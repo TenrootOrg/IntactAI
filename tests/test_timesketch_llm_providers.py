@@ -663,6 +663,44 @@ def test_every_provider_field_has_an_input_and_a_store_default():
                 f"{mode}: {ui_key} has no default in the settings store"
 
 
+def test_the_openrouter_model_field_is_catalog_backed_not_free_text():
+    """A hand-typed model id is how you end up pinned to something OpenRouter
+    renamed months ago and get a 404 at request time. The Timesketch picker
+    must read the same live catalog as Settings -> Agentic."""
+    html = _read(os.path.join(REPO, "modules", "nginx", "html", "partials",
+                              "settings.html"))
+    tab = html[html.index("<!-- Timesketch Tab -->"):html.index("<!-- Cloud Tab -->")]
+    block = tab[tab.index("llm_mode === 'openrouter'"):]
+    block = block[:block.index("llm_mode === 'litellm'")]
+
+    assert "/api/config/openrouter/models" in block, (
+        "the Timesketch OpenRouter model field is not backed by the catalog "
+        "endpoint that Settings -> Agentic uses")
+    assert "timesketch.openrouter_model = model.id" in block, \
+        "picking a catalog entry must write the model id back to the store"
+
+    # The whole x-data block lives inside a double-quoted attribute; a single
+    # double quote anywhere in it terminates the attribute and dumps the
+    # script onto the page as text.
+    for data_block in re.findall(r'x-data="([^"]*)"', tab, re.DOTALL):
+        assert '"' not in data_block, \
+            "a double quote inside an x-data attribute breaks out of it"
+
+
+def test_the_timesketch_save_seeds_the_openrouter_catalog():
+    """An operator who never opens the Agentic tab must still get a populated
+    model list, so the save path refreshes the shared catalog the same way
+    saveAgentic() does."""
+    store = _read(os.path.join(REPO, "modules", "nginx", "html", "js",
+                               "stores", "settings.js"))
+    save = store[store.index("async saveTimesketch()"):]
+    save = save[:save.index("\n        },")]
+    assert "refresh-openrouter-models" in save, \
+        "saveTimesketch does not refresh the OpenRouter catalog"
+    assert "llm-catalog-refreshed" in save, \
+        "saveTimesketch does not tell the combobox to re-query"
+
+
 def test_all_four_timesketch_containers_are_restarted_on_save():
     """web_v3 reads the same timesketch.conf as the others and was silently
     missing every settings change."""

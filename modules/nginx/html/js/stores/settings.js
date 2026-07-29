@@ -247,6 +247,18 @@ document.addEventListener('alpine:init', () => {
                 if (response.ok) {
                     window.currentConfig = this.config;
                     this.showMessage('Timesketch settings saved - containers restarting...', 'success');
+                    // Same fire-and-forget catalog refresh saveAgentic() does, so
+                    // the model combobox on this tab works for an operator who has
+                    // never opened Agentic. The OpenRouter catalog is shared and
+                    // its /models endpoint needs no key, so this is safe to call
+                    // whether or not one was just entered.
+                    if (this.config.timesketch?.llm_mode === 'openrouter') {
+                        try {
+                            await fetch('/api/maintenance/refresh-openrouter-models', { method: 'POST' });
+                        } catch (e) { /* best-effort */ }
+                        window.dispatchEvent(new CustomEvent('llm-catalog-refreshed',
+                            { detail: { provider: 'openrouter' } }));
+                    }
                     setTimeout(() => {
                         window.ActiveCase.gotoSystemWorkflows();
                     }, 1000);
