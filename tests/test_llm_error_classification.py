@@ -82,6 +82,38 @@ def test_the_message_points_at_the_model_not_the_key():
         "this message must not blame the API key -- that is what went wrong before"
 
 
+def test_an_account_out_of_credit_is_not_blamed_on_the_key():
+    """Verbatim from Anthropic. The key authenticated and listed 12 models --
+    only the balance was empty -- yet the operator was told to check the key."""
+    _check(
+        "Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', "
+        "'message': 'Your credit balance is too low to access the Anthropic API. "
+        "Please go to Plans & Billing to upgrade or purchase credits.'}}",
+        "no_credit")
+
+
+def test_a_funded_out_quota_is_not_mistaken_for_a_rate_limit():
+    """OpenAI returns insufficient_quota as a 429. The rate-limit branch would
+    otherwise claim it and say 'wait a moment and try again' -- advice that
+    never comes true, because waiting does not add credit."""
+    _check("429 - You exceeded your current quota, please check your plan and "
+           "billing details. type: insufficient_quota", "no_credit")
+
+
+def test_a_real_rate_limit_is_still_a_rate_limit():
+    """The billing check must not steal genuine throttling."""
+    _check("429 Client Error: Too Many Requests — rate limit exceeded, retry in 20s",
+           "rate_limited")
+
+
+def test_the_no_credit_message_does_not_blame_the_key():
+    text = MESSAGE("no_credit").lower()
+    assert "check the api key" not in text, \
+        "a billing failure must not send the operator to re-check a working key"
+    assert "key itself is fine" in text or "key is fine" in text, \
+        "the message should say the key is not the problem"
+
+
 def test_routing_refusals_are_classified_before_the_auth_patterns():
     """The auth branch matches on bare 'api key' and '403', either of which can
     appear in a provider's routing-refusal body. Order is load-bearing."""

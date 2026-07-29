@@ -877,6 +877,11 @@ _LLM_ERR_MESSAGES = {
     "cli_not_installed": "⚠️ The subscription CLI is not installed. Install it in Settings → Agentic (needs internet).",
     "cli_not_authenticated": "⚠️ The subscription is not connected. Sign in from Settings → Agentic (needs internet).",
     "model_unsupported": "⚠️ The vendor rejected the selected model for this subscription. Clear the Model field in Settings → Agentic to use the model your plan allows.",
+    "no_credit": (
+        "⚠️ The LLM provider accepted the key but refused the request for "
+        "billing reasons — no credit, or the quota for this plan is used up. "
+        "Top up or change plan with the provider, or switch to a different "
+        "provider in Settings → Agentic. The key itself is fine."),
     "model_not_routable": (
         "⚠️ The provider has no endpoint it is allowed to route this model to — "
         "usually a data-policy / privacy restriction on the account rather than "
@@ -926,6 +931,17 @@ def _classify_llm_error(exc) -> str:
     # operator was told to "check the API key and internet connection", both of
     # which were fine. The key authenticated and the same key worked on five
     # other models.
+    # Billing before BOTH the auth and rate-limit branches. A funded-out account
+    # still authenticates, so "check your API key" is wrong; and OpenAI returns
+    # insufficient_quota as a 429, which the rate-limit branch would otherwise
+    # claim and turn into "wait a moment and try again" -- advice that never
+    # comes true. Observed: Anthropic replying 400 "Your credit balance is too
+    # low", surfaced to the operator as "check the API key and internet
+    # connection" while the key was listing models fine.
+    if any(t in s for t in ("credit balance is too low", "insufficient_quota",
+                            "exceeded your current quota", "billing",
+                            "purchase credits", "payment required")):
+        return "no_credit"
     if any(t in s for t in ("no endpoints available", "no allowed providers",
                             "data policy", "guardrail")):
         return "model_not_routable"
