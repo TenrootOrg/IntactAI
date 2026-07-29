@@ -1,49 +1,102 @@
 #!/usr/bin/env bash
 # Pre-commit secret guard — blocks a commit whose STAGED content contains a
 # credential that must never enter git history. CI's gitleaks run
-# (.github/workflows/secret-scan.yml) is the last line of defense, but it
-# fires AFTER push — by then the secret is public and must be revoked. This
-# hook stops it locally, before it ever becomes a commit.
+# (.github/workflows/secret-scan.yml) is the last line of defense, but it fires
+# AFTER push — by then the secret is on GitHub and the only remedy is revoke
+# plus history rewrite. This hook stops it locally, before it is ever a commit.
 #
-# Install (one-time per clone):
-#     git config core.hooksPath scripts/git-hooks
+# Install: scripts/install-git-hooks.sh  (or `git config core.hooksPath
+# scripts/git-hooks`). install.sh runs it, so a normal clone is covered.
 #
 # Deliberate-bypass escape hatch (e.g. committing a doc that EXPLAINS a token
 # format): git commit --no-verify
+#
+# ---------------------------------------------------------------------------
+# LAYER 1 is gitleaks against .gitleaks.toml — the SAME binary and the SAME
+# config CI uses. That is the point: this file used to carry its own list of
+# five regexes while .gitleaks.toml carried those plus Anthropic, OpenAI,
+# OpenRouter, Azure and SECRET_KEY rules on top of gitleaks' ~150 defaults.
+# Local was quietly weaker than CI, so precisely the keys our own Settings
+# pages ask operators to paste (sk-or-v1-, sk-ant-, sk-proj-) committed
+# cleanly here and were only caught once pushed. Adding a rule to
+# .gitleaks.toml now protects both places at once, with no second list to
+# forget.
+#
+# LAYER 2 is the fallback pattern list below, used only when gitleaks is not
+# installed. It is deliberately NOT the full rule set — a partial check that
+# runs beats a complete one that does not, but it says so out loud rather than
+# letting an operator believe they have full coverage.
+# ---------------------------------------------------------------------------
 set -euo pipefail
 
 fail=0
+repo_root=$(git rev-parse --show-toplevel)
+config="${repo_root}/.gitleaks.toml"
 
-# 1) Known high-confidence token formats, checked against the staged DIFF
-#    (added lines only) of every file. GitHub PATs: classic (ghp_) and
-#    fine-grained (github_pat_), OAuth/app tokens (gho_/ghu_/ghs_/ghr_),
-#    plus AWS access keys and private-key headers for good measure.
-PATTERNS=(
-    'ghp_[A-Za-z0-9]{36}'
-    'github_pat_[A-Za-z0-9_]{22,}'
-    'gh[ousr]_[A-Za-z0-9]{36}'
-    'AKIA[0-9A-Z]{16}'
-    '-----BEGIN (RSA|EC|OPENSSH|DSA|PGP) PRIVATE KEY-----'
-)
-staged_added=$(git diff --cached --no-color --unified=0 | grep '^+' | grep -v '^+++' || true)
-for pat in "${PATTERNS[@]}"; do
-    if hits=$(printf '%s\n' "$staged_added" | grep -nE -e "$pat" | head -3); [[ -n "$hits" ]]; then
-        echo "✗ pre-commit: staged content matches secret pattern: $pat" >&2
-        printf '%s\n' "$hits" | sed 's/^/    /' >&2
+if command -v gitleaks >/dev/null 2>&1; then
+    # --staged scans the index, which is exactly what is about to be
+    # committed. --redact keeps the secret itself out of the terminal and
+    # anything that captures it (scrollback, CI logs, a pasted screenshot);
+    # the finding's file and rule are enough to act on.
+    if ! gitleaks protect --staged \
+            --config "$config" \
+            --redact --no-banner --log-level error 2>&1; then
+        echo "" >&2
+        echo "✗ pre-commit: gitleaks found a secret in the staged content (shown redacted above)." >&2
         fail=1
     fi
-done
+else
+    echo "! pre-commit: gitleaks not found — falling back to a PARTIAL pattern check." >&2
+    echo "  This misses the Anthropic / OpenAI / OpenRouter / Azure rules that" >&2
+    echo "  .gitleaks.toml carries. Install it for full local coverage:" >&2
+    echo "    https://github.com/gitleaks/gitleaks/releases" >&2
+    PATTERNS=(
+        'ghp_[A-Za-z0-9]{36}'
+        'github_pat_[A-Za-z0-9_]{22,}'
+        'gh[ousr]_[A-Za-z0-9]{36}'
+        'AKIA[0-9A-Z]{16}'
+        'sk-or-v1-[A-Za-z0-9]{64}'
+        'sk-ant-api03-[A-Za-z0-9_-]{93}AA'
+        'sk-(proj|svcacct|admin)-[A-Za-z0-9_-]{40,}'
+    )
+    staged_added=$(git diff --cached --no-color --unified=0 | grep '^+' | grep -v '^+++' || true)
+    for pat in "${PATTERNS[@]}"; do
+        if hits=$(printf '%s\n' "$staged_added" | grep -nE -e "$pat" | head -3); [[ -n "$hits" ]]; then
+            echo "✗ pre-commit: staged content matches secret pattern: $pat" >&2
+            # Print only the matched RULE and line number, never the line —
+            # echoing the secret to the terminal is the thing we are trying to
+            # prevent.
+            printf '%s\n' "$hits" | cut -d: -f1 | sed 's/^/    added line /' >&2
+            fail=1
+        fi
+    done
+fi
 
-# 2) config.yaml-specific guard: the SHIPPED default must never carry operator
-#    values. If config.yaml is staged, its staged blob must have an EMPTY
-#    github_token and no obvious real-token value anywhere. (The operator's
-#    local file is skip-worktree'd; this catches the mistake of clearing that
-#    flag and `git add config.yaml` with live values.)
+# Private-key header — checked ALWAYS, not just in the fallback branch.
+# gitleaks' private-key rule needs the key BODY to fire; a bare
+# `-----BEGIN ... PRIVATE KEY-----` line passes it. That header alone leaks
+# nothing, so this is not a security hole — but the previous version of this
+# hook did catch it, and silently dropping a check while claiming to have
+# strengthened the guard is how coverage rots. Cheap to keep, and a file that
+# legitimately documents the format is exactly what --no-verify is for.
+if git diff --cached --no-color --unified=0 | grep '^+' | grep -v '^+++' \
+        | grep -qE -- '-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----'; then
+    echo "✗ pre-commit: staged content contains a PRIVATE KEY header." >&2
+    fail=1
+fi
+
+# config.yaml-specific guard: the SHIPPED default must never carry operator
+# values. If config.yaml is staged, its staged blob must have an EMPTY
+# github_token. (The operator's local file is skip-worktree'd; this catches the
+# mistake of clearing that flag and `git add config.yaml` with live values.)
+# Kept separate from gitleaks because this is a policy about OUR file, not a
+# generic credential pattern — an empty-string default is correct, a populated
+# one is wrong even if the value is not a recognisable token format.
 if git diff --cached --name-only | grep -qx 'config.yaml'; then
     staged_cfg=$(git show :config.yaml)
     tok=$(printf '%s\n' "$staged_cfg" | sed -n "s/^[[:space:]]*github_token:[[:space:]]*['\"]\?\([^'\"]*\)['\"]\?.*$/\1/p" | head -1)
     if [[ -n "$tok" ]]; then
-        echo "✗ pre-commit: staged config.yaml has a NON-EMPTY github_token ('${tok:0:8}…')." >&2
+        echo "✗ pre-commit: staged config.yaml has a NON-EMPTY github_token ('${tok:0:4}…')." >&2
         echo "  The shipped default must stay github_token: '' — your real token" >&2
         echo "  lives only in your local (skip-worktree) copy / backend .env." >&2
         fail=1

@@ -55,6 +55,18 @@ main() {
     check_initialization_marker
     check_ubuntu
     check_config
+
+    # Point this clone's git at scripts/git-hooks so the pre-commit secret
+    # guard actually runs. core.hooksPath lives in .git/config, which is
+    # per-clone and untracked — so the guard shipped in the repo was off by
+    # default on every fresh clone. Best-effort: a tarball install has no .git
+    # and the script exits cleanly, and a hook-install failure must never stop
+    # a platform install.
+    if [[ -f "${SCRIPT_DIR}/scripts/install-git-hooks.sh" ]]; then
+        bash "${SCRIPT_DIR}/scripts/install-git-hooks.sh" >/dev/null 2>&1 \
+            && log_info "Git pre-commit secret guard: installed" \
+            || true
+    fi
     # Authenticate this install's GitHub API calls (module-update polling,
     # quota pre-flights, release lookups) when the operator set
     # options.github_token in config.yaml — raises the shared anonymous
