@@ -663,26 +663,60 @@ def test_every_provider_field_has_an_input_and_a_store_default():
                 f"{mode}: {ui_key} has no default in the settings store"
 
 
-def test_the_openrouter_model_field_is_catalog_backed_not_free_text():
-    """A hand-typed model id is how you end up pinned to something OpenRouter
-    renamed months ago and get a 404 at request time. The Timesketch picker
-    must read the same live catalog as Settings -> Agentic."""
+def _ts_tab():
     html = _read(os.path.join(REPO, "modules", "nginx", "html", "partials",
                               "settings.html"))
-    tab = html[html.index("<!-- Timesketch Tab -->"):html.index("<!-- Cloud Tab -->")]
-    block = tab[tab.index("llm_mode === 'openrouter'"):]
-    block = block[:block.index("llm_mode === 'litellm'")]
+    return html[html.index("<!-- Timesketch Tab -->"):html.index("<!-- Cloud Tab -->")]
 
-    assert "/api/config/openrouter/models" in block, (
-        "the Timesketch OpenRouter model field is not backed by the catalog "
-        "endpoint that Settings -> Agentic uses")
-    assert "timesketch.openrouter_model = model.id" in block, \
-        "picking a catalog entry must write the model id back to the store"
 
-    # The whole x-data block lives inside a double-quoted attribute; a single
-    # double quote anywhere in it terminates the attribute and dumps the
-    # script onto the page as text.
-    for data_block in re.findall(r'x-data="([^"]*)"', tab, re.DOTALL):
+def test_no_model_list_is_hardcoded():
+    """Every hardcoded list goes stale the moment a vendor ships a model.
+
+    The Google field shipped with gemini-2.5-flash / 2.5-pro / 1.5-pro baked
+    into the markup; by the time anyone looked, 1.5-pro was retired and the
+    live catalog had 32 entries including a whole generation the UI could not
+    offer. Model names belong in a catalog, not in HTML.
+    """
+    tab = _ts_tab()
+    for stale in ("gemini-1.5-pro", "gemini-2.5-pro", "gemini-2.5-flash"):
+        assert f'<option value="{stale}"' not in tab, (
+            f"{stale} is hardcoded as an <option> — use the live catalog "
+            f"(/api/config/gemini/models) instead")
+
+
+def test_every_model_field_is_catalog_or_server_backed():
+    """A hand-typed id is how you end up pinned to something the vendor
+    renamed and get a 404 at request time.
+
+    LiteLLM is the deliberate exception: its model names are whatever the
+    operator registered in their own proxy config, so there is nothing to
+    enumerate.
+    """
+    tab = _ts_tab()
+    cases = [
+        ("google",     "llm_mode === 'ollama'",     "/api/config/gemini/models",
+         "timesketch.google_ai_model = model.id"),
+        ("openrouter", "llm_mode === 'litellm'",    "/api/config/openrouter/models",
+         "timesketch.openrouter_model = model.id"),
+    ]
+    for label, next_marker, endpoint, writeback in cases:
+        block = tab[tab.index(f"llm_mode === '{label}'") if label != "google"
+                    else tab.index("Google AI Studio Configuration"):]
+        block = block[:block.index(next_marker)]
+        assert endpoint in block, f"{label}: model field is not catalog-backed"
+        assert writeback in block, \
+            f"{label}: picking a catalog entry must write the id back to the store"
+
+    # Ollama can't use a static catalog — it asks the operator's own server.
+    ollama = tab[tab.index("llm_mode === 'ollama'"):tab.index("llm_mode === 'openrouter'")]
+    assert "/api/config/ollama/models" in ollama, \
+        "the Ollama model field should be able to list what that server has"
+
+
+def test_no_x_data_block_can_break_out_of_its_attribute():
+    """Each block lives inside a double-quoted attribute; one double quote
+    terminates it and dumps the script onto the page as visible text."""
+    for data_block in re.findall(r'x-data="([^"]*)"', _ts_tab(), re.DOTALL):
         assert '"' not in data_block, \
             "a double quote inside an x-data attribute breaks out of it"
 

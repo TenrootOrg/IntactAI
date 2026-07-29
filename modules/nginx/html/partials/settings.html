@@ -926,23 +926,102 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                     <label class="block text-xs text-gray-400 mb-1">API Key</label>
                                     <input type="password" x-model="$store.settings.config.timesketch.google_ai_key" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="AIza...">
                                 </div>
-                                <div x-data="{ presets: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-pro'] }">
+                                <div>
                                     <label class="block text-xs text-gray-400 mb-1">Model</label>
-                                    <select
-                                        :value="presets.includes($store.settings.config.timesketch.google_ai_model) ? $store.settings.config.timesketch.google_ai_model : '__custom'"
-                                        @change="$store.settings.config.timesketch.google_ai_model = $event.target.value === '__custom' ? '' : $event.target.value"
-                                        class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
-                                        <option value="gemini-2.5-flash">gemini-2.5-flash</option>
-                                        <option value="gemini-2.5-pro">gemini-2.5-pro</option>
-                                        <option value="gemini-1.5-pro">gemini-1.5-pro</option>
-                                        <option value="__custom">Custom…</option>
-                                    </select>
-                                    <input
-                                        x-show="!presets.includes($store.settings.config.timesketch.google_ai_model)"
-                                        type="text"
-                                        x-model="$store.settings.config.timesketch.google_ai_model"
-                                        placeholder="e.g. gemini-3.0-flash"
-                                        class="mt-2 w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                    <!-- Live Gemini catalog, same as Settings -> Agentic. This was a
+                                         hardcoded list of three (gemini-2.5-flash / 2.5-pro /
+                                         1.5-pro) plus a Custom box, which went stale the moment
+                                         Google shipped a new model — 1.5-pro is retired outright,
+                                         and nothing in the UI said so.
+                                         /api/config/gemini/models is already filtered to
+                                         generateContent-capable models, which is exactly the set
+                                         Timesketch's aistudio provider can use: it passes `model`
+                                         straight to client.models.generate_content(), so there is
+                                         no Timesketch-side restriction to model against.
+                                         NOTE: no double quotes anywhere inside x-data. -->
+                                    <div x-data="{
+                                             selectedModel: null, results: [], total: 0,
+                                             open: false, loading: false, _debounce: null,
+                                             async query() {
+                                                 const q = $store.settings.config.timesketch.google_ai_model || '';
+                                                 this.loading = true;
+                                                 try {
+                                                     const resp = await fetch('/api/config/gemini/models?limit=10&q=' + encodeURIComponent(q));
+                                                     const data = await resp.json();
+                                                     this.results = data.models || [];
+                                                     this.total = data.total || 0;
+                                                 } catch(e) { this.results = []; this.total = 0; }
+                                                 this.loading = false;
+                                             },
+                                             async loadSelected() {
+                                                 const id = $store.settings.config.timesketch.google_ai_model;
+                                                 if (!id) { this.selectedModel = null; return; }
+                                                 try {
+                                                     const resp = await fetch('/api/config/gemini/models?limit=10&q=' + encodeURIComponent(id));
+                                                     const data = await resp.json();
+                                                     const list = data.models || [];
+                                                     this.selectedModel = list.find(m => m.id === id)
+                                                         || list.find(m => m.canonical_id === id) || null;
+                                                 } catch(e) { this.selectedModel = null; }
+                                             },
+                                             schedule() {
+                                                 clearTimeout(this._debounce);
+                                                 this._debounce = setTimeout(() => this.query(), 150);
+                                             },
+                                             select(model) {
+                                                 this.selectedModel = model;
+                                                 $store.settings.config.timesketch.google_ai_model = model.id;
+                                                 this.open = false;
+                                             }
+                                         }"
+                                         x-init="loadSelected(); query();
+                                                 $watch('$store.settings.config.timesketch.google_ai_model', () => { loadSelected(); });
+                                                 window.addEventListener('llm-catalog-refreshed', (ev) => {
+                                                     if (ev.detail?.provider === 'gemini') { results = []; total = 0; query(); loadSelected(); }
+                                                 });"
+                                         class="relative">
+                                        <input type="text"
+                                               x-model="$store.settings.config.timesketch.google_ai_model"
+                                               @focus="query(); open = true"
+                                               @input="open = true; schedule()"
+                                               @click.away="open = false"
+                                               @keydown.escape="open = false"
+                                               class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm"
+                                               placeholder="Type to search Gemini models">
+                                        <div x-show="loading" class="absolute right-2 top-2 text-xs text-gray-500">Loading…</div>
+                                        <div x-show="open && results.length > 0"
+                                             class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded shadow-lg max-h-64 overflow-y-auto">
+                                            <template x-for="m in results" :key="m.id">
+                                                <div @mousedown.prevent="select(m)"
+                                                     class="px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-700 border-b border-gray-700/50">
+                                                    <div class="text-white" x-text="m.name"></div>
+                                                    <div class="flex justify-between text-xs text-gray-500">
+                                                        <span x-text="m.id"></span>
+                                                        <span x-show="m.max_output_tokens">
+                                                            max&nbsp;<span x-text="m.max_output_tokens.toLocaleString()"></span>
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                            <div x-show="total > results.length"
+                                                 class="px-3 py-1 text-[11px] text-gray-500 italic border-t border-gray-700/50">
+                                                Showing <span x-text="results.length"></span> of <span x-text="total"></span> matches — keep typing to narrow down.
+                                            </div>
+                                        </div>
+                                        <div x-show="open && results.length === 0 && !loading && ($store.settings.config.timesketch.google_ai_model || '').length > 0"
+                                             class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded px-3 py-2 text-xs text-gray-400">
+                                            No matching Gemini models in the catalog.
+                                            Run <span class="text-blue-400">Maintenance → Refresh</span> to update it.
+                                        </div>
+                                        <div x-show="selectedModel" class="mt-1 text-[11px] text-gray-500 flex flex-wrap gap-x-4">
+                                            <span x-show="selectedModel?.context_length">
+                                                Context: <span class="text-gray-300" x-text="(selectedModel?.context_length ?? 0).toLocaleString()"></span>
+                                            </span>
+                                            <span x-show="selectedModel?.max_output_tokens">
+                                                Max output: <span class="text-gray-300" x-text="(selectedModel?.max_output_tokens ?? 0).toLocaleString()"></span>
+                                            </span>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -957,9 +1036,53 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                 </div>
                                 <div>
                                     <label class="block text-xs text-gray-400 mb-1">Model</label>
-                                    <input type="text" x-model="$store.settings.config.timesketch.ollama_model" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="llama3.1:8b">
+                                    <!-- Asks the operator's OWN server what it has, rather than
+                                         making them remember an exact tag. A typo here fails at
+                                         request time with an unhelpful 404 from Ollama, which is
+                                         a poor way to learn you wrote llama3.1 instead of
+                                         llama3.1:8b. Still a free-text input so an un-pulled
+                                         model can be named deliberately.
+                                         NOTE: no double quotes inside x-data. -->
+                                    <div x-data="{
+                                             models: [], err: '', loading: false, open: false,
+                                             async load() {
+                                                 const url = ($store.settings.config.timesketch.ollama_url || '').trim();
+                                                 if (!url) { this.err = 'Enter the server URL first.'; this.models = []; return; }
+                                                 this.loading = true; this.err = '';
+                                                 try {
+                                                     const qs = new URLSearchParams({ url: url, kind: 'ollama' });
+                                                     const resp = await fetch('/api/config/ollama/models?' + qs.toString());
+                                                     const d = await resp.json();
+                                                     this.models = d.models || [];
+                                                     if (!this.models.length) {
+                                                         this.err = (d && (d.error || d.reason)) || 'That server reports no models.';
+                                                     } else { this.open = true; }
+                                                 } catch(e) { this.err = 'Could not reach that server.'; this.models = []; }
+                                                 this.loading = false;
+                                             }
+                                         }" class="relative">
+                                        <input type="text"
+                                               x-model="$store.settings.config.timesketch.ollama_model"
+                                               @click.away="open = false"
+                                               class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm"
+                                               placeholder="llama3.1:8b">
+                                        <button type="button" @click="load()" :disabled="loading"
+                                                class="mt-1 text-[11px] text-blue-400 hover:text-blue-300 disabled:text-gray-600">
+                                            <span x-text="loading ? 'Asking the server…' : 'List models on this server'"></span>
+                                        </button>
+                                        <div x-show="open && models.length > 0"
+                                             class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded shadow-lg max-h-64 overflow-y-auto">
+                                            <template x-for="m in models" :key="m.id || m">
+                                                <div @mousedown.prevent="$store.settings.config.timesketch.ollama_model = (m.id || m); open = false"
+                                                     class="px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-700 border-b border-gray-700/50 text-white"
+                                                     x-text="m.id || m"></div>
+                                            </template>
+                                        </div>
+                                        <p x-show="err" x-transition class="mt-1 text-[11px] text-yellow-600" x-text="err"></p>
+                                    </div>
                                 </div>
                             </div>
+                            <p class="text-xs text-gray-500 mt-2">The URL must be reachable <span class="text-gray-400">from inside the Timesketch container</span> — "localhost" will not work.</p>
                         </div>
 
                         <!-- OpenRouter (API) -->
