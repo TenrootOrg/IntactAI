@@ -817,6 +817,7 @@ def _cloud_contribution(rid, det, provider):
         fb = det.get("findings_by_severity")
         if isinstance(fb, dict):
             raw = fb
+    synthetic = bool(det.get("synthetic"))
     if not raw:
         import json
         import os
@@ -824,10 +825,19 @@ def _cloud_contribution(rid, det, provider):
             if os.path.exists(base):
                 try:
                     with open(base) as f:
-                        raw = (json.load(f) or {}).get("findings")
+                        _persisted = json.load(f) or {}
+                    raw = _persisted.get("findings")
+                    synthetic = synthetic or bool(_persisted.get("synthetic"))
                 except Exception:
                     raw = None
                 break
+    # Demo data must never become case evidence. AWS ships attack-shaped
+    # fixtures for development, and the cloud mapper turns their IPs into
+    # `ioc:ip` nodes — which are GLOBAL, so a fictional address would collapse
+    # with real endpoint NetScan hits and cross-correlate against actual
+    # evidence. A run that used them is marked at the pipeline; drop it here.
+    if synthetic:
+        return [], []
     finds = _flatten_cloud_findings(raw)
     if not finds:
         return [], []

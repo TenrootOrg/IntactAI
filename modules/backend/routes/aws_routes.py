@@ -285,11 +285,26 @@ def start_scan():
 
             cloud_config = _load_cloud_config()
             aws_config = cloud_config.get('aws', {})
-            if not aws_config:
-                # In scaffold mode the stubs don't actually need creds, but
-                # the workflow row should still tell the operator the
-                # credentials are missing so the UI can surface the warning.
-                add_log_to_run(run_id, "[AWS] No AWS credentials configured — running stub collectors with fixture data.", "warning")
+            if not aws_config or not aws_config.get('access_key_id'):
+                # Fail closed, the way azure_routes.py already does for its
+                # missing tenant_id/client_id. This used to log a warning and
+                # continue with bundled fixtures, producing a run marked
+                # mode=online whose "findings" were invented — attack-shaped
+                # demo records that then entered the Case graph as IOCs.
+                # An online scan with no credentials has no honest result.
+                from services.aws.collectors import demo_fixtures_enabled, _DEMO_FIXTURES_ENV
+                if not demo_fixtures_enabled():
+                    msg = ("AWS credentials are not configured — configure them in "
+                           "Settings > Cloud, or set "
+                           f"{_DEMO_FIXTURES_ENV}=1 to run with bundled demo data.")
+                    add_log_to_run(run_id, f"[AWS] {msg}", "error")
+                    update_run_status(run_id, 'failed', error=msg)
+                    return
+                add_log_to_run(run_id,
+                               "[AWS] No credentials configured; "
+                               f"{_DEMO_FIXTURES_ENV} is set, so this run uses SYNTHETIC "
+                               "demo data and must not be treated as evidence.",
+                               "warning")
                 aws_config = {'region': 'us-east-1'}
 
             if isinstance(blueprint_id, str):
