@@ -235,6 +235,31 @@ print_summary() {
 }
 
 # ============================================================================
+# Installation Notes
+# ============================================================================
+
+# Prints the neutral notes recorded via record_install_note(). Separate from
+# print_final_issues_report() on purpose: that block is for things that went
+# wrong and is styled to alarm. This is for expected behaviour worth
+# remembering, and is styled not to. Called between print_summary and
+# print_final_issues_report, so it reads after the success banner and before
+# any ATTENTION block.
+print_install_notes() {
+    [[ ${#INSTALL_NOTES[@]} -eq 0 ]] && return 0
+
+    echo ""
+    echo "=============================================="
+    echo -e "${BLUE}For your information${NC}"
+    echo "=============================================="
+    local note
+    for note in "${INSTALL_NOTES[@]}"; do
+        echo ""
+        echo -e "$note"
+    done
+    echo ""
+}
+
+# ============================================================================
 # Installation Report
 # ============================================================================
 

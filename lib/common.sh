@@ -44,6 +44,26 @@ INSTALL_WARNINGS=()
 INSTALL_ERRORS=()
 declare -A INSTALL_ISSUE_SEEN=()
 
+# Neutral end-of-install notes. Deliberately NOT warnings: these never feed
+# INSTALL_WARNINGS, never reach print_final_issues_report's ATTENTION block,
+# and never change print_summary's banner colour. They exist so that an
+# operator — or an engineer reading install.log a year from now — learns about
+# deliberate, expected behaviour that is otherwise invisible, e.g. that we
+# modify a vendor container's site-packages on every start. Nothing here is a
+# problem, so nothing here should look like one.
+INSTALL_NOTES=()
+
+record_install_note() {
+    local message="${1:-}"
+    [[ -z "$message" ]] && return 0
+    INSTALL_NOTES+=("$message")
+    # [NOTE], never [WARN]/[ERROR]: record_child_output_issue() strips leading
+    # bracket groups and then substring-matches those two tokens, so anything
+    # tagged [NOTE] is inert to that scraper by construction.
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [NOTE] ${message}" >> "$LOG_FILE"
+    return 0
+}
+
 record_install_issue() {
     local severity="$1"
     local source="${2:-?}"

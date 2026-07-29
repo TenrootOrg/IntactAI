@@ -219,6 +219,10 @@ main() {
     fix_source_permissions
 
     print_summary
+    # Neutral "this is expected" notes recorded during the install. Kept
+    # separate from — and printed before — the ATTENTION block so that
+    # deliberate behaviour is never mistaken for something that went wrong.
+    print_install_notes
     # Final ATTENTION block listing every warning/error tracked anywhere
     # during the install. Operators currently miss yellow [WARN] lines
     # that scrolled past — this surfaces them right after the success

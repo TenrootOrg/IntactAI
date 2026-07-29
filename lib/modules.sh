@@ -784,12 +784,57 @@ _stamp_transitive_env_from_config() {
 # TimeSketch Module
 # ============================================================================
 
+# We modify a vendor container. Say so, once, where someone will find it.
+#
+# TimeSketch ships as an image we do not build, so the only way to add an LLM
+# provider is to write into the running container's site-packages. That is a
+# legitimate thing to do and it is fully automatic, but it is exactly the kind
+# of invisible behaviour that costs somebody a day of debugging after an
+# upstream change. This is that day's head start.
+#
+# Recorded as a NOTE, never a warning: record_install_note() does not feed
+# INSTALL_WARNINGS, so this cannot colour the summary banner or land in the
+# ATTENTION block. Nothing is wrong. The wording also deliberately avoids
+# every token record_child_output_issue() scrapes for ("WARNING:", "[WARN]",
+# "[ERROR]", ...) so it stays inert even if that scanner gains call sites.
+record_timesketch_llm_provider_note() {
+    record_install_note "\
+${YELLOW}TimeSketch container modification — expected, by design${NC}
+
+  IntactAI adds two LLM provider modules to the vendor TimeSketch image:
+    openrouter, litellm_proxy
+
+  On every container start, a prologue in
+  modules/timesketch/docker-compose.yaml copies them into the container's
+  Python site-packages under
+    timesketch/lib/llms/providers/contrib/
+  and appends two guarded import lines to that package's __init__.py.
+
+  Source of truth: modules/timesketch/llm_providers/ (bind-mounted read-only)
+  Scope:           the container's writable layer only. Nothing on this host
+                   is changed, and the edit is re-applied automatically on
+                   every up / recreate / restart.
+  Fail-safe:       if anything goes wrong the prologue logs it and TimeSketch
+                   starts unmodified. To see what it decided:
+                     docker exec intact_timesketch_web \\
+                       cat /var/log/timesketch/intact_llm_providers.log
+
+  This is recorded so that a future TimeSketch upgrade which changes
+  timesketch/lib/llms/providers/ is understood rather than debugged from
+  scratch. CI checks upstream for exactly that change on every release build
+  (scripts/ci/check_timesketch_provider_drift.py). No action is needed now."
+}
+
 deploy_timesketch() {
     local ts_enabled=$(read_config "['modules']['timesketch']['enabled']")
     if ! is_enabled "$ts_enabled"; then
         log_info "[2/8] TimeSketch: SKIPPED (disabled in config)"
         return
     fi
+
+    # Recorded before the skip-already-installed return below, so a re-run of
+    # install.sh still surfaces it. Printed at the end by print_install_notes.
+    record_timesketch_llm_provider_note
 
     # Skip-already-installed: install.sh re-runs after a partial failure
     # should reuse what's healthy instead of re-pulling + re-creating
