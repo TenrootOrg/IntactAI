@@ -161,11 +161,31 @@ def extract_memory_from_upload(
                 out_name = out_name + ".raw"
             out_path = os.path.join(staging_dir, out_name)
 
+            # Only ONE member is extracted here, so the archive-wide caps do
+            # not apply — what matters is whether the staging volume can hold
+            # this image, and whether the member stops where it said it would.
+            # `raw_size` comes from the ZIP central directory, i.e. it is what
+            # the archive CLAIMS; copy_bounded stops a member that keeps
+            # producing bytes past that instead of filling the volume.
+            from services.archive_guard import (ArchiveRejected, copy_bounded,
+                                                require_free_space)
+            try:
+                require_free_space(staging_dir, raw_size)
+            except ArchiveRejected as e:
+                raise UploadExtractError(str(e)) from e
+
             log(
                 f"upload: extracting {zip_member!r} ({raw_size // 1024 // 1024} MB) → {out_path}",
             )
-            with z.open(zip_member, "r") as src, open(out_path, "wb") as dst:
-                shutil.copyfileobj(src, dst, length=4 * 1024 * 1024)
+            try:
+                with z.open(zip_member, "r") as src, open(out_path, "wb") as dst:
+                    copy_bounded(src, dst, raw_size, what=f"{zip_member!r}")
+            except ArchiveRejected as e:
+                try:
+                    os.remove(out_path)
+                except OSError:
+                    pass
+                raise UploadExtractError(str(e)) from e
 
         _sniff_raw(out_path)
         log("upload: extraction complete — image looks uncompressed", "success")
