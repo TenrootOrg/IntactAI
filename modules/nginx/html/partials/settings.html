@@ -912,7 +912,10 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                             <select x-model="$store.settings.config.timesketch.llm_mode" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm">
                                 <option value="google">Google AI Studio</option>
                                 <option value="ollama">Ollama (Local)</option>
+                                <option value="openrouter">OpenRouter (API)</option>
+                                <option value="litellm">LiteLLM Proxy (Self-hosted)</option>
                             </select>
+                            <p class="text-xs text-gray-500 mt-1">Applies to NL2Q, summarization, synthesis and the default fallback.</p>
                         </div>
 
                         <!-- Google AI Studio -->
@@ -959,7 +962,46 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                             </div>
                         </div>
 
+                        <!-- OpenRouter (API) -->
+                        <div x-show="$store.settings.config.timesketch.llm_mode === 'openrouter'" x-transition>
+                            <div class="text-xs text-gray-500 mb-2 border-b border-gray-700 pb-1">OpenRouter Configuration</div>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">API Key</label>
+                                    <input type="password" x-model="$store.settings.config.timesketch.openrouter_key" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="sk-or-v1-...">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Model</label>
+                                    <input type="text" x-model="$store.settings.config.timesketch.openrouter_model" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="anthropic/claude-3.5-sonnet">
+                                </div>
+                            </div>
+                            <p class="text-xs text-gray-500 mt-2">One key, 100+ hosted models. Browse identifiers at openrouter.ai/models.</p>
+                        </div>
+
+                        <!-- LiteLLM Proxy (Self-hosted) -->
+                        <div x-show="$store.settings.config.timesketch.llm_mode === 'litellm'" x-transition>
+                            <div class="text-xs text-gray-500 mb-2 border-b border-gray-700 pb-1">LiteLLM Proxy Configuration</div>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Server URL</label>
+                                    <input type="text" x-model="$store.settings.config.timesketch.litellm_url" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="http://litellm.internal:4000">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Model</label>
+                                    <input type="text" x-model="$store.settings.config.timesketch.litellm_model" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="gpt-4o-mini">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Proxy Key <span class="text-gray-600">(optional)</span></label>
+                                    <input type="password" x-model="$store.settings.config.timesketch.litellm_key" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="leave empty if unauthenticated">
+                                </div>
+                            </div>
+                            <p class="text-xs text-gray-500 mt-2">The URL must be reachable <span class="text-gray-400">from inside the Timesketch container</span> — "localhost" will not work.</p>
+                        </div>
+
                         <p class="text-xs text-gray-500 mt-4">Note: These settings require Timesketch container restart to take effect.</p>
+                        <p x-show="['openrouter','litellm'].includes($store.settings.config.timesketch.llm_mode)" x-transition class="text-xs text-gray-500 mt-1">
+                            OpenRouter and LiteLLM are IntactAI add-on providers installed into the Timesketch container at start-up.
+                        </p>
 
                         <!-- Save Button -->
                         <div class="mt-4 pt-4 border-t border-gray-700 flex justify-end">

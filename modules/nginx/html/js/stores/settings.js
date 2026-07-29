@@ -20,7 +20,15 @@ document.addEventListener('alpine:init', () => {
                 google_ai_key: '',
                 google_ai_model: 'gemini-2.5-flash',
                 ollama_url: 'http://localhost:11434',
-                ollama_model: 'llama3.1:8b'
+                ollama_model: 'llama3.1:8b',
+                // openrouter and litellm_proxy are contrib providers IntactAI
+                // installs into the Timesketch container at start-up — see
+                // modules/timesketch/llm_providers/README.md.
+                openrouter_key: '',
+                openrouter_model: 'anthropic/claude-3.5-sonnet',
+                litellm_url: '',
+                litellm_model: '',
+                litellm_key: ''
             },
             cloud: {
                 provider: 'aws',
@@ -79,7 +87,12 @@ document.addEventListener('alpine:init', () => {
                         google_ai_key: tsData.google_ai_key || '',
                         google_ai_model: tsData.google_ai_model || 'gemini-2.5-flash',
                         ollama_url: tsData.ollama_url || '',
-                        ollama_model: tsData.ollama_model || ''
+                        ollama_model: tsData.ollama_model || '',
+                        openrouter_key: tsData.openrouter_key || '',
+                        openrouter_model: tsData.openrouter_model || 'anthropic/claude-3.5-sonnet',
+                        litellm_url: tsData.litellm_url || '',
+                        litellm_model: tsData.litellm_model || '',
+                        litellm_key: tsData.litellm_key || ''
                     };
                 }
 
