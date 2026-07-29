@@ -102,11 +102,20 @@ services:
     command:
       - |
         mkdir -p /var/log/timesketch
+        [ -r /opt/intact/llm_providers/apply.sh ] && bash /opt/intact/llm_providers/apply.sh; true
         exec /docker-entrypoint.sh timesketch-web
     environment:
       - NUM_WSGI_WORKERS=${NUM_WSGI_WORKERS:-4}
     volumes:
       - ./config:/etc/timesketch
+      # IntactAI's contrib LLM providers (openrouter, litellm_proxy). apply.sh
+      # writes them into the vendor image's site-packages on every start —
+      # /opt/venv has no volume, so a one-off docker cp would be destroyed by
+      # the next recreate. Read-only: the container never writes back here.
+      # The `[ -r ] && … ; true` guard above is load-bearing — on a partially
+      # applied upgrade docker bind-mounts an empty dir, and Timesketch must
+      # still start. See llm_providers/README.md.
+      - ./llm_providers:/opt/intact/llm_providers:ro
       - timesketch_upload:/usr/share/timesketch/upload
       - timesketch_logs:/var/log/timesketch
     restart: unless-stopped
@@ -123,14 +132,23 @@ services:
   timesketch-web-legacy:
     container_name: intact_timesketch_web_legacy
     image: us-docker.pkg.dev/osdfir-registry/timesketch/timesketch:${TIMESKETCH_VERSION:-latest}
-    entrypoint: ["/docker-entrypoint.sh"]
-    command: ["timesketch-web-legacy"]
+    # Converted from `entrypoint: ["/docker-entrypoint.sh"]` to the bash -c
+    # form so the contrib-LLM-provider prologue runs first. Cosmetic, not
+    # behavioural: /docker-entrypoint.sh runs gunicorn as a child rather than
+    # exec'ing it, so the process tree is identical either way.
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        mkdir -p /var/log/timesketch
+        [ -r /opt/intact/llm_providers/apply.sh ] && bash /opt/intact/llm_providers/apply.sh; true
+        exec /docker-entrypoint.sh timesketch-web-legacy
     environment:
       - NUM_WSGI_WORKERS=${NUM_WSGI_WORKERS:-2}
       - TIMESKETCH_UI_MODE=legacy
       - TIMESKETCH_SETTINGS=/etc/timesketch/timesketch_legacy.conf
     volumes:
       - ./config:/etc/timesketch
+      - ./llm_providers:/opt/intact/llm_providers:ro
       - timesketch_upload:/usr/share/timesketch/upload
       - timesketch_logs:/var/log/timesketch
     restart: unless-stopped
@@ -142,13 +160,19 @@ services:
   timesketch-web-v3:
     container_name: intact_timesketch_web_v3
     image: us-docker.pkg.dev/osdfir-registry/timesketch/timesketch:${TIMESKETCH_VERSION:-latest}
-    entrypoint: ["/docker-entrypoint.sh"]
-    command: ["timesketch-web-v3"]
+    # Same conversion as timesketch-web-legacy above.
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        mkdir -p /var/log/timesketch
+        [ -r /opt/intact/llm_providers/apply.sh ] && bash /opt/intact/llm_providers/apply.sh; true
+        exec /docker-entrypoint.sh timesketch-web-v3
     environment:
       - NUM_WSGI_WORKERS=${NUM_WSGI_WORKERS:-2}
       - TIMESKETCH_UI_MODE=v3
     volumes:
       - ./config:/etc/timesketch
+      - ./llm_providers:/opt/intact/llm_providers:ro
       - timesketch_upload:/usr/share/timesketch/upload
       - timesketch_logs:/var/log/timesketch
     restart: unless-stopped
@@ -190,11 +214,15 @@ services:
     command:
       - |
         mkdir -p /var/log/timesketch
+        [ -r /opt/intact/llm_providers/apply.sh ] && bash /opt/intact/llm_providers/apply.sh; true
         exec /docker-entrypoint.sh timesketch-worker
     environment:
       - WORKER_LOG_LEVEL=${WORKER_LOG_LEVEL:-INFO}
     volumes:
       - ./config:/etc/timesketch
+      # The worker runs the Celery-side LLM features (summarize/synthesize),
+      # so it needs the providers just as much as the web frontends do.
+      - ./llm_providers:/opt/intact/llm_providers:ro
       - timesketch_upload:/usr/share/timesketch/upload
       - timesketch_logs:/var/log/timesketch
     restart: unless-stopped
