@@ -190,3 +190,21 @@ data/fusion_graphs/
 # re-adds live-reload code bind-mounts on a dev box. See
 # modules/backend/docker-compose.override.yaml.example for the template.
 /modules/backend/docker-compose.override.yaml
+
+# Runtime state the backend writes to track what it has actually applied
+# (source/compose fingerprints for drift detection, the previous image tag for
+# rollback). Per-host facts, never repo content.
+data/backend-source.applied.sha256
+data/backend-compose.applied.sha256
+data/backend-image.previous
+modules/backend/data/
+
+# Console captures from install/upgrade runs. These routinely contain whatever
+# the run printed -- which has included a GitHub PAT -- and being untracked but
+# NOT ignored is the worst of both: invisible to `git status` discipline, yet
+# one `git add -A` from being committed.
+/*.out
+/*.log
+
+# Scratch output from external code-review tooling.
+/.codex/

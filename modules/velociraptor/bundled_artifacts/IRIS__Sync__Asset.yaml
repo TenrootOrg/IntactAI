@@ -212,11 +212,11 @@ sources:
 
       LET apiRequestIrisUpdate(currentAsset,assetId) =
           SELECT * FROM if(
-            # currentAsset comes from apiRequestIrisGet() with no success check
-            # before this — if that GET failed (asset deleted server-side,
-            # transient error, etc.) currentAsset's fields are null, and the
-            # update below would previously still POST them, blanking the
-            # existing asset's real name/type in IRIS instead of failing loudly.
+            -- currentAsset comes from apiRequestIrisGet() with no success check
+            -- before this -- if that GET failed (asset deleted server-side,
+            -- transient error, etc.) currentAsset's fields are null, and the
+            -- update below would previously still POST them, blanking the
+            -- existing asset's real name/type in IRIS instead of failing loudly.
             condition=currentAsset.asset_name[0],
             then={
               SELECT *,
