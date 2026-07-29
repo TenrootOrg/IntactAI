@@ -2295,6 +2295,7 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                                   *,
                                   prebuilt_package_dir: Optional[str] = None,
                                   prebuilt_manifest: Optional[Dict] = None,
+                                  expected_sha256: Optional[str] = None,
                                   workflow_label: str = "OFFLINE UPGRADE WORKFLOW") -> Dict:
     """Run the apply-upgrade orchestration with two-phase support.
 
@@ -2361,7 +2362,8 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                 run_command(f"rm -rf {old_dir}", logger=log)
 
         # Verify and extract package
-        verify_result = verify_upgrade_package(package_path, logger=log)
+        verify_result = verify_upgrade_package(
+            package_path, logger=log, expected_sha256=expected_sha256)
         if not verify_result['success']:
             if package_path and os.path.exists(package_path):
                 try:

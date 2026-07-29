@@ -30,6 +30,7 @@ Three deliberate design choices:
    prints a URL plus a short code that can be approved from any device.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -366,6 +367,41 @@ def detect(provider) -> dict:
 # install
 # ---------------------------------------------------------------------------
 
+def _resolve_installer_url(spec, provider, run_id=None):
+    """Turn the moving `latest` URL into an immutable per-tag one.
+
+    `/releases/latest/download/install.sh` is a stable URL with unstable
+    content: the bytes change on every upstream release, with no version in the
+    URL and nothing to compare against. Resolving to a concrete tag makes the
+    artifact immutable, so the digest logged next to it means something.
+
+    Falls back to the original URL on ANY failure — GitHub's unauthenticated
+    API allows 60 requests/hour per IP, and a shared or busy egress address
+    would otherwise lose the ability to install at all. A moving URL whose
+    digest is recorded is still a large improvement over a pipe into a shell.
+
+    Returns ``(url, human_version)``.
+    """
+    api = "https://api.github.com/repos/openai/codex/releases/latest"
+    try:
+        r = subprocess.run(["curl", "-fsSL", "--max-time", "20", api],
+                           capture_output=True, text=True, timeout=30)
+        tag = (json.loads(r.stdout or "{}") or {}).get("tag_name") if r.returncode == 0 else None
+    except Exception:  # noqa: BLE001 — resolution is best-effort by design
+        tag = None
+
+    if not tag or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", str(tag)):
+        # Also the guard against a hostile tag: it is interpolated into a URL,
+        # and although argv is a list (so it can never become shell syntax), a
+        # tag containing "../" or a scheme would still redirect the download.
+        _log(provider, "Could not resolve the latest release tag "
+                       "(offline, rate-limited, or an unexpected value) — "
+                       "using the rolling installer URL.", "warning", run_id)
+        return spec["installer"], "latest (unresolved)"
+    return (f"https://github.com/openai/codex/releases/download/{tag}/install.sh",
+            str(tag))
+
+
 def install(provider, run_id=None) -> dict:
     """Download and install the vendor CLI. Requires internet.
 
@@ -401,12 +437,42 @@ def install(provider, run_id=None) -> dict:
     # must NOT be the per-call scratch home we use at run time (that lives in
     # /tmp and is deleted after every command — it would break the symlink).
     env["CODEX_HOME"] = _PKG_HOME
+    # Download, RECORD, then execute — instead of piping the network into a
+    # shell. This container holds a read-write Docker socket, so whatever this
+    # script does runs as root on the host; "we ran whatever was served at the
+    # time and kept no record of it" is not a defensible position for a
+    # forensics platform.
+    #
+    # Three changes, none of which alter what a working install does:
+    #   - resolve `latest` to a concrete tag so the artifact is immutable, and
+    #     fall back to the moving URL if the API is unreachable or rate-limited
+    #     (60 req/hr unauthenticated — a hard failure here would break installs
+    #     on a busy egress IP for no security gain)
+    #   - fetch to a temp file and log its SHA-256 with the resolved version, so
+    #     "what exactly did this box execute?" is answerable afterwards
+    #   - no `sh -c`, no f-string building a command; argv is a list, so a tag
+    #     coming from a network response can never become shell syntax
+    url, resolved = _resolve_installer_url(spec, provider, run_id)
+    tmp_dir = tempfile.mkdtemp(prefix="codex_install_")
+    script = os.path.join(tmp_dir, "install.sh")
     try:
-        r = subprocess.run(
-            ["sh", "-c",
-             f"curl -fsSL {spec['installer']} | sh"],
-            env=env, capture_output=True, text=True, timeout=_INSTALL_TIMEOUT,
-        )
+        try:
+            dl = subprocess.run(["curl", "-fsSL", "-o", script, url],
+                                env=env, capture_output=True, text=True, timeout=120)
+            if dl.returncode != 0 or not os.path.exists(script):
+                err = _plain(dl.stderr or "").strip()[:200] or f"curl exit {dl.returncode}"
+                _log(provider, f"Could not download the installer: {err}", "error", run_id)
+                return {"success": False, "error": f"installer download failed: {err}",
+                        "log": get_log(provider)}
+            digest = hashlib.sha256(open(script, "rb").read()).hexdigest()
+            _log(provider,
+                 f"Installer {resolved} downloaded — sha256 {digest}. Executing.",
+                 run_id=run_id)
+            r = subprocess.run(["sh", script],
+                               env=env, capture_output=True, text=True,
+                               timeout=_INSTALL_TIMEOUT)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
     except subprocess.TimeoutExpired:
         msg = f"installer timed out after {_INSTALL_TIMEOUT}s"
         _log(provider, msg + " — slow link or a blocking proxy?", "error", run_id)

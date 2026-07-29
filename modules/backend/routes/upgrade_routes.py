@@ -782,6 +782,13 @@ def start_offline_upgrade():
         package_path = data.get('package_path')
         db_overwrite = data.get('db_overwrite', {})  # Per-module fresh install flags
         selected_modules = data.get('selected_modules')  # None = no filter (apply all)
+        # Optional operator-supplied digest for the uploaded archive. The
+        # package's own manifest can only prove it is INTACT — the hashes
+        # travel inside the archive they validate. This is the one value
+        # that comes from outside it: the .sha256 published alongside the
+        # release. When absent the apply proceeds exactly as before, with
+        # the computed digest logged so it can be compared by eye.
+        expected_sha256 = (data.get('expected_sha256') or '').strip() or None
         if selected_modules:
             # Accept legacy module ids from external automation (e.g. 'cloudtrail')
             from services.upgrade import LEGACY_MODULE_ALIASES
@@ -953,6 +960,7 @@ def start_offline_upgrade():
                     package_path, run_id=run_id, logger=logger,
                     db_overwrite=db_overwrite,
                     selected_modules=selected_modules,
+                    expected_sha256=expected_sha256,
                 )
 
                 # Handle two-phase upgrade (backend restart pending)

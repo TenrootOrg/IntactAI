@@ -1699,19 +1699,68 @@ def preflight_offline_images(module: str, version: str, images_dir: str,
 _EXTRACT_LOG_STEP = 5
 
 
-def verify_upgrade_package(package_path: str, logger: Callable = None) -> Dict:
+def verify_upgrade_package(package_path: str, logger: Callable = None,
+                           expected_sha256: str = None) -> Dict:
     """Extract and verify an upgrade package.
+
+    Two different questions, and it is worth being clear which one this answers.
+
+    The manifest's per-file sha256 map proves the archive is INTACT — nothing
+    was truncated or corrupted in transit. It cannot prove the archive is
+    AUTHENTIC, because the map travels inside the archive it validates: anyone
+    who can rewrite the files can rewrite the hashes, or drop the block
+    entirely. Applying a package is a privileged operation on a host whose
+    backend holds the Docker socket, so that distinction matters.
+
+    The online path is anchored: `services/upgrade/download.py` fetches the
+    `.sha256` sidecar published with the GitHub release and checks the whole
+    tarball against it. The offline path — an operator uploading a package by
+    hand, typically into an air-gapped site — had no anchor at all.
+
+    So: the archive digest is now always computed and logged, and
+    ``expected_sha256`` lets an operator supply the value published on the
+    release page. Same digest CI produces (it is computed pre-split, and
+    reassembling the parts reproduces the whole file byte for byte), so an
+    air-gap operator who carried the parts in can compare against the number
+    from the same page. Absent that value this still cannot authenticate
+    anything — it just makes the digest available to compare by eye.
 
     Args:
         package_path: Path to the .tar.gz package file
+        expected_sha256: Optional operator-supplied digest. Mismatch aborts
+            BEFORE anything is extracted; the uploaded file is left in place.
 
     Returns:
-        Dict with success, extract_dir, and manifest info
+        Dict with success, extract_dir, manifest info, and sha256.
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
 
     if not os.path.exists(package_path):
         return {"success": False, "error": f"Package not found: {package_path}"}
+
+    # Compute once, up front, before a single byte is extracted.
+    import hashlib as _hl
+    _h = _hl.sha256()
+    with open(package_path, 'rb') as _fh:
+        for _chunk in iter(lambda: _fh.read(8 * 1024 * 1024), b''):
+            _h.update(_chunk)
+    archive_sha256 = _h.hexdigest()
+    log(f"Package sha256: {archive_sha256}", "info")
+
+    if expected_sha256:
+        want = str(expected_sha256).strip().lower()
+        if want != archive_sha256:
+            err = (f"Package digest does not match the value you supplied. "
+                   f"Expected {want}, got {archive_sha256}. The upload was NOT "
+                   f"applied and the file was left in place — re-download it, "
+                   f"or check the digest against the release page.")
+            log(err, "error")
+            return {"success": False, "error": err, "sha256": archive_sha256}
+        log("  Digest matches the value supplied by the operator", "success")
+    else:
+        log("  No expected digest supplied — the package is checked for "
+            "corruption, NOT authenticity. Compare the sha256 above against "
+            "the .sha256 published with the release.", "warning")
 
     # Pre-extract integrity check. Catches archives that were
     # produced corrupt by an old prepare (pre-`gzip -t` fix) or
@@ -1867,18 +1916,25 @@ def verify_upgrade_package(package_path: str, logger: Callable = None) -> Dict:
                 err = (f"Package integrity check failed for {len(bad)} file(s): "
                        f"{'; '.join(bad[:5])}"
                        + (f" (+{len(bad)-5} more)" if len(bad) > 5 else "")
-                       + ". The package is corrupt — re-prepare/re-upload it. "
-                         "No module was touched.")
+                       + ". Re-prepare or re-download the package. No module "
+                         "was touched.")
                 log(f"  {err}", "error")
                 shutil.rmtree(extract_dir, ignore_errors=True)
                 return {"success": False, "error": err}
             log(f"  All {len(sha_map)} checksums verified", "success")
         else:
-            log("  Package has no sha256 map (older prepare) — integrity is "
-                "archive-level only", "info")
+            # Not a footnote: this is the bypass. The map lives INSIDE the
+            # archive being checked, so anyone who can modify the package can
+            # also drop this block and skip verification entirely. Say so at
+            # warning level rather than filing it under back-compat trivia.
+            log("  Package carries no sha256 map — per-file integrity NOT "
+                "verified (older prepare, or the block was removed). Compare "
+                "the archive digest logged above against the .sha256 published "
+                "with the release before applying.", "warning")
 
         return {
             "success": True,
+            "sha256": archive_sha256,
             "extract_dir": extract_dir,
             "package_dir": package_dir,
             "manifest": manifest
