@@ -65,6 +65,18 @@ modules/nginx/secrets/*
 # Operational data, not source — and it names real usernames and source IPs.
 data/auth/
 
+# The operator's live config. NOT tracked: it accumulates real credentials —
+# options.github_token (a GitHub PAT), the dashboard login, and every module
+# password. Tracking it meant one careless `git add config.yaml` from publishing
+# them, and the installer rewrites it through yaml.dump anyway, so a tracked copy
+# also lost all of its documentation comments on every install.
+#
+# config.yaml.example is what ships. lib/config.sh:check_config() seeds
+# config.yaml from it on a fresh checkout, and the backend image is built from
+# the example so no operator secret is ever baked into an image layer.
+config.yaml
+!config.yaml.example
+
 # Certificates (generated on install)
 modules/iris/config/certificates/rootCA/*
 modules/iris/config/certificates/web_certificates/*

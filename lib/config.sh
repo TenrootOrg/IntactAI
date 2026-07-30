@@ -7,9 +7,26 @@
 # ============================================================================
 
 check_config() {
+    # config.yaml is the OPERATOR'S file and is deliberately not tracked in git
+    # (see .gitignore): it accumulates the GitHub PAT, the dashboard login and
+    # every module password, so a tracked copy meant one careless `git add` away
+    # from publishing them — and it was previously baked into the backend image
+    # for the same reason. What ships is config.yaml.example. Seed from it on a
+    # fresh checkout so a first install still just works.
     if [[ ! -f "$CONFIG_FILE" ]]; then
-        log_error "Config file not found: $CONFIG_FILE"
-        exit 1
+        local template="${SCRIPT_DIR}/config.yaml.example"
+        if [[ -f "$template" ]]; then
+            cp "$template" "$CONFIG_FILE"
+            # Operator secrets land here, so don't leave it group/world-readable.
+            chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+            log_warn "No config.yaml found — created one from config.yaml.example"
+            log_warn "  Review it before continuing: ${CONFIG_FILE}"
+            log_warn "  At minimum set 'domain' to this host's address."
+        else
+            log_error "Config file not found: $CONFIG_FILE"
+            log_error "  And no config.yaml.example to seed it from."
+            exit 1
+        fi
     fi
     log_success "Config file found"
 }

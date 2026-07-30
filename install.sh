@@ -283,6 +283,7 @@ fix_source_permissions() {
         -not -path "*/modules/nginx/html/downloads/*" \
         -not -path "*/data/azure_cert.pfx" \
         -not -path "*/data/azure_cert.pfx.pass" \
+        -not -path "${SCRIPT_DIR}/config.yaml" \
         -exec chmod 644 {} \; 2>/dev/null || true
 
     # Re-assert the restrictive modes (and, for the IRIS web key, the
@@ -291,6 +292,12 @@ fix_source_permissions() {
     # weren't already at the intended mode (e.g. left over from an older
     # install), or had their ownership reset by the chown -R above.
     find "${SCRIPT_DIR}/modules" -type f \( -path "*/secrets/*" -o -name ".env" \) -exec chmod 600 {} \; 2>/dev/null || true
+    # config.yaml is as sensitive as anything under secrets/: it carries
+    # options.github_token (a real GitHub PAT), the dashboard login and every
+    # module password. It was landing at 664/644 — readable by every local
+    # account on the box — because the sweep above treats it as ordinary source.
+    # config.yaml.example is the tracked template and stays world-readable.
+    [[ -f "${SCRIPT_DIR}/config.yaml" ]] && chmod 600 "${SCRIPT_DIR}/config.yaml" 2>/dev/null || true
     [[ -f "${SCRIPT_DIR}/modules/nginx/ssl/nginx-cert.key" ]] && chmod 640 "${SCRIPT_DIR}/modules/nginx/ssl/nginx-cert.key" 2>/dev/null || true
     # No htpasswd override needed any more. nginx used to evaluate auth_basic in
     # its worker process (uid/gid 101), so the file had to be root:101/640 rather

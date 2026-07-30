@@ -42,8 +42,22 @@ RUN apt-get -o Acquire::Retries=5 update && \
 # Upgrade pip and wheel first to fix security vulnerabilities (CVE-2025-8869, CVE-2026-1703, CVE-2026-24049)
 RUN pip install --no-cache-dir --upgrade pip>=26.0 wheel>=0.46.2
 
-# Copy config.yaml early so we can conditionally install module dependencies
-COPY config.yaml /app/config.yaml
+# Copy the TEMPLATE, never the operator's live config.yaml.
+#
+# This used to be `COPY config.yaml`, which baked whatever the build host had
+# into an image layer. On a real install that file holds the operator's GitHub
+# PAT (options.github_token) and every module password in plaintext — verified
+# recoverable with a plain `docker run --entrypoint sh <image> -c 'cat
+# /app/config.yaml'`. Image layers get saved, pushed and shared, so that is a
+# credential leak with no audit trail. Nothing is lost by using the template:
+# at runtime modules/backend/docker-compose.yaml bind-mounts the operator's real
+# config.yaml over this exact path, so the baked copy is only ever a build-time
+# input and a fallback for contexts with no mount (CI test runs).
+#
+# install_deps.py below reads it to decide which module dependencies to install.
+# The template ships every module `enabled: true`, so this installs a superset —
+# which also makes the image reproducible instead of varying by build host.
+COPY config.yaml.example /app/config.yaml
 
 # Copy all requirements files and install script
 COPY modules/backend/requirements*.txt /app/
@@ -64,8 +78,9 @@ COPY modules/backend/scripts/ /app/scripts/
 # These are NOT volume-mounted, so they persist in the container image
 COPY modules/backend/config/ /app/config/
 
-# Copy config.yaml to /app/
-COPY config.yaml /app/config.yaml
+# Re-copy the template after the source layers (see the note above — the
+# operator's real config.yaml is bind-mounted over this at runtime).
+COPY config.yaml.example /app/config.yaml
 
 # Create logs directory
 RUN mkdir -p /app/logs
