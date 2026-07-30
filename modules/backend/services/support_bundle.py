@@ -259,6 +259,47 @@ def _copy_compose_configs(workdir: str, dest_dir: str, logger: Callable) -> int:
     return n
 
 
+def _copy_auth_audit_log(bundle_root: str, logger: Callable) -> int:
+    """Copy the dashboard login/setup audit trail into `<bundle>/auth/`.
+
+    Returns the number of log lines copied (0 if there is no log yet — a freshly
+    set-up appliance nobody has signed into again). Includes the rotated
+    generations so a brute-force burst that pushed the current file over the
+    rotation threshold is still visible.
+
+    Contains no secrets: services/auth_service.audit() records usernames, source
+    IPs and outcomes, never passwords or hashes.
+    """
+    try:
+        from services.auth_service import AUDIT_LOG, AUDIT_KEEP
+    except Exception as exc:            # auth service unavailable — not fatal
+        logger(f"  auth audit log unavailable: {exc}", 'warning')
+        return 0
+
+    dest_dir = os.path.join(bundle_root, 'auth')
+    lines = 0
+    copied = 0
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+        candidates = [AUDIT_LOG] + [f"{AUDIT_LOG}.{i}" for i in range(1, AUDIT_KEEP + 1)]
+        for src in candidates:
+            if not os.path.isfile(src):
+                continue
+            shutil.copy2(src, os.path.join(dest_dir, os.path.basename(src)))
+            copied += 1
+            with open(src, 'r', encoding='utf-8', errors='replace') as handle:
+                lines += sum(1 for _ in handle)
+    except Exception as exc:
+        logger(f"  could not copy auth audit log: {exc}", 'warning')
+        return lines
+
+    if copied:
+        logger(f"  ✓ auth audit log ({lines} event(s), {copied} file(s))", 'info')
+    else:
+        logger("  no auth audit log yet (nothing recorded since setup)", 'info')
+    return lines
+
+
 def _system_info(dest_path: str, logger: Callable) -> None:
     """Dump a single text file with `docker ps`, disk, memory, kernel, date."""
     sections = [
@@ -482,6 +523,14 @@ def prepare_support_bundle(run_id: str, logger: Callable) -> Dict:
         manifest['compose_files'] = compose_count
         logger(f"  ✓ {compose_count} compose file(s)", 'info')
 
+        # Dashboard login/setup audit trail. Copied explicitly because
+        # _collect_real_log_files() only auto-discovers *.log under /var/log
+        # inside each container, and this lives on the backend's own filesystem
+        # at /app/data/auth/ (a host bind mount, so it survives recreates).
+        # No docker exec needed — we ARE the backend.
+        auth_lines = _copy_auth_audit_log(bundle_root, logger)
+        manifest['auth_audit_lines'] = auth_lines
+
         # Phase 7 — per-section size breakdown, manifest, zip.
         update_run_status(run_id, 'running', progress=94)
         logger("=== Phase 7/7: writing manifest + packing .zip ===", 'info')
@@ -492,7 +541,10 @@ def prepare_support_bundle(run_id: str, logger: Callable) -> Dict:
         # service_logs is 8 MB, that's why this bundle is fat" without
         # having to unzip and du each subdir.
         composition: Dict[str, Dict] = {}
-        for sub in ('containers', 'service_logs', 'workflows', 'compose'):
+        # 'auth' holds the login/setup audit trail — listed here as well as in
+        # the copy step, or the breakdown silently omits it and the bundle looks
+        # like it has no auth history at all.
+        for sub in ('containers', 'service_logs', 'workflows', 'compose', 'auth'):
             sub_path = os.path.join(bundle_root, sub)
             if os.path.isdir(sub_path):
                 size = _dir_bytes(sub_path)

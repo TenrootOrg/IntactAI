@@ -124,87 +124,19 @@ generate_portainer_secrets() {
     log_success "Portainer secrets ready"
 }
 
-# Generates the HTTP Basic Auth credentials nginx.conf's server-level
-# auth_basic gates the whole site with (dashboard, /api/, /api/uploads/,
-# /velociraptor/ — see modules/nginx/config/nginx.conf). Without this, the
-# entire backend API and the unauthenticated-tus-upload proxy are reachable
-# by anyone who can route to the published port (CWE-306).
+# Nginx HTTP Basic Auth generation used to live here (generate_nginx_secrets +
+# _write_nginx_htpasswd, ~80 lines). Both are gone: nginx no longer gates the
+# site with auth_basic, so nothing reads an htpasswd file. The dashboard login is
+# now an application-level session the operator creates in the browser on first
+# visit, driven by config.yaml's top-level `first_login: true` — see
+# modules/backend/services/auth_service.py and modules/nginx/config/nginx.conf.
 #
-# The htpasswd file must be readable by the nginx WORKER process, which is
-# what actually evaluates auth_basic per request. The nginx:alpine image is
-# compiled with --user=nginx --group=nginx (uid/gid 101; verified via
-# `nginx -V` / `id nginx` inside the image) and our custom nginx.conf never
-# overrides `user`, so workers always run as uid/gid 101 regardless of who
-# generated the file. Owning the file root:101 mode 640 (mirrors the
-# root:33/640 pattern already used for the IRIS web TLS key, gid 33 being
-# iris-nginx's www-data) lets the worker read it without making it
-# world-readable on the host.
-# Write the plaintext + htpasswd pair for one user/password.
-#
-# SHA-1 htpasswd format ("{SHA}<base64 of sha1 digest>") — supported
-# natively by nginx's auth_basic module, no extra tooling needed beyond
-# openssl (already a hard dependency of this installer). Piped via stdin so
-# the plaintext password never appears as a process argument (visible to any
-# local user via `ps`).
-#
-# Both files are written with `>` (truncate in place, same inode) because
-# docker bind-mounts them BY PATH — replacing the inode would leave the
-# running nginx pinned to the old file and the new password silently inert.
-_write_nginx_htpasswd() {
-    local user="$1" password="$2" password_file="$3" htpasswd_file="$4"
-
-    printf '%s' "$password" > "$password_file"
-    chmod 600 "$password_file"
-
-    local sha1_b64
-    sha1_b64=$(printf '%s' "$password" | openssl dgst -sha1 -binary | openssl base64 -A)
-    printf '%s:{SHA}%s\n' "$user" "$sha1_b64" > "$htpasswd_file"
-    chown root:101 "$htpasswd_file" 2>/dev/null || true
-    chmod 640 "$htpasswd_file"
-}
-
-generate_nginx_secrets() {
-    log_info "Generating Nginx Basic Auth secrets..."
-    local secrets_dir="${SCRIPT_DIR}/modules/nginx/secrets"
-    mkdir -p "$secrets_dir"
-    local password_file="$secrets_dir/nginx_basic_auth_password"
-    local htpasswd_file="$secrets_dir/htpasswd"
-
-    # config.yaml is AUTHORITATIVE whenever the operator fills in
-    # dashboard.password: the htpasswd is rewritten on EVERY run, so editing
-    # config.yaml and re-running install/upgrade actually changes the login
-    # (same contract as the IRIS admin password). Left empty — the shipped
-    # default — we keep the previous behaviour: generate a random secret once
-    # and never touch it again, so an existing box is never locked out by an
-    # upgrade silently rotating its password.
-    local dash_user dash_password
-    dash_user=$(read_config "['dashboard']['id']")
-    dash_password=$(read_config "['dashboard']['password']")
-    [[ -z "$dash_user" || "$dash_user" == "None" ]] && dash_user="admin"
-    [[ "$dash_password" == "None" ]] && dash_password=""
-
-    if [[ -n "$dash_password" ]]; then
-        _write_nginx_htpasswd "$dash_user" "$dash_password" "$password_file" "$htpasswd_file"
-        log_info "  Nginx Basic Auth password set from config.yaml (username: ${dash_user})"
-    elif [[ ! -s "$password_file" || ! -s "$htpasswd_file" ]]; then
-        local nginx_password
-        nginx_password=$(openssl rand -hex 16)
-        _write_nginx_htpasswd "$dash_user" "$nginx_password" "$password_file" "$htpasswd_file"
-
-        log_warn "  Generated a random Nginx dashboard/API Basic Auth password (username: ${dash_user})"
-        log_warn "  Retrieve it with: cat ${password_file}"
-        log_warn "  Set dashboard.password in config.yaml to choose your own instead."
-    else
-        log_info "  Nginx Basic Auth secrets exist, skipping"
-        # Re-assert ownership/mode on every run — a prior fix_source_permissions
-        # sweep (or a manually-copied file) could have left this owned by the
-        # invoking user instead of root:101, which would 500 every request.
-        chown root:101 "$htpasswd_file" 2>/dev/null || true
-        chmod 640 "$htpasswd_file" 2>/dev/null || true
-    fi
-
-    log_success "Nginx Basic Auth secrets ready"
-}
+# A box installed BEFORE that change still has its old generated password on disk
+# at modules/nginx/secrets/nginx_basic_auth_password. It is not orphaned: the
+# upgrade path hashes it into the new login so the operator keeps signing in with
+# the password they already use, rather than being shown a claimable setup page
+# mid-upgrade. That migration is the last remaining consumer of these files and
+# lives in services/upgrade/intact.py:migrate_basic_auth_to_app_login().
 
 generate_certificates() {
     log_info "Generating SSL certificates..."
@@ -1982,8 +1914,10 @@ start_services() {
     echo ""
     generate_portainer_secrets
     echo ""
-    generate_nginx_secrets
-    echo ""
+    # No nginx Basic Auth secret to generate any more — the dashboard login is
+    # now an application-level session set up in the browser on first visit
+    # (config.yaml's top-level `first_login: true`, handled by
+    # modules/backend/services/auth_service.py). Nothing reads an htpasswd file.
     generate_certificates
     echo ""
     ensure_shared_volumes

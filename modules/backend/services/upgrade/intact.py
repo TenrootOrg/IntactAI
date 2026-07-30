@@ -852,17 +852,124 @@ def _format_value(v: str) -> str:
     return f"'{s}'"
 
 
+def migrate_basic_auth_to_app_login(logger: Callable = None) -> None:
+    """Move a pre-auth box onto the new session login WITHOUT opening a window
+    in which the appliance has no authentication at all.
+
+    A box installed before the app-level login only learns about it through an
+    upgrade — install.sh's bash bootstrap never runs again. That upgrade
+    simultaneously deletes nginx's `auth_basic` gate and ships the new login, so
+    the naive migration ("set first_login: true and let the operator set up a
+    password") would leave the appliance advertising an unauthenticated setup
+    page on the network from the moment nginx recreates until a human notices.
+    Whoever loaded it first would own the account. That is strictly worse than
+    the Basic Auth it replaces.
+
+    So instead we migrate the credential the operator ALREADY uses: hash their
+    existing Basic Auth password into the new store and mark setup complete.
+    Nothing to claim, no operator action, same password they were typing before.
+
+    Detection is the absence of the top-level `first_login:` key. The shipped
+    config.yaml carries it, so a fresh install always has it; only a box that
+    predates this feature does not. Idempotent — once the key exists this is a
+    no-op, so it is safe on every upgrade.
+
+    first_login: true is written ONLY as the last resort, when no existing
+    credential can be recovered at all. In that case there is nothing to
+    protect and the setup page is the only way back in.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+
+    # This module already lives under /app/services/upgrade/, so the sibling
+    # import resolves without any sys.path juggling.
+    try:
+        from services import auth_service
+    except Exception as e:
+        log(f"  Could not load auth_service ({type(e).__name__}: {e}) — "
+            f"skipping login migration", "warning")
+        return
+
+    flag = auth_service.read_first_login()
+    if flag == auth_service.FIRST_LOGIN_ERROR:
+        log("  config.yaml unreadable — skipping login migration (the login "
+            "page will explain how to recover)", "warning")
+        return
+    if flag != auth_service.FIRST_LOGIN_ABSENT:
+        # Already on the new scheme (or deliberately left in setup mode).
+        return
+
+    log("  Pre-auth install detected — migrating the dashboard login", "info")
+
+    # Guarantee there IS a password to carry over. On the rare box whose secret
+    # was never generated this creates one; without it the only option would be
+    # to open the setup page, which is exactly the claimable window this whole
+    # function exists to avoid. Called here rather than unconditionally at the
+    # call sites so a box already on the new scheme never regenerates an
+    # htpasswd that nothing reads any more.
+    ensure_nginx_basic_auth_secret(logger=log)
+
+    # Recover the existing credential. config.yaml's dashboard: block wins if
+    # the operator chose their own; otherwise the generated random secret in
+    # modules/nginx/secrets/. The shipped config.yaml never set a password, so
+    # in practice almost every real box lands on the secrets file.
+    user, password = _read_dashboard_credentials(log)
+    source = "config.yaml dashboard.password"
+    if not password:
+        password_path = os.path.join(
+            WORKDIR, 'modules', 'nginx', 'secrets', 'nginx_basic_auth_password')
+        try:
+            with open(password_path, 'r') as f:
+                password = f.read().strip()
+            source = password_path
+        except Exception as e:
+            log(f"  Could not read {password_path} ({type(e).__name__}: {e})",
+                "warning")
+
+    if password:
+        if auth_service.set_credential(user, password):
+            if auth_service.write_first_login(False):
+                log(f"  Dashboard login migrated (username: {user}) — your "
+                    f"EXISTING dashboard password now signs you in to the new "
+                    f"login page.", "success")
+                log(f"  Recovered from: {source}", "info")
+                log("  It is a generated 32-character secret on most installs; "
+                    "change it under Settings once you are in.", "info")
+                auth_service.audit('migrated_from_basic_auth',
+                                   username_value=user, source=source)
+                return
+            log("  Stored the credential but could not write first_login to "
+                "config.yaml — the setup page may still be served. Set "
+                "first_login: false by hand.", "error")
+            return
+        log("  Could not store the migrated credential", "warning")
+
+    # Nothing recoverable — fall back to setup mode and say so loudly.
+    if auth_service.write_first_login(True):
+        log("  No existing dashboard password could be recovered. This "
+            "appliance will show a SETUP page on next load — complete it "
+            "immediately, because until you do anyone who can reach it can "
+            "claim the account.", "warning")
+    else:
+        log("  Could not write first_login to config.yaml. Add "
+            "'first_login: true' at the top level by hand to set up a login.",
+            "error")
+
+
 def ensure_nginx_basic_auth_secret(logger: Callable = None) -> None:
     """Seed modules/nginx/secrets/{nginx_basic_auth_password,htpasswd} if
     missing — mirrors lib/modules.sh:generate_nginx_secrets() exactly.
 
-    A box that was installed before nginx.conf gained its server-level
-    auth_basic gate (CWE-306 — see F7/F8: /api/, /api/uploads/, and
-    /velociraptor/ proxied with zero authentication) only picks up the new
-    nginx.conf and docker-compose.yaml (with its new htpasswd bind mount)
-    through an upgrade — install.sh's bash bootstrap never runs again. This
-    self-heals the secret so recreate_nginx() below has something valid to
-    mount. Idempotent and safe to call on every intact upgrade:
+    RETAINED ONLY AS THE MIGRATION SOURCE. nginx no longer reads the htpasswd
+    (see modules/nginx/config/nginx.conf — the auth_basic gate is gone, replaced
+    by auth_request against the backend's session login), and the bind mount has
+    been removed from modules/nginx/docker-compose.yaml.
+
+    It still runs once, BEFORE migrate_basic_auth_to_app_login(), for one
+    reason: on a box whose secret was never generated, that function has no
+    existing password to migrate and would have to fall back to opening the
+    setup page. Generating here first means there is always something to hash,
+    so the upgrade never leaves the appliance claimable. Do not call it after
+    the migration, and do not re-add the nginx mount.
 
       * dashboard.password set in config.yaml -> re-applied every run, so the
         operator's chosen password is what the dashboard actually uses.
@@ -1123,11 +1230,13 @@ def upgrade_intact(version: str = None, logger: Callable = None) -> Dict:
     recreate_tusd(logger=log)
 
     # git pull above already refreshed nginx.conf (whole WORKDIR) and
-    # docker-compose.yaml (new htpasswd bind mount), so an existing install
-    # upgrading online needs only the secret (self-heals on a pre-fix box)
-    # and an actual recreate — `docker restart`, used elsewhere purely to
-    # clear nginx's cached upstream DNS, does not pick up a new mount.
-    ensure_nginx_basic_auth_secret(logger=log)
+    # docker-compose.yaml, so an existing install upgrading online needs the
+    # login migration and an actual recreate — `docker restart`, used elsewhere
+    # purely to clear nginx's cached upstream DNS, does not pick up a changed
+    # mount list (this upgrade REMOVES the old htpasswd mount).
+    #
+    # No-op unless this box predates the app login (see its docstring).
+    migrate_basic_auth_to_app_login(logger=log)
     recreate_nginx(logger=log)
 
     # NOTE: Backend restart (and the nginx DNS-cache refresh restart) is
@@ -1628,16 +1737,16 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
     recreate_tusd(logger=log)
 
     # The sidecar loop above (when the package uses the full-repo layout)
-    # already refreshed nginx/docker-compose.yaml (new htpasswd bind mount)
-    # and nginx/config/nginx.conf (the auth_basic gate itself) from the new
-    # release. Self-heal the secret those depend on — an existing install
-    # applying this as an offline upgrade never ran install.sh's bash
-    # bootstrap that would otherwise have created it — then force an actual
-    # recreate: `docker restart`, used elsewhere purely to clear nginx's
-    # cached upstream DNS, does not pick up a new mount or a changed config
-    # file, so without this the box stays fully unauthenticated after the
-    # upgrade "succeeds".
-    ensure_nginx_basic_auth_secret(logger=log)
+    # already refreshed nginx/docker-compose.yaml and nginx/config/nginx.conf
+    # from the new release — which is what REMOVES the old auth_basic gate and
+    # its htpasswd mount. Carry the operator's existing Basic Auth password over
+    # to the new session login before nginx comes back up, so the appliance is
+    # never briefly unauthenticated-and-claimable; an offline upgrade never runs
+    # install.sh's bash bootstrap, so this Python path is the only thing that
+    # will do it. Then force an actual recreate: `docker restart`, used
+    # elsewhere purely to clear nginx's cached upstream DNS, does not pick up a
+    # changed mount list or config file.
+    migrate_basic_auth_to_app_login(logger=log)
     recreate_nginx(logger=log)
 
     # NOTE: Backend restart (and the nginx DNS-cache refresh restart) is

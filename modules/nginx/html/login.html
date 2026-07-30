@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="intactdark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign in — TenRoot Intact.AI</title>
+    <link rel="icon" type="image/png" href="img/tenroot-logo.png">
+    <link rel="stylesheet" href="css/tailwind.css?v=10">
+    <link rel="stylesheet" href="css/styles.css?v=12">
+    <!-- Deliberately standalone: no Alpine, no stores, no api-client. This page
+         must work when the rest of the app cannot be reached, and it is the one
+         page an unauthenticated visitor can load. -->
+</head>
+<body class="bg-gray-900 text-white">
+<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px">
+  <div style="width:100%;max-width:420px">
+
+    <div style="text-align:center;margin-bottom:28px">
+      <img src="img/tenroot-logo.png" alt="TenRoot" style="width:140px;height:auto;opacity:.9">
+      <h1 style="margin-top:16px;font-size:20px;font-weight:600">Sign in to Intact.AI</h1>
+    </div>
+
+    <!-- Why you're seeing this page, when it wasn't just "you opened it".
+         Populated from ?reason= or from /api/auth/status. -->
+    <div id="notice" style="display:none;margin-bottom:16px;padding:12px 14px;border-radius:8px;
+         background:#1f2937;border:1px solid #374151;font-size:13px;line-height:1.5"></div>
+
+    <div id="lockbox" style="display:none;margin-bottom:16px;padding:12px 14px;border-radius:8px;
+         background:#3b1d1d;border:1px solid #7f1d1d;font-size:13px;line-height:1.5"></div>
+
+    <form id="loginForm" style="background:#111827;border:1px solid #1f2937;border-radius:10px;padding:20px">
+      <label for="username" style="display:block;font-size:12px;color:#9ca3af;margin-bottom:6px">Username</label>
+      <input id="username" name="username" type="text" autocomplete="username" autofocus
+             style="width:100%;padding:10px 12px;margin-bottom:14px;border-radius:6px;
+                    background:#0d1117;border:1px solid #374151;color:#fff">
+
+      <label for="password" style="display:block;font-size:12px;color:#9ca3af;margin-bottom:6px">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password"
+             style="width:100%;padding:10px 12px;margin-bottom:6px;border-radius:6px;
+                    background:#0d1117;border:1px solid #374151;color:#fff">
+
+      <div id="error" style="display:none;color:#f87171;font-size:13px;margin:10px 0"></div>
+
+      <button id="submitBtn" type="submit"
+              style="width:100%;margin-top:14px;padding:11px;border-radius:6px;border:none;
+                     background:#2563eb;color:#fff;font-weight:600;cursor:pointer">Sign in</button>
+    </form>
+
+    <!-- Shown ALWAYS, not only while locked out. There is one account and the
+         password is only stored as a hash, so a forgotten password has no
+         in-app way out — the way out has to be visible before you need it. -->
+    <div style="margin-top:18px;padding:12px 14px;border-radius:8px;background:#111827;
+                border:1px solid #1f2937;font-size:12px;color:#9ca3af;line-height:1.6">
+      <strong style="color:#d1d5db">Forgotten the password, or locked out?</strong><br>
+      On the appliance host, set <code style="color:#93c5fd">first_login: true</code> at the top of
+      <code style="color:#93c5fd">config.yaml</code>, then reload this page to choose new
+      credentials. Takes effect immediately — no restart needed.
+    </div>
+
+  </div>
+</div>
+
+<script>
+(function () {
+  var notice   = document.getElementById('notice');
+  var lockbox  = document.getElementById('lockbox');
+  var errorBox = document.getElementById('error');
+  var form     = document.getElementById('loginForm');
+  var btn      = document.getElementById('submitBtn');
+  var lockTimer = null;
+
+  function show(el, html) { el.innerHTML = html; el.style.display = 'block'; }
+  function hide(el) { el.style.display = 'none'; }
+
+  // The reason arrives either in the query string (nginx's 401 redirect for
+  // /velociraptor/ and uploads, or the frontend's fetch interceptor) or from
+  // /api/auth/status when the cookie is still present but stale.
+  var REASONS = {
+    expired: 'Your session expired, so you have been signed out. Sign in again to continue.',
+    credentials_changed: 'The password was changed, so all existing sessions were signed out.',
+    logged_out: 'You have been signed out.',
+    none: ''
+  };
+
+  function reasonFromQuery() {
+    var m = /[?&]reason=([^&]+)/.exec(location.search);
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+
+  function humanize(seconds) {
+    var mins = Math.max(1, Math.round(seconds / 60));
+    if (mins < 60) return mins + (mins === 1 ? ' minute' : ' minutes');
+    var hrs = Math.round(seconds / 3600 * 10) / 10;
+    return hrs + (hrs === 1 ? ' hour' : ' hours');
+  }
+
+  function renderLock(seconds) {
+    if (lockTimer) { clearInterval(lockTimer); lockTimer = null; }
+    if (!seconds || seconds <= 0) {
+      hide(lockbox);
+      btn.disabled = false;
+      btn.style.opacity = '1';
+      btn.style.cursor = 'pointer';
+      return;
+    }
+    btn.disabled = true;
+    btn.style.opacity = '.5';
+    btn.style.cursor = 'not-allowed';
+    var remaining = seconds;
+    var paint = function () {
+      if (remaining <= 0) { renderLock(0); return; }
+      show(lockbox,
+        '<strong>Too many failed attempts.</strong><br>Locked for another ' +
+        humanize(remaining) + '. This clears on its own — or reset the ' +
+        'credentials using the steps below.');
+      remaining -= 1;
+    };
+    paint();
+    lockTimer = setInterval(paint, 1000);
+  }
+
+  // Ask the backend where we stand: already signed in, needs setup, or locked.
+  fetch('/api/auth/status', { credentials: 'same-origin' })
+    .then(function (r) { return r.json(); })
+    .then(function (s) {
+      if (s.mode === 'setup') { location.replace('/setup.html'); return; }
+      if (s.authenticated)    { location.replace('/'); return; }
+      if (s.mode === 'error') {
+        show(notice, s.message || 'config.yaml could not be read on the appliance.');
+        return;
+      }
+      var reason = reasonFromQuery() || s.session_state || '';
+      if (REASONS[reason]) show(notice, REASONS[reason]);
+      if (s.locked) renderLock(s.lock_remaining_seconds);
+    })
+    .catch(function () {
+      show(notice, 'Cannot reach the Intact.AI backend. It may still be starting up.');
+    });
+
+  form.addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    hide(errorBox);
+    btn.disabled = true;
+    btn.textContent = 'Signing in…';
+
+    fetch('/api/auth/login', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: document.getElementById('username').value,
+        password: document.getElementById('password').value
+      })
+    })
+      .then(function (r) { return r.json().then(function (b) { return { status: r.status, body: b }; }); })
+      .then(function (res) {
+        btn.textContent = 'Sign in';
+        if (res.status === 200 && res.body.success) {
+          // Full navigation, not history.pushState — the dashboard needs a
+          // clean load with the new cookie in place.
+          location.replace('/');
+          return;
+        }
+        btn.disabled = false;
+        hide(notice);
+        if (res.body.error === 'locked') {
+          renderLock(res.body.lock_remaining_seconds || 0);
+          return;
+        }
+        var msg = res.body.message || 'Sign in failed.';
+        if (typeof res.body.attempts_before_lock === 'number') {
+          msg += ' ' + res.body.attempts_before_lock +
+                 (res.body.attempts_before_lock === 1
+                    ? ' attempt left before a temporary lockout.'
+                    : ' attempts left before a temporary lockout.');
+        }
+        show(errorBox, msg);
+        document.getElementById('password').value = '';
+        document.getElementById('password').focus();
+      })
+      .catch(function () {
+        btn.disabled = false;
+        btn.textContent = 'Sign in';
+        show(errorBox, 'Could not reach the backend. Try again in a moment.');
+      });
+  });
+})();
+</script>
+</body>
+</html>

@@ -126,6 +126,14 @@ class TusUploader {
 
             onShouldRetry: (err, retryAttempt, options) => {
                 console.log(`[TusUploader] Retry attempt ${retryAttempt}:`, err.message);
+                // Never retry an auth failure. nginx gates /api/uploads/ with
+                // auth_request, so once the session expires EVERY subsequent
+                // PATCH is a 401 — retrying just spins until the retry budget
+                // runs out and reports a misleading network error. onAfterResponse
+                // redirects to the login page instead.
+                const status = err && err.originalResponse && err.originalResponse.getStatus
+                    ? err.originalResponse.getStatus() : 0;
+                if (status === 401 || status === 403) return false;
                 // Retry on network errors
                 return true;
             },
@@ -135,6 +143,17 @@ class TusUploader {
                 const status = res.getStatus();
                 if (status >= 400) {
                     console.error(`[TusUploader] Server error: ${status}`);
+                }
+                // tus uses XMLHttpRequest, so it never passes through the
+                // window.fetch 401 hook in js/active-case.js. nginx gates
+                // /api/uploads/ with auth_request, so an expired session turns
+                // every PATCH into a 302 to the login page — which onShouldRetry
+                // above would happily retry forever. Bounce to the login page
+                // instead of spinning.
+                if (status === 401 || status === 403) {
+                    console.error('[TusUploader] Session expired mid-upload — redirecting to login');
+                    try { location.replace('/login.html?reason=expired'); }
+                    catch (e) { location.href = '/login.html?reason=expired'; }
                 }
             }
         });

@@ -1,24 +1,32 @@
 schema_version: 2
-domain: 192.168.120.10
 
-# Dashboard / API login (Nginx HTTP Basic Auth).
+# Dashboard / API login — set up in the browser, not in this file.
 #
-# Nginx gates EVERYTHING it serves — the dashboard, /api/, /api/uploads/ and
-# the /velociraptor/ proxy — behind Basic Auth. This is the username and
-# password your browser asks for at https://<domain>/.
+# true  = this appliance has no login yet. Browsing to https://<domain>/ shows
+#         a one-time setup page where you choose the username and password.
+#         Completing setup flips this to false automatically.
+# false = a login is configured. The setup page is closed and https://<domain>/
+#         shows the login page.
 #
-# password: '' (the shipped default) means "generate one for me": install.sh
-# writes a random 32-character secret to
-# modules/nginx/secrets/nginx_basic_auth_password and prints where to find
-# it. That is secure but not memorable, so set your own here instead.
+# THIS IS ALSO THE RECOVERY SWITCH. There is one operator account and the
+# password is stored only as a hash, so it cannot be read back. If you forget
+# it, or ten wrong attempts in a row trigger the lockout and you don't want to
+# wait it out, set this back to true and reload the page — you'll get the setup
+# page again and can choose new credentials. It takes effect immediately; no
+# restart needed.
 #
-# When you DO set a password, this file is authoritative: it is re-applied on
-# every install AND every upgrade, so changing it here and re-running is how
-# you change the dashboard login. Leaving it empty never rotates an existing
-# box's generated password — an upgrade will not lock you out.
-dashboard:
-  id: admin
-  password: ''
+# Because flipping this re-opens the setup page to whoever loads it first, it
+# deliberately requires access to this file on the appliance host. That host
+# access IS the authentication for a password reset. Don't leave it true on a
+# box you haven't just set up.
+#
+# The login gates the dashboard, /api/, the upload endpoint and the
+# /velociraptor/ proxy. The other bundled tools (Kibana, IRIS, Portainer,
+# Timesketch, VolWeb) listen on their own ports and keep their own separate
+# logins — see the `modules:` section below.
+first_login: true
+
+domain: 192.168.120.10
 
 # Installation options
 options:

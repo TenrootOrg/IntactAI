@@ -17,11 +17,14 @@ try:
     faulthandler.register(signal.SIGUSR1, all_threads=True)
 except Exception:
     pass
-from flask import Flask, jsonify
+from datetime import timedelta
+
+from flask import Flask, jsonify, request, session
 from flask_cors import CORS
 
 # Import blueprints
 from routes import (
+    auth_bp,
     client_bp,
     velociraptor_bp,
     velociraptor_offline_bp,
@@ -50,13 +53,39 @@ from services.elasticsearch_service import init_elasticsearch
 from services.velociraptor_init_service import initialize_velociraptor_artifacts
 from services.offline_collector import init_offline_collector_index
 from services.msi_generator_service import generate_all_client_installers
+from services import auth_service
 from config import ELASTICSEARCH_CONFIG
 
 # Create Flask app
 app = Flask(__name__)
+# Pre-existing wart, documented so it isn't re-flagged: CORS(app) with no args
+# emits Access-Control-Allow-Origin: * and nginx.conf adds it again (duplicate
+# header). With a WILDCARD origin the browser refuses to send credentials
+# cross-origin, so the session cookie can't be replayed from another site — CSRF
+# protection therefore rests on SESSION_COOKIE_SAMESITE='Lax' below, which is an
+# acceptable posture for a single-operator internal appliance.
 CORS(app)
 
+# --- session cookie policy (see services/auth_service.py) --------------------
+app.secret_key = auth_service.session_secret_key()
+app.config.update(
+    SESSION_COOKIE_NAME='intact_session',
+    SESSION_COOKIE_HTTPONLY=True,
+    # Port 80/8080 permanently redirect to 443 (modules/nginx/config/nginx.conf),
+    # so the cookie is never needed over plaintext. Note this is one reason the
+    # loopback exemption in _auth_gate() exists: a test hitting
+    # http://localhost:5001 could not authenticate with a Secure cookie.
+    SESSION_COOKIE_SECURE=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+    PERMANENT_SESSION_LIFETIME=timedelta(days=auth_service.SESSION_MAX_AGE_DAYS),
+    # We slide the window ourselves in _auth_gate() so we can distinguish an
+    # expired session from a missing one; Flask re-signing on every request
+    # would just be extra work per tus auth_request subrequest.
+    SESSION_REFRESH_EACH_REQUEST=False,
+)
+
 # Register blueprints
+app.register_blueprint(auth_bp)
 app.register_blueprint(client_bp)
 app.register_blueprint(velociraptor_bp)
 app.register_blueprint(velociraptor_offline_bp)
@@ -78,6 +107,53 @@ app.register_blueprint(aws_bp)
 app.register_blueprint(support_bundle_bp)
 app.register_blueprint(memory_bp)
 app.register_blueprint(case_bp)
+
+
+# =============================================================================
+# Authentication gate
+# =============================================================================
+#
+# This is the platform's primary authentication boundary. It replaces the nginx
+# server-level HTTP Basic Auth that used to be the only one, and unlike that
+# gate it also closes audit finding F-010: nginx could only protect requests
+# that came THROUGH nginx, so any peer container on intact_network could reach
+# intact_backend:5001 directly and drive the whole API — including case export,
+# Velociraptor hunts and /api/maintenance/purge — with zero credentials. A
+# before_request hook applies to those requests too.
+#
+# Two paths cannot be gated here because they never reach Flask:
+# /velociraptor/ (proxies to intact_velociraptor:8889) and /api/uploads/
+# (proxies to intact_tusd:8080). nginx gates those with `auth_request` against
+# /api/auth/verify. The static dashboard shell at `location /` is deliberately
+# left open — it is inert HTML/JS holding no case data, and the frontend
+# redirects to /login.html on its first 401.
+
+# The allowlist, the loopback exemption and the decision itself all live in
+# services/auth_service.gate_decision() — a pure function, so the security
+# boundary is unit-testable without standing up a live app. This hook is only the
+# Flask plumbing around it.
+@app.before_request
+def _auth_gate():
+    reason = auth_service.gate_decision(
+        request.path, request.method, request.remote_addr, session)
+
+    if reason is None:
+        # Slide the 7-day window for a genuinely logged-in caller. Guarded on
+        # `user` so an exempt/loopback request with no session doesn't get an
+        # empty cookie stamped onto it. Only re-stamps hourly, so this is not a
+        # cookie re-sign on every request.
+        if session.get('user') and auth_service.touch_session(session):
+            session.modified = True
+        return None
+
+    # `reason` is what lets login.html say "your session expired" or "the
+    # password was changed" instead of showing a bare form — the whole point of
+    # tracking the timestamp server-side rather than relying on cookie max-age.
+    return jsonify({
+        'error': 'unauthenticated',
+        'reason': reason,
+        'message': 'Authentication required.',
+    }), 401
 
 
 # Workspace guard: investigation features targeting the System workspace raise
