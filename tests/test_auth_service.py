@@ -46,17 +46,25 @@ import shutil
 import sys
 import tempfile
 import time
-import types
 
 REPO = os.environ.get("INTACT_PATH", "/app/workdir")
 BACKEND = os.path.join(REPO, "modules", "backend")
 
 
-# --- load auth_service with its storage layer faked out ----------------------
+# --- load auth_service, then redirect ONLY its own storage bindings ----------
 #
-# Importing services.storage would open the real /app/data/intact.db and mutate
-# the running appliance's credential. Register a stub package under the exact
-# module names auth_service imports so the real import statement resolves to it.
+# We must not let these tests read or write the real credential in
+# /app/data/intact.db. The obvious shortcut — installing a fake
+# services.storage.secret_store into sys.modules — is wrong, and was actively
+# harmful: run_all.py gives each file its own process, but CI also runs the whole
+# tests/ tree under pytest in ONE process, where a replaced sys.modules entry is
+# still in place when tests/test_secret_store.py imports it. That test then
+# exercises the fake and fails on behaviour the fake never promised
+# (delete_secret returning True for an absent key).
+#
+# So import the real module graph and rebind the two names auth_service pulled
+# into its OWN namespace. auth_service calls them as module globals, so this
+# redirects every internal use while leaving the shared registry untouched.
 
 _FAKE_SECRETS = {}
 
@@ -73,23 +81,6 @@ def _fake_get_secret(key):
     return val if val else None
 
 
-def _install_storage_stub():
-    services_pkg = types.ModuleType("services")
-    services_pkg.__path__ = [os.path.join(BACKEND, "services")]
-    storage_pkg = types.ModuleType("services.storage")
-    storage_pkg.__path__ = []
-    secret_mod = types.ModuleType("services.storage.secret_store")
-    secret_mod.set_secret = _fake_set_secret
-    secret_mod.get_secret = _fake_get_secret
-    secret_mod.delete_secret = lambda k: _FAKE_SECRETS.pop(k, None) is not None
-    storage_pkg.secret_store = secret_mod
-    services_pkg.storage = storage_pkg
-    sys.modules.setdefault("services", services_pkg)
-    sys.modules["services.storage"] = storage_pkg
-    sys.modules["services.storage.secret_store"] = secret_mod
-
-
-_install_storage_stub()
 if BACKEND not in sys.path:
     sys.path.insert(0, BACKEND)
 
@@ -98,8 +89,11 @@ import importlib.util  # noqa: E402
 _spec = importlib.util.spec_from_file_location(
     "services.auth_service", os.path.join(BACKEND, "services", "auth_service.py"))
 auth = importlib.util.module_from_spec(_spec)
-sys.modules["services.auth_service"] = auth
 _spec.loader.exec_module(auth)
+
+# Scoped to this module object only — nothing else in the process is affected.
+auth.set_secret = _fake_set_secret
+auth.get_secret = _fake_get_secret
 
 
 # --- fixtures ----------------------------------------------------------------

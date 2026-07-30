@@ -900,30 +900,42 @@ def migrate_basic_auth_to_app_login(logger: Callable = None) -> None:
 
     log("  Pre-auth install detected — migrating the dashboard login", "info")
 
-    # Guarantee there IS a password to carry over. On the rare box whose secret
-    # was never generated this creates one; without it the only option would be
-    # to open the setup page, which is exactly the claimable window this whole
-    # function exists to avoid. Called here rather than unconditionally at the
-    # call sites so a box already on the new scheme never regenerates an
-    # htpasswd that nothing reads any more.
-    ensure_nginx_basic_auth_secret(logger=log)
+    password_path = os.path.join(
+        WORKDIR, 'modules', 'nginx', 'secrets', 'nginx_basic_auth_password')
 
-    # Recover the existing credential. config.yaml's dashboard: block wins if
-    # the operator chose their own; otherwise the generated random secret in
-    # modules/nginx/secrets/. The shipped config.yaml never set a password, so
-    # in practice almost every real box lands on the secrets file.
-    user, password = _read_dashboard_credentials(log)
-    source = "config.yaml dashboard.password"
-    if not password:
-        password_path = os.path.join(
-            WORKDIR, 'modules', 'nginx', 'secrets', 'nginx_basic_auth_password')
+    def _recover():
+        """(user, password, source). config.yaml's dashboard: block wins if the
+        operator chose their own; otherwise the generated random secret on disk.
+        The shipped config.yaml never set a password, so in practice almost every
+        real box lands on the secrets file."""
+        u, p = _read_dashboard_credentials(log)
+        if p:
+            return u, p, "config.yaml dashboard.password"
         try:
             with open(password_path, 'r') as f:
-                password = f.read().strip()
-            source = password_path
+                return u, f.read().strip(), password_path
+        except FileNotFoundError:
+            return u, '', ''
         except Exception as e:
             log(f"  Could not read {password_path} ({type(e).__name__}: {e})",
                 "warning")
+            return u, '', ''
+
+    # READ BEFORE GENERATING. ensure_nginx_basic_auth_secret() rotates the
+    # password whenever the plaintext and the htpasswd are not BOTH present —
+    # so calling it first on a box missing one of the pair would mint a brand
+    # new secret and we would then "migrate" the operator onto a password that
+    # has never existed anywhere they could have seen it. Recover first; only
+    # generate if there was genuinely nothing to recover.
+    user, password, source = _recover()
+
+    if not password:
+        # Nothing on disk. Generating gives the migration something to carry, so
+        # the upgrade still doesn't have to fall back to a claimable setup page.
+        # Called here rather than at the call sites so a box already on the new
+        # scheme never regenerates an htpasswd that nothing reads any more.
+        ensure_nginx_basic_auth_secret(logger=log)
+        user, password, source = _recover()
 
     if password:
         if auth_service.set_credential(user, password):

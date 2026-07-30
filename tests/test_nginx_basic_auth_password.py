@@ -1,17 +1,27 @@
-"""Tests for ensure_nginx_basic_auth_secret() — dashboard password from config.yaml.
+"""Tests for ensure_nginx_basic_auth_secret() — now the LOGIN MIGRATION source.
 
-Nginx gates the dashboard, /api/, /api/uploads/ and the /velociraptor/ proxy behind
-Basic Auth (CWE-306 fix). The password used to be a random token minted by a
-self-heal, which locked operators out of their own box after an upgrade with the
-secret only discoverable by catting a root-owned file. config.yaml's `dashboard:`
-block now lets the operator choose it.
+Nginx no longer gates anything with Basic Auth. That gate was replaced by an
+application-level session login (modules/backend/services/auth_service.py), and
+the bash half of this pair — lib/modules.sh:generate_nginx_secrets — was deleted
+along with it, because nothing reads an htpasswd file any more.
 
-The contract this pins:
+This function survives for exactly one reason, and it is still worth pinning: a
+box upgrading from a pre-auth release has its existing Basic Auth password hashed
+into the new login by
+services/upgrade/intact.py:migrate_basic_auth_to_app_login(), so the operator
+keeps signing in with the password they already use instead of being shown an
+unauthenticated setup page mid-upgrade. This function is what guarantees there IS
+a password to migrate, even on a box whose secret was never generated.
+
+So the contract below is unchanged in behaviour but changed in purpose — it now
+protects a migration rather than a live login:
   * dashboard.password set   -> authoritative, re-applied on EVERY run
   * dashboard.password empty -> generate once if missing, otherwise NEVER touch
-    the existing secret (an upgrade must not silently rotate a working login)
-  * the bash installer and this Python upgrade path must agree byte-for-byte,
-    because a box can be seeded by either one
+    the existing secret (an upgrade must not silently rotate what it is about to
+    migrate)
+  * the bash generator must stay GONE — see
+    test_the_bash_generator_stays_gone, which replaced the old byte-for-byte
+    parity test between the two implementations.
 
 Run:  docker exec intact_backend python /app/workdir/tests/test_nginx_basic_auth_password.py
 """
@@ -151,30 +161,147 @@ def test_malformed_config_falls_back_instead_of_raising():
         shutil.rmtree(d, ignore_errors=True)
 
 
-def test_bash_installer_and_python_upgrade_agree():
-    """Same config.yaml through lib/modules.sh must yield the same htpasswd.
-    A box can be seeded by either path; a divergence means the login silently
-    depends on which one ran."""
-    repo = "/app/workdir"
+def test_the_bash_generator_stays_gone():
+    """This replaced a byte-for-byte parity test between lib/modules.sh's
+    generate_nginx_secrets and the Python path above.
+
+    That generator is deleted: nginx has no auth_basic directive and no htpasswd
+    bind mount, so a file it produced would be read by nothing. Re-adding it
+    would also re-add the bind mount pressure — and a mount whose source path is
+    missing makes docker create a DIRECTORY there, which stops nginx booting.
+    Pinned so it cannot quietly come back with a merge.
+    """
+    repo = os.environ.get("INTACT_PATH", "/app/workdir")
     lib = os.path.join(repo, "lib", "modules.sh")
     if not os.path.exists(lib):
         print("  (skipped — lib/modules.sh not mounted in this container)")
         return
+    with open(lib, "r", encoding="utf-8") as fh:
+        body = "\n".join(ln for ln in fh.read().splitlines()
+                         if not ln.lstrip().startswith("#"))
+    assert "generate_nginx_secrets" not in body, \
+        "generate_nginx_secrets is back in lib/modules.sh; nothing reads an htpasswd"
+    assert "_write_nginx_htpasswd" not in body, \
+        "_write_nginx_htpasswd is back in lib/modules.sh"
 
-    cfg = "dashboard:\n  id: soc_admin\n  password: 'Choose Me! 123'\n"
-    d, sec = _workdir(cfg)
+
+# --- the migration this function now exists to serve -------------------------
+
+
+def _migrate(workdir, config_yaml, secrets=None):
+    """Drive the real migrate_basic_auth_to_app_login() against a throwaway
+    WORKDIR + config.yaml, with the credential store captured in a dict."""
+    from services import auth_service as A
+
+    stored = {}
+    real = (A.set_credential, A.config_path)
+    A.set_credential = lambda u, p: (stored.update(user=u, password=p), True)[1]
+
+    prev_wd = I.WORKDIR
+    I.WORKDIR = workdir
+    cfg_path = os.path.join(workdir, "config.yaml")
+    with open(cfg_path, "w") as f:
+        f.write(config_yaml)
+    os.environ["INTACT_CONFIG_PATH"] = cfg_path
     try:
-        script = (
-            "log_info(){ :; }; log_warn(){ :; }; log_success(){ :; }\n"
-            f"CONFIG_FILE='{d}/config.yaml'; SCRIPT_DIR='{d}'\n"
-            f"source {repo}/lib/config.sh\n"
-            f"source {lib}\n"
-            "generate_nginx_secrets\n"
-        )
-        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
-        assert r.returncode == 0, f"generate_nginx_secrets failed: {r.stderr}"
-        assert _read(sec, "htpasswd") == _expected_line("soc_admin", "Choose Me! 123"), \
-            "bash installer and Python upgrade path disagree on the htpasswd"
+        I.migrate_basic_auth_to_app_login(_QUIET)
+        with open(cfg_path) as f:
+            return stored, f.read()
+    finally:
+        I.WORKDIR = prev_wd
+        A.set_credential, A.config_path = real
+        os.environ.pop("INTACT_CONFIG_PATH", None)
+
+
+def test_migration_carries_the_generated_password_into_the_new_login():
+    """The real case: the shipped config.yaml never set dashboard.password, so
+    almost every box authenticates with the random secret in modules/nginx/secrets.
+    That is the password the operator has been typing, so that is what must keep
+    working after the upgrade."""
+    # Deliberately a low-entropy, self-describing string rather than a realistic
+    # 32-char hex secret: gitleaks' generic-api-key rule fires on the real shape
+    # (entropy ~3.6) and blocks the commit. The migration is format-agnostic, so
+    # nothing is lost by making the fixture obviously not a credential.
+    fake = "EXAMPLE-not-a-real-basic-auth-password"
+    d, _sec = _workdir("schema_version: 2\ndomain: x\n",
+                       {"nginx_basic_auth_password": fake})
+    try:
+        stored, cfg = _migrate(d, "schema_version: 2\ndomain: x\n")
+        assert stored.get("password") == fake, \
+            "the existing Basic Auth password was not migrated"
+        assert "first_login: false" in cfg, \
+            "the migration left setup mode open — the appliance is claimable"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_migration_prefers_an_operator_chosen_password():
+    d, _sec = _workdir("x", {"nginx_basic_auth_password": "generated-one"})
+    try:
+        stored, cfg = _migrate(
+            d, "schema_version: 2\ndashboard:\n  id: soc_admin\n  password: 'Chosen! 123'\n")
+        assert stored.get("password") == "Chosen! 123", \
+            "config.yaml's dashboard.password should win over the generated secret"
+        assert stored.get("user") == "soc_admin"
+        assert "first_login: false" in cfg
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_migration_opens_setup_only_when_nothing_can_be_recovered():
+    """With no password anywhere there is nothing to protect, so the setup page
+    is the only way back in. ensure_nginx_basic_auth_secret() normally prevents
+    reaching this by generating one first."""
+    d = tempfile.mkdtemp(prefix="nginx_auth_")
+    try:
+        os.makedirs(os.path.join(d, "modules", "nginx", "secrets"), exist_ok=True)
+        from services import auth_service as A
+        prev_ensure = I.ensure_nginx_basic_auth_secret
+        I.ensure_nginx_basic_auth_secret = lambda *a, **k: None   # nothing to find
+        prev_set = A.set_credential
+        A.set_credential = lambda u, p: False
+        try:
+            _stored, cfg = _migrate(d, "schema_version: 2\ndomain: x\n")
+            assert "first_login: true" in cfg, \
+                "no credential was recoverable, so setup mode had to be opened"
+        finally:
+            I.ensure_nginx_basic_auth_secret = prev_ensure
+            A.set_credential = prev_set
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_migration_is_a_noop_on_a_box_already_using_the_new_login():
+    """Runs on EVERY upgrade, so it must not re-migrate (or reset) a box that has
+    already been set up."""
+    d, _sec = _workdir("x", {"nginx_basic_auth_password": "should-not-be-read"})
+    try:
+        stored, cfg = _migrate(d, "schema_version: 2\nfirst_login: false\ndomain: x\n")
+        assert not stored, \
+            "the migration overwrote the credential of an already-configured box"
+        assert "first_login: false" in cfg
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_migration_leaves_a_box_deliberately_in_setup_mode_alone():
+    d, _sec = _workdir("x", {"nginx_basic_auth_password": "should-not-be-read"})
+    try:
+        stored, cfg = _migrate(d, "schema_version: 2\nfirst_login: true\ndomain: x\n")
+        assert not stored, "an operator who asked for setup mode got a credential instead"
+        assert "first_login: true" in cfg
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_migration_does_not_touch_config_when_it_cannot_be_read():
+    """A malformed config.yaml must not be rewritten on a guess."""
+    d = tempfile.mkdtemp(prefix="nginx_auth_")
+    try:
+        os.makedirs(os.path.join(d, "modules", "nginx", "secrets"), exist_ok=True)
+        broken = "this: is: not: valid: [[[\n"
+        _stored, cfg = _migrate(d, broken)
+        assert cfg == broken, "a malformed config.yaml was rewritten"
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
