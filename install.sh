@@ -273,6 +273,10 @@ main() {
     refresh_nginx_upstreams
 
     verify_installation
+    # Runs after verify_installation so the backend is known to be up and can be
+    # asked whether a credential exists, and before the report so a repair shows
+    # up in the final ATTENTION block instead of scrolling past.
+    ensure_dashboard_login_is_reachable
     print_installation_report
     create_initialization_marker
 

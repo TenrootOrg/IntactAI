@@ -138,6 +138,74 @@ generate_portainer_secrets() {
 # mid-upgrade. That migration is the last remaining consumer of these files and
 # lives in services/upgrade/intact.py:migrate_basic_auth_to_app_login().
 
+ensure_dashboard_login_is_reachable() {
+    # Guard against a silent total lockout: config.yaml saying the login is
+    # already set up (first_login: false) while the backend holds NO credential.
+    # auth_service fails closed on that combination by design, so nobody can sign
+    # in, and the only way out is knowing to set first_login: true by hand.
+    #
+    # It is easy to reach and gives no warning at install time:
+    #   - restoring a config.yaml backup onto a fresh/wiped data/intact.db
+    #     (exactly what happened on 2026-07-30 after a wipe-and-reinstall),
+    #   - carrying config.yaml over to a rebuilt box,
+    #   - any purge/restore that recreates the DB without the secrets table.
+    #
+    # Repairing it here beats handing back a finished install nobody can log in
+    # to. It can only ever open setup on a box with NO credential at all, so it
+    # cannot displace a working login.
+    #
+    # Deliberately NOT done from the app at runtime: the lockout path must never
+    # auto-flip first_login, or an attacker fails 10 logins on purpose to claim
+    # the setup page. An installer run is explicit and operator-initiated.
+
+    local first_login
+    first_login=$(read_config "['first_login']" 2>/dev/null)
+
+    # Act only on an explicit false — absent or true already means setup mode.
+    [[ "$first_login" == "False" || "$first_login" == "false" ]] || return 0
+
+    # Ask the backend whether a credential actually exists.
+    # Importing services.storage prints "[STORAGE] ..." banners to STDOUT, not
+    # stderr, so the answer must be fished out by sentinel rather than read as
+    # the whole of stdout — a plain capture yields banner text glued to the
+    # answer and silently never matches.
+    local has_cred
+    has_cred=$(docker exec intact_backend python3 -c "
+import sys; sys.path.insert(0,'/app')
+from services.storage.secret_store import get_secret
+print('INTACT_CRED:' + ('yes' if get_secret('auth_password_hash') else 'no'))
+" 2>/dev/null | grep -o 'INTACT_CRED:[a-z]*' | tail -1)
+
+    # Anything inconclusive (backend down, import failure, no sentinel) — leave
+    # it alone rather than guess. Only a definite "no credential" repairs.
+    [[ "$has_cred" == "INTACT_CRED:no" ]] || return 0
+
+    log_warn "  Dashboard login: config.yaml says it is configured (first_login: false),"
+    log_warn "  but no credential is stored — nobody would be able to sign in."
+    log_warn "  Setting first_login: true so you can create one in the browser."
+
+    # Truncate IN PLACE. config.yaml is bind-mounted into the backend BY INODE,
+    # so write-temp-then-rename would leave the container's /app/config.yaml
+    # pinned to the old bytes and it would read first_login: false forever.
+    if python3 - "$CONFIG_FILE" <<'PYFIX'
+import sys
+p = sys.argv[1]
+with open(p) as f:
+    lines = f.read().splitlines(keepends=True)
+hits = [i for i, l in enumerate(lines) if l.startswith("first_login:")]
+if len(hits) != 1:
+    sys.exit(1)
+lines[hits[0]] = "first_login: true\n"
+with open(p, "w") as f:          # truncate in place -- preserves the inode
+    f.write("".join(lines))
+PYFIX
+    then
+        log_warn "  Done — open the dashboard to set your username and password."
+    else
+        log_error "  Could not edit config.yaml; set 'first_login: true' there by hand."
+    fi
+}
+
 generate_certificates() {
     log_info "Generating SSL certificates..."
     local domain="${DOMAIN:-localhost}"
