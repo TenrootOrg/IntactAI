@@ -150,6 +150,49 @@ def test_the_timeout_message_no_longer_claims_the_result_is_all_there_is():
         "a timed-out collection is being reported as complete again"
 
 
+def test_the_run_never_claims_the_collection_completed_when_it_did_not():
+    """The bug an operator actually hit: they set 1 minute, the window closed
+    early, the flows were left running — and the run still finished with a green
+    "Collection complete". That directly contradicted the timeout warning a few
+    lines above, and led them to believe the snapshot was all the data there
+    would ever be.
+
+    The run STATUS stays 'completed' (the pipeline did finish, and anything else
+    leaves a row spinning in the UI). Only the claim about the collection is
+    corrected.
+    """
+    code = _read(RUNNERS)
+    # Find the final success line and prove it is no longer unconditional.
+    assert 'add_log_to_run(run_id, "[Collection] Collection complete' in code, \
+        "the natural-completion message is gone entirely"
+    idx = code.index('add_log_to_run(run_id, "[Collection] Collection complete')
+    preceding = code[max(0, idx - 600):idx]
+    assert re.search(r'if timed_out:', preceding), (
+        "the 'Collection complete' line is not guarded by `if timed_out` — a "
+        "timed-out run will report a completed collection again")
+
+
+def test_the_timed_out_run_says_the_collection_continues():
+    code = _read(RUNNERS)
+    tail = code[code.index('_update_phase(run_id, "completed", 100)'):]
+    branch = tail[:tail.index("update_run_status(run_id, \"completed\"")]
+    lowered = branch.lower()
+    assert "still running" in lowered, \
+        "the timed-out completion message does not say the collection continues"
+    assert "not the full collection" in lowered or "not the full" in lowered, \
+        "the message does not make clear the snapshot is incomplete"
+
+
+def test_the_run_status_is_still_completed():
+    """Guard the other direction: making the wording honest must not turn a
+    finished pipeline into a permanently 'running' row."""
+    code = _read(RUNNERS)
+    tail = code[code.index('_update_phase(run_id, "completed", 100)'):]
+    assert 'update_run_status(run_id, "completed", progress=100)' in tail, \
+        "the pipeline no longer marks the run completed — the UI would show it " \
+        "as stuck forever"
+
+
 def test_the_collector_line_marks_its_total_as_provisional():
     code = _read(STREAM)
     start = code.index("Collection window closed")

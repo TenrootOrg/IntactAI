@@ -206,9 +206,17 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, c
         if cancel_event and cancel_event.is_set():
             return
 
-        add_log_to_run(run_id, f"[Collection] {total_rows} rows across "
-                       f"{len(all_results)} artifacts collected — fuse this run into a "
-                       f"Case for analysis.", "info")
+        if timed_out:
+            add_log_to_run(
+                run_id,
+                f"[Collection] {total_rows} rows across {len(all_results)} artifacts "
+                f"captured in the {collection_minutes}m window — fuse this run into a "
+                f"Case for analysis. The collection is STILL RUNNING in Velociraptor "
+                f"and will finish there on its own.", "info")
+        else:
+            add_log_to_run(run_id, f"[Collection] {total_rows} rows across "
+                           f"{len(all_results)} artifacts collected — fuse this run into a "
+                           f"Case for analysis.", "info")
         _update_phase(run_id, "report_ready", 85)
 
         if cancel_event and cancel_event.is_set():
@@ -222,7 +230,28 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, c
             print(f"[AGENTIC] persist_pipeline_artifacts failed (non-fatal): {_e}", flush=True)
 
         _update_phase(run_id, "completed", 100)
-        add_log_to_run(run_id, "[Collection] Collection complete — fuse into a Case for analysis.", "success")
+        # Do not claim the COLLECTION finished when only the RUN did.
+        #
+        # This line used to be an unconditional green "Collection complete", which
+        # on a timed-out run directly contradicted the warning a few lines above:
+        # the window closed early, the flows were left running (see the timeout
+        # branch), and Velociraptor is demonstrably still collecting. An operator
+        # who set 1 minute saw "Collection complete" and reasonably concluded that
+        # was all the data there would ever be.
+        #
+        # The run status stays 'completed' on purpose — the PIPELINE did finish its
+        # work, and anything else would leave a row spinning in the UI forever.
+        # Only the wording is corrected, because that is what was untrue.
+        if timed_out:
+            add_log_to_run(
+                run_id,
+                f"[Collection] Run finished — {total_rows} row(s) snapshotted for "
+                f"fusion. NOT the full collection: the {collection_minutes}m window "
+                f"ended first and the flows are still running in Velociraptor. "
+                f"Check them there, or re-run with a longer Collection Time to "
+                f"capture more in the Case.", "warning")
+        else:
+            add_log_to_run(run_id, "[Collection] Collection complete — fuse into a Case for analysis.", "success")
         if not is_cancelled(run_id):
             update_run_status(run_id, "completed", progress=100)
 
