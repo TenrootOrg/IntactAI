@@ -436,7 +436,13 @@ def test_an_unbaselined_watched_file_is_reported_not_ignored():
 
 
 def test_the_pinned_version_is_read_from_config_yaml():
-    version = DRIFT.read_pinned_version(os.path.join(REPO, "config.yaml"))
+    # config.yaml is the operator's file and gitignored (GitHub PAT, dashboard
+    # login, module passwords), so a fresh checkout has only the shipped
+    # template. Both carry the versions: block this reads.
+    config = os.path.join(REPO, "config.yaml")
+    if not os.path.isfile(config):
+        config = os.path.join(REPO, "config.yaml.example")
+    version = DRIFT.read_pinned_version(config)
     assert re.match(r"^[A-Za-z0-9._-]+$", version), version
     # Must come from the versions: block, not from modules.timesketch.enabled.
     assert version not in ("true", "false", "True", "False"), \

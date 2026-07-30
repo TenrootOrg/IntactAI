@@ -50,7 +50,19 @@ import urllib.error
 import urllib.request
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DEFAULT_CONFIG = os.path.join(REPO_ROOT, 'config.yaml')
+
+def _default_config():
+    """config.yaml is the operator's own file and is not tracked in git (GitHub
+    PAT, dashboard login, module passwords), so a CI checkout — where this runs —
+    has only config.yaml.example. Both carry the `versions:` pin this reads."""
+    for name in ('config.yaml', 'config.yaml.example'):
+        candidate = os.path.join(REPO_ROOT, name)
+        if os.path.isfile(candidate):
+            return candidate
+    return os.path.join(REPO_ROOT, 'config.yaml')
+
+
+DEFAULT_CONFIG = _default_config()
 DEFAULT_BASELINE = os.path.join(REPO_ROOT, 'scripts', 'ci',
                                 'timesketch_provider_baseline.json')
 

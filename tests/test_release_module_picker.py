@@ -37,9 +37,28 @@ def _load_picker():
     return mod
 
 
+def _config_path():
+    """The platform config to assert against.
+
+    config.yaml is the OPERATOR's file and is no longer tracked in git — it
+    accumulates the GitHub PAT, the dashboard login and every module password, so
+    it is gitignored and config.yaml.example is what ships. On an installed box
+    the real file exists and is the more faithful thing to test; in a fresh
+    checkout (CI) only the template does, and for the module list they are
+    equivalent.
+    """
+    for name in ("config.yaml", "config.yaml.example"):
+        path = os.path.join(_ROOT, name)
+        if os.path.isfile(path):
+            return path
+    raise AssertionError(
+        f"neither config.yaml nor config.yaml.example found under {_ROOT}")
+
+
 def _config_modules():
     import yaml
-    cfg = yaml.safe_load(open(os.path.join(_ROOT, "config.yaml"))) or {}
+    with open(_config_path()) as handle:
+        cfg = yaml.safe_load(handle) or {}
     return set(cfg.get("modules") or {})
 
 

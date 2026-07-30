@@ -61,6 +61,31 @@ RELEASE_MODULES = {
                       # an air-gapped box ever gets the dfir-o365rc image
 }
 
+def platform_config_path(must_exist: bool = True):
+    """The platform config this release ships, for reading AND stamping.
+
+    config.yaml is the OPERATOR's file and is not tracked in git — it holds
+    options.github_token (a real GitHub PAT), the dashboard login and every
+    module password, so it is gitignored and config.yaml.example is what ships.
+    This builder runs in CI from a plain checkout, where only the template
+    exists; it is also run locally, where a real config.yaml does and better
+    reflects that box's pins. Prefer the real file, fall back to the template.
+
+    Everything this script needs from it — the `versions:` block and the
+    `versions.backend` pin it stamps — lives in both.
+    """
+    root = os.environ.get("INTACT_PATH", "/app/workdir")
+    for name in ("config.yaml", "config.yaml.example"):
+        candidate = os.path.join(root, name)
+        if os.path.isfile(candidate):
+            return candidate
+    if must_exist:
+        raise FileNotFoundError(
+            f"neither config.yaml nor config.yaml.example found under {root} — "
+            f"cannot resolve the release's version pins")
+    return None
+
+
 def release_module_set(tag: str) -> dict:
     """{module: version} this release ships — always the full RELEASE_MODULES set.
 
@@ -72,8 +97,15 @@ def release_module_set(tag: str) -> dict:
     """
     import yaml
     from services.upgrade import UPGRADE_ORDER
-    cfg_path = os.path.join(os.environ.get("INTACT_PATH", "/app/workdir"), "config.yaml")
-    cfg = yaml.safe_load(open(cfg_path)) or {}
+    # config.yaml is the OPERATOR's file and is not tracked in git (it holds the
+    # GitHub PAT, the dashboard login and every module password), so it does not
+    # exist in a CI checkout — which is exactly where this builder runs. The
+    # tracked template carries the same `versions:` pins, which is all we read.
+    # Prefer a real config.yaml when present so a local package build reflects
+    # that box's own pins.
+    cfg_path = platform_config_path()
+    with open(cfg_path) as handle:
+        cfg = yaml.safe_load(handle) or {}
     versions = cfg.get("versions") or {}
     selected = set(RELEASE_MODULES)
 
@@ -95,7 +127,7 @@ def _stamp_backend_pin(tag: str) -> None:
     every other pin and all the comments. A no-op when the pin already matches.
     """
     import re
-    cfg = os.path.join(os.environ.get("INTACT_PATH", "/app/workdir"), "config.yaml")
+    cfg = platform_config_path()
     try:
         with open(cfg) as f:
             txt = f.read()
@@ -145,9 +177,9 @@ def _verify_package_usable(result: dict, tag: str):
     # with versions.backend: 'development' for exactly this reason.
     try:
         import yaml as _yaml
-        _cfg_path = os.path.join(os.environ.get("INTACT_PATH", "/app/workdir"),
-                                 "config.yaml")
-        _pin = ((_yaml.safe_load(open(_cfg_path)) or {}).get("versions") or {}).get("backend")
+        _cfg_path = platform_config_path()
+        with open(_cfg_path) as _cf:
+            _pin = ((_yaml.safe_load(_cf) or {}).get("versions") or {}).get("backend")
         _pin = str(_pin).strip() if _pin is not None else ""
         if _pin != tag:
             return (f"config.yaml versions.backend is {_pin!r}, expected {tag!r} — "
