@@ -8,6 +8,14 @@
 
 set -o pipefail
 
+# Every file this installer creates inherits this. Without it the operator's
+# umask decides the mode: on a umask-000 host (common on Vagrant/dev VMs)
+# install.sh was creating world-WRITABLE files — including its own
+# install_*.log, which carries command output that has leaked credentials
+# before. Must precede the LOG_FILE definition below, because the log is
+# created by later redirects and would otherwise land 0666.
+umask 022
+
 # ============================================================================
 # Script Configuration
 # ============================================================================
@@ -21,6 +29,49 @@ LOG_FILE="${SCRIPT_DIR}/install_$(date +%Y%m%d_%H%M%S).log"
 # project outside the default /home/tenroot/intact (the backend compose
 # reads ${INTACT_HOST_PATH:-...}).
 export INTACT_HOST_PATH="$SCRIPT_DIR"
+
+# ============================================================================
+# Harden the code we are about to source, BEFORE sourcing it
+# ============================================================================
+# This installer runs as root, so a group/world-writable lib/*.sh is a local
+# root-escalation path: anyone who can write there between extraction and
+# `sudo bash install.sh` gets their code executed as root.
+#
+# It is reachable in practice. actions/upload-artifact strips every Unix mode
+# bit from the release zip, so the extracted tree's modes come from the target
+# box's umask — on a umask-000 host that is 0777 dirs / 0666 files.
+#
+# fix_source_permissions() does the full sweep, but it is called from main(),
+# hundreds of lines AFTER the source statements below. This block is the only
+# thing protecting the sourcing itself.
+#
+# Scoped deliberately to executable code. A blanket `chmod -R` over SCRIPT_DIR
+# would also hit data/, client_installers/ and modules/timesketch/config/ —
+# writable bind mounts holding live container-written files — and install.sh
+# re-runs on every upgrade, so that would strip group-write from a populated
+# appliance, not just a fresh extract.
+#
+# go-w only: removes group/other WRITE, preserves read and the execute bit, so
+# sourcing here and the `chmod +x` in fix_source_permissions are unaffected.
+chmod go-w "${SCRIPT_DIR}/install.sh" 2>/dev/null || true
+chmod go-w "${SCRIPT_DIR}"/lib/*.sh 2>/dev/null || true
+chmod go-w "${SCRIPT_DIR}"/scripts/*.sh 2>/dev/null || true
+
+# Best-effort by design — warn, never abort. On a VirtualBox vboxsf / 9p / NTFS
+# mount chmod is a silent no-op and every file is forced 0777, so failing closed
+# would refuse to install on exactly those test VMs. Be honest about the limit:
+# this warning makes the exposure visible, it does not close it. chmod cannot
+# fix a filesystem that ignores chmod.
+_writable_libs="$(find "${SCRIPT_DIR}/lib" -maxdepth 1 -name '*.sh' -perm /022 2>/dev/null)"
+if [[ -n "$_writable_libs" ]]; then
+    echo "" >&2
+    echo "WARNING: these files are group/world-writable and are about to be sourced as root:" >&2
+    while IFS= read -r _wl; do echo "    $_wl" >&2; done <<< "$_writable_libs"
+    echo "         chmod could not fix them, which usually means a vboxsf/9p/NTFS mount." >&2
+    echo "         Anyone who can write them can run code as root. Prefer a local ext4 path." >&2
+    echo "" >&2
+fi
+unset _writable_libs _wl
 
 # ============================================================================
 # Load Library Modules
