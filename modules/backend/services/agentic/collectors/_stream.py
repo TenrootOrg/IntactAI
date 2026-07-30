@@ -280,16 +280,16 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
         # one caller later.
         total_rows = sum(len(r) for r in all_results.values())
         if elapsed >= total_seconds:
-            # "so far" is load-bearing: the flows are NOT cancelled when the
-            # window closes (see pipeline/_runners.py), so they keep writing in
-            # Velociraptor after this line. This is the snapshot that gets fused,
-            # not the final size of the collection.
+            # Just the count. The caller (pipeline/_runners.py) logs the one line
+            # explaining the time limit and that flows continue in Velociraptor —
+            # restating it here was part of the five-near-identical-messages pile
+            # that made a normal outcome look alarming. "so far" is kept because
+            # flows are not cancelled, so this total really is provisional.
             add_log_to_run(
                 run_id,
                 f"[Velociraptor] Collection window closed — retrieved "
-                f"{len(all_results)} source(s), {total_rows} row(s) so far. "
-                f"Flows still running are left to finish in Velociraptor.",
-                "warning")
+                f"{len(all_results)} source(s), {total_rows} row(s) so far",
+                "info")
         else:
             add_log_to_run(
                 run_id,

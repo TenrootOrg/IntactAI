@@ -139,48 +139,75 @@ def test_the_timeout_message_says_flows_are_not_cancelled():
         "they will assume the collection was truncated and the data lost")
 
 
-def test_the_timeout_message_no_longer_claims_the_result_is_all_there_is():
-    code = _read(RUNNERS)
-    assert "Collection SNAPSHOT" in code or "snapshot" in code.lower(), \
-        "the timed-out result is not described as a snapshot"
-    # And it must not go back to calling a timed-out collection 'complete'.
-    start = code.index("if timed_out:")
-    window = code[start:start + 1200]
-    assert "Collection complete" not in window, \
-        "a timed-out collection is being reported as complete again"
+def test_the_row_count_summary_is_not_duplicated_per_outcome():
+    """There used to be two summaries — a green "Collection complete: N rows" and
+    an orange "Collection SNAPSHOT: N rows ..." — chosen by timed_out. One count,
+    logged the same way either way, is enough."""
+    code = _code_only(_read(RUNNERS))
+    summaries = re.findall(r'add_log_to_run\((?:[^()]|\([^()]*\))*Collected \{total_rows\}'
+                           r'(?:[^()]|\([^()]*\))*\)', code, re.DOTALL)
+    assert len(summaries) == 1, (
+        f"expected exactly one row-count summary, found {len(summaries)}")
+    assert "SNAPSHOT" not in code, \
+        "the shouty SNAPSHOT wording is back"
 
 
-def test_the_run_never_claims_the_collection_completed_when_it_did_not():
-    """The bug an operator actually hit: they set 1 minute, the window closed
-    early, the flows were left running — and the run still finished with a green
-    "Collection complete". That directly contradicted the timeout warning a few
-    lines above, and led them to believe the snapshot was all the data there
-    would ever be.
+def test_the_run_ends_with_a_normal_completion():
+    """Reaching a limit the operator chose is not a failure, so the run finishes
+    the same way either way.
 
-    The run STATUS stays 'completed' (the pipeline did finish, and anything else
-    leaves a row spinning in the UI). Only the claim about the collection is
-    corrected.
+    An earlier revision branched this on timed_out and closed with an orange
+    "NOT the full collection". That over-corrected: by then the time-limit note
+    has already been logged once (see the test below), so the closing shout only
+    made a normal outcome look broken.
     """
-    code = _read(RUNNERS)
-    # Find the final success line and prove it is no longer unconditional.
-    assert 'add_log_to_run(run_id, "[Collection] Collection complete' in code, \
-        "the natural-completion message is gone entirely"
-    idx = code.index('add_log_to_run(run_id, "[Collection] Collection complete')
-    preceding = code[max(0, idx - 600):idx]
-    assert re.search(r'if timed_out:', preceding), (
-        "the 'Collection complete' line is not guarded by `if timed_out` — a "
-        "timed-out run will report a completed collection again")
+    code = _code_only(_read(RUNNERS))
+    assert 'add_log_to_run(run_id, "[Collection] Collection completed' in code, \
+        "the run no longer ends with a plain completion line"
+    idx = code.index('add_log_to_run(run_id, "[Collection] Collection completed')
+    # Unconditional: no `if timed_out:` between the phase update and this line.
+    phase_at = code.index('_update_phase(run_id, "completed", 100)')
+    assert "if timed_out" not in code[phase_at:idx], (
+        "the completion line is branched on timed_out again — a run that hit its "
+        "time limit still completed, and saying otherwise reads as a fault")
 
 
-def test_the_timed_out_run_says_the_collection_continues():
-    code = _read(RUNNERS)
-    tail = code[code.index('_update_phase(run_id, "completed", 100)'):]
-    branch = tail[:tail.index("update_run_status(run_id, \"completed\"")]
-    lowered = branch.lower()
-    assert "still running" in lowered, \
-        "the timed-out completion message does not say the collection continues"
-    assert "not the full collection" in lowered or "not the full" in lowered, \
-        "the message does not make clear the snapshot is incomplete"
+def test_the_time_limit_is_explained_exactly_once():
+    """Five near-identical messages inside two seconds is what made this feel
+    alarming — the same log-noise pattern already cut from the streaming
+    heartbeat. The explanation belongs in one place."""
+    code = _code_only(_read(RUNNERS)) + _code_only(_read(STREAM))
+    logged = re.findall(r'add_log_to_run\((?:[^()]|\([^()]*\))*\)', code, re.DOTALL)
+    # Anchored on "... in Velociraptor" / "finish there" on purpose: a bare
+    # "still running" also matches the streaming heartbeat ("Still running — 0m
+    # 30s left"), which is a different, wanted message.
+    mentions = [m for m in logged
+                if re.search(r'(?:keep|still) running in Velociraptor|'
+                             r'finish there|not cancelled',
+                             m, re.IGNORECASE)]
+    assert len(mentions) == 1, (
+        f"the 'flows continue' explanation appears in {len(mentions)} log lines; "
+        f"it should be stated once:\n" +
+        "\n".join(m[:120] for m in mentions))
+
+
+def test_that_one_explanation_is_informative_not_alarming():
+    code = _code_only(_read(RUNNERS))
+    logged = re.findall(r'add_log_to_run\((?:[^()]|\([^()]*\))*\)', code, re.DOTALL)
+    note = [m for m in logged if "Reached the" in m and "collection time" in m]
+    assert note, "the time-limit note is gone — the operator gets no explanation"
+    note = note[0]
+    assert '"info"' in note or "'info'" in note, \
+        "the time-limit note is not at info level; reaching a chosen limit is " \
+        "not a warning"
+    # No shouting.
+    assert not re.search(r'\bNOT\b|\bSTILL RUNNING\b|SNAPSHOT', note), \
+        f"the note still shouts at the operator: {note[:200]}"
+    # But it must still convey the two useful facts.
+    assert re.search(r'keep running|finish there', note, re.IGNORECASE), \
+        "the note does not say the flows continue in Velociraptor"
+    assert "Collection Time" in note, \
+        "the note does not tell the operator how to capture more next time"
 
 
 def test_the_run_status_is_still_completed():
