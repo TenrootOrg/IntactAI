@@ -21,7 +21,7 @@ if [ ! -f server.config.yaml ]; then
             "hostname": "'$VELOX_FRONTEND_HOSTNAME'",
             "bind_address": "0.0.0.0"
         },
-        "API": {"bind_address": "0.0.0.0"},
+        "API": {"bind_address": "0.0.0.0", "hostname": "127.0.0.1"},
         "GUI": {
             "bind_address": "0.0.0.0",
             "base_path": "/velociraptor",
@@ -36,6 +36,38 @@ if [ ! -f server.config.yaml ]; then
     }' > server.config.yaml
 
     sed -i 's#/tmp/velociraptor#.#g' server.config.yaml
+fi
+
+# Self-heal API.hostname on a config generated before it was set (the block
+# above only runs when server.config.yaml is absent, so every existing install
+# needs this).
+#
+# The GUI talks to its own API over gRPC, and builds that address from
+# API.hostname — falling back to Frontend.hostname when unset. Frontend.hostname
+# is the box's PUBLIC address, and ports 8001/8889 are deliberately published on
+# 127.0.0.1 only (see docker-compose.yaml: the GUI runs plain HTTP and the API
+# can task endpoints, so neither belongs on a public interface). So the GUI left
+# the container, dialled <public-ip>:8001, and got connection refused — the whole
+# UI then failed with:
+#
+#   connection error: desc = "transport: Error while dialing:
+#   dial tcp <public-ip>:8001: connect: connection refused"
+#
+# and every /velociraptor/api/v1/* call returned 503, while the API itself was
+# perfectly healthy and listening on 0.0.0.0:8001 inside the container.
+#
+# Pinning it to 127.0.0.1 keeps the GUI's gRPC connection inside the container.
+# This changes only the address the GUI DIALS — bind_address stays 0.0.0.0, so
+# the backend keeps reaching the API over the docker network via
+# api.config.yaml's `api_connection_string: intact_velociraptor:8001`.
+if [ -f server.config.yaml ] && ! grep -qE '^\s+hostname:\s*127\.0\.0\.1' server.config.yaml; then
+    if grep -q '^API:' server.config.yaml; then
+        echo "Pinning API.hostname to 127.0.0.1 (GUI -> API gRPC stays in-container)"
+        # Insert inside the API: block only — anchored between `API:` and the
+        # next top-level key so Frontend/GUI/Monitoring hostnames are untouched.
+        sed -i '/^API:/,/^[A-Za-z]/ { /^  bind_port:/a\  hostname: 127.0.0.1
+        }' server.config.yaml
+    fi
 fi
 
 # Always check and create admin user if not exists

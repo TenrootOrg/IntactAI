@@ -280,10 +280,15 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
         # one caller later.
         total_rows = sum(len(r) for r in all_results.values())
         if elapsed >= total_seconds:
+            # "so far" is load-bearing: the flows are NOT cancelled when the
+            # window closes (see pipeline/_runners.py), so they keep writing in
+            # Velociraptor after this line. This is the snapshot that gets fused,
+            # not the final size of the collection.
             add_log_to_run(
                 run_id,
                 f"[Velociraptor] Collection window closed — retrieved "
-                f"{len(all_results)} source(s), {total_rows} row(s) so far",
+                f"{len(all_results)} source(s), {total_rows} row(s) so far. "
+                f"Flows still running are left to finish in Velociraptor.",
                 "warning")
         else:
             add_log_to_run(

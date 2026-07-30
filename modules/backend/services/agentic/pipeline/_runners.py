@@ -25,9 +25,12 @@ from services.file_storage_service import get_agentic_blueprint, get_workflow, s
 from services.agentic.collectors import (
     create_collections,
     stream_collect_and_analyze,
-    cancel_collections,
     persist_pipeline_artifacts,
 )
+# cancel_collections is deliberately NOT imported here any more. The pipeline no
+# longer cancels flows when the collection window closes — see the note at the
+# timeout branch below. The only remaining canceller is the cleanup callback
+# _stream.py registers for a user-requested Stop.
 from services.agentic.pipeline._helpers import *  # noqa: F401,F403
 from services.agentic.pipeline._helpers import (_start_watchdog, _update_phase, _PIPELINE_SYNTHESIS_GRACE_SECONDS)  # underscore members
 
@@ -128,30 +131,56 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, c
             run_id, success_collections, artifacts, collection_minutes, _update_phase, cancel_event,
         )
 
-        # 4. Cancel any remaining collections ONLY if we timed out
+        # 4. The window is a deadline for US, not for the endpoints.
+        #
+        # This used to cancel_collections() on timeout, which killed flows that
+        # were still writing. Collection Time is meant to bound how long the
+        # pipeline WAITS before snapshotting and handing off to fusion — not to
+        # truncate work already running on a host. Cancelling threw away
+        # everything a slow client had left to send, and on a big artifact set
+        # that is most of it, so the operator paid the collection cost and got a
+        # fraction of the data with no way to recover it short of re-running the
+        # whole hunt.
+        #
+        # Now the flows are left alone: they run to completion in Velociraptor
+        # and their full output stays queryable there. Note the consequence,
+        # because it is not obvious — persist_pipeline_artifacts() below snapshots
+        # what was retrieved BY THIS POINT, so rows a flow writes after the window
+        # do not reach this run's Case. They are in Velociraptor, not lost.
+        #
+        # A user-requested Stop still cancels the flows: _stream.py registers
+        # cancel_collections as a cleanup callback, and cleanups run only from
+        # stop_workflow() — never on normal completion.
         if timed_out:
             add_log_to_run(
                 run_id,
                 f"[Velociraptor] {collection_minutes}m collection window reached "
-                f"— stopping flows that are still running...", "warning")
-            cancel_collections(run_id, success_collections)
+                f"— taking a snapshot for analysis. Flows that are still running "
+                f"are NOT cancelled; they will finish in Velociraptor.", "warning")
         else:
             add_log_to_run(run_id, "[Velociraptor] All flows completed naturally", "success")
 
-        # Say which of the two things happened. A timed-out collection is
-        # PARTIAL: the rows are whatever the clients had written when the
-        # window closed, not a finished collection. Calling that "complete"
-        # (in green, right after a timeout warning) is what made the log read
-        # as self-contradictory, and it hid the one fact the operator needs —
-        # that the result is truncated and the window was too short.
+        # Say which of the two things happened. A timed-out run yields a
+        # SNAPSHOT: the rows are whatever the clients had written when the window
+        # closed, not a finished collection. Calling that "complete" (in green,
+        # right after a timeout warning) is what made the log read as
+        # self-contradictory, and it hid the one fact the operator needs — that
+        # this Case sees less than the collection will ultimately produce.
+        #
+        # The remedy is no longer only "raise Collection Time": because the flows
+        # are no longer cancelled, the missing rows are still being written and
+        # are queryable in Velociraptor. Say both, so the operator knows the data
+        # exists rather than assuming it was lost.
         total_rows = sum(len(rows) for rows in all_results.values())
         if timed_out:
             add_log_to_run(
                 run_id,
-                f"[Pipeline] Collection PARTIAL: {total_rows} row(s) across "
+                f"[Pipeline] Collection SNAPSHOT: {total_rows} row(s) across "
                 f"{len(all_results)} artifact(s) — the {collection_minutes}m window "
-                f"closed before every flow finished. Raise Collection Time for "
-                f"this blueprint to collect it fully.", "warning")
+                f"closed before every flow finished, so this is what will be fused. "
+                f"The flows keep running in Velociraptor and their full output stays "
+                f"available there. Raise Collection Time to capture more of it in "
+                f"the run itself.", "warning")
         else:
             add_log_to_run(
                 run_id,
