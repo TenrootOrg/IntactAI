@@ -375,6 +375,19 @@ fix_source_permissions() {
     chmod +x "${SCRIPT_DIR}/scripts/"*.sh 2>/dev/null || true
     chmod +x "${SCRIPT_DIR}/modules/iris/scripts/"*.sh 2>/dev/null || true
     chmod +x "${SCRIPT_DIR}/modules/backend/scripts/"*.py 2>/dev/null || true
+    # git SILENTLY skips a hook that is not executable — no error, no warning
+    # from the hook itself. The 644 sweep above stripped +x from
+    # scripts/git-hooks/pre-commit on every single install, which switched the
+    # gitleaks secret guard off and left it looking installed. `git commit` says
+    # "hook was ignored because it's not set as executable" and that is the only
+    # sign. The glob (not *.sh) is deliberate: hooks have no extension.
+    chmod +x "${SCRIPT_DIR}/scripts/git-hooks/"* 2>/dev/null || true
+    # Subdirectories the `scripts/*.sh` glob above does not reach, plus two
+    # module-level helpers the sweep also de-executed.
+    chmod +x "${SCRIPT_DIR}/scripts/migrate/"*.sh 2>/dev/null || true
+    chmod +x "${SCRIPT_DIR}/scripts/migrate/"*.py 2>/dev/null || true
+    chmod +x "${SCRIPT_DIR}/modules/elk/config/"*.sh 2>/dev/null || true
+    chmod +x "${SCRIPT_DIR}/modules/nginx/build-tailwind.sh" 2>/dev/null || true
 
     log_info "Source file permissions fixed"
 }
