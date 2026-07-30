@@ -21,6 +21,45 @@ HOST_PATH = os.environ.get('INTACT_HOST_PATH', WORKDIR)
 MODULES_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+_SECRET_ARG_PATTERNS = (
+    # `-e NAME=secret` / bare `NAME=secret` env assignments, where NAME looks
+    # like a credential. This is the shape that actually leaked: iris.py builds
+    # `docker exec -e IRIS_RESET_PW=<pw> ...` and the echo below put the
+    # password into the backend's stdout, hence `docker logs`, hence every
+    # support bundle collected afterwards.
+    re.compile(r'((?:-e\s+)?[A-Za-z_][A-Za-z0-9_]*'
+               r'(?:PASSWORD|PASSWD|_PW|TOKEN|SECRET|APIKEY|API_KEY|KEY|CREDENTIAL)'
+               r'\s*=\s*)(\S+)', re.IGNORECASE),
+    # `--password value`, `--password=value`, `--token ...`, `-p value`
+    re.compile(r'(--(?:password|passwd|token|secret|api-key|apikey)[=\s]+)(\S+)',
+               re.IGNORECASE),
+)
+
+
+def redact_command(cmd: str) -> str:
+    """Mask credential-looking values in a command string before it is logged.
+
+    Applied UNCONDITIONALLY by run_command below, deliberately: the one call
+    site that tried to keep a password out of the logs (iris.py's IRIS admin
+    reset) did so by passing `logger=None` — which does not silence anything,
+    because run_command falls back to printing when no logger is given. The
+    result was the operator's IRIS password sitting in
+    containers/intact_backend.log inside a support bundle, i.e. the one artifact
+    designed to be sent to other people. Redacting at the choke point means a
+    future call site cannot make that mistake at all.
+
+    Worth keeping broad: run logs also reach the SQLite `workflows` table and
+    the `intact_workflow_runs` Elasticsearch index (whose mapping carries a
+    nested `logs` array), so a leaked credential here does not stay in one file.
+    """
+    if not cmd:
+        return cmd
+    out = cmd
+    for pattern in _SECRET_ARG_PATTERNS:
+        out = pattern.sub(lambda m: m.group(1) + '[REDACTED]', out)
+    return out
+
+
 def run_command(cmd: str, cwd: str = None, timeout: int = 300, logger: Callable = None,
                 run_id: Optional[str] = None) -> Dict:
     """Run a shell command and return result.
@@ -54,7 +93,9 @@ def run_command(cmd: str, cwd: str = None, timeout: int = 300, logger: Callable 
                 cmd = cmd.replace("docker compose", f"docker compose -f {compose_file} --project-directory {host_cwd}", 1)
                 cwd = None
 
-        log(f"  Running: {cmd[:80]}...", "info")
+        # Redact BEFORE truncating: the password that leaked previously sat
+        # inside the first 80 characters, so slicing is not a mitigation.
+        log(f"  Running: {redact_command(cmd)[:80]}...", "info")
 
         try:
             from services.workflow_service import (
