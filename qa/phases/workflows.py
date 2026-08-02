@@ -272,7 +272,10 @@ def register(runner, cfg):
 
         payload = {"client_id": client_id,
                    "client_name": ctx.get("hostname") or client_id,
-                   "case_name": f"QA {ctx.tl.run_id}"}
+                   # VolWeb groups evidence under its own case name; keep it
+                   # stable so repeat runs accumulate in one place rather
+                   # than littering VolWeb with a case per run.
+                   "case_name": "QA"}
         if bp:
             payload["blueprint_id"] = bp.get("id") or bp.get("blueprint_id")
 
@@ -358,13 +361,16 @@ def register(runner, cfg):
         member_runs = [r for r in (ctx.get("kape_run_id"), ctx.get("hunt_run_id"),
                                    ctx.get("volweb_run_id")) if r]
 
-        body = c.post("/api/cases", {"name": f"QA {ctx.tl.run_id}",
-                                     "member_run_ids": member_runs,
-                                     "min_severity": "low"})
-        case_id = body.get("case_id") if isinstance(body, dict) else None
-        ctx.check("case created", bool(case_id), actual=body)
+        # Fuse the PERSISTENT QA case the auth phase established, rather than
+        # minting a per-run one. Every workflow this run started was already
+        # tagged into it by the X-Case-Id header, so its members are the runs
+        # this QA produced — plus the history of previous runs, which is the
+        # point of a persistent case.
+        case_id = ctx.get("qa_case_id")
+        ctx.check("fusing the persistent QA case", bool(case_id),
+                  actual=case_id, note="established in the auth phase")
         if not case_id:
-            return {"response": body}
+            return {"error": "no QA case"}
         ctx.set(case_id=case_id)
         tl.ids(case_id=case_id)
 

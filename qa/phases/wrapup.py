@@ -8,9 +8,11 @@ import json
 import os
 import shutil
 
+from lib import api as api_lib
 from lib import redact as redact_lib
 from lib import runner as runner_lib
 from lib import shell
+from phases import platform as platform_mod
 
 
 def register(runner, cfg):
@@ -77,6 +79,76 @@ def register(runner, cfg):
         for f in os.listdir(logs_dir):
             os.chmod(os.path.join(logs_dir, f), 0o600)
         return detail
+
+    # --------------------------------------------------------------- F.2 --
+    @runner.phase("revoke", "Retire the qa/123123 dashboard account",
+                  optional=True)
+    def revoke(ctx):
+        """The QA runs with a deliberately weak, publicly-documented password
+        so the operator can open the dashboard mid-run without looking anything
+        up. Leaving it behind afterwards is the problem: the appliance would
+        sit there indefinitely with a guessable account gating the dashboard,
+        /api/, the upload endpoint and the /velociraptor/ proxy — and the
+        8-character minimum that would have refused it has been removed.
+
+        Rotated to a strong random value rather than deleted, deliberately.
+        The obvious alternative — set first_login: true and leave the box
+        unclaimed — is worse: it reopens the setup page to whoever browses
+        there first, turning a weak credential into no credential at all.
+
+        The new password is written to the run directory at 0600. Nobody needs
+        to know it; it exists so the run stays self-describing and so an
+        operator who wants back in has the option. The documented recovery is
+        still first_login: true on the host, which requires host access — and
+        that host access IS the authentication.
+        """
+        import secrets
+        import string
+
+        c = ctx.get("client")
+        if not c:
+            ctx.check("dashboard account retired", False,
+                      note="no authenticated session; qa/123123 may still be "
+                           "live on this appliance — rotate it by hand")
+            return {}
+
+        alphabet = string.ascii_letters + string.digits
+        new_password = "Qa-" + "".join(secrets.choice(alphabet) for _ in range(28))
+        ctx.redact.secrets.insert(0, new_password)
+        ctx.redact.secrets.sort(key=len, reverse=True)
+
+        body = c.request("POST", "/api/auth/change-password", expect=(),
+                         json={"current_password": platform_mod.QA_DASH_PASSWORD,
+                               "new_password": new_password,
+                               "confirm": new_password})
+        rotated = isinstance(body, dict) and body.get("success")
+
+        ctx.check("dashboard account retired", bool(rotated), actual=body,
+                  note="qa/123123 must not outlive the run")
+
+        if rotated:
+            path = os.path.join(ctx.run_dir, "dashboard-credentials.txt")
+            with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600),
+                      "w", encoding="utf-8") as fh:
+                fh.write(f"https://{cfg.platform_host}/\n"
+                         f"username: {platform_mod.QA_DASH_USER}\n"
+                         f"password: {new_password}\n\n"
+                         f"Rotated at teardown. The qa/123123 password the run "
+                         f"used is no longer valid.\nTo reset: set "
+                         f"first_login: true in config.yaml on the appliance.\n")
+            # Prove it, rather than trusting the 200.
+            probe = api_lib.Client(cfg.platform_host)
+            try:
+                probe.login(platform_mod.QA_DASH_USER,
+                            platform_mod.QA_DASH_PASSWORD)
+                still_works = True
+            except Exception:                                 # noqa: BLE001
+                still_works = False
+            ctx.check("the weak QA password no longer authenticates",
+                      not still_works, expected="rejected",
+                      actual="ACCEPTED" if still_works else "rejected")
+
+        return {"rotated": bool(rotated)}
 
     # ----------------------------------------------------------------- G --
     @runner.phase("report", "Redaction self-test, then write the report",

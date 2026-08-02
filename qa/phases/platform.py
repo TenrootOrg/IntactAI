@@ -320,12 +320,55 @@ def register(runner, cfg):
                   c.status_of("/api/clients") == 200,
                   expected=200, actual=c.status_of("/api/clients"))
 
+        # Everything this run does belongs in ONE persistent case named "QA",
+        # reused across runs rather than recreated. Runs are tagged to a
+        # workspace by the X-Case-Id request header (case_routes.py:253), so
+        # setting it on the session scopes every later call — the KAPE
+        # automation, the hunt, the memory run — into that case without each
+        # phase having to remember.
+        #
+        # Reused, not recreated, and never deleted: the case accumulates the
+        # history of every QA run, which is the point. A run that made its own
+        # throwaway case would leave the fusion graph of the previous run
+        # orphaned and the workspace list full of debris.
+        case_id, created = _ensure_qa_case(c)
+        ctx.check("the persistent QA case is available", bool(case_id),
+                  actual=case_id, note="reused across runs; never deleted")
+        if case_id:
+            c.s.headers["X-Case-Id"] = case_id
+            ctx.set(qa_case_id=case_id)
+            tl.ids(qa_case_id=case_id)
+
         ctx.set(client=c, dash_user=username, creds_path=creds_path)
         return {"how": how, "mode_before": mode_before, "mode_after": mode_after,
-                "credentials_file": creds_path}
+                "credentials_file": creds_path,
+                "qa_case_id": case_id, "qa_case_created": created}
 
 
 # --- helpers -------------------------------------------------------------
+
+
+QA_CASE_NAME = "QA"
+
+
+def _ensure_qa_case(c):
+    """Find the persistent "QA" case, creating it only if absent.
+
+    Returns (case_id, created). Matched by name because the id is generated at
+    creation time and differs per appliance, so it cannot be pinned in code.
+    """
+    try:
+        body = c.get("/api/cases")
+    except Exception:                                         # noqa: BLE001
+        return None, False
+    for case in (body.get("cases") or []) if isinstance(body, dict) else []:
+        if (case.get("name") or "").strip().lower() == QA_CASE_NAME.lower():
+            return case.get("case_id"), False
+    try:
+        made = c.post("/api/cases", {"name": QA_CASE_NAME, "min_severity": "low"})
+        return (made or {}).get("case_id"), True
+    except Exception:                                         # noqa: BLE001
+        return None, False
 
 
 def _reset_first_login(tl, path=None):
