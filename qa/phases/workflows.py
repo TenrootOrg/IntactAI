@@ -88,9 +88,47 @@ def register(runner, cfg):
         # lets an operator go and look at it in the product.
         ctx.set(kape_run_id=run_id, kape_flow_id=flow_id)
         tl.ids(kape_run_id=run_id, kape_flow_id=flow_id)
+
+        # SECOND CALL, and it is not optional.
+        #
+        # /api/velociraptor/timesketch ONLY dispatches the KAPE collection. Its
+        # own response says so: "KAPE collection started. Call
+        # /api/timesketch/import with this flow_id to start the full pipeline."
+        # Without it the run sits at 5% for ever — the collection completes on
+        # the endpoint, Velociraptor has the files, and nothing moves. That
+        # looked exactly like a stalled backend, which is how it was first
+        # diagnosed; it was a two-step API and the harness only made step one.
+        #
+        # The import reuses the SAME run_id (it reads it back out of the job
+        # registry), monitors the flow to completion itself, then runs plaso
+        # and the Timesketch index. So this one call covers the A2 gate and
+        # stage A3.
+        import_payload = {
+            "flow_id": flow_id,
+            "client_id": client_id,
+            "client_name": payload["client_name"],
+            "sketch_name": f"QA {ctx.tl.run_id}",
+            # winevtx: the collection is event logs only, so pointing plaso at
+            # the matching parser preset skips work it cannot use anyway.
+            "plaso_parser": settings.get("plaso_parser") or "winevtx",
+            "plaso_workers": settings.get("plaso_workers", 2),
+            "plaso_hasher": settings.get("plaso_hasher", ""),
+            "monitor_timeout": cfg.timeout("kape_collection", 30) * 60,
+            "timesketch_processing_timeout":
+                cfg.timeout("timesketch_ingest", 45) * 60,
+        }
+        imported = c.post("/api/timesketch/import", import_payload)
+        ctx.check("Timesketch import pipeline started",
+                  isinstance(imported, dict) and not imported.get("error"),
+                  actual=imported,
+                  note="without this the collection completes and the run "
+                       "never leaves 5%")
+
         return {"run_id": run_id, "flow_id": flow_id,
                 "kape_target": kape_target,
-                "blueprint": payload.get("blueprint")}
+                "blueprint": payload.get("blueprint"),
+                "plaso_parser": import_payload["plaso_parser"],
+                "import_response": imported}
 
     # ---------------------------------------------------------------- A2 --
     @runner.phase("kape_gate", "Wait for the collection to finish client-side",
@@ -101,21 +139,27 @@ def register(runner, cfg):
         finish, which includes a server-side ingest that can safely overlap."""
         c, run_id = ctx.get("client"), ctx.get("kape_run_id")
 
+        # The import pipeline writes a log line per stage, and `details.phase`
+        # is never populated — so progress is read from the LOGS, not from a
+        # status field. Watching for the words that mean the endpoint is done
+        # and the server has taken over is what releases the hunt: the point of
+        # the gate is that the endpoint never runs two heavy collections at
+        # once, while server-side plaso and indexing can safely overlap.
+        SERVER_SIDE = ("download", "downloaded", "plaso", "processing",
+                       "extracting", "uploading to timesketch", "sketch")
+
         def probe():
             run = c.run_status(run_id)
             if not run:
                 return None
-            det = run.get("details") or {}
-            phase = (det.get("phase") or "").lower()
             status = (run.get("status") or "").lower()
-            # Either the automation has moved past collection into an
-            # ingest/processing phase, or it has finished outright.
-            if status in ("completed", "success", "failed", "error"):
+            if status in ("completed", "success", "failed", "error", "cancelled"):
                 return run
-            if phase and not any(w in phase for w in
-                                 ("collect", "kape", "start", "queue", "wait")):
+            blob = " ".join(str(l.get("message", "")).lower()
+                            for l in (run.get("logs") or []))
+            if any(w in blob for w in SERVER_SIDE):
                 return run
-            if det.get("collection_complete") or det.get("kape_ready"):
+            if (run.get("progress") or 0) > 20:
                 return run
             return None
 
