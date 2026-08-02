@@ -81,74 +81,71 @@ def register(runner, cfg):
         return detail
 
     # --------------------------------------------------------------- F.2 --
-    @runner.phase("revoke", "Retire the qa/123123 dashboard account",
+    @runner.phase("revoke", "Confirm the dashboard account is as configured",
                   optional=True)
     def revoke(ctx):
-        """The QA runs with a deliberately weak, publicly-documented password
-        so the operator can open the dashboard mid-run without looking anything
-        up. Leaving it behind afterwards is the problem: the appliance would
-        sit there indefinitely with a guessable account gating the dashboard,
-        /api/, the upload endpoint and the /velociraptor/ proxy — and the
-        8-character minimum that would have refused it has been removed.
+        """Leaves qa/123123 in place. Deliberately.
 
-        Rotated to a strong random value rather than deleted, deliberately.
-        The obvious alternative — set first_login: true and leave the box
-        unclaimed — is worse: it reopens the setup page to whoever browses
-        there first, turning a weak credential into no credential at all.
+        This phase used to rotate the password to a random value at teardown,
+        on the reasoning that a guessable admin account gating the dashboard,
+        /api/, uploads and the /velociraptor/ proxy should not outlive the run.
+        That reasoning is sound but it is not the operator's call to make here:
+        the standing instruction is that the QA credentials are always
+        qa/123123, and rotating them meant the dashboard became unusable after
+        every run and the operator had to dig a password out of a run
+        directory to look at their own appliance.
 
-        The new password is written to the run directory at 0600. Nobody needs
-        to know it; it exists so the run stays self-describing and so an
-        operator who wants back in has the option. The documented recovery is
-        still first_login: true on the host, which requires host access — and
-        that host access IS the authentication.
+        Set run.revoke_dashboard_account: true in qa-config.yaml to rotate
+        instead. The credential file is written either way, so a run stays
+        self-describing.
+
+        The residual risk is real and worth stating plainly rather than
+        burying: on a network-reachable appliance this leaves a six-digit
+        password on an account that gates everything. What stands behind it is
+        the ten-attempt lockout, not the password.
         """
         import secrets
         import string
 
         c = ctx.get("client")
-        if not c:
-            ctx.check("dashboard account retired", False,
-                      note="no authenticated session; qa/123123 may still be "
-                           "live on this appliance — rotate it by hand")
-            return {}
+        rotate = bool(cfg.get("run", "revoke_dashboard_account", default=False))
+        username = platform_mod.QA_DASH_USER
+        password = platform_mod.QA_DASH_PASSWORD
+        rotated = False
 
-        alphabet = string.ascii_letters + string.digits
-        new_password = "Qa-" + "".join(secrets.choice(alphabet) for _ in range(28))
-        ctx.redact.secrets.insert(0, new_password)
-        ctx.redact.secrets.sort(key=len, reverse=True)
+        if rotate and c:
+            alphabet = string.ascii_letters + string.digits
+            password = "Qa-" + "".join(secrets.choice(alphabet) for _ in range(28))
+            ctx.redact.secrets.insert(0, password)
+            ctx.redact.secrets.sort(key=len, reverse=True)
+            body = c.request("POST", "/api/auth/change-password", expect=(),
+                             json={"current_password": platform_mod.QA_DASH_PASSWORD,
+                                   "new_password": password, "confirm": password})
+            rotated = isinstance(body, dict) and bool(body.get("success"))
+            ctx.check("dashboard account rotated", rotated, actual=body)
 
-        body = c.request("POST", "/api/auth/change-password", expect=(),
-                         json={"current_password": platform_mod.QA_DASH_PASSWORD,
-                               "new_password": new_password,
-                               "confirm": new_password})
-        rotated = isinstance(body, dict) and body.get("success")
+        # Whichever password is live, prove it actually authenticates — a run
+        # that leaves the operator locked out of their own box is a failed run
+        # regardless of what the config asked for.
+        probe = api_lib.Client(cfg.platform_host)
+        try:
+            probe.login(username, password)
+            works = True
+        except Exception:                                     # noqa: BLE001
+            works = False
+        ctx.check("the documented dashboard password works", works,
+                  expected="login accepted", actual="accepted" if works
+                  else "REJECTED",
+                  note=f"{username} / {'<rotated>' if rotated else password}")
 
-        ctx.check("dashboard account retired", bool(rotated), actual=body,
-                  note="qa/123123 must not outlive the run")
-
-        if rotated:
-            path = os.path.join(ctx.run_dir, "dashboard-credentials.txt")
-            with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600),
-                      "w", encoding="utf-8") as fh:
-                fh.write(f"https://{cfg.platform_host}/\n"
-                         f"username: {platform_mod.QA_DASH_USER}\n"
-                         f"password: {new_password}\n\n"
-                         f"Rotated at teardown. The qa/123123 password the run "
-                         f"used is no longer valid.\nTo reset: set "
-                         f"first_login: true in config.yaml on the appliance.\n")
-            # Prove it, rather than trusting the 200.
-            probe = api_lib.Client(cfg.platform_host)
-            try:
-                probe.login(platform_mod.QA_DASH_USER,
-                            platform_mod.QA_DASH_PASSWORD)
-                still_works = True
-            except Exception:                                 # noqa: BLE001
-                still_works = False
-            ctx.check("the weak QA password no longer authenticates",
-                      not still_works, expected="rejected",
-                      actual="ACCEPTED" if still_works else "rejected")
-
-        return {"rotated": bool(rotated)}
+        path = os.path.join(ctx.run_dir, "dashboard-credentials.txt")
+        with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600),
+                  "w", encoding="utf-8") as fh:
+            fh.write(f"https://{cfg.platform_host}/\n"
+                     f"username: {username}\npassword: {password}\n\n"
+                     + ("Rotated at teardown.\n" if rotated else
+                        "Fixed QA credentials, left in place by design.\n"))
+        return {"rotated": rotated, "username": username}
 
     # ----------------------------------------------------------------- G --
     @runner.phase("report", "Redaction self-test, then write the report",

@@ -216,9 +216,11 @@ def auth_change_password():
     if new_password != confirm:
         return jsonify({'success': False, 'error': 'mismatch',
                         'message': 'The two passwords do not match.'}), 400
-    if len(new_password) < 8:
-        return jsonify({'success': False, 'error': 'too_short',
-                        'message': 'Use at least 8 characters.'}), 400
+    # No minimum length here either. Removing it only from /api/auth/setup was
+    # a half-measure: an appliance claimed with a short password could not then
+    # CHANGE it back to one, so any rotation was a one-way door out of the
+    # documented default. Same reasoning as setup — the lockout in
+    # evaluate_login() is the control, not length.
 
     if not auth.set_credential(user, new_password):
         return jsonify({'success': False, 'error': 'store_failed',

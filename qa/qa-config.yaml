@@ -73,6 +73,16 @@ run:
   # local report instead, and nothing leaves the box unless you ask for it.
   llm_summary: false
 
+  # Rotate the qa/123123 dashboard password to a random value at teardown.
+  #
+  # OFF by default: the QA credentials are always qa/123123 so the dashboard
+  # stays usable between runs without digging a password out of a run
+  # directory. Turning this on closes a real exposure -- a six-digit password
+  # on the account gating the dashboard, /api/, uploads and the
+  # /velociraptor/ proxy -- at the cost of that convenience. The ten-attempt
+  # lockout is what stands behind the password either way.
+  revoke_dashboard_account: false
+
   # Keep the acquired memory image after teardown. Off by default because it
   # is multi-GB and full of plaintext credentials scraped from the target's
   # RAM — the single most dangerous artifact a run produces.
