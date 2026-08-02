@@ -410,6 +410,13 @@ fix_source_permissions() {
     # BEGIN shared-secret-hardening  (parity-checked against base.py)
     chmod 600 "${SCRIPT_DIR}/data/velociraptor/server.config.yaml" 2>/dev/null || true
     chmod 600 "${SCRIPT_DIR}/data/velociraptor/api.config.yaml" 2>/dev/null || true
+    # The Velociraptor CLI binary must stay EXECUTABLE. Everything that runs
+    # VQL via `docker exec intact_velociraptor /velociraptor/velociraptor ...`
+    # depends on it -- memory acquisition, flow cancellation -- and when it is
+    # not, the failure surfaces as an opaque "VQL query failed (rc=126)".
+    # Cheap to assert here so a hardening pass can never quietly clear it.
+    [ -f "${SCRIPT_DIR}/data/velociraptor/velociraptor" ] && \
+        chmod 755 "${SCRIPT_DIR}/data/velociraptor/velociraptor" 2>/dev/null || true
     chmod 600 "${SCRIPT_DIR}/data/intact.db" 2>/dev/null || true
     chmod 600 "${SCRIPT_DIR}/data/intact.db-wal" 2>/dev/null || true
     chmod 600 "${SCRIPT_DIR}/data/intact.db-shm" 2>/dev/null || true

@@ -239,6 +239,21 @@ def register(runner, cfg):
                       not reachable, expected="blocked",
                       actual=detail["isolation"][name], note=why)
 
+        # Hardening must not have cleared the execute bit on the Velociraptor
+        # CLI. Every VQL-by-exec path depends on it — memory acquisition, flow
+        # cancellation — and when it is missing the failure surfaces as an
+        # opaque "VQL query failed (rc=126)" from deep inside a pipeline, with
+        # nothing pointing at permissions. The server itself runs from the
+        # image copy and comes up perfectly, so nothing else looks wrong.
+        velo_bin = os.path.join(REPO_DIR, "data", "velociraptor", "velociraptor")
+        if os.path.exists(velo_bin):
+            mode = os.stat(velo_bin).st_mode & 0o777
+            detail["velociraptor_binary_mode"] = oct(mode)
+            ctx.check("the Velociraptor CLI binary is executable",
+                      bool(mode & 0o111), expected="0755", actual=oct(mode),
+                      note="rc=126 from the memory pipeline means this bit is "
+                           "missing")
+
         # The API must reject an unauthenticated caller.
         c = api_lib.Client(cfg.platform_host, tl=tl)
         code = c.status_of("/api/cases")

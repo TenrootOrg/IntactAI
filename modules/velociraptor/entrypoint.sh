@@ -6,8 +6,21 @@ BIND_ADDRESS=${BIND_ADDRESS:-"0.0.0.0"}
 PUBLIC_PATH=${PUBLIC_PATH:-"public"}
 CLIENT_DIR=${CLIENT_DIR:-"/velociraptor/clients"}
 
-# Copy binaries
-cp /opt/velociraptor/linux/velociraptor . && chmod +x velociraptor
+# Copy binaries.
+#
+# `chmod 755`, not `chmod +x`. A symbolic mode with no "who" is masked by the
+# umask -- so under a umask that includes execute bits, `+x` silently leaves
+# the binary non-executable. That is what happened here: the server itself runs
+# from the image copy and came up fine, so nothing looked wrong, while
+# /velociraptor/velociraptor on the bind mount sat at 0644.
+#
+# Everything that shells out to `docker exec intact_velociraptor
+# /velociraptor/velociraptor ... query` then fails with rc=126 (found, not
+# executable). That is the memory-acquisition pipeline and the flow-cancel
+# cleanup path, and the failure surfaces as an opaque "VQL query failed
+# (rc=126)" rather than a permissions error. An explicit numeric mode cannot be
+# masked.
+cp /opt/velociraptor/linux/velociraptor . && chmod 755 velociraptor
 mkdir -p $CLIENT_DIR/linux && cp /opt/velociraptor/linux/velociraptor $CLIENT_DIR/linux/velociraptor_client
 mkdir -p $CLIENT_DIR/mac && cp /opt/velociraptor/mac/velociraptor_client $CLIENT_DIR/mac/velociraptor_client
 mkdir -p $CLIENT_DIR/windows && cp /opt/velociraptor/windows/velociraptor_client* $CLIENT_DIR/windows/
