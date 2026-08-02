@@ -4,3 +4,10 @@
 # pulls exactly that tarball at the release tag. So /tests is present for
 # developers and CI, but absent from every release artifact operators install.
 /tests export-ignore
+
+# Same reasoning for the end-to-end QA harness. It is developer tooling: it
+# wipes and reinstalls the appliance, drives a real Windows endpoint, and
+# carries qa-config.yaml — a credentials template for a sudo password and a
+# domain Administrator password. Shipping that to operators is dead weight at
+# best, and at worst an invitation to fill it in on a production box.
+/qa export-ignore
