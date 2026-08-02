@@ -1664,7 +1664,8 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
     # actually remain, and floor it at the same APPLY_MIN_FREE_GB the rest of
     # the apply path uses.
     try:
-        from .config_validate import APPLY_MIN_FREE_GB, preflight_environment as _pe
+        from .config_validate import (required_free_gb_after_extraction,
+                                      preflight_environment as _pe)
         _remaining = 0
         _images_dir = os.path.join(package_dir, 'images') if package_dir else None
         if _images_dir and os.path.isdir(_images_dir):
@@ -1674,9 +1675,13 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
                         _remaining += os.path.getsize(os.path.join(_images_dir, _fn))
                     except OSError:
                         pass
-        # Each still-present tar gets a second copy in the image store.
-        _need = max(float(APPLY_MIN_FREE_GB),
-                    round(_remaining / (1024 ** 3) * 1.15, 1))
+        # Same sizing as the Phase-1 post-extraction check, and for the same
+        # reason: cleanup_after_load reclaims each tar as its layers land in the
+        # store, so the two copies never coexist for the whole set. Charging
+        # 100% of the staged bytes on top of tars that are already on disk was
+        # the conservative-but-wrong half of the 2026-08-02 disk refusals.
+        _need = (required_free_gb_after_extraction(_images_dir)
+                 if _images_dir else required_free_gb_after_extraction(''))
         _ok2, _errs2 = _pe(logger=None, min_free_gb=_need)
         if not _ok2:
             log(f"Insufficient disk for the remaining modules (~{_need} GiB "
@@ -2681,24 +2686,34 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
             log(f"  Unselected-image prune skipped ({type(_pe_err).__name__}: "
                 f"{_pe_err}) — continuing with the full package", "warning")
 
-    # Second disk check, now sized from THIS package instead of a fixed floor.
-    # The early check ran before extraction, when the real requirement was still
-    # unknown; a big package can clear a 10 GiB floor and then die of ENOSPC
-    # halfway through `docker load`. Advisory-but-blocking here is the right
-    # trade: it fails before the module loop, so nothing is half-applied.
+    # Second disk check. The early one ran before extraction against a fixed
+    # floor; a big package can clear 10 GiB and then die of ENOSPC halfway
+    # through `docker load`. Advisory-but-blocking here is the right trade: it
+    # fails before the module loop, so nothing is half-applied.
+    #
+    # Sized for what is STILL TO COME, not for the whole job. This used to call
+    # required_free_gb_for_manifest(), which budgets package + extracted tree +
+    # loaded images — correct before anything is unpacked, wrong here. By this
+    # point extraction has already happened (verify_upgrade_package above), so
+    # the tarball and the extracted tree are on disk and already subtracted
+    # from `free`; charging for them again double-counts every byte already
+    # spent. That demanded 37.7 GiB from a box with 23.1 GiB free and plenty of
+    # room for the remaining work (2026-08-02, upgrading from 20260726).
+    #
+    # required_free_gb_after_extraction measures the tars actually present, so
+    # it also picks up the unselected-module prune above for free — no need to
+    # re-derive the effective apply set here.
     try:
-        from .config_validate import required_free_gb_for_manifest, preflight_environment as _pe
-        _pkg_bytes = os.path.getsize(package_path) if (package_path and os.path.exists(package_path)) else 0
-        # Size the budget from the EFFECTIVE apply set, not the raw argument —
-        # a force-included 'intact' brings its own multi-GB backend image tar
-        # back into the requirement. Same reason the prune above uses it.
-        _need = required_free_gb_for_manifest(
-            manifest, _pkg_bytes,
-            selected_modules=(sorted(selected_set) if selected_set else selected_modules))
+        from .config_validate import (required_free_gb_after_extraction,
+                                      preflight_environment as _pe)
+        _need = required_free_gb_after_extraction(
+            os.path.join(package_dir, 'images'))
         _ok2, _errs2 = _pe(logger=None, min_free_gb=_need)
         if not _ok2:
-            log(f"Insufficient disk for this package (~{_need} GiB needed, "
-                f"sized from this package rather than a fixed floor):", "error")
+            log(f"Insufficient disk to finish this upgrade (~{_need} GiB "
+                f"still needed to load the staged images; the package and its "
+                f"extracted tree are already on disk and are NOT counted "
+                f"again):", "error")
             for _e in _errs2:
                 log(f"  - {_e}", "error")
             return {"success": False, "status": "failed",

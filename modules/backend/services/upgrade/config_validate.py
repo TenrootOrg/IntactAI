@@ -225,6 +225,50 @@ def required_free_gb_for_manifest(manifest: dict, package_bytes: int = 0,
     return max(float(floor_gb), round(need_gb * 1.15, 1))   # 15% headroom
 
 
+def required_free_gb_after_extraction(images_dir: str,
+                                      floor_gb: int = APPLY_MIN_FREE_GB) -> float:
+    """Disk still needed once the package is ALREADY EXTRACTED, in GiB.
+
+    required_free_gb_for_manifest() sizes the WHOLE job from a clean start:
+    package + extracted tree + loaded images. That is the right answer for the
+    check that runs BEFORE anything is downloaded or unpacked.
+
+    It is the wrong answer for the check that runs after extraction, which is
+    where it was being used. By then the tarball and the extracted tree are
+    both on disk and have already been subtracted from `free` -- so charging
+    for them again compares a from-scratch total against post-extraction free
+    space and double-counts every byte already spent. On a 5.8 GB / 10-module
+    package that demanded 37.7 GiB from a box with 23.1 GiB free and ample room
+    for the work actually remaining (2026-08-02, upgrading 20260726).
+
+    What is genuinely still to come is the docker image store growing as
+    `docker load` runs. And load_all_bundled_images(cleanup_after_load=True)
+    deletes each tar the moment its layers are in the store, so the extracted
+    copy and the store copy never coexist for the whole set -- only for the one
+    tar in flight. Worst case a store copy runs ~1.5x its tar (layers land
+    decompressed where the tar held them compressed), which makes the run's net
+    growth about half the staged bytes, plus one tar's transient peak:
+
+        need = staged_bytes * 0.5 + largest_single_tar
+
+    Measured from the tars ACTUALLY on disk rather than from the manifest, so
+    it automatically reflects the unselected-module prune and any tar a
+    previous attempt already loaded and reclaimed. The floor still applies:
+    module upgrades do more than load images (pg_dump backups, compose churn,
+    rollback snapshots) and that work needs room the image maths cannot see.
+    """
+    import os as _os
+    try:
+        sizes = [_os.path.getsize(_os.path.join(images_dir, f))
+                 for f in _os.listdir(images_dir) if f.endswith('.tar')]
+    except OSError:
+        return float(floor_gb)        # unreadable -> fall back to the floor
+    if not sizes:
+        return float(floor_gb)        # nothing left to load
+    need = sum(sizes) * 0.5 + max(sizes)
+    return max(float(floor_gb), round(need / (1024 ** 3) * 1.15, 1))
+
+
 def preflight_environment(logger: Callable = None,
                           min_free_gb: int = APPLY_MIN_FREE_GB) -> Tuple[bool, List[str]]:
     """Pre-upgrade environment check. Never raises. Returns (ok, errors).
