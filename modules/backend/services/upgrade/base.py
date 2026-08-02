@@ -21,6 +21,68 @@ HOST_PATH = os.environ.get('INTACT_HOST_PATH', WORKDIR)
 MODULES_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+# Secret files that install.sh's blanket `chmod 644` sweep resets to
+# world-readable on every run, and which this Python path must harden too.
+#
+# The in-UI upgrade NEVER executes install.sh (see intact.py's
+# "install.sh's bash bootstrap never runs again"), so an installer-only fix
+# leaves every upgraded box exposed. This list must stay byte-for-byte in step
+# with the `chmod 600` block in install.sh's fix_source_permissions();
+# tests/test_secret_files_are_not_world_readable.py asserts the two sets are
+# equal, because the realistic failure is someone adding a secret to one side
+# only and upgraded boxes silently staying at 644.
+#
+# NOTE: IRIS secrets are deliberately absent. install.sh chmods them 600 while
+# this path chmods them 644 (iris.py:399-423) to keep iris_app — which runs as
+# nobody/65534 — able to read them. Reconciling that is a separate ticket;
+# pulling them in here would risk the documented crashloop.
+_SECRET_PATHS_0600 = (
+    "data/velociraptor/server.config.yaml",   # CA private key: signs every endpoint
+    "data/velociraptor/api.config.yaml",      # API client private key
+    "data/intact.db",                         # `secrets` table is plaintext
+    "data/intact.db-wal",                     # same rows as the DB
+    "data/intact.db-shm",
+    "modules/timesketch/config/timesketch.conf",         # SECRET_KEY, OPENSEARCH_PASSWORD
+    "modules/timesketch/config/timesketch_legacy.conf",
+    "data/auth/audit.jsonl",                  # login / lockout history
+)
+
+
+def harden_secret_permissions(logger: Callable = None) -> Dict:
+    """chmod 600 the secret files the 644 sweep would otherwise leave open.
+
+    Safe at 600 because every consuming container runs as root and root ignores
+    file mode bits (verified with `docker top`, not Config.User). Runs as root
+    inside intact_backend, so the resulting host files are root:root — still
+    readable by those same root containers.
+
+    Best-effort by design: a chmod failure must never abort an upgrade, so every
+    path is attempted independently and errors are swallowed per-file.
+    """
+    log = logger or (lambda m, l="info": None)
+    hardened, skipped = [], []
+    for rel in _SECRET_PATHS_0600:
+        path = os.path.join(WORKDIR, rel)
+        try:
+            if not os.path.exists(path):
+                continue          # not every deployment has every file
+            if (os.stat(path).st_mode & 0o777) == 0o600:
+                skipped.append(rel)
+                continue
+            os.chmod(path, 0o600)
+            hardened.append(rel)
+        except Exception:
+            # Never fatal. A permission error here is far less bad than a
+            # half-finished upgrade.
+            continue
+    if hardened:
+        log(f"  Hardened {len(hardened)} secret file(s) to 0600: "
+            f"{', '.join(hardened)}", "success")
+    elif skipped:
+        log(f"  Secret file permissions already correct ({len(skipped)} file(s))", "info")
+    return {"hardened": hardened, "already_correct": skipped}
+
+
 _SECRET_ARG_PATTERNS = (
     # `-e NAME=secret` / bare `NAME=secret` env assignments, where NAME looks
     # like a credential. This is the shape that actually leaked: iris.py builds

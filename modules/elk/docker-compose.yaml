@@ -24,7 +24,15 @@ services:
       - elasticsearch_data:/usr/share/elasticsearch/data
     ports:
       - "9200:9200"
-      - "9300:9300"
+      # 9300 (the inter-node TRANSPORT port) is deliberately NOT published.
+      # This is a discovery.type=single-node cluster, so there is no peer node
+      # to talk to and no legitimate external consumer -- transport is only for
+      # node-to-node traffic and remote-cluster search. Elastic's own multi-node
+      # compose publishes 9200 on one node and nothing at all on the others;
+      # 9300 appears in no official Elastic example. It was reachable from the
+      # LAN with xpack.security.transport.ssl.enabled=false below.
+      # Container-to-container traffic is unaffected: that uses intact_network,
+      # not the published port.
     restart: unless-stopped
     networks:
       - intact_network

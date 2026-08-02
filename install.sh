@@ -369,6 +369,54 @@ fix_source_permissions() {
     [[ -f "${SCRIPT_DIR}/data/azure_cert.pfx" ]] && chmod 600 "${SCRIPT_DIR}/data/azure_cert.pfx" 2>/dev/null || true
     [[ -f "${SCRIPT_DIR}/data/azure_cert.pfx.pass" ]] && chmod 600 "${SCRIPT_DIR}/data/azure_cert.pfx.pass" 2>/dev/null || true
 
+    # ---- secrets created AFTER the exclusion list above was written ---------
+    # These are NOT umask drift: the blanket `chmod 644` sweep above has no
+    # exclusion for data/velociraptor/, data/intact.db, modules/*/config/ or
+    # data/auth/, so it ACTIVELY reset them to world-readable on every install
+    # and upgrade. Hand-fixing the modes never survived the next run.
+    #
+    # Hardened here as a positive pass rather than by adding more exclusions:
+    # an exclusion list only protects secrets that existed when it was written,
+    # and this file has now been bitten by that twice (the gitleaks pre-commit
+    # hook was the other). A corrective pass means a newly added secret ends up
+    # restrictive by default.
+    #
+    # What is at stake:
+    #   server.config.yaml  - the Velociraptor CA private key, which signs every
+    #                         enrolled endpoint. World-readable = anyone local
+    #                         can mint client certs and impersonate the server.
+    #   api.config.yaml     - API client private key (arbitrary VQL on all hosts)
+    #   intact.db           - the `secrets` table is plaintext and holds
+    #                         auth_session_key, which SIGNS the dashboard session
+    #                         cookie. Readable = forge a session, bypassing the
+    #                         login, the lockout and the audit log entirely.
+    #                         -wal/-shm carry the same rows and are recreated by
+    #                         SQLite, so they must be hardened alongside it.
+    #   timesketch*.conf    - live SECRET_KEY + OPENSEARCH_PASSWORD
+    #   auth/audit.jsonl    - login/lockout history
+    #
+    # Safe at 600: every consuming container runs as root (verified with
+    # `docker top`, not Config.User) and root ignores mode bits. Keep this list
+    # in sync with _SECRET_PATHS_0600 in
+    # modules/backend/services/upgrade/base.py — the in-UI upgrade never runs
+    # install.sh, so both paths must harden the same files. A parity test
+    # enforces it (tests/test_secret_files_are_not_world_readable.py).
+    #
+    # IRIS secrets are deliberately NOT here: install.sh and the upgrade path
+    # disagree on their mode (600 vs 644) for a documented reason — see
+    # services/upgrade/iris.py:399-423. Adding them here would risk the
+    # iris_app crashloop.
+    # BEGIN shared-secret-hardening  (parity-checked against base.py)
+    chmod 600 "${SCRIPT_DIR}/data/velociraptor/server.config.yaml" 2>/dev/null || true
+    chmod 600 "${SCRIPT_DIR}/data/velociraptor/api.config.yaml" 2>/dev/null || true
+    chmod 600 "${SCRIPT_DIR}/data/intact.db" 2>/dev/null || true
+    chmod 600 "${SCRIPT_DIR}/data/intact.db-wal" 2>/dev/null || true
+    chmod 600 "${SCRIPT_DIR}/data/intact.db-shm" 2>/dev/null || true
+    chmod 600 "${SCRIPT_DIR}/modules/timesketch/config/timesketch.conf" 2>/dev/null || true
+    chmod 600 "${SCRIPT_DIR}/modules/timesketch/config/timesketch_legacy.conf" 2>/dev/null || true
+    chmod 600 "${SCRIPT_DIR}/data/auth/audit.jsonl" 2>/dev/null || true
+    # END shared-secret-hardening
+
     # Restore execute permission on scripts
     chmod +x "${SCRIPT_DIR}/install.sh" 2>/dev/null || true
     chmod +x "${SCRIPT_DIR}/lib/"*.sh 2>/dev/null || true

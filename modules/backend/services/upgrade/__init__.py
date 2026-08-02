@@ -30,6 +30,7 @@ from .base import (
     get_package_info,
     ensure_module_enabled_in_config,
     sweep_stale_upgrade_staging,
+    harden_secret_permissions,
 )
 
 # Module-specific upgrade functions
@@ -2291,6 +2292,23 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
     # failed-module list, was never updated to skip them.
     all_success = all(r.get('success', False) for k, r in results.items()
                       if not isinstance(r, str) and not k.startswith('_'))
+
+    # Last thing before returning: re-assert 0600 on the secret files. Runs here,
+    # after every module handler, so anything a handler regenerated (Velociraptor
+    # configs, the Timesketch confs) is caught rather than left world-readable.
+    #
+    # This exists because the in-UI upgrade never executes install.sh, so the
+    # equivalent hardening block there does NOT protect an upgraded box. Both
+    # paths must do it; a parity test keeps the two lists identical.
+    #
+    # Best-effort and deliberately outside the success calculation — a chmod
+    # failure must not turn a clean upgrade into a failed one.
+    try:
+        harden_secret_permissions(logger=log)
+    except Exception as _e:
+        log(f"  (secret permission hardening skipped: "
+            f"{type(_e).__name__}: {_e})", "warning")
+
     return {
         "success": all_success,
         "status": overall_status,
