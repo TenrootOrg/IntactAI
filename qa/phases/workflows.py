@@ -345,8 +345,13 @@ def register(runner, cfg):
                 ctx.set(memory_image_paths=[det[key]])
                 break
 
-        return {"run_id": run_id, "plugins": plugins,
-                "yara_ran": yara_ran, "yara_hits": hit_count,
+        return {"run_id": run_id,
+                "plugins": plugins,
+                "plugins_with_results": sorted(with_results),
+                "mode": mode,
+                "yara_expected": yara_expected,
+                "yara_ran": yara_ran,
+                "evidence_id": det.get("evidence_id"),
                 "status": (run or {}).get("status")}
 
     # ----------------------------------------------------------------- D --
