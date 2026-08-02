@@ -322,6 +322,12 @@ def _write_report(ctx, cfg):
     return path
 
 
+# The one file whose entire purpose is to hold the credential. Scanning it and
+# reporting a leak is a false positive that makes the leak check cry wolf —
+# which is worse than not having it, because a real hit then looks routine.
+_DELIBERATE_CREDENTIAL_FILES = {"dashboard-credentials.txt"}
+
+
 def _scan_for_secrets(run_dir, secrets, max_bytes=8_000_000):
     """Grep the run directory for any configured credential.
 
@@ -335,6 +341,8 @@ def _scan_for_secrets(run_dir, secrets, max_bytes=8_000_000):
     for root, _dirs, files in os.walk(run_dir):
         for fn in files:
             path = os.path.join(root, fn)
+            if fn in _DELIBERATE_CREDENTIAL_FILES:
+                continue
             if fn.endswith((".zip", ".raw", ".mem", ".dmp", ".msi", ".exe")):
                 continue
             try:

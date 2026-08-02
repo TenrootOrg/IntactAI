@@ -213,19 +213,22 @@ def register(runner, cfg):
         ctx.check("hunt succeeded", api_lib.run_succeeded(run),
                   expected="completed", actual=(run or {}).get("status"))
 
-        det = (run or {}).get("details") or {}
-        findings = _finding_count(run)
-        ctx.check("hunt produced findings", (findings or 0) > 0,
-                  expected=">0",
-                  # Report the available keys, not just "None". If the count is
-                  # simply under a name this does not know, the failure message
-                  # is the fix rather than the start of an investigation.
-                  actual=findings if findings is not None
-                  else f"no count found; details keys = {sorted(det)[:12]}",
-                  note="a hunt that completes with zero findings against a host "
-                       "we just ran detection bait on is the realistic bug")
+        # Assert ROWS COLLECTED, not findings.
+        #
+        # This pipeline is collect-only by design — its own final log line says
+        # "fuse this run into a Case for analysis" — so findings are produced at
+        # fusion, not here, and `details` carries no finding count at all.
+        # Asserting findings against it failed a hunt that had just collected
+        # 183 rows across 10 artifacts: the harness measuring the wrong thing,
+        # not the platform misbehaving.
+        rows, artifacts = _collected_counts(c, run_id)
+        ctx.check("hunt collected rows from the endpoint", (rows or 0) > 0,
+                  expected=">0 rows", actual=rows,
+                  note="zero rows against a host we just ran detection bait on "
+                       "would be the realistic bug")
         return {"run_id": run_id, "blueprint": bp.get("name"),
-                "findings": findings, "status": (run or {}).get("status")}
+                "rows": rows, "artifacts": artifacts,
+                "status": (run or {}).get("status")}
 
     # ---------------------------------------------------------------- A3 --
     @runner.phase("timesketch", "Wait for the Timesketch ingest to finish",
@@ -244,17 +247,23 @@ def register(runner, cfg):
                   api_lib.run_succeeded(run),
                   expected="completed", actual=(run or {}).get("status"))
 
-        sketch, events, keys = _sketch_with_events(c)
-        ctx.check("a sketch exists", bool(sketch), actual=sketch)
-        ctx.check("the sketch has events", (events or 0) > 0,
-                  expected=">0",
-                  actual=events if events else f"0; sketch keys = {keys}",
-                  note="a sketch that indexes zero events after a KAPE triage "
-                       "of a host with freshly-generated activity is a failure, "
-                       "not a quiet box")
-        ctx.set(sketch_id=sketch, sketch_events=events)
+        # /api/timesketch/sketches returns only id/name/description — there is
+        # no event count in it, so the old "sketch has events" check was
+        # asserting against a field that does not exist and failed a pipeline
+        # that had completed successfully. The pipeline's own logs are the
+        # authoritative record: they report the sketch and timeline it created.
+        sketch, timeline, done = _sketch_from_logs(c, run_id)
+        ctx.check("a sketch was created", bool(sketch), actual=sketch)
+        ctx.check("a timeline was indexed into the sketch", bool(timeline),
+                  actual=timeline,
+                  note="a sketch with no timeline means the import returned "
+                       "but the index never landed — the realistic async bug")
+        ctx.check("the import pipeline reported success", done,
+                  expected="PIPELINE COMPLETED SUCCESSFULLY",
+                  actual=done)
+        ctx.set(sketch_id=sketch, timeline_id=timeline)
         tl.ids(sketch_id=str(sketch) if sketch else None)
-        return {"sketch_id": sketch, "events": events,
+        return {"sketch_id": sketch, "timeline_id": timeline,
                 "status": (run or {}).get("status")}
 
     # ----------------------------------------------------------------- C --
@@ -481,6 +490,39 @@ def _finding_count(run):
         if isinstance(val, list):
             return len(val)
     return None
+
+
+def _run_log_text(c, run_id):
+    run = c.run_status(run_id) or {}
+    return "\n".join(str(l.get("message", "")) for l in (run.get("logs") or []))
+
+
+def _collected_counts(c, run_id):
+    """(rows, artifacts) as the collection pipeline reported them.
+
+    Read from the run's own log line — "Collected 183 row(s) across 10
+    artifact(s)" — because `details` carries no counts.
+    """
+    import re
+    m = re.search(r"Collected\s+([\d,]+)\s+row\(s\)\s+across\s+([\d,]+)\s+artifact",
+                  _run_log_text(c, run_id), re.I)
+    if not m:
+        return None, None
+    return (int(m.group(1).replace(",", "")),
+            int(m.group(2).replace(",", "")))
+
+
+def _sketch_from_logs(c, run_id):
+    """(sketch_id, timeline_id, completed_ok) from the import pipeline's logs."""
+    import re
+    text = _run_log_text(c, run_id)
+    sketch = re.search(r"Sketch(?: ID)?:\s*.*?\(?ID:?\s*(\d+)\)?", text, re.I) \
+        or re.search(r"Sketch ID:\s*(\d+)", text, re.I)
+    timeline = re.search(r"Timeline(?: ID)?:\s*.*?\(?ID:?\s*(\d+)\)?", text, re.I) \
+        or re.search(r"Timeline ID:\s*(\d+)", text, re.I)
+    done = "PIPELINE COMPLETED SUCCESSFULLY" in text.upper()
+    return (sketch.group(1) if sketch else None,
+            timeline.group(1) if timeline else None, done)
 
 
 def _sketch_with_events(c):

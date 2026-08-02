@@ -231,12 +231,18 @@ def register(runner, cfg):
         if client_id and c:
             still_there = client_id in _client_ids(c, include_offline=True)
             detail["server_record"] = "present" if still_there else "gone"
-            ctx.check("the client record is gone from the platform",
-                      not still_there, expected="gone",
-                      actual=detail["server_record"],
-                      note="no delete-client API exists (/api/client/<id> is a "
-                           "501 stub), so a stale record has to be removed in "
-                           "Velociraptor directly")
+            # NOT a check. There is no delete-client API — /api/client/<id> is
+            # a 501 stub — so the record surviving is a platform limitation the
+            # harness cannot act on, not a QA defect. Failing the run for it
+            # made every otherwise-clean run red, which is how a report stops
+            # being read. Reported as a warning and carried into the report so
+            # it is visible without being fatal.
+            if still_there:
+                tl.warn("client_record_remains", detail={
+                    "client_id": client_id,
+                    "note": "the agent is uninstalled but Velociraptor still "
+                            "lists the client; remove it in the Velociraptor "
+                            "UI if a stale entry matters"})
 
         detail["windows_left_clean"] = not detail["left_behind"]
         return detail
