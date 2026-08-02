@@ -1394,7 +1394,8 @@ def _stage_binaries_for_build(
 
         if ok:
             if not dest.endswith('.msi'):
-                run_command(f"chmod +x {dest}", logger=log)
+                # Explicit mode: `chmod +x` is umask-masked (see velo_bin below).
+                run_command(f"chmod 755 {dest}", logger=log)
             staged.append(rel_dest)
             if is_required:
                 linux_ok = True
@@ -1705,7 +1706,17 @@ def upgrade_velociraptor(version: str, logger: Callable = None,
         staged_linux = os.path.join(work_dir, 'clients', 'linux', 'velociraptor')
         if os.path.exists(staged_linux):
             run_command(f"cp {staged_linux} {velo_bin}", logger=log)
-            run_command(f"chmod +x {velo_bin}", logger=log)
+            # `chmod 755`, NOT `chmod +x`. A symbolic mode with no "who" is
+            # masked by the umask, so under a umask carrying execute bits this
+            # silently leaves the binary non-executable -- and every VQL call
+            # made via `docker exec intact_velociraptor /velociraptor/
+            # velociraptor ... query` then fails rc=126 (found, not
+            # executable). That takes out memory acquisition and the
+            # flow-cancel path, while the Velociraptor SERVER stays healthy
+            # because it runs from the image's own copy, so nothing looks
+            # wrong. Same bug was fixed in modules/velociraptor/entrypoint.sh;
+            # this is the upgrade path that could reintroduce it.
+            run_command(f"chmod 755 {velo_bin}", logger=log)
 
         # Rebuild container — offline-safe now (COPY-only Dockerfile).
         log("Rebuilding container...", "info")
