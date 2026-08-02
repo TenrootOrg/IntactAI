@@ -351,7 +351,8 @@ fix_source_permissions() {
     # options.github_token (a real GitHub PAT), the dashboard login and every
     # module password. It was landing at 664/644 — readable by every local
     # account on the box — because the sweep above treats it as ordinary source.
-    # config.yaml.example is the tracked template and stays world-readable.
+    # config.yaml is tracked but sanitized on commit, so git only ever holds
+    # shipping defaults; the live file here still needs 600.
     [[ -f "${SCRIPT_DIR}/config.yaml" ]] && chmod 600 "${SCRIPT_DIR}/config.yaml" 2>/dev/null || true
     [[ -f "${SCRIPT_DIR}/modules/nginx/ssl/nginx-cert.key" ]] && chmod 640 "${SCRIPT_DIR}/modules/nginx/ssl/nginx-cert.key" 2>/dev/null || true
     # No htpasswd override needed any more. nginx used to evaluate auth_basic in

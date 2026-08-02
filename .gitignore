@@ -77,11 +77,9 @@ data/auth/
 # them, and the installer rewrites it through yaml.dump anyway, so a tracked copy
 # also lost all of its documentation comments on every install.
 #
-# config.yaml.example is what ships. lib/config.sh:check_config() seeds
+# config.yaml is TRACKED; scripts/git-hooks/sanitize-config-yaml.sh resets
 # config.yaml from it on a fresh checkout, and the backend image is built from
 # the example so no operator secret is ever baked into an image layer.
-config.yaml
-!config.yaml.example
 
 # Certificates (generated on install)
 modules/iris/config/certificates/rootCA/*

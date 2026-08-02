@@ -57,7 +57,7 @@ RUN pip install --no-cache-dir --upgrade pip>=26.0 wheel>=0.46.2
 # install_deps.py below reads it to decide which module dependencies to install.
 # The template ships every module `enabled: true`, so this installs a superset —
 # which also makes the image reproducible instead of varying by build host.
-COPY config.yaml.example /app/config.yaml
+COPY config.yaml /app/config.yaml
 
 # Copy all requirements files and install script
 COPY modules/backend/requirements*.txt /app/
@@ -80,7 +80,7 @@ COPY modules/backend/config/ /app/config/
 
 # Re-copy the template after the source layers (see the note above — the
 # operator's real config.yaml is bind-mounted over this at runtime).
-COPY config.yaml.example /app/config.yaml
+COPY config.yaml /app/config.yaml
 
 # Create logs directory
 RUN mkdir -p /app/logs

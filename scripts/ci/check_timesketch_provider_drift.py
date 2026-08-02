@@ -54,8 +54,8 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 def _default_config():
     """config.yaml is the operator's own file and is not tracked in git (GitHub
     PAT, dashboard login, module passwords), so a CI checkout — where this runs —
-    has only config.yaml.example. Both carry the `versions:` pin this reads."""
-    for name in ('config.yaml', 'config.yaml.example'):
+    has config.yaml tracked, carrying the `versions:` pin this reads."""
+    for name in ('config.yaml',):
         candidate = os.path.join(REPO_ROOT, name)
         if os.path.isfile(candidate):
             return candidate

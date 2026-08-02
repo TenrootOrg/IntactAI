@@ -1042,42 +1042,10 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     ignore=shutil.ignore_patterns(
                         '__pycache__', '*.pyc', '.env*', '*.db*',
                         '.git', 'data', 'backups',
-                        # config.yaml is the OPERATOR's live file: it holds
-                        # options.github_token (a real ghp_ PAT), the dashboard
-                        # login and every module password. In CI this is moot --
-                        # a clean tag checkout has no config.yaml -- but this
-                        # packager also runs LOCALLY, where it does exist, and
-                        # copying it would ship that operator's PAT to everyone
-                        # who downloads the release. Excluded here and
-                        # regenerated from the template just below.
-                        'config.yaml',
                     ),
                 )
                 log("  Full repo copied", "success")
 
-                # Ship the template AS config.yaml.
-                #
-                # config.yaml is gitignored, so a release built from a clean
-                # checkout used to contain only config.yaml.example -- meaning
-                # whoever extracted the package had no config.yaml to edit
-                # before running install.sh, and install.sh's own "review it
-                # before continuing" advice was impossible to follow.
-                #
-                # The template is safe to ship under that name: empty
-                # github_token, no dashboard block, default module passwords,
-                # first_login: true. Writing it here (rather than copying
-                # whatever was on the build machine) means a local build is safe
-                # by construction, not by remembering.
-                _pkg_root = f"{package_dir}/source/intact"
-                _tmpl = os.path.join(_pkg_root, 'config.yaml.example')
-                _out = os.path.join(_pkg_root, 'config.yaml')
-                if os.path.isfile(_tmpl):
-                    shutil.copyfile(_tmpl, _out)
-                    log("  config.yaml written from config.yaml.example "
-                        "(ready to edit before install)", "success")
-                else:
-                    log("  config.yaml.example missing — package ships without "
-                        "a config.yaml; install.sh will seed one", "warning")
 
                 # Mirror the historical `source/backend` and `source/frontend`
                 # entry points so the apply side (services/upgrade/intact.py +

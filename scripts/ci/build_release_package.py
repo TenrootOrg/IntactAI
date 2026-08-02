@@ -66,7 +66,7 @@ def platform_config_path(must_exist: bool = True):
 
     config.yaml is the OPERATOR's file and is not tracked in git — it holds
     options.github_token (a real GitHub PAT), the dashboard login and every
-    module password, so it is gitignored and config.yaml.example is what ships.
+    module password, so the pre-commit hook resets the staged copy to defaults.
     This builder runs in CI from a plain checkout, where only the template
     exists; it is also run locally, where a real config.yaml does and better
     reflects that box's pins. Prefer the real file, fall back to the template.
@@ -75,13 +75,13 @@ def platform_config_path(must_exist: bool = True):
     `versions.backend` pin it stamps — lives in both.
     """
     root = os.environ.get("INTACT_PATH", "/app/workdir")
-    for name in ("config.yaml", "config.yaml.example"):
+    for name in ("config.yaml",):
         candidate = os.path.join(root, name)
         if os.path.isfile(candidate):
             return candidate
     if must_exist:
         raise FileNotFoundError(
-            f"neither config.yaml nor config.yaml.example found under {root} — "
+            f"config.yaml not found under {root} — "
             f"cannot resolve the release's version pins")
     return None
 

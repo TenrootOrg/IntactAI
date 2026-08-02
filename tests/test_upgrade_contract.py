@@ -27,10 +27,10 @@ def _config_yaml():
 
     config.yaml is the operator's own file and is gitignored (it holds the GitHub
     PAT, the dashboard login and every module password), so a fresh checkout — CI
-    — has only config.yaml.example. Both declare the versions: block this file
+    — has config.yaml tracked. It declares the versions: block this file
     asserts on.
     """
-    for name in ("config.yaml", "config.yaml.example"):
+    for name in ("config.yaml",):
         path = os.path.join(ROOT, name)
         if os.path.isfile(path):
             return path

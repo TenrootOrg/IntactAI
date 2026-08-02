@@ -1535,13 +1535,13 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
     # bundle the wrong opensearch image. Merge is text-level so
     # operator-local fields (domain, passwords, modules.*.enabled)
     # outside the versions: block are preserved verbatim.
-    # Prefer the release's config.yaml.example: config.yaml is no longer tracked
+    # The release's tracked config.yaml carries the versions: block
     # (it is the operator's own file — PAT, dashboard login, module passwords), so
     # a package built from a current release ships only the template. Fall back to
     # config.yaml so packages built from an older release still merge their pins.
     new_config_path = None
     if os.path.isdir(intact_root):
-        for candidate in ('config.yaml.example', 'config.yaml'):
+        for candidate in ('config.yaml',):
             path = os.path.join(intact_root, candidate)
             if os.path.isfile(path):
                 new_config_path = path

@@ -109,4 +109,20 @@ if [[ $fail -ne 0 ]]; then
     echo "    git commit --no-verify" >&2
     exit 1
 fi
+
+# config.yaml is TRACKED (there is no config.yaml.example any more) so that a
+# clone or a downloaded release has a ready-to-edit file. It is also the
+# operator's live file, accumulating a real ghp_ PAT and every module password.
+#
+# Rather than block the commit, rewrite the STAGED copy back to shipping
+# defaults — the operator keeps their working file, and git only ever sees the
+# sanitized version. Runs AFTER the gitleaks gate above so a genuinely novel
+# secret is still blocked rather than silently normalized away.
+"${repo_root}/scripts/git-hooks/sanitize-config-yaml.sh" || {
+    echo "config.yaml sanitizer failed — refusing to commit rather than risk" >&2
+    echo "publishing a live credential. Fix the hook or use --no-verify only" >&2
+    echo "if you are certain config.yaml holds no secret." >&2
+    exit 1
+}
+
 exit 0

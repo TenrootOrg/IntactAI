@@ -8,25 +8,21 @@
 
 check_config() {
     # config.yaml is the OPERATOR'S file and is deliberately not tracked in git
-    # (see .gitignore): it accumulates the GitHub PAT, the dashboard login and
-    # every module password, so a tracked copy meant one careless `git add` away
-    # from publishing them — and it was previously baked into the backend image
-    # for the same reason. What ships is config.yaml.example. Seed from it on a
-    # fresh checkout so a first install still just works.
+    # config.yaml is TRACKED. There is no config.yaml.example any more: the
+    # pre-commit hook (scripts/git-hooks/sanitize-config-yaml.sh) rewrites the
+    # STAGED copy back to shipping defaults on every commit -- empty
+    # github_token, module passwords 123123, first_login: true -- so what is in
+    # git is always the template while the operator's working file keeps their
+    # real values. That means a clone or an extracted release already has a
+    # config.yaml to edit before install, which the old seed-on-first-run dance
+    # could not provide (it created the file and then immediately carried on,
+    # so its own "review it before continuing" advice was impossible to follow).
     if [[ ! -f "$CONFIG_FILE" ]]; then
-        local template="${SCRIPT_DIR}/config.yaml.example"
-        if [[ -f "$template" ]]; then
-            cp "$template" "$CONFIG_FILE"
-            # Operator secrets land here, so don't leave it group/world-readable.
-            chmod 600 "$CONFIG_FILE" 2>/dev/null || true
-            log_warn "No config.yaml found — created one from config.yaml.example"
-            log_warn "  Review it before continuing: ${CONFIG_FILE}"
-            log_warn "  At minimum set 'domain' to this host's address."
-        else
-            log_error "Config file not found: $CONFIG_FILE"
-            log_error "  And no config.yaml.example to seed it from."
-            exit 1
-        fi
+        log_error "Config file not found: $CONFIG_FILE"
+        log_error "  config.yaml is tracked in git — a complete checkout or"
+        log_error "  release package always contains one. Restore it with:"
+        log_error "    git checkout -- config.yaml"
+        exit 1
     fi
     log_success "Config file found"
 }
