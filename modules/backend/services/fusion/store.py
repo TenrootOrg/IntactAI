@@ -758,13 +758,27 @@ def _memory_contribution(rid, det):
     if plugins is None:
         from services.memory.volweb_client import VolWebClient
         from services.memory.analyzers import _build_plugin_payload, _build_yara_payload
-        client = VolWebClient()
         evid = det.get("evidence_id")
-        plugins, _w = _build_plugin_payload(client, evid)
-        try:                              # yara is optional — never lose plugins over it
-            hits, _t = _build_yara_payload(client, evid)
-        except Exception:
-            hits = []
+        if not evid:
+            # A memory run that never produced evidence — cancelled during
+            # acquisition, or failed before VolWeb registered anything. Without
+            # this guard the id flows straight into
+            # `/api/evidence/{evid}/plugins/`, requesting the literal path
+            # `/api/evidence/None/plugins/`, which 404s. Fusion then surfaces a
+            # page of HTML in a case warning, so a run with simply nothing to
+            # contribute reads like a VolWeb outage.
+            #
+            # Falls through with empty payloads rather than returning early, so
+            # the asset anchor is still created and the return shape stays
+            # whatever map_memory produces.
+            plugins, hits = [], []
+        else:
+            client = VolWebClient()
+            plugins, _w = _build_plugin_payload(client, evid)
+            try:                          # yara is optional — never lose plugins over it
+                hits, _t = _build_yara_payload(client, evid)
+            except Exception:
+                hits = []
     return map_memory({"plugins": plugins, "yara": hits, "host": host},
                       run_id=rid, asset=asset, hostname=host)
 
