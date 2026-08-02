@@ -74,9 +74,12 @@ def auth_setup():
     if password != confirm:
         return jsonify({'success': False, 'error': 'mismatch',
                         'message': 'The two passwords do not match.'}), 400
-    if len(password) < 8:
-        return jsonify({'success': False, 'error': 'too_short',
-                        'message': 'Use at least 8 characters.'}), 400
+    # No minimum length. Removed deliberately at the operator's request so the
+    # shipped default (123123) can be used, matching the module passwords in
+    # config.yaml. The appliance's real protection against a guessed dashboard
+    # password is the lockout in evaluate_login() -- ten wrong attempts and the
+    # account is locked -- not length. Operators who want a strong password can
+    # still set one; this only stops the appliance refusing a short one.
 
     # ORDER IS SECURITY-CRITICAL: close setup FIRST, then store the credential.
     # The reverse order means a failed config write leaves the setup page still

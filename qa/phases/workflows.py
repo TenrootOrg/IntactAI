@@ -28,7 +28,19 @@ from lib import api as api_lib
 
 # Fast-QA profile. Breadth traded for speed on purpose, and the report says so
 # rather than implying a thorough examination.
-KAPE_TARGET = "_KapeTriage"
+#
+# The shipped "Forensic Timeline: Event Logs Only" blueprint, which sets
+# kape_target: EventLogs. Chosen BY ID rather than by name matching: the first
+# version searched for "kape"/"triage"/"windows" and duly selected "Forensic
+# Timeline: Full Triage" (_KapeTriage), the slowest of the three — it collects
+# the full filesystem triage set where this run only needs event logs. That
+# turned a couple of minutes of collection into tens.
+#
+# Event logs are also exactly what this QA wants: phase 3 clears them first, so
+# the collected set contains only QA-generated activity and a detection that
+# fires is unambiguously ours.
+TIMESKETCH_BLUEPRINT_ID = "timesketch_event_logs"
+TIMESKETCH_BLUEPRINT_FALLBACK = ("event log", "evtx")
 VOLATILITY_PLUGINS = ["windows.pslist", "windows.malfind"]
 
 
@@ -41,16 +53,31 @@ def register(runner, cfg):
     def kape(ctx):
         c, client_id = ctx.get("client"), ctx.get("client_id")
         bp = _pick_blueprint(c, "/api/blueprints/timesketch",
-                             prefer=("kape", "triage", "windows"))
-        ctx.check("a Timesketch blueprint exists", bool(bp),
-                  note="the shipped default blueprint set should provide one")
+                             by_id=TIMESKETCH_BLUEPRINT_ID,
+                             prefer=TIMESKETCH_BLUEPRINT_FALLBACK)
+        ctx.check("the event-logs Timesketch blueprint exists", bool(bp),
+                  expected=TIMESKETCH_BLUEPRINT_ID,
+                  actual=bp and (bp.get("id"), bp.get("name")),
+                  note="shipped as 'Forensic Timeline: Event Logs Only'")
+
+        # Take the KAPE target FROM the blueprint rather than hardcoding it, so
+        # the run collects exactly what the blueprint says and the two cannot
+        # drift apart.
+        settings = (bp or {}).get("settings") or {}
+        kape_target = settings.get("kape_target") or "EventLogs"
 
         payload = {"client_id": client_id,
                    "client_name": ctx.get("hostname") or client_id,
-                   "kape_target": KAPE_TARGET}
+                   "kape_target": kape_target}
         if bp:
             payload["blueprint_id"] = bp.get("id") or bp.get("blueprint_id")
             payload["blueprint"] = bp.get("name")
+
+        ctx.check("collecting event logs only, not a full triage",
+                  kape_target == "EventLogs", expected="EventLogs",
+                  actual=kape_target,
+                  note="_KapeTriage collects the whole filesystem triage set "
+                       "and takes an order of magnitude longer")
 
         body = c.post("/api/velociraptor/timesketch", payload)
         run_id = body.get("run_id") if isinstance(body, dict) else None
@@ -62,7 +89,7 @@ def register(runner, cfg):
         ctx.set(kape_run_id=run_id, kape_flow_id=flow_id)
         tl.ids(kape_run_id=run_id, kape_flow_id=flow_id)
         return {"run_id": run_id, "flow_id": flow_id,
-                "kape_target": KAPE_TARGET,
+                "kape_target": kape_target,
                 "blueprint": payload.get("blueprint")}
 
     # ---------------------------------------------------------------- A2 --
@@ -365,18 +392,32 @@ def _safe_get(c, path):
         return None
 
 
-def _pick_blueprint(c, path, prefer=()):
+def _pick_blueprint(c, path, by_id=None, prefer=()):
+    """Select a blueprint: exact id first, then a name substring, then the first.
+
+    Exact id first because name matching is fragile in a way that fails
+    quietly. Searching for "triage" to find a KAPE blueprint selected
+    "Forensic Timeline: Full Triage" over "Event Logs Only" — a valid
+    blueprint, just the slowest one, so the run worked and merely took an order
+    of magnitude longer than intended.
+    """
     body = _safe_get(c, path)
     if body is None:
         return None
     items = body.get("blueprints", body) if isinstance(body, dict) else body
-    if not isinstance(items, list) or not items:
+    items = [it for it in (items or []) if isinstance(it, dict)]
+    if not items:
         return None
+
+    if by_id:
+        for it in items:
+            if (it.get("id") or it.get("blueprint_id")) == by_id:
+                return it
     for want in prefer:
         for it in items:
-            if isinstance(it, dict) and want in (it.get("name") or "").lower():
+            if want in (it.get("name") or "").lower():
                 return it
-    return items[0] if isinstance(items[0], dict) else None
+    return items[0]
 
 
 def _finding_count(run):

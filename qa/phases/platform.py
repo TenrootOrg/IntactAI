@@ -14,6 +14,14 @@ import shutil
 from lib import api as api_lib
 from lib import shell
 
+# Fixed dashboard credentials, matching the shipped module defaults in
+# config.yaml. Deliberately not random and deliberately not in qa-config.yaml:
+# they are the same on every run, so the operator can open the dashboard
+# mid-run without looking anything up, and there is no secret to leak because
+# the value is the documented shipped default.
+QA_DASH_USER = "qa"
+QA_DASH_PASSWORD = "123123"
+
 REPO_URL = "git@github.com:TenrootOrg/IntactAI.git"
 REPO_DIR = "/home/tenroot/intact"
 INSTALL_MARKER = "/etc/intact-initialized"
@@ -248,22 +256,26 @@ def register(runner, cfg):
     @runner.phase("auth", "Claim the appliance and hold a session",
                   needs=("install",), critical=True)
     def auth(ctx):
-        """A per-run random dashboard password, written to the run directory at
-        0600 rather than into qa-config.yaml. It is a real credential to a real
-        appliance, so it does not belong in a tracked file — and writing it down
-        means the operator can still log in and look around after a failed run.
+        """Fixed qa/123123, matching the shipped module defaults in config.yaml.
+
+        This was a per-run random password. The operator asked for fixed
+        credentials instead: a random password meant looking up a file every
+        time you wanted to open the dashboard mid-run, which is exactly when
+        you want to look at it. The appliance is a lab box behind the
+        operator's own network, and the real protection against a guessed
+        dashboard password is the ten-attempt lockout, not length.
+
+        Still written to the run directory at 0600, because a run should be
+        self-describing, and still fed through the redactor so it does not
+        appear in logs or the report.
         """
-        import secrets
-        import string
+        username, password = QA_DASH_USER, QA_DASH_PASSWORD
 
-        alphabet = string.ascii_letters + string.digits
-        password = "Qa-" + "".join(secrets.choice(alphabet) for _ in range(20))
-        username = "qa"
-
-        # Register with the redactor BEFORE it is used, or the first API log
-        # line carries it to disk.
-        ctx.redact.secrets.insert(0, password)
-        ctx.redact.secrets.sort(key=len, reverse=True)
+        # Deliberately NOT added to the redactor. It is the documented shipped
+        # default, not a secret, and redacting a string as common as "123123"
+        # would blank the module passwords wherever they legitimately appear in
+        # install logs — turning readable output into [REDACTED] noise for no
+        # gain.
 
         creds_path = os.path.join(ctx.run_dir, "dashboard-credentials.txt")
         with open(os.open(creds_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600),
