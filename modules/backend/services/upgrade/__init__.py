@@ -1898,6 +1898,39 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
         except Exception:
             pass
 
+    # Provision per-module secrets BEFORE the module loop, not after it.
+    #
+    # refresh_module_compose_file() runs for every sidecar on every upgrade, so
+    # a release shipping new compose files without bumping those modules' pins
+    # writes `env_file: ./secrets/postgres.env` (Timesketch) and
+    # `./secrets/agent.env` (Portainer) onto a box that has neither. This block
+    # creates them -- and it used to sit ~450 lines BELOW, after the very loop
+    # whose compose-up needs them.
+    #
+    # That ordering happens to work for an UPGRADE, because upgrade_timesketch()
+    # calls ensure_postgres_password() itself. It does not work for a FIRST-TIME
+    # install driven by the upgrade: install_timesketch_offline() never calls it,
+    # so `docker compose up` dies with "env file .../secrets/postgres.env not
+    # found" and the module is reported MODULE_FAILED while the run still ends
+    # `completed`. Observed 2026-08-02 installing Timesketch onto a backend-only
+    # intact-20260726 box -- the exact case the comment below already predicted.
+    #
+    # Both helpers are idempotent no-ops once their secret exists, so running
+    # them up here costs nothing and closes the gap for install and upgrade
+    # alike, regardless of pin movement.
+    for _label, _fn, _mod in (
+        ("Portainer agent secret", _ensure_agent_secret, 'portainer'),
+        ("Timesketch DB password", _ensure_ts_pg_password, 'timesketch'),
+    ):
+        try:
+            _dir = os.path.join(WORKDIR, 'modules', _mod)
+            if os.path.isdir(_dir):
+                _fn(_dir if _mod == 'timesketch'
+                    else os.path.join(_dir, '.env'), logger=log)
+        except Exception as _e:
+            log(f"  ({_label} provisioning skipped: "
+                f"{type(_e).__name__}: {_e})", "warning")
+
     try:
         for module_name in upgrade_order:
             if module_name not in modules or module_name in completed_modules:
@@ -2362,18 +2395,6 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
     #
     # Both are idempotent no-ops once their secret exists, so running them here
     # every time is free and closes the gap regardless of pin movement.
-    for _label, _fn, _mod in (
-        ("Portainer agent secret", _ensure_agent_secret, 'portainer'),
-        ("Timesketch DB password", _ensure_ts_pg_password, 'timesketch'),
-    ):
-        try:
-            _dir = os.path.join(WORKDIR, 'modules', _mod)
-            if os.path.isdir(_dir):
-                _fn(_dir if _mod == 'timesketch'
-                    else os.path.join(_dir, '.env'), logger=log)
-        except Exception as _e:
-            log(f"  ({_label} provisioning skipped: "
-                f"{type(_e).__name__}: {_e})", "warning")
 
     return {
         "success": all_success,
