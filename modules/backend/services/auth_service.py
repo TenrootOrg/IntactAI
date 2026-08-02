@@ -556,10 +556,38 @@ def audit(event: str, request=None, username_value: str = None, **extra) -> None
         with _audit_lock:
             os.makedirs(AUTH_DIR, exist_ok=True)
             _rotate_if_needed()
-            with open(AUDIT_LOG, "a", encoding="utf-8") as handle:
+            with _open_audit_append() as handle:
                 handle.write(json.dumps(entry, default=str) + "\n")
     except Exception as exc:
         print(f"[AUTH] Could not write audit log: {exc}", flush=True)
+
+
+def _open_audit_append():
+    """Open the audit log for append, creating it 0600.
+
+    A plain `open(path, "a")` creates with the process umask, which is 022 for
+    the root backend container — so the log lands 0644 and is readable by every
+    account on the host. install.sh chmods it to 0600, but that runs at install
+    time and this file is created on the FIRST AUTH EVENT, which is always
+    afterwards. So the hardening was reliably undone within seconds of the
+    install finishing, and a fresh box always ended up with a world-readable
+    audit log. Found by the QA harness's post-install permission sweep.
+
+    It records usernames, source IPs and user agents for every login, setup and
+    lockout — an attacker-useful map of who administers the appliance and from
+    where.
+
+    The chmod on the existing path is for boxes already carrying a 0644 file
+    from before this fix; without it they stay wrong forever, since the file is
+    only created once.
+    """
+    try:
+        if os.stat(AUDIT_LOG).st_mode & 0o077:
+            os.chmod(AUDIT_LOG, 0o600)
+    except OSError:
+        pass          # does not exist yet, or not ours to chmod — O_CREAT covers it
+    fd = os.open(AUDIT_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    return os.fdopen(fd, "a", encoding="utf-8")
 
 
 # =============================================================================

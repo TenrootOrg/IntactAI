@@ -30,6 +30,18 @@ set -euo pipefail
 
 repo_root=$(git rev-parse --show-toplevel)
 
+# Resolve the Python helper relative to THIS SCRIPT, not to repo_root.
+#
+# Those are not the same directory. `core.hooksPath` points at this repo's
+# scripts/git-hooks, so the hook runs against whatever repository the operator
+# is committing in — and `git rev-parse --show-toplevel` returns THAT repo.
+# Looking for the helper under repo_root therefore failed for every repo except
+# this one, and since the hook fails closed, it blocked ordinary commits with a
+# message about config.yaml holding a secret. Caught by test_secret_guard.py,
+# which commits benign files in a throwaway repo.
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+sanitizer_py="${script_dir}/sanitize_config.py"
+
 # ---------------------------------------------------------------------------
 # sanitize <path-in-repo>
 #
@@ -52,8 +64,7 @@ sanitize() {
     cleaned=$(mktemp)
 
     git cat-file blob "$staged_sha" > "$tmp"
-    python3 "${repo_root}/scripts/git-hooks/sanitize_config.py" \
-            "$target" "$tmp" "$cleaned"
+    python3 "$sanitizer_py" "$target" "$tmp" "$cleaned"
 
     if ! cmp -s "$tmp" "$cleaned"; then
         local new_sha

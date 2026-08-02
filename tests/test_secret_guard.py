@@ -69,9 +69,20 @@ def _repo():
     run("git", "config", "commit.gpgsign", "false")
     shutil.copy(GITLEAKS_CONFIG, os.path.join(root, ".gitleaks.toml"))
     hooks = os.path.join(root, "scripts", "git-hooks")
-    os.makedirs(hooks)
-    shutil.copy(HOOK, os.path.join(hooks, "pre-commit"))
-    os.chmod(os.path.join(hooks, "pre-commit"), 0o755)
+    # Copy the WHOLE hooks directory, not just pre-commit.
+    #
+    # The hook grew a sibling: it delegates config.yaml sanitizing to
+    # sanitize-config-yaml.sh, which in turn calls sanitize_config.py. Copying
+    # only pre-commit left it unable to find them, and because the hook fails
+    # closed by design, every benign commit in this fixture was blocked with a
+    # message about config.yaml holding a secret — which read as three broken
+    # tests rather than an incomplete fixture. A real install always has the
+    # whole directory, since core.hooksPath points at the directory.
+    shutil.copytree(os.path.dirname(HOOK), hooks)
+    for entry in os.listdir(hooks):
+        path = os.path.join(hooks, entry)
+        if os.path.isfile(path):
+            os.chmod(path, 0o755)
     run("git", "config", "core.hooksPath", "scripts/git-hooks")
     return root
 

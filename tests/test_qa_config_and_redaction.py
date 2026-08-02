@@ -257,6 +257,44 @@ def test_redaction_does_not_swallow_the_rest_of_the_line():
     assert out.endswith("\n"), "redaction ate the line ending"
 
 
+def test_prose_containing_the_word_password_is_not_mangled():
+    """Over-redaction is not a safe failure.
+
+    The pattern used to accept bare whitespace as the key/value separator, so
+    the check named "sudo password works" was recorded as "sudo password
+    [REDACTED]". It destroys the diagnostic value of the logs this harness
+    exists to produce, and invisibly: a reader cannot tell a redacted secret
+    from a redacted noun.
+    """
+    r = _redactor()
+    for prose in ("sudo password works",
+                  "the password is stored only as a hash",
+                  "token refresh completed",
+                  "secret files are 0600"):
+        assert r.redact(prose) == prose, f"mangled prose: {r.redact(prose)!r}"
+
+
+def test_flag_form_passwords_are_still_caught():
+    """Tightening the separator must not lose `--password hunter2`."""
+    out = _redactor().redact("velociraptor --password hunter2 --user bob")
+    assert "hunter2" not in out, out
+    assert "--user bob" in out, out
+
+
+def test_assigned_secrets_are_still_caught():
+    r = _redactor()
+    for form in ("password=hunter2", "password: hunter2", "api_key = hunter2"):
+        assert "hunter2" not in r.redact(form), f"{form!r} -> {r.redact(form)!r}"
+
+    # Bearer tokens are space-separated by protocol and so have their own rule,
+    # with a >=12-char floor that keeps it off prose. A realistic token, not a
+    # short made-up one — tuning the threshold down to fit a toy fixture would
+    # be weakening the pattern to make a test pass.
+    out = r.redact("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc.sig")
+    assert "eyJhbGciOiJIUzI1NiJ9" not in out, out
+    assert "Authorization: Bearer" in out, out
+
+
 def test_bytes_survive_a_round_trip():
     out = _redactor().redact(b"login 10RootRulez done")
     assert isinstance(out, bytes)

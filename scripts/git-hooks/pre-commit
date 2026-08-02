@@ -118,7 +118,16 @@ fi
 # defaults — the operator keeps their working file, and git only ever sees the
 # sanitized version. Runs AFTER the gitleaks gate above so a genuinely novel
 # secret is still blocked rather than silently normalized away.
-"${repo_root}/scripts/git-hooks/sanitize-config-yaml.sh" || {
+#
+# Resolved relative to THIS SCRIPT, not repo_root. `core.hooksPath` points at
+# this repo's scripts/git-hooks, so the hook runs against whatever repository
+# the operator is committing in and repo_root is THAT repo — which does not
+# contain our sanitizer. Since the hook fails closed, the effect was that every
+# ordinary commit in any other repository was blocked with a message about
+# config.yaml holding a secret. test_secret_guard.py commits benign files in a
+# throwaway repo and caught it.
+hook_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+"${hook_dir}/sanitize-config-yaml.sh" || {
     echo "config.yaml sanitizer failed — refusing to commit rather than risk" >&2
     echo "publishing a live credential. Fix the hook or use --no-verify only" >&2
     echo "if you are certain config.yaml holds no secret." >&2

@@ -42,10 +42,27 @@ PATTERNS = [
         re.DOTALL)),
     # key=value / key: value forms. The value stops at whitespace, a quote or a
     # comma so this does not swallow the rest of a log line.
+    #
+    # An explicit `:` or `=` is REQUIRED. An earlier version also accepted bare
+    # whitespace, which meant ordinary prose was mangled: the check named "sudo
+    # password works" was written to the results as "sudo password [REDACTED]",
+    # and "the password is stored as a hash" lost the word "is". Over-redaction
+    # is not a safe failure here — it destroys the diagnostic value of the very
+    # logs this harness exists to produce, and it does so invisibly, because a
+    # reader cannot tell a redacted secret from a redacted noun.
+    #
+    # Flag forms like `--password hunter2` are still covered, by the separate
+    # password-flag pattern below.
     ("assigned-secret", re.compile(
         r"(?i)\b(pass(?:word|wd)?|secret|token|api[_-]?key|bearer|cookie)"
-        r"(\s*[:=]\s*|\s+)"
+        r"(\s*[:=]\s*)"
         r"(['\"]?)([^\s'\",;]{4,})\3")),
+    # `Bearer <token>` is space-separated by protocol, so it needs its own rule
+    # now that the general assigned-secret pattern requires a : or = separator.
+    # The >=12-char token-shaped value is what keeps it off ordinary prose.
+    ("bearer-token", re.compile(
+        r"(?i)\b(bearer\s+)([A-Za-z0-9._\-+/=]{12,})")),
+
     # Windows / Linux CLI password flags, in case anything ever shells out.
     ("password-flag", re.compile(
         r"(?i)(-{1,2}(?:password|pass|p)\s+)(\S+)")),
@@ -84,7 +101,7 @@ class Redactor:
                 text = pat.sub(
                     lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}"
                               f"{PLACEHOLDER}{m.group(3)}", text)
-            elif name == "password-flag":
+            elif name in ("password-flag", "bearer-token"):
                 text = pat.sub(lambda m: f"{m.group(1)}{PLACEHOLDER}", text)
             else:
                 text = pat.sub(PLACEHOLDER, text)
