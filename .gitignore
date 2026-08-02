@@ -232,3 +232,12 @@ modules/backend/data/
 
 # Scratch output from external code-review tooling.
 /.codex/
+
+# QA harness run directories. A run produces container logs, a support bundle,
+# collected Windows event logs and a multi-GB memory image full of plaintext
+# credentials scraped from the target's RAM -- the most sensitive material this
+# platform ever holds. qa-config.yaml points output_dir OUTSIDE the repo by
+# default (phase 0a wipes the tree, so in-repo results would be destroyed by
+# the run that produced them); this covers anyone who repoints it inward.
+qa/qa-runs/
+qa/**/qa-runs/

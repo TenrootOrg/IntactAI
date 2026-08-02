@@ -98,7 +98,10 @@ def test_the_sanitizer_edits_the_index_not_the_working_tree():
 
 
 def test_it_sanitizes_all_three_fields():
-    body = _read(SANITIZER)
+    # The rules live in sanitize_config.py; the .sh is the git plumbing around
+    # them. Split out so the rewriting logic can be unit-tested directly —
+    # see tests/test_config_sanitizer.py.
+    body = _read(os.path.join(REPO, "scripts", "git-hooks", "sanitize_config.py"))
     for field, why in (
         ("github_token", "a live PAT to a private org — the one that actually leaked"),
         ("password", "module passwords are operator state"),
