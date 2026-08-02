@@ -457,6 +457,42 @@ def run_startup_initialization():
                           f"correct image", flush=True)
             except Exception as _she:
                 print(f"[STARTUP] Backend self-heal check skipped: {_she}", flush=True)
+        # Migrate a pre-auth box onto the app login. Runs on EVERY boot, outside
+        # the pending/not-pending split, because the one call site that used to
+        # cover this cannot reach the case it was written for.
+        #
+        # migrate_basic_auth_to_app_login() lives in upgrade_intact_offline(),
+        # which executes in PHASE 1 — and Phase 1 runs on the OLD backend's
+        # code, because the image swap happens at the END of it. A box on a
+        # genuinely pre-auth release (intact-20260615 and earlier) has no
+        # auth_service.py and zero occurrences of that function, so the
+        # migration never fires on the only upgrade that needs it. It runs
+        # exclusively when the source box ALREADY has the new auth code, i.e.
+        # when it is a no-op.
+        #
+        # Observed 2026-08-02 upgrading 20260615 -> 20260802: the box landed
+        # with first_login absent, no stored credential, and auth_mode()
+        # mapping ABSENT -> MODE_LOGIN. That is a locked-out appliance whose
+        # only route back in is hand-editing config.yaml on the host — and the
+        # recovery hint explaining that is rendered on the login page the
+        # operator cannot reach.
+        #
+        # Doing it at boot rather than in Phase 2 is deliberate: Phase 2 is not
+        # guaranteed to run. That same upgrade had Phase 2 refused by the disk
+        # preflight, so a Phase-2-only fix would still have left the box locked
+        # out. Boot always happens.
+        #
+        # Idempotent by construction — the trigger is the ABSENCE of the
+        # first_login key and the migration always writes that key, so this is
+        # a cheap early return on every subsequent boot.
+        try:
+            from services.upgrade.intact import migrate_basic_auth_to_app_login
+            migrate_basic_auth_to_app_login(
+                logger=lambda m, l="info": print(f"[STARTUP][auth-migrate] {m}",
+                                                 flush=True))
+        except Exception as _ame:
+            print(f"[STARTUP] Pre-auth login migration skipped: {_ame}", flush=True)
+
         if pending:
             run_id = pending['run_id']
             print(f"[STARTUP] Found pending upgrade: {run_id}", flush=True)
