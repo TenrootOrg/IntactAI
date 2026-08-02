@@ -285,8 +285,7 @@ def download_release_package(tag: str, dest_dir: str, run_id: str = None,
         workers = max(1, min(_PART_WORKERS, len(parts)))
         log(f"  Fetching {len(parts)} parts, {workers} at a time "
             f"(one stream is per-connection limited, not link limited). "
-            f"Progress updates every {_PROGRESS_SECONDS}s on a single line "
-            f"below.", "info")
+            f"Progress logged every {_PROGRESS_SECONDS}s.", "info")
 
         # Overall fraction (download phase = 0..0.9 of the bar). Each worker
         # reports ITS OWN cumulative byte count, so the bar needs the sum
@@ -330,17 +329,21 @@ def download_release_package(tag: str, dest_dir: str, run_id: str = None,
                     f"{total / 1024 / 1024 / 1024:.1f} GB — " + ", ".join(bits))
 
         def _emit_status():
-            """Rewrite the single progress line in place; fall back to a plain
-            append when there's no run to attach it to (CLI/tests)."""
-            line = _status_line()
-            if run_id:
-                try:
-                    from services.workflow_service import upsert_log_line
-                    upsert_log_line(run_id, _PROGRESS_MARKER, line, "info")
-                    return
-                except Exception:
-                    pass
-            log(line, "info")
+            """Append a new progress line each interval.
+
+            This used to upsert a SINGLE line in place, keyed by
+            _PROGRESS_MARKER. In a terminal that reads well; in the workflow
+            log viewer it does not, because the history is the information:
+            whether throughput is holding, when a part stalled, and how long
+            the download has really been running. An in-place line answers none
+            of those -- a transfer frozen for ten minutes looks identical to a
+            healthy one, since the only thing that changes is a number you
+            never saw before.
+
+            One line per interval is cheap: a 5.7 GB package at typical speeds
+            is a few dozen lines, each timestamped by the viewer.
+            """
+            log(_status_line(), "info")
 
         stop_reporter = threading.Event()
 
