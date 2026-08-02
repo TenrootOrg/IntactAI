@@ -142,9 +142,15 @@ def register(runner, cfg):
         ctx.check("hunt succeeded", api_lib.run_succeeded(run),
                   expected="completed", actual=(run or {}).get("status"))
 
+        det = (run or {}).get("details") or {}
         findings = _finding_count(run)
         ctx.check("hunt produced findings", (findings or 0) > 0,
-                  expected=">0", actual=findings,
+                  expected=">0",
+                  # Report the available keys, not just "None". If the count is
+                  # simply under a name this does not know, the failure message
+                  # is the fix rather than the start of an investigation.
+                  actual=findings if findings is not None
+                  else f"no count found; details keys = {sorted(det)[:12]}",
                   note="a hunt that completes with zero findings against a host "
                        "we just ran detection bait on is the realistic bug")
         return {"run_id": run_id, "blueprint": bp.get("name"),
@@ -167,10 +173,11 @@ def register(runner, cfg):
                   api_lib.run_succeeded(run),
                   expected="completed", actual=(run or {}).get("status"))
 
-        sketch, events = _sketch_with_events(c)
+        sketch, events, keys = _sketch_with_events(c)
         ctx.check("a sketch exists", bool(sketch), actual=sketch)
         ctx.check("the sketch has events", (events or 0) > 0,
-                  expected=">0", actual=events,
+                  expected=">0",
+                  actual=events if events else f"0; sketch keys = {keys}",
                   note="a sketch that indexes zero events after a KAPE triage "
                        "of a host with freshly-generated activity is a failure, "
                        "not a quiet box")
@@ -214,18 +221,42 @@ def register(runner, cfg):
                   expected="completed", actual=(run or {}).get("status"))
 
         det = (run or {}).get("details") or {}
-        plugins = det.get("plugins") or det.get("plugin_results") or {}
+        plugins = det.get("plugins") or det.get("plugin_results") or \
+            det.get("extracted_plugins") or {}
         ctx.check("plugin output was produced", bool(plugins),
-                  actual=list(plugins)[:6] if isinstance(plugins, dict) else plugins,
+                  expected=">0 plugins",
+                  actual=(list(plugins)[:6] if isinstance(plugins, (dict, list))
+                          else plugins) if plugins
+                  else f"none found; details keys = {sorted(det)[:12]}",
                   note="pslist proves the image parses at all")
 
+        # Yara is asserted as HAVING RUN, not as having matched.
+        #
+        # The plan called for one targeted rule matching the canary the bait
+        # writes into an RWX allocation, so that a miss would be unambiguous.
+        # That is not reachable from here: rules come from VolWeb's seeded
+        # corpus, scoped by the blueprint's yara_categories, and there is no
+        # per-run rule-injection endpoint. Worse, the pipeline documents zero
+        # hits as a legitimate outcome (services/memory/analyzers.py:195), so
+        # asserting a hit would fail on a correctly working platform.
+        #
+        # What is still worth catching is the real failure mode the plan named:
+        # yara quietly no-opping because its worker is dead or no rules are
+        # active. So this asserts the scan executed and produced a result set,
+        # and records the hit count as information. The report states plainly
+        # that detection CONTENT was not verified.
+        yara_ran = any(k in det for k in
+                       ("yara_hits", "yara", "yarascan", "yara_summary"))
         yara_hits = det.get("yara_hits") or det.get("yara") or []
-        ctx.check("yara ran and matched", bool(yara_hits),
-                  expected=">=1 hit", actual=yara_hits if not isinstance(
-                      yara_hits, list) else len(yara_hits),
-                  note=f"the single QA rule matches {ctx.get('yara_canary')}, "
-                       f"which the bait wrote into an RWX allocation — a miss "
-                       f"here is a real bug, not an ambiguous result")
+        hit_count = len(yara_hits) if isinstance(yara_hits, list) else yara_hits
+        ctx.check("yara scan executed", yara_ran,
+                  expected="a yarascan result set", actual=sorted(det)[:10],
+                  note="catches the worker being dead or no rules active; a "
+                       "zero-hit result is legitimate and is NOT a failure")
+        if yara_ran and not hit_count:
+            tl.warn("yara_zero_hits", detail={
+                "note": "legitimate per the pipeline, but it means this run "
+                        "did not exercise the yara matching path end to end"})
 
         for key in ("image_path", "memory_image", "dump_path"):
             if det.get(key):
@@ -233,11 +264,20 @@ def register(runner, cfg):
                 break
 
         return {"run_id": run_id, "plugins": plugins,
-                "yara_hits": yara_hits, "status": (run or {}).get("status")}
+                "yara_ran": yara_ran, "yara_hits": hit_count,
+                "status": (run or {}).get("status")}
 
     # ----------------------------------------------------------------- D --
+    # Depends on the two collection stages, NOT on volweb passing.
+    #
+    # Fusion is the most valuable assertion in the run, and VolWeb is the
+    # stage most likely to fail for reasons unrelated to it (a slow
+    # acquisition, a missing symbol table, a dead yara worker). Making a
+    # VolWeb check failure skip fusion would hide the answer we most want.
+    # Fusion's own "memory/VolWeb contributed entities" check reports the
+    # missing source clearly, so nothing is silently glossed over.
     @runner.phase("fusion", "Fuse the Case from all three sources",
-                  needs=("volweb",))
+                  needs=("timesketch", "hunt"))
     def fusion(ctx):
         """Fusion is the platform's core value and the thing most able to
         silently half-work: a Case that reports "fused" while having dropped a
@@ -353,22 +393,31 @@ def _finding_count(run):
 
 
 def _sketch_with_events(c):
+    """The sketch with the most events, as (sketch_id, event_count, keys).
+
+    The third element is the item's key names. Sketch payload shape is not
+    pinned anywhere, so if the count is under a name this does not know, the
+    failure message can say which names exist instead of just reporting zero.
+    """
     body = _safe_get(c, "/api/timesketch/sketches")
     if body is None:
-        return None, None
+        return None, None, []
     items = body.get("sketches", body) if isinstance(body, dict) else body
-    best, best_events = None, 0
-    for it in items or []:
-        if not isinstance(it, dict):
-            continue
-        events = it.get("event_count") or it.get("events") or 0
-        try:
-            events = int(events)
-        except (TypeError, ValueError):
-            events = 0
-        if best is None or events > best_events:
-            best, best_events = it.get("id") or it.get("sketch_id"), events
-    return best, best_events
+    items = [it for it in (items or []) if isinstance(it, dict)]
+    if not items:
+        return None, 0, []
+
+    def count(it):
+        for key in ("event_count", "events", "num_events", "total_events"):
+            try:
+                return int(it.get(key) or 0)
+            except (TypeError, ValueError):
+                continue
+        return 0
+
+    best = max(items, key=count)
+    return (best.get("id") or best.get("sketch_id"), count(best),
+            sorted(best.keys())[:12])
 
 
 def _sources_in(graph):

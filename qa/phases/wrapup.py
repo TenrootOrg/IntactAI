@@ -120,10 +120,17 @@ def _write_report(ctx, cfg):
               "agentic blueprint, and Windows memory into VolWeb. It is not "
               "full platform coverage, and a green result here says nothing "
               "about the Linux path.", "",
-              "**Fast-QA profile.** One yara rule, two Volatility plugins, "
-              "cleared event logs, a 4 GB memory image. Breadth was traded for "
-              "speed deliberately; this proves each path *works*, not that the "
-              "host was forensically examined.", ""]
+              "**Fast-QA profile.** Two Volatility plugins, cleared event "
+              "logs, a 4 GB memory image. Breadth was traded for speed "
+              "deliberately; this proves each path *works*, not that the host "
+              "was forensically examined.", "",
+              "**Yara is checked as having run, not as having matched.** "
+              "Rules come from VolWeb's seeded corpus scoped by blueprint "
+              "category, with no per-run rule-injection endpoint, and the "
+              "pipeline treats zero hits as a legitimate result. So this run "
+              "verifies the yarascan worker executes and returns a result "
+              "set; it does not verify that any detection content is correct.",
+              ""]
 
     lines += ["## Verdict", "",
               f"| result | count |", "|---|---|",

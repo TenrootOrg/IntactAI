@@ -25,9 +25,15 @@ import stat
 
 import yaml
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))))
-DEFAULT_PATH = os.path.join(REPO_ROOT, "qa", "qa-config.yaml")
+# Anchored to the package root (the directory holding lib/), NOT to the repo.
+#
+# run_qa.py copies the whole qa/ tree to ~/.qa-runner/<run-id>/ and re-execs
+# from there, so the directory is not always called "qa". Deriving the path by
+# walking up three levels and appending "qa/" worked in the repo and looked for
+# ~/.qa-runner/qa/qa-config.yaml after relocation — which does not exist, so
+# every relocated run died before it started.
+PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_PATH = os.path.join(PACKAGE_ROOT, "qa-config.yaml")
 
 # Environment overrides. The config file is the normal path; these exist so a
 # run can be driven without a filled-in file (a scheduled job, a second

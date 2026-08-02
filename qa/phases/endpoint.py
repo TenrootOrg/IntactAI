@@ -15,7 +15,11 @@ from lib import winssh
 
 # Where the QA stages its own files on the target. One directory, so teardown
 # is a single recursive delete and there is no doubt about what to remove.
+#
+# Two spellings of the same path, deliberately: SFTP wants forward slashes,
+# while cmd.exe mishandles them for mkdir and for quoted msiexec arguments.
 STAGE_DIR = "C:/Windows/Temp/intact-qa"
+STAGE_DIR_WIN = STAGE_DIR.replace("/", "\\")
 
 # The distinctive string the fake malicious script writes into memory. Phase 6
 # asserts a yara rule matching THIS string fires — one targeted rule instead of
@@ -52,15 +56,17 @@ def register(runner, cfg):
         detail["installer_bytes"] = os.path.getsize(installer)
 
         remote = f"{STAGE_DIR}/{os.path.basename(installer)}"
+        remote_win = remote.replace("/", "\\")
         with target() as win:
-            win.run(f'cmd /c if not exist "{STAGE_DIR}" mkdir "{STAGE_DIR}"')
+            win.run(f'if not exist "{STAGE_DIR_WIN}" mkdir "{STAGE_DIR_WIN}"')
             win.put(installer, remote)
             ctx.check("installer uploaded", win.exists(remote))
 
-            rc, out = win.run(
-                f'msiexec /i "{remote.replace("/", chr(92))}" /quiet /norestart',
-                timeout=600) if remote.endswith(".msi") else win.run(
-                f'"{remote.replace("/", chr(92))}" --install', timeout=600)
+            if remote.endswith(".msi"):
+                rc, out = win.run(
+                    f'msiexec /i "{remote_win}" /quiet /norestart', timeout=900)
+            else:
+                rc, out = win.run(f'"{remote_win}" --install', timeout=900)
             detail["install_rc"] = rc
             # msiexec 3010 = success, reboot required. Not a failure.
             ctx.check("client installer ran", rc in (0, 3010),
@@ -119,7 +125,7 @@ def register(runner, cfg):
                       note="keeps the collected .evtx small and unambiguous")
 
             rc, out = win.run_powershell(_BAIT_SCRIPT.replace(
-                "@@CANARY@@", YARA_CANARY).replace("@@STAGE@@", STAGE_DIR))
+                "@@CANARY@@", YARA_CANARY).replace("@@STAGE@@", STAGE_DIR_WIN))
             detail["bait_rc"] = rc
             detail["canary"] = YARA_CANARY
             ctx.check("detection bait ran", rc == 0,

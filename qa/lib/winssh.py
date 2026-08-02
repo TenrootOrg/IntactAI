@@ -14,8 +14,8 @@ fuses into the Case, and packages into the support bundle and the final report
 test. paramiko puts it in the SSH auth exchange and nowhere else.
 """
 
-import io
 import posixpath
+import re
 import stat as statmod
 
 try:
@@ -182,17 +182,27 @@ class WindowsTarget:
 
     @staticmethod
     def _mkdirs(sftp, path):
+        """Create a remote directory tree, skipping the drive letter.
+
+        Walking every component from the start would call sftp.mkdir("C:")
+        first. Windows OpenSSH's SFTP resolves that relative to the session's
+        home directory, so instead of failing it happily creates a literal
+        directory named `C:` in the user's profile — junk that teardown does
+        not know about because it is not under the staging directory.
+        """
         if not path or path in ("/", "."):
             return
-        parts, built = path.split("/"), ""
+        parts = [p for p in path.split("/") if p]
+        if not parts:
+            return
+        # A leading "C:" is a drive, not a directory to create.
+        built = parts.pop(0) if re.match(r"^[A-Za-z]:$", parts[0]) else ""
         for p in parts:
-            if not p:
-                continue
             built = built + "/" + p if built else p
             try:
                 sftp.mkdir(built)
             except IOError:
-                pass          # exists, or a drive root like C:
+                pass          # already exists
 
     # --- facts -----------------------------------------------------------
 
