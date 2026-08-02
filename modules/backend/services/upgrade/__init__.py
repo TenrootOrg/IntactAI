@@ -2538,23 +2538,94 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         return {"success": False, "status": "failed", "error": _fmt,
                 "results": {}, "completed": 0, "total": 0, "versions": {}}
 
+    # Build modules dict for state tracking
+    modules_dict = {k: v for k, v in versions.items()}
+    if 'intact' not in modules_dict:
+        # Check if intact source exists in package (not just empty dirs).
+        # Try the new GitHub-tarball layout first (`source/intact/`) and
+        # fall back to the legacy `source/backend` + `source/frontend`
+        # split for packages built before that change.
+        intact_root = os.path.join(package_dir, 'source', 'intact')
+        if os.path.isdir(intact_root):
+            backend_source = os.path.join(intact_root, 'modules', 'backend')
+            frontend_source = os.path.join(intact_root, 'modules', 'nginx', 'html')
+        else:
+            backend_source = os.path.join(package_dir, 'source', 'backend')
+            frontend_source = os.path.join(package_dir, 'source', 'frontend')
+        has_backend = os.path.exists(backend_source) and os.listdir(backend_source)
+        has_frontend = os.path.exists(frontend_source) and os.listdir(frontend_source)
+        if has_backend or has_frontend:
+            modules_dict['intact'] = 'from_package'
+
+    # Refuse a package that would move any module BACKWARDS. Checked here —
+    # after the module set is known, before the loop touches anything, and
+    # before the prune below deletes anything — so a rejected run leaves both
+    # the platform AND the extracted package exactly as they were.
+    _dg = _reject_downgrades(modules_dict, current_versions, logger=log)
+    if _dg:
+        log("DOWNGRADE REFUSED — aborting with the platform untouched.", "error")
+        log(f"  {_dg}", "error")
+        return {"success": False, "status": "failed", "error": _dg,
+                "results": {}, "completed": 0, "total": 0, "versions": {}}
+
+    # Apply Uploaded Package can pass an operator-chosen subset. When
+    # set, modules in the manifest NOT in this set are skipped and the
+    # final summary shows them under "skipped: N". When None, every
+    # module in the manifest is applied (legacy behavior — keeps
+    # external automation working).
+    selected_set = set(selected_modules) if selected_modules else None
+
+    # Safety net mirroring _modules_for_prepare's "intact is force-added even
+    # if the request omitted it": the real UI always includes intact when it's
+    # an upgrade/downgrade (applyModuleAction forces it into the ticked set),
+    # but nothing stopped an external/API caller from posting a subset that
+    # forgets it. Without this, 'intact' silently drops out of state_modules
+    # below, the swap-detection step in upgrade_intact_offline() never runs,
+    # and the run reports "completed, 0 errors" while the platform quietly
+    # never upgraded — discovered 2026-07-22 when a hand-built API call
+    # omitted intact and got exactly that misleading result.
+    #
+    # THIS MUST STAY ABOVE THE PRUNE. It used to sit ~100 lines below it, so
+    # the prune computed its keep-set from the RAW operator subset while the
+    # module loop ran against the force-included one. An apply that deselected
+    # 'intact' therefore deleted images/intact-backend-<tag>.tar and
+    # images/tusd-<ver>.tar (both attributed to 'intact' by images_by_module)
+    # and then went on to upgrade intact anyway — which failed at
+    # ensure_backend_runtime_image with "neither present nor bundled in the
+    # package", pointing at CI for a file that WAS in the package and had been
+    # deleted locally seconds earlier. Any later addition to the effective
+    # apply set has to happen before the prune for the same reason.
+    if selected_set is not None and 'intact' in modules_dict and 'intact' not in selected_set:
+        log("'intact' was not in the selected subset but IS in this package — "
+            "force-including it. A package without its own platform upgrade "
+            "applied is a half-applied release. Deselect modules you don't "
+            "want, not the platform itself.", "warning")
+        selected_set.add('intact')
+
+    if selected_set is not None:
+        log(f"Operator-selected subset: {sorted(selected_set)}", "info")
+
     # Drop the image tars for modules the operator did not choose, BEFORE the
     # disk check below and before any `docker load`. A package ships every
     # module; an apply that installs two of them was still carrying the other
     # eight on disk for the whole run. On a 5.8 GB package that is ~10 GiB of
     # extracted tars held for nothing, at exactly the moment disk is tightest.
     #
+    # Keyed off `selected_set` — the EFFECTIVE apply set after force-includes —
+    # never off the raw `selected_modules` argument. See the force-include
+    # comment above for what the raw set cost us.
+    #
     # Safe because the tars are a copy: the package itself is untouched, so a
     # retry re-extracts whatever was pruned. Runs before the budget so the
     # requirement reflects what is actually left on disk.
-    if selected_modules:
+    if selected_set:
         try:
             from .package import images_by_module
             _img_dir = os.path.join(package_dir, 'images')
             if os.path.isdir(_img_dir):
                 _present = os.listdir(_img_dir)
                 _owned = images_by_module(_present)
-                _keep = set(selected_modules)
+                _keep = set(selected_set)
                 _freed = 0
                 _dropped = 0
                 for _mod, _names in _owned.items():
@@ -2586,8 +2657,12 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     try:
         from .config_validate import required_free_gb_for_manifest, preflight_environment as _pe
         _pkg_bytes = os.path.getsize(package_path) if (package_path and os.path.exists(package_path)) else 0
-        _need = required_free_gb_for_manifest(manifest, _pkg_bytes,
-                                              selected_modules=selected_modules)
+        # Size the budget from the EFFECTIVE apply set, not the raw argument —
+        # a force-included 'intact' brings its own multi-GB backend image tar
+        # back into the requirement. Same reason the prune above uses it.
+        _need = required_free_gb_for_manifest(
+            manifest, _pkg_bytes,
+            selected_modules=(sorted(selected_set) if selected_set else selected_modules))
         _ok2, _errs2 = _pe(logger=None, min_free_gb=_need)
         if not _ok2:
             log(f"Insufficient disk for this package (~{_need} GiB needed, "
@@ -2600,61 +2675,6 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         log(f"  Disk preflight: ~{_need} GiB required for this package, satisfied.", "info")
     except Exception as _de:
         log(f"  manifest-sized disk check skipped ({type(_de).__name__}: {_de})", "warning")
-
-    # Build modules dict for state tracking
-    modules_dict = {k: v for k, v in versions.items()}
-    if 'intact' not in modules_dict:
-        # Check if intact source exists in package (not just empty dirs).
-        # Try the new GitHub-tarball layout first (`source/intact/`) and
-        # fall back to the legacy `source/backend` + `source/frontend`
-        # split for packages built before that change.
-        intact_root = os.path.join(package_dir, 'source', 'intact')
-        if os.path.isdir(intact_root):
-            backend_source = os.path.join(intact_root, 'modules', 'backend')
-            frontend_source = os.path.join(intact_root, 'modules', 'nginx', 'html')
-        else:
-            backend_source = os.path.join(package_dir, 'source', 'backend')
-            frontend_source = os.path.join(package_dir, 'source', 'frontend')
-        has_backend = os.path.exists(backend_source) and os.listdir(backend_source)
-        has_frontend = os.path.exists(frontend_source) and os.listdir(frontend_source)
-        if has_backend or has_frontend:
-            modules_dict['intact'] = 'from_package'
-
-    # Refuse a package that would move any module BACKWARDS. Checked here —
-    # after the module set is known, before the loop touches anything — so a
-    # rejected run leaves the platform exactly as it was.
-    _dg = _reject_downgrades(modules_dict, current_versions, logger=log)
-    if _dg:
-        log("DOWNGRADE REFUSED — aborting with the platform untouched.", "error")
-        log(f"  {_dg}", "error")
-        return {"success": False, "status": "failed", "error": _dg,
-                "results": {}, "completed": 0, "total": 0, "versions": {}}
-
-    # Apply Uploaded Package can pass an operator-chosen subset. When
-    # set, modules in the manifest NOT in this set are skipped and the
-    # final summary shows them under "skipped: N". When None, every
-    # module in the manifest is applied (legacy behavior — keeps
-    # external automation working).
-    selected_set = set(selected_modules) if selected_modules else None
-
-    # Safety net mirroring _modules_for_prepare's "intact is force-added even
-    # if the request omitted it": the real UI always includes intact when it's
-    # an upgrade/downgrade (applyModuleAction forces it into the ticked set),
-    # but nothing stopped an external/API caller from posting a subset that
-    # forgets it. Without this, 'intact' silently drops out of state_modules
-    # below, the swap-detection step in upgrade_intact_offline() never runs,
-    # and the run reports "completed, 0 errors" while the platform quietly
-    # never upgraded — discovered 2026-07-22 when a hand-built API call
-    # omitted intact and got exactly that misleading result.
-    if selected_set is not None and 'intact' in modules_dict and 'intact' not in selected_set:
-        log("'intact' was not in the selected subset but IS in this package — "
-            "force-including it. A package without its own platform upgrade "
-            "applied is a half-applied release. Deselect modules you don't "
-            "want, not the platform itself.", "warning")
-        selected_set.add('intact')
-
-    if selected_set is not None:
-        log(f"Operator-selected subset: {sorted(selected_set)}", "info")
 
     # State persisted across the intact restart must carry ONLY the modules the
     # operator selected. The Phase-2 resume (resume_upgrade_workflow) applies

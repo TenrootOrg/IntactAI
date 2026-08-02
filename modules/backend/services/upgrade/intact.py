@@ -1458,19 +1458,36 @@ def ensure_backend_runtime_image(package_dir: str, target_tag: str,
     """Make `intact-backend:<target_tag>` present locally BEFORE any recreate.
 
     Order (idempotent — safe on crash-resume): already-present → refresh from the
-    bundled tar if one ships (loads a moved dev tag's new bits) → load the bundled
-    tar → FAIL. Runs in Phase 1 before the snapshot/mirror, so a FAIL leaves the
-    platform fully up and untouched.
+    bundled tar if one ships (loads a moved dev tag's new bits) → load the exactly
+    named tar → load ANY intact-backend-*.tar in the package and retag → FAIL.
+    Runs in Phase 1 before the snapshot/mirror, so a FAIL leaves the platform fully
+    up and untouched.
+
+    The retag fallback is what makes this work ACROSS releases in both directions.
+    The tar's filename tag comes from the packager's `be_tag`
+    (``_release_tag or versions.backend or target_version``) while the tag we look
+    for here comes from the manifest's ``versions.intact``. Those agree for a
+    package built by a current prepare from a tagged release, and disagree
+    whenever they were resolved differently — an older package built while
+    ``versions.backend`` was still a moving pin like 'development', or a newer one
+    that changes how the release tag is derived. Requiring an exact filename match
+    turned that cosmetic disagreement into a hard abort on a package that
+    contained a perfectly good image. Resolve by CONTENT — load whatever backend
+    image the package ships and tag it as the release being applied.
 
     Returns {"available": bool, "error": str}.
     """
     log = logger or (lambda m, l="info": None)
     image = f"intact-backend:{target_tag}"
-    tar = (os.path.join(package_dir, 'images', f'intact-backend-{target_tag}.tar')
-           if package_dir else None)
+    images_dir = os.path.join(package_dir, 'images') if package_dir else None
+    tar = (os.path.join(images_dir, f'intact-backend-{target_tag}.tar')
+           if images_dir else None)
 
-    present = run_command(f"docker image inspect {image}",
-                          logger=None, timeout=30).get('success')
+    def _have(ref):
+        return run_command(f"docker image inspect {ref}",
+                           logger=None, timeout=30).get('success')
+
+    present = _have(image)
     if present:
         # Full mode always ships a freshly-baked image; refresh from the tar so a
         # moved tag (dev 'development') picks up new bits. Offline already loaded
@@ -1482,15 +1499,66 @@ def ensure_backend_runtime_image(package_dir: str, target_tag: str,
     if tar and os.path.isfile(tar):
         log(f"  Loading bundled backend image {os.path.basename(tar)}...", "info")
         res = load_docker_image(tar, logger=log, run_id=run_id)
-        if res.get('success') and run_command(
-                f"docker image inspect {image}", logger=None, timeout=30).get('success'):
+        if res.get('success') and _have(image):
             return {"available": True, "error": ""}
 
+    # Fallback: any backend tar in the package, whatever tag its filename or its
+    # own metadata carries. `docker load` prints "Loaded image: <ref>" (or
+    # "Loaded image ID: <sha>" for an untagged save) — take that ref and tag it
+    # as the release we are applying.
+    candidates = []
+    if images_dir and os.path.isdir(images_dir):
+        try:
+            candidates = sorted(fn for fn in os.listdir(images_dir)
+                                if fn.startswith('intact-backend-') and fn.endswith('.tar')
+                                and fn != f'intact-backend-{target_tag}.tar')
+        except OSError:
+            candidates = []
+    for fn in candidates:
+        log(f"  No intact-backend-{target_tag}.tar, but the package ships {fn} — "
+            f"loading it and retagging as {image}", "warning")
+        res = load_docker_image(os.path.join(images_dir, fn), logger=log, run_id=run_id)
+        if not res.get('success'):
+            continue
+        ref = ''
+        for line in (res.get('stdout') or '').splitlines():
+            line = line.strip()
+            for prefix in ('Loaded image: ', 'Loaded image ID: '):
+                if line.startswith(prefix):
+                    ref = line[len(prefix):].strip()
+        if not ref:
+            # Older docker prints nothing useful; fall back to the tag the
+            # filename claims, which is what the packager named it after.
+            ref = f"intact-backend:{fn[len('intact-backend-'):-len('.tar')]}"
+        if not _have(ref):
+            continue
+        if run_command(f"docker tag {ref} {image}",
+                       logger=log, timeout=60).get('success') and _have(image):
+            log(f"  Retagged {ref} -> {image}", "info")
+            return {"available": True, "error": ""}
+
+    # Say what is actually on disk. The old message named CI ("re-prepare the
+    # package") for a failure whose real cause was local — the unselected-image
+    # prune had deleted the tar minutes earlier — and that misdirection cost
+    # hours. Report the evidence and let the reader draw the conclusion.
+    listing = "images/ directory not present"
+    if images_dir and os.path.isdir(images_dir):
+        try:
+            names = sorted(fn for fn in os.listdir(images_dir) if fn.endswith('.tar'))
+            listing = (", ".join(names) if names else "no .tar files")
+        except OSError as e:
+            listing = f"unreadable ({e})"
+    local = run_command("docker images --format '{{.Repository}}:{{.Tag}}' intact-backend",
+                        logger=None, timeout=30).get('stdout', '').strip()
     return {"available": False,
-            "error": (f"backend runtime image {image} is neither present nor "
-                      f"bundled in the package — this Full-mode release cannot be "
-                      f"applied. Re-prepare the package with a Wave-F-capable "
-                      f"release (the prepare step bakes + bundles the image).")}
+            "error": (f"backend runtime image {image} is not in the local docker "
+                      f"store and no loadable intact-backend tar was found in the "
+                      f"package. images/ contains: {listing}. "
+                      f"Local intact-backend tags: {local or 'none'}. "
+                      f"If the package tarball DOES contain an intact-backend tar, "
+                      f"it was deleted after extraction — check the "
+                      f"unselected-image prune. Otherwise re-prepare the package "
+                      f"with a release whose prepare step bakes + bundles the image.")}
 
 
 def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callable = None,
