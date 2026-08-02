@@ -187,6 +187,31 @@ def test_the_files_are_actually_0600_on_this_box():
     assert not bad, "secret files readable beyond their owner: " + "; ".join(bad)
 
 
+
+# --- the compose files require these secrets, so provisioning must be unconditional
+
+
+def test_env_file_secrets_are_provisioned_outside_the_per_module_upgrades():
+    """_upgrade_noop_module() SKIPS a module whose version pins did not change,
+    but refresh_module_compose_file() runs for every sidecar on every upgrade.
+    So a release shipping the new Portainer/Timesketch compose files without
+    bumping those pins would write a compose declaring
+    `env_file: ./secrets/agent.env` and `./secrets/postgres.env` onto a box that
+    has neither -- and the next `docker compose up` dies with "env file not
+    found". Upgrading from intact-20260726 is exactly that case.
+
+    Both generators must be called from the upgrade's UNCONDITIONAL final phase.
+    """
+    body = _read(UPGRADE_INIT)
+    tail = body[body.index("harden_secret_permissions(logger=log)"):]
+    for name in ("_ensure_agent_secret", "_ensure_ts_pg_password"):
+        assert name in body, f"{name} is not wired into the upgrade flow"
+        assert name in tail, (
+            f"{name} is called before the unconditional final phase — it would "
+            f"be skipped whenever that module is a version no-op, leaving the "
+            f"refreshed compose file pointing at a missing env_file")
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items())

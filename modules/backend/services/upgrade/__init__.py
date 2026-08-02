@@ -35,7 +35,8 @@ from .base import (
 
 # Module-specific upgrade functions
 from .elk import upgrade_elk, upgrade_elk_offline
-from .timesketch import upgrade_timesketch, upgrade_timesketch_offline
+from .timesketch import (upgrade_timesketch, upgrade_timesketch_offline,
+                         ensure_postgres_password as _ensure_ts_pg_password)
 from .iris import upgrade_iris, upgrade_iris_offline
 from .velociraptor import upgrade_velociraptor, upgrade_velociraptor_offline
 from .intact import (
@@ -46,7 +47,8 @@ from .plaso import upgrade_plaso, upgrade_plaso_offline
 from .aws import upgrade_aws, upgrade_aws_offline
 from .azure import upgrade_azure, upgrade_azure_offline
 from .volweb import upgrade_volweb, upgrade_volweb_offline, install_volweb_offline
-from .portainer import upgrade_portainer, upgrade_portainer_offline, install_portainer_offline
+from .portainer import (upgrade_portainer, upgrade_portainer_offline,
+                        install_portainer_offline, _ensure_agent_secret)
 from .elk import install_elk_offline
 from .timesketch import install_timesketch_offline
 from .velociraptor import install_velociraptor_offline
@@ -2308,6 +2310,33 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
     except Exception as _e:
         log(f"  (secret permission hardening skipped: "
             f"{type(_e).__name__}: {_e})", "warning")
+
+    # Provision the secrets the REFRESHED compose files require -- unconditionally.
+    #
+    # This must not live inside upgrade_portainer()/upgrade_timesketch():
+    # _upgrade_noop_module() skips a module entirely when its version pins did
+    # not change, but refresh_module_compose_file() runs for every sidecar on
+    # every upgrade. So a release that ships the new compose files without
+    # bumping those modules' pins would write a compose declaring
+    # `env_file: ./secrets/agent.env` (Portainer) and `./secrets/postgres.env`
+    # (Timesketch) onto a box that has neither -- and the next `docker compose
+    # up` for that module dies with "env file not found". Upgrading from
+    # intact-20260726 is exactly that case.
+    #
+    # Both are idempotent no-ops once their secret exists, so running them here
+    # every time is free and closes the gap regardless of pin movement.
+    for _label, _fn, _mod in (
+        ("Portainer agent secret", _ensure_agent_secret, 'portainer'),
+        ("Timesketch DB password", _ensure_ts_pg_password, 'timesketch'),
+    ):
+        try:
+            _dir = os.path.join(WORKDIR, 'modules', _mod)
+            if os.path.isdir(_dir):
+                _fn(_dir if _mod == 'timesketch'
+                    else os.path.join(_dir, '.env'), logger=log)
+        except Exception as _e:
+            log(f"  ({_label} provisioning skipped: "
+                f"{type(_e).__name__}: {_e})", "warning")
 
     return {
         "success": all_success,
