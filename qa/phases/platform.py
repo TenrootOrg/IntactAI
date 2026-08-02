@@ -187,9 +187,17 @@ def register(runner, cfg):
 
         # Copy install.sh's own log too — it carries the pre-container phase
         # that our capture starts too late to see on a resumed run.
+        # REDACT on the way in. These are install.sh's own logs, and .gitignore
+        # says why they matter: "these routinely contain whatever the run
+        # printed -- which has included a GitHub PAT". Copying them verbatim
+        # put unredacted credentials into the run directory, which is the exact
+        # leak the redactor exists to prevent — and it went unnoticed because
+        # the canary self-test passed, the canary being seeded into a different
+        # file. The leak scan at report time caught it.
         for candidate in sorted(_glob_logs(REPO_DIR)):
-            shutil.copy2(candidate, os.path.join(ctx.run_dir, "logs",
-                                                 os.path.basename(candidate)))
+            dest = os.path.join(ctx.run_dir, "logs", os.path.basename(candidate))
+            ctx.redact.redact_file(candidate, dest)
+            os.chmod(dest, 0o600)
 
         names = shell.container_names()
         unhealthy = []
