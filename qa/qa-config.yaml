@@ -17,8 +17,12 @@
 #   * The hook only exists if git-hooks are installed — install.sh does that,
 #     or run scripts/install-git-hooks.sh by hand after a clone. Verify with
 #     `git config core.hooksPath` (expected: scripts/git-hooks).
-#   * `git diff` on this file will look empty after a commit even though your
-#     values are still on disk. That is the mechanism working, not a bug.
+#   * This file will show as MODIFIED in `git status` permanently, because
+#     HEAD holds blanks and your disk holds credentials. That is the mechanism
+#     working, not a bug. Do not "clean it up".
+#   * Consequently `git checkout -- qa/qa-config.yaml`, `git stash`, and
+#     `git reset --hard` all DESTROY your credentials by restoring the blank
+#     version. They are recoverable only by typing them in again.
 #
 # Same arrangement as the top-level config.yaml, for the same reason: a clone
 # should come with a ready-to-edit file rather than an .example you have to
