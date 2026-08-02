@@ -49,6 +49,23 @@ with open(src) as f:
 # comments that PyYAML would silently discard, and the whole point of tracking
 # this file is that a human reads it before installing.
 DEFAULT_PW = "123123"
+# Values that are ALREADY shipping defaults and must be left exactly as-is.
+# Portainer's is deliberately >=12 chars because Portainer refuses shorter
+# ones; forcing it to 123123 would silently change shipped behaviour
+# (install.sh would then generate a random password instead).
+SHIPPED = {DEFAULT_PW, "1234qwer!@#$"}
+def _pat(prefix):
+    """key: value [# comment], where a QUOTED value may itself contain '#'.
+
+    The first version let a non-greedy .*? stop at the '#' inside Portainer's
+    shipped '1234qwer!@#$' and treated the remainder as a comment, rewriting the
+    line to a mangled `123123#$'`. Matching a quoted value as a single unit
+    fixes that.
+    """
+    return (r"^(" + prefix + r":[ \t]*)"
+            r"('[^']*'|\"[^\"]*\"|[^\s#]*)"
+            r"([ \t]*(?:#.*)?)$")
+
 out, current, changed = [], None, []
 
 for ln in lines:
@@ -58,7 +75,7 @@ for ln in lines:
 
     # options.github_token -> always empty. This is the one that matters: a
     # live PAT to a private org, written at runtime, never something to ship.
-    t = re.match(r'^(\s*github_token:[ \t]*)(.*?)([ \t]*(?:#.*)?)$', ln)
+    t = re.match(_pat(r"\s*github_token"), ln)
     if t and t.group(2).strip().strip('"\''):
         out.append(f"{t.group(1)}''{t.group(3)}\n")
         changed.append("github_token")
@@ -66,15 +83,15 @@ for ln in lines:
 
     # Module passwords -> back to the shipped default. Operators are told to
     # change these at install time; whatever this box uses is not for git.
-    p = re.match(r'^(    password:[ \t]*)(.*?)([ \t]*(?:#.*)?)$', ln)
-    if p and p.group(2).strip().strip('"\'') != DEFAULT_PW:
+    p = re.match(_pat("    password"), ln)
+    if p and p.group(2).strip().strip('"\'') not in SHIPPED:
         out.append(f"{p.group(1)}{DEFAULT_PW}{p.group(3)}\n")
         changed.append("password")
         continue
 
     # A fresh checkout must land in setup mode, or the first install has
     # first_login: false with no stored credential and fails closed = locked out.
-    fl = re.match(r'^(first_login:[ \t]*)(.*?)([ \t]*(?:#.*)?)$', ln)
+    fl = re.match(_pat("first_login"), ln)
     if fl and fl.group(2).strip().lower() != "true":
         out.append(f"{fl.group(1)}true{fl.group(3)}\n")
         changed.append("first_login")

@@ -134,7 +134,10 @@ def test_the_committed_config_carries_no_secret():
         "would fail closed with no credential"
     for name, mod in (cfg.get("modules") or {}).items():
         if isinstance(mod, dict) and "password" in mod:
-            assert str(mod["password"]) == "123123", \
+            # Portainer's shipped default is deliberately >=12 chars because
+            # Portainer refuses shorter ones — forcing it to 123123 would
+            # silently change shipped behaviour, so the sanitizer preserves it.
+            assert str(mod["password"]) in ("123123", "1234qwer!@#$"), \
                 f"the committed config.yaml has a non-default password for {name}"
 
 
