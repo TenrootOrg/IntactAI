@@ -869,9 +869,30 @@ def ensure_postgres_password(work_dir: str, logger: Callable = None) -> Dict:
         return {"changed": False, "error": str(e)}
 
     # Step 2 — change it inside the running database, using the old credential.
-    # psql via docker exec: the container is on timesketch_internal now, so this
-    # is the only route in from here anyway.
-    alter = run_command(
+    #
+    # ...but only if there IS one. On a FIRST-TIME install driven by the upgrade
+    # there is no intact_timesketch_postgres container yet: the database has not
+    # been initdb'd, and the credential in the file we just wrote is what initdb
+    # will bake in. Running the ALTER anyway fails (nothing to exec into), and
+    # the rollback below then DELETES postgres.env — leaving compose to die on
+    # `env file ./secrets/postgres.env not found` and the module reported
+    # MODULE_FAILED. Observed 2026-08-02 installing Timesketch onto a
+    # backend-only intact-20260726 box.
+    #
+    # So distinguish "no database to alter" from "alter against a running
+    # database failed". The first is the normal fresh-install path and must keep
+    # the file; only the second is the dangerous case the rollback exists for.
+    _pg_exists = run_command(
+        "docker inspect intact_timesketch_postgres",
+        logger=None).get('success')
+    if not _pg_exists:
+        log("  No existing Timesketch database — the generated credential will "
+            "be applied at initdb by the first compose up", "info")
+        _fresh = True
+    else:
+        _fresh = False
+
+    alter = {"success": True} if _fresh else run_command(
         "docker exec -e PGPASSWORD=timesketch intact_timesketch_postgres "
         "psql -U timesketch -d timesketch -c "
         + shlex.quote(f"ALTER USER timesketch WITH PASSWORD '{new_pw}'"),
