@@ -472,7 +472,39 @@ def post_upgrade_health_gate(logger: Callable = None, budget_s: int = 45,
                         f"{name} was in `created` and would not start "
                         f"(now {state})")
             elif state != 'running':
-                problems.append(f"{name} is {state} ({status[:40]})")
+                # Not every intact_* container is a service. Some are one-shot
+                # setup tasks that do a job and exit — intact_elk_setup
+                # provisions the Elasticsearch kibana_system user and stops
+                # (modules/elk/docker-compose.yaml: `restart: "no"`). For those,
+                # `Exited (0)` IS success, and reporting it as a problem made
+                # every single upgrade finish DEGRADED with a warning about a
+                # container that had done exactly what it was supposed to. A
+                # health gate that cries wolf on every run trains operators to
+                # ignore it, which costs more than the check is worth.
+                #
+                # The compose file already states the intent, so read it rather
+                # than hardcoding names: a container declared `restart: "no"`
+                # that exited ZERO ran to completion. Anything else that is not
+                # running is still a problem — a stopped nginx
+                # (restart: unless-stopped) and a setup task that exited 1 both
+                # still report, which is the whole point of the check.
+                policy, code = '', None
+                try:
+                    ri = run_command(
+                        "docker inspect -f '{{.HostConfig.RestartPolicy.Name}} "
+                        "{{.State.ExitCode}}' " + name,
+                        logger=None, timeout=min(10, max(5, int(_left()))))
+                    bits = (ri.get('stdout') or '').strip().strip("'").split()
+                    if len(bits) == 2:
+                        policy, code = bits[0], int(bits[1])
+                except Exception:
+                    policy, code = '', None
+                if state == 'exited' and policy == 'no' and code == 0:
+                    log(f"  [health] {name} exited 0 and is declared "
+                        f"restart:\"no\" — a one-shot setup task that "
+                        f"completed, not a fault.", "info")
+                else:
+                    problems.append(f"{name} is {state} ({status[:40]})")
             elif 'unhealthy' in status.lower():
                 problems.append(f"{name} reports unhealthy ({status[:40]})")
     except Exception as e:
