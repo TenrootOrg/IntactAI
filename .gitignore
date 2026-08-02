@@ -53,6 +53,12 @@ modules/portainer/secrets/*
 modules/volweb/secrets/*
 !modules/volweb/secrets/.gitkeep
 
+# Timesketch Postgres password (generated on install). NOT modules/timesketch/
+# .env — that file is tracked, so a credential written there gets staged by the
+# next `git add`.
+modules/timesketch/secrets/*
+!modules/timesketch/secrets/.gitkeep
+
 # Legacy Nginx Basic Auth password + htpasswd. No longer generated (the
 # dashboard login is an app-level session now — see
 # modules/backend/services/auth_service.py), but a box upgraded from an older

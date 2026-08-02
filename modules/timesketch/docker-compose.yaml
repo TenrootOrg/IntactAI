@@ -18,8 +18,20 @@ services:
     image: postgres:${POSTGRES_VERSION:?must be set via modules/timesketch/.env — see versions.timesketch_postgres in config.yaml}
     environment:
       - POSTGRES_USER=timesketch
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-timesketch}
       - POSTGRES_DB=timesketch
+    # POSTGRES_PASSWORD was `${POSTGRES_PASSWORD:-timesketch}`, and the fallback
+    # was LIVE: modules/timesketch/.env contains no such key and nothing set it,
+    # so every deployment ran the timeline database on timesketch/timesketch.
+    # Note the asymmetry that hid it -- the version pins above fail loudly with
+    # `:?`, while the password silently defaulted. A stale image tag is
+    # recoverable; a default database password is not.
+    #
+    # Delivered via secrets/ rather than the module .env because that .env is
+    # git-TRACKED and a credential there would be staged by the next `git add`.
+    # Written by deploy_timesketch() in lib/modules.sh and by
+    # _ensure_postgres_password() on the upgrade path.
+    env_file:
+      - ./secrets/postgres.env
     volumes:
       - timesketch_postgres_data:/var/lib/postgresql/data
     restart: unless-stopped

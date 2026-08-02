@@ -812,6 +812,105 @@ def _clear_timesketch_pip_cache(logger: Callable = None):
     log("Cleared potentially conflicting pip packages", "info")
 
 
+def ensure_postgres_password(work_dir: str, logger: Callable = None) -> Dict:
+    """Move Timesketch's database off the shipped timesketch/timesketch credential.
+
+    The compose file used to read `${POSTGRES_PASSWORD:-timesketch}` and that
+    fallback was LIVE — modules/timesketch/.env has no such key and nothing set
+    it — so every deployment ran the timeline database on timesketch/timesketch.
+    It now reads secrets/postgres.env, which must therefore exist or Postgres
+    will not start at all.
+
+    Fresh installs get this from lib/modules.sh. This is the upgrade path, and
+    it is harder: the database ALREADY EXISTS with the old credential baked in
+    at initdb time, so the password has to be changed inside Postgres as well as
+    in the files.
+
+    ORDER IS LOAD-BEARING:
+      1. write secrets/postgres.env      (so a later compose up can start)
+      2. ALTER USER inside the running DB (while the OLD credential still works)
+      3. rewrite the conf files' URI      (so the app uses the NEW one)
+    Rewriting the URI before the ALTER, or altering after the container has been
+    recreated with the new env, leaves the app unable to authenticate to its own
+    database.
+
+    Idempotent: once secrets/postgres.env exists this is a no-op, so re-running
+    an upgrade never rotates a working credential.
+    """
+    log = logger or (lambda m, l="info": None)
+    secrets_dir = os.path.join(work_dir, 'secrets')
+    pg_env = os.path.join(secrets_dir, 'postgres.env')
+    if os.path.exists(pg_env) and os.path.getsize(pg_env) > 0:
+        return {"changed": False, "reason": "already-set"}
+
+    import secrets as _secrets
+    new_pw = _secrets.token_hex(32)
+
+    try:
+        os.makedirs(secrets_dir, exist_ok=True)
+        with open(pg_env, 'w') as f:
+            f.write(f"POSTGRES_PASSWORD={new_pw}\n")
+        os.chmod(pg_env, 0o600)
+        # `env_file:` is read by the COMPOSE CLIENT, not by the container, so
+        # this file must be readable by whoever runs `docker compose` — not just
+        # by root. We write it as root from inside the backend container, which
+        # would otherwise leave a root-owned 0600 file that fails with
+        # "permission denied" the moment the operator runs compose by hand.
+        # Match the module directory's owner, the same way install.sh's
+        # fix_source_permissions chowns the tree.
+        try:
+            st = os.stat(work_dir)
+            os.chown(pg_env, st.st_uid, st.st_gid)
+        except Exception:
+            pass
+    except Exception as e:
+        log(f"  Could not write {pg_env} ({type(e).__name__}: {e}); leaving the "
+            f"database credential unchanged", "error")
+        return {"changed": False, "error": str(e)}
+
+    # Step 2 — change it inside the running database, using the old credential.
+    # psql via docker exec: the container is on timesketch_internal now, so this
+    # is the only route in from here anyway.
+    alter = run_command(
+        "docker exec -e PGPASSWORD=timesketch intact_timesketch_postgres "
+        "psql -U timesketch -d timesketch -c "
+        + shlex.quote(f"ALTER USER timesketch WITH PASSWORD '{new_pw}'"),
+        logger=None)          # logger=None: never echo the new password
+    if not (alter or {}).get('success'):
+        # Roll back the file so the next attempt retries cleanly rather than
+        # leaving a password that the database does not know about.
+        try:
+            os.remove(pg_env)
+        except OSError:
+            pass
+        log("  Could not change the Timesketch database password "
+            "(ALTER USER failed); left on the previous credential", "warning")
+        return {"changed": False, "error": "alter-failed"}
+
+    # Step 3 — point the app configs at the new credential.
+    updated = []
+    for base in ('timesketch.conf', 'timesketch_legacy.conf'):
+        conf = os.path.join(work_dir, 'config', base)
+        if not os.path.exists(conf):
+            continue
+        try:
+            with open(conf) as f:
+                body = f.read()
+            new_body = re.sub(r"postgresql://timesketch:[^@]*@",
+                              f"postgresql://timesketch:{new_pw}@", body)
+            if new_body != body:
+                with open(conf, 'w') as f:      # truncate in place: bind-mounted
+                    f.write(new_body)
+                updated.append(base)
+        except Exception as e:
+            log(f"  Could not update {base} ({type(e).__name__}: {e}) — "
+                f"Timesketch will fail to reach its database", "error")
+
+    log(f"  Timesketch database moved off the default timesketch/timesketch "
+        f"credential ({len(updated)} config(s) updated)", "success")
+    return {"changed": True, "configs_updated": updated}
+
+
 def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str = None) -> Dict:
     """Upgrade Timesketch to specified version with automatic rollback on failure."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
@@ -820,6 +919,19 @@ def upgrade_timesketch(version: str, logger: Callable = None, plaso_version: str
     backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
 
     log("Starting Timesketch upgrade...", "info")
+
+    # Before anything else touches the containers: get the database off the
+    # shipped timesketch/timesketch credential while the OLD one still works and
+    # Postgres is still running with its current env. Doing this after a
+    # recreate would mean the container already has the new POSTGRES_PASSWORD in
+    # its environment while the database itself still knows only the old one.
+    # No-op once secrets/postgres.env exists, so re-running never rotates a
+    # working credential.
+    try:
+        ensure_postgres_password(work_dir, logger=log)
+    except Exception as _e:
+        log(f"  (Timesketch DB credential migration skipped: "
+            f"{type(_e).__name__}: {_e})", "warning")
 
     # Get current versions for rollback
     current_vars = read_env_file(env_file)

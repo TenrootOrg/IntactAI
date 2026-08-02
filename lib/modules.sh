@@ -910,6 +910,26 @@ deploy_timesketch() {
     # via the dashboard Settings → Timesketch tab (no env var, no secret
     # baked into install). Idempotent: existing conf is preserved so
     # post-install edits (manual or via the Settings UI) survive re-runs.
+    # Timesketch's Postgres password. The compose file used to read
+    # `${POSTGRES_PASSWORD:-timesketch}` and the fallback was LIVE — nothing set
+    # the variable, so every install ran the timeline database on
+    # timesketch/timesketch. Generated once here and reused; rotating it on a
+    # re-run would leave the existing database unreachable (the credential is
+    # baked into the DB at initdb time).
+    #
+    # secrets/, not modules/timesketch/.env: that .env is git-tracked.
+    local ts_secrets="${SCRIPT_DIR}/modules/timesketch/secrets"
+    local ts_pg_env="$ts_secrets/postgres.env"
+    mkdir -p "$ts_secrets"
+    if [[ ! -s "$ts_pg_env" ]]; then
+        printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 32)" > "$ts_pg_env"
+        chmod 600 "$ts_pg_env"
+        sync
+        log_info "  Generated Timesketch Postgres password"
+    fi
+    local ts_pg_pass
+    ts_pg_pass=$(sed -n 's/^POSTGRES_PASSWORD=//p' "$ts_pg_env" | head -1)
+
     for base in timesketch.conf timesketch_legacy.conf; do
         local ts_template="${SCRIPT_DIR}/modules/timesketch/config/${base}.template"
         local ts_out="${SCRIPT_DIR}/modules/timesketch/config/${base}"
@@ -925,7 +945,13 @@ deploy_timesketch() {
             local random_key
             random_key=$(openssl rand -hex 32)
             sed -i "s|^SECRET_KEY = '[^']*'|SECRET_KEY = '${random_key}'|" "$ts_out"
-            log_success "  ${base} created from template (api_key empty — set via Settings → Timesketch; SECRET_KEY randomized)"
+            # The template ships the DB URI with the literal timesketch:timesketch
+            # credential. Point it at the generated password, or the app cannot
+            # authenticate to its own database now that the default is gone.
+            if [[ -n "$ts_pg_pass" ]]; then
+                sed -i "s|postgresql://timesketch:[^@]*@|postgresql://timesketch:${ts_pg_pass}@|" "$ts_out"
+            fi
+            log_success "  ${base} created from template (api_key empty — set via Settings → Timesketch; SECRET_KEY + DB password randomized)"
         else
             log_warn "  Template missing: $ts_template"
         fi

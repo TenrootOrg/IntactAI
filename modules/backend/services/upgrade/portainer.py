@@ -103,6 +103,15 @@ def _ensure_agent_secret(env_file: str, logger: Callable = None) -> None:
         with open(agent_env, 'w') as f:
             f.write(f"AGENT_SECRET={_secrets.token_hex(32)}\n")
         os.chmod(agent_env, 0o600)
+        # `env_file:` is read by the COMPOSE CLIENT, not the container, so this
+        # must be readable by whoever runs `docker compose`. We write it as root
+        # from inside the backend container; left root-owned 0600 it fails with
+        # "permission denied" as soon as the operator runs compose by hand.
+        try:
+            st = os.stat(os.path.dirname(env_file))
+            os.chown(agent_env, st.st_uid, st.st_gid)
+        except Exception:
+            pass
         log("  Generated Portainer agent secret (the agent was previously "
             "unauthenticated)", "success")
     except Exception as e:
