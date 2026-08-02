@@ -104,12 +104,24 @@ def test_both_paths_provision_it():
         "ensure_postgres_password is defined but never called"
 
 
+def _fn_source(body, name):
+    """The FULL text of a top-level function, not a fixed-size window.
+
+    These tests used `body[start:start + 4200]`. That slice silently truncates
+    the moment the function grows -- adding a comment block to
+    ensure_postgres_password pushed "alter-failed" past the 4200th character
+    and the assertion died with `ValueError: substring not found`, which reads
+    like the behaviour vanished rather than the window being too small.
+    """
+    start = body.index(f"def {name}")
+    nxt = re.search(r"^def ", body[start + 1:], re.MULTILINE)
+    return body[start:start + 1 + nxt.start()] if nxt else body[start:]
+
 def test_the_migration_order_is_correct():
     """ALTER USER must happen BEFORE the conf URI is rewritten, and both while
     the old credential still works."""
     body = _read(UPGRADE_PY)
-    start = body.index("def ensure_postgres_password")
-    fn = body[start:start + 4200]
+    fn = _fn_source(body, "ensure_postgres_password")
     write_env = fn.index("POSTGRES_PASSWORD=")
     alter = fn.index("ALTER USER timesketch")
     rewrite = fn.index("postgresql://timesketch:")
@@ -123,8 +135,7 @@ def test_a_failed_alter_rolls_back_the_env_file():
     """Otherwise the file claims a password the database never accepted, and
     the next run short-circuits on it — permanently broken."""
     body = _read(UPGRADE_PY)
-    start = body.index("def ensure_postgres_password")
-    fn = body[start:start + 4200]
+    fn = _fn_source(body, "ensure_postgres_password")
     at = fn.index("alter-failed")
     assert "os.remove" in fn[:at], \
         "a failed ALTER USER does not remove the env file; the next run would " \
@@ -133,8 +144,7 @@ def test_a_failed_alter_rolls_back_the_env_file():
 
 def test_it_is_idempotent():
     body = _read(UPGRADE_PY)
-    start = body.index("def ensure_postgres_password")
-    fn = body[start:start + 4200]
+    fn = _fn_source(body, "ensure_postgres_password")
     assert "already-set" in fn or "getsize" in fn, \
         "ensure_postgres_password no longer short-circuits when the secret " \
         "exists; re-running an upgrade would rotate a working credential"

@@ -155,8 +155,31 @@ def test_no_token_pattern_in_the_committed_config():
 
 
 def test_the_working_config_is_tight():
+    """0600 matters once the file HOLDS something. It does not before.
+
+    Git cannot record 0600 (only 100644/100755), so a fresh clone or an
+    extracted release always arrives group-readable -- and at that moment the
+    file is the blank template the sanitizer guarantees: empty github_token,
+    shipped module passwords. There is nothing to protect yet, and install.sh
+    chmods it the moment there is.
+
+    Asserting unconditionally made this fail in CI, where the checkout is by
+    definition pristine. That is a false positive on the one control that is
+    supposed to mean something -- and a check that cries wolf on every push is
+    how a real 0644 on a live appliance gets waved through.
+
+    So: skip while the file still carries no credential; assert hard the moment
+    it does."""
     if not os.path.exists(CONFIG):
         return
+    body = _read(CONFIG)
+    token = re.search(r"^\s*github_token:\s*(.*)$", body, re.M)
+    token_val = (token.group(1).strip().strip("'\"") if token else "")
+    pristine = not token_val and not re.search(
+        r"^\s*password:\s*(?!'?(123123|1234qwer!@#\$)'?\s*(#.*)?$)\S",
+        body, re.M)
+    if pristine:
+        return          # blank template — nothing to protect yet
     mode = os.stat(CONFIG).st_mode & 0o777
     assert not (mode & 0o077), \
         f"config.yaml is {oct(mode)} — it holds the operator's live PAT once edited"

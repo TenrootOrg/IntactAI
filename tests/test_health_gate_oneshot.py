@@ -46,13 +46,30 @@ class _Docker:
         return {"success": True, "stdout": ""}
 
 
+class _FakeResp:
+    status = 200
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
 def _gate(containers, **kw):
-    orig = up.run_command
+    """Stub BOTH halves of the gate.
+
+    It has three parts: container states via run_command, the backend image
+    identity, and an HTTP probe of /api/health + /api/upgrade/current-versions
+    on 127.0.0.1:5001. The CI container runs with --network none and no backend,
+    so leaving the HTTP half live made every case fail with `unreachable
+    (URLError)` regardless of the container states under test -- the tests
+    passed locally only because a real backend happened to be listening."""
+    import urllib.request
+    orig_run, orig_open = up.run_command, urllib.request.urlopen
     up.run_command = _Docker(containers)
+    urllib.request.urlopen = lambda *a, **k: _FakeResp()
     try:
         return up.post_upgrade_health_gate(budget_s=5, **kw)
     finally:
-        up.run_command = orig
+        up.run_command = orig_run
+        urllib.request.urlopen = orig_open
 
 
 SETUP_OK = ("exited", "Exited (0) 2 hours ago", "no", 0)

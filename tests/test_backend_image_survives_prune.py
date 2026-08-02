@@ -77,12 +77,19 @@ def test_prune_keys_off_the_effective_set_not_the_raw_argument():
         "prune still derives its keep-set from the raw selected_modules argument")
 
 
-def test_disk_budget_also_sized_from_the_effective_set():
-    """A force-included intact brings a multi-GB image back into the
-    requirement; budgeting from the raw subset under-counts it."""
+def test_disk_budget_is_sized_after_extraction_not_from_scratch():
+    """This used to assert the budget was narrowed by the effective apply set.
+    f4c045a replaced that call entirely: by this point the package is already
+    extracted, so the check now sizes only the work still to come and measures
+    the tars actually on disk -- which picks up the prune above for free, with
+    no apply set to re-derive. Assert the current contract rather than leaving
+    a stale string match that fails for the right reason with the wrong
+    message. The sizing itself is covered by
+    tests/test_disk_budget_after_extraction.py."""
     budget = SRC[_pos("Second disk check"):_pos("State persisted across")]
-    assert "sorted(selected_set) if selected_set else selected_modules" in budget, (
-        "disk budget is not sized from the effective apply set")
+    assert "required_free_gb_after_extraction(" in budget, (
+        "the post-extraction disk check no longer uses the after-extraction "
+        "sizing — it is double-counting the package and the extracted tree")
 
 
 def test_downgrade_check_runs_before_anything_is_deleted():

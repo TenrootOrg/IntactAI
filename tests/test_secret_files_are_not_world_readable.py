@@ -200,16 +200,45 @@ def test_env_file_secrets_are_provisioned_outside_the_per_module_upgrades():
     has neither -- and the next `docker compose up` dies with "env file not
     found". Upgrading from intact-20260726 is exactly that case.
 
-    Both generators must be called from the upgrade's UNCONDITIONAL final phase.
+    Both generators must therefore run UNCONDITIONALLY -- never inside a branch
+    that a version no-op can skip.
+
+    They used to be asserted to live in the upgrade's final phase. That was one
+    way to be unconditional, but it put them AFTER the module loop whose
+    compose-up consumes them, which broke a first-time install: the secret did
+    not exist yet when Timesketch's `docker compose up` ran, and the module was
+    reported MODULE_FAILED inside a run that still said `completed` (2026-08-02,
+    installing Timesketch onto a backend-only intact-20260726 box).
+
+    So the requirement is stronger than "final phase": unconditional AND before
+    the loop. Both helpers are idempotent no-ops once their secret exists, so
+    running early costs nothing and cannot rotate a live credential.
     """
-    body = _read(UPGRADE_INIT)
-    tail = body[body.index("harden_secret_permissions(logger=log)"):]
+    # Scope to resume_upgrade_workflow. __init__.py has THREE module loops (the
+    # online path, the Phase-2 resume, the offline apply); anchoring on the
+    # first occurrence of each pattern silently compared positions in two
+    # different functions.
+    whole = _read(UPGRADE_INIT)
+    body = whole[whole.index("def resume_upgrade_workflow("):]
+    loop = body.index("for module_name in upgrade_order:")
+
+    # Both are wired through one provisioning block. Locate THAT, not the bare
+    # names -- the names also appear in the import line at the top of the file,
+    # which is deeply indented and would fail the nesting check for no reason.
+    block = body.index('for _label, _fn, _mod in (')
     for name in ("_ensure_agent_secret", "_ensure_ts_pg_password"):
         assert name in body, f"{name} is not wired into the upgrade flow"
-        assert name in tail, (
-            f"{name} is called before the unconditional final phase — it would "
-            f"be skipped whenever that module is a version no-op, leaving the "
-            f"refreshed compose file pointing at a missing env_file")
+        assert name in body[block:loop], (
+            f"{name} is not in the provisioning block that runs before the "
+            f"module loop — a first-time install of that module composes up "
+            f"before its secret exists")
+
+    assert block < loop, (
+        "the secret provisioning block moved to or below the module loop")
+    line = body[:block].rsplit("\n", 1)[-1]
+    assert len(line) - len(line.lstrip()) <= 4, (
+        "the provisioning block looks nested inside a conditional — it must "
+        "run for every upgrade, including ones where the module is a no-op")
 
 
 if __name__ == "__main__":
