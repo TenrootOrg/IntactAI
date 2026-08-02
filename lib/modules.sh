@@ -121,6 +121,35 @@ generate_portainer_secrets() {
         log_info "  Portainer admin password file exists, skipping"
     fi
 
+    # AGENT_SECRET — the ONLY thing authenticating callers to portainer-agent.
+    # The agent is a full Docker API proxy holding /var/run/docker.sock as root
+    # (its own README documents /browse/* endpoints that read anywhere on the
+    # host filesystem), so an unauthenticated agent reachable over the network
+    # is a direct container-to-host-root path: create a container binding / and
+    # you own the box.
+    #
+    # It was previously unset. `docker inspect intact_portainer_agent` showed an
+    # environment of exactly PATH — no secret — while the agent sat on the
+    # shared intact_network alongside 24 other containers.
+    #
+    # Both server and agent load this same file; a mismatch means Portainer
+    # cannot see its environment, which is loud and immediate rather than
+    # silent. Generated once and then left alone -- rotating it on every install
+    # would unpair an already-working server/agent.
+    #
+    # Deliberately NOT modules/portainer/.env: that file is git-TRACKED, so a
+    # credential written there gets staged by the next `git add` (the same trap
+    # that once staged a live GitHub PAT). secrets/ is gitignored.
+    local agent_env="$secrets_dir/agent.env"
+    if [[ ! -s "$agent_env" ]]; then
+        printf 'AGENT_SECRET=%s\n' "$(openssl rand -hex 32)" > "$agent_env"
+        chmod 600 "$agent_env"
+        sync
+        log_info "  Generated Portainer agent secret"
+    else
+        log_info "  Portainer agent secret exists, skipping"
+    fi
+
     log_success "Portainer secrets ready"
 }
 

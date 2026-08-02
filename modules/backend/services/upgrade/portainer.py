@@ -65,6 +65,51 @@ def _update_portainer_versions(env_file: str, version: str, logger: Callable) ->
     require the agent to run the exact same version as the server."""
     update_env_file(env_file, 'PORTAINER_VERSION', version, logger=logger)
     update_env_file(env_file, 'PORTAINER_AGENT_VERSION', version, logger=logger)
+    # Called from here rather than from each of the three upgrade entry points,
+    # so no path can be added later that stamps versions but forgets the secret
+    # — which would leave that path unable to start Portainer at all.
+    _ensure_agent_secret(env_file, logger)
+
+
+def _ensure_agent_secret(env_file: str, logger: Callable = None) -> None:
+    """Create modules/portainer/secrets/agent.env if absent.
+
+    AGENT_SECRET is the only thing authenticating callers to portainer-agent,
+    which is a full Docker API proxy running as root with docker.sock mounted —
+    unauthenticated access to it is a container-to-host-root path. It was
+    previously never set at all.
+
+    This MUST run on the upgrade path, not just in lib/modules.sh: the compose
+    file now declares `env_file: ./secrets/agent.env` for BOTH services, so a
+    box upgraded without it fails `docker compose up` outright. The bash
+    bootstrap never runs again after the first install, so this is the only
+    thing standing between an upgraded box and a dead Portainer.
+
+    Written to secrets/ rather than the module .env on purpose: that .env is
+    git-tracked, and a credential written there would be staged by the next
+    `git add`. secrets/* is gitignored.
+
+    Generated once and then left alone — rotating it would unpair a working
+    server/agent until both were recreated together.
+    """
+    log = logger or (lambda m, l="info": None)
+    secrets_dir = os.path.join(os.path.dirname(env_file), 'secrets')
+    agent_env = os.path.join(secrets_dir, 'agent.env')
+    try:
+        if os.path.exists(agent_env) and os.path.getsize(agent_env) > 0:
+            return
+        os.makedirs(secrets_dir, exist_ok=True)
+        import secrets as _secrets
+        with open(agent_env, 'w') as f:
+            f.write(f"AGENT_SECRET={_secrets.token_hex(32)}\n")
+        os.chmod(agent_env, 0o600)
+        log("  Generated Portainer agent secret (the agent was previously "
+            "unauthenticated)", "success")
+    except Exception as e:
+        # Loud: without this file Portainer will not start at all, so a silent
+        # failure here would look like an unrelated Portainer outage later.
+        log(f"  Could not write {agent_env} ({type(e).__name__}: {e}) — "
+            f"Portainer will fail to start until it exists", "error")
 
 
 def upgrade_portainer(version: str, logger: Callable = None) -> Dict:
