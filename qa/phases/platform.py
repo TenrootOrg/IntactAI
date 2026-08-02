@@ -7,6 +7,7 @@ listing twelve failures caused by one broken install is worse than a report
 saying "install failed" once.
 """
 
+import glob
 import os
 import re
 import shutil
@@ -262,6 +263,39 @@ def register(runner, cfg):
                       note="rc=126 from the memory pipeline means this bit is "
                            "missing")
 
+        # The LEGACY Velociraptor client (0.7.x) has never been exercised by
+        # anything. It exists for old Windows hosts -- Server 2008 R2, Win 7 --
+        # where the modern Go 1.22+ binary dies with 0xc0000005, so the boxes
+        # that need it are exactly the ones nobody has to hand to test with.
+        #
+        # It is served to operators as a download, which makes the failure mode
+        # silent: a 0644 binary downloads fine and only fails when the customer
+        # runs it, on a machine we will never see. Same masked-execute-bit bug
+        # as the CLI above (`chmod +x` is filtered by the process umask,
+        # `chmod 755` is not) with a far longer feedback loop.
+        legacy_dir = os.path.join(REPO_DIR, "modules", "nginx", "html", "downloads")
+        legacy = sorted(glob.glob(os.path.join(legacy_dir, "velociraptor-v0.7.*")))
+        if legacy:
+            detail["velociraptor_legacy_files"] = [os.path.basename(p) for p in legacy]
+            for p in legacy:
+                mode = os.stat(p).st_mode & 0o777
+                name = os.path.basename(p)
+                # Only the ELF/musl build is ever executed here; the .exe is a
+                # download served to Windows. Assert the bit on the one that
+                # needs it, and assert non-empty on both -- a truncated download
+                # is the other way this ships broken.
+                if name.endswith("-linux-amd64-musl"):
+                    ctx.check(f"legacy client {name} is executable",
+                              bool(mode & 0o111), expected="0755", actual=oct(mode))
+                ctx.check(f"legacy client {name} is not truncated",
+                          os.path.getsize(p) > 1024 * 1024, expected=">1 MB",
+                          actual=f"{os.path.getsize(p) / 1048576:.1f} MB")
+        else:
+            # Not a failure on its own -- a package built without the legacy pin
+            # legitimately ships none. Recorded so a run that SHOULD have them
+            # cannot look identical to one that never expected any.
+            detail["velociraptor_legacy_files"] = "none staged"
+
         # The API must reject an unauthenticated caller.
         c = api_lib.Client(cfg.platform_host, tl=tl)
         code = c.status_of("/api/cases")
@@ -273,6 +307,49 @@ def register(runner, cfg):
         ctx.check("Elasticsearch 9300 is closed from the LAN", not code_9300,
                   expected="closed", actual="open" if code_9300 else "closed")
 
+        return detail
+
+    # ---------------------------------------------------------------- 0c --
+    @runner.phase("cloud", "Cloud detection content (AWS SIGMA / Azure o365rc)",
+                  needs=("install",), optional=True)
+    def cloud(ctx):
+        """WRITTEN BUT NOT RUN by default -- see cfg.cloud_tests.
+
+        The DFIR profile this harness exercises does not install aws_sigma or
+        o365rc, so every assertion here would fail for the wrong reason on a
+        box that was never meant to have them, burying the failures that
+        matter. The coverage exists so that pointing this at a cloud-enabled
+        appliance is a config flag rather than a writing exercise.
+
+        What it checks, and why each is the part that silently no-ops:
+          * the SIGMA rule pack is PRESENT AND NON-EMPTY -- an aws_sigma module
+            that installed cleanly but cloned zero rules detects nothing while
+            reporting healthy, which is the exact shape of the aws_sigma
+            'enabled but no rules' case the upgrade path already warns about;
+          * the o365rc image exists locally -- upstream publishes only :latest,
+            so an 'upgrade' is a re-pull and a missing image is invisible until
+            an Azure collection is actually attempted.
+        """
+        if not cfg.cloud_tests:
+            return {"skipped": "run.cloud_tests is false (default) — "
+                               "assertions written, deliberately not run"}
+
+        detail = {}
+        rules = "/opt/sigma-rules/rules/cloud/aws"
+        r = shell.docker(["exec", "intact_backend", "sh", "-c",
+                          f"ls {rules}/*.yml 2>/dev/null | wc -l"])
+        count = int((r.out.strip() or "0").splitlines()[-1] or 0) if r.ok else 0
+        detail["aws_sigma_rules"] = count
+        ctx.check("the AWS SIGMA rule pack has rules", count > 0,
+                  expected=">0", actual=count,
+                  note="an aws_sigma module that installed but cloned zero "
+                       "rules detects nothing while reporting healthy")
+
+        r = shell.docker(["image", "inspect", "anssi/dfir-o365rc:latest"])
+        ctx.check("the o365rc collector image is present locally", r.ok,
+                  expected="present", actual="present" if r.ok else "missing",
+                  note="upstream ships only :latest, so a missing image is "
+                       "invisible until an Azure collection is attempted")
         return detail
 
     # ----------------------------------------------------------------- 1 --

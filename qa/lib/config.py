@@ -131,6 +131,18 @@ class QAConfig:
     def keep_memory(self):
         return bool(self.get("run", "keep_memory", default=False))
 
+    @property
+    def cloud_tests(self):
+        """Run the AWS/Azure cloud-module assertions.
+
+        OFF by default and deliberately so. The cloud phase asserts on the
+        aws_sigma rule pack and the o365rc image, neither of which this QA
+        profile installs -- so with them enabled on a DFIR-only box every
+        assertion fails for the wrong reason and buries the failures that
+        matter. Written now so the coverage exists the moment a cloud-enabled
+        box is available to point it at."""
+        return bool(self.get("run", "cloud_tests", default=False))
+
     def timeout(self, stage, default=30):
         """Minutes to wait for a slow stage before calling it failed."""
         return int(self.get("run", "timeouts", stage, default=default))
