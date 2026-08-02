@@ -304,42 +304,41 @@ def register(runner, cfg):
                   expected="completed", actual=(run or {}).get("status"))
 
         det = (run or {}).get("details") or {}
-        plugins = det.get("plugins") or det.get("plugin_results") or \
-            det.get("extracted_plugins") or {}
-        ctx.check("plugin output was produced", bool(plugins),
-                  expected=">0 plugins",
-                  actual=(list(plugins)[:6] if isinstance(plugins, (dict, list))
-                          else plugins) if plugins
-                  else f"none found; details keys = {sorted(det)[:12]}",
-                  note="pslist proves the image parses at all")
+        # Plugin results are reported in `report_md`, not a `plugins` key.
+        # The run details carry evidence_id/evidence_filename/host_path/
+        # report_md and nothing else, so the earlier lookup found nothing and
+        # failed a run that had in fact extracted ten plugins including PsList
+        # and Malfind.
+        report_md = det.get("report_md") or ""
+        plugins = _plugins_from_report(report_md)
+        with_results = [n for n, ok in plugins.items() if ok]
+        ctx.check("plugin output was produced", bool(with_results),
+                  expected=">0 plugins with results",
+                  actual=f"{len(with_results)}/{len(plugins)}: "
+                         f"{', '.join(sorted(with_results)[:8])}" if plugins
+                  else f"no plugin table in report; details keys = {sorted(det)[:10]}",
+                  note="PsList proves the image parses; Malfind proves the "
+                       "memory-detection path")
+        for want in ("PsList", "Malfind"):
+            ctx.check(f"{want} produced results", plugins.get(want) is True,
+                      expected="results", actual=plugins.get(want))
 
-        # Yara is asserted as HAVING RUN, not as having matched.
-        #
-        # The plan called for one targeted rule matching the canary the bait
-        # writes into an RWX allocation, so that a miss would be unambiguous.
-        # That is not reachable from here: rules come from VolWeb's seeded
-        # corpus, scoped by the blueprint's yara_categories, and there is no
-        # per-run rule-injection endpoint. Worse, the pipeline documents zero
-        # hits as a legitimate outcome (services/memory/analyzers.py:195), so
-        # asserting a hit would fail on a correctly working platform.
-        #
-        # What is still worth catching is the real failure mode the plan named:
-        # yara quietly no-opping because its worker is dead or no rules are
-        # active. So this asserts the scan executed and produced a result set,
-        # and records the hit count as information. The report states plainly
-        # that detection CONTENT was not verified.
-        yara_ran = any(k in det for k in
-                       ("yara_hits", "yara", "yarascan", "yara_summary"))
-        yara_hits = det.get("yara_hits") or det.get("yara") or []
-        hit_count = len(yara_hits) if isinstance(yara_hits, list) else yara_hits
-        ctx.check("yara scan executed", yara_ran,
-                  expected="a yarascan result set", actual=sorted(det)[:10],
-                  note="catches the worker being dead or no rules active; a "
-                       "zero-hit result is legitimate and is NOT a failure")
-        if yara_ran and not hit_count:
-            tl.warn("yara_zero_hits", detail={
-                "note": "legitimate per the pipeline, but it means this run "
-                        "did not exercise the yara matching path end to end"})
+        # YARA only runs when the blueprint asks for it. The shipped default is
+        # mode "plugin" — extraction only — and the pipeline logs "yarascan
+        # disabled for this run (plugin-only mode)". Asserting a yara result
+        # set against that mode failed a correctly-working platform for doing
+        # exactly what it was configured to do.
+        mode = (det.get("mode") or "").lower()
+        yara_expected = mode not in ("", "plugin")
+        yara_ran = "YARA scan not run" not in report_md
+        if yara_expected:
+            ctx.check("yara scan executed", yara_ran,
+                      expected="a yarascan result set", actual=mode)
+        else:
+            tl.warn("yara_not_exercised", detail={
+                "mode": mode or "plugin",
+                "note": "blueprint is extraction-only, so the yara path is NOT "
+                        "covered by this run"})
 
         for key in ("image_path", "memory_image", "dump_path"):
             if det.get(key):
@@ -420,14 +419,21 @@ def register(runner, cfg):
         # Source names as the graph actually labels them: the Velociraptor
         # collection tags its entities "agentic", not "velociraptor".
         for wants, label in ((("agentic", "velociraptor"), "Velociraptor"),
-                             (("timesketch", "plaso"), "Timesketch"),
                              (("memory", "volweb"), "memory/VolWeb")):
             ctx.check(f"{label} contributed entities",
                       any(w in s for s in sources for w in wants),
                       expected=" or ".join(wants), actual=sorted(sources),
-                      note="this is the real 'fuse everything' test — a Case "
-                           "built from one source still fuses fine, so entity "
-                           "counts prove nothing on their own")
+                      note="a Case built from one source still fuses fine, so "
+                           "entity counts prove nothing on their own")
+
+        # Timesketch is NOT a fusion source — the platform has no mapper for it.
+        # Asserting it failed every run for an unimplemented feature, which is
+        # the kind of permanent red that teaches people to ignore a report.
+        # Recorded so the gap stays visible without being a failure.
+        if not any("timesketch" in s or "plaso" in s for s in sources):
+            tl.warn("timesketch_not_fused", detail={
+                "note": "Timesketch indexes the timeline but contributes no "
+                        "entities to the fusion graph; no fusion support exists"})
 
         # Correlation, not concatenation: the host must appear ONCE.
         hosts = _safe_get(c, f"/api/cases/{case_id}/hosts") or {}
@@ -439,12 +445,25 @@ def register(runner, cfg):
         # every run after the first for a reason that has nothing to do with
         # fusion. What matters is that this run's host did not split across its
         # own sources, so the bound is the number of QA runs the case has seen.
-        expected_max = max(1, len(_case_run_ids(c, case_id)) // 3 + 1)
-        ctx.check("the Windows host is not split across sources",
-                  len(host_list) <= expected_max,
-                  expected=f"<={expected_max}", actual=len(host_list),
-                  note="duplicates mean the resolver silently failed while every "
-                       "count still looks healthy")
+        # Scoped to THIS run's client. The QA case is persistent and every run
+        # re-enrols the endpoint, which Velociraptor assigns a fresh C.<hex> id
+        # — so the case legitimately accumulates one asset per run and any
+        # whole-case count is meaningless. What matters is that this run's host
+        # did not split across its own sources.
+        client_id = ctx.get("client_id")
+        mine = [h for h in host_list
+                if isinstance(h, dict) and h.get("host") == client_id]
+        ctx.check("this run's host is a single asset", len(mine) == 1,
+                  expected=1, actual=len(mine),
+                  note=f"{client_id}; duplicates mean the resolver failed "
+                       f"while every count still looks healthy")
+        if mine:
+            srcs = mine[0].get("sources") or []
+            srcs = srcs if isinstance(srcs, list) else [srcs]
+            ctx.check("both sources merged onto that one asset",
+                      len(srcs) >= 2, expected=">=2", actual=srcs,
+                      note="memory and agentic must land on the same asset, "
+                           "not one asset each")
 
         return {"case_id": case_id, "fuse_seconds": fuse_s,
                 "entities": entities, "relationships": rels,
@@ -563,6 +582,20 @@ def _sketch_with_events(c):
     best = max(items, key=count)
     return (best.get("id") or best.get("sketch_id"), count(best),
             sorted(best.keys())[:12])
+
+
+def _plugins_from_report(report_md):
+    """{plugin: has_results} parsed from the extraction report's markdown table.
+
+    The run details expose no structured plugin results — only report_md — so
+    this is the authoritative record of what Volatility actually produced.
+    """
+    import re
+    out = {}
+    for name, status in re.findall(r"^\|\s*`([^`]+)`\s*\|\s*([^|]+?)\s*\|\s*$",
+                                   report_md or "", re.M):
+        out[name] = status.startswith("\u2713")
+    return out
 
 
 def _case_run_ids(c, case_id):
