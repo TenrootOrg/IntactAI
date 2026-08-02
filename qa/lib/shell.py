@@ -134,8 +134,44 @@ def container_names():
 
 
 def container_state(name):
-    r = docker(["inspect", "-f", "{{.State.Status}}|{{.State.Health.Status}}", name])
+    """(status, health) for a container. health is None when it has no
+    healthcheck, which is not the same as being unhealthy.
+
+    The `{{if .State.Health}}` guard is load-bearing. Referencing
+    `.State.Health.Status` directly errors on any container that declares no
+    healthcheck — Go templates cannot dereference a nil pointer — so `docker
+    inspect` exits non-zero and this returned (None, None). That read as
+    "not running", and the install phase failed a perfectly healthy box,
+    naming the eight containers that simply have no healthcheck defined.
+    """
+    r = docker(["inspect", "-f",
+                "{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}"
+                "{{else}}none{{end}}|{{.State.ExitCode}}", name])
     if not r.ok:
         return None, None
-    status, _, health = r.out.strip().partition("|")
-    return status or None, (health if health not in ("", "<no value>") else None)
+    parts = r.out.strip().split("|")
+    status = parts[0] or None
+    health = parts[1] if len(parts) > 1 and parts[1] not in (
+        "", "none", "<no value>") else None
+    exit_code = parts[2] if len(parts) > 2 else None
+    return status, health, exit_code
+
+
+def container_is_ok(name):
+    """Whether a container is in an acceptable state, with a reason if not.
+
+    `running` is the normal case, but `exited` with code 0 is also correct:
+    intact_elk_setup is a one-shot initialiser that does its work and stops.
+    Treating any non-running container as broken flagged it on every healthy
+    box. Checking the exit code rather than allow-listing the name means a
+    future one-shot is handled too, and a one-shot that starts FAILING is
+    still caught.
+    """
+    status, health, exit_code = container_state(name)
+    if status == "running":
+        if health == "unhealthy":
+            return False, f"{name}(running/unhealthy)"
+        return True, None
+    if status == "exited" and exit_code in ("0", 0):
+        return True, None
+    return False, f"{name}({status}/{health}/exit={exit_code})"

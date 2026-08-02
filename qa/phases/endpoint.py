@@ -58,19 +58,42 @@ def register(runner, cfg):
         remote = f"{STAGE_DIR}/{os.path.basename(installer)}"
         remote_win = remote.replace("/", "\\")
         with target() as win:
-            win.run(f'if not exist "{STAGE_DIR_WIN}" mkdir "{STAGE_DIR_WIN}"')
+            # UPLOAD FIRST, then uninstall, then install.
+            #
+            # The order is load-bearing. Removing the old client has to be done
+            # with the package file in hand (see _uninstall_client), so the MSI
+            # must already be on the box. Uninstalling first and uploading
+            # afterwards left the product half-registered and made the install
+            # fail 1603.
+            #
+            # PowerShell, not cmd: OpenSSH for Windows starts powershell.exe
+            # here, so `if not exist ... mkdir` is a parse error, not a mkdir.
+            win.run_powershell(
+                f"New-Item -ItemType Directory -Force -Path '{STAGE_DIR_WIN}' "
+                f"| Out-Null")
             win.put(installer, remote)
             ctx.check("installer uploaded", win.exists(remote))
 
-            if remote.endswith(".msi"):
-                rc, out = win.run(
-                    f'msiexec /i "{remote_win}" /quiet /norestart', timeout=900)
-            else:
-                rc, out = win.run(f'"{remote_win}" --install', timeout=900)
-            detail["install_rc"] = rc
-            # msiexec 3010 = success, reboot required. Not a failure.
-            ctx.check("client installer ran", rc in (0, 3010),
-                      actual=rc, note=ctx.redact(out)[:200])
+            # Any client already here is from an earlier session and holds the
+            # PREVIOUS server's CA — a fresh install regenerates it, so that
+            # client can never enrol. Left in place the symptom is the worst
+            # kind: service Running, installer "succeeded", client never
+            # appears, phase waits out its whole timeout.
+            pre = _uninstall_client(win, msi_path_win=remote_win)
+            detail["preexisting_client_removed"] = pre
+            if pre:
+                tl.warn("stale_client_removed", detail={
+                    "note": "target already had a Velociraptor client holding "
+                            "the old CA; removed so enrolment is genuinely fresh"})
+
+            code = win.msiexec(["/i", remote_win, "/quiet", "/norestart"])
+            detail["install_exit"] = code
+            # 0 = success, 3010 = success + reboot pending. 1603 is the fatal
+            # one and used to be invisible because msiexec detaches.
+            ctx.check("client installer succeeded", code in (0, 3010),
+                      expected="0 or 3010", actual=code,
+                      note="1603 usually means a previous install is still "
+                           "registered; 1618 means another msiexec is running")
 
             state, _ = None, None
             for _ in range(30):
@@ -183,11 +206,7 @@ def register(runner, cfg):
                 # 2. uninstall. Fire-and-forget BY NATURE: the agent kills its
                 # own service, so this call cannot return a clean success.
                 # Confirm by watching the client go offline, never by exit code.
-                win.run('sc.exe stop Velociraptor', timeout=60)
-                rc, out = win.run(
-                    'wmic product where "name like \'Velociraptor%%\'" '
-                    'call uninstall /nointeractive', timeout=600)
-                detail["uninstall_rc"] = rc
+                detail["uninstalled"] = _uninstall_client(win)
 
                 state = win.service_state("Velociraptor")
                 detail["service_after"] = state
@@ -285,6 +304,53 @@ Write-Output 'BAIT_COMPLETE'
 
 
 # --- helpers -------------------------------------------------------------
+
+
+def _uninstall_client(win, msi_path_win=None):
+    """Remove any installed Velociraptor client. Returns True if one was there.
+
+    Uninstall BY PACKAGE FILE when one is available, not by product code.
+
+    Uninstalling by code left the product half-registered on this target:
+    Windows Installer still had Velociraptor 0.77.1 recorded, with a cached
+    source path pointing at a package that no longer existed. The next `/i`
+    was therefore treated as a RECONFIGURE, went looking for that missing
+    source, failed SecureRepair and returned 1603 — while the service was
+    gone, so every symptom pointed at the install rather than at the leftover
+    registration. Handing msiexec the actual .msi gives it a valid source and
+    makes the removal complete.
+
+    Idempotent and best-effort: teardown runs even when earlier phases failed,
+    so "nothing to remove" is a normal outcome rather than an error. Success is
+    judged by the service being GONE, never by an exit code — the agent stops
+    its own service, so the call cannot report cleanly.
+    """
+    installed = (win.service_state("Velociraptor") is not None
+                 or win.exists("C:/Program Files/Velociraptor")
+                 or bool(win.ps_value(
+                     "Get-CimInstance Win32_Product "
+                     "-Filter \"Name LIKE 'Velociraptor%'\" "
+                     "| Select-Object -First 1 -ExpandProperty IdentifyingNumber")))
+    if not installed:
+        return False
+
+    win.run_powershell("Stop-Service -Name Velociraptor -Force "
+                       "-ErrorAction SilentlyContinue", timeout=120)
+
+    if msi_path_win:
+        win.msiexec(["/x", msi_path_win, "/quiet", "/norestart"])
+    else:
+        code = win.ps_value(
+            "Get-CimInstance Win32_Product -Filter \"Name LIKE 'Velociraptor%'\" "
+            "| Select-Object -First 1 -ExpandProperty IdentifyingNumber")
+        if code:
+            win.msiexec(["/x", code, "/quiet", "/norestart"])
+
+    win.run_powershell("sc.exe delete Velociraptor 2>&1 | Out-Null", timeout=60)
+    # The writeback file holds the client_id. Leaving it behind would let a
+    # reinstalled client re-adopt the old identity instead of enrolling fresh.
+    win.remove("C:/Program Files/Velociraptor", recursive=True)
+    return True
 
 
 def _clients(c, include_offline=False):

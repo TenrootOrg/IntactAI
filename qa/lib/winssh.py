@@ -116,10 +116,69 @@ class WindowsTarget:
         detection bait we WANT the collection to find.
         """
         import base64
+        # $ProgressPreference is load-bearing, not tidiness. PowerShell writes
+        # progress records to the CLIXML stream, and over SSH that lands
+        # INTERLEAVED with stdout — so `(Get-Service X).Status` came back as
+        # several hundred bytes of <Objs Version="1.1.0.1">…</Objs> with the
+        # actual word buried in it. Every service-state probe therefore read as
+        # "not Running", and enrolment waited out its full timeout against a
+        # client that was fine.
+        script = "$ProgressPreference='SilentlyContinue'\n" + script
         blob = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
         cmd = ("powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass "
                f"-EncodedCommand {blob}")
         return self.run(cmd, timeout=timeout)
+
+    def msiexec(self, args, timeout=900):
+        """Run msiexec and return its REAL exit code.
+
+        Two traps, both of which made a failed install look like a clean one:
+
+        * OpenSSH for Windows starts POWERSHELL here, not cmd.exe. Anything
+          written in cmd syntax (`if not exist ... mkdir`, `&& echo`) fails to
+          parse, and `&` produces a bare "AmpersandNotAllowed" parser error.
+        * msiexec detaches. Invoked plainly it returns 0 within a fraction of a
+          second whatever the outcome, so a 1603 fatal error was indistinguish-
+          able from success and the phase went on to wait ten minutes for a
+          client that was never going to appear.
+
+        Start-Process -Wait -PassThru fixes both: PowerShell-native, blocks
+        until msiexec exits, and hands back the actual code.
+        """
+        quoted = ",".join(
+            "\"`\"" + a + "`\"\"" if a.startswith(("C:", "{", "\\")) else f"'{a}'"
+            for a in args)
+        rc, out = self.run_powershell(
+            f"$p = Start-Process msiexec.exe -ArgumentList {quoted} "
+            f"-Wait -PassThru; Write-Output ('QAVAL:' + $p.ExitCode + ':QAVAL')",
+            timeout=timeout)
+        m = re.search(r"QAVAL:(-?\d+):QAVAL", out or "")
+        code = int(m.group(1)) if m else None
+        if self.tl:
+            # 0 = success, 3010 = success + reboot pending. Anything else is a
+            # failure worth naming: 1603 fatal, 1618 another install running,
+            # 1605 product not installed.
+            self.tl.event("msiexec", status="ok" if code in (0, 3010) else "fail",
+                          detail={"exit": code, "args": " ".join(args)[:160]})
+        return code
+
+    def ps_value(self, expression, timeout=120):
+        """Evaluate a PowerShell expression and return just its value.
+
+        Wraps the result in a sentinel and greps it back out, because even with
+        the progress stream silenced, banners and warnings can share stdout.
+        Returns None if the expression produced nothing.
+        """
+        script = (f"$v = ({expression});"
+                  f"Write-Output ('QAVAL:' + [string]$v + ':QAVAL')")
+        rc, out = self.run_powershell(script, timeout=timeout)
+        if rc != 0:
+            return None
+        m = re.search(r"QAVAL:(.*?):QAVAL", out, re.S)
+        if not m:
+            return None
+        val = m.group(1).strip()
+        return val or None
 
     # --- files -----------------------------------------------------------
 
@@ -206,13 +265,6 @@ class WindowsTarget:
 
     # --- facts -----------------------------------------------------------
 
-    def is_admin(self):
-        rc, out = self.run_powershell(
-            "$p=New-Object Security.Principal.WindowsPrincipal("
-            "[Security.Principal.WindowsIdentity]::GetCurrent());"
-            "$p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)")
-        return rc == 0 and "true" in out.lower()
-
     def facts(self):
         rc, out = self.run_powershell(
             "$os=Get-CimInstance Win32_OperatingSystem;"
@@ -231,10 +283,15 @@ class WindowsTarget:
 
     def service_state(self, name):
         """'Running' | 'Stopped' | None if the service does not exist."""
+        return self.ps_value(
+            f"Get-Service -Name '{name}' -ErrorAction SilentlyContinue "
+            f"| Select-Object -ExpandProperty Status")
+
+    def is_admin(self):
         rc, out = self.run_powershell(
-            f"(Get-Service -Name '{name}' -ErrorAction SilentlyContinue).Status")
-        if rc != 0:
-            return None
-        val = out.strip().splitlines()
-        val = val[-1].strip() if val else ""
-        return val or None
+            "$p=New-Object Security.Principal.WindowsPrincipal("
+            "[Security.Principal.WindowsIdentity]::GetCurrent());"
+            "Write-Output ('QAVAL:' + $p.IsInRole("
+            "[Security.Principal.WindowsBuiltInRole]::Administrator) + ':QAVAL')")
+        m = re.search(r"QAVAL:(.*?):QAVAL", out or "", re.S)
+        return rc == 0 and bool(m) and "true" in m.group(1).strip().lower()

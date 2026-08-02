@@ -138,6 +138,14 @@ class Runner:
             return fn
         return register
 
+    # A dependency the OPERATOR skipped is treated as satisfied. `--skip
+    # install` means "this box is already installed, get on with it" — the
+    # alternative is that skipping one early phase cascades into skipping
+    # everything, which makes iterating on a late phase cost a full reinstall
+    # per attempt. A dependency that ran and FAILED still blocks, which is the
+    # case that actually protects the report from cascade noise.
+    _OPERATOR_SKIPS = ("explicitly skipped", "not selected")
+
     def _unmet(self, needs):
         for dep in needs:
             res = self.ctx.results.get(dep)
@@ -145,8 +153,8 @@ class Runner:
                 return f"{dep} did not run"
             if res.status in (FAIL, ERROR):
                 return f"{dep} {res.status}ed"
-            if res.status == SKIP:
-                return f"{dep} was skipped"
+            if res.status == SKIP and res.skipped_because not in self._OPERATOR_SKIPS:
+                return f"{dep} was skipped ({res.skipped_because})"
         return None
 
     def run(self, only=None, skip=None):
