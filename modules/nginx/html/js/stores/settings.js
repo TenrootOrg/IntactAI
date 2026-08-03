@@ -997,6 +997,18 @@ document.addEventListener('alpine:init', () => {
                 const d = await r.json();
                 if (d && d.success) {
                     this.upgradeRefs = d.refs || [];
+                    // The backend serves the last known list when a live fetch
+                    // fails, rather than emptying the picker. Say so -- a list
+                    // presented as current when it is an hour old is how an
+                    // operator misses a release that exists.
+                    if (d.stale) {
+                        const mins = Math.round((d.stale_age_s || 0) / 60);
+                        this.showTopToast(
+                            'Showing the last known release list'
+                            + (mins ? ` (${mins} min old)` : '')
+                            + '. ' + (d.error || 'Could not refresh from GitHub.'),
+                            'error');
+                    }
                 } else if (d && d.offline) {
                     this.showTopToast('No internet connection — cannot reach GitHub to list '
                                     + 'releases. Reconnect and press refresh.', 'error');

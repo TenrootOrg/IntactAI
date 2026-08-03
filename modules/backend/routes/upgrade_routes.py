@@ -592,17 +592,55 @@ def list_upgrade_refs():
         except Exception:
             pass          # probe itself failed — fall through and let the real call decide
 
+    from services.upgrade.resolver import (
+        list_github_refs, ResolverError, _cache_get_stale)
+
+    def _stale_or(err_msg, status):
+        """Serve the last known list rather than an empty dropdown.
+
+        Every failure below -- quota exhausted, GitHub unreachable, a 5xx that
+        survived the retries -- used to return nothing, so the operator saw an
+        empty picker with no way forward. Releases are cut weekly at most, so a
+        list from an hour ago is very nearly as good as a live one and is
+        enormously better than none. Marked `stale` with its age so the UI says
+        where it came from instead of implying it is current.
+        """
+        cached, age = _cache_get_stale('refs')
+        if cached and any(i.get('kind') == 'tag' for i in cached):
+            return jsonify({
+                "success": True, "refs": cached, "stale": True,
+                "stale_age_s": age, "error": err_msg,
+            }), 200
+        return jsonify({"success": False, "error": err_msg}), status
+
     err = _quota_preflight_or_jsonify(2 if force else 1, "refs fetch")
-    if err: return err
+    if err:
+        # The quota gate is the single most common reason this comes back
+        # empty: 2 calls per modal open against an anonymous 60/hr cap.
+        return _stale_or(
+            "GitHub API quota is spent, so the release list could not be "
+            "refreshed. It resets within the hour; setting GITHUB_TOKEN in "
+            "modules/backend/.env raises the cap from 60/hr to 5000/hr.", 429)
     try:
-        from services.upgrade.resolver import list_github_refs, ResolverError
         try:
             refs = list_github_refs(user_action='fetch', force=force)
         except ResolverError as e:
-            return jsonify({"success": False, "error": str(e)}), 502
+            return _stale_or(str(e), 502)
+
+        # An empty list is a real answer, but a useless one on its own. Say
+        # WHICH empty it is: GitHub had no releases at all, or it had releases
+        # and none of them carries a package asset yet because CI is still
+        # building. The second is the common case right after a tag is pushed,
+        # and looks identical to a broken dialog without this.
+        if not any(r.get('kind') == 'tag' for r in refs):
+            return _stale_or(
+                "GitHub returned no installable releases. A release only "
+                "appears once CI has attached its upgrade package, which takes "
+                "a few minutes after the tag is pushed.", 200)
+
         return jsonify({"success": True, "refs": refs})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return _stale_or(f"Unexpected error listing releases: {e}", 500)
 
 
 @upgrade_bp.route('/api/upgrade/plan', methods=['POST'])

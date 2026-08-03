@@ -120,13 +120,34 @@ def _cache_get(key: str):
         return None
     stamped_at, value = entry
     if (time.time() - stamped_at) > CACHE_TTL_SECONDS:
-        _cache.pop(key, None)
+        # Return None, but do NOT evict. _cache_get_stale() serves this entry
+        # as a last-resort fallback when a live fetch fails, and popping here
+        # destroyed it at precisely the moment it became useful: the cache
+        # expires, the next fetch fails, and the fallback finds nothing.
+        # The keyspace is a handful of fixed keys, so retaining costs nothing.
         return None
     return value
 
 
 def _cache_put(key: str, value):
     _cache[key] = (time.time(), value)
+
+
+def _cache_get_stale(key: str):
+    """The cached value REGARDLESS of age, or (None, 0).
+
+    A last resort for when a live fetch fails. A release list from an hour ago
+    is very nearly as useful as one from a minute ago -- releases are cut
+    weekly at most -- and it is enormously more useful than the empty dropdown
+    the operator sees today when GitHub is unreachable or the anonymous
+    60/hr quota is spent. The caller marks the answer stale so the UI can say
+    so rather than pretending it is current.
+    """
+    entry = _cache.get(key)
+    if not entry:
+        return None, 0
+    stamped_at, value = entry
+    return value, int(time.time() - stamped_at)
 
 
 def _gh_call_log(path: str, action: str):
@@ -349,13 +370,30 @@ def list_github_refs(user_action: str = 'fetch', force: bool = False) -> List[Di
     token = _github_token()
     if token:
         headers['Authorization'] = f'token {token}'
-    try:
-        resp = requests.get(
-            f'{GITHUB_API}/releases',
-            headers=headers, timeout=GH_TIMEOUT,
-        )
-    except requests.RequestException as e:
-        raise ResolverError(f'GitHub unreachable: {e}')
+    # Retry the transient shapes before giving up. A single dropped TCP
+    # connection or a GitHub 5xx currently empties the operator's dropdown and
+    # costs them a manual retry -- which spends MORE quota than the retry would
+    # have. Deliberately does NOT retry 403 (rate limit) or 404: those are
+    # answers, not accidents, and hammering them makes the situation worse.
+    resp = None
+    last_exc = None
+    for attempt in range(3):
+        try:
+            resp = requests.get(
+                f'{GITHUB_API}/releases',
+                headers=headers, timeout=GH_TIMEOUT,
+            )
+            if resp.status_code < 500:
+                break
+            last_exc = ResolverError(
+                f'GitHub /releases returned {resp.status_code}')
+        except requests.RequestException as e:
+            last_exc = ResolverError(f'GitHub unreachable: {e}')
+            resp = None
+        if attempt < 2:
+            time.sleep(1.5 * (attempt + 1))
+    if resp is None:
+        raise last_exc or ResolverError('GitHub unreachable')
     if resp.status_code == 403:
         raise ResolverError(
             'GitHub rate-limit reached. Wait until the limit resets '
@@ -408,7 +446,16 @@ def list_github_refs(user_action: str = 'fetch', force: bool = False) -> List[Di
             'label': 'development branch (rolling)',
         })
 
-    _cache_put('refs', items)
+    # Cache only a list that actually has releases in it.
+    #
+    # `items` can come back with nothing but the synthetic development entry --
+    # when CI has not finished attaching package assets yet, every release is
+    # filtered out by the `pkg_bytes is None` test above. Caching that pinned an
+    # empty dropdown for the full 30-minute TTL, so every non-forced call
+    # returned nothing and the operator's instinct (open it again) could not
+    # clear it. An empty answer is exactly the one worth re-asking.
+    if any(i.get('kind') == 'tag' for i in items):
+        _cache_put('refs', items)
     return items
 
 
