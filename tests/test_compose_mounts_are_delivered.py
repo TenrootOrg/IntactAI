@@ -338,10 +338,22 @@ def test_delivery_fills_the_gap_and_preserves_the_execute_bit():
             ca.WORKDIR = orig
 
 
-def test_delivery_never_overwrites_operator_state():
-    """timesketch mounts its whole ./config directory and the backend writes LLM
-    settings into it. Fill-the-gap is the only safe rule; an overwrite here
-    would destroy live configuration to deliver a default."""
+def test_a_refreshed_file_is_always_recoverable():
+    """CONTRACT CHANGED 2026-08-03, deliberately.
+
+    This test used to assert that a mounted file is NEVER overwritten. That
+    rule was too strict and shipped a real outage: the ELK release added
+    Elasticsearch credentials to config/pipeline/main.conf, the appliance
+    already had a main.conf, delivery skipped it, and Logstash 401'd into a
+    24-restart crash loop against a cluster reporting healthy. The fix existed
+    upstream with no route to the box.
+
+    So a shipped file that differs is now refreshed -- and the previous content
+    is relocated, never destroyed. What still protects operator state is the
+    source-presence rule: a file that exists only on the appliance (timesketch's
+    generated timesketch.conf, which carries the database password) is not in
+    the release tree and can never be selected for refresh. See
+    test_generated_state_inside_a_mounted_directory_is_untouched."""
     with tempfile.TemporaryDirectory() as d:
         src_root = os.path.join(d, "src")
         appliance = os.path.join(d, "box")
@@ -361,8 +373,46 @@ def test_delivery_never_overwrites_operator_state():
         finally:
             ca.WORKDIR = orig
         with open(live) as f:
-            check("an existing mounted file is never overwritten",
-                  f.read().strip() == "OPERATOR EDIT", "the shipped default won")
+            check("the shipped version reaches the box",
+                  f.read().strip() == "SHIPPED DEFAULT", "the fix never landed")
+        backup = os.path.join(appliance, "data/upgrade-backups",
+                              "modules/elk/config/logstash.yml")
+        check("the previous content is relocated, not destroyed",
+              os.path.isfile(backup), "no backup written")
+        if os.path.isfile(backup):
+            with open(backup) as f:
+                check("and it is the operator's version",
+                      f.read().strip() == "OPERATOR EDIT", "wrong content backed up")
+
+
+def test_generated_state_inside_a_mounted_directory_is_untouched():
+    """The rule that makes directory refresh safe. timesketch mounts its whole
+    ./config; the generated timesketch.conf inside it carries the database
+    password and is NOT in the release source tree, so it is never a refresh
+    candidate. If this ever fails, an upgrade is about to overwrite a live
+    credential with a shipped default and take Timesketch down."""
+    with tempfile.TemporaryDirectory() as d:
+        src_root, box = os.path.join(d, "src"), _elk_box(os.path.join(d, "box"))
+        for r in (src_root, box):
+            os.makedirs(os.path.join(r, "modules", "elk", "config", "pipeline"),
+                        exist_ok=True)
+        with open(os.path.join(src_root,
+                  "modules/elk/config/pipeline/main.conf"), "w") as f:
+            f.write("shipped\n")
+        # present ONLY on the appliance: generated state
+        generated = os.path.join(box, "modules/elk/config/pipeline/generated.conf")
+        with open(generated, "w") as f:
+            f.write("PASSWORD=live-secret\n")
+
+        orig, ca.WORKDIR = ca.WORKDIR, box
+        try:
+            ca.deliver_referenced_assets("elk", src_root, logger=lambda *a, **k: None)
+        finally:
+            ca.WORKDIR = orig
+        with open(generated) as f:
+            check("a file absent from the release source is never touched",
+                  f.read().strip() == "PASSWORD=live-secret",
+                  "generated state was overwritten")
 
 
 def test_delivery_is_a_noop_without_a_source_tree():
@@ -502,6 +552,46 @@ def test_a_plain_data_mount_is_not_made_executable():
         check("a data mount keeps its mode",
               os.stat(data).st_mode & 0o777 == 0o644,
               f"mode changed to {oct(os.stat(data).st_mode & 0o777)}")
+
+
+def test_the_refresh_backup_never_lands_in_a_mounted_directory():
+    """Caught on the live box, not in a test.
+
+    The first version wrote the previous content to <name>.pre-upgrade beside
+    the original. Logstash glob-loads every file in its mounted pipeline
+    directory, so it loaded BOTH:
+
+        "pipeline.sources" => [".../main.conf", ".../main.conf.pre-upgrade"]
+
+    The stale credential-less output block stayed active and the 401 crash loop
+    survived the fix meant to end it. nginx conf.d and Timesketch's config dir
+    glob the same way, so the backup has to live outside the mounted tree."""
+    with tempfile.TemporaryDirectory() as d:
+        src_root, box = os.path.join(d, "src"), _elk_box(os.path.join(d, "box"))
+        os.makedirs(os.path.join(src_root, "modules", "elk", "config", "pipeline"))
+        os.makedirs(os.path.join(box, "modules", "elk", "config", "pipeline"),
+                    exist_ok=True)
+        rel = "modules/elk/config/pipeline/main.conf"
+        with open(os.path.join(src_root, rel), "w") as f:
+            f.write("output { elasticsearch { user => \"elastic\" } }\n")
+        with open(os.path.join(box, rel), "w") as f:
+            f.write("output { elasticsearch { } }\n")
+
+        orig, ca.WORKDIR = ca.WORKDIR, box
+        try:
+            ca.deliver_referenced_assets("elk", src_root, logger=lambda *a, **k: None)
+        finally:
+            ca.WORKDIR = orig
+
+        pipeline_dir = os.path.join(box, "modules/elk/config/pipeline")
+        strays = [f for f in os.listdir(pipeline_dir) if f != "main.conf"]
+        check("no backup file is left in the mounted directory", not strays,
+              f"a consumer would glob-load these too: {strays}")
+        check("the new content actually landed",
+              "user =>" in open(os.path.join(box, rel)).read(), "not refreshed")
+        check("the previous content is still recoverable",
+              os.path.isfile(os.path.join(box, "data/upgrade-backups", rel)),
+              "the old content was destroyed, not relocated")
 
 
 # -------------------------------------------------------- stderr truncation

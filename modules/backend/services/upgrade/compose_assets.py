@@ -228,6 +228,43 @@ def iter_bind_sources(compose_path: str, module_name: str) -> List[BindRef]:
     return refs
 
 
+def _deliver_file(src: str, dst: str, repo_path: str, service: str,
+                  log: Callable) -> int:
+    """Copy or refresh ONE shipped file. Returns 1 if it changed the box.
+
+    The previous content is relocated to data/upgrade-backups/<repo_path>, NOT
+    left beside the original. Consumers glob-load their mounted directories:
+    writing main.conf.pre-upgrade next to main.conf made Logstash load BOTH as
+    pipeline sources -- "pipeline.sources" => [main.conf, main.conf.pre-upgrade]
+    -- so the stale credential-less block stayed active and the crash loop
+    outlived the fix meant to end it. Observed on the live box.
+    """
+    try:
+        if not os.path.exists(dst):
+            os.makedirs(os.path.dirname(dst) or '/', exist_ok=True)
+            shutil.copy2(src, dst)
+            shutil.copystat(src, dst)
+            log(f"  Delivered {repo_path} (mode "
+                f"{oct(os.stat(dst).st_mode & 0o777)[2:]}) — required by the "
+                f"new compose file, service '{service}'", "success")
+            return 1
+        if filecmp.cmp(src, dst, shallow=False):
+            return 0
+        backup = os.path.join(WORKDIR, 'data', 'upgrade-backups', repo_path)
+        os.makedirs(os.path.dirname(backup), exist_ok=True)
+        shutil.copy2(dst, backup)
+        shutil.copy2(src, dst)
+        shutil.copystat(src, dst)
+        log(f"  Refreshed {repo_path} from the new release (service "
+            f"'{service}' mounts it); previous content kept at "
+            f"data/upgrade-backups/{repo_path}", "success")
+        return 1
+    except Exception as e:
+        log(f"  Could not deliver {repo_path} "
+            f"({type(e).__name__}: {e})", "warning")
+        return 0
+
+
 def deliver_referenced_assets(module_name: str, intact_root: str,
                               logger: Callable = None) -> int:
     """Copy every file the module's NEW compose file bind-mounts that the
@@ -266,55 +303,51 @@ def deliver_referenced_assets(module_name: str, intact_root: str,
             # not just avoid causing it. Only ever an EMPTY directory standing
             # in for a file: anything with contents is real data, and no
             # upgrade gets to delete that.
-            if not (os.path.isdir(dst) and os.path.isfile(src)):
-                continue
-            try:
-                if os.listdir(dst):
-                    log(f"  {ref.repo_path} is a non-empty directory where "
-                        f"{ref.service} expects a file — leaving it alone; "
-                        f"this needs a human", "warning")
+            # Falls THROUGH when this is not the damaged case — a directory
+            # standing in for a directory is the normal Logstash-pipeline
+            # shape and belongs to the refresh branch below. An early
+            # `continue` here silently skipped every directory mount.
+            if os.path.isdir(dst) and os.path.isfile(src):
+                try:
+                    if os.listdir(dst):
+                        log(f"  {ref.repo_path} is a non-empty directory where "
+                            f"{ref.service} expects a file — leaving it alone; "
+                            f"this needs a human", "warning")
+                        continue
+                    os.rmdir(dst)
+                    log(f"  Removed the empty directory Docker created at "
+                        f"{ref.repo_path} (a previous run mounted a file that "
+                        f"was never delivered)", "warning")
+                except Exception as e:
+                    log(f"  Could not clear {ref.repo_path} "
+                        f"({type(e).__name__}: {e})", "warning")
                     continue
-                os.rmdir(dst)
-                log(f"  Removed the empty directory Docker created at "
-                    f"{ref.repo_path} (a previous run mounted a file that was "
-                    f"never delivered)", "warning")
-            except Exception as e:
-                log(f"  Could not clear {ref.repo_path} "
-                    f"({type(e).__name__}: {e})", "warning")
-                continue
         if not os.path.exists(src):
             continue  # install-generated; verify_referenced_assets reports it
+        if os.path.isdir(dst) and os.path.isdir(src):
+            # A mounted DIRECTORY. Recurse and apply the same rule per file:
+            # a file present in the release source is shipped code, so it may
+            # be delivered or refreshed; a file that exists only on the
+            # appliance is generated state and is never touched. That split is
+            # exactly what keeps timesketch's ./config safe -- its generated
+            # timesketch.conf carries the database password and is not in the
+            # source tree, so it can never be selected here.
+            #
+            # Not optional: Logstash mounts ./config/pipeline as a DIRECTORY,
+            # so the credentials fix that ended its 401 crash loop lives in a
+            # file that file-level refresh alone would never have reached.
+            for root, _dirs, files in os.walk(src):
+                for fn in files:
+                    s_file = os.path.join(root, fn)
+                    rel = os.path.relpath(s_file, src)
+                    d_file = os.path.join(dst, rel)
+                    delivered += _deliver_file(
+                        s_file, d_file, posixpath.join(ref.repo_path,
+                                                       rel.replace(os.sep, '/')),
+                        ref.service, log)
+            continue
         if os.path.isfile(dst) and os.path.isfile(src):
-            # REFRESH a shipped config file whose content changed.
-            #
-            # Fill-the-gap alone is not enough, and the proof arrived the same
-            # day: the ELK release that enabled xpack.security also added
-            # Elasticsearch credentials to config/pipeline/main.conf. The
-            # appliance already HAD a main.conf, so delivery skipped it,
-            # Logstash kept the credential-less version, and it 401'd into a
-            # 24-restart crash loop against an Elasticsearch that reported
-            # healthy the whole time. The fix existed upstream and could not
-            # reach the box.
-            #
-            # Only single mounted FILES, never directories: a mounted directory
-            # (timesketch's ./config) mixes shipped defaults with operator state
-            # and cannot be reasoned about file by file from here. And the
-            # previous content is kept beside it, so a local edit is recoverable
-            # rather than destroyed.
-            try:
-                if filecmp.cmp(src, dst, shallow=False):
-                    continue
-                backup = dst + '.pre-upgrade'
-                shutil.copy2(dst, backup)
-                shutil.copy2(src, dst)
-                shutil.copystat(src, dst)
-                log(f"  Refreshed {ref.repo_path} from the new release "
-                    f"({ref.service} mounts it); previous content kept at "
-                    f"{os.path.basename(backup)}", "success")
-                delivered += 1
-            except Exception as e:
-                log(f"  Could not refresh {ref.repo_path} "
-                    f"({type(e).__name__}: {e})", "warning")
+            delivered += _deliver_file(src, dst, ref.repo_path, ref.service, log)
             continue
         try:
             os.makedirs(os.path.dirname(dst.rstrip('/')) or '/', exist_ok=True)
