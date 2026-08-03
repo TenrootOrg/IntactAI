@@ -1434,7 +1434,7 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                         <p class="text-gray-400 text-sm mb-4"
                            x-text="$store.settings.prepareModalMode === 'online'
                                    ? 'Select modules to download and apply right now (no intermediate package file):'
-                                   : 'Select modules to include in the offline upgrade package:'"></p>
+                                   : 'Download the prebuilt offline package for a release. Nothing is built here — you pick modules when you import it.'"></p>
 
                         <!-- Scroll wrapper — flex-1 + overflow-y-auto means
                              when content overflows the modal's 90vh budget,
@@ -1530,6 +1530,44 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                 <div class="text-xs text-gray-300 bg-blue-900/30 border border-blue-700/40 rounded p-2">
                                     This release ships a <span class="text-blue-400">prebuilt package</span> (<span class="font-mono" x-text="$store.settings.selectedRefPackageMb + ' MB'"></span>), built in CI from the release's own code. It is <span class="text-blue-400">downloaded and verified</span> as one <span class="font-mono">.tar.gz</span> — nothing is built on this machine. Every module it ships is included; you pick which to install when you import it.
                                 </div>
+
+                                <!-- Manual fallback. The operator most likely to need a
+                                     package is the one whose appliance cannot fetch it:
+                                     no route to GitHub, a wedged backend, an exhausted
+                                     API quota, or an air-gapped site where the download
+                                     has to happen on a laptop and be carried in. Since
+                                     Prepare is download-only, the equivalent really is
+                                     just curl + sha256 — so it is worth handing over. -->
+                                <details class="mt-3 group">
+                                    <summary class="cursor-pointer text-xs text-gray-400 hover:text-gray-200 select-none">
+                                        <span class="group-open:hidden">▸</span><span class="hidden group-open:inline">▾</span>
+                                        Do this manually instead (bash — runs on any machine, no Intact.AI needed)
+                                    </summary>
+                                    <div class="mt-2">
+                                        <p class="text-gray-500 text-xs mb-2">
+                                            Prepare only <em>downloads</em> the CI-built package and checks its
+                                            hash, so this script is the whole of it. Useful when this appliance
+                                            cannot reach GitHub, the quota is spent, or the site is air-gapped and
+                                            the download has to happen elsewhere and be carried in.
+                                            Needs <span class="font-mono">curl</span>,
+                                            <span class="font-mono">python3</span> and a GitHub token
+                                            (<span class="font-mono">repo</span> scope — the repository is private).
+                                        </p>
+                                        <div class="relative">
+                                            <button @click="$store.settings.cliCopy($store.settings.prepareManualScript(), 'Script')"
+                                                    class="absolute top-2 right-2 bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs px-2 py-1 rounded border border-gray-600">
+                                                Copy
+                                            </button>
+                                            <pre class="bg-gray-950 border border-gray-700 rounded p-3 pr-16 text-xs text-gray-300 font-mono overflow-x-auto max-h-72 whitespace-pre"
+                                                 x-text="$store.settings.prepareManualScript()"></pre>
+                                        </div>
+                                        <p class="text-gray-500 text-xs mt-2">
+                                            Then copy the resulting <span class="font-mono">.tar.gz</span> to this
+                                            appliance and use <span class="text-gray-400">Import Upgrade Package</span> below —
+                                            the import path is identical either way.
+                                        </p>
+                                    </div>
+                                </details>
                             </div>
 
                             <!-- Step 3 (ONLINE mode): plan preview -->

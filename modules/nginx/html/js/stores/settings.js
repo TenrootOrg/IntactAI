@@ -1521,6 +1521,78 @@ document.addEventListener('alpine:init', () => {
             this.cliRefresh();
         },
 
+        // Bash equivalent of Prepare Package, for the operator to run anywhere.
+        //
+        // Prepare is DOWNLOAD-ONLY: it fetches the CI-built artifact attached to
+        // the GitHub release and verifies it. Nothing is compiled on the
+        // appliance. So the manual fallback is genuinely just curl + sha256 --
+        // no docker, no Intact.AI install, no images to build.
+        //
+        // Worth shipping because the operator most likely to need a package is
+        // the one whose appliance cannot fetch it: no route to GitHub, a wedged
+        // backend, an exhausted API quota, or an air-gapped site where the
+        // download has to happen on a laptop and be carried in.
+        //
+        // Assets are `intact-upgrade-<tag>.tar.gz`, or `.part-00`/`.part-01`/...
+        // when the package exceeds GitHub's 2 GB per-asset limit, plus a
+        // whole-file `.sha256` (.github/workflows/build-release-package.yml).
+        // The parts must be concatenated in sort order or the checksum fails.
+        prepareManualScript() {
+            const tag = this.selectedRef || '<RELEASE-TAG>';
+            return [
+                '#!/usr/bin/env bash',
+                '# Fetch the Intact.AI offline upgrade package by hand.',
+                '# Runs anywhere with bash + curl + python3 + sha256sum.',
+                '# No Intact.AI install and no docker needed on this machine.',
+                'set -euo pipefail',
+                '',
+                'TAG=' + tag,
+                'REPO=TenrootOrg/IntactAI',
+                '',
+                '# The repo is private, so a token is needed even to LIST the release.',
+                '# github.com/settings/tokens -> classic token with `repo` scope.',
+                ': "${GITHUB_TOKEN:?export GITHUB_TOKEN=ghp_... first}"',
+                '',
+                'export BASE="intact-upgrade-$TAG.tar.gz"',
+                'AUTH=(-H "Authorization: Bearer $GITHUB_TOKEN"',
+                '      -H "X-GitHub-Api-Version: 2022-11-28")',
+                '',
+                '# 1. List this release\'s package assets.',
+                'curl -fsSL "${AUTH[@]}" \\',
+                '  "https://api.github.com/repos/$REPO/releases/tags/$TAG" |',
+                'python3 -c \'',
+                'import json, os, sys',
+                'base = os.environ["BASE"]',
+                'hits = [a for a in json.load(sys.stdin).get("assets", [])',
+                '        if a["name"].startswith(base)]',
+                'if not hits:',
+                '    sys.exit("no package assets on this release")',
+                '[print(a["name"], a["url"]) for a in hits]',
+                '\' > assets.txt',
+                '',
+                '# 2. Download each. A private repo serves assets from the API url',
+                '#    with an octet-stream Accept header, NOT browser_download_url.',
+                'while read -r name url; do',
+                '  echo "  -> $name"',
+                '  curl -fL --retry 3 --retry-delay 5 "${AUTH[@]}" \\',
+                '       -H "Accept: application/octet-stream" -o "$name" "$url"',
+                'done < assets.txt',
+                '',
+                '# 3. Reassemble if split, then verify. Sort order matters: parts',
+                '#    joined in any other order still produce a file, just not a',
+                '#    valid one -- which the checksum is there to catch.',
+                'if ls "$BASE".part-* >/dev/null 2>&1; then',
+                '  cat $(ls "$BASE".part-* | sort) > "$BASE"',
+                '  rm -f "$BASE".part-*',
+                'fi',
+                'sha256sum -c "$BASE.sha256"',
+                '',
+                'echo',
+                'echo "Ready: $BASE"',
+                'echo "Copy it to the appliance, then Settings -> Import Upgrade Package."',
+            ].join('\n');
+        },
+
         cliCopy(text, what) {
             if (!text) return;
             const done = () => this.showMessage((what || 'Value') + ' copied', 'success');
