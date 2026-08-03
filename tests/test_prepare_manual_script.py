@@ -37,8 +37,13 @@ DOWNLOAD_PY = open(os.path.join(REPO, "modules", "backend", "services",
 SETTINGS_HTML = open(os.path.join(REPO, "modules", "nginx", "html", "partials",
                                   "settings.html")).read()
 
-SCRIPT = STORE[STORE.index("prepareManualScript()"):]
-SCRIPT = SCRIPT[:SCRIPT.index("\n        },")]
+def _fn_body(name):
+    body = STORE[STORE.index(name + "()"):]
+    return body[:body.index("\n        },")]
+
+
+SCRIPT = _fn_body("prepareManualScript")
+SCRIPT_PS = _fn_body("prepareManualScriptPs")
 
 # The generated script documents itself -- "no docker needed on this machine",
 # "NOT browser_download_url". Asserting over the raw text matches those
@@ -69,9 +74,9 @@ COMMANDS = _commands_only(SCRIPT)
 def test_the_generator_exists_and_is_wired_to_the_dialog():
     assert "prepareManualScript()" in SETTINGS_HTML, (
         "the manual script is no longer rendered in the Prepare dialog")
-    assert "cliCopy($store.settings.prepareManualScript()" in SETTINGS_HTML, (
-        "there is no copy button — the operator would have to select multi-line "
-        "text out of a <pre>, which is the whole thing this replaces")
+    assert "cliCopy(" in SETTINGS_HTML and "prepareManualScript()" in SETTINGS_HTML, (
+        "there is no copy button — the operator would have to hand-select "
+        "multi-line text, which is the whole thing this replaces")
 
 
 def test_the_base_asset_name_matches_the_backend():
@@ -133,6 +138,60 @@ def test_it_needs_nothing_from_the_appliance():
         assert forbidden not in COMMANDS, (
             f"the manual script references {forbidden!r} — it is supposed to "
             f"run on a machine with no Intact.AI install")
+
+
+def test_a_powershell_twin_exists():
+    """Windows operators are a large share of the people who would ever run
+    this by hand, and telling them to install WSL or Git Bash first defeats the
+    point of a fallback."""
+    assert "prepareManualScriptPs" in STORE, "no PowerShell variant"
+    assert "prepareManualScriptPs()" in SETTINGS_HTML, (
+        "the PowerShell variant is not reachable from the dialog")
+
+
+def test_powershell_needs_nothing_installed():
+    """It is the only genuinely dependency-free option: PowerShell 5+ parses
+    JSON and hashes natively. Reaching for curl or jq there would throw that
+    away."""
+    ps = _commands_only(SCRIPT_PS)
+    assert "ConvertFrom-Json" in ps or "Invoke-RestMethod" in ps, (
+        "PowerShell script does not use native JSON parsing")
+    assert "Get-FileHash" in ps, "PowerShell script does not verify the checksum"
+    for dep in ("curl ", "jq ", "python3", "sha256sum"):
+        assert dep not in ps, (
+            f"PowerShell script shells out to {dep!r} — it should need nothing "
+            f"installed")
+
+
+def test_powershell_handles_the_same_traps():
+    ps = _commands_only(SCRIPT_PS)
+    assert "application/octet-stream" in ps, "private-repo asset download will fail"
+    assert "Sort-Object" in ps, "split parts joined without an explicit sort"
+
+
+def test_bash_does_not_hard_require_python():
+    """'Runs anywhere' is weakened by a hard python3 dependency; jq is just as
+    common and either will do."""
+    cmds = _commands_only(SCRIPT)
+    assert "command -v jq" in cmds, "bash script no longer tries jq first"
+    assert "command -v python3" in cmds, "bash script has no python3 fallback"
+
+
+def test_the_script_is_not_hidden_behind_a_disclosure():
+    """The operator who needs this is the one whose dialog is already failing.
+    Hiding it behind a click assumes the dialog works."""
+    assert "<details" not in SETTINGS_HTML, (
+        "the manual script is behind a <details> again — it must be visible "
+        "without interaction")
+    assert '<textarea readonly' in SETTINGS_HTML, (
+        "the script is not in a selectable textbox")
+
+
+def test_the_note_no_longer_claims_it_builds_images():
+    """Prepare downloads a prebuilt package; it has not built images on the box
+    since it became download-only."""
+    assert "download Docker images and binaries for selected modules" not in SETTINGS_HTML, (
+        "the yellow Note still describes the old build-on-box behaviour")
 
 
 def test_the_dialog_no_longer_claims_module_selection():
