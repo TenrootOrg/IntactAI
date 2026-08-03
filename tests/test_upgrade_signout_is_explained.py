@@ -54,19 +54,28 @@ def _code(obj):
 
 def test_the_operator_is_warned_before_the_screen_changes():
     src = _code(up)
-    check("it says they are about to be signed out",
-          "ABOUT TO BE SIGNED OUT" in src, "no warning before the restart")
+    check("it says they will need to sign in again",
+          "SIGN IN AGAIN" in src, "no warning before the screen changes")
+    check("it explains WHY, not just what",
+          "WHY:" in src and "no session to carry across" in src,
+          "'sign in again' with no reason reads as a fault")
+    check("it names the cause: this release adds a login",
+          "adds a dashboard login" in src,
+          "the operator cannot tell an intended change from a bug")
     check("it says the upgrade keeps running",
           "KEEPS RUNNING" in src, "nothing tells them it continues")
+    check("it says reloading cannot interrupt the run",
+          "cannot interrupt" in src,
+          "operators avoid touching a screen they think is load-bearing")
     check("it explains the SETUP page",
-          "SETUP page appears" in src or "SETUP page" in src,
+          "SETUP page" in src,
           "a pre-auth box gets an unexplained setup screen")
 
 
 def test_the_warning_comes_before_the_restart_is_scheduled():
     """After the fact is not a warning. It has to be the last thing they read."""
     src = inspect.getsource(up)
-    warn = src.find("ABOUT TO BE SIGNED OUT")
+    warn = src.find("SIGN IN AGAIN")
     restart = src.find("schedule_backend_restart(run_id=run_id", warn if warn > 0 else 0)
     check("the warning precedes schedule_backend_restart",
           warn != -1 and restart != -1 and warn < restart,
@@ -78,7 +87,7 @@ def test_every_restart_site_warns():
     whichever operator hits the silent path."""
     src = inspect.getsource(up)
     sites = src.count("schedule_backend_restart(run_id=run_id")
-    warns = src.count("ABOUT TO BE SIGNED OUT")
+    warns = src.count("SIGN IN AGAIN")
     check("all restart sites warn", warns >= sites,
           f"{sites} restart sites, {warns} warnings")
 

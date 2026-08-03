@@ -1496,16 +1496,22 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
                             # after the fact is no warning; this has to be the last
                             # thing they read before the screen changes.
                             log("", "info")
-                            log("YOU ARE ABOUT TO BE SIGNED OUT — THIS IS NORMAL.",
+                            log("YOU WILL NEED TO SIGN IN AGAIN — THIS IS EXPECTED.",
                                 "warning")
-                            log("  The backend is restarting to load the new code. "
-                                "The upgrade KEEPS RUNNING in the background and "
-                                "does not need this page to stay open.", "info")
+                            log("  WHY: this release adds a dashboard login. Until "
+                                "now this appliance had no authentication at all, "
+                                "so there is no session to carry across — one has "
+                                "to be created, and creating it means signing in. "
+                                "Nothing has gone wrong.", "info")
+                            log("  The backend is also restarting to load the new "
+                                "code, which ends any session that did exist.", "info")
+                            log("  The upgrade KEEPS RUNNING in the background. It "
+                                "does not need this page to stay open, and closing "
+                                "or reloading it cannot interrupt the run.", "info")
                             log("  Sign back in and this run reopens where it left "
-                                "off. If a SETUP page appears instead, this "
-                                "appliance predates the dashboard login: choose "
-                                "your own username and password. That is the "
-                                "upgrade doing its job, not a failure.", "info")
+                                "off. If a SETUP page appears instead, that is this "
+                                "appliance getting its first login: choose your own "
+                                "username and password there.", "info")
                             log("", "info")
                             log("Backend will restart to load new code. Upgrade will resume automatically.", "info")
                             schedule_backend_restart(run_id=run_id, logger=log)
@@ -3158,16 +3164,22 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                             # after the fact is no warning; this has to be the last
                             # thing they read before the screen changes.
                             log("", "info")
-                            log("YOU ARE ABOUT TO BE SIGNED OUT — THIS IS NORMAL.",
+                            log("YOU WILL NEED TO SIGN IN AGAIN — THIS IS EXPECTED.",
                                 "warning")
-                            log("  The backend is restarting to load the new code. "
-                                "The upgrade KEEPS RUNNING in the background and "
-                                "does not need this page to stay open.", "info")
+                            log("  WHY: this release adds a dashboard login. Until "
+                                "now this appliance had no authentication at all, "
+                                "so there is no session to carry across — one has "
+                                "to be created, and creating it means signing in. "
+                                "Nothing has gone wrong.", "info")
+                            log("  The backend is also restarting to load the new "
+                                "code, which ends any session that did exist.", "info")
+                            log("  The upgrade KEEPS RUNNING in the background. It "
+                                "does not need this page to stay open, and closing "
+                                "or reloading it cannot interrupt the run.", "info")
                             log("  Sign back in and this run reopens where it left "
-                                "off. If a SETUP page appears instead, this "
-                                "appliance predates the dashboard login: choose "
-                                "your own username and password. That is the "
-                                "upgrade doing its job, not a failure.", "info")
+                                "off. If a SETUP page appears instead, that is this "
+                                "appliance getting its first login: choose your own "
+                                "username and password there.", "info")
                             log("", "info")
                             log("Backend will restart to load new code. Upgrade will resume automatically.", "info")
                             schedule_backend_restart(run_id=run_id, logger=log)
