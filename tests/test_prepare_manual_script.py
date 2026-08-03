@@ -105,11 +105,19 @@ def test_the_parts_are_concatenated_in_order():
         "parts are concatenated without an explicit sort")
 
 
-def test_it_verifies_the_checksum():
+def test_both_verify_the_checksum():
     """The one step that must never be dropped for convenience: this file gets
-    carried in on a USB stick to an air-gapped site."""
-    assert "sha256sum -c" in SCRIPT, (
-        "the manual script no longer verifies the package checksum")
+    carried into an air-gapped site on a USB stick.
+
+    Asserts the BEHAVIOUR, not one spelling of it. The bash version moved off
+    `sha256sum -c` to an explicit compare so a mismatch can print want-vs-got
+    instead of sha256sum's terse 'FAILED'."""
+    b = _commands_only(SCRIPT)
+    assert "sha256sum" in b and "MISMATCH" in b, (
+        "the bash script no longer compares the package checksum")
+    ps = _commands_only(SCRIPT_PS)
+    assert "Get-FileHash" in ps and "MISMATCH" in ps, (
+        "the PowerShell script no longer compares the package checksum")
 
 
 def test_it_uses_the_api_asset_url_not_browser_download_url():
@@ -138,6 +146,59 @@ def test_it_needs_nothing_from_the_appliance():
         assert forbidden not in COMMANDS, (
             f"the manual script references {forbidden!r} — it is supposed to "
             f"run on a machine with no Intact.AI install")
+
+
+def test_the_default_tag_is_a_real_release():
+    """A `<RELEASE-TAG>` placeholder failed forty lines later as "Illegal
+    characters in path" from Get-Content, because < and > cannot appear in a
+    Windows filename. Reported 2026-08-03 from a real paste. A concrete tag
+    runs as-is, and the inline note says to change it."""
+    for src, label in ((SCRIPT, "bash"), (SCRIPT_PS, "powershell")):
+        assert "<RELEASE-TAG>" not in src, (
+            f"{label} still emits an angle-bracket placeholder — it produces an "
+            f"illegal Windows filename and fails late and unclearly")
+        assert "CHANGE to the release you want" in src, (
+            f"{label} has no inline instruction to change the tag")
+
+
+def test_powershell_does_not_interpolate_the_token_into_its_own_error():
+    """`throw "set $env:GITHUB_TOKEN first"` expands the variable INSIDE the
+    message, so an unset token printed "set  first" — advice with the crucial
+    word deleted. Reported from a real paste 2026-08-03."""
+    line = next((l for l in SCRIPT_PS.splitlines()
+                 if "GITHUB_TOKEN first" in l), "")
+    assert line, "the token check message is gone"
+    assert "throw '" in line or "\\'" in line, (
+        "the token error is double-quoted, so PowerShell expands "
+        "$env:GITHUB_TOKEN inside the message and prints 'set  first'")
+
+
+def test_powershell_runs_as_one_unit_when_pasted():
+    """Pasted into an interactive prompt, a bare script runs line BY line: a
+    `throw` aborts one statement and every later line still runs against
+    half-initialised state, cascading errors that hide the real one. A script
+    block is buffered to the closing brace and runs atomically."""
+    assert "'& {'," in SCRIPT_PS, (
+        "the PowerShell script is not wrapped in & { } — pasting it will run "
+        "line-by-line and a failure will cascade instead of stopping")
+
+
+def test_both_handle_a_failed_api_call():
+    """A 401 left $rel null and the next line died with 'cannot call a method
+    on a null-valued expression' — an error about PowerShell semantics, not
+    about the token being wrong."""
+    assert "try {" in SCRIPT_PS and "catch" in SCRIPT_PS, (
+        "PowerShell does not catch the release lookup failure")
+    for src, label in ((SCRIPT, "bash"), (SCRIPT_PS, "powershell")):
+        assert "401" in src and "404" in src, (
+            f"{label} does not explain what a 401 or 404 actually means")
+
+
+def test_both_print_the_hash_on_success():
+    """So the operator can compare it against the release without re-hashing."""
+    for src, label in ((SCRIPT, "bash"), (SCRIPT_PS, "powershell")):
+        assert "sha256 $" in src or "sha256 $got" in src, (
+            f"{label} does not print the verified hash")
 
 
 def test_a_powershell_twin_exists():
