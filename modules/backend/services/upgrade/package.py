@@ -1293,7 +1293,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
 
                     run_command(f"cp {pkg_path} {staged_dest}", logger=None)
                     if not fname.endswith('.msi'):
-                        run_command(f"chmod +x {staged_dest}", logger=None)
+                        run_command(f"chmod 755 {staged_dest}", logger=None)
                     if fname == required_binary:
                         required_ok = True
 

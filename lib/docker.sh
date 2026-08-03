@@ -627,7 +627,7 @@ download_offline_collector_binaries() {
         else
             log_info "  Downloading: $binary  (from ${base_url}/${binary})"
             if _curl_with_throughput "$binary" "${base_url}/${binary}" "$dest_path"; then
-                chmod +x "$dest_path" 2>/dev/null || true
+                chmod 755 "$dest_path" 2>/dev/null || true
                 log_success "  Downloaded: $binary"
                 ((downloaded++))
             else
@@ -650,7 +650,7 @@ download_offline_collector_binaries() {
         if [[ ! -s "$p" ]] || (( sz < min_size )); then
             log_error "Offline-Collector binary missing or undersized: $binary"
             log_error "  Expected ≥1 MB at $p — got $sz bytes (real binaries are 65-85 MB)"
-            log_error "  Manual fix: curl -fsSL ${base_url}/${binary} -o $p && chmod +x $p"
+            log_error "  Manual fix: curl -fsSL ${base_url}/${binary} -o $p && chmod 755 $p"
             rm -f "$p"
             ((missing++))
         fi
@@ -738,20 +738,64 @@ stage_velociraptor_client_binaries() {
         local is_required=0
         [[ "$dest" == "$required_dest" ]] && is_required=1
 
-        if [[ -f "$dest" ]] && [[ $(stat -c%s "$dest" 2>/dev/null || echo 0) -ge $min_size ]]; then
-            log_info "  Already staged: $(basename "$dest")"
+        # Skip only when the staged file is BOTH credible AND the right version.
+        #
+        # The destinations are version-agnostic (velociraptor_client.exe) while
+        # the sources carry the version (velociraptor-v0.77.1-windows-amd64.exe),
+        # so a size-only check can never tell WHICH version is sitting there. It
+        # answered "big enough, leave it" for any previously staged binary, and
+        # every version change after the first silently kept the old one.
+        #
+        # Observed 2026-08-02: a box staged with 0.77.1 was reinstalled at
+        # 0.76.1, the staged 0.77.1 binaries were "already staged", and the
+        # image build then refused because the staged binary and the image tag
+        # disagreed. Same shape in the other direction on an upgrade.
+        #
+        # A sidecar records what is actually staged. Absent (every box
+        # installed before this change) means unknown, so we re-stage rather
+        # than trust it -- but the download failure path below deliberately
+        # keeps an existing usable file instead of deleting it, so an air-gapped
+        # box that cannot re-download is no worse off than before.
+        local ver_marker="${dest}.version"
+        local staged_ver=""
+        [[ -f "$ver_marker" ]] && staged_ver="$(cat "$ver_marker" 2>/dev/null)"
+        if [[ -f "$dest" ]] && [[ $(stat -c%s "$dest" 2>/dev/null || echo 0) -ge $min_size ]] \
+           && [[ "$staged_ver" == "$velo_version" ]]; then
+            log_info "  Already staged: $(basename "$dest") (v${velo_version})"
             (( is_required )) && required_ok=1
             continue
+        fi
+        if [[ -f "$dest" ]] && [[ -n "$staged_ver" ]] && [[ "$staged_ver" != "$velo_version" ]]; then
+            log_info "  Re-staging $(basename "$dest"): staged v${staged_ver}, need v${velo_version}"
         fi
 
         log_info "  Staging: $fname  (from ${base_url}/${fname})"
         local sz=0
+        # Download to a temp path, not over $dest. Writing directly meant a
+        # failed transfer destroyed a perfectly good previously-staged binary —
+        # survivable when the network is up and fatal on an air-gapped box,
+        # which is exactly where a re-stage is most likely to fail.
+        local tmp_dest="${dest}.staging"
+        rm -f "$tmp_dest"
         if curl -fsSL --retry 5 --retry-delay 5 --retry-max-time 120 \
-                "${base_url}/${fname}" -o "$dest" 2>> "$LOG_FILE"; then
-            sz=$(stat -c%s "$dest" 2>/dev/null || echo 0)
+                "${base_url}/${fname}" -o "$tmp_dest" 2>> "$LOG_FILE"; then
+            sz=$(stat -c%s "$tmp_dest" 2>/dev/null || echo 0)
         else
             sz=0
-            rm -f "$dest"
+            rm -f "$tmp_dest"
+        fi
+        if (( sz >= min_size )); then
+            mv -f "$tmp_dest" "$dest"
+            printf '%s\n' "$velo_version" > "$ver_marker"
+        elif [[ -f "$dest" ]] && [[ $(stat -c%s "$dest" 2>/dev/null || echo 0) -ge $min_size ]]; then
+            # Re-stage failed but a usable binary is already here. Keep it and
+            # say so plainly: the version may be wrong, which is a real risk,
+            # but deleting the only working binary is a worse one.
+            rm -f "$tmp_dest"
+            log_warn "  Could not re-stage $fname — keeping the existing $(basename "$dest") (version unverified${staged_ver:+, marker says v$staged_ver})"
+            printf '%s\n' "${staged_ver:-unknown}" > "$ver_marker"
+            (( is_required )) && required_ok=1
+            continue
         fi
 
         if (( sz < min_size )); then
@@ -765,12 +809,15 @@ stage_velociraptor_client_binaries() {
             # step silently no-ops on the empty file.
             log_warn "  $fname unavailable upstream — using empty placeholder (no pre-repacked client for this platform)"
             : > "$dest"
+            # A placeholder is not a version. Leaving a stale marker here would
+            # make the next run skip it as "already staged at the right version".
+            rm -f "$ver_marker"
             ((placeholders++))
             continue
         fi
 
         if [[ "$dest" != *.msi ]]; then
-            chmod +x "$dest" 2>/dev/null || true
+            chmod 755 "$dest" 2>/dev/null || true
         fi
         log_success "  Staged: $(basename "$dest") (${sz} bytes)"
         (( is_required )) && required_ok=1
@@ -914,7 +961,7 @@ download_legacy_velociraptor_binaries() {
         else
             log_info "  Downloading: $binary"
             if _curl_with_throughput "$binary" "${base_url}/${binary}" "$dest_path"; then
-                chmod +x "$dest_path" 2>/dev/null || true
+                chmod 755 "$dest_path" 2>/dev/null || true
                 log_success "  Downloaded: $binary"
                 ((downloaded++))
             else
@@ -1015,7 +1062,7 @@ create_velociraptor_collector() {
         fi
     fi
 
-    chmod +x "$dest_path"
+    chmod 755 "$dest_path"
     local size=$(stat -c%s "$dest_path" 2>/dev/null || echo "0")
     if [[ "$size" -gt "$min_size" ]]; then
         log_success "  Downloaded: velociraptor-collector from ${url_label} ($(numfmt --to=iec $size))"

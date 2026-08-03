@@ -1118,6 +1118,36 @@ def recreate_nginx(logger: Callable = None) -> bool:
     log = logger or (lambda m, l="info": None)
     nginx_dir = os.path.join(WORKDIR, 'modules', 'nginx')
     try:
+        # Stamp versions.nginx into modules/nginx/.env before converging.
+        #
+        # lib/config.sh:248 does this at INSTALL time, in bash, which never runs
+        # again. So an upgrade merges the new pin into config.yaml and mirrors a
+        # compose whose default is the new tag, while the .env keeps whatever
+        # the original install wrote — and `image: nginx:${NGINX_VERSION:-...}`
+        # resolves to the STALE value, so the default is never reached.
+        #
+        # A box installed at intact-20260615 has NGINX_VERSION=alpine (that
+        # release had no versions.nginx pin at all and defaulted to the floating
+        # tag). It then runs nginx:alpine forever, however many times it is
+        # upgraded — observed 2026-08-02, where every other sidecar converted to
+        # its pin and the platform nginx alone stayed floating. A floating tag
+        # on the component terminating TLS for the whole appliance is the one
+        # place an unreviewed upstream bump should not silently arrive.
+        try:
+            cfg_path = os.path.join(WORKDIR, 'config.yaml')
+            if os.path.isfile(cfg_path):
+                import yaml
+                with open(cfg_path) as f:
+                    pin = ((yaml.safe_load(f) or {}).get('versions') or {}).get('nginx')
+                if pin:
+                    update_env_file(os.path.join(nginx_dir, '.env'),
+                                    'NGINX_VERSION', str(pin), logger=log)
+        except Exception as e:                                  # noqa: BLE001
+            # Never block the recreate on the pin write: a stale-but-working
+            # nginx beats no nginx.
+            log(f"  could not stamp NGINX_VERSION ({type(e).__name__}: {e}) — "
+                f"converging on the existing pin", "warning")
+
         r = run_command("docker compose up -d nginx", cwd=nginx_dir,
                         logger=None, timeout=120)
         if not r.get('success'):
@@ -1159,13 +1189,34 @@ def recreate_tusd(logger: Callable = None) -> bool:
         if tag:
             update_env_file(os.path.join(backend_dir, '.env'), 'TUSD_VERSION',
                             str(tag), logger=log)
+        # Capture the container's identity before and after so the log can say
+        # what actually happened. `docker compose up -d` is a CONVERGENCE, not a
+        # recreate: when nothing about the service changed it is a no-op and the
+        # container keeps running untouched. Reporting that as "recreated" is
+        # the same class of overstatement as the VERSION SUMMARY claiming it
+        # installed a module the loop never dispatched — an operator reading
+        # "recreated at v2.9.2" reasonably concludes the sidecar restarted on
+        # that version, when it may have been running since before the upgrade.
+        def _tusd_id():
+            p = run_command("docker inspect -f '{{.Id}}' intact_tusd",
+                            logger=None, timeout=30)
+            return (p.get('stdout') or '').strip().strip("'") if p.get('success') else ''
+
+        before = _tusd_id()
         r = run_command("docker compose up -d tusd", cwd=backend_dir,
                         logger=None, timeout=120)
         if not r.get('success'):
             log(f"tusd recreate returned nonzero (sidecar — continuing): "
                 f"{(r.get('stderr') or r.get('stdout') or '')[:200]}", "warning")
             return False
-        log(f"tusd sidecar recreated at {tag or 'pinned default'}", "success")
+        after = _tusd_id()
+        version = tag or 'pinned default'
+        if before and after and before == after:
+            log(f"tusd sidecar already at {version} — no change needed", "info")
+        elif not before and after:
+            log(f"tusd sidecar created at {version}", "success")
+        else:
+            log(f"tusd sidecar recreated at {version}", "success")
         return True
     except Exception as e:
         log(f"tusd recreate skipped ({type(e).__name__}: {e})", "warning")

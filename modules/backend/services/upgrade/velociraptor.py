@@ -1819,7 +1819,7 @@ def upgrade_velociraptor(version: str, logger: Callable = None,
         # Restore binary backup
         if os.path.exists(f"{backup_dir}/velociraptor.backup"):
             run_command(f"cp {backup_dir}/velociraptor.backup {velo_bin}", logger=log)
-            run_command(f"chmod +x {velo_bin}", logger=log)
+            run_command(f"chmod 755 {velo_bin}", logger=log)
 
         # Restart on the old version. Only REBUILD if the old image is actually
         # gone: a rollback is the worst possible moment to need the network, and
@@ -2027,7 +2027,7 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         staged_linux = os.path.join(work_dir, 'clients', 'linux', 'velociraptor')
         if os.path.exists(staged_linux):
             run_command(f"cp {staged_linux} {velo_bin}", logger=log)
-            run_command(f"chmod +x {velo_bin}", logger=log)
+            run_command(f"chmod 755 {velo_bin}", logger=log)
         _publish_client_binaries_to_tools(work_dir, actual_version, logger=log)
         log("  Binaries staged successfully", "info")
 
@@ -2241,7 +2241,7 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         # Restore binary backup
         if os.path.exists(f"{backup_dir}/velociraptor.backup"):
             run_command(f"cp {backup_dir}/velociraptor.backup {velo_bin}", logger=log)
-            run_command(f"chmod +x {velo_bin}", logger=log)
+            run_command(f"chmod 755 {velo_bin}", logger=log)
 
         # Restart on the old version. Only REBUILD if the old image is actually
         # gone: a rollback is the worst possible moment to need the network, and
