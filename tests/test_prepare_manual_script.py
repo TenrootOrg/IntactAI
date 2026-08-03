@@ -282,6 +282,26 @@ def test_powershell_needs_nothing_installed():
             f"installed")
 
 
+def test_powershell_survives_windows_powershell_51():
+    """Tested in pwsh 7; operators run Windows PowerShell 5.1 (the reported
+    paste showed 5.1's `At line:1 char:31` error format). Two 5.1-specific
+    behaviours are the difference between working and appearing to hang:
+
+      * 5.1 redraws an Invoke-WebRequest progress bar on every chunk. On a
+        ~2 GB asset that rendering dominates the transfer -- routinely 10-50x
+        slower, and indistinguishable from a hang.
+      * without -UseBasicParsing, 5.1's IWR initialises the Internet Explorer
+        engine, which fails outright on a box where IE first-launch
+        configuration has never been completed (common on Server Core)."""
+    ps = _commands_only(SCRIPT_PS)
+    assert "ProgressPreference" in ps, (
+        "the progress bar is not silenced — on Windows PowerShell 5.1 a 2 GB "
+        "download will crawl and look hung")
+    assert "-UseBasicParsing" in ps, (
+        "Invoke-WebRequest without -UseBasicParsing initialises the IE engine "
+        "on 5.1 and fails where IE first-launch was never completed")
+
+
 def test_powershell_handles_the_same_traps():
     ps = _commands_only(SCRIPT_PS)
     assert "application/octet-stream" in ps, "private-repo asset download will fail"
