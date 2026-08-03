@@ -72,7 +72,9 @@ def upgrade_elk(version: str, logger: Callable = None) -> Dict:
         log("Starting ELK containers...", "info")
         result = run_command("docker compose up -d --pull never", cwd=work_dir, logger=log)
         if not result['success']:
-            raise Exception(f"Failed to start ELK: {result['error']}")
+            raise Exception("Failed to start ELK: "
+                            + (result.get('error_summary')
+                               or result.get('error') or ''))
 
         # Honest health gate (G5): cluster-status-aware probe with rollback on
         # 'down' — replaces the old any-HTTP-200 loop whose TIMEOUT still
@@ -175,11 +177,34 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None,
         update_env_file(env_file, 'ELASTIC_VERSION', version, logger=log)
         update_env_file(env_file, 'KIBANA_VERSION', version, logger=log)
 
+        # Deliver and preflight what the compose file bind-mounts. The `setup`
+        # service mounts config/setup-kibana-user.sh and execs it; on a box
+        # upgraded from a release that predates that service, the compose file
+        # arrives and the script does not, Docker fabricates an empty DIRECTORY
+        # at the mount path, and the container dies with exit 126. Doing this
+        # here as well as in the intact mirror covers an ELK-only upgrade,
+        # where the intact module is not part of the run at all.
+        try:
+            from .compose_assets import (deliver_referenced_assets,
+                                         verify_referenced_assets)
+            _src = os.path.join(package_dir, 'source', 'intact')
+            if os.path.isdir(_src):
+                deliver_referenced_assets('elk', _src, logger=log)
+            _fatal = verify_referenced_assets('elk', logger=log)
+        except Exception as _me:
+            log(f"  ELK mount preflight skipped "
+                f"({type(_me).__name__}: {_me})", "warning")
+            _fatal = []
+        if _fatal:
+            raise Exception("; ".join(_fatal))
+
         # Start containers
         log("Starting ELK containers...", "info")
         result = run_command("docker compose up -d --pull never", cwd=work_dir, logger=log, run_id=run_id)
         if not result['success']:
-            raise Exception(f"Failed to start ELK: {result['error']}")
+            raise Exception("Failed to start ELK: "
+                            + (result.get('error_summary')
+                               or result.get('error') or ''))
 
         # Honest health gate (G5): cluster-status-aware probe with rollback on
         # 'down' — replaces the old any-HTTP-200 loop whose TIMEOUT still

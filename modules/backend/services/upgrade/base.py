@@ -250,8 +250,24 @@ def run_command(cmd: str, cwd: str = None, timeout: int = 300, logger: Callable 
             time.sleep(1.0)
         stdout, stderr = _collect(5)
         if process.returncode != 0:
-            log(f"  Command failed: {(stderr or '')[:200]}", "warning")
-            return {"success": False, "error": stderr or "", "stdout": stdout or ""}
+            # Report what FAILED, not what happened first. `docker compose`
+            # writes "Container X Creating/Created/Starting" progress to stderr
+            # interleaved with real diagnostics, so a head truncation shows
+            # nothing but chatter: the ELK failure's decisive line — service
+            # "setup" didn't complete successfully: exit 126 — was the last one
+            # in the stream, and the old [:200] cut it off. Three diagnoses of
+            # that failure were wrong before anyone opened the raw log.
+            # Deferred import: compose_assets imports WORKDIR from this module.
+            try:
+                from .compose_assets import strip_compose_progress
+                detail = strip_compose_progress(stderr or '')
+            except Exception:
+                detail = (stderr or '')[-600:]
+            log(f"  Command failed: {detail}", "warning")
+            # "error" stays the raw stream — callers parse it for specific
+            # substrings. "error_summary" is the operator-facing one.
+            return {"success": False, "error": stderr or "",
+                    "error_summary": detail, "stdout": stdout or ""}
         return {"success": True, "stdout": stdout or "", "stderr": stderr or ""}
     except Exception as e:
         log(f"  Command error: {str(e)}", "error")
@@ -2461,13 +2477,27 @@ def install_module_compose_up(
     # working in an air-gapped environment. The pre-existing
     # `upgrade_*_offline` paths already pass --pull never for the
     # same reason; only the install helper was missing it.
+    # Preflight the compose file's own dependencies. A bind source that does
+    # not exist is not an error to Docker — it silently creates an empty
+    # DIRECTORY there, and a service that execs the mount then dies with a bare
+    # exit 126 naming nothing. Refuse here, where we can name the file.
+    try:
+        from .compose_assets import verify_referenced_assets
+        fatal = verify_referenced_assets(module_id, logger=log)
+        if fatal:
+            return {"success": False, "error": "; ".join(fatal)}
+    except Exception as e:
+        log(f"  Mount preflight skipped ({type(e).__name__}: {e})", "warning")
+
     r = run_command(
         f"docker compose -f {host_work_dir}/docker-compose.yaml "
         f"--project-directory {host_work_dir} up -d --pull never",
         timeout=300, logger=log, run_id=run_id,
     )
     if not r.get('success'):
-        return {"success": False, "error": f"compose up failed: {r.get('error')}"}
+        return {"success": False,
+                "error": f"compose up failed: "
+                         f"{r.get('error_summary') or r.get('error')}"}
 
     log(f"{module_id} first-time install complete", "success")
     return {"success": True, "version": version, "first_install": True}

@@ -852,6 +852,65 @@ def _format_value(v: str) -> str:
     return f"'{s}'"
 
 
+def report_dashboard_login(logger: Callable = None) -> None:
+    """Tell the operator how to sign in, in the log they are actually reading.
+
+    migrate_basic_auth_to_app_login() runs at backend BOOT — it has to, because
+    Phase 1 executes the OLD code and the migration belongs to the new one. So
+    everything it says goes to `docker logs intact_backend` under a [STARTUP]
+    prefix. On the 20260726 -> 20260803 upgrade the migration worked perfectly
+    and `grep -c STARTUP` on the operator's upgrade log returned 0: it recovered
+    the existing nginx Basic Auth credential, wrote first_login: false, and the
+    operator — who had never needed that password, because nginx had been
+    prompting for it — was locked out of an appliance that was functioning
+    exactly as designed.
+
+    A correct migration nobody can see is indistinguishable from a broken one.
+    This runs at the END of the upgrade, unconditionally, and states the
+    outcome. It reports the username and the FILE holding the password, never
+    the password itself: the upgrade log is downloaded, pasted into tickets and
+    attached to QA reports.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    try:
+        from services import auth_service
+    except Exception as e:
+        log(f"  (could not read dashboard login state: "
+            f"{type(e).__name__}: {e})", "info")
+        return
+
+    flag = auth_service.read_first_login()
+    log("", "info")
+    log("DASHBOARD LOGIN:", "info")
+    if flag == auth_service.FIRST_LOGIN_TRUE:
+        log("  This appliance will show the SETUP page on next load. Create "
+            "your account IMMEDIATELY — until you do, anyone who can reach it "
+            "can claim it.", "warning")
+        return
+    if flag == auth_service.FIRST_LOGIN_ERROR:
+        log("  config.yaml could not be read, so the login state is unknown. "
+            "The login page explains how to recover.", "warning")
+        return
+    if flag == auth_service.FIRST_LOGIN_ABSENT:
+        log("  No first_login key in config.yaml — the login migration has "
+            "not run yet. It runs on the next backend start.", "info")
+        return
+
+    user = auth_service.username() or 'admin'
+    log(f"  Sign in as: {user}", "success")
+    secret = os.path.join(WORKDIR, 'modules', 'nginx', 'secrets',
+                          'nginx_basic_auth_password')
+    if os.path.isfile(secret):
+        log("  Your password is UNCHANGED — it is the same one the browser "
+            "used to prompt for. On boxes upgraded from a pre-login release "
+            "it is a generated 32-character secret; read it on the appliance "
+            "with:", "info")
+        log(f"    sudo cat {secret}", "info")
+    else:
+        log("  Your password is unchanged from before this upgrade.", "info")
+    log("  Change it under Settings once you are in.", "info")
+
+
 def migrate_basic_auth_to_app_login(logger: Callable = None) -> None:
     """Move a pre-auth box onto the new session login WITHOUT opening a window
     in which the appliance has no authentication at all.
@@ -1790,12 +1849,30 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
         # the module dir. Takes effect the next time that module's compose
         # comes up (its own version bump, or an operator restart) — this
         # step alone does not recreate any container.
+        # ...and then DELIVER the files that new compose file bind-mounts.
+        # Shipping the compose file alone is what produced the ELK exit 126:
+        # the new `setup` service mounted config/setup-kibana-user.sh and
+        # exec'd it, the script was never copied, and Docker answered a missing
+        # bind source the way it always does — by creating an empty DIRECTORY
+        # there. `/bin/bash <a directory>` is exit 126, with nothing in the log
+        # naming the file. Order matters: the compose file is the manifest, so
+        # it has to land before we can read what it needs.
+        from .compose_assets import (deliver_referenced_assets,
+                                     verify_referenced_assets)
         for _sidecar in ('velociraptor', 'iris', 'timesketch', 'elk',
                           'portainer', 'volweb', 'nginx'):
             try:
                 refresh_module_compose_file(_sidecar, intact_root, logger=log)
             except Exception as e:
                 log(f"  Could not refresh {_sidecar} compose file: {e}", "warning")
+            try:
+                deliver_referenced_assets(_sidecar, intact_root, logger=log)
+                # Report anything still missing NOW, while the operator is
+                # reading the upgrade log, rather than as a bare exit code from
+                # a container twenty minutes later.
+                verify_referenced_assets(_sidecar, logger=log)
+            except Exception as e:
+                log(f"  Could not sync {_sidecar} compose assets: {e}", "warning")
 
         # nginx.conf carries the server-level auth_basic gate (CWE-306 fix
         # for the unauthenticated /api/, /api/uploads/, /velociraptor/

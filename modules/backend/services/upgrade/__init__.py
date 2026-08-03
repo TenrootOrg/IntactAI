@@ -3336,6 +3336,17 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                     log(f"  {mod}: {before_s} -> {after_s}   ({status})", "info")
             log("-" * 64, "info")
 
+            # How to sign in. The auth migration runs at backend boot and logs
+            # to `docker logs`, so a successful migration left the operator
+            # locked out of a working appliance with nothing in THIS log to
+            # explain it. See report_dashboard_login's docstring.
+            try:
+                from .intact import report_dashboard_login
+                report_dashboard_login(logger=log)
+            except Exception as _dle:
+                log(f"  (could not report the dashboard login state: "
+                    f"{type(_dle).__name__}: {_dle})", "info")
+
             # We patch the vendor Timesketch container. Say so once, here, at
             # info level — see the helper's docstring for why not "warning".
             try:
