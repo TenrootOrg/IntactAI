@@ -26,7 +26,7 @@ schema_version: 2
 # logins — see the `modules:` section below.
 first_login: true
 
-domain: 192.168.120.10
+domain: 192.168.120.11
 
 # Installation options
 options:
@@ -118,7 +118,7 @@ modules:
   plaso:
     enabled: true
   elk:
-    enabled: true
+    enabled: false
     id: elastic
     password: '123123'
   iris:
@@ -126,7 +126,7 @@ modules:
     id: administrator #Cant be changed
     password: '123123'
   portainer:
-    enabled: true
+    enabled: false
     id: admin
     password: '1234qwer!@#$' # Portainer requires >=12 chars; shorter values get a randomly-generated one instead (see lib/modules.sh)
   timesketch:
@@ -150,7 +150,7 @@ modules:
     password: '123123'
 project_name: intact
 versions:
-  elk: 9.4.2
+  elk: '9.4.4'
   iris: v2.4.27
   plaso: '20260512'
   portainer: 2.39.5
@@ -245,7 +245,7 @@ versions:
   # here so install/upgrade drive one reproducible tag; a bump recreates the
   # container (docker restart alone keeps the old image). Docker Hub:
   # tusproject/tusd — v2.9.2 current.
-  backend_tusd:          'v2.9.2'
+  backend_tusd:          'v2.10.0'
   volweb_postgres:       '14.1'
   # Was floating '7' — pinned to the exact patch (debian variant, matches the
   # currently-deployed redis:7). Reproducible; bump deliberately.
