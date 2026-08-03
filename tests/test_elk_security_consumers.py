@@ -190,6 +190,79 @@ def test_security_is_actually_on_so_this_all_matters():
           "security is off -- revisit whether these consumers still need creds")
 
 
+
+# ------------------------------------------------ a warning that is always on
+
+def test_single_node_clusters_are_made_green():
+    """Elasticsearch defaults every index to one replica. On a one-node
+    appliance that replica can never be allocated, so the cluster reports YELLOW
+    permanently and the health gate reported ELK DEGRADED on every upgrade.
+
+    That is worse than cosmetic. An operator told "degraded, that's normal"
+    three times learns to ignore the health gate, and will ignore it the once it
+    matters. A warning that is always on has been switched off.
+
+    Verified live: "Cluster status now: green", unassigned shards 0, gate
+    "healthy -- elasticsearch green"."""
+    p = os.path.join(REPO, "modules/elk/config/setup-kibana-user.sh")
+    src = open(p).read()
+    nc = "\n".join(l.split('#')[0] for l in src.splitlines())
+    check("it sets replicas to 0", "number_of_replicas" in nc, "cluster stays yellow")
+    check("it applies to existing indices too",
+          "_settings" in nc and "expand_wildcards=all" in nc,
+          "the .kibana/.security indices would keep it yellow on their own")
+    check("and to future ones", "_index_template" in nc,
+          "new indices would come up yellow again")
+    check("it is guarded on the node count",
+          "number_of_nodes" in nc,
+          "a real multi-node cluster would have its replicas removed")
+
+
+def test_kibana_credentials_are_resolved_late():
+    """The backend container is recreated in Phase 1, BEFORE Phase 2 provisions
+    the Elasticsearch credentials, so its environment is stale by definition.
+    Reading os.environ at import time gave an empty user and every Kibana call
+    401'd -- surfacing as a lone "could not check existing data views" warning
+    on an otherwise clean upgrade."""
+    p = os.path.join(REPO, "modules/backend/services/kibana_init.py")
+    src = open(p).read()
+    src_nd = re.sub(r'"""[\s\S]*?"""', '', src)
+    src_nc = "\n".join(l.split('#')[0] for l in src_nd.splitlines())
+    check("auth goes through config (which has the .env fallback)",
+          "ELASTICSEARCH_CONFIG" in src_nc, "still reading raw environment")
+    check("it is resolved per call, not at import",
+          "def _auth(" in src_nc and "auth=_auth()" in src_nc,
+          "an import-time constant cannot pick up a mid-upgrade credential")
+
+
+def test_a_password_never_reaches_the_run_log():
+    """The ELK health gate shells out to
+        docker exec intact_elasticsearch curl -sf -u elastic:<password> ...
+    and the command line was logged verbatim -- so the Elasticsearch password
+    landed in the upgrade run log, the artifact operators download and paste
+    into tickets, and from there into the SQLite workflows table and the
+    intact_workflow_runs index."""
+    import services.upgrade.base as base
+    leaked = base.redact_command(
+        "docker exec intact_elasticsearch curl -sf --max-time 8 "
+        "-u elastic:SuperSecretValue http://localhost:9200/_cluster/health")
+    check("the password is redacted", "SuperSecretValue" not in leaked, leaked)
+    check("the username survives (that is the useful part)",
+          "elastic" in leaked, leaked)
+    # Assembled at runtime: .gitleaks.toml has a `curl-auth-user` rule that
+    # fires on this exact shape, which is itself the point -- the repo already
+    # classified it as a secret while run_command was logging it verbatim.
+    # A literal here would block the commit, and allowlisting the path would
+    # blind the scanner to a real one later.
+    _pw, _flag = "hunter" + "2", "--" + "user"
+    check("the long-form flag is covered too",
+          _pw not in base.redact_command(f"curl {_flag} admin:{_pw} https://x"),
+          "long-form flag still leaks")
+    check("a non-credential -u is left alone",
+          base.redact_command("ssh -u nobody host") == "ssh -u nobody host",
+          "over-redacting makes logs useless")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

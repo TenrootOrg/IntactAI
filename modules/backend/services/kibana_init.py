@@ -28,8 +28,27 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 KIBANA_URL = "https://intact_kibana:5601"
 DATA_VIEW_TITLE = "artifact_*"
 DATA_VIEW_NAME = "Velociraptor Artifacts"
-_AUTH = (os.environ.get('ELASTICSEARCH_USER', 'elastic'),
-         os.environ.get('ELASTICSEARCH_PASSWORD', ''))
+def _auth():
+    """Credentials, resolved LATE and through config.
+
+    This used to read os.environ at import time. The backend container is
+    recreated in Phase 1 of an upgrade, BEFORE Phase 2 provisions the
+    Elasticsearch credentials, so its environment is stale by definition --
+    ELASTICSEARCH_USER came back empty and every Kibana call 401'd. The symptom
+    was a lone "Kibana: could not check existing data views" warning on an
+    otherwise clean upgrade.
+
+    config.ELASTICSEARCH_CONFIG already falls back to modules/elk/.env for
+    exactly this reason. Going through it, per call rather than per import, is
+    what lets a running backend pick the credentials up without a restart it is
+    never going to get mid-upgrade.
+    """
+    try:
+        from config import ELASTICSEARCH_CONFIG as C
+        return (C.get('user') or 'elastic', C.get('password') or '')
+    except Exception:
+        return (os.environ.get('ELASTICSEARCH_USER') or 'elastic',
+                os.environ.get('ELASTICSEARCH_PASSWORD', ''))
 
 
 def _wait_for_kibana(logger: Callable, timeout: int = 120) -> bool:
@@ -68,7 +87,7 @@ def ensure_kibana_data_view(logger: Optional[Callable] = None, wait: bool = True
                 log("  Kibana: not ready yet", "info")
                 return False
 
-        existing = requests.get(f"{KIBANA_URL}/api/data_views", headers=headers, auth=_AUTH, timeout=10, verify=False)
+        existing = requests.get(f"{KIBANA_URL}/api/data_views", headers=headers, auth=_auth(), timeout=10, verify=False)
         if existing.status_code != 200:
             log("  Kibana: could not check existing data views", "warning")
             return False
@@ -78,7 +97,7 @@ def ensure_kibana_data_view(logger: Optional[Callable] = None, wait: bool = True
             return True
 
         payload = {"data_view": {"title": DATA_VIEW_TITLE, "name": DATA_VIEW_NAME, "timeFieldName": "@timestamp"}}
-        resp = requests.post(f"{KIBANA_URL}/api/data_views/data_view", json=payload, headers=headers, auth=_AUTH, timeout=10, verify=False)
+        resp = requests.post(f"{KIBANA_URL}/api/data_views/data_view", json=payload, headers=headers, auth=_auth(), timeout=10, verify=False)
         if resp.status_code in (200, 201):
             log(f"  Kibana: created '{DATA_VIEW_NAME}' data view", "success")
             return True

@@ -95,6 +95,15 @@ _SECRET_ARG_PATTERNS = (
     # `--password value`, `--password=value`, `--token ...`, `-p value`
     re.compile(r'(--(?:password|passwd|token|secret|api-key|apikey)[=\s]+)(\S+)',
                re.IGNORECASE),
+    # curl's `-u user:password` / `--user user:password`. This one leaked in
+    # plain sight: the ELK health gate shells out to
+    #   docker exec intact_elasticsearch curl -sf -u elastic:<password> http://...
+    # and the whole command line was logged verbatim, so the Elasticsearch
+    # password landed in the upgrade run log -- the artifact operators download
+    # and paste into tickets -- and from there into the SQLite workflows table
+    # and the intact_workflow_runs index. Keeps the username, which is the part
+    # that makes the log useful, and drops everything after the colon.
+    re.compile(r'((?:-u|--user)\s+[^\s:]+:)(\S+)'),
 )
 
 
