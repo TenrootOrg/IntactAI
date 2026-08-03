@@ -870,7 +870,29 @@ document.addEventListener('alpine:init', () => {
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), timeoutMs);
             try {
-                return await fetch(url, { ...opts, signal: controller.signal });
+                const r = await fetch(url, { ...opts, signal: controller.signal });
+                // When the backend is down, nginx answers with an HTML error
+                // page. Callers immediately do `await r.json()`, which throws
+                // "Unexpected token '<', "<html>... is not valid JSON" — so a
+                // backend outage is reported to the operator as malformed JSON.
+                //
+                // That is actively misleading. Observed 2026-08-03: every
+                // /api/ call on the box was 502ing, and the Prepare Package
+                // modal said "Fetch releases failed: Unexpected token '<'",
+                // which reads like GitHub changed something and sent the
+                // operator looking for a scraper that does not exist (we use
+                // the REST API, not HTML).
+                //
+                // Label it here rather than at each call site: every caller
+                // already funnels through this helper and surfaces e.message,
+                // so one throw fixes the message everywhere at once.
+                if (r.status === 502 || r.status === 503 || r.status === 504) {
+                    throw new Error(
+                        `the backend is not responding (HTTP ${r.status}). `
+                        + 'This is a local problem, not a GitHub or network one — '
+                        + 'check `docker ps` and `docker logs intact_backend`.');
+                }
+                return r;
             } finally {
                 clearTimeout(timer);
             }
