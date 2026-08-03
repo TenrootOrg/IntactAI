@@ -53,12 +53,27 @@ RELEASE_MODULES = {
     "aws_sigma",      # SigmaHQ AWS CloudTrail rule pack
     "timesketch",
     "plaso",
-    "elk",
-    "iris",
     "volweb",
-    "portainer",
-    "o365rc",         # pins the literal 'latest'; bundling it is the ONLY way
-                      # an air-gapped box ever gets the dfir-o365rc image
+}
+
+# Deliberately NOT bundled. These four are ~6.9 GB of a ~13.8 GB package --
+# roughly half the download -- for modules outside the core DFIR path.
+#
+# THE COST IS REAL AND IS ACCEPTED: an air-gapped site cannot install or
+# upgrade a module that no release carries. Boxes already running these keep
+# working, they just cannot change version without internet. Online installs
+# are unaffected, because install.sh pulls from upstream directly.
+#
+# This is an explicit map rather than four deleted lines so the exclusion has
+# to be re-decided when someone reads it, and so the membership test can still
+# catch a module dropped by ACCIDENT -- which is what it was written for.
+# Removing an entry here puts the module straight back in the package.
+EXCLUDED_FROM_RELEASE = {
+    "elk":       "elasticsearch+kibana+logstash = 3.97 GB",
+    "iris":      "app+db+nginx+rabbitmq = 1.94 GB",
+    "o365rc":    "dfir-o365rc = 0.72 GB; pins the literal 'latest', so an "
+                 "air-gapped box now has no route to this image at all",
+    "portainer": "ce+agent = 0.24 GB",
 }
 
 def platform_config_path(must_exist: bool = True):

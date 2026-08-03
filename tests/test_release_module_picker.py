@@ -62,32 +62,59 @@ def _config_modules():
     return set(cfg.get("modules") or {})
 
 
-def test_release_modules_covers_every_upgradeable_module():
-    """RELEASE_MODULES must equal UPGRADE_ORDER exactly.
+def test_every_upgradeable_module_is_shipped_or_explicitly_excluded():
+    """RELEASE_MODULES + EXCLUDED_FROM_RELEASE must equal UPGRADE_ORDER.
 
-    UPGRADE_ORDER is the platform's own list of what an upgrade can install.
-    Anything in it that RELEASE_MODULES omits is a module no release ever
-    bundles; anything RELEASE_MODULES adds beyond it is a module the packager
-    has no upgrade handler for.
+    This used to demand RELEASE_MODULES == UPGRADE_ORDER, because a module
+    missing from the set is one an air-gapped box can never obtain. Four are
+    now excluded ON PURPOSE (elk, iris, o365rc, portainer -- ~6.9 GB of a
+    ~13.8 GB package, roughly half the download) for modules outside the core
+    DFIR path.
+
+    The guard is kept, not dropped: a module must appear in ONE of the two
+    sets. Deleting an entry from RELEASE_MODULES without adding it to
+    EXCLUDED_FROM_RELEASE -- the accidental case this test was written for --
+    still fails. What changed is that a deliberate exclusion now has to be
+    written down with its reason, rather than being indistinguishable from a
+    mistake.
     """
     bp = _load_picker()
     from services.upgrade import UPGRADE_ORDER
-    missing = set(UPGRADE_ORDER) - set(bp.RELEASE_MODULES)
-    extra = set(bp.RELEASE_MODULES) - set(UPGRADE_ORDER)
+    shipped = set(bp.RELEASE_MODULES)
+    excluded = set(bp.EXCLUDED_FROM_RELEASE)
+    missing = set(UPGRADE_ORDER) - shipped - excluded
+    extra = shipped - set(UPGRADE_ORDER)
+    overlap = shipped & excluded
     assert not missing, (
-        f"{sorted(missing)} are upgradeable but never shipped in a release -- "
-        f"an air-gapped box can never obtain them. Add them to RELEASE_MODULES.")
+        f"{sorted(missing)} are upgradeable but neither shipped nor listed in "
+        f"EXCLUDED_FROM_RELEASE -- an air-gapped box can never obtain them, and "
+        f"nothing records that as a decision. Add them to one set or the other.")
     assert not extra, (
         f"{sorted(extra)} are in RELEASE_MODULES but not UPGRADE_ORDER -- "
         f"the packager has no handler for them.")
+    assert not overlap, (
+        f"{sorted(overlap)} are in BOTH sets — the exclusion is a no-op and the "
+        f"reader cannot tell which wins")
 
 
-def test_every_configured_module_ships():
-    """A module an operator can enable in config.yaml must be shippable."""
+def test_every_exclusion_carries_a_reason():
+    """An exclusion with no reason is a deletion with extra steps. The next
+    person to read this needs to know what it bought and what it cost."""
     bp = _load_picker()
-    unshipped = _config_modules() - set(bp.RELEASE_MODULES)
+    for mod, reason in bp.EXCLUDED_FROM_RELEASE.items():
+        assert reason and len(reason) > 10, (
+            f"{mod} is excluded from releases with no stated reason")
+
+
+def test_every_configured_module_ships_or_is_excluded():
+    """A module an operator can enable in config.yaml must either ship, or be
+    a known exclusion. Otherwise the UI offers something no package delivers
+    and nothing anywhere says why."""
+    bp = _load_picker()
+    unshipped = _config_modules() - set(bp.RELEASE_MODULES) - set(bp.EXCLUDED_FROM_RELEASE)
     assert not unshipped, (
-        f"config.yaml offers {sorted(unshipped)} but no release bundles them")
+        f"config.yaml offers {sorted(unshipped)} but no release bundles them "
+        f"and they are not listed as deliberate exclusions")
 
 
 def test_full_scope_is_built_regardless_of_history():
