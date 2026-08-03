@@ -2520,7 +2520,21 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     log("-" * 40, "info")
     for module, target_ver in versions.items():
         current_ver = current_versions.get(module, {}).get('current', 'Not installed')
-        if current_ver in ('Not installed', 'unknown'):
+        if module in _unknown_manifest_modules:
+            # Same principle as the same-version branch below: say what actually
+            # happens. The module loop walks UPGRADE_ORDER, so an entry this
+            # installer does not know is never dispatched — and printing it as
+            # "installing X (fresh install)" directly contradicts the WARNING
+            # logged a few lines above, which says it will NOT be applied.
+            #
+            # An operator reading the summary would believe a module was
+            # installed that the previous screen said was skipped. Observed
+            # 2026-08-02 with a manifest carrying `velociraptor_legacy` in
+            # versions: (it is a version PIN, not a module — but the summary
+            # cannot know that, and should not claim work it will not do).
+            log(f"  {module.upper()}: {target_ver} in package but NOT APPLIED "
+                f"(unknown to this installer — see the warning above)", "warning")
+        elif current_ver in ('Not installed', 'unknown'):
             log(f"  {module.upper()}: installing {target_ver} (fresh install)", "info")
         elif current_ver == target_ver:
             # Say what actually happens. The dispatch below SKIPS same-version
