@@ -635,7 +635,65 @@ def _upgrade_noop_module(module_name: str, target_ref: str = None) -> bool:
             continue
         if str(pre_merge.get(key)).strip() != str(tgt).strip():
             return False   # primary or a sidecar pin changed / was added
+
+    # Pins are identical -- but "same version" is not the same as "same image".
+    #
+    # velociraptor-server is BUILT from repo source (modules/velociraptor/
+    # Dockerfile + entrypoint.sh), so a source change produces a different image
+    # under an unchanged version pin. The orchestrator's pre-load then
+    # `docker load`s the new image and REASSIGNS the tag, while this function
+    # says "nothing to do" and the container is never recreated. The store and
+    # the running container silently disagree.
+    #
+    # That is not hypothetical: the 2026-08-02 `chmod +x` -> `chmod 755` fix in
+    # entrypoint.sh lives entirely inside the image and does not move the 0.77.1
+    # pin. Every operator already on 0.77.1 -- i.e. exactly the ones carrying the
+    # bug -- would be skipped and never receive the fix.
+    #
+    # So compare identity, not just labels: if the tag now resolves to a
+    # different image than the one the container is running, this module has
+    # work to do. Any failure to determine that returns False (do process),
+    # matching the rest of this function -- never skip something that might
+    # need work.
+    if _module_image_drifted(module_name):
+        return False
     return True
+
+
+def _module_image_drifted(module_name: str) -> bool:
+    """True iff the module's primary container is running an image that is no
+    longer what its tag points at.
+
+    Ask the daemon for both IDs. A tag that was reassigned by `docker load`
+    while the container kept running the old layers is invisible to any
+    version-pin comparison, because nothing about the version changed.
+    """
+    from .base import _MODULE_PRIMARY_CONTAINERS
+    name = _MODULE_PRIMARY_CONTAINERS.get(module_name)
+    if not name:
+        return False                     # no container concept -> nothing to compare
+    try:
+        running = run_command(
+            f"docker inspect -f '{{{{.Image}}}}' {name}",
+            logger=None, timeout=30)
+        ref = run_command(
+            f"docker inspect -f '{{{{.Config.Image}}}}' {name}",
+            logger=None, timeout=30)
+        if not (running.get('success') and ref.get('success')):
+            return False
+        running_id = (running.get('stdout') or '').strip().strip("'")
+        image_ref = (ref.get('stdout') or '').strip().strip("'")
+        if not running_id or not image_ref:
+            return False
+        tagged = run_command(
+            f"docker inspect -f '{{{{.Id}}}}' {image_ref}",
+            logger=None, timeout=30)
+        if not tagged.get('success'):
+            return False                 # tag gone entirely -> compose will pull/build
+        tagged_id = (tagged.get('stdout') or '').strip().strip("'")
+        return bool(tagged_id and running_id != tagged_id)
+    except Exception:
+        return False
 
 # Database volumes that can be reset for fresh install (schema compatibility)
 RESET_VOLUMES = {
