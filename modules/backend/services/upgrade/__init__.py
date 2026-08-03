@@ -1017,6 +1017,25 @@ def prepare_recreate_handoff(run_id: str, swap_info: Dict, logger: Callable = No
     log(f"Recreating backend -> intact-backend:{new_tag}. If the box is left "
         f"down, recover with: {recover_host}", "info")
 
+    # THE LAST LINE THE OPERATOR SEES. Everything below this point happens after
+    # the backend has been replaced, so nothing more can reach a page that is
+    # still talking to the old one — this log view stops updating here and looks
+    # frozen. It is the single most-reported "the upgrade is stuck" moment, on
+    # runs that go on to complete with zero warnings. So the instruction has to
+    # be the last thing written, not a summary at the end nobody gets to read.
+    log("", "info")
+    log("THIS LOG STOPS UPDATING HERE — REFRESH THE PAGE TO KEEP READING IT.",
+        "warning")
+    log("  The backend is being replaced, so this page is talking to a process "
+        "that is about to be gone. It cannot receive the rest of the run.", "info")
+    log("  Press Ctrl+Shift+R (Cmd+Shift+R on Mac). The upgrade KEEPS RUNNING "
+        "meanwhile — refreshing, closing this tab, or losing the browser "
+        "entirely cannot interrupt it.", "info")
+    log("  After the refresh this run reopens where it left off and the log "
+        "continues. If a login or SETUP page appears first, sign in and it will "
+        "reattach.", "info")
+    log("", "info")
+
     # 4. write the helper script to the shared data bind, then spawn the helper
     #    container FROM THE OLD IMAGE (has docker + compose; survives our death).
     try:

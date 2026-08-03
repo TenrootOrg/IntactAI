@@ -129,6 +129,38 @@ def test_reattach_can_never_break_the_page():
           "it would reopen over whatever the operator was reading")
 
 
+def test_the_freeze_point_itself_tells_you_to_refresh():
+    """The operator's screenshot ended at "Recreating backend -> ...". That is
+    the last line that can reach a page still talking to the old backend, so the
+    view freezes there -- on a run that completed 100% with zero warnings. A
+    refresh instruction anywhere later is a message nobody receives.
+
+    Asserted against prepare_recreate_handoff specifically -- the function that
+    actually writes that line -- not the whole module, so it cannot be satisfied
+    by some other function's text."""
+    src = _code(up.prepare_recreate_handoff)
+    check("it says the log stops updating here",
+          "STOPS UPDATING HERE" in src, "the freeze is unexplained")
+    check("it says to refresh", "REFRESH THE PAGE" in src and "Ctrl+Shift+R" in src,
+          "no action given")
+    check("it says refreshing cannot interrupt the run",
+          "cannot interrupt" in src,
+          "operators will not touch a screen they think is load-bearing")
+    check("it promises the log continues after the refresh",
+          "reopens where it left off" in src, "no reason to bother refreshing")
+
+
+def test_the_refresh_notice_is_the_last_thing_logged():
+    """Ordering is the entire point. Printed before the recreate line it scrolls
+    away; printed after the spawn it never arrives."""
+    src = inspect.getsource(up.prepare_recreate_handoff)
+    recreate = src.find("Recreating backend ->")
+    notice = src.find("STOPS UPDATING HERE")
+    check("the notice follows the recreate line",
+          recreate != -1 and notice != -1 and notice > recreate,
+          f"recreate at {recreate}, notice at {notice}")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
