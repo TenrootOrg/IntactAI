@@ -13,22 +13,32 @@ Meant to run INSIDE a container built from the release's backend image, with:
   - INTACT_PATH / INTACT_HOST_PATH set to the release checkout,
   - an output dir mounted for the finished tarball.
 
-Module set = EVERY module, every release. No diffing against a baseline.
+Module set = an EXPLICIT list, declared per release. See RELEASE_MODULES and
+EXCLUDED_FROM_RELEASE below; every upgradeable module must appear in one of
+them, so dropping one is always a decision rather than an oversight.
 
-This used to ship only modules whose version pin moved since a baseline
-release. That saved gigabytes but made a package's contents depend on which
-release you happened to build from, and the online flow downloads exactly ONE
-package for the target ref — it does not walk the upgrade chain. So a customer
-who skipped a release got a package diffed against a baseline NEWER than what
-they were running, and whatever changed in the gap they jumped was simply
-absent: their modules stayed stale while the run reported success. Choosing the
-baseline correctly required knowing the oldest release any customer might still
-be on, which is not knowable at build time.
+This is currently a DELTA release and that is a deliberate, revisit-every-time
+choice, not the default. The history matters because it is easy to re-break:
+
+The package once shipped only modules whose pin moved since a baseline release.
+That saved gigabytes and made a package's contents depend on which release you
+happened to build from. The online flow downloads exactly ONE package for the
+target ref -- it does not walk the upgrade chain. So a customer who skipped a
+release got a package diffed against a baseline NEWER than what they were
+running, and whatever changed in the gap they jumped was simply absent: their
+modules stayed stale WHILE THE RUN REPORTED SUCCESS. Choosing the baseline
+correctly required knowing the oldest release any customer might still be on,
+which is not knowable at build time.
 
 Shipping everything makes the package self-contained and the outcome identical
-no matter where a box is upgrading FROM. The cost is size, not correctness --
-and the apply side already skips modules whose installed version matches the
-target, so a byte-identical module in the package is inert on arrival.
+no matter where a box upgrades FROM; the cost is size, not correctness, and the
+apply side already skips modules whose installed version matches the target, so
+a byte-identical module in the package is inert on arrival.
+
+A hand-declared subset gets the size saving back and re-accepts that risk, but
+narrowly: it is safe exactly while every box upgrades SEQUENTIALLY from the
+previous release. Confirm that before trimming, and re-derive the set each
+release rather than inheriting it.
 
 Usage:
   build_release_package.py --tag intact-20260722 --out /output
@@ -43,37 +53,46 @@ if "/app" not in sys.path:
     sys.path.insert(0, "/app")
 
 
-# THE release scope: every module ships in every package. Order here is
-# irrelevant (UPGRADE_ORDER drives packaging); this is purely the membership
-# list. A module missing from this set is a module an air-gapped operator can
-# never obtain, so add new modules here when they land.
+# THE release scope. Order is irrelevant (UPGRADE_ORDER drives packaging); this
+# is purely the membership list. A module in NEITHER this set nor
+# EXCLUDED_FROM_RELEASE fails the membership test, so a new module cannot land
+# without someone deciding whether it ships.
 RELEASE_MODULES = {
-    "intact",         # backend + frontend (nginx) platform source + image
-    "velociraptor",
-    "aws_sigma",      # SigmaHQ AWS CloudTrail rule pack
-    "timesketch",
-    "plaso",
-    "volweb",
+    "intact",         # backend + frontend source, the intact-backend image, and
+                      # tusd -- both `intact-backend-` and `tusd-` are attributed
+                      # to `intact` by image_owner_prefixes, so this one entry
+                      # carries the platform and its upload sidecar.
+    "elk",
+    "iris",
 }
 
-# Deliberately NOT bundled. These four are ~6.9 GB of a ~13.8 GB package --
-# roughly half the download -- for modules outside the core DFIR path.
+# Deliberately NOT bundled: a DELTA release.
 #
-# THE COST IS REAL AND IS ACCEPTED: an air-gapped site cannot install or
-# upgrade a module that no release carries. Boxes already running these keep
-# working, they just cannot change version without internet. Online installs
-# are unaffected, because install.sh pulls from upstream directly.
+# Module pins are identical between intact-20260726 and this release except elk
+# and tusd, so shipping only those plus the platform is the delta for anyone
+# upgrading SEQUENTIALLY from the previous release. Everything of value in this
+# release is platform code, which `intact` carries in full.
 #
-# This is an explicit map rather than four deleted lines so the exclusion has
-# to be re-decided when someone reads it, and so the membership test can still
-# catch a module dropped by ACCIDENT -- which is what it was written for.
-# Removing an entry here puts the module straight back in the package.
+# THE COST, ACCEPTED: this is the architecture the packager's own docstring
+# argues against, and for a specific reason -- the online flow downloads exactly
+# ONE package for the target ref and does not walk the upgrade chain. A box that
+# SKIPS a release gets a package whose omitted modules stay stale while the run
+# reports success. Concretely, upgrading straight from intact-20260615 would not
+# move timesketch 20260326 -> 20260630, velociraptor 0.76.1 -> 0.77.1, plaso,
+# volweb or aws_sigma, and nothing would say so.
+#
+# That is survivable while upgrades are sequential and every box is on
+# intact-20260726. It stops being survivable the moment one is not, so this set
+# has to be revisited per release rather than inherited.
 EXCLUDED_FROM_RELEASE = {
-    "elk":       "elasticsearch+kibana+logstash = 3.97 GB",
-    "iris":      "app+db+nginx+rabbitmq = 1.94 GB",
-    "o365rc":    "dfir-o365rc = 0.72 GB; pins the literal 'latest', so an "
-                 "air-gapped box now has no route to this image at all",
-    "portainer": "ce+agent = 0.24 GB",
+    "timesketch": "delta release: pin unchanged since intact-20260726",
+    "plaso":      "delta release: pin unchanged since intact-20260726",
+    "velociraptor": "delta release: pin unchanged since intact-20260726",
+    "volweb":     "delta release: pin unchanged since intact-20260726",
+    "aws_sigma":  "delta release: pin unchanged since intact-20260726",
+    "portainer":  "delta release: pin unchanged since intact-20260726",
+    "o365rc":     "delta release: pins the literal 'latest'; an air-gapped box "
+                  "has no route to this image at all without it",
 }
 
 def platform_config_path(must_exist: bool = True):
