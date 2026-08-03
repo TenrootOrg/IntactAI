@@ -40,18 +40,30 @@ tests/test_compose_mounts_are_delivered.py enforces it at CI time against the
 repo, and verify_referenced_assets() enforces it at upgrade time against the
 appliance, immediately before compose runs.
 
-DELIVERY IS FILL-THE-GAP, NEVER OVERWRITE
------------------------------------------
-deliver_referenced_assets() copies only what is MISSING on the appliance. It
-never overwrites a file that is already there, because a mounted path can hold
-operator state that merely happens to also ship a default — timesketch mounts
-its whole ./config directory, which the backend writes LLM settings into. So a
-mounted file whose CONTENT changes between releases is still not propagated by
-this module; that needs the deliberate, reviewed refresh_module_compose_file(
-relative_path=...) call, as nginx.conf already uses. What is covered here is the
-failure that silently produces a directory where a file was meant to be.
+WHAT DELIVERY DOES, AND WHAT IT REFUSES TO DO
+---------------------------------------------
+deliver_referenced_assets() handles three cases:
+
+  missing        -> copy it, preserving mode
+  empty dir      -> Docker's leftover from a previous failed run; remove, copy
+  file, differs  -> refresh it, keeping the old content at <name>.pre-upgrade
+
+The refresh case was added the same day as the rest, because fill-the-gap alone
+demonstrably was not enough. The ELK release that enabled xpack.security also
+added Elasticsearch credentials to config/pipeline/main.conf. The appliance
+already HAD a main.conf, so delivery skipped it, Logstash kept the
+credential-less version, and it 401'd into a 24-restart crash loop against an
+Elasticsearch that reported healthy throughout. The fix existed upstream and had
+no route to the box.
+
+It refuses to touch DIRECTORIES that already exist. A mounted directory mixes
+shipped defaults with operator state — timesketch mounts its whole ./config,
+which the backend writes LLM settings into — and cannot be reasoned about from
+here. It also refuses to delete a non-empty directory standing where a file
+belongs: that is data, and no upgrade gets to remove it to make a mount fit.
 """
 
+import filecmp
 import os
 import posixpath
 import shutil
@@ -272,6 +284,38 @@ def deliver_referenced_assets(module_name: str, intact_root: str,
                 continue
         if not os.path.exists(src):
             continue  # install-generated; verify_referenced_assets reports it
+        if os.path.isfile(dst) and os.path.isfile(src):
+            # REFRESH a shipped config file whose content changed.
+            #
+            # Fill-the-gap alone is not enough, and the proof arrived the same
+            # day: the ELK release that enabled xpack.security also added
+            # Elasticsearch credentials to config/pipeline/main.conf. The
+            # appliance already HAD a main.conf, so delivery skipped it,
+            # Logstash kept the credential-less version, and it 401'd into a
+            # 24-restart crash loop against an Elasticsearch that reported
+            # healthy the whole time. The fix existed upstream and could not
+            # reach the box.
+            #
+            # Only single mounted FILES, never directories: a mounted directory
+            # (timesketch's ./config) mixes shipped defaults with operator state
+            # and cannot be reasoned about file by file from here. And the
+            # previous content is kept beside it, so a local edit is recoverable
+            # rather than destroyed.
+            try:
+                if filecmp.cmp(src, dst, shallow=False):
+                    continue
+                backup = dst + '.pre-upgrade'
+                shutil.copy2(dst, backup)
+                shutil.copy2(src, dst)
+                shutil.copystat(src, dst)
+                log(f"  Refreshed {ref.repo_path} from the new release "
+                    f"({ref.service} mounts it); previous content kept at "
+                    f"{os.path.basename(backup)}", "success")
+                delivered += 1
+            except Exception as e:
+                log(f"  Could not refresh {ref.repo_path} "
+                    f"({type(e).__name__}: {e})", "warning")
+            continue
         try:
             os.makedirs(os.path.dirname(dst.rstrip('/')) or '/', exist_ok=True)
             if os.path.isdir(src):

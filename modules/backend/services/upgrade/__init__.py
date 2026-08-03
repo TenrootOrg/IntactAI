@@ -1976,6 +1976,19 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
     # Both helpers are idempotent no-ops once their secret exists, so running
     # them up here costs nothing and closes the gap for install and upgrade
     # alike, regardless of pin movement.
+    # Elasticsearch credentials belong in this same block, and for the same
+    # reason: the release that turns on xpack.security has THREE consumers
+    # (Kibana, Logstash, the backend) and shipping the switch without the
+    # credentials leaves two of them 401'ing while every health signal stays
+    # green. Idempotent and non-rotating -- see ensure_elk_credentials.
+    try:
+        if os.path.isdir(os.path.join(WORKDIR, 'modules', 'elk')):
+            from .elk import ensure_elk_credentials
+            ensure_elk_credentials(logger=log)
+    except Exception as _e:
+        log(f"  (Elasticsearch credential provisioning skipped: "
+            f"{type(_e).__name__}: {_e})", "warning")
+
     for _label, _fn, _mod in (
         ("Portainer agent secret", _ensure_agent_secret, 'portainer'),
         ("Timesketch DB password", _ensure_ts_pg_password, 'timesketch'),

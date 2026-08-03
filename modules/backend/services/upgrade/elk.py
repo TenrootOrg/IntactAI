@@ -184,6 +184,13 @@ def upgrade_elk_offline(package_dir: str, version: str, logger: Callable = None,
         # at the mount path, and the container dies with exit 126. Doing this
         # here as well as in the intact mirror covers an ELK-only upgrade,
         # where the intact module is not part of the run at all.
+        # Credentials before compose up: the containers read them at start.
+        try:
+            ensure_elk_credentials(logger=log)
+        except Exception as _ce:
+            log(f"  Elasticsearch credential check skipped "
+                f"({type(_ce).__name__}: {_ce})", "warning")
+
         try:
             from .compose_assets import (deliver_referenced_assets,
                                          verify_referenced_assets)
@@ -349,3 +356,84 @@ def install_elk_offline(package_dir: str, version: str, logger=None, run_id=None
         )
 
     return compose_result
+
+
+# ---------------------------------------------------------------------------
+# Elasticsearch credentials
+# ---------------------------------------------------------------------------
+# The 20260803 ELK release turned on `xpack.security.enabled=true`. That is a
+# platform-wide change with THREE consumers, and the release updated one:
+#
+#   Kibana    kibana_system, provisioned by the new `setup` service   OK
+#   Logstash  no credentials in its pipeline config                   401, crash loop
+#   backend   ELASTICSEARCH_USER empty, password unset                401 on every query
+#
+# Observed on the 20260726 -> 20260803 upgrade: Elasticsearch healthy, Kibana
+# healthy, `setup` exited 0, upgrade reported success -- while the backend
+# logged `AuthenticationException(401) ... /intact_workflow_runs/_search` on a
+# loop and Logstash restarted 24 times. Every summary signal was green.
+#
+# NEVER ROTATES. Elasticsearch fixes the `elastic` password at initdb, so
+# generating a new one on an existing cluster locks the platform out of its own
+# data -- the failure mode would be worse than the one being fixed. An existing
+# password is reused as-is; only a genuinely absent one is seeded, and then the
+# operator is told, loudly, to change it.
+DEFAULT_ELASTIC_USER = 'elastic'
+DEFAULT_ELASTIC_PASSWORD = 'changeme'
+
+
+def ensure_elk_credentials(logger: Callable = None) -> Dict:
+    """Make sure every Elasticsearch consumer holds the SAME credentials.
+
+    Returns {'user', 'seeded': bool, 'propagated': [str]} — 'seeded' is True
+    only when nothing was on disk and the documented default was written.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    elk_env = os.path.join(WORKDIR, 'modules', 'elk', '.env')
+    if not os.path.isfile(elk_env):
+        return {'user': '', 'seeded': False, 'propagated': []}
+
+    current = read_env_file(elk_env)
+    user = (current.get('ELASTIC_USER') or '').strip() or DEFAULT_ELASTIC_USER
+    password = (current.get('ELASTIC_PASSWORD') or '').strip()
+    kibana_pw = (current.get('KIBANA_PASSWORD') or '').strip()
+
+    seeded = False
+    if password:
+        # The normal path on every upgrade after the first: security is already
+        # on, Elasticsearch already holds this password, so it is the only one
+        # that can possibly work.
+        log("  Elasticsearch security: reusing the existing credentials", "info")
+    else:
+        password = DEFAULT_ELASTIC_PASSWORD
+        seeded = True
+        update_env_file(elk_env, 'ELASTIC_PASSWORD', password, logger=None)
+        log("  ELASTICSEARCH IS USING DEFAULT CREDENTIALS. This release enables "
+            f"Elasticsearch authentication, and no password was set on this "
+            f"box, so the documented default was used: user '{user}', password "
+            f"'{DEFAULT_ELASTIC_PASSWORD}'. CHANGE IT: set ELASTIC_PASSWORD in "
+            "modules/elk/.env and re-run the ELK module.", "warning")
+    if not current.get('ELASTIC_USER'):
+        update_env_file(elk_env, 'ELASTIC_USER', user, logger=None)
+    if not kibana_pw:
+        # Kibana's own service account. Same rule: reuse if present.
+        update_env_file(elk_env, 'KIBANA_PASSWORD', password, logger=None)
+
+    # Propagate to every other consumer. Writing the .env keeps a future
+    # container recreation correct; config.py also falls back to reading
+    # modules/elk/.env at runtime, so the RUNNING backend recovers without
+    # waiting for a restart it is not going to get mid-upgrade.
+    propagated = []
+    be_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
+    if os.path.isfile(be_env):
+        be = read_env_file(be_env)
+        if (be.get('ELASTICSEARCH_USER') or '').strip() != user:
+            update_env_file(be_env, 'ELASTICSEARCH_USER', user, logger=None)
+            propagated.append('backend ELASTICSEARCH_USER')
+        if (be.get('ELASTICSEARCH_PASSWORD') or '').strip() != password:
+            update_env_file(be_env, 'ELASTICSEARCH_PASSWORD', password, logger=None)
+            propagated.append('backend ELASTICSEARCH_PASSWORD')
+    if propagated:
+        log(f"  Propagated Elasticsearch credentials to: "
+            f"{', '.join(propagated)}", "success")
+    return {'user': user, 'seeded': seeded, 'propagated': propagated}
