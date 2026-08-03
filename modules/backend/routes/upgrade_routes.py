@@ -1468,3 +1468,55 @@ def download_prepared_package(run_id):
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@upgrade_bp.route('/api/upgrade/active', methods=['GET'])
+def get_active_upgrade_run():
+    """The upgrade run currently in flight, if any.
+
+    Exists because an upgrade signs the operator out halfway through. The
+    backend restarts to load the new code, every session dies with it, and on a
+    pre-auth box the auth migration additionally lands them on the SETUP page.
+    The frontend held the run id only in memory, so after signing back in it had
+    nothing to poll and simply sat there -- reported as "it's stuck at some
+    point", on a run that was completing normally.
+
+    So the run has to be discoverable from the SERVER rather than remembered by
+    a page that is about to be thrown away. Returns the newest upgrade workflow
+    still running or waiting to resume, so the UI can reattach itself.
+    """
+    ACTIVE = ('running', 'awaiting_restart', 'phase2', 'pending')
+    try:
+        from services.workflow_service import get_all_automation_runs
+    except Exception:
+        try:
+            from routes.dashboard_routes import get_all_automation_runs
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e), "active": None}), 200
+    try:
+        runs = get_all_automation_runs() or []
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e), "active": None}), 200
+
+    best = None
+    for run in runs:
+        rid = run.get('run_id') or ''
+        if not rid.startswith(('upgrade_', 'prepare_package_')):
+            continue
+        if (run.get('status') or '').lower() not in ACTIVE:
+            continue
+        if best is None or (run.get('updated_at') or '') > (best.get('updated_at') or ''):
+            best = run
+    if not best:
+        return jsonify({"success": True, "active": None}), 200
+    return jsonify({
+        "success": True,
+        "active": {
+            "run_id": best.get('run_id'),
+            "status": best.get('status'),
+            "phase": best.get('phase'),
+            "progress": best.get('progress'),
+            "name": best.get('name'),
+            "updated_at": best.get('updated_at'),
+        },
+    }), 200

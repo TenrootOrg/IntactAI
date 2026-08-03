@@ -1485,6 +1485,28 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
                                 return {"success": False,
                                         "error": "failed to persist Phase-2 resume state; "
                                                  "restart aborted"}
+                            # SAY IT BEFORE IT HAPPENS. The restart drops every
+                            # session, and on a pre-auth box the auth migration
+                            # additionally lands the operator on the SETUP page.
+                            # From the operator's chair that is: the progress view
+                            # freezes, then a login screen they were not expecting
+                            # appears, with nothing anywhere saying the upgrade is
+                            # still running. Reported as "it's stuck at some point"
+                            # -- on a run that was working perfectly. A warning
+                            # after the fact is no warning; this has to be the last
+                            # thing they read before the screen changes.
+                            log("", "info")
+                            log("YOU ARE ABOUT TO BE SIGNED OUT — THIS IS NORMAL.",
+                                "warning")
+                            log("  The backend is restarting to load the new code. "
+                                "The upgrade KEEPS RUNNING in the background and "
+                                "does not need this page to stay open.", "info")
+                            log("  Sign back in and this run reopens where it left "
+                                "off. If a SETUP page appears instead, this "
+                                "appliance predates the dashboard login: choose "
+                                "your own username and password. That is the "
+                                "upgrade doing its job, not a failure.", "info")
+                            log("", "info")
                             log("Backend will restart to load new code. Upgrade will resume automatically.", "info")
                             schedule_backend_restart(run_id=run_id, logger=log)
 
@@ -3125,6 +3147,28 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                                 return {"success": False,
                                         "error": "failed to persist Phase-2 resume state; "
                                                  "restart aborted"}
+                            # SAY IT BEFORE IT HAPPENS. The restart drops every
+                            # session, and on a pre-auth box the auth migration
+                            # additionally lands the operator on the SETUP page.
+                            # From the operator's chair that is: the progress view
+                            # freezes, then a login screen they were not expecting
+                            # appears, with nothing anywhere saying the upgrade is
+                            # still running. Reported as "it's stuck at some point"
+                            # -- on a run that was working perfectly. A warning
+                            # after the fact is no warning; this has to be the last
+                            # thing they read before the screen changes.
+                            log("", "info")
+                            log("YOU ARE ABOUT TO BE SIGNED OUT — THIS IS NORMAL.",
+                                "warning")
+                            log("  The backend is restarting to load the new code. "
+                                "The upgrade KEEPS RUNNING in the background and "
+                                "does not need this page to stay open.", "info")
+                            log("  Sign back in and this run reopens where it left "
+                                "off. If a SETUP page appears instead, this "
+                                "appliance predates the dashboard login: choose "
+                                "your own username and password. That is the "
+                                "upgrade doing its job, not a failure.", "info")
+                            log("", "info")
                             log("Backend will restart to load new code. Upgrade will resume automatically.", "info")
                             schedule_backend_restart(run_id=run_id, logger=log)
 
