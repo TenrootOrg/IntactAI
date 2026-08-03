@@ -24,6 +24,21 @@ QA_DASH_USER = "qa"
 QA_DASH_PASSWORD = "123123"
 
 REPO_URL = "git@github.com:TenrootOrg/IntactAI.git"
+
+# Where the platform is INSTALLED, i.e. the tree install.sh runs from and every
+# container bind-mounts. Hardcoding /home/tenroot/intact was fine while that was
+# the only possibility; it is wrong the moment the appliance lives anywhere else.
+#
+# It moved on 2026-08-03: the working copy and the install are now one directory
+# (/home/tenroot/intact-dev), because keeping them apart existed only to hold an
+# OLD release for upgrade testing, and that finished. With the constant still
+# pointing at the old path the harness would have wiped and reinstalled into a
+# directory nothing was running from, then asserted against the appliance that
+# was still up elsewhere -- passing or failing for reasons unrelated to the code
+# under test.
+#
+# Resolved from qa-config so it follows the box rather than a literal, falling
+# back to the historical default for an unconfigured checkout.
 REPO_DIR = "/home/tenroot/intact"
 INSTALL_MARKER = "/etc/intact-initialized"
 
@@ -55,6 +70,9 @@ ISOLATED = [
 
 def register(runner, cfg):
     tl = runner.ctx.tl
+
+    global REPO_DIR
+    REPO_DIR = cfg.repo_dir or REPO_DIR
 
     # ---------------------------------------------------------------- -1 --
     @runner.phase("preflight", "Verify prerequisites before destroying anything",

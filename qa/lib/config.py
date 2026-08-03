@@ -132,6 +132,16 @@ class QAConfig:
         return bool(self.get("run", "keep_memory", default=False))
 
     @property
+    def repo_dir(self):
+        """Where the platform is installed — the tree install.sh runs from.
+
+        Not a preference: get it wrong and the harness wipes and reinstalls a
+        directory nothing is running from, then asserts against whatever
+        appliance is actually up, passing or failing for reasons unrelated to
+        the code under test."""
+        return self.get("platform", "repo_dir", default="") or ""
+
+    @property
     def cloud_tests(self):
         """Run the AWS/Azure cloud-module assertions.
 
