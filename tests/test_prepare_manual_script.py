@@ -148,7 +148,8 @@ def test_the_token_is_optional_in_both():
     assert 'if ($env:GITHUB_TOKEN)' in ps, (
         "PowerShell sends the Authorization header unconditionally")
     for src, label in ((SCRIPT, "bash"), (SCRIPT_PS, "powershell")):
-        assert "OPTIONAL" in src, f"{label} does not say the token is optional"
+        assert ("No GitHub token needed" in src or "OPTIONAL" in src), (
+            f"{label} does not say the token is optional")
         assert "repo scope" not in src, (
             f"{label} still asks for `repo` scope — these are public releases "
             f"and a no-scope token is enough even for the rate limit")

@@ -270,38 +270,25 @@ def check_quota_or_raise(needed: int, action_name: str,
     if remaining < needed:
         _emit(f"[GH-QUOTA] {action_name}: REFUSED — needs {needed}, have {remaining}/{limit} "
               f"(resets {reset_hm}, in {reset_min}m)", "error")
-        # Multi-line actionable instructions in the error message so
-        # the UI's "showMessage(d.error)" surfaces a path the operator
-        # can actually follow, not just "set GITHUB_TOKEN" with no
-        # context. Two options shown — wait OR raise the cap — with
-        # exact commands for the raise-the-cap path.
+        # ONE sentence. This lands in a transient toast, and the previous
+        # version put ~200 words there -- three numbered steps, two URLs and a
+        # config snippet -- which is unreadable in a popup that disappears and
+        # cannot be copied from. The instinct was right (give the operator a
+        # path, not just "set GITHUB_TOKEN") but a toast is the wrong place for
+        # it: the full walkthrough lives in the modal's quota banner, which is
+        # persistent, on-screen while they act, and next to the thing it fixes.
         if state['authed']:
-            fix_block = (
-                " (Token IS authed against /5000 cap; "
-                "you're rate-limited by an unusually high call volume — "
-                "wait until reset.)"
-            )
+            fix_block = (" The token is already authenticated against the "
+                         "5000/hr cap, so this is unusual call volume — wait "
+                         "for the reset.")
         else:
-            fix_block = (
-                "\n\nTo raise the cap from 60 → 5000/hr:\n"
-                "  1) Get a token: https://github.com/settings/tokens/new "
-                "(classic). Leave ALL scopes UNCHECKED — the platform only "
-                "READS a public repo, so an empty-scope token authenticates "
-                "fine and is harmless if it leaks. (Fine-grained alt: "
-                "https://github.com/settings/personal-access-tokens/new with "
-                "'Public repositories (read-only)' and no permissions.)\n"
-                "  2) Put it in config.yaml under options:\n"
-                "       github_token: 'ghp_YOUR_TOKEN'\n"
-                "     (picked up immediately — no restart needed; install.sh "
-                "also persists it to the backend .env on the next run)\n"
-                "  3) Confirm — open this modal again; the [GH-QUOTA] log "
-                "should now show have N/5000 instead of N/60.\n"
-                "Otherwise, wait until reset."
-            )
+            fix_block = (" Set options.github_token in config.yaml to raise the "
+                         "cap to 5000/hr (no restart needed), or wait for the "
+                         "reset.")
         raise ResolverQuotaError(
-            f"GitHub rate limit too low for {action_name}: "
-            f"need {needed}, have {remaining}. "
-            f"Quota resets at {reset_hm} (in {reset_min} minutes).{fix_block}"
+            f"GitHub rate limit reached — {action_name} needs {needed} calls, "
+            f"{remaining} left. Resets at {reset_hm}, in {reset_min} min."
+            f"{fix_block}"
         )
     _emit(f"[GH-QUOTA] {action_name}: needs {needed} calls, "
           f"have {remaining}/{limit} remaining (resets {reset_hm})", "info")

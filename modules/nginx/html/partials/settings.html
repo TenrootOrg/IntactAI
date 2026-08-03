@@ -1471,7 +1471,25 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                 </span>
                                 <span x-show="$store.settings.githubQuota && $store.settings.githubQuota.remaining <= 10">
                                     ⚠ GitHub quota low: <span class="font-mono" x-text="($store.settings.githubQuota?.remaining || 0) + '/' + ($store.settings.githubQuota?.limit || 60)"></span> calls left
-                                    (resets <span class="font-mono" x-text="$store.settings.githubQuota?.reset_hm || ''"></span>). The upgrade flow needs a couple more — wait for reset if you hit a 429.
+                                    (resets <span class="font-mono" x-text="$store.settings.githubQuota?.reset_hm || ''"></span>). Each time this dialog opens costs 2.
+                                    <!-- The full walkthrough lives HERE, not in the error toast.
+                                         It used to be ~200 words of numbered steps and URLs inside
+                                         a popup that vanishes and cannot be copied from. This
+                                         banner is persistent, on screen while the operator acts,
+                                         and sits next to the number it explains. -->
+                                    <template x-if="$store.settings.githubQuota && !$store.settings.githubQuota.authed">
+                                        <span>
+                                            <br>
+                                            <span class="text-gray-300">Raise the cap 60 → 5000/hr:</span>
+                                            create a token at
+                                            <a href="https://github.com/settings/tokens/new" target="_blank" rel="noopener"
+                                               class="text-blue-400 hover:underline font-mono">github.com/settings/tokens/new</a>
+                                            with <span class="text-gray-300">every scope left unchecked</span> — the platform only reads a
+                                            public repo, so a scopeless token is enough and harmless if it leaks. Put it in
+                                            <span class="font-mono">config.yaml</span> under
+                                            <span class="font-mono">options.github_token</span>; it takes effect immediately, no restart.
+                                        </span>
+                                    </template>
                                 </span>
                             </div>
 

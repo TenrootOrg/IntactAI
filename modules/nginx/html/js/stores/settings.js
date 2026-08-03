@@ -1549,19 +1549,30 @@ document.addEventListener('alpine:init', () => {
         // when the package exceeds GitHub's 2 GB per-asset limit, plus a
         // whole-file `.sha256` (.github/workflows/build-release-package.yml).
         // The parts must be concatenated in sort order or the checksum fails.
+        // WHY the emitted bash looks like this — kept HERE, not in the output.
+        // The operator pastes the script; they do not maintain it, and every
+        // line of rationale is a line they have to scroll past to find the one
+        // thing they must edit.
+        //
+        //   ( ... )   it is PASTED into a live shell, not saved and run. There
+        //             `set -e` aborts the operator's session on the first error
+        //             and `exit 1` closes their terminal. A subshell contains
+        //             both, and keeps the atomicity that stops a failure
+        //             cascading — the same job & { } does for PowerShell.
+        //   AUTH      only add Authorization when a token exists. An empty
+        //             Bearer is worse than none: GitHub rejects it outright
+        //             instead of falling back to the anonymous quota.
+        //   .part-*   packages over GitHub's 2 GB asset cap ship split. They
+        //             must be joined in sort order — any other order still
+        //             produces a file, just not a valid one.
+        //   octet-stream  asset bytes only come back with this Accept header;
+        //             browser_download_url returns JSON metadata instead.
         prepareManualScript() {
             const tag = this.selectedRef || 'intact-20260726';
             return [
-                '# Fetch the Intact.AI offline upgrade package. Paste into a terminal.',
-                '# Needs curl, sha256sum, and either jq or python3 for the JSON.',
-                '# A GitHub token is OPTIONAL - the releases are public. Setting one',
-                '# only raises the API rate limit from 60/hr to 5000/hr.',
-                '#',
-                '# Wrapped in ( ) on purpose. This is meant to be PASTED, not saved as',
-                '# a script, and in an interactive shell `set -e` would abort your',
-                '# session on the first error while `exit 1` would CLOSE THE TERMINAL.',
-                '# A subshell keeps both contained: it exits, your shell survives, and',
-                '# the whole thing still runs as one unit so a failure stops the rest.',
+                '# Download the Intact.AI offline upgrade package. Paste into a terminal.',
+                '# No GitHub token needed. Setting GITHUB_TOKEN only raises the API',
+                '# rate limit from 60/hr to 5000/hr.',
                 '(',
                 '  set -euo pipefail',
                 '',
@@ -1570,19 +1581,15 @@ document.addEventListener('alpine:init', () => {
                 '  API=https://api.github.com',
                 '  BASE="intact-upgrade-$TAG.tar.gz"',
                 '',
-                '  # Anonymous works. Only add the header when a token is actually set -',
-                '  # an empty Bearer is worse than none, because GitHub rejects it',
-                '  # outright instead of falling back to the anonymous quota.',
                 '  AUTH=(-H "X-GitHub-Api-Version: 2022-11-28")',
-                '  if [ -n "${GITHUB_TOKEN:-}" ]; then',
+                '  if [ -n "${GITHUB_TOKEN:-}" ]; then                 # optional: raises the rate limit',
                 '    AUTH+=(-H "Authorization: Bearer $GITHUB_TOKEN")',
                 '  fi',
                 '',
-                '  # 1. List this release\'s package assets.',
                 '  if ! REL=$(curl -fsSL "${AUTH[@]}" "$API/repos/$REPO/releases/tags/$TAG"); then',
                 '    echo "Cannot read release $TAG." >&2',
-                '    echo "  404 - no PUBLISHED release for that tag. A git tag alone is not" >&2',
-                '    echo "        enough, and a DRAFT release is invisible without a token." >&2',
+                '    echo "  404 - no PUBLISHED release for that tag (a git tag alone is not" >&2',
+                '    echo "        enough; a DRAFT release needs a token to be visible)." >&2',
                 '    echo "  403 - rate limited (60/hr anonymous). Wait, or set GITHUB_TOKEN." >&2',
                 '    echo "  401 - the token you set is wrong or expired." >&2',
                 '    exit 1',
@@ -1602,13 +1609,8 @@ document.addEventListener('alpine:init', () => {
                 '  else',
                 '    echo "Need jq or python3 to read the release JSON." >&2; exit 1',
                 '  fi',
-                '  if [ -z "$ASSETS" ]; then',
-                '    echo "Release $TAG has no package assets (CI may still be building it)." >&2',
-                '    exit 1',
-                '  fi',
+                '  [ -n "$ASSETS" ] || { echo "Release $TAG has no package assets (CI may still be building)." >&2; exit 1; }',
                 '',
-                '  # 2. Download each. A private repo serves assets from the API url with',
-                '  #    an octet-stream Accept header; browser_download_url returns JSON.',
                 '  while read -r name url; do',
                 '    [ -n "$name" ] || continue',
                 '    echo "  -> $name"',
@@ -1616,8 +1618,6 @@ document.addEventListener('alpine:init', () => {
                 '         -H "Accept: application/octet-stream" -o "$name" "$url"',
                 '  done <<< "$ASSETS"',
                 '',
-                '  # 3. Reassemble if split, then verify. Sort order matters: parts joined',
-                '  #    in any other order still produce a file, just not a valid one.',
                 '  if compgen -G "$BASE.part-*" >/dev/null; then',
                 '    echo "  joining parts"',
                 '    cat $(ls "$BASE".part-* | sort) > "$BASE"',
@@ -1627,10 +1627,7 @@ document.addEventListener('alpine:init', () => {
                 '  [ -f "$BASE.sha256" ] || { echo "No $BASE.sha256 downloaded - cannot verify." >&2; exit 1; }',
                 '  want=$(awk \'{print $1; exit}\' "$BASE.sha256")',
                 '  got=$(sha256sum "$BASE" | awk \'{print $1}\')',
-                '  if [ "$want" != "$got" ]; then',
-                '    echo "CHECKSUM MISMATCH" >&2; echo "  want $want" >&2; echo "  got  $got" >&2',
-                '    exit 1',
-                '  fi',
+                '  [ "$want" = "$got" ] || { echo "CHECKSUM MISMATCH" >&2; echo "  want $want" >&2; echo "  got  $got" >&2; exit 1; }',
                 '',
                 '  echo',
                 '  echo "OK  $BASE"',
@@ -1651,54 +1648,50 @@ document.addEventListener('alpine:init', () => {
         // Same three steps and the same traps as the bash version: private-repo
         // assets need the API url with an octet-stream Accept header, split
         // parts must be joined in sort order, and the sha256 is checked.
+        // PowerShell twin. Rationale kept HERE rather than in the emitted text,
+        // for the same reason as the bash one — see above. PowerShell-specific:
+        //
+        //   & { }     pasted into an interactive prompt a bare script runs line
+        //             BY line, so `throw` aborts one statement and every later
+        //             line still runs against half-initialised state. A script
+        //             block is buffered to the closing brace and runs atomically.
+        //   'single'  quotes in any human-facing message: double quotes expand
+        //             $env:GITHUB_TOKEN inside the text, which once printed
+        //             "set  first" — advice with the crucial word deleted.
+        //   native    Invoke-RestMethod + Get-FileHash mean nothing needs
+        //             installing; this is the only genuinely dependency-free
+        //             version, which is the point on Windows.
         prepareManualScriptPs() {
             const tag = this.selectedRef || 'intact-20260726';
             return [
-                '# Fetch the Intact.AI offline upgrade package by hand (Windows).',
-                '# Needs nothing installed - PowerShell 5+ parses JSON and hashes natively.',
-                '# A GitHub token is OPTIONAL - public releases work anonymously.',
-                '# Setting one only raises the API rate limit from 60/hr to 5000/hr.',
-                '#',
-                '# Wrapped in & { } on purpose. Pasted into an interactive prompt a bare',
-                '# script runs line BY line, so a `throw` aborts one statement and every',
-                '# later line still runs against half-initialised state - which produces a',
-                '# cascade of errors that hide the real one. A script block is buffered',
-                '# until the closing brace and then runs as a single unit, so the first',
-                '# throw stops everything.',
+                '# Download the Intact.AI offline upgrade package. Paste into PowerShell.',
+                '# No GitHub token needed. Setting $env:GITHUB_TOKEN only raises the API',
+                '# rate limit from 60/hr to 5000/hr.',
                 '& {',
                 '  $ErrorActionPreference = \'Stop\'',
                 '',
                 '  $Tag  = \'' + tag + '\'   # <-- CHANGE to the release you want',
                 '  $Repo = \'TenrootOrg/IntactAI\'',
                 '  $Api  = \'https://api.github.com\'',
-                '',
                 '  $Base = "intact-upgrade-$Tag.tar.gz"',
                 '',
-                '  # Anonymous works. Only send Authorization when a token is actually',
-                '  # set - an empty Bearer is worse than none, because GitHub rejects it',
-                '  # outright instead of falling back to the anonymous quota.',
                 '  $Auth = @{ \'X-GitHub-Api-Version\' = \'2022-11-28\' }',
                 '  if ($env:GITHUB_TOKEN) { $Auth[\'Authorization\'] = "Bearer $env:GITHUB_TOKEN" }',
                 '',
-                '  # 1. List this release\'s package assets.',
                 '  try {',
                 '    $rel = Invoke-RestMethod -Headers $Auth -Uri "$Api/repos/$Repo/releases/tags/$Tag"',
                 '  } catch {',
-                '    throw \"Cannot read release $Tag - $($_.Exception.Message).`n  404 - no PUBLISHED release for that tag; a git tag alone is not enough, and a DRAFT release is invisible without a token.`n  403 - rate limited (60/hr anonymous); wait, or set `$env:GITHUB_TOKEN.`n  401 - the token you set is wrong or expired.\"',
+                '    throw \"Cannot read release $Tag - $($_.Exception.Message).`n  404 - no PUBLISHED release for that tag (a git tag alone is not enough; a DRAFT needs a token to be visible).`n  403 - rate limited (60/hr anonymous); wait, or set `$env:GITHUB_TOKEN.`n  401 - the token you set is wrong or expired.\"',
                 '  }',
                 '  $assets = @($rel.assets | Where-Object { $_.name -and $_.name.StartsWith($Base) })',
-                '  if (-not $assets) { throw "Release $Tag has no package assets (CI may still be building it)." }',
+                '  if (-not $assets) { throw "Release $Tag has no package assets (CI may still be building)." }',
                 '',
-                '  # 2. Download each. A private repo serves assets from the API url with an',
-                '  #    octet-stream Accept header; browser_download_url returns JSON instead.',
                 '  foreach ($a in $assets) {',
                 '    Write-Host "  -> $($a.name)  ($([math]::Round($a.size/1MB)) MB)"',
                 '    Invoke-WebRequest -Headers ($Auth + @{ Accept = \'application/octet-stream\' }) `',
                 '      -Uri $a.url -OutFile $a.name',
                 '  }',
                 '',
-                '  # 3. Reassemble if split, then verify. Sort order matters: parts joined in',
-                '  #    any other order still produce a file, just not a valid one.',
                 '  $parts = @(Get-ChildItem "$Base.part-*" -ErrorAction SilentlyContinue | Sort-Object Name)',
                 '  if ($parts) {',
                 '    Write-Host "  joining $($parts.Count) parts"',
@@ -1710,7 +1703,7 @@ document.addEventListener('alpine:init', () => {
                 '    $parts | Remove-Item',
                 '  }',
                 '',
-                '  if (-not (Test-Path "$Base.sha256")) { throw "No $Base.sha256 was downloaded - cannot verify." }',
+                '  if (-not (Test-Path "$Base.sha256")) { throw "No $Base.sha256 downloaded - cannot verify." }',
                 '  $want = ((Get-Content "$Base.sha256" -Raw).Trim() -split \'\\s+\')[0].ToLower()',
                 '  $got  = (Get-FileHash $Base -Algorithm SHA256).Hash.ToLower()',
                 '  if ($want -ne $got) { throw "CHECKSUM MISMATCH`n  want $want`n  got  $got" }',
