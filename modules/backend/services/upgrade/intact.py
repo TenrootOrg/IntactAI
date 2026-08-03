@@ -912,30 +912,38 @@ def report_dashboard_login(logger: Callable = None) -> None:
 
 
 def migrate_basic_auth_to_app_login(logger: Callable = None) -> None:
-    """Move a pre-auth box onto the new session login WITHOUT opening a window
-    in which the appliance has no authentication at all.
+    """Move a pre-auth box onto the new session login, landing the operator on
+    the setup page so THEY choose the credentials.
 
-    A box installed before the app-level login only learns about it through an
-    upgrade — install.sh's bash bootstrap never runs again. That upgrade
-    simultaneously deletes nginx's `auth_basic` gate and ships the new login, so
-    the naive migration ("set first_login: true and let the operator set up a
-    password") would leave the appliance advertising an unauthenticated setup
-    page on the network from the moment nginx recreates until a human notices.
-    Whoever loaded it first would own the account. That is strictly worse than
-    the Basic Auth it replaces.
+    This function used to do the opposite, and the reasoning was wrong on a
+    point of fact. It assumed the box it was upgrading had nginx Basic Auth —
+    a password the operator was already typing — and argued that replacing it
+    with a claimable setup page was strictly worse. Checked against the tags:
 
-    So instead we migrate the credential the operator ALREADY uses: hash their
-    existing Basic Auth password into the new store and mark setup complete.
-    Nothing to claim, no operator action, same password they were typing before.
+        auth_basic in intact-20260615 : 0
+        auth_basic in intact-20260726 : 0
+        auth_basic in development     : 3
+
+    NO SHIPPED RELEASE EVER HAD IT. The gate was added and replaced by the app
+    login inside the same unreleased window, so on every real appliance the
+    recovery found nothing, fell through to ensure_nginx_basic_auth_secret(),
+    and GENERATED a random 32-character password — then stored it as the login
+    and marked setup complete. The operator was locked out of their own box by
+    a credential that had never existed anywhere they could have seen it. That
+    is what happened on the 20260726 -> 20260803 upgrade.
+
+    With no prior credential there is nothing to preserve, and the appliance is
+    serving an unauthenticated dashboard TODAY — so the setup page is strictly
+    an improvement over the status quo, not a regression from it. Hence: never
+    generate a password nobody has seen. Carry one across only when the operator
+    explicitly set `dashboard.password` in config.yaml, which is a real choice
+    they made; otherwise write first_login: true and let them pick.
 
     Detection is the absence of the top-level `first_login:` key. The shipped
     config.yaml carries it, so a fresh install always has it; only a box that
     predates this feature does not. Idempotent — once the key exists this is a
-    no-op, so it is safe on every upgrade.
-
-    first_login: true is written ONLY as the last resort, when no existing
-    credential can be recovered at all. In that case there is nothing to
-    protect and the setup page is the only way back in.
+    no-op, so it is safe on every upgrade, and a box already on the new scheme
+    never has its credentials touched.
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
 
@@ -957,69 +965,42 @@ def migrate_basic_auth_to_app_login(logger: Callable = None) -> None:
         # Already on the new scheme (or deliberately left in setup mode).
         return
 
-    log("  Pre-auth install detected — migrating the dashboard login", "info")
+    log("  Pre-auth install detected — moving to the new dashboard login", "info")
 
-    password_path = os.path.join(
-        WORKDIR, 'modules', 'nginx', 'secrets', 'nginx_basic_auth_password')
-
-    def _recover():
-        """(user, password, source). config.yaml's dashboard: block wins if the
-        operator chose their own; otherwise the generated random secret on disk.
-        The shipped config.yaml never set a password, so in practice almost every
-        real box lands on the secrets file."""
-        u, p = _read_dashboard_credentials(log)
-        if p:
-            return u, p, "config.yaml dashboard.password"
-        try:
-            with open(password_path, 'r') as f:
-                return u, f.read().strip(), password_path
-        except FileNotFoundError:
-            return u, '', ''
-        except Exception as e:
-            log(f"  Could not read {password_path} ({type(e).__name__}: {e})",
-                "warning")
-            return u, '', ''
-
-    # READ BEFORE GENERATING. ensure_nginx_basic_auth_secret() rotates the
-    # password whenever the plaintext and the htpasswd are not BOTH present —
-    # so calling it first on a box missing one of the pair would mint a brand
-    # new secret and we would then "migrate" the operator onto a password that
-    # has never existed anywhere they could have seen it. Recover first; only
-    # generate if there was genuinely nothing to recover.
-    user, password, source = _recover()
-
-    if not password:
-        # Nothing on disk. Generating gives the migration something to carry, so
-        # the upgrade still doesn't have to fall back to a claimable setup page.
-        # Called here rather than at the call sites so a box already on the new
-        # scheme never regenerates an htpasswd that nothing reads any more.
-        ensure_nginx_basic_auth_secret(logger=log)
-        user, password, source = _recover()
+    # ONLY an explicitly operator-chosen password is carried across. Deleting
+    # the old fallback (read a generated secret off disk, and failing that
+    # GENERATE one) is the entire fix: that branch is what silently minted a
+    # 32-character password nobody had ever seen and then locked the operator
+    # out behind it. A password the operator did not choose and cannot know is
+    # not a credential — it is a lockout with extra steps.
+    user, password = _read_dashboard_credentials(log)
 
     if password:
         if auth_service.set_credential(user, password):
             if auth_service.write_first_login(False):
-                log(f"  Dashboard login migrated (username: {user}) — your "
-                    f"EXISTING dashboard password now signs you in to the new "
-                    f"login page.", "success")
-                log(f"  Recovered from: {source}", "info")
-                log("  It is a generated 32-character secret on most installs; "
-                    "change it under Settings once you are in.", "info")
+                log(f"  Dashboard login carried across (username: {user}) — the "
+                    f"password you set in config.yaml under dashboard.password "
+                    f"signs you in to the new login page.", "success")
                 auth_service.audit('migrated_from_basic_auth',
-                                   username_value=user, source=source)
+                                   username_value=user,
+                                   source="config.yaml dashboard.password")
                 return
             log("  Stored the credential but could not write first_login to "
                 "config.yaml — the setup page may still be served. Set "
                 "first_login: false by hand.", "error")
             return
-        log("  Could not store the migrated credential", "warning")
+        log("  Could not store the credential from config.yaml — falling back "
+            "to the setup page", "warning")
 
-    # Nothing recoverable — fall back to setup mode and say so loudly.
+    # The normal path for every real appliance: no operator-chosen password, so
+    # the operator picks their own on the setup page.
     if auth_service.write_first_login(True):
-        log("  No existing dashboard password could be recovered. This "
-            "appliance will show a SETUP page on next load — complete it "
-            "immediately, because until you do anyone who can reach it can "
-            "claim the account.", "warning")
+        log("  This appliance will show the SETUP page on next load, where you "
+            "choose your own username and password. Complete it IMMEDIATELY — "
+            "until you do, anyone who can reach the appliance can claim the "
+            "account. (It has been serving an unauthenticated dashboard up to "
+            "now, so this is not a new exposure, but it is your chance to end "
+            "it.)", "warning")
     else:
         log("  Could not write first_login to config.yaml. Add "
             "'first_login: true' at the top level by hand to set up a login.",

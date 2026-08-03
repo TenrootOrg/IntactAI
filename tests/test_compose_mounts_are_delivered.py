@@ -387,6 +387,123 @@ def test_delivery_is_a_noop_without_a_source_tree():
             check("empty source tree destroys nothing", f.read().strip() == "KEEP ME", "")
 
 
+# ------------------------------------------------------------- self-repair
+
+def _elk_box(tmpdir):
+    """An appliance directory carrying the new ELK compose file."""
+    os.makedirs(os.path.join(tmpdir, "modules", "elk", "config"), exist_ok=True)
+    shutil.copy2(os.path.join(REPO, "modules/elk/docker-compose.yaml"),
+                 os.path.join(tmpdir, "modules/elk/docker-compose.yaml"))
+    return tmpdir
+
+
+def test_it_repairs_the_empty_directory_docker_left_behind():
+    """The damage is self-perpetuating without this.
+
+    A box that already hit the bug has Docker's empty directory sitting exactly
+    where the script belongs. A plain exists() check calls that 'already
+    delivered' and skips it -- so the box stays broken through every future
+    upgrade, and the repair never reaches the population that needs it."""
+    with tempfile.TemporaryDirectory() as d:
+        src_root, box = os.path.join(d, "src"), _elk_box(os.path.join(d, "box"))
+        os.makedirs(os.path.join(src_root, "modules", "elk", "config"))
+        real = os.path.join(src_root, "modules/elk/config/setup-kibana-user.sh")
+        with open(real, "w") as f:
+            f.write("#!/bin/bash\necho ok\n")
+        os.chmod(real, 0o755)
+        # Docker's leftover: a directory where the file belongs.
+        broken = os.path.join(box, "modules/elk/config/setup-kibana-user.sh")
+        os.makedirs(broken)
+
+        orig, ca.WORKDIR = ca.WORKDIR, box
+        try:
+            ca.deliver_referenced_assets("elk", src_root, logger=lambda *a, **k: None)
+            fatal = ca.verify_referenced_assets("elk", logger=lambda *a, **k: None)
+        finally:
+            ca.WORKDIR = orig
+        check("the empty directory is replaced by the real file",
+              os.path.isfile(broken), "still a directory" if os.path.isdir(broken)
+              else "missing entirely")
+        check("the repaired file is executable",
+              os.path.isfile(broken) and os.stat(broken).st_mode & 0o111, "")
+        check("nothing fatal remains", not fatal, str(fatal))
+
+
+def test_it_refuses_to_delete_a_directory_with_contents():
+    """Only Docker's EMPTY placeholder is disposable. Anything with contents is
+    real data, and no upgrade gets to delete that to make a mount fit."""
+    with tempfile.TemporaryDirectory() as d:
+        src_root, box = os.path.join(d, "src"), _elk_box(os.path.join(d, "box"))
+        os.makedirs(os.path.join(src_root, "modules", "elk", "config"))
+        with open(os.path.join(src_root, "modules/elk/config/setup-kibana-user.sh"),
+                  "w") as f:
+            f.write("#!/bin/bash\n")
+        occupied = os.path.join(box, "modules/elk/config/setup-kibana-user.sh")
+        os.makedirs(occupied)
+        with open(os.path.join(occupied, "someones_data.txt"), "w") as f:
+            f.write("do not delete me\n")
+
+        orig, ca.WORKDIR = ca.WORKDIR, box
+        try:
+            ca.deliver_referenced_assets("elk", src_root, logger=lambda *a, **k: None)
+        finally:
+            ca.WORKDIR = orig
+        check("a non-empty directory is left alone",
+              os.path.isfile(os.path.join(occupied, "someones_data.txt")),
+              "the upgrade deleted operator data")
+
+
+def test_it_repairs_a_delivered_script_that_lost_its_execute_bit():
+    """`chmod +x` (symbolic, no 'who') is filtered by the process umask;
+    `chmod 755` is not. This repo has shipped a non-executable script through
+    exactly that route, and the container symptom is identical to the file
+    being absent: exit 126. The correct mode is not a judgement call, so repair
+    it rather than making an operator diagnose it."""
+    with tempfile.TemporaryDirectory() as d:
+        box = _elk_box(os.path.join(d, "box"))
+        script = os.path.join(box, "modules/elk/config/setup-kibana-user.sh")
+        with open(script, "w") as f:
+            f.write("#!/bin/bash\n")
+        os.chmod(script, 0o644)
+        # the other mounts, so the run reaches the script
+        with open(os.path.join(box, "modules/elk/config/logstash.yml"), "w") as f:
+            f.write("http.host: 0.0.0.0\n")
+
+        orig, ca.WORKDIR = ca.WORKDIR, box
+        try:
+            fatal = ca.verify_referenced_assets("elk", logger=lambda *a, **k: None)
+        finally:
+            ca.WORKDIR = orig
+        check("the execute bit is restored",
+              os.stat(script).st_mode & 0o111,
+              f"mode {oct(os.stat(script).st_mode & 0o777)}")
+        check("and it is no longer fatal", not fatal, str(fatal))
+
+
+def test_a_plain_data_mount_is_not_made_executable():
+    """Repair is scoped to programs. Silently chmod-ing every mounted file to
+    755 would be a permission change nobody asked for."""
+    with tempfile.TemporaryDirectory() as d:
+        box = _elk_box(os.path.join(d, "box"))
+        with open(os.path.join(box, "modules/elk/config/setup-kibana-user.sh"),
+                  "w") as f:
+            f.write("#!/bin/bash\n")
+        os.chmod(os.path.join(box, "modules/elk/config/setup-kibana-user.sh"), 0o755)
+        data = os.path.join(box, "modules/elk/config/logstash.yml")
+        with open(data, "w") as f:
+            f.write("http.host: 0.0.0.0\n")
+        os.chmod(data, 0o644)
+
+        orig, ca.WORKDIR = ca.WORKDIR, box
+        try:
+            ca.verify_referenced_assets("elk", logger=lambda *a, **k: None)
+        finally:
+            ca.WORKDIR = orig
+        check("a data mount keeps its mode",
+              os.stat(data).st_mode & 0o777 == 0o644,
+              f"mode changed to {oct(os.stat(data).st_mode & 0o777)}")
+
+
 # -------------------------------------------------------- stderr truncation
 
 def test_compose_progress_is_stripped_so_the_error_survives():

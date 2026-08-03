@@ -245,9 +245,31 @@ def deliver_referenced_assets(module_name: str, intact_root: str,
     delivered = 0
     for ref in refs:
         dst = os.path.join(WORKDIR, ref.repo_path)
-        if os.path.exists(dst):
-            continue
         src = os.path.join(intact_root, ref.repo_path)
+        if os.path.exists(dst):
+            # A box that ALREADY hit this bug has Docker's empty directory
+            # sitting exactly where the file belongs. A plain exists() check
+            # calls that "delivered" and leaves the box broken through every
+            # future upgrade — the repair has to be able to undo the damage,
+            # not just avoid causing it. Only ever an EMPTY directory standing
+            # in for a file: anything with contents is real data, and no
+            # upgrade gets to delete that.
+            if not (os.path.isdir(dst) and os.path.isfile(src)):
+                continue
+            try:
+                if os.listdir(dst):
+                    log(f"  {ref.repo_path} is a non-empty directory where "
+                        f"{ref.service} expects a file — leaving it alone; "
+                        f"this needs a human", "warning")
+                    continue
+                os.rmdir(dst)
+                log(f"  Removed the empty directory Docker created at "
+                    f"{ref.repo_path} (a previous run mounted a file that was "
+                    f"never delivered)", "warning")
+            except Exception as e:
+                log(f"  Could not clear {ref.repo_path} "
+                    f"({type(e).__name__}: {e})", "warning")
+                continue
         if not os.path.exists(src):
             continue  # install-generated; verify_referenced_assets reports it
         try:
@@ -291,7 +313,35 @@ def verify_referenced_assets(module_name: str,
 
     fatal: List[str] = []
     for ref in refs:
-        if os.path.exists(os.path.join(WORKDIR, ref.repo_path)):
+        path = os.path.join(WORKDIR, ref.repo_path)
+        if os.path.exists(path):
+            # Present, but is it RUNNABLE? A delivered-but-not-executable
+            # script fails exactly as loudly as a missing one, and this repo has
+            # shipped one before: `chmod +x` (symbolic, no "who") is filtered by
+            # the process umask, `chmod 755` is not. Repair rather than refuse —
+            # the correct mode is not a judgement call, and an operator staring
+            # at exit 126 at 2am should not have to make it.
+            if ref.executed and os.path.isfile(path):
+                mode = os.stat(path).st_mode & 0o777
+                if not mode & 0o111:
+                    try:
+                        os.chmod(path, mode | 0o755)
+                        log(f"  Repaired {ref.repo_path}: mode {oct(mode)[2:]} "
+                            f"-> 755 ({ref.service} execs it; it would have "
+                            f"exited 126)", "warning")
+                    except Exception as e:
+                        fatal.append(
+                            f"{module_name}: {ref.repo_path} is not executable "
+                            f"(mode {oct(mode)[2:]}) and could not be repaired "
+                            f"({type(e).__name__}: {e}); service "
+                            f"'{ref.service}' runs it and would exit 126.")
+            elif ref.executed and os.path.isdir(path):
+                fatal.append(
+                    f"{module_name}: {ref.repo_path} is a DIRECTORY where "
+                    f"service '{ref.service}' expects the program {ref.target}. "
+                    f"Docker creates one automatically when a bind-mounted file "
+                    f"is missing, so this box ran an upgrade that did not "
+                    f"deliver it; the container would exit 126.")
             continue
         if ref.executed:
             fatal.append(

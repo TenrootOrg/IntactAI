@@ -219,20 +219,55 @@ def test_it_reports_after_the_final_version_table():
           f"table at {table}, call at {call}")
 
 
-def test_the_migration_still_refuses_to_open_a_claimable_setup_page():
-    """The fix is visibility, not a weakened security posture. If someone
-    'fixes' the lockout by making the upgrade always write first_login: true,
-    every upgraded appliance serves an unauthenticated setup page from the
-    moment nginx recreates until a human notices. This asserts the migration
-    still writes False on the success path."""
+def test_the_migration_never_invents_a_password():
+    """The lockout mechanism itself.
+
+    The old code, finding nothing to recover, called
+    ensure_nginx_basic_auth_secret() to GENERATE a random 32-character password,
+    stored it as the login and marked setup complete. Since no shipped release
+    ever had Basic Auth (auth_basic: 0 in 20260615, 0 in 20260726, 3 only in
+    development), that branch ran on EVERY real appliance. A password the
+    operator did not choose and cannot know is not a credential.
+
+    Comments and docstrings are stripped first -- this file's own prose names
+    the function, and a previous test in this repo passed by matching the
+    comment that described the code rather than the code."""
     src = inspect.getsource(intact.migrate_basic_auth_to_app_login)
-    src_nodoc = re.sub(r'"""[\s\S]*?"""', '', src)
-    check("it still writes first_login False after a successful recovery",
-          "write_first_login(False)" in src_nodoc, "the safe branch is gone")
-    check("it still writes True only as the last resort",
-          src_nodoc.index("write_first_login(False)")
-          < src_nodoc.index("write_first_login(True)"),
-          "True is no longer the fallback")
+    src = re.sub(r'"""[\s\S]*?"""', '', src)
+    src = "\n".join(l.split('#')[0] for l in src.splitlines())
+    check("it never generates a password",
+          "ensure_nginx_basic_auth_secret" not in src,
+          "the generate-a-secret fallback is back")
+    check("it does not read a secret off disk as a credential",
+          "nginx_basic_auth_password" not in src,
+          "it is recovering a password the operator never chose")
+
+
+def test_setup_mode_is_the_default_outcome_for_a_pre_auth_box():
+    """What the operator asked for: land on the setup page and choose the
+    credentials yourself. With no operator-chosen password in config.yaml --
+    the state of every real appliance -- first_login must end up true."""
+    src = inspect.getsource(intact.migrate_basic_auth_to_app_login)
+    src = re.sub(r'"""[\s\S]*?"""', '', src)
+    src = "\n".join(l.split('#')[0] for l in src.splitlines())
+    check("write_first_login(True) is the fall-through",
+          "write_first_login(True)" in src, "the setup-page path is gone")
+    check("False is reachable only from the config.yaml branch",
+          src.index("write_first_login(False)") < src.index("write_first_login(True)")
+          and "_read_dashboard_credentials" in src,
+          "the carry-across path no longer guards the False write")
+
+
+def test_an_operator_chosen_password_is_still_honoured():
+    """dashboard.password in config.yaml is a real choice the operator made.
+    Overriding it with a setup page would throw away a deliberate setting."""
+    src = inspect.getsource(intact.migrate_basic_auth_to_app_login)
+    src = re.sub(r'"""[\s\S]*?"""', '', src)
+    src = "\n".join(l.split('#')[0] for l in src.splitlines())
+    check("config.yaml dashboard.password is still read",
+          "_read_dashboard_credentials" in src, "the carry-across path is gone")
+    check("and still results in a stored credential",
+          "set_credential(" in src, "nothing stores it any more")
 
 
 if __name__ == "__main__":
