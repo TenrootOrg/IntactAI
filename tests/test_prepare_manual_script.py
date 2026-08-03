@@ -132,12 +132,37 @@ def test_it_uses_the_api_asset_url_not_browser_download_url():
         "private repository")
 
 
-def test_it_demands_a_token_up_front():
-    """The repo is private, so even LISTING the release needs auth. Failing at
-    the first line with an actionable message beats failing three GB in."""
-    assert "GITHUB_TOKEN" in SCRIPT
-    assert ':?' in SCRIPT or 'exit' in SCRIPT, (
-        "the script does not fail fast when GITHUB_TOKEN is unset")
+def test_the_token_is_optional_in_both():
+    """The releases are PUBLIC — verified anonymously against the live API,
+    which returns 200 and lists them. Both scripts originally hard-required a
+    token, built on a stale "private repo" comment in download.py rather than
+    on a test, and told the operator to grant `repo` scope they do not need.
+
+    An unconditional Authorization header is worse than none: GitHub rejects a
+    present-but-empty Bearer outright instead of falling back to the anonymous
+    quota, so `GITHUB_TOKEN=""` would 401 rather than work."""
+    b, ps = _commands_only(SCRIPT), _commands_only(SCRIPT_PS)
+    assert 'if [ -n "${GITHUB_TOKEN:-}" ]' in b, (
+        "bash sends the Authorization header unconditionally — an unset token "
+        "becomes an empty Bearer, which GitHub rejects")
+    assert 'if ($env:GITHUB_TOKEN)' in ps, (
+        "PowerShell sends the Authorization header unconditionally")
+    for src, label in ((SCRIPT, "bash"), (SCRIPT_PS, "powershell")):
+        assert "OPTIONAL" in src, f"{label} does not say the token is optional"
+        assert "repo scope" not in src, (
+            f"{label} still asks for `repo` scope — these are public releases "
+            f"and a no-scope token is enough even for the rate limit")
+
+
+def test_a_404_explains_that_a_git_tag_is_not_a_release():
+    """intact-20260803 existed as a git tag and 404'd on the releases API: no
+    published Release, so the picker could never offer it. A bare '404 means
+    the tag does not exist' would have been actively misleading — the tag did
+    exist."""
+    for src, label in ((SCRIPT, "bash"), (SCRIPT_PS, "powershell")):
+        assert "DRAFT" in src or "PUBLISHED" in src, (
+            f"{label} does not distinguish a missing release from a git tag "
+            f"with no Release, or from a draft")
 
 
 def test_it_needs_nothing_from_the_appliance():
@@ -161,16 +186,23 @@ def test_the_default_tag_is_a_real_release():
             f"{label} has no inline instruction to change the tag")
 
 
-def test_powershell_does_not_interpolate_the_token_into_its_own_error():
+def test_powershell_never_interpolates_the_token_into_a_message():
     """`throw "set $env:GITHUB_TOKEN first"` expands the variable INSIDE the
     message, so an unset token printed "set  first" — advice with the crucial
-    word deleted. Reported from a real paste 2026-08-03."""
-    line = next((l for l in SCRIPT_PS.splitlines()
-                 if "GITHUB_TOKEN first" in l), "")
-    assert line, "the token check message is gone"
-    assert "throw '" in line or "\\'" in line, (
-        "the token error is double-quoted, so PowerShell expands "
-        "$env:GITHUB_TOKEN inside the message and prints 'set  first'")
+    word deleted by the quoting. Reported from a real paste 2026-08-03.
+
+    Interpolating it into the Authorization header is correct and must keep
+    working; the rule is only about text shown to a human. Checked as a rule
+    rather than against that one message, since the message itself is gone now
+    that the token is optional."""
+    for line in SCRIPT_PS.splitlines():
+        if "$env:GITHUB_TOKEN" not in line:
+            continue
+        if "Authorization" in line or "Bearer" in line:
+            continue                      # header: interpolation is the point
+        assert "throw \"" not in line and "Write-Host \"" not in line, (
+            f"a human-facing message interpolates the token variable, so an "
+            f"unset token silently deletes it from the text: {line.strip()}")
 
 
 def test_powershell_runs_as_one_unit_when_pasted():
@@ -199,6 +231,31 @@ def test_both_print_the_hash_on_success():
     for src, label in ((SCRIPT, "bash"), (SCRIPT_PS, "powershell")):
         assert "sha256 $" in src or "sha256 $got" in src, (
             f"{label} does not print the verified hash")
+
+
+def test_both_are_paste_safe_not_scripts():
+    """These are pasted into a live terminal, not saved and run.
+
+    In an interactive shell `set -e` aborts the SESSION on the first error and
+    `exit 1` CLOSES THE TERMINAL. Both are correct in a script file and
+    hostile in a paste. Containing them is what & { } already did for
+    PowerShell; bash needs a subshell for the same reason."""
+    assert not SCRIPT.startswith("prepareManualScript() {\n            const") or True
+    b = _commands_only(SCRIPT)
+    assert "'('," in SCRIPT and "')'," in SCRIPT, (
+        "the bash block is not wrapped in a subshell — a failure would abort "
+        "the operator's shell and `exit 1` would close their terminal")
+    assert "#!/usr/bin/env bash" not in SCRIPT, (
+        "a shebang implies a file; this is meant to be pasted")
+    assert "'& {'," in SCRIPT_PS, "PowerShell is not wrapped in a script block"
+
+
+def test_bash_writes_no_temp_file():
+    """assets.txt lived in the operator's cwd and survived a failure. A paste
+    should leave nothing behind that it did not intend to download."""
+    b = _commands_only(SCRIPT)
+    assert "assets.txt" not in b, (
+        "the bash block still spills an assets.txt into the working directory")
 
 
 def test_a_powershell_twin_exists():

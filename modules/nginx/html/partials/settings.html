@@ -1641,8 +1641,10 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                             </div>
                             <p class="text-gray-500 text-xs mb-2">
                                 Prepare only <em>downloads</em> the CI-built package and verifies its hash, so this
-                                is the whole of it — runs on any machine, no Intact.AI needed. Requires a GitHub
-                                token (<span class="font-mono">repo</span> scope; the repository is private).
+                                is the whole of it — runs on any machine, no Intact.AI needed.
+                                <span class="text-gray-400">No GitHub token needed</span> — releases are public.
+                                Setting <span class="font-mono">GITHUB_TOKEN</span> is optional and only raises the
+                                API rate limit from 60/hr to 5000/hr.
                                 <span x-show="shell === 'bash'"><span class="font-mono">curl</span> plus <span class="font-mono">jq</span> or <span class="font-mono">python3</span>.</span>
                                 <span x-show="shell === 'ps'">PowerShell 5+ — nothing to install.</span>
                                 <span x-show="!$store.settings.selectedRef" class="text-yellow-500">Pick a release above to fill in the tag.</span>
