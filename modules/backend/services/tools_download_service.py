@@ -661,8 +661,16 @@ def configure_inventory(tools_dir: str, config: Dict, logger: Callable = None,
         )
         for response in stub.Query(request, timeout=35):
             if response.Response:
-                data = json.loads(response.Response)
-                available_files = [item.get('Name', '') for item in data]
+                # EXTEND, not assign -- same streaming bug as the inventory
+                # query below. glob() over a populated data/tools returns
+                # several batches, and keeping only the last one is why the
+                # install log read "Found 8 files in tools directory" on a box
+                # serving 45 tools. Every tool whose file landed in a dropped
+                # batch then looked absent, so it was skipped for configuration
+                # instead of being registered.
+                available_files.extend(
+                    item.get('Name', '') for item in json.loads(response.Response)
+                )
         log(f"Found {len(available_files)} files in tools directory")
     except Exception as e:
         log(f"Could not list tools directory: {str(e)[:50]}", "warning")
