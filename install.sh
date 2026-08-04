@@ -1158,6 +1158,13 @@ fix_source_permissions() {
     chmod +x "${SCRIPT_DIR}/install.sh" 2>/dev/null || true
     chmod +x "${SCRIPT_DIR}/lib/"*.sh 2>/dev/null || true
     chmod +x "${SCRIPT_DIR}/scripts/"*.sh 2>/dev/null || true
+    # ...and the Python ones beside them. The globs here are per-extension, so
+    # `scripts/*.sh` does not cover `scripts/*.py` -- which meant the 644 sweep
+    # de-executed the first top-level Python script added to that directory
+    # (make_single_package.py) on every install, and the repo showed a
+    # permanently dirty mode change nobody could explain. scripts/migrate/*.py
+    # below already had this line; the top level was simply missed.
+    chmod +x "${SCRIPT_DIR}/scripts/"*.py 2>/dev/null || true
     chmod +x "${SCRIPT_DIR}/modules/iris/scripts/"*.sh 2>/dev/null || true
     chmod +x "${SCRIPT_DIR}/modules/backend/scripts/"*.py 2>/dev/null || true
     # git SILENTLY skips a hook that is not executable — no error, no warning
