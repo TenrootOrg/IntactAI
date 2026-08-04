@@ -141,6 +141,13 @@ def image_owner_prefixes():
     # resolves to no owner and would be excluded from both pruning and the disk
     # budget.
     prefixes['velociraptor-'] = 'velociraptor'
+    # aws_sigma ships a DATA tar (the SigmaHQ rule pack), also written directly
+    # by the packager rather than coming from either table. It was ownerless
+    # until now, which was survivable only while aws_sigma was excluded from
+    # releases: an ownerless file is never pruned and never budgeted. Now that
+    # it ships as its own asset, that asset's entire payload would have been
+    # unattributable.
+    prefixes['cloudtrail-'] = 'aws_sigma'
     return prefixes
 
 
@@ -730,7 +737,8 @@ def _prepare_backend_images(package_dir: str, target_version: str, manifest: Dic
 def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                             compress: bool = True,
                             work_dir: Optional[str] = None,
-                            manifest_extra: Optional[Dict] = None) -> Dict:
+                            manifest_extra: Optional[Dict] = None,
+                            manifest_sidecar_name: Optional[str] = None) -> Dict:
     """Download and package upgrade components.
 
     Args:
@@ -2165,6 +2173,12 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 _rel = os.path.relpath(_abs, package_dir)
                 if _rel == 'manifest.json':
                     continue  # the manifest can't contain its own hash
+                if _rel.startswith('manifests/'):
+                    # Per-module manifest sidecars are copies of this same
+                    # manifest, so they cannot contain their own hash either.
+                    # Both are covered by the ASSET-level sha256 published
+                    # alongside the tarball and verified before extraction.
+                    continue
                 _h = _hashlib.sha256()
                 with open(_abs, 'rb') as _fh:
                     for _chunk in iter(lambda: _fh.read(4 * 1024 * 1024), b''):
@@ -2207,6 +2221,25 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
         with open(f"{package_dir}/manifest.json", 'w') as f:
             json.dump(manifest, f, indent=2)
         log("  Created manifest.json", "success")
+
+        # PER-MODULE ASSET SIDECAR — written LAST, so it carries the COMPLETE
+        # manifest including the sha256 map.
+        #
+        # N module assets all extract into one directory (they share a
+        # top-level dir name), so their root manifest.json files overwrite each
+        # other -- last extractor wins, silently. Each asset therefore also
+        # carries manifests/<module>.json, and the apply-side assembler merges
+        # those into the root manifest. Writing this BEFORE the hash walk was
+        # the obvious-looking mistake: the sidecar then held a manifest with no
+        # sha map at all, so the assembled package had nothing to verify and
+        # said so only by silently checking zero files.
+        if manifest_sidecar_name:
+            _side_abs = os.path.join(package_dir, manifest_sidecar_name)
+            os.makedirs(os.path.dirname(_side_abs), exist_ok=True)
+            with open(_side_abs, 'w') as _sf:
+                json.dump(manifest, _sf, indent=2)
+            log(f"  Created {manifest_sidecar_name} (per-module asset manifest)",
+                "success")
 
         # Online-upgrade short-circuit: no tar.gz needed — return the
         # built package_dir directly. Caller (run_online_upgrade_workflow)
