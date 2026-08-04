@@ -203,7 +203,12 @@ jobs:
       # a second time.
       - name: Tag packager image as the release backend image
         if: matrix.module == 'intact'
-        run: docker tag intact-backend:ci-packager "intact-backend:${{ needs.resolve.outputs.tag }}"
+        run: |
+          if [ "${{ matrix.module }}" != "intact" ]; then
+            echo "Skipping tag (not intact module)"
+            exit 0
+          fi
+          docker tag intact-backend:ci-packager "intact-backend:${{ needs.resolve.outputs.tag }}"
 
       # Only aws_sigma consumes the rule pack; cloning it for every module
       # would be ~9x the work for nothing.
