@@ -125,8 +125,13 @@ modules:
     enabled: false
     id: administrator #Cant be changed
     password: '123123'
+  # Portainer — container infrastructure management UI. On by default: it is
+  # the operator's window into the container layer (logs, restarts, resource
+  # use) and is the first thing wanted when something on the box misbehaves.
+  # The dashboard card is already wired (modules/nginx/html/partials/dashboard.html)
+  # and appears once the service reports healthy.
   portainer:
-    enabled: false
+    enabled: true
     id: admin
     password: '1234qwer!@#$' # Portainer requires >=12 chars; shorter values get a randomly-generated one instead (see lib/modules.sh)
   timesketch:

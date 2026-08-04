@@ -270,6 +270,31 @@ update_env_files() {
         # tusd sidecar pin (versions.backend_tusd) -> TUSD_VERSION in the backend
         # compose. Guarded so an older config without the key keeps the compose default.
         [[ -n "$tusd_version" && "$tusd_version" != "None" ]] && update_env_var "$backend_env" "TUSD_VERSION" "$tusd_version"
+        # THE PACKAGE WINS OVER THE PIN. config.yaml versions.backend is only a
+        # pin; the release package carries the image that was actually built
+        # and tested. When they disagree the pin is stale, and trusting it is
+        # what made a 20260804 install rebuild the backend from source:
+        # VERSION said intact-20260804, config.yaml still said intact-20260803
+        # (the release workflow stamps VERSION but not this key, and commits
+        # after publish, so the tagged tree always trails by one), compose
+        # could not find :intact-20260803, and `up -d` quietly rebuilt it from
+        # source over ~380 lines of live PyPI + apt — impossible air-gapped,
+        # and it replaced the tested image with an untested local build.
+        #
+        # The write-back to config.yaml is NOT cosmetic. app.py calls
+        # self_heal_backend_swap() on EVERY backend boot, and that reads
+        # config.yaml versions.backend (not .env) via backend_target_tag().
+        # Correcting only .env would leave the two disagreeing, and the backend
+        # would "self-heal" BACKWARD onto the stale tag — rebuilding from
+        # source in-process, asynchronously, after the installer already
+        # printed success. Fixing both is what makes the box converge.
+        if [[ -n "${INTACT_PKG_BACKEND_TAG:-}" && "$INTACT_PKG_BACKEND_TAG" != "$backend_version" ]]; then
+            log_warn "config.yaml versions.backend is '${backend_version}' but the release package"
+            log_warn "  shipped intact-backend:${INTACT_PKG_BACKEND_TAG}. Using the package's tag and"
+            log_warn "  correcting config.yaml — a stale pin makes compose rebuild from source."
+            _pin_module_version backend "$INTACT_PKG_BACKEND_TAG"
+            backend_version="$INTACT_PKG_BACKEND_TAG"
+        fi
         # Wave F: backend image tag (versions.backend, e.g. a release id or
         # 'development') -> BACKEND_VERSION, so a fresh install BUILDS and tags
         # intact-backend:<that value> instead of relying on the compose :-1.0.0

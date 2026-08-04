@@ -344,6 +344,16 @@ run_docker_compose() {
     # The upgrade engine already refuses to build for the same reason
     # (ensure_backend_runtime_image: present -> load tar -> never build). This
     # brings install into line with it.
+    #
+    # THIS GUARD IS NOT SUFFICIENT ON ITS OWN and must not be mistaken for the
+    # whole protection. It only short-circuits an EXPLICIT `build` action --
+    # `docker compose up -d` still resolves a missing image by building it
+    # (both the backend and velociraptor composes set `pull_policy: build`) or
+    # by pulling it. That is exactly how a 20260804 install logged
+    # "using the image from the release package (not rebuilding)" and then
+    # rebuilt the backend from source on the very next line. The real guard is
+    # the image-presence check in deploy_backend(); this stays as a cheap
+    # second belt.
     if [[ "$action" == "build" && "${INTACT_FROM_PACKAGE:-0}" == "1" ]]; then
         log_info "  ${2:-module}: using the image from the release package (not rebuilding)"
         return 0
@@ -1925,14 +1935,55 @@ deploy_backend() {
     log_info "  Directory: ${SCRIPT_DIR}/modules/backend"
     cd "${SCRIPT_DIR}/modules/backend"
 
-    # Build
-    log_info "  Building Backend Docker image..."
-    if ! run_docker_compose "build" "Backend"; then
-        log_error "  Failed to build Backend image"
-        track_module_failure "Backend API"
-        return 1
+    # Installing from a package means the backend image was BUILT AND TESTED
+    # by CI and shipped in the asset. Rebuilding it here would need PyPI + apt
+    # (impossible air-gapped) and would replace a tested artifact with an
+    # untested local build under the same tag, so a missing image is a hard
+    # failure rather than a silent rebuild.
+    if [[ "${INTACT_FROM_PACKAGE:-0}" == "1" ]]; then
+        # Read the tag from modules/backend/.env — that is the file docker
+        # compose itself interpolates ${BACKEND_VERSION} from, so this checks
+        # for exactly the image compose is about to demand. (It is not a shell
+        # variable here: update_env_files writes it to .env, it is never
+        # exported.) config.yaml is the fallback for a pre-Wave-F .env.
+        local be_env="${SCRIPT_DIR}/modules/backend/.env"
+        local be_tag
+        be_tag="$(grep -E '^BACKEND_VERSION=' "$be_env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'"' \r')"
+        [[ -z "$be_tag" ]] && be_tag="$(read_config "['versions']['backend']")"
+        local want="intact-backend:${be_tag}"
+        if docker image inspect "$want" >/dev/null 2>&1; then
+            log_success "  Backend image ${want} present (shipped by the release package) — not building"
+        else
+            # The package's filename tag and config.yaml can legitimately
+            # disagree; when exactly one backend image is present, that is
+            # unambiguously the one the package shipped. Mirrors the retag
+            # branch in services/upgrade/intact.py:ensure_backend_runtime_image.
+            local found=()
+            mapfile -t found < <(docker images --format '{{.Repository}}:{{.Tag}}' \
+                                 --filter reference='intact-backend:*' 2>/dev/null | grep -v '<none>')
+            if (( ${#found[@]} == 1 )); then
+                log_warn "  ${want} is not in the image store, but ${found[0]} is — retagging."
+                log_warn "  (config.yaml versions.backend and the shipped package disagree.)"
+                docker tag "${found[0]}" "$want"
+            else
+                log_error "  ${want} was not shipped by the release package."
+                log_error "  intact-backend images present: ${found[*]:-none}"
+                log_error "  Refusing to rebuild the backend from source: that needs PyPI + apt"
+                log_error "  (impossible air-gapped) and would replace the tested image with an"
+                log_error "  untested local build under the same tag."
+                track_module_failure "Backend API"
+                return 1
+            fi
+        fi
+    else
+        log_info "  Building Backend Docker image..."
+        if ! run_docker_compose "build" "Backend"; then
+            log_error "  Failed to build Backend image"
+            track_module_failure "Backend API"
+            return 1
+        fi
+        log_success "  Backend image built successfully"
     fi
-    log_success "  Backend image built successfully"
 
     # Start
     log_info "  Starting Backend container..."

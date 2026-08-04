@@ -2326,7 +2326,7 @@ def load_all_bundled_images(package_dir: str, logger: Callable = None,
         image_tar = os.path.join(images_dir, fn)
         # Not every tar under images/ is a docker image. Some no-image modules
         # ship a DATA artifact here as a plain tar (e.g. aws_sigma bundles the
-        # SigmaHQ AWS CloudTrail rule pack as images/cloudtrail-<ver>.tar, applied
+        # SigmaHQ AWS CloudTrail rule pack as images/aws_sigma-<ver>.tar, applied
         # by upgrade_cloudtrail_offline — not `docker load`ed). A docker-save tar
         # always has a top-level `manifest.json`; a data tar does not. Skip the
         # non-image tars quietly so they don't log a misleading "Image load

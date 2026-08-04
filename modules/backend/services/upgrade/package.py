@@ -171,6 +171,13 @@ def image_owner_prefixes():
     # releases: an ownerless file is never pruned and never budgeted. Now that
     # it ships as its own asset, that asset's entire payload would have been
     # unattributable.
+    #
+    # BOTH spellings stay mapped. `aws_sigma-` is what the packager writes now;
+    # `cloudtrail-` is what every package built before the module rename
+    # carries, and this box can be handed one of those. Dropping the old prefix
+    # would make that pack ownerless again — silently un-pruned and
+    # un-budgeted, which is the exact failure this entry was added to fix.
+    prefixes['aws_sigma-'] = 'aws_sigma'
     prefixes['cloudtrail-'] = 'aws_sigma'
     return prefixes
 
@@ -2329,18 +2336,29 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                             "Maintenance → Refresh YARA Rulesets later if "
                             "the target gets internet.", "warning")
             elif module == 'aws_sigma':
-                # CloudTrail ships no docker image — the versioned artifact is the
+                # aws_sigma ships no docker image — the versioned artifact is the
                 # SIGMA AWS CloudTrail rule pack (cloned from SigmaHQ into
-                # /opt/sigma-rules). Bundle it as images/cloudtrail-<version>.tar so an
+                # /opt/sigma-rules). Bundle it as images/aws_sigma-<version>.tar so an
                 # air-gapped target installs the detection rules on apply
-                # (services/upgrade/aws.py:upgrade_cloudtrail_offline). Mirrors the
-                # cve_scan pattern (a no-image module that ships a data artifact).
+                # (services/upgrade/aws.py:upgrade_aws_offline, and
+                # lib/docker.sh:install_bundled_rule_packs on the install path).
+                # Mirrors the cve_scan pattern (a no-image module that ships a
+                # data artifact).
+                #
+                # Named aws_sigma-<v>.tar, not the historical cloudtrail-<v>.tar:
+                # the module id was renamed and the old filename made the artifact
+                # look like it belonged to a module that no longer exists. Both
+                # readers accept either spelling, so a package built before the
+                # rename still applies — see aws.py and install_bundled_rule_packs.
+                # image_owner_prefixes() likewise still maps BOTH prefixes, or an
+                # older package's pack becomes unattributable and is never pruned
+                # or disk-budgeted.
                 import tarfile as _cttf
                 aws_rules = "/opt/sigma-rules/rules/cloud/aws"
                 if os.path.isdir(aws_rules):
                     images_dir = f"{package_dir}/images"
                     os.makedirs(images_dir, exist_ok=True)
-                    out_tar = f"{images_dir}/cloudtrail-{version}.tar"
+                    out_tar = f"{images_dir}/aws_sigma-{version}.tar"
                     with _cttf.open(out_tar, 'w') as tar:
                         tar.add(aws_rules, arcname='.')
                     n_rules = sum(1 for _r, _d, fs in os.walk(aws_rules)
@@ -2348,7 +2366,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     size_mb = os.path.getsize(out_tar) / (1024 * 1024)
                     manifest["contents"].setdefault("rule_packs", []).append({
                         "module": "aws_sigma",
-                        "file": f"images/cloudtrail-{version}.tar",
+                        "file": f"images/aws_sigma-{version}.tar",
                         "rules": n_rules, "size_mb": round(size_mb, 2),
                     })
                     # Register aws_sigma as a versioned module so the apply

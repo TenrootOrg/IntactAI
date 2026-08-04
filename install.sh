@@ -155,6 +155,60 @@ fi
 
 export INTACT_AIRGAP
 
+# Display names for progress lines below. Keys are module ids, matched
+# against each asset's filename by suffix ("...-<id>.tar.gz") -- a --package
+# install can point at files carrying no release tag at all, so this cannot
+# assume the "intact-<tag>-<module>" shape and parse the tag back out.
+declare -A INTACT_MODULE_DISPLAY=(
+    [intact]="Intact.AI platform" [elk]="ELK" [iris]="IRIS"
+    [timesketch]="TimeSketch" [plaso]="Plaso" [velociraptor]="Velociraptor"
+    [volweb]="VolWeb" [aws_sigma]="AWS SIGMA rules" [portainer]="Portainer"
+)
+
+_module_from_asset_name() {
+    local base="${1%.tar.gz}" id
+    for id in "${!INTACT_MODULE_DISPLAY[@]}"; do
+        [[ "$base" == *"-${id}" ]] && { echo "$id"; return 0; }
+    done
+    echo ""
+}
+
+# Display name for a module id, or $2 when the id is unknown/empty. Goes
+# through a function rather than ${INTACT_MODULE_DISPLAY[$id]:-...} inline
+# because bash raises "bad array subscript" on an EMPTY subscript, and an
+# empty id is the normal case for a legacy single bundle or an
+# operator-renamed file.
+_module_display() {
+    local id="${1:-}" fallback="${2:-}"
+    [[ -n "$id" && -n "${INTACT_MODULE_DISPLAY[$id]:-}" ]] \
+        && { echo "${INTACT_MODULE_DISPLAY[$id]}"; return 0; }
+    echo "${id:-$fallback}"
+}
+
+_human_size() {
+    numfmt --to=iec "${1:-0}" 2>/dev/null || echo "${1:-0}B"
+}
+
+# True if $1 looks like a `docker save` archive (top-level manifest.json /
+# index.json / oci-layout), false if it is a plain data tar bundled under
+# images/ (e.g. the aws_sigma SIGMA rule pack). Ports
+# services/upgrade/base.py:_tar_is_docker_image() so install.sh applies the
+# same distinction the upgrade engine already does -- see that function's
+# docstring for why. On any read error this returns TRUE (fail-open): an
+# unreadable tar still gets handed to `docker load`, which is today's
+# behaviour, rather than being silently skipped as "not an image".
+_tar_is_docker_image() {
+    local t="$1" listing name
+    listing="$(tar -tf "$t" 2>/dev/null)" || return 0
+    while IFS= read -r name; do
+        name="${name#./}"
+        case "$name" in
+            manifest.json|index.json|oci-layout) return 0 ;;
+        esac
+    done <<< "$listing"
+    return 1
+}
+
 # Load every image out of the package into the local docker store.
 #
 # Idempotent and non-fatal per image: `docker load` on an image that is already
@@ -162,6 +216,11 @@ export INTACT_AIRGAP
 # may not even need that module. What DOES abort is a package that yields no
 # images at all -- that is a wrong or corrupt file, and continuing would fall
 # through to registry pulls that cannot work on an air-gapped box.
+#
+# Sets INTACT_PKG_BACKEND_TAG (best-effort) to the backend image tag this
+# package actually shipped, so the caller can correct a stale
+# config.yaml versions.backend rather than trust it -- see lib/config.sh and
+# lib/modules.sh:deploy_backend.
 load_images_from_package() {
     # Takes ONE OR MORE assets. Per-module assets share a top-level directory
     # name, so extracting them all into one place merges them into the single
@@ -181,23 +240,7 @@ load_images_from_package() {
     done
     log_info "Installing from ${#pkgs[@]} asset(s): $(basename "${pkgs[0]}")$( (( ${#pkgs[@]} > 1 )) && echo " (+$(( ${#pkgs[@]} - 1 )) more)")"
     mkdir -p "${SCRIPT_DIR}/data/tmp" 2>/dev/null || true
-
-    # A DELTA package predates the per-module scheme: it carried only the
-    # modules whose versions had moved since some other release. Deltas are no
-    # longer produced, but one can still be sitting on a USB stick, and it must
-    # be refused by name rather than half-applied.
-    for pkg in "${pkgs[@]}"; do
-        local kind
-        kind="$(tar -xzOf "$pkg" --wildcards '*/manifest.json' 2>/dev/null \
-                | python3 -c 'import json,sys;print((json.load(sys.stdin).get("contents") or {}).get("package_kind",""))' 2>/dev/null || echo "")"
-        if [[ "$kind" == "delta" ]]; then
-            log_error "$(basename "$pkg") is a DELTA package: it carries only the"
-            log_error "modules whose versions moved since another release, so it"
-            log_error "cannot install a box from scratch. Use the release bundle"
-            log_error "or its per-module assets."
-            return 1
-        fi
-    done
+    INTACT_PKG_BACKEND_TAG=""
 
     # Extract onto the appliance's own disk, not /tmp. The assets total several
     # GB and many hosts mount /tmp as a small tmpfs -- extracting there fills RAM
@@ -207,13 +250,29 @@ load_images_from_package() {
     local work
     work="$(mktemp -d -p "${SCRIPT_DIR}/data/tmp" pkg-XXXXXX 2>/dev/null)" \
         || work="$(mktemp -d)"
-    log_info "  Extracting (this takes a few minutes)..."
+
+    local total_size=0 pkg_size
     for pkg in "${pkgs[@]}"; do
-        if ! tar -xzf "$pkg" -C "$work" 2>>"$LOG_FILE"; then
-            log_error "  Could not extract $(basename "$pkg")"
+        pkg_size=$(stat -c%s "$pkg" 2>/dev/null || echo 0)
+        total_size=$((total_size + pkg_size))
+    done
+    log_info "Extracting assets — ${#pkgs[@]} asset(s), $(_human_size "$total_size")"
+
+    local ext_i=0 base mod_id display
+    for pkg in "${pkgs[@]}"; do
+        ext_i=$((ext_i + 1))
+        base="$(basename "$pkg")"
+        mod_id="$(_module_from_asset_name "$base")"
+        display="$(_module_display "$mod_id" "$base")"
+        pkg_size=$(stat -c%s "$pkg" 2>/dev/null || echo 0)
+        log_info "  [${ext_i}/${#pkgs[@]}] ${display} — extracting $(_human_size "$pkg_size")..."
+        if ! run_with_heartbeat "extracting ${display} asset" 1800 \
+                bash -c 'tar -xzf "$1" -C "$2" 2>>"$3"' _ "$pkg" "$work" "$LOG_FILE"; then
+            log_error "  Could not extract ${display} (${base})"
             rm -rf "$work"; return 1
         fi
     done
+    log_success "Extraction complete: ${#pkgs[@]} asset(s), $(_human_size "$total_size")"
 
     # One merged tree, or the assets did not share a root and each would be a
     # separate half-package.
@@ -226,38 +285,231 @@ load_images_from_package() {
         rm -rf "$work"; return 1
     fi
 
-    local loaded=0 failed=0 tar_file
-    while IFS= read -r tar_file; do
-        if docker load -i "$tar_file" >>"$LOG_FILE" 2>&1; then
+    # A DELTA package predates the per-module scheme: it carried only the
+    # modules whose versions had moved since some other release. Deltas are no
+    # longer produced, but one can still be sitting on a USB stick, and it must
+    # be refused by name rather than half-applied. Checked here, on the
+    # EXTRACTED tree, rather than pre-extraction as before: gzip isn't
+    # seekable, so reading `*/manifest.json` out of each compressed asset
+    # meant fully decompressing every one of them just to read a few bytes of
+    # JSON -- an unexplained multi-minute silence on a multi-GB release with
+    # nothing to show for it. Now it's a handful of small files already on
+    # disk. Scans both the root manifest.json (legacy single bundle) and every
+    # per-module manifests/*.json sidecar, so a delta shipped as a per-module
+    # asset can't slip through either.
+    local delta_kind
+    delta_kind="$(python3 -c "
+import json, glob, sys
+work = sys.argv[1]
+paths = glob.glob(f'{work}/*/manifest.json') + glob.glob(f'{work}/*/manifests/*.json')
+for p in paths:
+    try:
+        m = json.load(open(p))
+    except Exception:
+        continue
+    if (m.get('contents') or {}).get('package_kind') == 'delta':
+        print('delta')
+        break
+" "$work" 2>/dev/null)"
+    if [[ "$delta_kind" == "delta" ]]; then
+        log_error "  This package is a DELTA package: it carries only the"
+        log_error "  modules whose versions moved since another release, so it"
+        log_error "  cannot install a box from scratch. Use the release bundle"
+        log_error "  or its per-module assets."
+        rm -rf "$work"; return 1
+    fi
+
+    # Attribute every bundled image tar to its owning module and record its
+    # size, from the manifest sidecars already on disk -- no extra I/O. Each
+    # per-module asset carries manifests/<module>.json (a full copy of that
+    # module's manifest, contents.images + contents.image_sizes included); a
+    # legacy single-bundle asset has only the root manifest.json and no
+    # per-module attribution, so its images are labelled "(unattributed)"
+    # rather than guessed.
+    declare -A IMG_OWNER=() IMG_SIZE=()
+    local _iname _iowner _isize
+    while IFS=$'\t' read -r _iname _iowner _isize; do
+        [[ -n "$_iname" ]] || continue
+        IMG_OWNER["$_iname"]="$_iowner"
+        [[ -n "$_isize" ]] && IMG_SIZE["$_iname"]="$_isize"
+    done < <(python3 -c "
+import json, glob, os, sys
+work = sys.argv[1]
+owner, size = {}, {}
+sidecars = glob.glob(os.path.join(work, '*', 'manifests', '*.json'))
+sources = sidecars if sidecars else glob.glob(os.path.join(work, '*', 'manifest.json'))
+for p in sources:
+    module = os.path.splitext(os.path.basename(p))[0] if sidecars else ''
+    try:
+        m = json.load(open(p))
+    except Exception:
+        continue
+    c = m.get('contents') or {}
+    sizes = c.get('image_sizes') or {}
+    for img in c.get('images') or []:
+        if module:
+            owner[img] = module
+        if img in sizes:
+            size[img] = sizes[img]
+for img in sorted(set(owner) | set(size)):
+    print(f'{img}\t{owner.get(img, \"\")}\t{size.get(img, \"\")}')
+" "$work" 2>/dev/null)
+
+    # Classify every bundled tar up front: a docker-save image, or a plain
+    # data tar (e.g. the aws_sigma SIGMA rule pack) that must NOT be handed to
+    # `docker load` -- see _tar_is_docker_image(). Data tars are staged aside
+    # rather than applied here: download_sigma_rules() runs later in main()
+    # and rm -rf's /opt/sigma-rules before cloning, so anything written here
+    # would be silently destroyed. install_bundled_rule_packs() applies them
+    # after that clone step.
+    local image_tars=() data_tars=() t
+    while IFS= read -r t; do
+        if _tar_is_docker_image "$t"; then
+            image_tars+=("$t")
+        else
+            data_tars+=("$t")
+        fi
+    done < <(find "$work" -type f -name '*.tar' 2>/dev/null | sort)
+
+    local rule_pack_dir="${SCRIPT_DIR}/data/tmp/rule-packs"
+    if (( ${#data_tars[@]} > 0 )); then
+        mkdir -p "$rule_pack_dir"
+        for t in "${data_tars[@]}"; do
+            base="$(basename "$t")"
+            log_info "  ${base}: bundled data/rule pack, not a docker image — staged for install"
+            cp -f "$t" "$rule_pack_dir/" 2>/dev/null || true
+        done
+    fi
+
+    local images_total_size=0
+    for t in "${image_tars[@]}"; do
+        images_total_size=$(( images_total_size + $(stat -c%s "$t" 2>/dev/null || echo 0) ))
+    done
+    log_info "Package contents: ${#image_tars[@]} image tar(s) ($(_human_size "$images_total_size")), ${#data_tars[@]} rule pack(s)"
+
+    local loaded=0 failed=0 img_i=0 img_total=${#image_tars[@]}
+    for tar_file in "${image_tars[@]}"; do
+        img_i=$((img_i + 1))
+        base="$(basename "$tar_file")"
+        mod_id="${IMG_OWNER[$base]:-}"
+        display="$(_module_display "$mod_id" "(unattributed)")"
+        pkg_size="${IMG_SIZE[$base]:-$(stat -c%s "$tar_file" 2>/dev/null || echo 0)}"
+        log_info "  [${img_i}/${img_total}] ${display} / ${base} ($(_human_size "$pkg_size")) — loading..."
+        local load_log; load_log="$(mktemp -p "${SCRIPT_DIR}/data/tmp" load-XXXXXX)"
+        if run_with_heartbeat "loading ${display}/${base}" 1800 \
+                bash -c 'docker load -i "$1" >"$2" 2>&1' _ "$tar_file" "$load_log"; then
             loaded=$((loaded + 1))
+            local ref; ref="$(sed -n 's/^Loaded image: //p' "$load_log" | tail -1)"
+            log_success "  [${img_i}/${img_total}] ${display} — ${ref:-loaded} ($(_human_size "$pkg_size"))"
+            # Capture what the package actually shipped as the backend image,
+            # so the caller can correct a stale config.yaml versions.backend
+            # instead of trusting it (see lib/config.sh + lib/modules.sh).
+            if [[ -z "$INTACT_PKG_BACKEND_TAG" && "$base" == intact-backend-*.tar ]]; then
+                if [[ -n "$ref" && "$ref" == intact-backend:* ]]; then
+                    INTACT_PKG_BACKEND_TAG="${ref#intact-backend:}"
+                else
+                    INTACT_PKG_BACKEND_TAG="${base#intact-backend-}"
+                    INTACT_PKG_BACKEND_TAG="${INTACT_PKG_BACKEND_TAG%.tar}"
+                fi
+            fi
         else
             failed=$((failed + 1))
-            log_warn "  Could not load $(basename "$tar_file")"
+            log_warn "  [${img_i}/${img_total}] ${display} — could not load ${base}: $(tail -1 "$load_log" 2>/dev/null)"
         fi
-    done < <(find "$work" -type f -name '*.tar' 2>/dev/null)
+        cat "$load_log" >> "$LOG_FILE" 2>/dev/null
+        rm -f "$load_log"
+    done
+
+    # Prefer the manifest's own version.intact over anything guessed from a
+    # tar filename or docker's own "Loaded image:" line -- it's what
+    # ensure_backend_runtime_image() on the upgrade side treats as
+    # authoritative, and it's readable even when the backend image was
+    # ALREADY present locally and docker load therefore printed nothing new.
+    local manifest_backend_tag
+    manifest_backend_tag="$(python3 -c "
+import json, glob, sys
+work = sys.argv[1]
+for p in glob.glob(f'{work}/*/manifests/intact.json') + glob.glob(f'{work}/*/manifest.json'):
+    try:
+        v = (json.load(open(p)).get('versions') or {}).get('intact')
+    except Exception:
+        v = None
+    if v:
+        print(v)
+        break
+" "$work" 2>/dev/null)"
+    if [[ -n "$manifest_backend_tag" ]]; then
+        INTACT_PKG_BACKEND_TAG="$manifest_backend_tag"
+    fi
+    if [[ -n "$INTACT_PKG_BACKEND_TAG" ]]; then
+        log_info "  Package backend image tag: ${INTACT_PKG_BACKEND_TAG}"
+    fi
+    export INTACT_PKG_BACKEND_TAG
 
     # Images are not the only thing an air-gapped box cannot fetch. The
-    # installer also downloads Velociraptor binaries (current + legacy clients,
-    # the offline collector) and clones SigmaHQ. Deliver whatever the package
-    # carries so the download_* functions find their work already done; each of
-    # them reports honestly if something is genuinely absent.
+    # installer also downloads Velociraptor binaries (current + legacy
+    # clients, the offline collector) and clones SigmaHQ. Deliver whatever
+    # the package carries so the download_* / stage_* functions find their
+    # work already done; each reports honestly if something is genuinely
+    # absent (see lib/docker.sh:_airgap_asset_check).
     local dl_dir="${SCRIPT_DIR}/modules/nginx/html/downloads"
     local staged_bin=0 bin
     mkdir -p "$dl_dir"
     while IFS= read -r bin; do
-        if cp -n "$bin" "$dl_dir/" 2>/dev/null; then staged_bin=$((staged_bin + 1)); fi
+        # cp -n exits 0 whether it copied or declined to overwrite an
+        # existing file of the same name -- count only what it actually
+        # placed, or "Staged N binaries" over-reports on a re-run.
+        if [[ ! -e "$dl_dir/$(basename "$bin")" ]] && cp -n "$bin" "$dl_dir/" 2>/dev/null; then
+            staged_bin=$((staged_bin + 1))
+        fi
     done < <(find "$work" -type d -name binaries -exec find {} -type f \; 2>/dev/null)
     if (( staged_bin > 0 )); then
         chmod 755 "$dl_dir"/* 2>/dev/null || true   # 755, not +x: umask filters symbolic modes
-        log_success "  Staged $staged_bin Velociraptor binary/binaries from the package"
+        log_success "  Staged $staged_bin Velociraptor binary/binaries into ${dl_dir}"
     fi
 
-    local sigma_src
-    sigma_src="$(find "$work" -type d -name 'sigma*' -maxdepth 4 2>/dev/null | head -1)"
-    if [[ -n "$sigma_src" && ! -d /opt/sigma-rules/rules ]]; then
-        mkdir -p /opt/sigma-rules
-        cp -rn "$sigma_src"/. /opt/sigma-rules/ 2>/dev/null \
-            && log_success "  Staged SIGMA rules from the package"
+    # Also stage into the Velociraptor build-context paths the Dockerfile
+    # COPYs from (modules/velociraptor/clients/...) and drop the .version
+    # sidecar stage_velociraptor_client_binaries() needs to skip a re-download
+    # -- see lib/docker.sh. Without this the flat copy above satisfies
+    # download_offline_collector_binaries()'s check but NOT this one, and the
+    # image build re-fetches ~250 MB from github.com even though the package
+    # already carried it (observed 2026-08-04).
+    local velo_dir="${SCRIPT_DIR}/modules/velociraptor"
+    local velo_bin
+    velo_bin="$(find "$work" -type f -name 'velociraptor-v*-linux-amd64' ! -name '*-musl' 2>/dev/null | head -1)"
+    if [[ -n "$velo_bin" ]]; then
+        local vfile vver
+        vfile="$(basename "$velo_bin")"
+        vver="$(sed -n 's/^velociraptor-v\(.*\)-linux-amd64$/\1/p' <<< "$vfile")"
+        local expect_ver; expect_ver="$(read_config "['versions']['velociraptor']" 2>/dev/null)"
+        if [[ -n "$expect_ver" && "$expect_ver" != "$vver" ]]; then
+            log_warn "  Bundled Velociraptor client is v${vver} but config.yaml pins v${expect_ver}"
+        fi
+        mkdir -p "${velo_dir}/clients/linux" "${velo_dir}/clients/mac" "${velo_dir}/clients/windows"
+        local _pairs=(
+            "velociraptor-v${vver}-linux-amd64|${velo_dir}/clients/linux/velociraptor"
+            "velociraptor-v${vver}-darwin-amd64|${velo_dir}/clients/mac/velociraptor_client"
+            "velociraptor-v${vver}-windows-amd64.exe|${velo_dir}/clients/windows/velociraptor_client.exe"
+            "velociraptor-v${vver}-windows-amd64.msi|${velo_dir}/clients/windows/velociraptor_client.msi"
+        )
+        local _p _srcname _dest _src staged_ctx=0
+        for _p in "${_pairs[@]}"; do
+            _srcname="${_p%%|*}"; _dest="${_p##*|}"
+            _src="$(find "$work" -type f -name "$_srcname" 2>/dev/null | head -1)"
+            [[ -n "$_src" ]] || continue
+            cp -f "$_src" "$_dest" && staged_ctx=$((staged_ctx + 1))
+            [[ "$_dest" != *.msi ]] && chmod 755 "$_dest" 2>/dev/null || true
+            printf '%s\n' "$vver" > "${_dest}.version"
+        done
+        (( staged_ctx > 0 )) && log_success "  Staged ${staged_ctx} Velociraptor client binary/binaries for the image build (v${vver})"
+        local _collector_src
+        _collector_src="$(find "$work" -type f -name 'velociraptor-collector' 2>/dev/null | head -1)"
+        if [[ -n "$_collector_src" ]]; then
+            mkdir -p "${SCRIPT_DIR}/data/tools"
+            cp -f "$_collector_src" "${SCRIPT_DIR}/data/tools/velociraptor-collector"
+            log_success "  Staged velociraptor-collector into data/tools"
+        fi
     fi
 
     rm -rf "$work"
@@ -704,14 +956,21 @@ main() {
     # Azure Security Tools (SIGMA Rules + DFIR-O365RC)
     # -------------------------------------------------------------------------
     download_sigma_rules
+    # STRICTLY AFTER download_sigma_rules: that function rm -rf's
+    # /opt/sigma-rules before cloning, so the bundled pack has to be laid down
+    # afterwards or it is silently wiped. See install_bundled_rule_packs().
+    install_bundled_rule_packs
     pull_dfir_o365rc_image
     generate_azure_certificate
 
     # -------------------------------------------------------------------------
     # AWS DFIR (CloudTrail + SIGMA) — native, no image to pull. boto3 is
-    # installed into the backend by install_deps.py; the SIGMA AWS rule pack
-    # is fetched by download_sigma_rules() above when the cloudtrail (or
-    # azure) module is enabled in config.yaml.
+    # installed into the backend by install_deps.py. The SIGMA AWS rule pack
+    # comes from one of two places: the release package (applied by
+    # install_bundled_rule_packs above — the only route that works offline), or
+    # the SigmaHQ clone download_sigma_rules() makes when the aws_sigma or
+    # o365rc module is enabled. When both happen the bundled pack is applied
+    # last, so the release-pinned rules win over whatever the clone carried.
 
     # -------------------------------------------------------------------------
     # Backend base image — always built, so always pre-pull. Keeps the

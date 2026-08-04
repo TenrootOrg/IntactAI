@@ -188,8 +188,17 @@ def _m2_consolidate_aws_module_id(config_path, logger=None):
     meaning) → DROP it. The Phase-1 versions-merge already added the new
     versions.aws_sigma, so the cloudtrail rename usually just drops the dup.
 
-    NOT renamed (compat contracts): the CLOUDTRAIL_VERSION env var in every
-    installed host's backend .env, and the cloudtrail-<v>.tar package artifact.
+    NOT renamed (compat contract): the CLOUDTRAIL_VERSION env var in every
+    installed host's backend .env. Renaming that would need an .env migration
+    on every existing box, and until it ran the module would report
+    "Not installed".
+
+    The package artifact WAS since renamed cloudtrail-<v>.tar -> aws_sigma-<v>.tar,
+    which was safe in a way the env var is not: no installed host persists that
+    filename, only packages do. Both readers (services/upgrade/aws.py and
+    lib/docker.sh:install_bundled_rule_packs) accept either spelling, and
+    image_owner_prefixes() maps both, so a package built before the rename
+    still applies cleanly.
     """
     rename_module_in_config('cloudtrail', 'aws_sigma', logger=logger,
                             config_path=config_path)

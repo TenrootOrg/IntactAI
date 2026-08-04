@@ -30,8 +30,60 @@ check_ubuntu() {
     log_success "OS Check: $PRETTY_NAME"
 }
 
+# The host packages the installer itself needs, as "<apt package>|<probe>".
+# The probe is what actually decides — a package can be half-configured, and
+# `dpkg -s` would call that installed. python3-pip is probed via `python3 -m
+# pip` rather than `command -v pip3` because the two disagree on plenty of
+# boxes (pip importable, no pip3 shim, and vice versa).
+INTACT_HOST_DEPS=(
+    "curl|command -v curl"
+    "wget|command -v wget"
+    "git|command -v git"
+    "python3|command -v python3"
+    "python3-pip|python3 -m pip --version"
+    "python3-yaml|python3 -c 'import yaml'"
+    "openssl|command -v openssl"
+    "jq|command -v jq"
+    "dnsutils|command -v dig"
+)
+
+# Which of INTACT_HOST_DEPS are missing right now. Echoes apt package names,
+# space separated; empty output means everything is present.
+_missing_host_deps() {
+    local entry pkg probe out=()
+    for entry in "${INTACT_HOST_DEPS[@]}"; do
+        pkg="${entry%%|*}"; probe="${entry#*|}"
+        eval "$probe" >/dev/null 2>&1 || out+=("$pkg")
+    done
+    echo "${out[*]}"
+}
+
 install_dependencies() {
-    log_info "Installing system dependencies..."
+    log_info "Checking system dependencies..."
+
+    # PROBE BEFORE apt. This used to run `apt-get update` + a nine-package
+    # `apt-get install` unconditionally, which cost ~2 minutes on every online
+    # run of an already-provisioned box (measured 2026-08-04: 14:08:19 ->
+    # 14:10:28) to install nothing. It is also mostly moot by the time it runs:
+    # read_config() is `python3 -c "import yaml"` and download_release_assets()
+    # needs curl + python3, and both run ~100 lines EARLIER in main(). So on a
+    # box that got this far, these packages are present by definition.
+    #
+    # Nothing downstream needs fresh apt lists either — install_docker_online()
+    # manages its own repo and runs its own `apt-get update`.
+    local missing; missing="$(_missing_host_deps)"
+    if [[ -z "$missing" && "${INTACT_FORCE_APT:-0}" != "1" ]]; then
+        log_success "System dependencies already present — skipping apt"
+        record_install_note "apt was skipped: every host dependency was already installed. Set INTACT_FORCE_APT=1 to force apt-get update + install."
+        return 0
+    fi
+
+    if [[ -n "$missing" ]]; then
+        log_info "  Missing: ${missing} — installing via apt"
+    else
+        log_info "  INTACT_FORCE_APT=1 — running apt even though nothing is missing"
+        missing="$(printf '%s ' "${INTACT_HOST_DEPS[@]%%|*}")"
+    fi
 
     # Block on Ubuntu's unattended-upgrades daemon if it's holding the
     # dpkg lock (common on fresh-boot VMs). Without this, install.sh
@@ -46,18 +98,24 @@ install_dependencies() {
         log_warn "apt-get update had issues, continuing..."
     fi
 
-    if ! apt-get install -y -qq \
-        curl \
-        wget \
-        git \
-        python3 \
-        python3-pip \
-        python3-yaml \
-        openssl \
-        jq \
-        dnsutils \
-        2>> "$LOG_FILE"; then
+    # Install only what is actually missing, so a nearly-complete box does one
+    # small transaction instead of nine.
+    # shellcheck disable=SC2086 -- word splitting is the intent
+    if ! apt-get install -y -qq $missing 2>> "$LOG_FILE"; then
         log_error "Failed to install some dependencies"
+        return 1
+    fi
+
+    # RE-PROBE. apt can exit 0 having installed something that still doesn't
+    # satisfy us (held package, broken postinst, a python3-yaml that imports
+    # against a different interpreter). Previously this function trusted apt's
+    # exit code and logged "System dependencies installed" regardless, so a
+    # genuinely missing python3-yaml surfaced ~100 lines later as read_config
+    # silently returning empty strings.
+    local still; still="$(_missing_host_deps)"
+    if [[ -n "$still" ]]; then
+        log_error "Still missing after apt: ${still}"
+        log_error "  Install them by hand and re-run: sudo apt-get install ${still}"
         return 1
     fi
 
@@ -613,11 +671,18 @@ download_offline_collector_binaries() {
     local minor_tag="v$(echo "$velo_version" | sed 's/^\([0-9]*\.[0-9]*\).*/\1/')"
     local velo_tag="$minor_tag"
     local _probe="velociraptor-v${velo_version}-windows-amd64.exe"
-    if [[ "$(curl -s -o /dev/null -w '%{http_code}' -IL \
+    # Skip the probe entirely when air-gapped: there is no route to github.com,
+    # so this only burns a connect timeout and then reports the WRONG tag (the
+    # minor-tag fallback) as if it had been resolved. Nothing downstream can
+    # use it offline anyway — every consumer below is gated on the same flag.
+    if [[ "${INTACT_AIRGAP:-0}" == "1" ]]; then
+        log_info "  Air-gapped — not resolving the Velociraptor release tag from GitHub"
+    elif [[ "$(curl -s -o /dev/null -w '%{http_code}' -IL \
             "https://github.com/Velocidex/velociraptor/releases/download/${full_tag}/${_probe}" 2>/dev/null)" == "200" ]]; then
         velo_tag="$full_tag"
     fi
-    log_info "  Resolved Velociraptor release tag: ${velo_tag} (for v${velo_version})"
+    [[ "${INTACT_AIRGAP:-0}" == "1" ]] \
+        || log_info "  Resolved Velociraptor release tag: ${velo_tag} (for v${velo_version})"
     local base_url="https://github.com/Velocidex/velociraptor/releases/download/${velo_tag}"
 
     log_info "Checking Velociraptor v${velo_version} binaries for Offline Collector..."
@@ -762,11 +827,19 @@ stage_velociraptor_client_binaries() {
     local full_tag="v${velo_version}"
     local minor_tag="v${parts[0]}.${parts[1]}"
     local release_tag="$minor_tag"
-    if [[ "$(curl -s -o /dev/null -w '%{http_code}' -IL \
+    # Air-gapped: no route to github.com, so skip the probe (see the identical
+    # guard in download_offline_collector_binaries above). Every download below
+    # is refused in this mode too — the binaries must have come from the
+    # package, which install.sh stages into clients/ with a .version sidecar.
+    if [[ "${INTACT_AIRGAP:-0}" == "1" ]]; then
+        log_info "  Air-gapped — using only the binaries staged from the release package"
+    elif [[ "$(curl -s -o /dev/null -w '%{http_code}' -IL \
             "https://github.com/Velocidex/velociraptor/releases/download/${full_tag}/velociraptor-v${velo_version}-windows-amd64.exe" 2>/dev/null)" == "200" ]]; then
         release_tag="$full_tag"
+        log_info "  Resolved Velociraptor release tag: ${release_tag} (for v${velo_version})"
+    else
+        log_info "  Resolved Velociraptor release tag: ${release_tag} (for v${velo_version})"
     fi
-    log_info "  Resolved Velociraptor release tag: ${release_tag} (for v${velo_version})"
     local base_url="https://github.com/Velocidex/velociraptor/releases/download/${release_tag}"
 
     local linux_dir="${module_dir}/clients/linux"
@@ -823,6 +896,28 @@ stage_velociraptor_client_binaries() {
         fi
         if [[ -f "$dest" ]] && [[ -n "$staged_ver" ]] && [[ "$staged_ver" != "$velo_version" ]]; then
             log_info "  Re-staging $(basename "$dest"): staged v${staged_ver}, need v${velo_version}"
+        fi
+
+        # Air-gapped and not already satisfied above: there is no route to
+        # GitHub, so do not pretend. Say precisely which file is missing and
+        # where it should have come from, and fail only for the one binary the
+        # image build genuinely cannot do without.
+        if [[ "${INTACT_AIRGAP:-0}" == "1" ]]; then
+            if (( is_required )); then
+                log_error "  REQUIRED Velociraptor binary missing and cannot be downloaded (air-gapped):"
+                log_error "    wanted: $(basename "$dest")  (v${velo_version})"
+                log_error "    source: the release package should carry binaries/${fname}"
+                return 1
+            fi
+            log_warn "  ${fname}: not in the release package and cannot be downloaded offline."
+            log_warn "    Consequence: no pre-repacked client for that platform."
+            INSTALL_WARNINGS+=("  air-gap: ${fname} unavailable — no pre-repacked client for that platform")
+            # Same placeholder the upstream-missing branch below uses, so the
+            # Dockerfile COPY still succeeds.
+            : > "$dest"
+            rm -f "$ver_marker"
+            ((placeholders++))
+            continue
         fi
 
         log_info "  Staging: $fname  (from ${base_url}/${fname})"
@@ -1232,6 +1327,69 @@ download_sigma_rules() {
         log_warn "SIGMA Azure rules directory not found"
         return 1
     fi
+}
+
+
+# Apply the AWS SIGMA rule pack the release package carried.
+#
+# MUST RUN AFTER download_sigma_rules(). That function does `rm -rf
+# /opt/sigma-rules` before cloning, so a pack written any earlier — e.g. during
+# image loading, which is where it arrives — is silently destroyed. install.sh
+# stages it aside into data/tmp/rule-packs/ precisely so it can be applied here
+# instead.
+#
+# The rule pack is a plain data tar bundled under the package's images/ dir; it
+# is NOT a docker image and must never be `docker load`ed (see
+# _tar_is_docker_image in install.sh). Before this existed, install.sh had no
+# route for it at all: an offline install with aws_sigma enabled came up with
+# zero AWS detection rules, and the only symptom was a spurious
+# "Could not load cloudtrail-<v>.tar" warning.
+#
+# Deliberately extracts on the HOST rather than through a one-shot container
+# the way services/upgrade/aws.py:upgrade_aws_offline does. That indirection
+# exists only because the backend runs INSIDE a container and cannot write the
+# host's /opt/sigma-rules directly. install.sh is already root on the host, so
+# the container round-trip would buy nothing. Do not "fix" this back.
+install_bundled_rule_packs() {
+    local staged_dir="${SCRIPT_DIR}/data/tmp/rule-packs"
+    [[ -d "$staged_dir" ]] || return 0
+
+    local pack applied=0 found=0
+    # Both spellings: aws_sigma-<v>.tar is what the packager writes now,
+    # cloudtrail-<v>.tar is what every package built before the rename carries.
+    for pack in "$staged_dir"/aws_sigma-*.tar "$staged_dir"/cloudtrail-*.tar; do
+        [[ -f "$pack" ]] || continue
+        found=$((found + 1))
+        local ver="$(basename "$pack")"
+        ver="${ver#aws_sigma-}"; ver="${ver#cloudtrail-}"; ver="${ver%.tar}"
+
+        local aws_enabled; aws_enabled=$(read_config "['modules']['aws_sigma']['enabled']")
+        if ! is_enabled "$aws_enabled"; then
+            log_info "  AWS SIGMA rule pack ${ver} is in the package but aws_sigma is disabled — not installed"
+            record_install_note "Bundled AWS SIGMA rule pack ${ver} was not installed (modules.aws_sigma.enabled is false). Enable it and re-run install.sh to apply it — no internet needed."
+            continue
+        fi
+
+        local pinned; pinned=$(read_config "['versions']['aws_sigma']")
+        if [[ -n "$pinned" && "$pinned" != "None" && "$pinned" != "$ver" ]]; then
+            log_warn "  Bundled AWS SIGMA rule pack is ${ver} but config.yaml pins ${pinned}"
+        fi
+
+        local dest="/opt/sigma-rules/rules/cloud/aws"
+        mkdir -p "$dest"
+        if tar xf "$pack" -C "$dest" 2>>"$LOG_FILE"; then
+            local n; n=$(find "$dest" \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null | wc -l)
+            log_success "  AWS SIGMA rule pack ${ver} installed (${n} rules)"
+            applied=$((applied + 1))
+        else
+            log_error "  Could not extract the bundled AWS SIGMA rule pack ($(basename "$pack"))"
+            log_error "  AWS CloudTrail detection will run with no rules."
+        fi
+    done
+
+    (( found == 0 )) && return 0
+    (( applied > 0 )) && rm -rf "$staged_dir" 2>/dev/null || true
+    return 0
 }
 
 

@@ -12,9 +12,12 @@ by a one-shot container that mounts the host path read-write (the backend has th
 docker socket) — the same host directory install-time `download_sigma_rules` writes.
 Every rule operation is best-effort: a rule refresh must never fail the upgrade.
 
-Internal function names `upgrade_aws` / `upgrade_aws_offline` are kept as aliases so
-the dispatcher tables in __init__.py continue to resolve; the public module key is
-now 'aws_sigma' (module id; the AWS service itself is CloudTrail).
+The canonical functions are `upgrade_aws` / `upgrade_aws_offline`, matching the
+module id 'aws_sigma'. The pre-rename names `upgrade_cloudtrail*` stay bound as
+aliases at the bottom of this file. Note the distinction the rename preserved:
+'aws_sigma' is the MODULE id, while CloudTrail is the real AWS service — so
+CLOUDTRAIL_VERSION, the cloudtrail_* collector code and the log strings that
+name the service are all still correct and deliberately untouched.
 """
 
 import os
@@ -34,7 +37,7 @@ _GIT_IMAGE = "alpine/git:latest"
 _TAR_IMAGE = "ubuntu:22.04"
 
 
-def upgrade_cloudtrail(version: str, logger: Callable = None) -> Dict:
+def upgrade_aws(version: str, logger: Callable = None) -> Dict:
     """Online: refresh the SIGMA AWS rule pack (git pull the SigmaHQ clone) and pin
     CLOUDTRAIL_VERSION. Rule refresh is best-effort; version pin + enable always run."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
@@ -76,11 +79,12 @@ def upgrade_cloudtrail(version: str, logger: Callable = None) -> Dict:
                 "restored_version": current_version}
 
 
-def upgrade_cloudtrail_offline(package_dir: str, version: str, logger: Callable = None,
-                               run_id: Optional[str] = None) -> Dict:
-    """Offline: install the bundled AWS rule pack (cloudtrail-<version>.tar) into the
-    host SIGMA rules dir via a one-shot container (tar streamed over stdin, so no
-    host-path translation needed). Best-effort; version pin + enable always run."""
+def upgrade_aws_offline(package_dir: str, version: str, logger: Callable = None,
+                        run_id: Optional[str] = None) -> Dict:
+    """Offline: install the bundled AWS rule pack (aws_sigma-<version>.tar, or
+    the pre-rename cloudtrail-<version>.tar) into the host SIGMA rules dir via a
+    one-shot container (tar streamed over stdin, so no host-path translation
+    needed). Best-effort; version pin + enable always run."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     backend_env = os.path.join(WORKDIR, 'modules', 'backend', '.env')
     images_dir = os.path.join(package_dir, 'images')
@@ -90,9 +94,18 @@ def upgrade_cloudtrail_offline(package_dir: str, version: str, logger: Callable 
     backup_file = backup_env_file(backend_env, logger=log)
 
     try:
-        tar_path = os.path.join(images_dir, f"cloudtrail-{version}.tar")
+        # READ BOTH NAMES. The packager writes aws_sigma-<v>.tar now; every
+        # package built before that rename carries cloudtrail-<v>.tar. This box
+        # can be handed either — an older package on a USB stick is a perfectly
+        # ordinary input — so accept both and prefer the current spelling.
+        tar_path = next(
+            (p for p in (os.path.join(images_dir, f"aws_sigma-{version}.tar"),
+                         os.path.join(images_dir, f"cloudtrail-{version}.tar"))
+             if os.path.exists(p)),
+            os.path.join(images_dir, f"aws_sigma-{version}.tar"))
         if os.path.exists(tar_path):
-            log("Installing SIGMA AWS rule pack from package...", "info")
+            log(f"Installing SIGMA AWS rule pack from package "
+                f"({os.path.basename(tar_path)})...", "info")
             dest = f"{SIGMA_RULES_DIR}/{AWS_RULES_SUBPATH}"
             # Stream the tar (readable in the backend fs) into a one-shot that mounts
             # the host rules dir read-write. Avoids mounting the tar (no host-path map).
@@ -103,7 +116,7 @@ def upgrade_cloudtrail_offline(package_dir: str, version: str, logger: Callable 
             if not r.get('success'):
                 log("  Rule-pack extract failed (non-fatal) — keeping current rules", "warning")
         else:
-            log(f"CloudTrail rule pack not in package (cloudtrail-{version}.tar) — "
+            log(f"AWS SIGMA rule pack not in package (aws_sigma-{version}.tar) — "
                 f"skipping (rules ship with the SigmaHQ clone)", "warning")
 
         update_env_file(backend_env, 'CLOUDTRAIL_VERSION', version, logger=log)
@@ -128,6 +141,11 @@ def upgrade_cloudtrail_offline(package_dir: str, version: str, logger: Callable 
                 "restored_version": current_version}
 
 
-# Back-compat aliases for the dispatcher tables in __init__.py.
-upgrade_aws = upgrade_cloudtrail
-upgrade_aws_offline = upgrade_cloudtrail_offline
+# Legacy names. The module id was renamed prowler/cloudtrail -> aws_sigma and
+# the canonical functions moved with it; these remain bound so any caller or
+# saved state still referring to the old symbols keeps resolving. Every
+# in-tree caller already imports the upgrade_aws* names (see the dispatcher
+# tables in __init__.py), so these are for out-of-tree/legacy reach only and
+# can be dropped a release after the rename has shipped.
+upgrade_cloudtrail = upgrade_aws
+upgrade_cloudtrail_offline = upgrade_aws_offline
