@@ -327,24 +327,7 @@ def cover_block(name, generated_at, sources, tlp='AMBER', version=1, customer_na
     return "\n".join(lines)
 
 
-def section_heading(section_name, ordinal):
-    """Heading line for one of the per-environment sections (§5–§7
-    in the canonical layout, plus any "Other" catch-all)."""
-    return f"## {ordinal}. {section_name}\n"
 
 
-def ioc_table_header():
-    return (
-        "| Type | Indicator | Sources |\n"
-        "|---|---|---|\n"
-    )
 
 
-def appendix_heading():
-    return (
-        "\n---\n\n"
-        "## Appendix A — Source Reports (verbatim)\n"
-        "\n"
-        "*Each source workflow's full report as it was generated, "
-        "preserved for the engagement's record.*\n"
-    )

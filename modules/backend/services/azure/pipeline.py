@@ -682,37 +682,6 @@ def get_azure_blueprints() -> List[Dict]:
     ]
 
 
-def _filter_azure_findings_by_severity(findings: Dict, analysis_results: Dict, min_severity: str, run_id: str):
-    """Defensively drop sub-threshold records from cached findings + analysis.
-
-    Mirrors the AWS rerun helper — scan-time already applied the same
-    threshold (see SEVERITY_RANK use elsewhere in this module), but a
-    rerun is a cheap moment to re-enforce. Rules whose records all drop
-    out are removed; `analysis_results` is pruned to surviving rule keys."""
-    from services.workflow_service import add_log_to_run as _log
-    _RANK = {'informational': 0, 'info': 0, 'low': 1, 'medium': 2, 'high': 3, 'critical': 4}
-    min_rank = _RANK.get((min_severity or 'low').lower(), 1)
-    out_findings = {}
-    dropped = 0
-    for rule_key, records in (findings or {}).items():
-        if not isinstance(records, list):
-            out_findings[rule_key] = records
-            continue
-        kept = []
-        for r in records:
-            sev = 'low'
-            if isinstance(r, dict):
-                sev = (r.get('_severity') or r.get('severity') or 'low').lower()
-            if _RANK.get(sev, 1) >= min_rank:
-                kept.append(r)
-            else:
-                dropped += 1
-        if kept:
-            out_findings[rule_key] = kept
-    out_analysis = {k: v for k, v in (analysis_results or {}).items() if k in out_findings}
-    if dropped:
-        _log(run_id, f"[RERUN] Dropped {dropped} sub-threshold record(s) below {min_severity}", "info")
-    return out_findings, out_analysis
 
 
 def get_available_sources() -> List[Dict]:

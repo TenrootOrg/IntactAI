@@ -47,21 +47,6 @@ def _cleanup_container(container_name: str):
         pass
 
 
-def cleanup_orphan_containers():
-    """Remove any leftover DFIR-O365RC containers (called on startup or purge)."""
-    try:
-        result = subprocess.run(
-            "docker ps -a --filter name=dfir_o365rc_ -q",
-            shell=True, capture_output=True, text=True, timeout=10
-        )
-        if result.stdout.strip():
-            containers = result.stdout.strip().split('\n')
-            for cid in containers:
-                subprocess.run(f"docker rm -f {cid}", shell=True, capture_output=True, timeout=10)
-            return len(containers)
-    except Exception:
-        pass
-    return 0
 
 
 def is_available() -> Dict[str, any]:
@@ -99,80 +84,6 @@ def get_public_certificate() -> Optional[str]:
     return None
 
 
-def check_exchange_online_available(azure_config: Dict[str, str]) -> Dict[str, any]:
-    """Check if the tenant has an active Exchange Online subscription.
-
-    DFIR-O365RC requires active (non-expired) Exchange Online for UAL collection.
-    Checks both SKU presence AND capabilityStatus (Enabled vs Suspended/Warning/Deleted).
-    Also tries to fetch mailbox settings to verify Exchange Online is actually responding.
-    Returns a dict with 'available' (bool) and 'message' (str).
-    """
-    try:
-        from .collectors import get_access_token, graph_request
-
-        token = get_access_token(azure_config)
-
-        # Real Exchange Online plans (excluding EXCHANGE_S_FOUNDATION which is shared/bundled)
-        real_exchange_plans = {
-            'EXCHANGE_S_STANDARD',
-            'EXCHANGE_S_ENTERPRISE',
-            'EXCHANGE_S_DESKLESS',
-            'EXCHANGE_S_ARCHIVE',
-            'EXCHANGE_B_STANDARD',
-            'EXCHANGE_DESKLESS',
-        }
-
-        resp = graph_request(token, '/subscribedSkus')
-        if resp.status_code != 200:
-            return {'available': False, 'message': f'Failed to query subscribed SKUs (HTTP {resp.status_code})'}
-
-        # Check for an ENABLED Exchange Online SKU
-        skus = resp.json().get('value', [])
-        active_exchange_sku = None
-        suspended_exchange = False
-
-        for sku in skus:
-            sku_capability = sku.get('capabilityStatus', '')
-            for plan in sku.get('servicePlans', []):
-                plan_name = plan.get('servicePlanName', '').upper()
-                if plan_name in real_exchange_plans:
-                    if sku_capability == 'Enabled' and plan.get('provisioningStatus') == 'Success':
-                        active_exchange_sku = plan_name
-                        break
-                    else:
-                        suspended_exchange = True
-            if active_exchange_sku:
-                break
-
-        if not active_exchange_sku:
-            if suspended_exchange:
-                return {'available': False, 'message': 'Exchange Online SKU exists but is suspended/expired (likely trial expired)'}
-            return {'available': False, 'message': 'No active Exchange Online subscription in tenant'}
-
-        # Definitive test: try to fetch mailboxSettings for any user
-        # This will fail if Exchange Online is suspended even if SKU shows Enabled
-        users_resp = graph_request(token, '/users', params={'$select': 'id,mail', '$top': '10'})
-        if users_resp.status_code == 200:
-            users = users_resp.json().get('value', [])
-            for user in users:
-                if not user.get('mail'):
-                    continue
-                mb_resp = graph_request(token, f"/users/{user['id']}/mailboxSettings")
-                if mb_resp.status_code == 200:
-                    return {'available': True, 'message': f'Exchange Online active and responding ({active_exchange_sku})'}
-                elif mb_resp.status_code in (403, 404):
-                    err = mb_resp.json().get('error', {}).get('code', '') if mb_resp.text else ''
-                    if 'MailboxNotEnabled' in err or 'NotFound' in err:
-                        continue
-                    # Other errors mean Exchange is responding but blocking us
-                    return {'available': False, 'message': f'Exchange Online not accessible: {err}'}
-
-            return {'available': False, 'message': 'Exchange Online SKU active but no functional mailboxes found (likely expired/suspended)'}
-
-        return {'available': True, 'message': f'Exchange Online available ({active_exchange_sku})'}
-
-    except Exception as e:
-        return {'available': False, 'message': f'Exchange check failed: {str(e)[:200]}'}
 
 
 # =============================================================================

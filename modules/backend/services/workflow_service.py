@@ -447,43 +447,6 @@ def add_log_to_run(run_id, log_message, log_level="info"):
 
             save_workflow(workflow)
 
-def upsert_log_line(run_id, marker, log_message, log_level="info"):
-    """Add a log entry, or REWRITE the existing one that starts with ``marker``.
-
-    For long-running progress that would otherwise flood the log: a multi-GB
-    multi-part download reporting every 30s appends dozens of near-identical
-    lines, burying everything else. This keeps exactly one line that updates
-    in place, so the operator reads a live status rather than scrolling a
-    transcript of it.
-
-    ``marker`` must be a stable prefix the caller owns (e.g. "Download: ").
-    The line keeps its original position — it was written when the phase
-    started, which is where it belongs chronologically — while later entries
-    (retries, warnings) still append after it.
-
-    Same per-run lock and cancelled-run rule as add_log_to_run.
-    """
-    with _get_run_log_lock(run_id):
-        workflow = file_get_workflow(run_id)
-        if not workflow:
-            return
-        if workflow.get("status") == "cancelled":
-            return
-        logs = workflow.setdefault("logs", [])
-        for entry in logs:
-            if str(entry.get("message") or "").startswith(marker):
-                entry["message"] = log_message
-                entry["level"] = log_level
-                entry["timestamp"] = datetime.now().isoformat()
-                break
-        else:
-            logs.append({
-                "timestamp": datetime.now().isoformat(),
-                "level": log_level,
-                "message": log_message,
-            })
-        workflow["updated_at"] = datetime.now().isoformat()
-        save_workflow(workflow)
 
 
 def update_run_status(run_id, status, progress=None, error=None, details=None, force=False):

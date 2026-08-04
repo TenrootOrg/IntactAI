@@ -139,9 +139,6 @@ def get_log(provider) -> list:
         return list(_logs.get(provider, []))
 
 
-def clear_log(provider) -> None:
-    with _log_lock:
-        _logs[provider] = []
 
 
 def _check_internet(provider, what, run_id=None) -> bool:

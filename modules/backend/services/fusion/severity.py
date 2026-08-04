@@ -38,20 +38,6 @@ def from_anomaly(score: int) -> str:
     return "informational"
 
 
-def from_cvss(score) -> str:
-    try:
-        s = float(score)
-    except (TypeError, ValueError):
-        return "informational"
-    if s >= 9.0:
-        return "critical"
-    if s >= 7.0:
-        return "high"
-    if s >= 4.0:
-        return "medium"
-    if s > 0:
-        return "low"
-    return "informational"
 
 
 def from_string(level) -> str:

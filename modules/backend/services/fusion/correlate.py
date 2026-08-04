@@ -513,11 +513,6 @@ def _matched_yara(g: FusionGraph, proc_id: str) -> list:
             if r.kind == "matched" and g.entities.get(r.src)]
 
 
-def _parent(g: FusionGraph, proc_id: str):
-    for r in g.in_edges(proc_id):
-        if r.kind == "spawned" and g.entities.get(r.src):
-            return g.entities[r.src]
-    return None
 
 
 def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
