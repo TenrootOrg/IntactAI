@@ -126,14 +126,14 @@ RELEASE_MODULES = {
                       # tusd -- both `intact-backend-` and `tusd-` are attributed
                       # to `intact` by image_owner_prefixes, so this one entry
                       # carries the platform and its upload sidecar.
-    "elk",
-    "iris",
-    "timesketch",
-    "plaso",
-    "velociraptor",   # both kinds -- 0.77.1 and the legacy 0.7.1 client
-    "volweb",
+    # "elk",
+    # "iris",
+    # "timesketch",
+    # "plaso",
+    # "velociraptor",   # both kinds -- 0.77.1 and the legacy 0.7.1 client
+    # "volweb",
     "aws_sigma",
-    "portainer",
+    # "portainer",
 }
 
 # Deliberately NOT shipped.
