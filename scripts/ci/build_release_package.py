@@ -64,35 +64,41 @@ RELEASE_MODULES = {
                       # carries the platform and its upload sidecar.
     "elk",
     "iris",
+    "timesketch",
+    "plaso",
+    "velociraptor",   # both kinds -- 0.77.1 and the legacy 0.7.1 client
 }
 
-# Deliberately NOT bundled: a DELTA release.
+# Deliberately NOT bundled.
 #
-# Module pins are identical between intact-20260726 and this release except elk
-# and tusd, so shipping only those plus the platform is the delta for anyone
-# upgrading SEQUENTIALLY from the previous release. Everything of value in this
-# release is platform code, which `intact` carries in full.
+# WIDENED 2026-08-04 to timesketch, plaso and velociraptor, and the reason is
+# the skipped-release trap this comment used to merely accept. The online flow
+# downloads exactly ONE package for the target ref and does not walk the upgrade
+# chain, so a box that SKIPS a release gets a package whose omitted modules stay
+# stale WHILE THE RUN REPORTS SUCCESS. Upgrading straight from intact-20260615
+# would not have moved timesketch 20260326 -> 20260630 or velociraptor
+# 0.76.1 -> 0.77.1, and nothing would have said so.
 #
-# THE COST, ACCEPTED: this is the architecture the packager's own docstring
-# argues against, and for a specific reason -- the online flow downloads exactly
-# ONE package for the target ref and does not walk the upgrade chain. A box that
-# SKIPS a release gets a package whose omitted modules stay stale while the run
-# reports success. Concretely, upgrading straight from intact-20260615 would not
-# move timesketch 20260326 -> 20260630, velociraptor 0.76.1 -> 0.77.1, plaso,
-# volweb or aws_sigma, and nothing would say so.
+# The old note called that "survivable while every box is on intact-20260726".
+# That condition is not checkable from inside the package, which is what makes
+# it dangerous: the assumption is invisible at apply time. Carrying these three
+# means a package is correct for any baseline, not just the expected one.
 #
-# That is survivable while upgrades are sequential and every box is on
-# intact-20260726. It stops being survivable the moment one is not, so this set
-# has to be revisited per release rather than inherited.
+# The three that remain excluded are a deliberate, revisit-per-release choice --
+# not an inheritance. This set stops being hand-maintained entirely once the
+# two-asset CI computes the delta from pin movement between release tags.
 EXCLUDED_FROM_RELEASE = {
-    "timesketch": "delta release: pin unchanged since intact-20260726",
-    "plaso":      "delta release: pin unchanged since intact-20260726",
-    "velociraptor": "delta release: pin unchanged since intact-20260726",
     "volweb":     "delta release: pin unchanged since intact-20260726",
     "aws_sigma":  "delta release: pin unchanged since intact-20260726",
     "portainer":  "delta release: pin unchanged since intact-20260726",
-    "o365rc":     "delta release: pins the literal 'latest'; an air-gapped box "
-                  "has no route to this image at all without it",
+    # HELD OUT OF BOTH the full and the delta asset, deliberately, until the
+    # two-asset CI lands. o365rc pins the literal string 'latest', so there is
+    # no version to diff and no way to say which image a package contains. That
+    # makes it the one module whose presence cannot be reasoned about from a
+    # manifest -- the exact property the full/delta split exists to guarantee.
+    # Revisit when the pin becomes a real version.
+    "o365rc":     "held out of full and delta: pins the literal 'latest', so "
+                  "the package cannot record which image it shipped",
 }
 
 def platform_config_path(must_exist: bool = True):
