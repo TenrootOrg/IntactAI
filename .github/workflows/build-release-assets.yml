@@ -1,25 +1,28 @@
-# Build BOTH release assets — full and delta — from one run.
+# Build one release asset PER MODULE, plus an index and a compatibility bundle.
 #
-# Deliberately a SEPARATE workflow from build-release-package.yml, which stays
-# exactly as it is. `main` keeps using the old one until this path has produced
-# a green release; retiring it before then would leave no way back.
+# WHY PER MODULE. The scheme this replaces shipped a DELTA -- "the modules whose
+# pins moved since release X" -- and that relativity was the problem: the online
+# flow downloads exactly one artifact for the target ref and does not walk the
+# upgrade chain, so a box that SKIPPED a release got a package diffed against a
+# baseline newer than the one it was running, with everything in the gap simply
+# absent WHILE THE RUN REPORTED SUCCESS. A module asset is absolute -- "this is
+# elk 9.4.4" -- so the box compares what it has against what it wants and
+# fetches the difference itself. No baseline, nothing to guard.
 #
-# WHY ONE JOB AND NOT TWO PARALLEL ONES
-# Two jobs each run their own `docker pull`. If an upstream tag moves between
-# them -- or a registry serves a different digest -- the full and delta assets
-# end up carrying DIFFERENT BYTES FOR THE SAME IMAGE under one release tag. That
-# divergence is silent and very hard to detect afterwards. One job pulls once,
-# so the delta is provably a subset of the full. The wall-clock argument for
-# splitting is weaker than it looks anyway: the delta only covers the modules
-# that moved, so parallel time is max(full, delta) which is just full.
+# WHY resolve-THEN-matrix. A tag is not an identity: intact-20260803 was re-cut
+# and moved 6316e05 -> 25effd5, and the two packages were indistinguishable from
+# outside. If each matrix job resolved the tag itself, a re-cut mid-build would
+# produce assets from two different commits that nothing downstream could tell
+# apart. `resolve` pins the SHA once; every builder checks out THE SHA; `index`
+# asserts they all agree; the on-box assembler asserts it again at apply time.
 #
-# WHY fetch-depth: 0 IS LOAD-BEARING
-# actions/checkout@v4 defaults to a shallow, single-ref fetch. The delta is
-# computed by diffing this release's config.yaml pins against the PREVIOUS
-# release tag's, so without full history `git tag --list` returns nothing,
-# previous_release_tag() returns None, and the delta silently degrades to
-# "first release ever" -- shipping a full package under a delta's name.
-name: Build release assets (full + delta)
+# WHY THE MERGE WORKS. Every asset's tarball uses the same top-level directory,
+# intact-upgrade-<tag>/, so extracting N of them into one place yields exactly
+# the single package_dir the apply side already consumes. That is what
+# --work-dir buys, and it is not cosmetic: without it each root is named from a
+# build timestamp, the assets extract as siblings, and the apply side silently
+# picks one.
+name: Build release assets (per module)
 
 on:
   workflow_dispatch:
@@ -27,44 +30,81 @@ on:
       tag:
         description: "Release tag to build (e.g. intact-20260804)"
         required: true
+      skip_bundle:
+        description: "Skip the compatibility bundle (faster; older boxes and the air-gap single-file path need it)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 jobs:
-  build-assets:
+  # ---------------------------------------------------------------- resolve
+  resolve:
     runs-on: ubuntu-latest
-    timeout-minutes: 120      # full build + a second, much smaller delta build
+    outputs:
+      tag: ${{ steps.r.outputs.tag }}
+      commit: ${{ steps.r.outputs.commit }}
+      matrix: ${{ steps.m.outputs.matrix }}
     steps:
-      - name: Resolve tag
-        id: tag
+      - name: Validate the tag
+        id: r0
         env:
           TAG: ${{ github.event.inputs.tag }}
         run: |
           case "$TAG" in
             intact-*) ;;
-            *) echo "::error::Not an intact-* release tag ($TAG) — nothing to build"; exit 1 ;;
+            *) echo "::error::Not an intact-* release tag ($TAG)"; exit 1 ;;
           esac
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout the release tag (with full tag history)
-        uses: actions/checkout@v4
+      # fetch-depth: 0 because the builder resolves the tag to a commit, and a
+      # shallow single-ref checkout has no tag objects to resolve against.
+      - uses: actions/checkout@v4
         with:
-          ref: ${{ steps.tag.outputs.tag }}
-          fetch-depth: 0        # see header — the delta baseline needs tags
+          ref: ${{ github.event.inputs.tag }}
+          fetch-depth: 0
 
-      # A tag is not an identity. intact-20260803 was re-cut and moved
-      # 6316e05 -> 25effd5; the two packages were indistinguishable from the
-      # outside. Print what this build is ACTUALLY made of, and record the same
-      # commit in both manifests.
-      - name: Show what this tag resolves to
+      - name: Pin the tag to a commit, once
+        id: r
         env:
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAG: ${{ github.event.inputs.tag }}
         run: |
-          echo "tag        : $TAG"
-          echo "commit     : $(git rev-list -n1 "$TAG")"
-          echo "release tags visible to the delta baseline lookup:"
-          git tag --list 'intact-*' | sort | tail -8
+          COMMIT="$(git rev-list -n1 "$TAG")"
+          echo "tag=$TAG"       >> "$GITHUB_OUTPUT"
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+          echo "Building $TAG @ $COMMIT"
+
+      # The backend package is importable straight from the checkout for this
+      # (it only reads config.yaml + UPGRADE_ORDER), so no container needed.
+      - name: Resolve the module matrix
+        id: m
+        env:
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          python3 -m pip install --quiet pyyaml
+          MATRIX="$(INTACT_PATH="$GITHUB_WORKSPACE" PYTHONPATH="$GITHUB_WORKSPACE/modules/backend" \
+                    python3 scripts/ci/build_release_package.py --tag "$TAG" --emit-matrix)"
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "Modules: $MATRIX"
+
+  # ------------------------------------------------------------------ build
+  build:
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: true          # a partial release must never be published
+      matrix:
+        module: ${{ fromJson(needs.resolve.outputs.matrix) }}
+    steps:
+      # THE SHA, not the tag -- see the header. This is what makes the
+      # coherence assertion in `index` structurally satisfiable rather than
+      # hopeful.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+          fetch-depth: 0
 
       - name: Free up disk space
         run: |
@@ -73,144 +113,341 @@ jobs:
           docker image prune -af || true
           df -h /
 
-      - name: Seed SigmaHQ rules (aws_sigma rule pack source)
+      # Only aws_sigma consumes the rule pack; cloning it for every module
+      # would be ~9x the work for nothing.
+      - name: Seed SigmaHQ rules
+        if: matrix.module == 'aws_sigma'
         run: |
           sudo mkdir -p /opt/sigma-rules
           sudo chown "$(id -un)" /opt/sigma-rules
           git clone --depth 1 https://github.com/SigmaHQ/sigma /opt/sigma-rules
+          echo "AWS rules: $(find /opt/sigma-rules/rules/cloud/aws -name '*.yml' | wc -l)"
 
-      - name: Build the release backend image (packager runtime)
+      # Velociraptor's image is BUILT, not pulled, and it bakes artifacts from
+      # the checkout. refresh_velociraptor_build_files() returns False and only
+      # WARNS when it cannot find them, so a bundle-less image would ship while
+      # the log looked merely noisy. Assert instead.
+      - name: Assert Velociraptor artifacts are present
+        if: matrix.module == 'velociraptor'
+        run: |
+          N=$(find modules/velociraptor/bundled_artifacts -name '*.yaml' 2>/dev/null | wc -l)
+          echo "bundled artifacts: $N"
+          if [ "$N" -lt 100 ]; then
+            echo "::error::only $N bundled artifacts — the image would ship without them"
+            exit 1
+          fi
+
+      - name: Build the packager image
         run: docker build -f modules/backend/Dockerfile -t intact-backend:ci-packager .
 
-      # ---- FULL -------------------------------------------------------------
-      # Built first and on its own, because it is the correctness-bearing
-      # artifact: it carries every module and is valid from ANY baseline. If the
-      # delta step fails, a usable release asset still exists.
-      - name: Build the FULL package
+      - name: Build the ${{ matrix.module }} asset
         env:
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          COMMIT: ${{ needs.resolve.outputs.commit }}
+          MODULE: ${{ matrix.module }}
         run: |
-          mkdir -p "$GITHUB_WORKSPACE/out-full"
+          mkdir -p "$GITHUB_WORKSPACE/out"
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
             -e INTACT_PATH="$GITHUB_WORKSPACE" \
             -e INTACT_HOST_PATH="$GITHUB_WORKSPACE" \
             -v /opt/sigma-rules:/opt/sigma-rules:ro \
-            -v "$GITHUB_WORKSPACE/out-full:/output" \
+            -v "$GITHUB_WORKSPACE/out:/output" \
             intact-backend:ci-packager \
             python3 "$GITHUB_WORKSPACE/scripts/ci/build_release_package.py" \
-              --tag "$TAG" --scope full --out /output
-          echo "== full =="; ls -lh "$GITHUB_WORKSPACE/out-full"; df -h /
+              --tag "$TAG" --module "$MODULE" --commit "$COMMIT" \
+              --work-dir "/tmp/intact-upgrade-$TAG" --out /output
+          ls -lh "$GITHUB_WORKSPACE/out"
 
-      # ---- DELTA ------------------------------------------------------------
-      # Same job, so the images the full build pulled are already in the local
-      # docker store: this re-saves a subset rather than re-pulling anything.
-      # continue-on-error because a missing delta is an inconvenience while a
-      # missing full is a broken release.
-      - name: Build the DELTA package
-        id: delta
-        continue-on-error: true
+      # 2 GiB per release asset. sha256 is of the WHOLE tarball, taken
+      # pre-split, so a consumer can reassemble and verify.
+      - name: Checksum and split
+        working-directory: out
+        run: |
+          PKG="$(ls *.tar.gz | head -1)"
+          sha256sum "$PKG" > "$PKG.sha256"
+          SIZE=$(stat -c%s "$PKG")
+          if [ "$SIZE" -gt $((1900 * 1024 * 1024)) ]; then
+            echo "$PKG is $((SIZE/1024/1024)) MiB — splitting"
+            split -b 1900m -d -a 2 "$PKG" "$PKG.part-"
+            rm -f "$PKG"
+          fi
+          ls -lh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: asset-${{ matrix.module }}
+          path: out/*
+          retention-days: 3
+
+  # ------------------------------------------------------------------ index
+  # The index is the CONTRACT: it is how a box learns which modules a release
+  # carries and what each should hash to. It consumes only the tiny .meta.json
+  # sidecars, never the gigabytes.
+  index:
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          pattern: asset-*
+
+      - name: Build and validate the index
         env:
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          COMMIT: ${{ needs.resolve.outputs.commit }}
         run: |
-          mkdir -p "$GITHUB_WORKSPACE/out-delta"
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
-            -e INTACT_PATH="$GITHUB_WORKSPACE" \
-            -e INTACT_HOST_PATH="$GITHUB_WORKSPACE" \
-            -v /opt/sigma-rules:/opt/sigma-rules:ro \
-            -v "$GITHUB_WORKSPACE/out-delta:/output" \
-            intact-backend:ci-packager \
-            python3 "$GITHUB_WORKSPACE/scripts/ci/build_release_package.py" \
-              --tag "$TAG" --scope delta --out /output
-          echo "== delta =="; ls -lh "$GITHUB_WORKSPACE/out-delta"; df -h /
+          mkdir -p out
+          python3 - <<'PY'
+          import glob, json, os, sys
+          tag, commit = os.environ["TAG"], os.environ["COMMIT"]
+          metas = sorted(glob.glob("assets/**/*.meta.json", recursive=True))
+          if not metas:
+              sys.exit("::error::no .meta.json sidecars — nothing was built")
 
-      # The manifests are the whole point of this workflow — surface them in the
-      # log so a wrong-looking asset is caught here rather than by downloading
-      # it and reading the manifest by hand, which is how the last stale package
-      # was eventually diagnosed.
-      - name: Report what each asset contains
-        run: |
-          for d in out-full out-delta; do
-            m="$(ls "$GITHUB_WORKSPACE/$d"/*.manifest.json 2>/dev/null | head -1)" || true
-            [ -n "$m" ] || { echo "--- $d: no manifest"; continue; }
-            echo "--- $d"
-            python3 - "$m" <<'PY'
-          import json, sys
-          man = json.load(open(sys.argv[1]))
-          c = man.get("contents") or {}
-          print("   kind        :", c.get("package_kind", "(unset)"))
-          print("   commit      :", str(c.get("source_commit", ""))[:12] or "(unset)")
-          print("   delta_from  :", c.get("delta_from", "-"))
-          print("   versions    :", json.dumps(man.get("versions", {})))
-          print("   images      :", len((c.get("images") or [])))
+          entries, images, shas, problems = {}, {}, {}, []
+          for mp in metas:
+              m = json.load(open(mp))
+              mod = m["module"]
+
+              # COHERENCE. Every asset must come from the one commit `resolve`
+              # pinned. A tag re-cut mid-matrix is the failure this catches, and
+              # it is not hypothetical -- intact-20260803 moved mid-flight.
+              if m.get("source_commit") != commit:
+                  problems.append(f"{mod}: built from {m.get('source_commit')}, expected {commit}")
+              if m.get("release_tag") != tag:
+                  problems.append(f"{mod}: claims release {m.get('release_tag')}, expected {tag}")
+
+              base = m["asset"]
+              d = os.path.dirname(mp)
+              parts = sorted(os.path.basename(p) for p in glob.glob(os.path.join(d, base + ".part-*")))
+              entries[mod] = {"asset": base, "version": (m.get("modules") or {}).get(mod),
+                              "size": m.get("size"), "sha256": m.get("sha256"),
+                              "parts": parts}
+
+              # The merge is a disjoint union only because image tar names are
+              # unique per module. That disjointness is EMERGENT, not enforced --
+              # a future module adding a colliding prefix would make one asset
+              # silently truncate another's file on extract. Assert it here,
+              # where it costs nothing, instead of discovering it on a customer.
+              man = os.path.join(d, base + ".manifest.json")
+              if os.path.exists(man):
+                  c = (json.load(open(man)).get("contents") or {})
+                  for img in (c.get("images") or []):
+                      if img in images and images[img] != mod:
+                          problems.append(f"image {img} claimed by both {images[img]} and {mod}")
+                      images[img] = mod
+                  for k, v in (c.get("sha256") or {}).items():
+                      if k in shas and shas[k] != v:
+                          problems.append(f"file {k} differs between assets — one would overwrite the other")
+                      shas[k] = v
+
+          if problems:
+              for p in problems:
+                  print(f"::error::{p}")
+              sys.exit(1)
+
+          index = {"release_tag": tag, "source_commit": commit,
+                   "assets": entries}
+          out = f"out/intact-release-{tag}.index.json"
+          json.dump(index, open(out, "w"), indent=2)
+          print(f"indexed {len(entries)} module(s): {', '.join(sorted(entries))}")
           PY
-          done
+          cd out && sha256sum "intact-release-$TAG.index.json" > "intact-release-$TAG.index.json.sha256"
+          cat "intact-release-$TAG.index.json"
 
-      # Rename so the two assets cannot collide on the release, split anything
-      # over the 2 GiB per-asset cap, and sha the WHOLE tarball pre-split so a
-      # consumer can `cat *.part-* > pkg.tar.gz` and verify.
-      - name: Name, checksum and split both assets
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-index
+          path: out/*
+          retention-days: 3
+
+  # ----------------------------------------------------------------- bundle
+  # The compatibility bundle: the same content as the module assets, re-packed
+  # into the single legacy-named tarball. Two audiences need it permanently --
+  # boxes older than the index, and anyone hand-carrying ONE file into an
+  # air-gapped site. Re-packed rather than rebuilt, so it cannot disagree with
+  # the assets it is made of.
+  bundle:
+    needs: [resolve, build, index]
+    if: ${{ github.event.inputs.skip_bundle != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          pattern: asset-*
+
+      - name: Free up disk space
         run: |
-          cd "$GITHUB_WORKSPACE"
-          mkdir -p ci-output
-          for kind in full delta; do
-            src="out-$kind"
-            pkg="$(ls "$src"/*.tar.gz 2>/dev/null | head -1)" || true
-            if [ -z "$pkg" ]; then
-              echo "no package in $src — skipping"
-              [ "$kind" = "full" ] && { echo "::error::the FULL package is missing"; exit 1; }
-              continue
-            fi
-            base="$(basename "$pkg" .tar.gz)-$kind.tar.gz"
-            mv "$pkg" "ci-output/$base"
-            # `if`, not `[ -n "$x" ] && mv`. Steps run under bash -e, where a
-            # bare AND list whose test fails returns non-zero -- harmless here
-            # only because statements follow it, which a later reorder would
-            # silently take away.
-            for side in manifest.json sha256; do
-              extra="$(ls "$src"/*."$side" 2>/dev/null | head -1)" || true
-              if [ -n "$extra" ]; then mv "$extra" "ci-output/$base.$side"; fi
-            done
-            cd ci-output
-            sha256sum "$base" > "$base.sha256"
-            SIZE=$(stat -c%s "$base"); LIMIT=$((1900 * 1024 * 1024))
-            if [ "$SIZE" -gt "$LIMIT" ]; then
-              echo "$base is $((SIZE/1024/1024)) MiB — splitting"
-              split -b 1900m -d -a 2 "$base" "$base.part-"
-              rm -f "$base"
-            fi
-            cd ..
-          done
-          echo "== to upload =="; ls -lh ci-output
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          df -h /
 
-      - name: Attach both assets to the GitHub Release
+      - name: Merge the assets and re-pack
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p merge out
+          # Reassemble any split assets, then extract them ALL into one dir.
+          # They share a top-level directory name, so this merges rather than
+          # colliding -- that is the whole per-module contract.
+          find assets -name '*.tar.gz.part-00' | while read -r p0; do
+            base="${p0%.part-00}"
+            cat "$base".part-* > "$base"
+            rm -f "$base".part-*
+          done
+          for a in $(find assets -name '*.tar.gz' | sort); do
+            echo "  merging $(basename "$a")"
+            tar xzf "$a" -C merge
+          done
+          ROOTS=$(ls merge | wc -l)
+          if [ "$ROOTS" -ne 1 ]; then
+            echo "::error::assets did not merge — $ROOTS top-level dirs: $(ls merge)"
+            exit 1
+          fi
+          test -d "merge/intact-upgrade-$TAG" || {
+            echo "::error::merged root is $(ls merge), expected intact-upgrade-$TAG"; exit 1; }
+
+      - name: Assemble the bundle manifest
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          python3 - <<'PY'
+          import glob, json, os, sys
+          tag = os.environ["TAG"]
+          root = f"merge/intact-upgrade-{tag}"
+          mans = sorted(glob.glob(os.path.join(root, "manifests", "*.json")))
+          if not mans:
+              sys.exit("::error::no per-module manifests in the merged tree")
+
+          merged = {"package_version": None, "versions": {}, "contents": {}}
+          c = merged["contents"]
+          c.update({"images": [], "binaries": [], "migrations": [],
+                    "sha256": {}, "image_sizes": {}, "transitive_versions": {},
+                    "rule_packs": [], "include_source": False})
+          created = []
+          for mp in mans:
+              man = json.load(open(mp)); mc = man.get("contents") or {}
+              merged["package_version"] = merged["package_version"] or man.get("package_version")
+              for k, v in (man.get("versions") or {}).items():
+                  if merged["versions"].get(k, v) != v:
+                      sys.exit(f"::error::assets disagree about {k}")
+                  merged["versions"][k] = v
+              for k, v in (mc.get("sha256") or {}).items():
+                  if c["sha256"].get(k, v) != v:
+                      sys.exit(f"::error::assets disagree about the hash of {k}")
+                  c["sha256"][k] = v
+              for k, v in (mc.get("image_sizes") or {}).items():
+                  c["image_sizes"][k] = v
+              for k, v in (mc.get("transitive_versions") or {}).items():
+                  c["transitive_versions"][k] = v
+              for key in ("images", "binaries", "migrations"):
+                  for item in (mc.get(key) or []):
+                      if item not in c[key]:
+                          c[key].append(item)
+              c["rule_packs"].extend(mc.get("rule_packs") or [])
+              c["include_source"] = c["include_source"] or bool(mc.get("include_source"))
+              for k in ("velociraptor_artifacts", "velociraptor_legacy",
+                        "yara_rulesets", "velociraptor_tools", "source_origin",
+                        "source_commit", "release_tag", "pins_source"):
+                  if k in mc and k not in c:
+                      c[k] = mc[k]
+              if man.get("created"):
+                  created.append(man["created"])
+          merged["created"] = max(created) if created else None
+          merged["created_by"] = "intact-ci-bundle"
+          c["package_kind"] = "assembled"
+          c["assembled_from"] = sorted(os.path.basename(m)[:-5] for m in mans)
+
+          json.dump(merged, open(os.path.join(root, "manifest.json"), "w"), indent=2)
+
+          # CONTENT-EQUIVALENCE, not byte-identity. `created` and run_id differ
+          # per builder and gzip output depends on member ordering, so the
+          # bundle can never be byte-identical to the sum of its parts. What
+          # MUST hold is that it describes exactly the same files and versions.
+          missing = [p for p in c["sha256"] if not os.path.exists(os.path.join(root, p))]
+          if missing:
+              sys.exit(f"::error::bundle is missing {len(missing)} file(s) the manifests describe: {missing[:5]}")
+          print(f"bundle: {len(merged['versions'])} module(s), "
+                f"{len(c['images'])} image(s), {len(c['sha256'])} hashed file(s)")
+          PY
+
+      - name: Pack, checksum and split
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          PKG="$PWD/out/intact-upgrade-$TAG.tar.gz"
+          # manifest.json FIRST in the member list so it lands in the first few
+          # KB of the tarball -- /api/upgrade/peek-manifest reads only the head
+          # of the blob to show an operator what they are about to apply. Same
+          # trick prepare_upgrade_package uses; -T takes the order literally.
+          cd merge
+          {
+            echo "intact-upgrade-$TAG/manifest.json"
+            find "intact-upgrade-$TAG" -type f ! -path "intact-upgrade-$TAG/manifest.json"
+          } > /tmp/members.txt
+          echo "  packing $(wc -l < /tmp/members.txt) members"
+          tar czf "$PKG" -T /tmp/members.txt
+          cd ..
+          cp "merge/intact-upgrade-$TAG/manifest.json" "$PKG.manifest.json"
+          cd out
+          sha256sum "intact-upgrade-$TAG.tar.gz" > "intact-upgrade-$TAG.tar.gz.sha256"
+          SIZE=$(stat -c%s "intact-upgrade-$TAG.tar.gz")
+          if [ "$SIZE" -gt $((1900 * 1024 * 1024)) ]; then
+            split -b 1900m -d -a 2 "intact-upgrade-$TAG.tar.gz" "intact-upgrade-$TAG.tar.gz.part-"
+            rm -f "intact-upgrade-$TAG.tar.gz"
+          fi
+          ls -lh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compat-bundle
+          path: out/*
+          retention-days: 3
+
+  # ----------------------------------------------------------------- attach
+  publish:
+    needs: [resolve, build, index, bundle]
+    if: ${{ always() && needs.index.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: all
+
+      - name: Attach everything to the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
+          mkdir -p upload
+          find all -type f ! -name '*.meta.json' -exec cp {} upload/ \;
+          echo "== attaching =="; ls -lh upload
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$GITHUB_WORKSPACE"/ci-output/* --clobber
+            gh release upload "$TAG" upload/* --clobber
           else
-            echo "No release exists for $TAG — artifact upload covers this run"
+            echo "::warning::no release exists for $TAG — assets remain as workflow artifacts only"
           fi
 
-      - name: Upload both assets as a workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-assets-${{ steps.tag.outputs.tag }}
-          path: ci-output/*
-          retention-days: 7
-
-      - name: Delta build verdict
-        if: always()
+      - name: Summary
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+          COMMIT: ${{ needs.resolve.outputs.commit }}
         run: |
-          if [ "${{ steps.delta.outcome }}" = "success" ]; then
-            echo "Delta built. It is valid ONLY for boxes on the baseline named in"
-            echo "its manifest — the apply side refuses it anywhere else."
-          else
-            echo "::warning::Delta build did not succeed — only the FULL asset was"
-            echo "published. That is safe: full is valid from any baseline."
-          fi
+          {
+            echo "### Release assets for \`$TAG\`"
+            echo ""
+            echo "Built from commit \`$COMMIT\`."
+            echo ""
+            if [ "${{ needs.bundle.result }}" = "success" ]; then
+              echo "Per-module assets, the index, and the compatibility bundle were published."
+            else
+              echo "Per-module assets and the index were published. **No compatibility bundle** — boxes older than the index, and the single-file air-gap path, cannot use this release."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
