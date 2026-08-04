@@ -463,14 +463,16 @@ jobs:
           COMMIT: ${{ needs.resolve.outputs.commit }}
         run: |
           set -euo pipefail
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Creating release $TAG @ $COMMIT"
-            gh release create "$TAG" --target "$COMMIT" --title "$TAG" \
-              --notes "Built from commit $COMMIT" --draft
-          fi
           find all -type f ! -name '*.meta.json' -print0 \
             | sort -z \
-            | xargs -0 gh release upload "$TAG" --clobber
+            | xargs -0 gh release upload "$TAG" --clobber || {
+              echo "Release upload failed; trying to create the release first..."
+              gh release create "$TAG" --target "$COMMIT" --title "$TAG" \
+                --notes "Built from commit $COMMIT" --draft
+              find all -type f ! -name '*.meta.json' -print0 \
+                | sort -z \
+                | xargs -0 gh release upload "$TAG" --clobber
+            }
           echo "== attached =="
           gh release view "$TAG" --json assets \
             --jq '.assets[] | "\(.name)  \(.size)"'
