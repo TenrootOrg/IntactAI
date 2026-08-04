@@ -463,16 +463,14 @@ jobs:
           COMMIT: ${{ needs.resolve.outputs.commit }}
         run: |
           set -euo pipefail
+          # If release is a draft, publish it first so upload works
+          if gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null | grep -q true; then
+            echo "Publishing draft release $TAG..."
+            gh release edit "$TAG" --draft=false
+          fi
           find all -type f ! -name '*.meta.json' -print0 \
             | sort -z \
-            | xargs -0 gh release upload "$TAG" --clobber || {
-              echo "Release upload failed; trying to create the release first..."
-              gh release create "$TAG" --target "$COMMIT" --title "$TAG" \
-                --notes "Built from commit $COMMIT" --draft
-              find all -type f ! -name '*.meta.json' -print0 \
-                | sort -z \
-                | xargs -0 gh release upload "$TAG" --clobber
-            }
+            | xargs -0 gh release upload "$TAG" --clobber
           echo "== attached =="
           gh release view "$TAG" --json assets \
             --jq '.assets[] | "\(.name)  \(.size)"'
