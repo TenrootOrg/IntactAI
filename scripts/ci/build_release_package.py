@@ -392,6 +392,12 @@ def main() -> int:
     ap.add_argument("--out", required=True, help="dir to copy the finished package into")
     ap.add_argument("--print-modules", action="store_true",
                     help="print the resolved module set and exit (no build)")
+    ap.add_argument("--scope", choices=("full", "delta"), default="full",
+                    help="full = every module in RELEASE_MODULES (correct from "
+                         "ANY baseline). delta = only modules whose config.yaml "
+                         "pin moved since the previous release; valid ONLY for a "
+                         "box on that exact baseline, which the manifest records "
+                         "as delta_from and the apply side enforces.")
     args = ap.parse_args()
 
     # Pin the backend image tag to the release BEFORE building. The checkout is
@@ -404,6 +410,19 @@ def main() -> int:
     _stamp_backend_pin(args.tag)
 
     modules = release_module_set(args.tag)
+    baseline = None
+    if args.scope == "delta":
+        baseline = previous_release_tag(args.tag)
+        if baseline is None:
+            # No earlier release to diff against: a "delta" here would mean
+            # "everything", so say so and build it rather than emitting an asset
+            # whose name promises a subset it cannot define.
+            print(f"[ci-package] {args.tag} has no previous release — "
+                  f"building FULL scope instead of a delta", flush=True)
+            args.scope = "full"
+        else:
+            modules = delta_module_set(args.tag, baseline)
+
     if args.print_modules:
         for m, v in modules.items():
             print(f"{m}={v}")
@@ -418,14 +437,29 @@ def main() -> int:
               f"absent from config.yaml versions: — NOT shipped", flush=True)
 
     from services.upgrade.package import prepare_upgrade_package
-    print(f"[ci-package] release {args.tag}: full scope, building "
-          f"{', '.join(modules)}", flush=True)
+    print(f"[ci-package] release {args.tag}: {args.scope} scope"
+          + (f" vs {baseline}" if baseline else "")
+          + f", building {', '.join(modules)}", flush=True)
+
+    # Provenance, recorded INSIDE the tarball. `package_kind` is what lets the
+    # apply side know whether delta_from must be honoured at all; the commits
+    # are there because a tag is not an identity -- intact-20260803 was re-cut
+    # and moved 6316e05 -> 25effd5, and the two packages were indistinguishable
+    # from the outside.
+    manifest_extra = {
+        "package_kind": args.scope,
+        "source_commit": commit_of(args.tag),
+    }
+    if args.scope == "delta":
+        manifest_extra["delta_from"] = baseline
+        manifest_extra["delta_from_commit"] = commit_of(baseline)
 
     result = prepare_upgrade_package(
         modules,
         run_id=f"ci_release_{args.tag}",
         logger=lambda m, l="info": print(f"[{l}] {m}", flush=True),
         compress=True,
+        manifest_extra=manifest_extra,
     )
     if not result.get("success"):
         print(f"[ci-package] FAILED: {result.get('error')}", flush=True)
