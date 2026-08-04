@@ -104,6 +104,7 @@ jobs:
         id: m
         env:
           TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+          INTACT_STORAGE_BASE: /tmp
         run: |
           # Just enough to import services.upgrade WITHOUT importing the rest
           # of the backend's service graph — see _upgrade_order() in
