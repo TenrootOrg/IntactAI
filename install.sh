@@ -329,11 +329,22 @@ download_release_assets() {
     # asset, because the release page then carried three files per module and
     # two of them were digests nothing read. Fetch it before anything else so
     # the payload can be verified against it below.
-    local index_json=""
-    if printf '%s' "$json" | grep -q "\"intact-release-${tag}.index.json\""; then
-        log_info "  Reading the release index..."
+    #
+    # Two spellings accepted: `<tag>.index.json`, and the older
+    # `intact-release-<tag>.index.json` that doubled the prefix on a tag
+    # already beginning with `intact-`.
+    local index_json="" index_name=""
+    local candidate
+    for candidate in "${tag}.index.json" "intact-release-${tag}.index.json"; do
+        if printf '%s' "$json" | grep -q "\"${candidate}\""; then
+            index_name="$candidate"
+            break
+        fi
+    done
+    if [[ -n "$index_name" ]]; then
+        log_info "  Reading the release index (${index_name})..."
         index_json="$(curl -fsSL --max-time 120 \
-            "https://github.com/${repo}/releases/download/${tag}/intact-release-${tag}.index.json" \
+            "https://github.com/${repo}/releases/download/${tag}/${index_name}" \
             2>/dev/null)" || index_json=""
         [[ -n "$index_json" ]] || log_warn "  Could not read the release index — falling back to name matching"
     fi

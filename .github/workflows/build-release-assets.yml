@@ -387,11 +387,11 @@ jobs:
 
           index = {"release_tag": tag, "source_commit": commit,
                    "assets": entries}
-          out = f"out/intact-release-{tag}.index.json"
+          out = f"out/{tag}.index.json"
           json.dump(index, open(out, "w"), indent=2)
           print(f"indexed {len(entries)} module(s): {', '.join(sorted(entries))}")
           PY
-          cat "out/intact-release-$TAG.index.json"
+          cat "out/$TAG.index.json"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -449,7 +449,7 @@ jobs:
           TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           set -euo pipefail
-          INDEX="$(find all -name "intact-release-$TAG.index.json" | head -1)"
+          INDEX="$(find all -name "$TAG.index.json" | head -1)"
           test -n "$INDEX" || { echo "::error::no index in the artifacts"; exit 1; }
           fail=0
           while read -r mod asset want; do
@@ -502,7 +502,7 @@ jobs:
           find all -type f \( \
                  -name "$TAG-*.tar.gz" \
               -o -name "$TAG-*.tar.gz.part-*" \
-              -o -name "intact-release-$TAG.index.json" \
+              -o -name "$TAG.index.json" \
             \) -print0 \
             | sort -z \
             | xargs -0 gh release upload "$TAG" --clobber
@@ -519,7 +519,7 @@ jobs:
           # the index is 347 bytes and GitHub prints a sha256 beside every
           # asset on the release page, so a `.index.json.sha256` file was one
           # more row saying what the row above it already said.
-          IDX="$(find all -name "intact-release-$TAG.index.json" | head -1)"
+          IDX="$(find all -name "$TAG.index.json" | head -1)"
           {
             echo "### Release assets for \`$TAG\`"
             echo ""
