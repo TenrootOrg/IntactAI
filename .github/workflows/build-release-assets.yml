@@ -1,4 +1,4 @@
-# Build one release asset PER MODULE, plus an index and a compatibility bundle.
+# Build one release asset PER MODULE, plus the index that describes them.
 #
 # WHY PER MODULE. The scheme this replaces shipped a DELTA -- "the modules whose
 # pins moved since release X" -- and that relativity was the problem: the online
@@ -22,6 +22,14 @@
 # --work-dir buys, and it is not cosmetic: without it each root is named from a
 # build timestamp, the assets extract as siblings, and the apply side silently
 # picks one.
+#
+# WHY NO SINGLE-FILE BUNDLE. Earlier revisions re-packed the module assets into
+# one legacy-named tarball for boxes older than the index. Building it cost a
+# job that downloaded every asset, extracted all of it, and re-compressed the
+# lot -- roughly triple the release on one runner's disk -- to produce something
+# each release needs at most once, if ever. `build_release_package.py` still
+# builds a bundle when run without --module, so one can be made by hand the day
+# a box actually needs it. It is not worth a job on every release.
 name: Build release assets (per module)
 
 on:
@@ -30,26 +38,27 @@ on:
       tag:
         description: "Release tag to build (e.g. intact-20260804)"
         required: true
-      skip_bundle:
-        description: "Skip the compatibility bundle (faster; older boxes and the air-gap single-file path need it)"
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: write
+
+# Two dispatches for one tag would race on `gh release upload --clobber` and
+# interleave assets from two commits under a single release -- the tag-identity
+# problem again, arriving through the scheduler instead of through git. Queue
+# rather than cancel: a half-uploaded release is worse than a slow one.
+concurrency:
+  group: release-assets-${{ github.event.inputs.tag }}
+  cancel-in-progress: false
 
 jobs:
   # ---------------------------------------------------------------- resolve
   resolve:
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.r.outputs.tag }}
       commit: ${{ steps.r.outputs.commit }}
       matrix: ${{ steps.m.outputs.matrix }}
     steps:
       - name: Validate the tag
-        id: r0
         env:
           TAG: ${{ github.event.inputs.tag }}
         run: |
@@ -71,12 +80,17 @@ jobs:
           TAG: ${{ github.event.inputs.tag }}
         run: |
           COMMIT="$(git rev-list -n1 "$TAG")"
-          echo "tag=$TAG"       >> "$GITHUB_OUTPUT"
           echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
           echo "Building $TAG @ $COMMIT"
 
       # The backend package is importable straight from the checkout for this
       # (it only reads config.yaml + UPGRADE_ORDER), so no container needed.
+      #
+      # --emit-matrix is a GATE, not just a query: it fails when a module in
+      # RELEASE_MODULES has no pin in config.yaml, because the matrix it prints
+      # becomes the index and the index is what a box believes the release
+      # contains. A dropped module would leave every job green and the release
+      # one module short.
       - name: Resolve the module matrix
         id: m
         env:
@@ -132,7 +146,7 @@ jobs:
         run: |
           N=$(find modules/velociraptor/bundled_artifacts -name '*.yaml' 2>/dev/null | wc -l)
           echo "bundled artifacts: $N"
-          if [ "$N" -lt 100 ]; then
+          if [ "$N" -lt 400 ]; then
             echo "::error::only $N bundled artifacts — the image would ship without them"
             exit 1
           fi
@@ -142,7 +156,7 @@ jobs:
 
       - name: Build the ${{ matrix.module }} asset
         env:
-          TAG: ${{ needs.resolve.outputs.tag }}
+          TAG: ${{ github.event.inputs.tag }}
           COMMIT: ${{ needs.resolve.outputs.commit }}
           MODULE: ${{ matrix.module }}
         run: |
@@ -162,9 +176,15 @@ jobs:
 
       # 2 GiB per release asset. sha256 is of the WHOLE tarball, taken
       # pre-split, so a consumer can reassemble and verify.
+      #
+      # The part list is recorded INTO the .meta.json because splitting happens
+      # here, after the builder wrote it, and because the sidecars now travel
+      # as a separate artifact from the payload -- `index` can no longer see
+      # the parts on disk to count them.
       - name: Checksum and split
         working-directory: out
         run: |
+          set -euo pipefail
           PKG="$(ls *.tar.gz | head -1)"
           sha256sum "$PKG" > "$PKG.sha256"
           SIZE=$(stat -c%s "$PKG")
@@ -173,37 +193,61 @@ jobs:
             split -b 1900m -d -a 2 "$PKG" "$PKG.part-"
             rm -f "$PKG"
           fi
+          python3 - "$PKG" <<'PY'
+          import glob, json, os, sys
+          pkg = sys.argv[1]
+          meta_path = pkg + ".meta.json"
+          meta = json.load(open(meta_path))
+          meta["parts"] = sorted(os.path.basename(p)
+                                 for p in glob.glob(pkg + ".part-*"))
+          json.dump(meta, open(meta_path, "w"), indent=2)
+          print(f"{pkg}: {len(meta['parts']) or 'no'} part(s)")
+          PY
           ls -lh
 
+      # The payload and its description travel as SEPARATE artifacts on
+      # purpose: `index` needs only the description, and download-artifact has
+      # no way to fetch part of an artifact. Bundled together, the index job
+      # would pull every gigabyte of every asset to read a few KB of JSON.
       - uses: actions/upload-artifact@v4
         with:
           name: asset-${{ matrix.module }}
-          path: out/*
+          path: |
+            out/*
+            !out/*.meta.json
+            !out/*.manifest.json
+          retention-days: 3
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: meta-${{ matrix.module }}
+          path: |
+            out/*.meta.json
+            out/*.manifest.json
           retention-days: 3
 
   # ------------------------------------------------------------------ index
   # The index is the CONTRACT: it is how a box learns which modules a release
-  # carries and what each should hash to. It consumes only the tiny .meta.json
-  # sidecars, never the gigabytes.
+  # carries and what each should hash to. It reads only the tiny sidecars.
   index:
     needs: [resolve, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
-          path: assets
-          pattern: asset-*
+          path: meta
+          pattern: meta-*
 
       - name: Build and validate the index
         env:
-          TAG: ${{ needs.resolve.outputs.tag }}
+          TAG: ${{ github.event.inputs.tag }}
           COMMIT: ${{ needs.resolve.outputs.commit }}
         run: |
           mkdir -p out
           python3 - <<'PY'
           import glob, json, os, sys
           tag, commit = os.environ["TAG"], os.environ["COMMIT"]
-          metas = sorted(glob.glob("assets/**/*.meta.json", recursive=True))
+          metas = sorted(glob.glob("meta/**/*.meta.json", recursive=True))
           if not metas:
               sys.exit("::error::no .meta.json sidecars — nothing was built")
 
@@ -221,28 +265,29 @@ jobs:
                   problems.append(f"{mod}: claims release {m.get('release_tag')}, expected {tag}")
 
               base = m["asset"]
-              d = os.path.dirname(mp)
-              parts = sorted(os.path.basename(p) for p in glob.glob(os.path.join(d, base + ".part-*")))
               entries[mod] = {"asset": base, "version": (m.get("modules") or {}).get(mod),
                               "size": m.get("size"), "sha256": m.get("sha256"),
-                              "parts": parts}
+                              "parts": m.get("parts") or []}
 
               # The merge is a disjoint union only because image tar names are
               # unique per module. That disjointness is EMERGENT, not enforced --
               # a future module adding a colliding prefix would make one asset
               # silently truncate another's file on extract. Assert it here,
               # where it costs nothing, instead of discovering it on a customer.
-              man = os.path.join(d, base + ".manifest.json")
-              if os.path.exists(man):
-                  c = (json.load(open(man)).get("contents") or {})
-                  for img in (c.get("images") or []):
-                      if img in images and images[img] != mod:
-                          problems.append(f"image {img} claimed by both {images[img]} and {mod}")
-                      images[img] = mod
-                  for k, v in (c.get("sha256") or {}).items():
-                      if k in shas and shas[k] != v:
-                          problems.append(f"file {k} differs between assets — one would overwrite the other")
-                      shas[k] = v
+              man = os.path.join(os.path.dirname(mp), base + ".manifest.json")
+              if not os.path.exists(man):
+                  problems.append(f"{mod}: no manifest sidecar — collisions with "
+                                  f"other assets cannot be checked")
+                  continue
+              c = (json.load(open(man)).get("contents") or {})
+              for img in (c.get("images") or []):
+                  if img in images and images[img] != mod:
+                      problems.append(f"image {img} claimed by both {images[img]} and {mod}")
+                  images[img] = mod
+              for k, v in (c.get("sha256") or {}).items():
+                  if k in shas and shas[k] != v:
+                      problems.append(f"file {k} differs between assets — one would overwrite the other")
+                  shas[k] = v
 
           if problems:
               for p in problems:
@@ -264,190 +309,108 @@ jobs:
           path: out/*
           retention-days: 3
 
-  # ----------------------------------------------------------------- bundle
-  # The compatibility bundle: the same content as the module assets, re-packed
-  # into the single legacy-named tarball. Two audiences need it permanently --
-  # boxes older than the index, and anyone hand-carrying ONE file into an
-  # air-gapped site. Re-packed rather than rebuilt, so it cannot disagree with
-  # the assets it is made of.
-  bundle:
+  # ----------------------------------------------------------------- attach
+  publish:
     needs: [resolve, build, index]
-    if: ${{ github.event.inputs.skip_bundle != 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: assets
-          pattern: asset-*
-
+      # This job holds the whole release on disk at once, so give it room. It
+      # used to stage everything into an upload/ directory first, which meant a
+      # SECOND full copy -- more than a runner has.
       - name: Free up disk space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
                       /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          docker image prune -af || true
           df -h /
 
-      - name: Merge the assets and re-pack
-        env:
-          TAG: ${{ needs.resolve.outputs.tag }}
-        run: |
-          set -euo pipefail
-          mkdir -p merge out
-          # Reassemble any split assets, then extract them ALL into one dir.
-          # They share a top-level directory name, so this merges rather than
-          # colliding -- that is the whole per-module contract.
-          find assets -name '*.tar.gz.part-00' | while read -r p0; do
-            base="${p0%.part-00}"
-            cat "$base".part-* > "$base"
-            rm -f "$base".part-*
-          done
-          for a in $(find assets -name '*.tar.gz' | sort); do
-            echo "  merging $(basename "$a")"
-            tar xzf "$a" -C merge
-          done
-          ROOTS=$(ls merge | wc -l)
-          if [ "$ROOTS" -ne 1 ]; then
-            echo "::error::assets did not merge — $ROOTS top-level dirs: $(ls merge)"
-            exit 1
-          fi
-          test -d "merge/intact-upgrade-$TAG" || {
-            echo "::error::merged root is $(ls merge), expected intact-upgrade-$TAG"; exit 1; }
-
-      - name: Assemble the bundle manifest
-        env:
-          TAG: ${{ needs.resolve.outputs.tag }}
-        run: |
-          python3 - <<'PY'
-          import glob, json, os, sys
-          tag = os.environ["TAG"]
-          root = f"merge/intact-upgrade-{tag}"
-          mans = sorted(glob.glob(os.path.join(root, "manifests", "*.json")))
-          if not mans:
-              sys.exit("::error::no per-module manifests in the merged tree")
-
-          merged = {"package_version": None, "versions": {}, "contents": {}}
-          c = merged["contents"]
-          c.update({"images": [], "binaries": [], "migrations": [],
-                    "sha256": {}, "image_sizes": {}, "transitive_versions": {},
-                    "rule_packs": [], "include_source": False})
-          created = []
-          for mp in mans:
-              man = json.load(open(mp)); mc = man.get("contents") or {}
-              merged["package_version"] = merged["package_version"] or man.get("package_version")
-              for k, v in (man.get("versions") or {}).items():
-                  if merged["versions"].get(k, v) != v:
-                      sys.exit(f"::error::assets disagree about {k}")
-                  merged["versions"][k] = v
-              for k, v in (mc.get("sha256") or {}).items():
-                  if c["sha256"].get(k, v) != v:
-                      sys.exit(f"::error::assets disagree about the hash of {k}")
-                  c["sha256"][k] = v
-              for k, v in (mc.get("image_sizes") or {}).items():
-                  c["image_sizes"][k] = v
-              for k, v in (mc.get("transitive_versions") or {}).items():
-                  c["transitive_versions"][k] = v
-              for key in ("images", "binaries", "migrations"):
-                  for item in (mc.get(key) or []):
-                      if item not in c[key]:
-                          c[key].append(item)
-              c["rule_packs"].extend(mc.get("rule_packs") or [])
-              c["include_source"] = c["include_source"] or bool(mc.get("include_source"))
-              for k in ("velociraptor_artifacts", "velociraptor_legacy",
-                        "yara_rulesets", "velociraptor_tools", "source_origin",
-                        "source_commit", "release_tag", "pins_source"):
-                  if k in mc and k not in c:
-                      c[k] = mc[k]
-              if man.get("created"):
-                  created.append(man["created"])
-          merged["created"] = max(created) if created else None
-          merged["created_by"] = "intact-ci-bundle"
-          c["package_kind"] = "assembled"
-          c["assembled_from"] = sorted(os.path.basename(m)[:-5] for m in mans)
-
-          json.dump(merged, open(os.path.join(root, "manifest.json"), "w"), indent=2)
-
-          # CONTENT-EQUIVALENCE, not byte-identity. `created` and run_id differ
-          # per builder and gzip output depends on member ordering, so the
-          # bundle can never be byte-identical to the sum of its parts. What
-          # MUST hold is that it describes exactly the same files and versions.
-          missing = [p for p in c["sha256"] if not os.path.exists(os.path.join(root, p))]
-          if missing:
-              sys.exit(f"::error::bundle is missing {len(missing)} file(s) the manifests describe: {missing[:5]}")
-          print(f"bundle: {len(merged['versions'])} module(s), "
-                f"{len(c['images'])} image(s), {len(c['sha256'])} hashed file(s)")
-          PY
-
-      - name: Pack, checksum and split
-        env:
-          TAG: ${{ needs.resolve.outputs.tag }}
-        run: |
-          set -euo pipefail
-          PKG="$PWD/out/intact-upgrade-$TAG.tar.gz"
-          # manifest.json FIRST in the member list so it lands in the first few
-          # KB of the tarball -- /api/upgrade/peek-manifest reads only the head
-          # of the blob to show an operator what they are about to apply. Same
-          # trick prepare_upgrade_package uses; -T takes the order literally.
-          cd merge
-          {
-            echo "intact-upgrade-$TAG/manifest.json"
-            find "intact-upgrade-$TAG" -type f ! -path "intact-upgrade-$TAG/manifest.json"
-          } > /tmp/members.txt
-          echo "  packing $(wc -l < /tmp/members.txt) members"
-          tar czf "$PKG" -T /tmp/members.txt
-          cd ..
-          cp "merge/intact-upgrade-$TAG/manifest.json" "$PKG.manifest.json"
-          cd out
-          sha256sum "intact-upgrade-$TAG.tar.gz" > "intact-upgrade-$TAG.tar.gz.sha256"
-          SIZE=$(stat -c%s "intact-upgrade-$TAG.tar.gz")
-          if [ "$SIZE" -gt $((1900 * 1024 * 1024)) ]; then
-            split -b 1900m -d -a 2 "intact-upgrade-$TAG.tar.gz" "intact-upgrade-$TAG.tar.gz.part-"
-            rm -f "intact-upgrade-$TAG.tar.gz"
-          fi
-          ls -lh
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: compat-bundle
-          path: out/*
-          retention-days: 3
-
-  # ----------------------------------------------------------------- attach
-  publish:
-    needs: [resolve, build, index, bundle]
-    if: ${{ always() && needs.index.result == 'success' }}
-    runs-on: ubuntu-latest
-    steps:
       - uses: actions/download-artifact@v4
         with:
           path: all
 
+      # THE ROUND TRIP IS UNVERIFIED UNTIL HERE. The sha256 in the index was
+      # computed by the builder, inside its container, before the file was ever
+      # uploaded to or downloaded from the artifact store. Re-hash what we are
+      # about to attach and compare against the index -- that is what a box
+      # will check the download against, so a mismatch caught here is a
+      # mismatch the customer never sees.
+      #
+      # Split assets are hashed by streaming the parts through sha256sum, not
+      # by reassembling them: the checksum covers the whole tarball, and
+      # writing a second copy just to hash it is what filled the disk before.
+      - name: Verify every asset against the index
+        env:
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          INDEX="$(find all -name "intact-release-$TAG.index.json" | head -1)"
+          test -n "$INDEX" || { echo "::error::no index in the artifacts"; exit 1; }
+          fail=0
+          while read -r mod asset want; do
+            dir="$(find all -type d -name "asset-$mod" | head -1)"
+            if [ -z "$dir" ]; then
+              echo "::error::$mod: indexed but no asset artifact"; fail=1; continue
+            fi
+            if [ -f "$dir/$asset" ]; then
+              got="$(sha256sum "$dir/$asset" | cut -d' ' -f1)"
+            elif ls "$dir/$asset".part-* >/dev/null 2>&1; then
+              got="$(cat "$dir/$asset".part-* | sha256sum | cut -d' ' -f1)"
+            else
+              echo "::error::$mod: $asset missing from artifact $dir"; fail=1; continue
+            fi
+            if [ "$got" != "$want" ]; then
+              echo "::error::$mod: $asset hashes $got, index says $want — corrupted in transit"
+              fail=1
+            else
+              echo "  ok  $mod  $asset"
+            fi
+          done < <(python3 -c "
+          import json,sys
+          idx=json.load(open(sys.argv[1]))
+          for m,e in sorted(idx['assets'].items()):
+              print(m, e['asset'], e['sha256'])
+          " "$INDEX")
+          exit $fail
+
+      # Uploaded straight from where they were downloaded. No staging copy --
+      # the release is several GB and a runner cannot hold two of it.
       - name: Attach everything to the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.resolve.outputs.tag }}
+          TAG: ${{ github.event.inputs.tag }}
         run: |
-          mkdir -p upload
-          find all -type f ! -name '*.meta.json' -exec cp {} upload/ \;
-          echo "== attaching =="; ls -lh upload
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" upload/* --clobber
-          else
-            echo "::warning::no release exists for $TAG — assets remain as workflow artifacts only"
+          set -euo pipefail
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::no release exists for $TAG — create it first, then re-run. Assets are still attached to this workflow run."
+            exit 1
           fi
+          find all -type f ! -name '*.meta.json' -print0 \
+            | sort -z \
+            | xargs -0 gh release upload "$TAG" --clobber
+          echo "== attached =="
+          gh release view "$TAG" --json assets \
+            --jq '.assets[] | "\(.name)  \(.size)"'
 
       - name: Summary
         env:
-          TAG: ${{ needs.resolve.outputs.tag }}
+          TAG: ${{ github.event.inputs.tag }}
           COMMIT: ${{ needs.resolve.outputs.commit }}
         run: |
+          IDX="$(find all -name "intact-release-$TAG.index.json.sha256" | head -1)"
           {
             echo "### Release assets for \`$TAG\`"
             echo ""
-            echo "Built from commit \`$COMMIT\`."
+            echo "Built from commit \`$COMMIT\`. Every asset re-hashed after the"
+            echo "artifact round trip and matched against the index."
             echo ""
-            if [ "${{ needs.bundle.result }}" = "success" ]; then
-              echo "Per-module assets, the index, and the compatibility bundle were published."
-            else
-              echo "Per-module assets and the index were published. **No compatibility bundle** — boxes older than the index, and the single-file air-gap path, cannot use this release."
-            fi
+            echo "Air-gap operators verify the index by eye, then let it vouch"
+            echo "for the assets:"
+            echo ""
+            echo '```'
+            cut -d' ' -f1 "$IDX"
+            echo '```'
+            echo ""
+            echo "No single-file bundle is published. Build one with"
+            echo "\`build_release_package.py --tag $TAG --out <dir>\` if a box"
+            echo "predating the index needs it."
           } >> "$GITHUB_STEP_SUMMARY"

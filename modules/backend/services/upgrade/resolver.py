@@ -504,8 +504,24 @@ def fetch_upstream_config(ref: str, user_action: str = 'plan') -> Dict:
 
 
 def fetch_release_manifest(ref: str, user_action: str = 'plan') -> Optional[Dict]:
-    """Fetch and parse the ``.manifest.json`` sidecar of release ``ref``'s
-    CI-built package — the actual list of modules that download will contain.
+    """What release ``ref`` can actually deliver, as ``{'versions': {...}}``.
+
+    Two shapes answer this, and they are tried in that order:
+
+    1. ``intact-release-<ref>.index.json`` — the per-module release index. This
+       is the authority for anything built after the move to per-module assets:
+       it names every module the release ships and the version each one
+       carries, which is exactly the picker's question. It is also the ONLY
+       answer for such a release, because there is no longer a single bundle to
+       hang a sidecar off.
+    2. ``intact-upgrade-<ref>.tar.gz.manifest.json`` — the bundle sidecar. Every
+       release up to and including the last full-package one has this and no
+       index, so the fallback is not politeness, it is how older releases stay
+       visible in the picker.
+
+    Both are normalised to the manifest shape (``versions``) that
+    :func:`_upstream_module_rows` consumes, so callers cannot tell which
+    answered.
 
     ``config.yaml``'s ``modules:`` block (what :func:`fetch_upstream_config`
     reads) lists every module the CODEBASE supports, regardless of what a
@@ -518,10 +534,10 @@ def fetch_release_manifest(ref: str, user_action: str = 'plan') -> Optional[Dict
     the apply engine matches against, so the picker can never promise more
     than the package actually contains.
 
-    Returns ``None`` when the release carries no manifest asset (shouldn't
-    happen for any ref ``list_github_refs`` offers, since that already
-    filters to releases with a package asset — the sidecar ships alongside
-    it). Cached like :func:`fetch_upstream_config`.
+    Returns ``None`` when the release carries neither (shouldn't happen for any
+    ref ``list_github_refs`` offers, since that already filters to releases
+    with a payload asset — one of the two ships alongside it). Cached like
+    :func:`fetch_upstream_config`.
     """
     cache_key = f'manifest:{ref}'
     cached = _cache_get(cache_key)
@@ -544,11 +560,15 @@ def fetch_release_manifest(ref: str, user_action: str = 'plan') -> Optional[Dict
             f'{resp.text[:200]}'
         )
     rel = resp.json() or {}
+    by_name = {(a.get('name') or ''): a.get('browser_download_url')
+               for a in (rel.get('assets') or [])}
+    index_name = f'intact-release-{ref}.index.json'
     manifest_name = f'intact-upgrade-{ref}.tar.gz.manifest.json'
-    asset_url = None
-    for a in (rel.get('assets') or []):
-        if (a.get('name') or '') == manifest_name:
-            asset_url = a.get('browser_download_url')
+
+    kind, asset_url = None, None
+    for _kind, _name in (('index', index_name), ('manifest', manifest_name)):
+        if by_name.get(_name):
+            kind, asset_url = _kind, by_name[_name]
             break
     if not asset_url:
         _cache_put(cache_key, _MISSING)
@@ -563,9 +583,25 @@ def fetch_release_manifest(ref: str, user_action: str = 'plan') -> Optional[Dict
             f'Manifest download for {ref} returned {mresp.status_code}'
         )
     try:
-        manifest = mresp.json()
+        payload = mresp.json()
     except ValueError as e:
         raise ResolverError(f'Manifest for {ref} did not parse as JSON: {e}')
+
+    if kind == 'index':
+        # Normalise the index into the manifest shape. A module whose entry
+        # carries no version is still listed — it exists in the release, and
+        # 'latest' is what the config.yaml path would have shown anyway. What
+        # must NOT happen is dropping it, which would hide a downloadable
+        # module from the picker.
+        assets = payload.get('assets') or {}
+        manifest = {
+            'versions': {m: (e.get('version') or 'latest')
+                         for m, e in assets.items()},
+            'release_tag': payload.get('release_tag'),
+            'source_commit': payload.get('source_commit'),
+        }
+    else:
+        manifest = payload
 
     _cache_put(cache_key, manifest)
     return manifest

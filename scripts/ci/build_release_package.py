@@ -139,8 +139,14 @@ def release_module_set(tag: str, only: str = None) -> dict:
     One member is special-cased because its "version" is not a config pin:
       - `intact` is the platform itself, what Phase 1 swaps. Its version IS the
         release tag, so the bundled image is `intact-backend:<tag>`.
-    A module listed here but absent from `versions:` is skipped rather than
-    guessed at, so a config typo drops one module instead of failing the build.
+
+    A module in RELEASE_MODULES but absent from `versions:` cannot be built --
+    there is no pin to build. Callers decide what that means: `--module` and
+    `--emit-matrix` treat it as fatal (see below and in main()), because both
+    are release-planning operations and a forgotten pin would otherwise ship a
+    release that is quietly one module short while every job reports success.
+    A manual bundle build only warns, since a partial bundle is sometimes
+    exactly what you asked for.
     """
     import yaml
     from services.upgrade import UPGRADE_ORDER
@@ -174,6 +180,17 @@ def release_module_set(tag: str, only: str = None) -> dict:
             modules["intact"] = tag  # -> builds intact-backend:<tag>
         elif m in versions:
             modules[m] = versions[m]
+
+    # A per-module build that resolves to nothing would produce a perfectly
+    # valid, perfectly EMPTY asset: right filename, right merged root, zero
+    # images, and a manifest whose `versions` block simply does not mention the
+    # module. The box would extract it, find nothing to do for that module, and
+    # report success. Fail here instead.
+    if only and only not in modules:
+        raise SystemExit(
+            f"[ci-package] {only!r} has no pin under `versions:` in {cfg_path} "
+            f"— there is nothing to build. Add the pin, or move it to "
+            f"EXCLUDED_FROM_RELEASE.")
     return modules
 
 
@@ -335,7 +352,24 @@ def main() -> int:
 
     if args.emit_matrix:
         import json as _json
-        print(_json.dumps(sorted(release_module_set(args.tag))))
+        resolved = release_module_set(args.tag)
+        # THE RELEASE CONTRACT IS DECIDED HERE. Whatever this prints becomes the
+        # build matrix, and whatever the matrix builds becomes the index, and
+        # the index is what a box believes the release contains. So a module in
+        # RELEASE_MODULES that has no pin must not simply fall out of the list:
+        # every downstream job would be green, the index would be internally
+        # coherent, and the release would just be one module short with nobody
+        # ever saying so. That is the same silent-skip the delta scheme died
+        # for, arriving through the config file instead of the baseline.
+        missing = sorted(set(RELEASE_MODULES) - set(resolved))
+        if missing:
+            print(f"[ci-package] FAILED: {', '.join(missing)} in RELEASE_MODULES "
+                  f"but absent from `versions:` in {platform_config_path()}. A "
+                  f"release cannot ship a module it has no pin for, and dropping "
+                  f"it silently is worse than failing. Add the pin, or move it "
+                  f"to EXCLUDED_FROM_RELEASE.", flush=True)
+            return 1
+        print(_json.dumps(sorted(resolved)))
         return 0
 
     modules = release_module_set(args.tag, only=args.module)
