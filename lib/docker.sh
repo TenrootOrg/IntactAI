@@ -514,6 +514,16 @@ pull_plaso_image() {
 }
 
 pull_python_alpine_image() {
+    # Base images exist ONLY to feed `docker compose build`. When the release
+    # package supplied the images there is no build (run_docker_compose skips
+    # it), so pulling a base layer is pure waste online -- and offline it is a
+    # guaranteed failure that logs an alarming error for something the install
+    # does not need. Skip before either happens.
+    if [[ "${INTACT_FROM_PACKAGE:-0}" == "1" ]]; then
+        log_info "  Base image not needed — images came from the release package"
+        return 0
+    fi
+
     # Python Alpine image is used by Plaso decompression (plaso_service.py)
     # Pre-pull to avoid network access at runtime in air-gap environments
 
@@ -1264,6 +1274,16 @@ pull_dfir_o365rc_image() {
 
 
 pull_velociraptor_base_image() {
+    # Base images exist ONLY to feed `docker compose build`. When the release
+    # package supplied the images there is no build (run_docker_compose skips
+    # it), so pulling a base layer is pure waste online -- and offline it is a
+    # guaranteed failure that logs an alarming error for something the install
+    # does not need. Skip before either happens.
+    if [[ "${INTACT_FROM_PACKAGE:-0}" == "1" ]]; then
+        log_info "  Base image not needed — images came from the release package"
+        return 0
+    fi
+
     # Velociraptor's Dockerfile builds FROM ubuntu:22.04. Pre-pulling the base
     # image on the host with retry keeps a transient Docker Hub DNS hiccup at
     # "compose build" time from killing the whole module install.
@@ -1290,6 +1310,16 @@ pull_velociraptor_base_image() {
 }
 
 pull_backend_base_image() {
+    # Base images exist ONLY to feed `docker compose build`. When the release
+    # package supplied the images there is no build (run_docker_compose skips
+    # it), so pulling a base layer is pure waste online -- and offline it is a
+    # guaranteed failure that logs an alarming error for something the install
+    # does not need. Skip before either happens.
+    if [[ "${INTACT_FROM_PACKAGE:-0}" == "1" ]]; then
+        log_info "  Base image not needed — images came from the release package"
+        return 0
+    fi
+
     # The Backend Dockerfile builds FROM python:3.11-slim. Pre-pulling on the
     # host means the ~46 MB base image doesn't count against `docker compose
     # build`'s wall-clock timeout — important on slow-uplink customer VMs

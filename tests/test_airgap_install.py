@@ -392,6 +392,38 @@ def test_the_engine_and_the_installer_agree_about_building():
           "docker build" not in fn, "the engine builds too -- premise broken")
 
 
+def test_base_image_pulls_are_skipped_when_nothing_will_be_built():
+    """Base images exist ONLY to feed `docker compose build`. With the build
+    skipped they are pure waste online -- and offline they are a guaranteed
+    failure that logs an alarming error for something the install does not
+    need."""
+    src = open(DOCKER_SH).read()
+    for fn in ("pull_backend_base_image", "pull_velociraptor_base_image",
+               "pull_python_alpine_image"):
+        body = src[src.index(fn + "() {"):]
+        body = body[:body.index("\n}")]
+        check(f"{fn} skips when images came from the package",
+              "INTACT_FROM_PACKAGE" in body,
+              "it would fail air-gapped for an image nothing builds with")
+
+
+def test_extraction_does_not_land_in_tmpfs():
+    """A full package is several GB and many hosts mount /tmp as a small
+    tmpfs. Extracting there fills RAM and fails with ENOSPC partway through --
+    AFTER the multi-GB download already succeeded, which is the most expensive
+    possible moment to discover it."""
+    src = open(INSTALL_SH).read()
+    fn = src[src.index("load_images_from_package() {"):]
+    fn = fn[:fn.index("\ndownload_release_package")]
+    check("it extracts under the repo's data dir",
+          'mktemp -d -p "${SCRIPT_DIR}/data/tmp"' in fn,
+          "extraction would go to /tmp")
+    check("with a fallback if that is unusable",
+          fn.count("mktemp -d") >= 2, "no fallback path")
+    check("and the extraction dir is always cleaned up",
+          'rm -rf "$work"' in fn, "multi-GB leftovers would accumulate")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

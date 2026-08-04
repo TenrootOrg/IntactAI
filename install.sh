@@ -137,7 +137,8 @@ load_images_from_package() {
         log_error "Package not found: $pkg"
         return 1
     fi
-    log_info "Air-gapped install from $(basename "$pkg")"
+    log_info "Installing from $(basename "$pkg")"
+    mkdir -p "${SCRIPT_DIR}/data/tmp" 2>/dev/null || true
 
     local kind
     kind="$(tar -xzOf "$pkg" --wildcards '*/manifest.json' 2>/dev/null \
@@ -149,7 +150,14 @@ load_images_from_package() {
         return 1
     fi
 
-    local work; work="$(mktemp -d)"
+    # Extract onto the appliance's own disk, not /tmp. A full package is
+    # several GB and many hosts mount /tmp as a small tmpfs -- extracting there
+    # fills RAM and fails with a confusing ENOSPC partway through, after the
+    # download already succeeded. Fall back to /tmp only if the repo disk is
+    # unusable, which is the situation where nothing will work anyway.
+    local work
+    work="$(mktemp -d -p "${SCRIPT_DIR}/data/tmp" pkg-XXXXXX 2>/dev/null)" \
+        || work="$(mktemp -d)"
     log_info "  Extracting images (this takes a few minutes for a full package)..."
     if ! tar -xzf "$pkg" -C "$work" 2>>"$LOG_FILE"; then
         log_error "  Could not extract $pkg"
