@@ -460,11 +460,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.resolve.outputs.tag }}
+          COMMIT: ${{ needs.resolve.outputs.commit }}
         run: |
           set -euo pipefail
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            echo "::error::no release exists for $TAG — create it first, then re-run. Assets are still attached to this workflow run."
-            exit 1
+            echo "Creating release $TAG @ $COMMIT"
+            gh release create "$TAG" --target "$COMMIT" --title "$TAG" \
+              --notes "Built from commit $COMMIT" --draft
           fi
           find all -type f ! -name '*.meta.json' -print0 \
             | sort -z \
