@@ -166,6 +166,30 @@ load_images_from_package() {
         fi
     done < <(find "$work" -type f -name '*.tar' 2>/dev/null)
 
+    # Images are not the only thing an air-gapped box cannot fetch. The
+    # installer also downloads Velociraptor binaries (current + legacy clients,
+    # the offline collector) and clones SigmaHQ. Deliver whatever the package
+    # carries so the download_* functions find their work already done; each of
+    # them reports honestly if something is genuinely absent.
+    local dl_dir="${SCRIPT_DIR}/modules/nginx/html/downloads"
+    local staged_bin=0 bin
+    mkdir -p "$dl_dir"
+    while IFS= read -r bin; do
+        if cp -n "$bin" "$dl_dir/" 2>/dev/null; then staged_bin=$((staged_bin + 1)); fi
+    done < <(find "$work" -type d -name binaries -exec find {} -type f \; 2>/dev/null)
+    if (( staged_bin > 0 )); then
+        chmod 755 "$dl_dir"/* 2>/dev/null || true   # 755, not +x: umask filters symbolic modes
+        log_success "  Staged $staged_bin Velociraptor binary/binaries from the package"
+    fi
+
+    local sigma_src
+    sigma_src="$(find "$work" -type d -name 'sigma*' -maxdepth 4 2>/dev/null | head -1)"
+    if [[ -n "$sigma_src" && ! -d /opt/sigma-rules/rules ]]; then
+        mkdir -p /opt/sigma-rules
+        cp -rn "$sigma_src"/. /opt/sigma-rules/ 2>/dev/null \
+            && log_success "  Staged SIGMA rules from the package"
+    fi
+
     rm -rf "$work"
     if (( loaded == 0 )); then
         log_error "  No images loaded from the package — wrong or corrupt file."
@@ -176,6 +200,15 @@ load_images_from_package() {
     else
         log_success "  Loaded $loaded image(s) from the package"
     fi
+    # Loading is not installing. config.yaml's per-module `enabled` flag still
+    # decides what gets deployed, exactly as on an online install -- a full
+    # package deliberately carries images for modules this box has turned OFF,
+    # so one can be enabled later and installed with no route to a registry.
+    # Said out loud because "20 images loaded, 6 modules running" otherwise
+    # reads as something having gone wrong.
+    log_info "  Images are now local; config.yaml's enabled flags still decide"
+    log_info "  which modules are deployed. Disabled modules keep their images"
+    log_info "  on disk so they can be enabled later without internet access."
     return 0
 }
 

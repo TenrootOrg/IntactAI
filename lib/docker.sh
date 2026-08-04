@@ -548,7 +548,32 @@ download_timesketch_packages() {
     log_info "Timesketch LLM packages: included in Timesketch image (no download needed)"
 }
 
+# In air-gap mode there is no route to GitHub, so a download cannot be
+# attempted -- but these assets are not all load-bearing, and failing the whole
+# install over an optional one would be wrong. install.sh --package stages
+# whatever the package carried; this reports precisely what is still missing and
+# what the consequence is, then lets the install continue.
+#
+# Returns 0 = "handled, skip the download", 1 = "carry on and download".
+_airgap_asset_check() {
+    local what="$1" probe="$2" consequence="$3"
+    [[ "${INTACT_AIRGAP:-0}" == "1" ]] || return 1
+    if [[ -e "$probe" ]] || compgen -G "$probe" >/dev/null 2>&1; then
+        log_info "  $what: already present (staged from the package) — not downloading"
+    else
+        log_warn "  $what: NOT in the package and cannot be downloaded offline."
+        log_warn "    Consequence: $consequence"
+        INSTALL_WARNINGS+=("  air-gap: $what unavailable — $consequence")
+    fi
+    return 0
+}
+
 download_offline_collector_binaries() {
+    _airgap_asset_check "Velociraptor offline-collector binaries" \
+        "${SCRIPT_DIR}/modules/nginx/html/downloads/velociraptor-*" \
+        "offline collectors cannot be generated until these are supplied" \
+        && return 0
+
     # Velociraptor offline-collector binaries — version follows
     # `versions.velociraptor` in `config.yaml` (single source of truth,
     # same pin used to build the server image). Bump that one value and
@@ -909,6 +934,11 @@ publish_velociraptor_binaries_to_tools() {
 }
 
 download_legacy_velociraptor_binaries() {
+    _airgap_asset_check "Legacy Velociraptor client (Win7 / 2008 R2)" \
+        "${SCRIPT_DIR}/modules/nginx/html/downloads/velociraptor-v0.7.*" \
+        "legacy Windows endpoints cannot be enrolled; current clients are unaffected" \
+        && return 0
+
     # Legacy Velociraptor binary for old Windows hosts (Server 2008 R2 SP1,
     # Win 7). Pin lives in `versions.velociraptor_legacy` in config.yaml.
     # Distinct namespace from the main pin so they coexist in the same
@@ -1100,6 +1130,10 @@ create_velociraptor_collector() {
 # =============================================================================
 
 download_sigma_rules() {
+    _airgap_asset_check "SIGMA detection rules" "/opt/sigma-rules/rules" \
+        "cloud detection packs (aws_sigma / o365rc) will have no rules" \
+        && return 0
+
     # Download SIGMA detection rules for Azure security automation
     # Clones SigmaHQ rules repository for offline use
 

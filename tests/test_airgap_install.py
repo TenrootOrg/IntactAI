@@ -210,6 +210,67 @@ def test_the_connectivity_gate_is_skipped_in_airgap_mode():
           "check_network_connectivity" in src, "the gate was removed entirely")
 
 
+# ------------------------------------------------- assets beyond the images
+
+def test_the_package_stages_binaries_and_sigma_not_just_images():
+    """Images are not the only thing an air-gapped box cannot fetch. The
+    installer also downloads Velociraptor binaries (current + legacy + offline
+    collector) and clones SigmaHQ; an image-only loader leaves those missing and
+    the failure shows up much later, as a client installer that cannot be
+    generated."""
+    src = open(INSTALL_SH).read()
+    fn = src[src.index("load_images_from_package() {"):]
+    fn = fn[:fn.index("\nmain()")]
+    check("it stages binaries", "binaries" in fn and "downloads" in fn,
+          "velociraptor binaries would be missing offline")
+    check("with chmod 755, not +x", "chmod 755" in fn,
+          "symbolic +x is filtered by umask -- this repo has shipped a "
+          "non-executable binary through exactly that route")
+    check("it stages SIGMA rules", "sigma" in fn.lower(),
+          "cloud detection packs would have no rules")
+
+
+def test_the_download_helpers_degrade_instead_of_failing():
+    """These assets are not all load-bearing. Failing an entire install because
+    the legacy Win7 client is absent would be wrong -- but silently skipping it
+    is worse. Each says what is missing AND what stops working."""
+    src = open(DOCKER_SH).read()
+    check("a shared air-gap guard exists", "_airgap_asset_check" in src,
+          "each download would attempt the network offline")
+    guard = src[src.index("_airgap_asset_check() {"):]
+    guard = guard[:guard.index("\n}")]
+    check("it is inert when NOT air-gapped",
+          'INTACT_AIRGAP:-0}" == "1" ]] || return 1' in guard,
+          "an online install would stop downloading")
+    check("a missing asset warns rather than aborts",
+          "log_warn" in guard and "return 0" in guard, "it would fail the install")
+    check("and records the consequence for the summary",
+          "INSTALL_WARNINGS" in guard,
+          "the operator would not see it in the end-of-install report")
+    for fname in ("download_offline_collector_binaries",
+                  "download_legacy_velociraptor_binaries",
+                  "download_sigma_rules"):
+        body = src[src.index(fname + "() {"):]
+        body = body[:body.index("\n}")]
+        check(f"{fname} is guarded", "_airgap_asset_check" in body,
+              "it would try to reach GitHub with no route")
+
+
+def test_enabled_flags_still_govern_what_is_deployed():
+    """A full package deliberately carries images for modules this box has
+    turned OFF, so one can be enabled later with no internet. Loading is not
+    installing -- and '20 images loaded, 6 modules running' reads as a fault
+    unless it is said out loud."""
+    src = open(INSTALL_SH).read()
+    fn = src[src.index("load_images_from_package() {"):]
+    fn = fn[:fn.index("\nmain()")]
+    check("the log explains loading is not installing",
+          "enabled flags still decide" in fn,
+          "the image count would look like a bug")
+    check("and why disabled modules keep their images",
+          "without internet" in fn, "the rationale is not stated")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
