@@ -338,6 +338,20 @@ def main() -> int:
         print(_json.dumps(sorted(release_module_set(args.tag))))
         return 0
 
+    modules = release_module_set(args.tag, only=args.module)
+
+    # Query modes answer and exit. They must not touch the checkout: CI calls
+    # --emit-matrix and --print-modules to plan the build, and a query that
+    # edits config.yaml as a side effect leaves a dirty tree behind and makes
+    # "what would this build?" a question you cannot ask twice.
+    if args.print_modules:
+        for m, v in modules.items():
+            print(f"{m}={v}")
+        return 0
+
+    if not args.out:
+        ap.error("--out is required unless --print-modules/--emit-matrix")
+
     # Pin the backend image tag to the release BEFORE building. The checkout is
     # ephemeral in CI and the tag is authoritative here, so this is the natural
     # place to resolve it — `development` (or any stale value) carried in from
@@ -346,16 +360,6 @@ def main() -> int:
     # package does not contain. Doing it on the checkout means the packaged
     # source inherits it too, since prepare copies the tree.
     _stamp_backend_pin(args.tag)
-
-    modules = release_module_set(args.tag, only=args.module)
-
-    if args.print_modules:
-        for m, v in modules.items():
-            print(f"{m}={v}")
-        return 0
-
-    if not args.out:
-        ap.error("--out is required unless --print-modules/--emit-matrix")
 
     if not args.module:
         # Bundle build: a module in RELEASE_MODULES whose pin is missing from
