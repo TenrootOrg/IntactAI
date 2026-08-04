@@ -422,14 +422,36 @@ run_docker_compose() {
         # is used, or compose fails loudly naming what is missing, which is the
         # outcome we want on an air-gapped box.
         #
-        # NOT `--pull never` (yet). That is the other half of the same idea, but
-        # it would break the one image nothing bundles: the platform's own
-        # nginx. The packager now bundles it, so once a release built from that
-        # change exists, --pull never can be added here and the last silent
-        # network dependency closes.
+        # --pull never IS THE OTHER HALF. Without it, a missing image is still
+        # silently repaired by a registry pull -- which is how the platform's
+        # own nginx went unbundled for as long as it did: on a connected box
+        # `up -d` just fetched it, one line after the installer logged "images
+        # already loaded from the package -- not pulling", and nothing was ever
+        # wrong until someone tried it air-gapped.
+        #
+        # Held back until a release actually carried that image, because
+        # turning it on earlier would have made [8/8] Nginx a hard failure on
+        # every published release. intact-20260804 (rebuilt 2026-08-04 16:14)
+        # ships images/intact-nginx-1.31.2-alpine.tar, and a clean-box install
+        # verified it loads from the package -- so the flag can land.
+        #
+        # Together the two flags mean: after the download phase, a module
+        # either deploys from what the package supplied or fails loudly naming
+        # what is missing. It can no longer quietly reach the network, which is
+        # the only property that makes an air-gapped install trustworthy.
+        #
+        # `--pull never` is checked for rather than assumed: it is Compose v2+
+        # only, and a host with an older plugin should degrade to --no-build
+        # rather than die on an unknown flag.
         local up_flags=()
         if [[ "${INTACT_FROM_PACKAGE:-0}" == "1" ]]; then
             up_flags+=(--no-build)
+            if docker compose up --help 2>/dev/null | grep -q -- '--pull'; then
+                up_flags+=(--pull never)
+            else
+                log_warn "  This docker compose has no 'up --pull' flag — a missing"
+                log_warn "  image can still be pulled from a registry."
+            fi
         fi
         run_with_heartbeat "${module_name} compose up" "$build_timeout" \
             bash -c '
