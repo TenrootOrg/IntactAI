@@ -1827,6 +1827,80 @@ def preflight_offline_images(module: str, version: str, images_dir: str,
 _EXTRACT_LOG_STEP = 5
 
 
+def installed_release_version() -> str:
+    """The release this box is currently on, from WORKDIR/VERSION. '' if absent
+    (a pre-VERSION install), which every caller must treat as "unknown"."""
+    try:
+        with open(os.path.join(WORKDIR, 'VERSION')) as f:
+            return f.read().strip()
+    except Exception:
+        return ''
+
+
+def _reject_delta_on_wrong_baseline(manifest: Dict,
+                                    logger: Callable = None) -> Optional[str]:
+    """Refuse a DELTA package unless this box is on the exact baseline it was
+    built against. Returns an error string to abort with, or None to proceed.
+
+    A delta contains only the modules whose pins moved between two consecutive
+    releases. Applied to a box on a DIFFERENT baseline, every module that moved
+    in the gap it skipped is simply absent -- and the run reports success,
+    because the orchestrator can only skip modules it was given. Measured on
+    real history for intact-20260803:
+
+        vs intact-20260802 : elk 9.4.2 -> 9.4.4, backend_tusd v2.9.2 -> v2.10.0
+        vs intact-20260615 : 14 modules moved
+
+    So a 20260615 box handed a delta built against 20260802 keeps a dozen stale
+    modules and is told it succeeded. That is the failure mode the packager's
+    own docstring has warned about since the first delta release; this is the
+    check that finally makes it impossible rather than merely documented.
+
+    Full packages are always allowed: they carry every module, and the apply
+    side already skips the ones whose installed version matches, so a full
+    package self-deltas on arrival.
+
+    A package with no `package_kind` predates this field and is treated as
+    full -- old packages were all full, so that is the truthful reading.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    contents = manifest.get('contents') or {}
+    kind = (contents.get('package_kind') or 'full').strip().lower()
+
+    commit = contents.get('source_commit')
+    if commit:
+        log(f"  Built from commit {str(commit)[:12]}", "info")
+
+    if kind != 'delta':
+        return None
+
+    baseline = (contents.get('delta_from') or '').strip()
+    installed = installed_release_version()
+    log(f"  DELTA package — valid only for a box on {baseline or '(unrecorded)'}",
+        "info")
+
+    if not baseline:
+        return ("this package declares package_kind: delta but records no "
+                "delta_from, so there is no way to tell which baseline it is "
+                "valid for. Use the full package for this release.")
+
+    if not installed:
+        return (f"this is a DELTA package for boxes on {baseline}, and this "
+                f"appliance has no VERSION file, so its baseline cannot be "
+                f"confirmed. Use the full package for this release.")
+
+    if installed != baseline:
+        return (f"this is a DELTA package built for boxes on {baseline}, but "
+                f"this appliance is on {installed}. Applying it would leave "
+                f"every module that changed between {installed} and {baseline} "
+                f"stale while the upgrade reported success. Use the full "
+                f"package for this release instead.")
+
+    log(f"  Baseline matches ({installed}) — delta is valid for this box",
+        "success")
+    return None
+
+
 def verify_upgrade_package(package_path: str, logger: Callable = None,
                            expected_sha256: str = None) -> Dict:
     """Extract and verify an upgrade package.
@@ -2019,6 +2093,10 @@ def verify_upgrade_package(package_path: str, logger: Callable = None,
 
         log(f"  Package created: {manifest.get('created', 'unknown')}", "info")
         log(f"  Versions: {json.dumps(manifest.get('versions', {}))}", "info")
+
+        _kind_err = _reject_delta_on_wrong_baseline(manifest, logger=log)
+        if _kind_err:
+            return {"success": False, "error": _kind_err}
 
         # Per-file sha256 verification. gzip -t above only proves the OUTER
         # archive isn't corrupt — this catches a truncated/corrupt file

@@ -64,35 +64,41 @@ RELEASE_MODULES = {
                       # carries the platform and its upload sidecar.
     "elk",
     "iris",
+    "timesketch",
+    "plaso",
+    "velociraptor",   # both kinds -- 0.77.1 and the legacy 0.7.1 client
 }
 
-# Deliberately NOT bundled: a DELTA release.
+# Deliberately NOT bundled.
 #
-# Module pins are identical between intact-20260726 and this release except elk
-# and tusd, so shipping only those plus the platform is the delta for anyone
-# upgrading SEQUENTIALLY from the previous release. Everything of value in this
-# release is platform code, which `intact` carries in full.
+# WIDENED 2026-08-04 to timesketch, plaso and velociraptor, and the reason is
+# the skipped-release trap this comment used to merely accept. The online flow
+# downloads exactly ONE package for the target ref and does not walk the upgrade
+# chain, so a box that SKIPS a release gets a package whose omitted modules stay
+# stale WHILE THE RUN REPORTS SUCCESS. Upgrading straight from intact-20260615
+# would not have moved timesketch 20260326 -> 20260630 or velociraptor
+# 0.76.1 -> 0.77.1, and nothing would have said so.
 #
-# THE COST, ACCEPTED: this is the architecture the packager's own docstring
-# argues against, and for a specific reason -- the online flow downloads exactly
-# ONE package for the target ref and does not walk the upgrade chain. A box that
-# SKIPS a release gets a package whose omitted modules stay stale while the run
-# reports success. Concretely, upgrading straight from intact-20260615 would not
-# move timesketch 20260326 -> 20260630, velociraptor 0.76.1 -> 0.77.1, plaso,
-# volweb or aws_sigma, and nothing would say so.
+# The old note called that "survivable while every box is on intact-20260726".
+# That condition is not checkable from inside the package, which is what makes
+# it dangerous: the assumption is invisible at apply time. Carrying these three
+# means a package is correct for any baseline, not just the expected one.
 #
-# That is survivable while upgrades are sequential and every box is on
-# intact-20260726. It stops being survivable the moment one is not, so this set
-# has to be revisited per release rather than inherited.
+# The three that remain excluded are a deliberate, revisit-per-release choice --
+# not an inheritance. This set stops being hand-maintained entirely once the
+# two-asset CI computes the delta from pin movement between release tags.
 EXCLUDED_FROM_RELEASE = {
-    "timesketch": "delta release: pin unchanged since intact-20260726",
-    "plaso":      "delta release: pin unchanged since intact-20260726",
-    "velociraptor": "delta release: pin unchanged since intact-20260726",
     "volweb":     "delta release: pin unchanged since intact-20260726",
     "aws_sigma":  "delta release: pin unchanged since intact-20260726",
     "portainer":  "delta release: pin unchanged since intact-20260726",
-    "o365rc":     "delta release: pins the literal 'latest'; an air-gapped box "
-                  "has no route to this image at all without it",
+    # HELD OUT OF BOTH the full and the delta asset, deliberately, until the
+    # two-asset CI lands. o365rc pins the literal string 'latest', so there is
+    # no version to diff and no way to say which image a package contains. That
+    # makes it the one module whose presence cannot be reasoned about from a
+    # manifest -- the exact property the full/delta split exists to guarantee.
+    # Revisit when the pin becomes a real version.
+    "o365rc":     "held out of full and delta: pins the literal 'latest', so "
+                  "the package cannot record which image it shipped",
 }
 
 def platform_config_path(must_exist: bool = True):
@@ -152,6 +158,155 @@ def release_module_set(tag: str) -> dict:
         elif m in versions:
             modules[m] = versions[m]
     return modules
+
+
+def _git(*args, timeout: int = 120):
+    """Run git with ownership checks relaxed.
+
+    The builder runs as ROOT inside a container while the checkout is owned by
+    the host/runner user, and modern git refuses that with "detected dubious
+    ownership" -- exit 128, on every command. Caught by running the delta scope
+    against a real clone: `git tag --list` failed, previous_release_tag()
+    returned None, and the build quietly produced a FULL package under a
+    delta's name. It fails safe, which is exactly what makes it dangerous: the
+    delta would have degraded to full on every CI run and nothing would have
+    said so.
+
+    -c is used rather than `git config --global` so nothing is mutated outside
+    this process.
+    """
+    import subprocess
+    return subprocess.run(
+        ["git", "-c", "safe.directory=*", *args],
+        capture_output=True, text=True, timeout=timeout)
+
+
+def previous_release_tag(tag: str) -> "str | None":
+    """The release immediately before ``tag``, from git.
+
+    Release tags are ``intact-YYYYMMDD``, so a plain lexical sort over that
+    shape IS chronological -- no date parsing, no creatordate lookup that a
+    re-tag could reorder. Returns None when this is the first release, which
+    the caller treats as "there is no delta, ship full".
+
+    STRICTLY that shape, though. The repo also carries suffixed tags --
+    intact-20260615Legacy, intact-20260705Legacy -- which are not releases in
+    this line and sort straight into the middle of the real ones: an unfiltered
+    sort makes intact-20260705Legacy the "previous release" of intact-20260726,
+    and the delta would then be diffed against a config that never shipped to
+    anyone. Anything that is not exactly intact-<8 digits> is ignored.
+    """
+    import re
+    import subprocess
+
+    # REFRESH TAGS FIRST, FORCIBLY. Two ways this goes wrong without it, both
+    # observed:
+    #
+    #  1. `git fetch` does NOT move an existing local tag. A re-cut release
+    #     leaves the old target in place, so the diff runs against code that
+    #     release no longer contains -- silently, with no error. This exact
+    #     staleness made intact-20260803 measure as "nothing but elk-and-tusd
+    #     unchanged" while the real tag had moved from 6316e05 to 25effd5.
+    #  2. actions/checkout@v4 defaults to a SHALLOW, single-ref fetch, so a CI
+    #     runner has no other release tags at all and every baseline lookup
+    #     returns None -- the delta quietly degrades to "first release ever".
+    #     The workflow also sets fetch-depth: 0; this is the belt to that brace,
+    #     since the builder is run locally too.
+    #
+    # Best-effort: an air-gapped or network-less build still proceeds on
+    # whatever tags are local.
+    try:
+        _git("fetch", "--tags", "--force", "--quiet", "origin")
+    except Exception as e:
+        print(f"[ci-package] tag refresh skipped ({type(e).__name__}: {e}) — "
+              f"baseline is whatever this checkout already has", flush=True)
+
+    res = _git("tag", "--list", "intact-*")
+    if res.returncode != 0:
+        # Loud, not silent: a failure here silently degrades the delta to a
+        # full package under a delta's name.
+        print(f"[ci-package] WARNING: could not list tags (exit "
+              f"{res.returncode}): {res.stderr.strip()[:200]}", flush=True)
+        return None
+    out = res.stdout
+    shape = re.compile(r"^intact-\d{8}$")
+    tags = sorted(t.strip() for t in out.splitlines()
+                  if shape.match(t.strip()))
+    earlier = [t for t in tags if t < tag]
+    return earlier[-1] if earlier else None
+
+
+def commit_of(ref: str) -> str:
+    """The commit ``ref`` resolves to right now, or '' if it cannot be read.
+
+    Recorded in the manifest for both the release tag and the delta baseline,
+    because a TAG IS NOT AN IDENTITY. intact-20260803 was rebuilt against a
+    moved tag and the two packages were indistinguishable from the outside --
+    same name, same manifest, different code. Diagnosing it took comparing a
+    shipped tusd-v2.9.2 against a pinned v2.10.0. A commit makes the same
+    question a glance.
+    """
+    try:
+        res = _git("rev-list", "-n1", ref)
+        return res.stdout.strip() if res.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _versions_at_ref(ref: str) -> dict:
+    """The ``versions:`` block of config.yaml as of ``ref``.
+
+    Reads from git rather than the working tree so the comparison is against
+    what that release actually SHIPPED, not whatever is checked out now.
+    Falls back to the tracked template, since config.yaml itself is untracked.
+    """
+    import yaml
+    for path in ("config.yaml", "config.yaml.template"):
+        try:
+            res = _git("show", f"{ref}:{path}")
+            if res.returncode != 0:
+                continue
+            blob = res.stdout
+        except Exception:
+            continue
+        try:
+            return (yaml.safe_load(blob) or {}).get("versions") or {}
+        except Exception:
+            continue
+    return {}
+
+
+def delta_module_set(tag: str, previous_tag: str) -> dict:
+    """{module: version} whose pin MOVED between ``previous_tag`` and ``tag``.
+
+    Computed, never hand-listed. Editing any module's version in config.yaml is
+    the whole trigger -- the value simply has to differ, in any direction and in
+    any format. Version strings are compared as opaque strings on purpose: this
+    asks "did the operator change this pin", not "is this newer", so a revert, a
+    format change and a bump all count, and none of them depend on parsing a
+    scheme that varies per module (9.4.4, v2.10.0, 20260630, 0.77.1, latest).
+
+    A module present now and absent from the previous release counts as changed
+    -- it is new, so the target has none of it.
+
+    `intact` is ALWAYS included. It is the platform itself and its image is
+    rebuilt for every release, so a delta without it could not upgrade anything;
+    a delta with no module movement at all would otherwise be empty.
+
+    Only ever a subset of RELEASE_MODULES, so EXCLUDED_FROM_RELEASE still wins:
+    a module held out of the full asset can never appear in the delta.
+    """
+    full = release_module_set(tag)
+    before = _versions_at_ref(previous_tag)
+
+    out = {}
+    for module, version in full.items():
+        if module == "intact":
+            out[module] = version          # always -- see docstring
+            continue
+        if str(before.get(module, "")) != str(version):
+            out[module] = version
+    return out
 
 
 def _stamp_backend_pin(tag: str) -> None:
@@ -256,6 +411,12 @@ def main() -> int:
     ap.add_argument("--out", required=True, help="dir to copy the finished package into")
     ap.add_argument("--print-modules", action="store_true",
                     help="print the resolved module set and exit (no build)")
+    ap.add_argument("--scope", choices=("full", "delta"), default="full",
+                    help="full = every module in RELEASE_MODULES (correct from "
+                         "ANY baseline). delta = only modules whose config.yaml "
+                         "pin moved since the previous release; valid ONLY for a "
+                         "box on that exact baseline, which the manifest records "
+                         "as delta_from and the apply side enforces.")
     args = ap.parse_args()
 
     # Pin the backend image tag to the release BEFORE building. The checkout is
@@ -268,6 +429,19 @@ def main() -> int:
     _stamp_backend_pin(args.tag)
 
     modules = release_module_set(args.tag)
+    baseline = None
+    if args.scope == "delta":
+        baseline = previous_release_tag(args.tag)
+        if baseline is None:
+            # No earlier release to diff against: a "delta" here would mean
+            # "everything", so say so and build it rather than emitting an asset
+            # whose name promises a subset it cannot define.
+            print(f"[ci-package] {args.tag} has no previous release — "
+                  f"building FULL scope instead of a delta", flush=True)
+            args.scope = "full"
+        else:
+            modules = delta_module_set(args.tag, baseline)
+
     if args.print_modules:
         for m, v in modules.items():
             print(f"{m}={v}")
@@ -282,14 +456,29 @@ def main() -> int:
               f"absent from config.yaml versions: — NOT shipped", flush=True)
 
     from services.upgrade.package import prepare_upgrade_package
-    print(f"[ci-package] release {args.tag}: full scope, building "
-          f"{', '.join(modules)}", flush=True)
+    print(f"[ci-package] release {args.tag}: {args.scope} scope"
+          + (f" vs {baseline}" if baseline else "")
+          + f", building {', '.join(modules)}", flush=True)
+
+    # Provenance, recorded INSIDE the tarball. `package_kind` is what lets the
+    # apply side know whether delta_from must be honoured at all; the commits
+    # are there because a tag is not an identity -- intact-20260803 was re-cut
+    # and moved 6316e05 -> 25effd5, and the two packages were indistinguishable
+    # from the outside.
+    manifest_extra = {
+        "package_kind": args.scope,
+        "source_commit": commit_of(args.tag),
+    }
+    if args.scope == "delta":
+        manifest_extra["delta_from"] = baseline
+        manifest_extra["delta_from_commit"] = commit_of(baseline)
 
     result = prepare_upgrade_package(
         modules,
         run_id=f"ci_release_{args.tag}",
         logger=lambda m, l="info": print(f"[{l}] {m}", flush=True),
         compress=True,
+        manifest_extra=manifest_extra,
     )
     if not result.get("success"):
         print(f"[ci-package] FAILED: {result.get('error')}", flush=True)
