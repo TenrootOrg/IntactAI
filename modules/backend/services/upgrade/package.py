@@ -729,7 +729,8 @@ def _prepare_backend_images(package_dir: str, target_version: str, manifest: Dic
 
 def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                             compress: bool = True,
-                            work_dir: Optional[str] = None) -> Dict:
+                            work_dir: Optional[str] = None,
+                            manifest_extra: Optional[Dict] = None) -> Dict:
     """Download and package upgrade components.
 
     Args:
@@ -2191,6 +2192,14 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
             if os.path.exists(fpath):
                 image_sizes[fn] = os.path.getsize(fpath)
         manifest["contents"]["image_sizes"] = image_sizes
+
+        # Caller-supplied provenance, merged in BEFORE the write so it lands
+        # inside the tarball rather than only in the sidecar. The sidecar can be
+        # regenerated or replaced independently of the package it describes; a
+        # field that only lives there cannot be trusted by the apply side, which
+        # reads the manifest out of the archive it is about to install.
+        if manifest_extra:
+            manifest.setdefault("contents", {}).update(manifest_extra)
 
         # Write manifest
         log("", "info")

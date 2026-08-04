@@ -160,6 +160,93 @@ def release_module_set(tag: str) -> dict:
     return modules
 
 
+def previous_release_tag(tag: str) -> "str | None":
+    """The release immediately before ``tag``, from git.
+
+    Release tags are ``intact-YYYYMMDD``, so a plain lexical sort over that
+    shape IS chronological -- no date parsing, no creatordate lookup that a
+    re-tag could reorder. Returns None when this is the first release, which
+    the caller treats as "there is no delta, ship full".
+
+    STRICTLY that shape, though. The repo also carries suffixed tags --
+    intact-20260615Legacy, intact-20260705Legacy -- which are not releases in
+    this line and sort straight into the middle of the real ones: an unfiltered
+    sort makes intact-20260705Legacy the "previous release" of intact-20260726,
+    and the delta would then be diffed against a config that never shipped to
+    anyone. Anything that is not exactly intact-<8 digits> is ignored.
+    """
+    import re
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["git", "tag", "--list", "intact-*"],
+            capture_output=True, text=True, check=True).stdout
+    except Exception as e:
+        print(f"[ci-package] could not list tags ({type(e).__name__}: {e})",
+              flush=True)
+        return None
+    shape = re.compile(r"^intact-\d{8}$")
+    tags = sorted(t.strip() for t in out.splitlines()
+                  if shape.match(t.strip()))
+    earlier = [t for t in tags if t < tag]
+    return earlier[-1] if earlier else None
+
+
+def _versions_at_ref(ref: str) -> dict:
+    """The ``versions:`` block of config.yaml as of ``ref``.
+
+    Reads from git rather than the working tree so the comparison is against
+    what that release actually SHIPPED, not whatever is checked out now.
+    Falls back to the tracked template, since config.yaml itself is untracked.
+    """
+    import subprocess
+    import yaml
+    for path in ("config.yaml", "config.yaml.template"):
+        try:
+            blob = subprocess.run(["git", "show", f"{ref}:{path}"],
+                                  capture_output=True, text=True, check=True).stdout
+        except Exception:
+            continue
+        try:
+            return (yaml.safe_load(blob) or {}).get("versions") or {}
+        except Exception:
+            continue
+    return {}
+
+
+def delta_module_set(tag: str, previous_tag: str) -> dict:
+    """{module: version} whose pin MOVED between ``previous_tag`` and ``tag``.
+
+    Computed, never hand-listed. Editing any module's version in config.yaml is
+    the whole trigger -- the value simply has to differ, in any direction and in
+    any format. Version strings are compared as opaque strings on purpose: this
+    asks "did the operator change this pin", not "is this newer", so a revert, a
+    format change and a bump all count, and none of them depend on parsing a
+    scheme that varies per module (9.4.4, v2.10.0, 20260630, 0.77.1, latest).
+
+    A module present now and absent from the previous release counts as changed
+    -- it is new, so the target has none of it.
+
+    `intact` is ALWAYS included. It is the platform itself and its image is
+    rebuilt for every release, so a delta without it could not upgrade anything;
+    a delta with no module movement at all would otherwise be empty.
+
+    Only ever a subset of RELEASE_MODULES, so EXCLUDED_FROM_RELEASE still wins:
+    a module held out of the full asset can never appear in the delta.
+    """
+    full = release_module_set(tag)
+    before = _versions_at_ref(previous_tag)
+
+    out = {}
+    for module, version in full.items():
+        if module == "intact":
+            out[module] = version          # always -- see docstring
+            continue
+        if str(before.get(module, "")) != str(version):
+            out[module] = version
+    return out
+
+
 def _stamp_backend_pin(tag: str) -> None:
     """Set ``versions.backend`` to ``tag`` in the release checkout's config.yaml.
 
