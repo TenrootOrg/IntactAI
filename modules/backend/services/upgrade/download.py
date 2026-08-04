@@ -23,6 +23,7 @@ back to building on-box and every existing scenario keeps working.
 """
 import hashlib
 import os
+import shutil
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -413,3 +414,132 @@ def download_release_package(tag: str, dest_dir: str, run_id: str = None,
             "(the apply step still verifies every file against the in-package "
             "manifest).", "warning")
     return final_path
+
+
+# ===========================================================================
+# Per-module release assets
+# ===========================================================================
+#
+# A release publishes one asset per module plus an index describing them. The
+# box downloads only the modules it is actually installing or upgrading, then
+# assembles them into one package_dir (see base.assemble_release_package).
+#
+# find_release_index returning None is the whole transition strategy: releases
+# built before this existed have no index, the caller falls back to
+# download_release_package, and the legacy single-bundle path is untouched.
+
+def find_release_index(tag: str, logger: Callable = None) -> Optional[dict]:
+    """The per-module asset index for release ``tag``, or None if it has none.
+
+    Shape:
+        {"release_tag": …, "source_commit": …,
+         "assets": {"<module>": {"asset": name, "version": …,
+                                 "sha256": …, "size": n,
+                                 "parts": [name, …]}}}
+    """
+    log = logger or (lambda m, l="info": None)
+    rel = _get_release(tag, log)
+    if not rel:
+        return None
+    name = f"intact-release-{tag}.index.json"
+    assets = {a['name']: a for a in (rel.get('assets') or [])}
+    if name not in assets:
+        log(f"  Release '{tag}' has no per-module index ({name}) — "
+            f"using the single-package path.", "info")
+        return None
+    try:
+        r = requests.get(assets[name]['url'], headers=_headers(octet=True),
+                         timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT))
+        r.raise_for_status()
+        index = r.json()
+    except Exception as e:
+        log(f"  Could not read the release index ({type(e).__name__}: {e}) — "
+            f"falling back to the single package.", "warning")
+        return None
+
+    # Attach the live asset URLs; the index records names, not URLs, so it
+    # stays valid if the repo is renamed or mirrored.
+    for module, entry in (index.get('assets') or {}).items():
+        entry['urls'] = []
+        for n in ([entry['asset']] if entry.get('asset') in assets
+                  else (entry.get('parts') or [])):
+            if n in assets:
+                entry['urls'].append((n, assets[n]['url'],
+                                      assets[n].get('size') or 0))
+    return index
+
+
+def download_release_assets(tag: str, modules, dest_dir: str,
+                            run_id: str = None, logger: Callable = None,
+                            progress_cb: Optional[Callable] = None):
+    """Download the assets for ``modules`` from release ``tag``.
+
+    Returns ``(asset_paths, index)``. Raises IOError if any requested module has
+    no asset, or if one fails its checksum.
+
+    A MISSING ASSET IS FATAL, deliberately. The apply loop is driven by the
+    assembled manifest's ``versions``, so a module whose asset quietly failed to
+    download simply would not appear there — and the run would report success
+    having never touched it. That is the same silent-staleness failure the delta
+    scheme had, arriving through a different door, so it is refused here and
+    again in the assembler.
+    """
+    log = logger or (lambda m, l="info": print(f"[{l}] {m}"))
+    index = find_release_index(tag, logger=log)
+    if not index:
+        return None, None
+
+    available = index.get('assets') or {}
+    wanted = [m for m in modules if m in available]
+    missing = sorted(set(modules) - set(available))
+    if missing:
+        raise IOError(
+            f"release {tag} has no asset for: {', '.join(missing)}. "
+            f"Applying without them would leave those modules untouched while "
+            f"reporting success.")
+
+    os.makedirs(dest_dir, exist_ok=True)
+    paths = []
+    log(f"Downloading {len(wanted)} module asset(s) from {tag}: "
+        f"{', '.join(sorted(wanted))}", "info")
+
+    for module in sorted(wanted):
+        entry = available[module]
+        urls = entry.get('urls') or []
+        if not urls:
+            raise IOError(f"release {tag} lists {module} in its index but the "
+                          f"asset itself is not attached to the release")
+        final = os.path.join(dest_dir, entry['asset'])
+
+        if len(urls) == 1 and urls[0][0] == entry['asset']:
+            name, url, size = urls[0]
+            _download_asset(url, final, size, run_id, log, progress_cb,
+                            label=f"{module} ", log_progress=True)
+        else:
+            # Split asset: fetch parts, then concatenate, removing each as it is
+            # appended so peak disk stays at assembled + one part.
+            part_paths = []
+            for name, url, size in urls:
+                p = os.path.join(dest_dir, name)
+                _download_asset(url, p, size, run_id, log, progress_cb,
+                                label=f"{module} {name.rsplit('.', 1)[-1]} ",
+                                log_progress=True)
+                part_paths.append(p)
+            log(f"  Reassembling {module} from {len(part_paths)} part(s)…",
+                "info")
+            with open(final, 'wb') as out:
+                for p in part_paths:
+                    with open(p, 'rb') as chunk:
+                        shutil.copyfileobj(chunk, out, 8 * 1024 * 1024)
+                    os.remove(p)
+
+        want = entry.get('sha256')
+        if want:
+            _verify_sha256(final, want, run_id, log)
+        else:
+            log(f"  {module}: no sha256 in the index — integrity unverified",
+                "warning")
+        paths.append(final)
+
+    log(f"  {len(paths)} asset(s) ready", "success")
+    return paths, index

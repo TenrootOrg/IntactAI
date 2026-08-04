@@ -64,20 +64,39 @@ CACHE_TTL_SECONDS = 30 * 60
 
 
 def _release_package_bytes(rel: dict, tag: str):
-    """Total size in bytes of the CI upgrade-package attached to ``rel``, or
-    ``None`` when that release carries no package asset.
+    """Total size in bytes of the installable payload attached to ``rel``, or
+    ``None`` when that release carries nothing a box could apply.
 
-    CI attaches either a single ``intact-upgrade-<tag>.tar.gz`` or, when the
-    tarball exceeds GitHub's 2 GiB asset cap, a set of ``….tar.gz.part-NN``
-    pieces (see .github/workflows/build-release-package.yml). Either shape
-    counts; the ``.sha256`` / ``.manifest.json`` sidecars do not.
+    THREE SHAPES COUNT, and getting this wrong makes releases disappear from
+    the picker entirely — the caller `continue`s on ``None`` and upgrades are
+    download-only, so a release nothing recognises is simply not offered.
+
+      1. per-module assets — ``intact-<tag>-<module>.tar.gz[.part-NN]``, the
+         current shape. Their total is what a box would pay to take the whole
+         release; it fetches only the modules it needs, so this over-states
+         rather than under-states, which is the safe direction for a size hint.
+      2. the compatibility bundle — ``intact-upgrade-<tag>.tar.gz[.part-NN]``,
+         still published and still what an older box downloads.
+      3. nothing else. ``.sha256`` / ``.manifest.json`` / ``.meta.json`` /
+         ``.index.json`` sidecars are metadata, not payload.
+
+    Deliberately does NOT require the index: a release carrying module assets
+    is installable by any box new enough to read them, and one carrying only
+    the bundle is installable by every box. Both must remain visible.
     """
-    base = f'intact-upgrade-{tag}.tar.gz'
+    bundle = f'intact-upgrade-{tag}.tar.gz'
+    module_prefix = f'intact-{tag}-'
+    sidecars = ('.sha256', '.manifest.json', '.meta.json', '.index.json')
     total = 0
     found = False
     for a in (rel.get('assets') or []):
         name = a.get('name') or ''
-        if name == base or name.startswith(base + '.part-'):
+        if name.endswith(sidecars):
+            continue
+        is_bundle = name == bundle or name.startswith(bundle + '.part-')
+        is_module = (name.startswith(module_prefix)
+                     and ('.tar.gz' in name))
+        if is_bundle or is_module:
             total += a.get('size') or 0
             found = True
     return total if found else None

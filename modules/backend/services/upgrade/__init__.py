@@ -3529,12 +3529,56 @@ def run_online_upgrade_workflow(modules: Dict[str, str], run_id: str = None,
     # its CI build has not run yet.
     _intact_ref = modules.get('intact')
     _pkg = None
+    _assembled = None
     try:
         from services.upgrade.download import (
-            download_release_package, PackageDownloadCancelled)
+            download_release_package, download_release_assets,
+            PackageDownloadCancelled)
         os.makedirs('/data/uploads', exist_ok=True)  # ALLOWED_PACKAGE_DIR
-        _pkg = download_release_package(
-            _intact_ref, dest_dir='/data/uploads', run_id=run_id, logger=log)
+
+        # PER-MODULE ASSETS FIRST. A release built by the per-module CI publishes
+        # one asset per module plus an index; fetch only the modules this run
+        # actually touches instead of the whole platform. Releases built before
+        # that CI existed have no index, download_release_assets returns
+        # (None, None), and we fall through to the single-package path below --
+        # that fallback IS the transition strategy, not a safety net.
+        _wanted = sorted(modules.keys())
+        _asset_paths, _index = download_release_assets(
+            _intact_ref, _wanted, dest_dir='/data/uploads',
+            run_id=run_id, logger=log)
+
+        if _asset_paths:
+            from services.upgrade.base import assemble_release_package
+            # Staged OUTSIDE the /app/data/tmp/intact-upgrade-* glob that the
+            # offline flow wipes before every apply -- otherwise a later offline
+            # upload would delete a multi-GB download out from under this run.
+            _stage = f"/app/data/tmp/intact-assets-{_intact_ref}"
+            shutil.rmtree(_stage, ignore_errors=True)
+            _assembled = assemble_release_package(
+                _asset_paths, tag=_intact_ref, extract_dir=_stage,
+                expected_modules=_wanted,
+                expected_sha256={
+                    e['asset']: e.get('sha256')
+                    for e in (_index.get('assets') or {}).values()
+                    if e.get('sha256')},
+                logger=log)
+            # Reclaim the downloaded tarballs; their contents are now staged.
+            for _p in _asset_paths:
+                try:
+                    os.remove(_p)
+                except Exception:
+                    pass
+            if not _assembled.get('success'):
+                _msg = (f"Could not assemble the release assets: "
+                        f"{_assembled.get('error')}")
+                log(_msg, "error")
+                shutil.rmtree(_stage, ignore_errors=True)
+                return {"success": False, "status": "failed", "error": _msg,
+                        "results": {}, "completed": 0, "total": 0,
+                        "versions": {}}
+        else:
+            _pkg = download_release_package(
+                _intact_ref, dest_dir='/data/uploads', run_id=run_id, logger=log)
     except PackageDownloadCancelled:
         log("Upgrade cancelled during package download.", "warning")
         return {"success": False, "status": "cancelled", "cancelled": True,
@@ -3544,6 +3588,25 @@ def run_online_upgrade_workflow(modules: Dict[str, str], run_id: str = None,
         log(f"Could not download the pre-built release package "
             f"({type(_de).__name__}: {_de}).", "error")
         _pkg = None
+
+    if _assembled:
+        log("", "info")
+        log("=" * 50, "info")
+        log(f"Assembled {len(_assembled['manifest'].get('contents', {}).get('assembled_from', []))} "
+            f"module asset(s) — applying without a full-platform download.",
+            "success")
+        log("=" * 50, "info")
+        log("", "info")
+        return run_offline_upgrade_workflow(
+            package_path=None,
+            run_id=run_id,
+            logger=log,
+            db_overwrite=db_overwrite,
+            selected_modules=list(modules.keys()),
+            prebuilt_package_dir=_assembled['package_dir'],
+            prebuilt_manifest=_assembled['manifest'],
+            workflow_label="ONLINE UPGRADE (per-module assets + apply)",
+        )
 
     if not _pkg:
         _msg = (f"Release '{_intact_ref}' ships no downloadable upgrade "
