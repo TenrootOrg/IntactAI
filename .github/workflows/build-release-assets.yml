@@ -166,9 +166,13 @@ jobs:
             fi
             base="$(basename "$pkg" .tar.gz)-$kind.tar.gz"
             mv "$pkg" "ci-output/$base"
+            # `if`, not `[ -n "$x" ] && mv`. Steps run under bash -e, where a
+            # bare AND list whose test fails returns non-zero -- harmless here
+            # only because statements follow it, which a later reorder would
+            # silently take away.
             for side in manifest.json sha256; do
               extra="$(ls "$src"/*."$side" 2>/dev/null | head -1)" || true
-              [ -n "$extra" ] && mv "$extra" "ci-output/$base.$side"
+              if [ -n "$extra" ]; then mv "$extra" "ci-output/$base.$side"; fi
             done
             cd ci-output
             sha256sum "$base" > "$base.sha256"
