@@ -97,12 +97,62 @@ jobs:
           git pull --ff-only origin "${BRANCH}"
           echo "Stamping VERSION as: ${TAG} on ${BRANCH}"
           echo "${TAG}" > VERSION
+
+          # config.yaml versions.backend MUST move with VERSION.
+          #
+          # It is the tag compose resolves ${BACKEND_VERSION} to, so when the
+          # two disagree the box looks for an image the package never shipped
+          # and `up -d` rebuilds the backend from source -- observed on
+          # intact-20260804, where VERSION said 20260804 and this key still
+          # said 20260803, costing ~380 lines of live PyPI and replacing the
+          # tested image with an untested local build.
+          #
+          # Stamping only VERSION here is what caused that drift: prepare
+          # writes the right value INTO the package, so the artifact is always
+          # correct and only the repo -- and therefore every fresh checkout and
+          # every tagged tree -- carries the stale one. Nothing surfaced it
+          # because the failure is a silent rebuild, not an error.
+          #
+          # Same single-quoted form _pin_module_version uses, so a date-like
+          # tag is never YAML-cast to an int.
+          python3 - "${TAG}" <<'PY' || echo "::warning::could not stamp config.yaml versions.backend"
+          import re, sys
+          tag = sys.argv[1]
+          path = 'config.yaml'
+          try:
+              lines = open(path).readlines()
+          except FileNotFoundError:
+              sys.exit(0)
+          out, in_versions, stamped = [], False, False
+          for line in lines:
+              indent = re.match(r'^(\s*)', line).group(1)
+              if line.startswith('versions:'):
+                  in_versions = True
+                  out.append(line)
+                  continue
+              if in_versions:
+                  stripped = line.strip()
+                  # a new top-level key ends the versions: block
+                  if not indent and stripped and not stripped.startswith('#'):
+                      in_versions = False
+                  elif re.match(r'^\s+backend\s*:', line):
+                      out.append(f"{indent}backend: '{tag}'\n")
+                      stamped = True
+                      continue
+              out.append(line)
+          if stamped:
+              open(path, 'w').writelines(out)
+              print(f"Stamped config.yaml versions.backend as {tag}")
+          else:
+              print("::warning::no versions.backend key in config.yaml — not stamped")
+          PY
+
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if [[ -z "$(git status --porcelain VERSION)" ]]; then
-            echo "VERSION already up to date — nothing to commit."
+          if [[ -z "$(git status --porcelain VERSION config.yaml)" ]]; then
+            echo "VERSION and config.yaml already up to date — nothing to commit."
             exit 0
           fi
-          git add VERSION
-          git commit -m "chore: stamp VERSION as ${TAG} [skip ci]"
+          git add VERSION config.yaml
+          git commit -m "chore: stamp VERSION + versions.backend as ${TAG} [skip ci]"
           git push origin "${BRANCH}"
