@@ -1,0 +1,212 @@
+# Build BOTH release assets — full and delta — from one run.
+#
+# Deliberately a SEPARATE workflow from build-release-package.yml, which stays
+# exactly as it is. `main` keeps using the old one until this path has produced
+# a green release; retiring it before then would leave no way back.
+#
+# WHY ONE JOB AND NOT TWO PARALLEL ONES
+# Two jobs each run their own `docker pull`. If an upstream tag moves between
+# them -- or a registry serves a different digest -- the full and delta assets
+# end up carrying DIFFERENT BYTES FOR THE SAME IMAGE under one release tag. That
+# divergence is silent and very hard to detect afterwards. One job pulls once,
+# so the delta is provably a subset of the full. The wall-clock argument for
+# splitting is weaker than it looks anyway: the delta only covers the modules
+# that moved, so parallel time is max(full, delta) which is just full.
+#
+# WHY fetch-depth: 0 IS LOAD-BEARING
+# actions/checkout@v4 defaults to a shallow, single-ref fetch. The delta is
+# computed by diffing this release's config.yaml pins against the PREVIOUS
+# release tag's, so without full history `git tag --list` returns nothing,
+# previous_release_tag() returns None, and the delta silently degrades to
+# "first release ever" -- shipping a full package under a delta's name.
+name: Build release assets (full + delta)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build (e.g. intact-20260804)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-assets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120      # full build + a second, much smaller delta build
+    steps:
+      - name: Resolve tag
+        id: tag
+        env:
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          case "$TAG" in
+            intact-*) ;;
+            *) echo "::error::Not an intact-* release tag ($TAG) — nothing to build"; exit 1 ;;
+          esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout the release tag (with full tag history)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          fetch-depth: 0        # see header — the delta baseline needs tags
+
+      # A tag is not an identity. intact-20260803 was re-cut and moved
+      # 6316e05 -> 25effd5; the two packages were indistinguishable from the
+      # outside. Print what this build is ACTUALLY made of, and record the same
+      # commit in both manifests.
+      - name: Show what this tag resolves to
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          echo "tag        : $TAG"
+          echo "commit     : $(git rev-list -n1 "$TAG")"
+          echo "release tags visible to the delta baseline lookup:"
+          git tag --list 'intact-*' | sort | tail -8
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          docker image prune -af || true
+          df -h /
+
+      - name: Seed SigmaHQ rules (aws_sigma rule pack source)
+        run: |
+          sudo mkdir -p /opt/sigma-rules
+          sudo chown "$(id -un)" /opt/sigma-rules
+          git clone --depth 1 https://github.com/SigmaHQ/sigma /opt/sigma-rules
+
+      - name: Build the release backend image (packager runtime)
+        run: docker build -f modules/backend/Dockerfile -t intact-backend:ci-packager .
+
+      # ---- FULL -------------------------------------------------------------
+      # Built first and on its own, because it is the correctness-bearing
+      # artifact: it carries every module and is valid from ANY baseline. If the
+      # delta step fails, a usable release asset still exists.
+      - name: Build the FULL package
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/out-full"
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+            -e INTACT_PATH="$GITHUB_WORKSPACE" \
+            -e INTACT_HOST_PATH="$GITHUB_WORKSPACE" \
+            -v /opt/sigma-rules:/opt/sigma-rules:ro \
+            -v "$GITHUB_WORKSPACE/out-full:/output" \
+            intact-backend:ci-packager \
+            python3 "$GITHUB_WORKSPACE/scripts/ci/build_release_package.py" \
+              --tag "$TAG" --scope full --out /output
+          echo "== full =="; ls -lh "$GITHUB_WORKSPACE/out-full"; df -h /
+
+      # ---- DELTA ------------------------------------------------------------
+      # Same job, so the images the full build pulled are already in the local
+      # docker store: this re-saves a subset rather than re-pulling anything.
+      # continue-on-error because a missing delta is an inconvenience while a
+      # missing full is a broken release.
+      - name: Build the DELTA package
+        id: delta
+        continue-on-error: true
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/out-delta"
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+            -e INTACT_PATH="$GITHUB_WORKSPACE" \
+            -e INTACT_HOST_PATH="$GITHUB_WORKSPACE" \
+            -v /opt/sigma-rules:/opt/sigma-rules:ro \
+            -v "$GITHUB_WORKSPACE/out-delta:/output" \
+            intact-backend:ci-packager \
+            python3 "$GITHUB_WORKSPACE/scripts/ci/build_release_package.py" \
+              --tag "$TAG" --scope delta --out /output
+          echo "== delta =="; ls -lh "$GITHUB_WORKSPACE/out-delta"; df -h /
+
+      # The manifests are the whole point of this workflow — surface them in the
+      # log so a wrong-looking asset is caught here rather than by downloading
+      # it and reading the manifest by hand, which is how the last stale package
+      # was eventually diagnosed.
+      - name: Report what each asset contains
+        run: |
+          for d in out-full out-delta; do
+            m="$(ls "$GITHUB_WORKSPACE/$d"/*.manifest.json 2>/dev/null | head -1)" || true
+            [ -n "$m" ] || { echo "--- $d: no manifest"; continue; }
+            echo "--- $d"
+            python3 - "$m" <<'PY'
+          import json, sys
+          man = json.load(open(sys.argv[1]))
+          c = man.get("contents") or {}
+          print("   kind        :", c.get("package_kind", "(unset)"))
+          print("   commit      :", str(c.get("source_commit", ""))[:12] or "(unset)")
+          print("   delta_from  :", c.get("delta_from", "-"))
+          print("   versions    :", json.dumps(man.get("versions", {})))
+          print("   images      :", len((c.get("images") or [])))
+          PY
+          done
+
+      # Rename so the two assets cannot collide on the release, split anything
+      # over the 2 GiB per-asset cap, and sha the WHOLE tarball pre-split so a
+      # consumer can `cat *.part-* > pkg.tar.gz` and verify.
+      - name: Name, checksum and split both assets
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p ci-output
+          for kind in full delta; do
+            src="out-$kind"
+            pkg="$(ls "$src"/*.tar.gz 2>/dev/null | head -1)" || true
+            if [ -z "$pkg" ]; then
+              echo "no package in $src — skipping"
+              [ "$kind" = "full" ] && { echo "::error::the FULL package is missing"; exit 1; }
+              continue
+            fi
+            base="$(basename "$pkg" .tar.gz)-$kind.tar.gz"
+            mv "$pkg" "ci-output/$base"
+            for side in manifest.json sha256; do
+              extra="$(ls "$src"/*."$side" 2>/dev/null | head -1)" || true
+              [ -n "$extra" ] && mv "$extra" "ci-output/$base.$side"
+            done
+            cd ci-output
+            sha256sum "$base" > "$base.sha256"
+            SIZE=$(stat -c%s "$base"); LIMIT=$((1900 * 1024 * 1024))
+            if [ "$SIZE" -gt "$LIMIT" ]; then
+              echo "$base is $((SIZE/1024/1024)) MiB — splitting"
+              split -b 1900m -d -a 2 "$base" "$base.part-"
+              rm -f "$base"
+            fi
+            cd ..
+          done
+          echo "== to upload =="; ls -lh ci-output
+
+      - name: Attach both assets to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$GITHUB_WORKSPACE"/ci-output/* --clobber
+          else
+            echo "No release exists for $TAG — artifact upload covers this run"
+          fi
+
+      - name: Upload both assets as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ steps.tag.outputs.tag }}
+          path: ci-output/*
+          retention-days: 7
+
+      - name: Delta build verdict
+        if: always()
+        run: |
+          if [ "${{ steps.delta.outcome }}" = "success" ]; then
+            echo "Delta built. It is valid ONLY for boxes on the baseline named in"
+            echo "its manifest — the apply side refuses it anywhere else."
+          else
+            echo "::warning::Delta build did not succeed — only the FULL asset was"
+            echo "published. That is safe: full is valid from any baseline."
+          fi

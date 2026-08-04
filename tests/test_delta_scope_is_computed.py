@@ -92,7 +92,7 @@ def _load(*names):
 
 
 NS = _load("previous_release_tag", "_versions_at_ref", "delta_module_set",
-           "commit_of", "RELEASE_MODULES", "EXCLUDED_FROM_RELEASE")
+           "commit_of", "_git", "RELEASE_MODULES", "EXCLUDED_FROM_RELEASE")
 
 
 def _fixture_repo():
@@ -294,6 +294,40 @@ def test_tags_are_refreshed_before_the_baseline_is_chosen():
     check("and before listing them",
           fn_nc.index('"fetch"') < fn_nc.index('"--list"'),
           "the refresh happens too late to matter")
+
+
+def test_git_runs_with_ownership_checks_relaxed():
+    """The builder runs as ROOT inside a container while the checkout is owned
+    by the host/runner user, and modern git refuses that with "detected dubious
+    ownership" -- exit 128, on every command. That is precisely the CI shape:
+    the runner owns the workspace, the packager container runs as root.
+
+    Found by running --scope delta against a real clone, not by reading code:
+    `git tag --list` failed, previous_release_tag() returned None, and the build
+    produced a FULL package under a delta's name. It fails SAFE, which is what
+    made it dangerous -- the delta would have degraded on every CI run and
+    nothing would have said so."""
+    src = open(BUILDER).read()
+    src_nc = "\n".join(l.split("#")[0] for l in src.splitlines())
+    check("git is invoked with safe.directory relaxed",
+          '"safe.directory=*"' in src_nc, "container-root git calls will exit 128")
+    check("every git call goes through the helper",
+          src_nc.count('subprocess.run(\n        ["git"') <= 1
+          and src_nc.count('["git", "tag"') == 0
+          and src_nc.count('["git", "rev-list"') == 0,
+          "a raw git call bypasses the ownership handling")
+
+
+def test_a_failed_tag_listing_is_reported_not_swallowed():
+    """Silently returning None means "no previous release", which builds a full
+    package labelled as a delta. Whatever goes wrong has to be visible."""
+    src = open(BUILDER).read()
+    fn = src[src.index("def previous_release_tag"):]
+    fn = fn[:fn.index("\ndef ")]
+    check("a non-zero tag listing warns", "WARNING" in fn,
+          "a broken baseline lookup would be invisible")
+    check("and includes git's own stderr", "stderr" in fn,
+          "no way to tell WHY the lookup failed")
 
 
 # ------------------------------------------------------------- scope guards

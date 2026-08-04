@@ -160,6 +160,27 @@ def release_module_set(tag: str) -> dict:
     return modules
 
 
+def _git(*args, timeout: int = 120):
+    """Run git with ownership checks relaxed.
+
+    The builder runs as ROOT inside a container while the checkout is owned by
+    the host/runner user, and modern git refuses that with "detected dubious
+    ownership" -- exit 128, on every command. Caught by running the delta scope
+    against a real clone: `git tag --list` failed, previous_release_tag()
+    returned None, and the build quietly produced a FULL package under a
+    delta's name. It fails safe, which is exactly what makes it dangerous: the
+    delta would have degraded to full on every CI run and nothing would have
+    said so.
+
+    -c is used rather than `git config --global` so nothing is mutated outside
+    this process.
+    """
+    import subprocess
+    return subprocess.run(
+        ["git", "-c", "safe.directory=*", *args],
+        capture_output=True, text=True, timeout=timeout)
+
+
 def previous_release_tag(tag: str) -> "str | None":
     """The release immediately before ``tag``, from git.
 
@@ -195,20 +216,19 @@ def previous_release_tag(tag: str) -> "str | None":
     # Best-effort: an air-gapped or network-less build still proceeds on
     # whatever tags are local.
     try:
-        subprocess.run(["git", "fetch", "--tags", "--force", "--quiet", "origin"],
-                       capture_output=True, timeout=120)
+        _git("fetch", "--tags", "--force", "--quiet", "origin")
     except Exception as e:
         print(f"[ci-package] tag refresh skipped ({type(e).__name__}: {e}) — "
               f"baseline is whatever this checkout already has", flush=True)
 
-    try:
-        out = subprocess.run(
-            ["git", "tag", "--list", "intact-*"],
-            capture_output=True, text=True, check=True).stdout
-    except Exception as e:
-        print(f"[ci-package] could not list tags ({type(e).__name__}: {e})",
-              flush=True)
+    res = _git("tag", "--list", "intact-*")
+    if res.returncode != 0:
+        # Loud, not silent: a failure here silently degrades the delta to a
+        # full package under a delta's name.
+        print(f"[ci-package] WARNING: could not list tags (exit "
+              f"{res.returncode}): {res.stderr.strip()[:200]}", flush=True)
         return None
+    out = res.stdout
     shape = re.compile(r"^intact-\d{8}$")
     tags = sorted(t.strip() for t in out.splitlines()
                   if shape.match(t.strip()))
@@ -226,11 +246,9 @@ def commit_of(ref: str) -> str:
     shipped tusd-v2.9.2 against a pinned v2.10.0. A commit makes the same
     question a glance.
     """
-    import subprocess
     try:
-        return subprocess.run(["git", "rev-list", "-n1", ref],
-                              capture_output=True, text=True,
-                              check=True).stdout.strip()
+        res = _git("rev-list", "-n1", ref)
+        return res.stdout.strip() if res.returncode == 0 else ""
     except Exception:
         return ""
 
@@ -242,12 +260,13 @@ def _versions_at_ref(ref: str) -> dict:
     what that release actually SHIPPED, not whatever is checked out now.
     Falls back to the tracked template, since config.yaml itself is untracked.
     """
-    import subprocess
     import yaml
     for path in ("config.yaml", "config.yaml.template"):
         try:
-            blob = subprocess.run(["git", "show", f"{ref}:{path}"],
-                                  capture_output=True, text=True, check=True).stdout
+            res = _git("show", f"{ref}:{path}")
+            if res.returncode != 0:
+                continue
+            blob = res.stdout
         except Exception:
             continue
         try:
