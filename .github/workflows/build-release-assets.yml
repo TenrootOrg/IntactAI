@@ -33,6 +33,13 @@
 name: Build release assets (per module)
 
 on:
+  # Publishing a release builds it. Note for anyone wondering why an edit here
+  # appears to do nothing: `release` is a repository-level event, and GitHub
+  # only ever reads its workflow file from the DEFAULT BRANCH. A copy of this
+  # file on any other branch is reachable by workflow_dispatch and by nothing
+  # else, so the automatic trigger lives or dies by what is on main.
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -47,7 +54,7 @@ permissions:
 # problem again, arriving through the scheduler instead of through git. Queue
 # rather than cancel: a half-uploaded release is worse than a slow one.
 concurrency:
-  group: release-assets-${{ github.event.inputs.tag }}
+  group: release-assets-${{ github.event.release.tag_name || github.event.inputs.tag }}
   cancel-in-progress: false
 
 jobs:
@@ -55,12 +62,13 @@ jobs:
   resolve:
     runs-on: ubuntu-latest
     outputs:
+      tag: ${{ steps.r.outputs.tag }}
       commit: ${{ steps.r.outputs.commit }}
       matrix: ${{ steps.m.outputs.matrix }}
     steps:
       - name: Validate the tag
         env:
-          TAG: ${{ github.event.inputs.tag }}
+          TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
         run: |
           case "$TAG" in
             intact-*) ;;
@@ -71,15 +79,16 @@ jobs:
       # shallow single-ref checkout has no tag objects to resolve against.
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag }}
+          ref: ${{ github.event.release.tag_name || github.event.inputs.tag }}
           fetch-depth: 0
 
       - name: Pin the tag to a commit, once
         id: r
         env:
-          TAG: ${{ github.event.inputs.tag }}
+          TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
         run: |
           COMMIT="$(git rev-list -n1 "$TAG")"
+          echo "tag=$TAG"       >> "$GITHUB_OUTPUT"
           echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
           echo "Building $TAG @ $COMMIT"
 
@@ -94,7 +103,7 @@ jobs:
       - name: Resolve the module matrix
         id: m
         env:
-          TAG: ${{ github.event.inputs.tag }}
+          TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
         run: |
           python3 -m pip install --quiet pyyaml
           MATRIX="$(INTACT_PATH="$GITHUB_WORKSPACE" PYTHONPATH="$GITHUB_WORKSPACE/modules/backend" \
@@ -173,7 +182,7 @@ jobs:
 
       - name: Build the ${{ matrix.module }} asset
         env:
-          TAG: ${{ github.event.inputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
           COMMIT: ${{ needs.resolve.outputs.commit }}
           MODULE: ${{ matrix.module }}
         run: |
@@ -257,7 +266,7 @@ jobs:
 
       - name: Build and validate the index
         env:
-          TAG: ${{ github.event.inputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
           COMMIT: ${{ needs.resolve.outputs.commit }}
         run: |
           mkdir -p out
@@ -357,7 +366,7 @@ jobs:
       # writing a second copy just to hash it is what filled the disk before.
       - name: Verify every asset against the index
         env:
-          TAG: ${{ github.event.inputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           set -euo pipefail
           INDEX="$(find all -name "intact-release-$TAG.index.json" | head -1)"
@@ -394,7 +403,7 @@ jobs:
       - name: Attach everything to the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.inputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           set -euo pipefail
           if ! gh release view "$TAG" >/dev/null 2>&1; then
@@ -410,7 +419,7 @@ jobs:
 
       - name: Summary
         env:
-          TAG: ${{ github.event.inputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
           COMMIT: ${{ needs.resolve.outputs.commit }}
         run: |
           IDX="$(find all -name "intact-release-$TAG.index.json.sha256" | head -1)"
