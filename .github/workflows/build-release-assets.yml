@@ -237,6 +237,8 @@ jobs:
             python3 "$GITHUB_WORKSPACE/scripts/ci/build_release_package.py" \
               --tag "$TAG" --module "$MODULE" --commit "$COMMIT" \
               --work-dir "/tmp/intact-upgrade-$TAG" --out /output
+          # Docker container runs as root; make output files writable by host user
+          chmod -R u+w "$GITHUB_WORKSPACE/out"
           ls -lh "$GITHUB_WORKSPACE/out"
 
       # 2 GiB per release asset. sha256 is of the WHOLE tarball, taken
