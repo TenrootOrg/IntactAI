@@ -53,6 +53,15 @@ _RETRIES = 4
 # will have more, not fewer -- so this scales on its own.
 _PART_WORKERS = 4
 
+# Concurrent ASSET downloads. A release now ships one asset per module, so a
+# full fetch is ~9 separate downloads rather than one -- and GitHub throttles a
+# single connection well below what the link can carry, which made the
+# sequential version spend most of its wall-clock waiting instead of
+# transferring. Four rather than "all of them": past that the per-connection
+# share falls off faster than the concurrency wins it back, and each extra
+# stream is another multi-GB write competing for the same disk.
+_ASSET_WORKERS = 4
+
 # One status line for the whole download, rewritten on this interval, instead
 # of every part logging its own progress. With parts running concurrently the
 # per-part lines interleave, and at ~5% each a 4-part package emits ~80 of
@@ -499,11 +508,36 @@ def download_release_assets(tag: str, modules, dest_dir: str,
             f"reporting success.")
 
     os.makedirs(dest_dir, exist_ok=True)
-    paths = []
-    log(f"Downloading {len(wanted)} module asset(s) from {tag}: "
-        f"{', '.join(sorted(wanted))}", "info")
 
-    for module in sorted(wanted):
+    total_bytes = sum((available[m].get('size') or 0) for m in wanted)
+    log(f"Downloading {len(wanted)} asset(s) from {tag} "
+        f"({total_bytes / (1024 ** 3):.2f} GB): {', '.join(sorted(wanted))}",
+        "info")
+
+    # PARALLEL ACROSS ASSETS. GitHub throttles a single connection well below
+    # what the link can carry, so nine sequential downloads spend most of their
+    # time waiting rather than transferring. Bounded at _ASSET_WORKERS because
+    # past that the per-connection share drops faster than the concurrency buys
+    # back, and every extra stream is another multi-GB write competing for the
+    # same disk.
+    #
+    # Progress is reported by a single reporter thread rather than by each
+    # worker: nine workers logging their own percentages interleave into
+    # something unreadable, and the operator only wants one question answered --
+    # how much of the whole download is left.
+    done_bytes = {m: 0 for m in wanted}
+    done_lock = threading.Lock()
+    finished = set()
+    results: Dict[str, str] = {}
+    errors: Dict[str, BaseException] = {}
+
+    def _progress_for(module):
+        def _cb(n):
+            with done_lock:
+                done_bytes[module] = n
+        return _cb
+
+    def _fetch(module):
         entry = available[module]
         urls = entry.get('urls') or []
         if not urls:
@@ -513,25 +547,23 @@ def download_release_assets(tag: str, modules, dest_dir: str,
 
         if len(urls) == 1 and urls[0][0] == entry['asset']:
             name, url, size = urls[0]
-            _download_asset(url, final, size, run_id, log, progress_cb,
-                            label=f"{module} ", log_progress=True)
+            _download_asset(url, final, size, run_id, log,
+                            _progress_for(module), label=f"{module} ",
+                            log_progress=False)
         else:
-            # Split asset: fetch parts, then concatenate, removing each as it is
-            # appended so peak disk stays at assembled + one part.
+            # Split asset: fetch its parts, then concatenate, removing each as
+            # it is appended so peak disk stays at assembled + one part.
             part_paths = []
             for name, url, size in urls:
-                p = os.path.join(dest_dir, name)
-                _download_asset(url, p, size, run_id, log, progress_cb,
-                                label=f"{module} {name.rsplit('.', 1)[-1]} ",
-                                log_progress=True)
-                part_paths.append(p)
-            log(f"  Reassembling {module} from {len(part_paths)} part(s)…",
-                "info")
+                pp = os.path.join(dest_dir, name)
+                _download_asset(url, pp, size, run_id, log, None,
+                                label=f"{module} ", log_progress=False)
+                part_paths.append(pp)
             with open(final, 'wb') as out:
-                for p in part_paths:
-                    with open(p, 'rb') as chunk:
+                for pp in part_paths:
+                    with open(pp, 'rb') as chunk:
                         shutil.copyfileobj(chunk, out, 8 * 1024 * 1024)
-                    os.remove(p)
+                    os.remove(pp)
 
         want = entry.get('sha256')
         if want:
@@ -539,7 +571,54 @@ def download_release_assets(tag: str, modules, dest_dir: str,
         else:
             log(f"  {module}: no sha256 in the index — integrity unverified",
                 "warning")
-        paths.append(final)
+        return final
 
+    stop_reporting = threading.Event()
+
+    def _report():
+        # One line every _PROGRESS_SECONDS, naming what is still in flight so a
+        # stall is attributable to a module rather than to "the download".
+        while not stop_reporting.wait(_PROGRESS_SECONDS):
+            with done_lock:
+                got = sum(done_bytes.values())
+                pending = sorted(set(wanted) - finished)
+            pct = (got * 100 // total_bytes) if total_bytes else 0
+            log(f"  … {got / (1024 ** 3):.2f}/{total_bytes / (1024 ** 3):.2f} GB "
+                f"({pct}%) — {len(finished)}/{len(wanted)} done"
+                + (f", fetching {', '.join(pending[:3])}"
+                   f"{'…' if len(pending) > 3 else ''}" if pending else ""),
+                "info")
+
+    reporter = threading.Thread(target=_report, daemon=True)
+    reporter.start()
+    try:
+        workers = max(1, min(_ASSET_WORKERS, len(wanted)))
+        with ThreadPoolExecutor(max_workers=workers,
+                                thread_name_prefix='asset-dl') as ex:
+            futures = {ex.submit(_fetch, m): m for m in sorted(wanted)}
+            for fut in as_completed(futures):
+                module = futures[fut]
+                try:
+                    results[module] = fut.result()
+                except BaseException as e:          # noqa: BLE001 - re-raised
+                    errors[module] = e
+                with done_lock:
+                    finished.add(module)
+                if module in results:
+                    log(f"  ✓ {module} ({os.path.getsize(results[module]) / (1024 ** 2):.0f} MB) "
+                        f"[{len(finished)}/{len(wanted)}]", "success")
+    finally:
+        stop_reporting.set()
+
+    if errors:
+        # Cancellation wins over any other failure: it is what the operator
+        # asked for, not something that went wrong.
+        for e in errors.values():
+            if isinstance(e, PackageDownloadCancelled):
+                raise e
+        first = sorted(errors)[0]
+        raise IOError(f"could not download the {first} asset: {errors[first]}")
+
+    paths = [results[m] for m in sorted(results)]
     log(f"  {len(paths)} asset(s) ready", "success")
     return paths, index
