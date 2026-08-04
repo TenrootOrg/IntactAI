@@ -418,6 +418,16 @@ run_docker_compose() {
 # Same exponential-backoff cadence as _pull_image_with_retry() in docker.sh.
 pull_compose_with_retry() {
     local module_name="$1"
+    # Installed from a package? Then every image this module needs is already in
+    # the local store and `docker compose pull` has nothing to do but contact a
+    # registry -- which is pointless online and impossible air-gapped. Skipping
+    # here is what makes "install from the package" mean it: the per-image
+    # helper already short-circuits, but compose pulls by service and would
+    # otherwise still go out to the network for each one.
+    if [[ "${INTACT_FROM_PACKAGE:-0}" == "1" ]]; then
+        log_info "  ${module_name}: images already loaded from the package — not pulling"
+        return 0
+    fi
     local max_attempts=3
     local delays=(5 15 45)
     local attempt=1

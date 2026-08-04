@@ -206,9 +206,104 @@ load_images_from_package() {
     # so one can be enabled later and installed with no route to a registry.
     # Said out loud because "20 images loaded, 6 modules running" otherwise
     # reads as something having gone wrong.
+    # Every downstream pull helper keys off this: the per-image one and
+    # pull_compose_with_retry. Set only after images actually loaded, so a
+    # failed load never silently disables the fallback to registries.
+    INTACT_FROM_PACKAGE=1
+    export INTACT_FROM_PACKAGE
+
     log_info "  Images are now local; config.yaml's enabled flags still decide"
     log_info "  which modules are deployed. Disabled modules keep their images"
     log_info "  on disk so they can be enabled later without internet access."
+    return 0
+}
+
+# Fetch the release package this checkout corresponds to, so an ONLINE install
+# runs the same code as an air-gapped one.
+#
+# THE POINT IS NOT THE DOWNLOAD, IT IS THE SHARED PATH. Installing from a
+# package means install and upgrade converge on one implementation: the same
+# images, loaded the same way, deployed by the same compose files. Two
+# implementations of "get this box running" are what let the installer and the
+# upgrade engine drift -- secrets generated in both bash and Python, chmod
+# policies that disagree, an ELK script one of them shipped and the other did
+# not. One path is one thing to test.
+#
+# Falls back to per-image registry pulls if the asset cannot be had. That is the
+# old behaviour, still correct, so a release without a published package (or a
+# GitHub outage) degrades to a slower install rather than no install.
+download_release_package() {
+    local tag="$1" dest_dir="$2"
+    local repo="${INTACT_REPO:-TenrootOrg/IntactAI}"
+    local api="https://api.github.com/repos/${repo}/releases/tags/${tag}"
+    local hdr=(-H "Accept: application/vnd.github+json")
+    [[ -n "${GITHUB_TOKEN:-}" ]] && hdr+=(-H "Authorization: token ${GITHUB_TOKEN}")
+
+    log_info "Looking for a release package for ${tag}..."
+    local json
+    json="$(curl -sSL --max-time 60 "${hdr[@]}" "$api" 2>/dev/null)" || true
+    [[ -n "$json" ]] || { log_warn "  Could not reach the releases API"; return 1; }
+
+    # Prefer the FULL asset. A delta cannot install a box from scratch, and the
+    # old single-asset name is accepted so existing releases still work.
+    local names
+    names="$(printf '%s' "$json" | python3 -c '
+import json,sys
+try: rel=json.load(sys.stdin)
+except Exception: sys.exit(0)
+a=[x.get("name","") for x in (rel.get("assets") or [])]
+full=[n for n in a if n.endswith(("-full.tar.gz",)) or ".tar.gz.part-" in n and "-full" in n]
+if not full:
+    full=[n for n in a if n.endswith(".tar.gz") and "-delta" not in n]
+if not full:
+    full=[n for n in a if ".tar.gz.part-" in n and "-delta" not in n]
+print("\n".join(sorted(set(full))))
+' 2>/dev/null)" || true
+    [[ -n "$names" ]] || { log_warn "  No installable package asset on release ${tag}"; return 1; }
+
+    mkdir -p "$dest_dir"
+    local n
+    while IFS= read -r n; do
+        [[ -n "$n" ]] || continue
+        log_info "  Downloading ${n}..."
+        if ! curl -fSL --retry 3 --retry-delay 5 --max-time 3600 \
+                 -o "${dest_dir}/${n}" \
+                 "https://github.com/${repo}/releases/download/${tag}/${n}" 2>>"$LOG_FILE"; then
+            log_warn "  Download failed: ${n}"
+            return 1
+        fi
+    done <<< "$names"
+
+    # Reassemble split parts. CI splits anything over the 2 GiB asset cap and
+    # publishes the sha256 of the WHOLE tarball, pre-split.
+    local pkg
+    pkg="$(ls "${dest_dir}"/*.tar.gz 2>/dev/null | head -1)" || true
+    if [[ -z "$pkg" ]]; then
+        local first_part; first_part="$(ls "${dest_dir}"/*.part-00 2>/dev/null | head -1)" || true
+        [[ -n "$first_part" ]] || { log_warn "  Nothing downloaded"; return 1; }
+        pkg="${first_part%.part-00}"
+        log_info "  Reassembling parts..."
+        cat "${pkg}".part-* > "$pkg" && rm -f "${pkg}".part-*
+    fi
+
+    # Verify against the published sidecar when there is one. Same digest CI
+    # computed; a truncated multi-GB download is otherwise indistinguishable
+    # from a good one until images fail to load, much later.
+    local sha_file="${pkg}.sha256"
+    if [[ -f "$sha_file" ]]; then
+        local want got
+        want="$(awk '{print $1}' "$sha_file" | head -1)"
+        got="$(sha256sum "$pkg" | awk '{print $1}')"
+        if [[ "$want" != "$got" ]]; then
+            log_error "  Package checksum MISMATCH — refusing it (expected ${want:0:16}…, got ${got:0:16}…)"
+            return 1
+        fi
+        log_success "  Package checksum verified"
+    else
+        log_warn "  No .sha256 published for this asset — integrity unverified"
+    fi
+
+    INTACT_PACKAGE="$pkg"
     return 0
 }
 
@@ -268,6 +363,50 @@ main() {
     elif ! check_network_connectivity; then
         log_error "Network connectivity check failed - aborting installation"
         exit 1
+    else
+        # ONLINE — and STILL installing from the release package. This is the
+        # only way a box gets its images now; there is deliberately no
+        # per-image registry fallback.
+        #
+        # The point is not the download, it is that install and upgrade run ONE
+        # implementation: the same asset, the same loader, the same compose
+        # files. Two ways to "get this box running" is precisely what let the
+        # installer and the upgrade engine drift -- secrets generated in both
+        # bash and Python, chmod policies that disagree, an ELK script one of
+        # them shipped and the other did not. A fallback would quietly restore
+        # that second path and with it the second test matrix, which is the
+        # entire cost this change exists to remove.
+        #
+        # So a package that cannot be fetched or loaded is a FAILED INSTALL,
+        # stated plainly, rather than a silent downgrade to a different code
+        # path that nobody tested this release.
+        local _rel_tag; _rel_tag="$(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null || true)"
+        if [[ -z "$_rel_tag" ]]; then
+            log_error "=============================================="
+            log_error "No VERSION file in ${SCRIPT_DIR}, so there is no way to tell"
+            log_error "which release package to install."
+            log_error ""
+            log_error "Use a release checkout, or install offline with:"
+            log_error "    sudo bash install.sh --package <asset>-full.tar.gz"
+            log_error "=============================================="
+            exit 1
+        fi
+        if ! download_release_package "$_rel_tag" "${SCRIPT_DIR}/data/tmp/install-pkg"; then
+            log_error "=============================================="
+            log_error "Could not obtain the release package for ${_rel_tag}."
+            log_error ""
+            log_error "Images come only from the package now, so the install"
+            log_error "cannot continue. Either fix connectivity to GitHub, or"
+            log_error "download the -full asset elsewhere and run:"
+            log_error "    sudo bash install.sh --package <asset>-full.tar.gz"
+            log_error "=============================================="
+            exit 1
+        fi
+        if ! load_images_from_package "$INTACT_PACKAGE"; then
+            log_error "The release package could not be loaded - aborting installation"
+            exit 1
+        fi
+        rm -f "$INTACT_PACKAGE" 2>/dev/null || true
     fi
 
     # -------------------------------------------------------------------------

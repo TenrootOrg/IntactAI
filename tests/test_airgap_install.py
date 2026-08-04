@@ -271,6 +271,89 @@ def test_enabled_flags_still_govern_what_is_deployed():
           "without internet" in fn, "the rationale is not stated")
 
 
+# --------------------------------------------- one path for install + upgrade
+
+def test_online_install_also_goes_through_the_package():
+    """THE POINT OF ALL THIS. Installing from a package online means install and
+    upgrade converge on one implementation -- same images, same loader, same
+    compose files. Two implementations of "get this box running" are exactly what
+    let the installer and the upgrade engine drift apart: secrets generated in
+    both bash and Python, chmod policies that disagree, an ELK script one shipped
+    and the other did not. One path is one thing to test."""
+    src = open(INSTALL_SH).read()
+    check("there is an online package download",
+          "download_release_package()" in src, "online still pulls per-image only")
+    check("the online branch calls it",
+          "download_release_package \"$_rel_tag\"" in src,
+          "it is defined but never used")
+    check("and loads what it downloaded",
+          "load_images_from_package \"$INTACT_PACKAGE\"" in src,
+          "downloaded but never loaded")
+
+
+def test_there_is_no_registry_fallback():
+    """The package is the ONLY way a box gets images now.
+
+    A fallback would quietly restore the second code path -- and with it the
+    second test matrix -- which is the entire cost this change exists to
+    remove. So a package that cannot be fetched or loaded is a FAILED INSTALL,
+    stated plainly, not a silent downgrade to a path nobody tested this
+    release."""
+    src = open(INSTALL_SH).read()
+    check("no opt-out back to per-image pulls",
+          "INTACT_NO_PACKAGE" not in src, "the second path is still reachable")
+    check("a failed download aborts",
+          "cannot continue" in src and "exit 1" in src, "it degrades silently")
+    check("a failed load aborts",
+          "could not be loaded - aborting installation" in src, "it degrades silently")
+    check("a missing VERSION aborts rather than guessing",
+          "no way to tell" in src, "it would pick an arbitrary release")
+    check("and every abort points at the offline route",
+          src.count("--package <asset>-full.tar.gz") >= 2,
+          "the operator is left with no next step")
+
+
+def test_compose_level_pulls_skip_when_images_came_from_a_package():
+    """The per-image helper is not enough: compose pulls by SERVICE and would
+    still reach the registry for each one, which is pointless online and
+    impossible air-gapped."""
+    src = open(os.path.join(REPO, "lib", "modules.sh")).read()
+    fn = src[src.index("pull_compose_with_retry() {"):]
+    fn = fn[:fn.index("\n}")]
+    check("compose pull is skipped", "INTACT_FROM_PACKAGE" in fn,
+          "compose would still contact the registry per service")
+    check("and it returns before the retry loop",
+          fn.index("INTACT_FROM_PACKAGE") < fn.index("max_attempts=3"),
+          "it retries the pull first")
+
+
+def test_the_flag_is_only_set_after_images_actually_load():
+    """Setting it early would disable the registry fallback on a FAILED load --
+    turning a recoverable problem into an install with no images and no way to
+    get any."""
+    src = open(INSTALL_SH).read()
+    fn = src[src.index("load_images_from_package() {"):]
+    fn = fn[:fn.index("\ndownload_release_package")]
+    check("the flag is set after the zero-images check",
+          fn.index("loaded == 0") < fn.index("INTACT_FROM_PACKAGE=1"),
+          "a failed load would still suppress registry pulls")
+
+
+def test_a_checksum_mismatch_refuses_the_package():
+    """A truncated multi-GB download is otherwise indistinguishable from a good
+    one until images fail to load, much later and far from the cause."""
+    src = open(INSTALL_SH).read()
+    fn = src[src.index("download_release_package() {"):]
+    fn = fn[:fn.index("\nmain()")]
+    check("it verifies against the published sha256",
+          "sha256sum" in fn and "MISMATCH" in fn, "corruption would pass silently")
+    check("split parts are reassembled before verifying",
+          fn.index("part-") < fn.index("sha256sum"),
+          "it would hash a fragment")
+    check("a delta asset is never selected for install",
+          "-delta" in fn, "a delta could be chosen and cannot install a box")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
