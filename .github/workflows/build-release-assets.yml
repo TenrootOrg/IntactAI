@@ -111,9 +111,8 @@ jobs:
           # build_release_package.py for why the parent package is stubbed out
           # rather than this list growing to match requirements.txt.
           python3 -m pip install --quiet pyyaml requests
-          # Suppress storage layer's startup logs so they don't pollute stdout.
           MATRIX="$(INTACT_PATH="$GITHUB_WORKSPACE" PYTHONPATH="$GITHUB_WORKSPACE/modules/backend" \
-                    python3 scripts/ci/build_release_package.py --tag "$TAG" --emit-matrix 2>/dev/null)"
+                    python3 scripts/ci/build_release_package.py --tag "$TAG" --emit-matrix)"
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
           echo "Modules: $MATRIX"
 

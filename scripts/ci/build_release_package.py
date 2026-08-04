@@ -93,6 +93,7 @@ def _upgrade_order():
     actually has a `services/upgrade/` under it.
     """
     import types
+    import io
     if "services" not in sys.modules:
         real_dir = next(
             (os.path.join(p, "services") for p in sys.path
@@ -106,7 +107,13 @@ def _upgrade_order():
         stub = types.ModuleType("services")
         stub.__path__ = [real_dir]
         sys.modules["services"] = stub
-    from services.upgrade import UPGRADE_ORDER
+    # Suppress storage initialization logs during import.
+    old_stdout = sys.stdout
+    sys.stdout = io.StringIO()
+    try:
+        from services.upgrade import UPGRADE_ORDER
+    finally:
+        sys.stdout = old_stdout
     return UPGRADE_ORDER
 
 
