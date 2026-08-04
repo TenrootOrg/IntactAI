@@ -195,6 +195,16 @@ jobs:
       - name: Load Docker image
         run: docker load < /tmp/docker-images/intact-backend-ci-packager.tar.gz
 
+      # The intact module's asset bundles a `docker save` of intact-backend:<tag>
+      # for customers to load. That image is built from this exact checkout at
+      # this exact commit -- identical inputs to the ci-packager image already
+      # loaded above. Tag it under the release name so package.py's own
+      # `docker image inspect` finds it and skips rebuilding the same Dockerfile
+      # a second time.
+      - name: Tag packager image as the release backend image
+        if: matrix.module == 'intact'
+        run: docker tag intact-backend:ci-packager "intact-backend:${{ needs.resolve.outputs.tag }}"
+
       # Only aws_sigma consumes the rule pack; cloning it for every module
       # would be ~9x the work for nothing.
       - name: Seed SigmaHQ rules

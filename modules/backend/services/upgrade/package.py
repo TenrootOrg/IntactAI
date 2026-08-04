@@ -884,21 +884,32 @@ def _prepare_backend_images(package_dir: str, target_version: str, manifest: Dic
         return {"success": True}
 
     image = f"intact-backend:{be_tag}"
-    log(f"Baking backend runtime image {image} (Full-mode release)...", "info")
     dockerfile = os.path.join(src_root, 'modules', 'backend', 'Dockerfile')
-    if not os.path.isfile(dockerfile):
-        return {"success": False,
-                "error": (f"Full-mode release but no backend Dockerfile at {dockerfile} "
-                          f"— cannot bake the required backend image. Re-prepare from a "
-                          f"complete release tree.")}
-    build = run_command(f"docker build -f {dockerfile} -t {image} {src_root}",
-                        timeout=1800, logger=None, run_id=run_id)
-    if build.get("cancelled"):
-        return {"success": False, "cancelled": True, "error": "cancelled"}
-    if not build.get("success"):
-        return {"success": False,
-                "error": (f"backend runtime image build failed — a Full-mode release "
-                          f"CANNOT ship without its image: {build.get('error', '')[:200]}")}
+    # CI pre-tags this exact image as `intact-backend:ci-packager` before this
+    # runs -- same Dockerfile, same checkout, same commit, since this whole
+    # packaging process is invoked FROM inside that image. Rebuilding it here
+    # would be an identical build of the identical inputs; `docker image
+    # inspect` catches that and skips straight to save.
+    inspect = run_command(f"docker image inspect {image}",
+                          timeout=30, logger=None, run_id=run_id)
+    if inspect.get("success"):
+        log(f"  Backend image {image} already present — reusing (built earlier "
+            f"in this run from the same commit)", "info")
+    else:
+        log(f"Baking backend runtime image {image} (Full-mode release)...", "info")
+        if not os.path.isfile(dockerfile):
+            return {"success": False,
+                    "error": (f"Full-mode release but no backend Dockerfile at {dockerfile} "
+                              f"— cannot bake the required backend image. Re-prepare from a "
+                              f"complete release tree.")}
+        build = run_command(f"docker build -f {dockerfile} -t {image} {src_root}",
+                            timeout=1800, logger=None, run_id=run_id)
+        if build.get("cancelled"):
+            return {"success": False, "cancelled": True, "error": "cancelled"}
+        if not build.get("success"):
+            return {"success": False,
+                    "error": (f"backend runtime image build failed — a Full-mode release "
+                              f"CANNOT ship without its image: {build.get('error', '')[:200]}")}
     _out = f"{package_dir}/images/intact-backend-{be_tag}.tar"
     save = run_command(f"docker save -o {_out} {image}",
                        timeout=600, logger=None, run_id=run_id)
