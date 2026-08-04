@@ -550,12 +550,17 @@ pull_plaso_image() {
     plaso_version="${plaso_version#plaso-}"
     local plaso_image="log2timeline/plaso:${plaso_version:-20260119}"
 
-    log_info "Pulling Plaso image for timeline processing..."
-
+    # Check FIRST, announce second. Saying "Pulling ..." before looking is how
+    # a log ends up claiming a network fetch that never happened -- and the
+    # inverse of that noise is what let the real nginx pull hide in plain sight
+    # for as long as it did. Grepping an install log for pulls should return
+    # pulls.
     if docker image inspect "$plaso_image" &> /dev/null; then
-        log_info "Plaso image already exists: $plaso_image"
+        log_info "Plaso image already present: $plaso_image"
         return 0
     fi
+
+    log_info "Pulling Plaso image for timeline processing..."
 
     log_info "Downloading $plaso_image (this may take a few minutes)..."
     local pull_start=$SECONDS
@@ -589,12 +594,12 @@ pull_python_alpine_image() {
     # Matches the currently-shipped Python 3.14 alpine line.
     local image="python:3.14-alpine"
 
-    log_info "Pulling Python Alpine image for Plaso decompression..."
-
     if docker image inspect "$image" &> /dev/null; then
         log_info "  Python Alpine image already exists"
         return 0
     fi
+
+    log_info "Pulling Python Alpine image for Plaso decompression..."
 
     log_info "  Downloading $image..."
     local pull_start=$SECONDS
@@ -1407,12 +1412,12 @@ pull_dfir_o365rc_image() {
     [[ -z "$o365rc_version" ]] && o365rc_version="latest"
     local o365rc_image="anssi/dfir-o365rc:${o365rc_version}"
 
-    log_info "Pulling DFIR-O365RC image (${o365rc_image}, Unified Audit Log collection)..."
-
     if docker image inspect "$o365rc_image" > /dev/null 2>&1; then
         log_info "DFIR-O365RC image already present"
         return 0
     fi
+
+    log_info "Pulling DFIR-O365RC image (${o365rc_image}, Unified Audit Log collection)..."
 
     local pull_start=$SECONDS
     if docker pull "$o365rc_image" 2>&1 | tee -a "$LOG_FILE"; then
@@ -1452,12 +1457,12 @@ pull_velociraptor_base_image() {
     fi
 
     local image="ubuntu:22.04"
-    log_info "Pulling Ubuntu base image for Velociraptor build..."
-
     if docker image inspect "$image" > /dev/null 2>&1; then
         log_info "  $image already exists"
         return 0
     fi
+
+    log_info "Pulling Ubuntu base image for Velociraptor build..."
 
     if _pull_image_with_retry "$image"; then
         log_success "  $image pulled successfully"
@@ -1484,12 +1489,12 @@ pull_backend_base_image() {
     # where install_20260610_070534.log showed ~120 kB/s sustained, putting
     # the base image alone at ~4 min of the build budget.
     local image="python:3.11-slim"
-    log_info "Pulling Python base image for Backend build..."
-
     if docker image inspect "$image" > /dev/null 2>&1; then
         log_info "  $image already exists"
         return 0
     fi
+
+    log_info "Pulling Python base image for Backend build..."
 
     if _pull_image_with_retry "$image"; then
         log_success "  $image pulled successfully"
