@@ -144,13 +144,6 @@ jobs:
           ref: ${{ needs.resolve.outputs.commit }}
           fetch-depth: 0
 
-      - name: Free up disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
-                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
-          docker image prune -af || true
-          df -h /
-
       - name: Build the packager image
         run: docker build -f modules/backend/Dockerfile -t intact-backend:ci-packager .
 
