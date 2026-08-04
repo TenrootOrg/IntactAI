@@ -246,7 +246,8 @@ def get_github_release_url(repo: str, pattern: str, logger: Callable = None) -> 
     def log(msg):
         if logger:
             logger(msg)
-        print(f"[TOOLS-DL] {msg}", flush=True)
+        else:
+            print(f"[TOOLS-DL] {msg}", flush=True)
 
     api_url = f"https://api.github.com/repos/{repo}/releases/latest"
     try:
@@ -309,7 +310,8 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
     def log(msg):
         if logger:
             logger(msg)
-        print(f"[TOOLS-DL] {msg}", flush=True)
+        else:
+            print(f"[TOOLS-DL] {msg}", flush=True)
 
     # Hook the cancel event for this run if available
     cancel_event = None
@@ -404,7 +406,8 @@ def download_tools_from_config(tools_dir: str, config: Dict,
     def log(msg, level="info"):
         if logger:
             logger(msg, level)
-        print(f"[TOOLS-DL] {msg}", flush=True)
+        else:
+            print(f"[TOOLS-DL] {msg}", flush=True)
 
     def _wanted(t):
         # Default tool (enabled:true) → always. Optional tool (enabled:false)
@@ -596,7 +599,8 @@ def configure_inventory(tools_dir: str, config: Dict, logger: Callable = None,
     def log(msg, level="info"):
         if logger:
             logger(msg, level)
-        print(f"[TOOLS-INV] {msg}", flush=True)
+        else:
+            print(f"[TOOLS-INV] {msg}", flush=True)
 
     results = {
         "configured": [],
@@ -835,7 +839,8 @@ def ensure_offline_collector_binaries(downloads_dir: str, logger: Callable = Non
     def log(msg, level="info"):
         if logger:
             logger(msg, level)
-        print(f"[TOOLS] {msg}", flush=True)
+        else:
+            print(f"[TOOLS] {msg}", flush=True)
 
     import glob as _glob
 
@@ -898,7 +903,8 @@ def download_and_configure_tools(logger: Callable = None, run_id: Optional[str] 
     def log(msg, level="info"):
         if logger:
             logger(msg, level)
-        print(f"[TOOLS] {msg}", flush=True)
+        else:
+            print(f"[TOOLS] {msg}", flush=True)
 
     if include_optional is None:
         try:
