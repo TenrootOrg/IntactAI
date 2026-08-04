@@ -2746,7 +2746,7 @@ def assemble_manifest(per_module: Dict[str, Dict],
     return merged
 
 
-def assemble_release_package(asset_paths, tag: str, extract_dir: str,
+def assemble_release_package(asset_paths, tag: str = None, extract_dir: str = None,
                              expected_modules=None,
                              expected_sha256: Dict[str, str] = None,
                              logger: Callable = None) -> Dict:
@@ -2811,6 +2811,19 @@ def assemble_release_package(asset_paths, tag: str, extract_dir: str,
                               f"they did not merge — rebuild them with "
                               f"--work-dir .../intact-upgrade-<tag>.")}
         package_dir = os.path.join(extract_dir, subdirs[0])
+        if not tag:
+            # Uploaded assets: the operator picked files, nobody told us which
+            # release they are. The merged root is named intact-upgrade-<tag>,
+            # so take it from there and let the per-manifest release_tag check
+            # below confirm every asset agrees.
+            if subdirs[0].startswith('intact-upgrade-'):
+                tag = subdirs[0][len('intact-upgrade-'):]
+                log(f"  Assets are for release {tag}", "info")
+            else:
+                return {"success": False,
+                        "error": (f"cannot tell which release these assets are "
+                                  f"for: merged root is {subdirs[0]!r}, expected "
+                                  f"intact-upgrade-<tag>")}
         want_root = f"intact-upgrade-{tag}"
         if subdirs[0] != want_root:
             return {"success": False,
