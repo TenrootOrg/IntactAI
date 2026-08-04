@@ -26,14 +26,15 @@ from going quiet on its own.
     python3 scripts/ci/check_timesketch_provider_drift.py --version 20260630 --stamp
 
 Exit codes (the workflow maps ALL of them to success — this never fails a
-release build; see .github/workflows/build-release-package.yml):
+release build; see the `resolve` job in
+.github/workflows/build-release-assets.yml):
 
     0   verified, no drift
     10  drift detected
     20  could not verify (network, missing tag, unreadable baseline)
 
 Stdlib only, and the network is touched only by ``fetch_upstream_files``, so
-everything else is unit-testable offline. See tests/test_timesketch_llm_providers.py.
+everything else runs offline.
 """
 
 import argparse

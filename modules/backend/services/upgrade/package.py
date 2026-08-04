@@ -916,7 +916,10 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                             compress: bool = True,
                             work_dir: Optional[str] = None,
                             manifest_extra: Optional[Dict] = None,
-                            manifest_sidecar_name: Optional[str] = None) -> Dict:
+                            manifest_sidecar_name: Optional[str] = None,
+                            source_dir: Optional[str] = None,
+                            source_commit: Optional[str] = None,
+                            packages_dir: Optional[str] = None) -> Dict:
     """Download and package upgrade components.
 
     Args:
@@ -935,6 +938,21 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                   /app/data/tmp/<...>/ so the dir survives the backend
                   restart that intact upgrades trigger between Phase 1
                   and Phase 2.
+        source_dir: Package the Intact.AI source from THIS directory instead of
+                  downloading it from GitHub. For CI, where the checkout is
+                  already on disk at the pinned commit — see the long note at
+                  the `intact` branch below for why that is a correctness fix
+                  and not just a saved download. A box leaves this None.
+        source_commit: The commit `source_dir` sits at, recorded in the
+                  manifest as the source's origin. Only meaningful with
+                  source_dir.
+        packages_dir: Where the finished .tar.gz lands. Defaults to
+                  /data/upgrade_packages — the persistent location an operator
+                  later downloads it from, which is why the atomic swap keeps
+                  the previous archive intact. CI points this straight at its
+                  output mount instead, so the asset is written ONCE rather
+                  than written there and copied out: at ~2.5 GB for elk, the
+                  second copy is not free.
 
     Returns:
         Dict with success status. Shape depends on `compress`:
@@ -949,7 +967,8 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
 
     # Compression-only state — skipped when compress=False (online flow
     # doesn't produce a tar.gz at all).
-    packages_dir = "/data/upgrade_packages"
+    _packages_dir_overridden = bool(packages_dir)
+    packages_dir = packages_dir or "/data/upgrade_packages"
     output_file = f"{packages_dir}/intact-upgrade-latest.tar.gz"
     output_file_tmp = f"{output_file}.new"
     if compress:
@@ -1075,141 +1094,168 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                         "'Intact.AI Source Code' version field"
                     )
 
-                import urllib.request
-                import urllib.error
-                import json as _json
-                import tarfile
+                # WHERE THE SOURCE COMES FROM. On a box, nowhere but GitHub:
+                # the appliance has no checkout and no git, so Prepare downloads
+                # the ref the operator typed. In CI the source is already on
+                # disk, checked out at the commit `resolve` pinned — and going
+                # back to GitHub for it there is not merely redundant, it
+                # reopens the hole the pin exists to close. Every other asset is
+                # built from THE SHA; a codeload fetch is by REF, so a tag
+                # re-cut mid-run would ship different source than the rest of
+                # the release was built from, and `source_origin` would record
+                # the ref rather than the commit, leaving nothing to catch it.
+                #
+                # Copying the checkout was rejected once before, for a good
+                # reason: it was the RUNNING box's mounted source, so untracked
+                # local edits leaked into the package. A CI checkout has no such
+                # edits by construction — it is a fresh clone at one SHA — which
+                # is why this is opt-in via source_dir rather than a default.
+                if source_dir:
+                    if not os.path.isdir(source_dir):
+                        raise RuntimeError(
+                            f"source_dir {source_dir!r} is not a directory — "
+                            f"cannot package the Intact.AI source from it")
+                    extracted_root = source_dir
+                    resolved_ref = source_commit or version
+                    tar_path = extract_dir = None
+                    log(f"  Using the checkout at {source_dir} "
+                        f"(commit {(source_commit or '?')[:12]}) — no download", "info")
+                else:
+                    import urllib.request
+                    import urllib.error
+                    import json as _json
+                    import tarfile
 
-                repo = "TenrootOrg/IntactAI"
+                    repo = "TenrootOrg/IntactAI"
 
-                # If the operator typed a BRANCH name (`development`,
-                # `main`, a feature branch), resolve its current HEAD
-                # SHA via the GitHub branches API FIRST. Two reasons:
-                #
-                # 1. Codeload caches tarballs by ref. For branches —
-                #    which move — the cache can serve a stale or
-                #    truncated tarball captured before the latest
-                #    commit. We've hit this exact issue (memory note:
-                #    "push any commit to bust the per-SHA cache").
-                #    Downloading by resolved SHA bypasses the
-                #    branch-ref cache entirely.
-                #
-                # 2. The package becomes reproducible — the manifest
-                #    records the exact commit SHA shipped, so an
-                #    operator can correlate the apply log against
-                #    git history later.
-                #
-                # If `version` is already a release tag or commit SHA
-                # (the branches API 404s for those), skip the
-                # resolution and fall through to the existing
-                # codeload-by-ref path.
-                # `resolved_ref` is what we pass to codeload (SHA when
-                # we can resolve the branch — bypasses the codeload
-                # stale-cache bug for moving refs). The manifest +
-                # VERSION-file stamp still uses the operator's input
-                # verbatim (`development`, `intact-20260604`, etc.) —
-                # operators don't want to see SHAs in the UI; they want
-                # "the latest development" to read as exactly that.
-                resolved_ref = version
-                branch_api_url = (
-                    f"https://api.github.com/repos/{repo}/branches/{version}"
-                )
-                try:
-                    # Authenticate when a token is configured (env or
-                    # config.yaml options.github_token) — this api.github.com
-                    # call counts against the 60/hr anonymous per-IP cap.
-                    _gh_headers = {"Accept": "application/vnd.github+json"}
-                    try:
-                        from .resolver import _github_token
-                        _tok = _github_token()
-                        if _tok:
-                            _gh_headers["Authorization"] = f"token {_tok}"
-                    except Exception:
-                        pass
-                    req = urllib.request.Request(
-                        branch_api_url,
-                        headers=_gh_headers,
+                    # If the operator typed a BRANCH name (`development`,
+                    # `main`, a feature branch), resolve its current HEAD
+                    # SHA via the GitHub branches API FIRST. Two reasons:
+                    #
+                    # 1. Codeload caches tarballs by ref. For branches —
+                    #    which move — the cache can serve a stale or
+                    #    truncated tarball captured before the latest
+                    #    commit. We've hit this exact issue (memory note:
+                    #    "push any commit to bust the per-SHA cache").
+                    #    Downloading by resolved SHA bypasses the
+                    #    branch-ref cache entirely.
+                    #
+                    # 2. The package becomes reproducible — the manifest
+                    #    records the exact commit SHA shipped, so an
+                    #    operator can correlate the apply log against
+                    #    git history later.
+                    #
+                    # If `version` is already a release tag or commit SHA
+                    # (the branches API 404s for those), skip the
+                    # resolution and fall through to the existing
+                    # codeload-by-ref path.
+                    # `resolved_ref` is what we pass to codeload (SHA when
+                    # we can resolve the branch — bypasses the codeload
+                    # stale-cache bug for moving refs). The manifest +
+                    # VERSION-file stamp still uses the operator's input
+                    # verbatim (`development`, `intact-20260604`, etc.) —
+                    # operators don't want to see SHAs in the UI; they want
+                    # "the latest development" to read as exactly that.
+                    resolved_ref = version
+                    branch_api_url = (
+                        f"https://api.github.com/repos/{repo}/branches/{version}"
                     )
-                    with urllib.request.urlopen(req, timeout=30) as resp:
-                        branch_data = _json.load(resp)
-                    head_sha = (branch_data.get('commit') or {}).get('sha')
-                    if head_sha:
-                        resolved_ref = head_sha
-                        log(
-                            f"  Branch '{version}' resolved to HEAD "
-                            f"{head_sha[:7]} for download (manifest "
-                            f"keeps '{version}')",
-                            "info",
+                    try:
+                        # Authenticate when a token is configured (env or
+                        # config.yaml options.github_token) — this api.github.com
+                        # call counts against the 60/hr anonymous per-IP cap.
+                        _gh_headers = {"Accept": "application/vnd.github+json"}
+                        try:
+                            from .resolver import _github_token
+                            _tok = _github_token()
+                            if _tok:
+                                _gh_headers["Authorization"] = f"token {_tok}"
+                        except Exception:
+                            pass
+                        req = urllib.request.Request(
+                            branch_api_url,
+                            headers=_gh_headers,
                         )
-                except urllib.error.HTTPError as e:
-                    if e.code == 404:
-                        # Not a branch — could be a tag or SHA. Use
-                        # the operator's input verbatim. The codeload
-                        # call below will surface a clearer error if
-                        # the ref doesn't exist at all.
-                        pass
-                    else:
+                        with urllib.request.urlopen(req, timeout=30) as resp:
+                            branch_data = _json.load(resp)
+                        head_sha = (branch_data.get('commit') or {}).get('sha')
+                        if head_sha:
+                            resolved_ref = head_sha
+                            log(
+                                f"  Branch '{version}' resolved to HEAD "
+                                f"{head_sha[:7]} for download (manifest "
+                                f"keeps '{version}')",
+                                "info",
+                            )
+                    except urllib.error.HTTPError as e:
+                        if e.code == 404:
+                            # Not a branch — could be a tag or SHA. Use
+                            # the operator's input verbatim. The codeload
+                            # call below will surface a clearer error if
+                            # the ref doesn't exist at all.
+                            pass
+                        else:
+                            log(
+                                f"  Branch resolution returned HTTP {e.code} "
+                                f"(continuing with raw ref): {e.reason}",
+                                "warning",
+                            )
+                    except urllib.error.URLError as e:
+                        # GitHub API unreachable — try codeload directly.
+                        # If GitHub is fully down, codeload will fail with
+                        # a clearer error below.
                         log(
-                            f"  Branch resolution returned HTTP {e.code} "
-                            f"(continuing with raw ref): {e.reason}",
+                            f"  Branch resolution skipped (network: {e}). "
+                            "Will try codeload with the ref as-is.",
                             "warning",
                         )
-                except urllib.error.URLError as e:
-                    # GitHub API unreachable — try codeload directly.
-                    # If GitHub is fully down, codeload will fail with
-                    # a clearer error below.
+
+                    tar_url = (
+                        f"https://codeload.github.com/{repo}/tar.gz/{resolved_ref}"
+                    )
+                    tar_path = f"{package_dir}/_intact_source.tar.gz"
+                    extract_dir = f"{package_dir}/_intact_extracted"
+
                     log(
-                        f"  Branch resolution skipped (network: {e}). "
-                        "Will try codeload with the ref as-is.",
-                        "warning",
+                        f"Downloading Intact.AI source from "
+                        f"github.com/{repo} @ '{version}'...",
+                        "info",
                     )
+                    try:
+                        urllib.request.urlretrieve(tar_url, tar_path)
+                    except urllib.error.HTTPError as e:
+                        raise RuntimeError(
+                            f"GitHub ref '{resolved_ref}' not found at {repo} "
+                            f"(HTTP {e.code}). Make sure the release tag exists "
+                            f"at https://github.com/{repo}/releases — or if you "
+                            f"meant a branch, check it isn't deleted."
+                        ) from e
+                    except urllib.error.URLError as e:
+                        raise RuntimeError(
+                            f"Could not reach github.com to download the "
+                            f"Intact.AI source: {e}. The Prepare Upgrade flow "
+                            f"requires internet on the box running the prepare."
+                        ) from e
 
-                tar_url = (
-                    f"https://codeload.github.com/{repo}/tar.gz/{resolved_ref}"
-                )
-                tar_path = f"{package_dir}/_intact_source.tar.gz"
-                extract_dir = f"{package_dir}/_intact_extracted"
+                    size_mb = os.path.getsize(tar_path) / (1024 * 1024)
+                    log(f"  Downloaded {size_mb:.1f} MB", "info")
 
-                log(
-                    f"Downloading Intact.AI source from "
-                    f"github.com/{repo} @ '{version}'...",
-                    "info",
-                )
-                try:
-                    urllib.request.urlretrieve(tar_url, tar_path)
-                except urllib.error.HTTPError as e:
-                    raise RuntimeError(
-                        f"GitHub ref '{resolved_ref}' not found at {repo} "
-                        f"(HTTP {e.code}). Make sure the release tag exists "
-                        f"at https://github.com/{repo}/releases — or if you "
-                        f"meant a branch, check it isn't deleted."
-                    ) from e
-                except urllib.error.URLError as e:
-                    raise RuntimeError(
-                        f"Could not reach github.com to download the "
-                        f"Intact.AI source: {e}. The Prepare Upgrade flow "
-                        f"requires internet on the box running the prepare."
-                    ) from e
+                    # Extract — GitHub tarballs unpack into a single top-level
+                    # directory shaped like `IntactAI-<sha-or-tag>/`.
+                    os.makedirs(extract_dir, exist_ok=True)
+                    with tarfile.open(tar_path, "r:gz") as tar:
+                        tar.extractall(extract_dir)
 
-                size_mb = os.path.getsize(tar_path) / (1024 * 1024)
-                log(f"  Downloaded {size_mb:.1f} MB", "info")
-
-                # Extract — GitHub tarballs unpack into a single top-level
-                # directory shaped like `IntactAI-<sha-or-tag>/`.
-                os.makedirs(extract_dir, exist_ok=True)
-                with tarfile.open(tar_path, "r:gz") as tar:
-                    tar.extractall(extract_dir)
-
-                tops = [
-                    d for d in os.listdir(extract_dir)
-                    if os.path.isdir(os.path.join(extract_dir, d))
-                ]
-                if not tops:
-                    raise RuntimeError(
-                        f"Downloaded tarball from {tar_url} had no top-level "
-                        "directory — corrupt download?"
-                    )
-                extracted_root = os.path.join(extract_dir, tops[0])
+                    tops = [
+                        d for d in os.listdir(extract_dir)
+                        if os.path.isdir(os.path.join(extract_dir, d))
+                    ]
+                    if not tops:
+                        raise RuntimeError(
+                            f"Downloaded tarball from {tar_url} had no top-level "
+                            "directory — corrupt download?"
+                        )
+                    extracted_root = os.path.join(extract_dir, tops[0])
 
                 # Copy the WHOLE repo (matches the GitHub layout — `modules/`,
                 # `lib/`, `scripts/`, `install.sh`, `config.yaml`, etc.) to
@@ -1259,12 +1305,15 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     )
 
                 # Tear down the temp tarball + extraction so they don't end up
-                # inside the final .tar.gz output.
-                try:
-                    os.remove(tar_path)
-                    shutil.rmtree(extract_dir)
-                except Exception:
-                    pass
+                # inside the final .tar.gz output. Nothing to tear down when the
+                # source came from a checkout we do not own — deleting THAT
+                # would take the caller's working tree with it.
+                if tar_path or extract_dir:
+                    try:
+                        os.remove(tar_path)
+                        shutil.rmtree(extract_dir)
+                    except Exception:
+                        pass
 
                 # Record the operator's input verbatim in the manifest.
                 # `resolved_ref` (the SHA we actually downloaded) is
@@ -1274,7 +1323,8 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 manifest["versions"]["intact"] = version
                 manifest["contents"]["include_source"] = True
                 manifest["contents"]["source_origin"] = (
-                    f"github.com/{repo}@{resolved_ref}"
+                    f"checkout@{resolved_ref}" if source_dir
+                    else f"github.com/{repo}@{resolved_ref}"
                 )
 
                 # Belt-and-suspenders: stamp the VERSION file inside the
@@ -2506,7 +2556,11 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
         log(f"  Size: {_format_size(package_size)}", "info")
         log(f"  Modules: {', '.join(modules.keys())}", "info")
         log("", "info")
-        log("Click 'Download Package' to save the file.", "info")
+        # UI guidance, and only true when the archive landed in the operator's
+        # persistent packages dir with a button pointing at it. A CI build sends
+        # it somewhere else and nobody is going to click anything.
+        if not _packages_dir_overridden:
+            log("Click 'Download Package' to save the file.", "info")
 
         return {
             "success": True,

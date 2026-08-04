@@ -437,6 +437,8 @@ def main() -> int:
     if args.module:
         manifest_extra["module"] = args.module
 
+    os.makedirs(args.out, exist_ok=True)
+
     result = prepare_upgrade_package(
         modules,
         run_id=f"ci_release_{args.tag}",
@@ -446,6 +448,18 @@ def main() -> int:
         manifest_extra=manifest_extra,
         manifest_sidecar_name=(f"manifests/{args.module}.json"
                                if args.module else None),
+        # Package the source we are already standing in. Prepare's default is
+        # to fetch it from GitHub by ref, which on a box is the only option and
+        # in CI is a hole: every other asset is built from the commit `resolve`
+        # pinned, while a codeload fetch is by REF and would follow a tag that
+        # moved mid-run. It also cannot work before the tag is pushed.
+        source_dir=os.environ.get("INTACT_PATH") or None,
+        source_commit=commit or None,
+        # Write the archive straight into the output dir. The default is the
+        # operator's persistent packages dir, which would mean building the
+        # asset there and then copying it out -- two copies of several GB on a
+        # runner, for nothing.
+        packages_dir=args.out,
     )
     if not result.get("success"):
         print(f"[ci-package] FAILED: {result.get('error')}", flush=True)
@@ -468,15 +482,19 @@ def main() -> int:
             print(f"[ci-package] SELF-CHECK FAILED: {err}", flush=True)
             return 1
 
+    # MOVE, not copy. prepare wrote into args.out (see packages_dir above), so
+    # this is a same-filesystem rename: instant, and no second copy of a
+    # multi-GB asset. It also has to happen -- prepare names its output
+    # intact-upgrade-latest.tar.gz, and leaving that behind in the output dir
+    # would give CI's `ls *.tar.gz | head -1` two files to choose between.
     src = result["package_path"]
-    os.makedirs(args.out, exist_ok=True)
     name = (f"intact-{args.tag}-{args.module}.tar.gz" if args.module
             else f"intact-upgrade-{args.tag}.tar.gz")
     dest = os.path.join(args.out, name)
-    shutil.copy2(src, dest)
+    shutil.move(src, dest)
     man = src + ".manifest.json"
     if os.path.exists(man):
-        shutil.copy2(man, dest + ".manifest.json")
+        shutil.move(man, dest + ".manifest.json")
 
     # A tiny sidecar so the index job can assert coherence across every asset
     # without downloading gigabytes of them.

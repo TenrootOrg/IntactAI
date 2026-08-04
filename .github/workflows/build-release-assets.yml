@@ -102,6 +102,23 @@ jobs:
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
           echo "Modules: $MATRIX"
 
+      # We add two LLM providers to Timesketch by writing into the vendor
+      # image's site-packages and appending imports to a file UPSTREAM owns.
+      # A Timesketch bump can move any of that. apply.sh guards each import at
+      # runtime so the outcome is a missing feature rather than a crash loop --
+      # which is exactly why a human needs telling: a silently-absent feature
+      # is not something a green build would ever surface.
+      #
+      # Here rather than in a build job: it is a pre-release heads-up, not a
+      # packaging step, and it takes seconds. Running it before the matrix
+      # spends 90 minutes means the verdict is on the run page whatever happens
+      # afterwards. It never fails the build (exit 0 clean / 10 drift / 20
+      # could-not-verify, all swallowed) -- the release is valid either way.
+      - name: Check upstream Timesketch LLM-provider drift
+        continue-on-error: true
+        run: |
+          python3 scripts/ci/check_timesketch_provider_drift.py --github || true
+
   # ------------------------------------------------------------------ build
   build:
     needs: resolve
@@ -314,19 +331,19 @@ jobs:
     needs: [resolve, build, index]
     runs-on: ubuntu-latest
     steps:
-      # This job holds the whole release on disk at once, so give it room. It
-      # used to stage everything into an upload/ directory first, which meant a
-      # SECOND full copy -- more than a runner has.
-      - name: Free up disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
-                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
-          docker image prune -af || true
-          df -h /
-
       - uses: actions/download-artifact@v4
         with:
           path: all
+
+      # No toolchain-reclaiming step here, deliberately. This job holds ONE
+      # copy of the release (~8 GB) on a runner with ~21 GB free -- it used to
+      # also stage a second copy into an upload/ dir, which is what made the
+      # cleanup necessary. Printing the real numbers so the next release can
+      # tell us if that stops being true.
+      - name: Disk after download
+        run: |
+          df -h /
+          du -sh all | cut -f1 | sed 's/^/release size: /'
 
       # THE ROUND TRIP IS UNVERIFIED UNTIL HERE. The sha256 in the index was
       # computed by the builder, inside its container, before the file was ever
