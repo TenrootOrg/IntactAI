@@ -179,6 +179,14 @@ def image_owner_prefixes():
     # un-budgeted, which is the exact failure this entry was added to fix.
     prefixes['aws_sigma-'] = 'aws_sigma'
     prefixes['cloudtrail-'] = 'aws_sigma'
+    # The platform's main reverse proxy (modules/nginx/, intact_nginx). It is
+    # deliberately NOT named `nginx-<tag>.tar`: that prefix belongs to
+    # timesketch's own nginx (TRANSITIVE_IMAGES above), this dict is keyed by
+    # prefix, and reusing it would silently reassign timesketch's image --
+    # after which the unselected-module prune would delete it on any apply
+    # that deselects timesketch. `intact-nginx-` is unambiguous, and since
+    # lookup is longest-prefix-first it cannot shadow `intact-backend-` either.
+    prefixes['intact-nginx-'] = 'intact'
     return prefixes
 
 
@@ -870,6 +878,62 @@ def _prepare_backend_images(package_dir: str, target_version: str, manifest: Dic
         _out = f"{package_dir}/images/tusd-{tusd_tag}.tar"
         if _pull_and_save_image(f"tusproject/tusd:{tusd_tag}", _out, log, run_id=run_id):
             manifest["contents"]["images"].append(f"tusd-{tusd_tag}.tar")
+
+    # Main reverse-proxy nginx — the appliance's ONLY ingress (modules/nginx/,
+    # the intact_nginx container, `image: nginx:${NGINX_VERSION}`).
+    #
+    # Nothing bundled this until now, and the gap was invisible on a connected
+    # box: `docker compose up -d` just pulled it, one line after the installer
+    # logged "images already loaded from the package — not pulling". On an
+    # air-gapped box [8/8] Nginx simply fails and the platform has no front
+    # door. The same hole exists on the upgrade side, where intact.py stamps
+    # NGINX_VERSION and runs `compose up -d nginx`; both are fixed by the image
+    # being in the package, with no change needed there.
+    #
+    # FATAL rather than best-effort like tusd above: tusd is a sidecar and a
+    # package without it is merely degraded, while a package without nginx is
+    # undeployable. Same reasoning as the backend image below.
+    #
+    # NAME: intact-nginx-<tag>.tar, NOT nginx-<tag>.tar. `nginx-` is already
+    # timesketch's prefix in TRANSITIVE_IMAGES (its own nginx:1.25.5-alpine-slim),
+    # and image_owner_prefixes() is a flat prefix map -- reusing it would
+    # attribute the platform's ingress to timesketch and let the unselected-module
+    # prune delete it on any apply that deselects timesketch. The tar filename is
+    # module-qualified; the image ref inside is plain `nginx:<tag>`, which is what
+    # compose resolves. The two differ on purpose.
+    nginx_tag = _versions.get('nginx')
+    if not nginx_tag:
+        return {"success": False,
+                "error": ("versions.nginx is missing from the target release's "
+                          "config.yaml, so the main reverse-proxy image cannot be "
+                          "bundled. modules/nginx/docker-compose.yaml pins "
+                          "nginx:${NGINX_VERSION}; a package without it cannot "
+                          "bring up the platform's only ingress offline.")}
+    _nginx_image = f"nginx:{nginx_tag}"
+    _out = f"{package_dir}/images/intact-nginx-{nginx_tag}.tar"
+    # INSPECT BEFORE PULL. _pull_and_save_image always runs `docker pull`, and
+    # this function is shared with the on-box Prepare Package flow -- an
+    # appliance preparing a package is, by definition, already running this
+    # exact nginx image, and may well have no registry access at all. Pulling
+    # unconditionally would turn a fatal error into the normal case there.
+    _have = run_command(f"docker image inspect {_nginx_image}",
+                        timeout=30, logger=None, run_id=run_id)
+    if _have.get("success"):
+        log(f"  {_nginx_image} already present — saving without pulling", "info")
+        _save = run_command(f"docker save -o {_out} {_nginx_image}",
+                            timeout=600, logger=None, run_id=run_id)
+        if _save.get("cancelled"):
+            return {"success": False, "cancelled": True, "error": "cancelled"}
+        _ok = _save.get("success") and os.path.exists(_out)
+    else:
+        _ok = _pull_and_save_image(_nginx_image, _out, log, run_id=run_id)
+    if not _ok:
+        return {"success": False,
+                "error": (f"could not bundle {_nginx_image} — refusing to ship a "
+                          f"package whose [8/8] Nginx step would need the internet. "
+                          f"Pull it on this host first, or correct versions.nginx.")}
+    manifest["contents"]["images"].append(f"intact-nginx-{nginx_tag}.tar")
+    log(f"  Main nginx image bundled ({_format_size(os.path.getsize(_out))})", "success")
 
     # backend runtime image — Full-mode releases MUST ship their baked image.
     # A Full-mode package without it forces the target to rebuild the backend
