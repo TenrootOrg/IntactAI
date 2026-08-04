@@ -63,6 +63,53 @@ if "/app" not in sys.path:
     sys.path.insert(0, "/app")
 
 
+def _upgrade_order():
+    """UPGRADE_ORDER, without importing the whole backend service graph.
+
+    `resolve` (see build-release-assets.yml) runs this on a bare runner with
+    only pyyaml + requests installed, deliberately -- spinning up the packager
+    container just to answer "what would this build?" would cost a container
+    build before the matrix it plans even exists. But `services` is a regular
+    Python package, and `import services.upgrade` -- however it's spelled --
+    runs `services/__init__.py` FIRST regardless of which submodule you
+    actually asked for. That file eagerly imports every service the running
+    backend needs, including `services.velociraptor_service`, which needs
+    `grpc` -- a module-specific dependency (requirements-velociraptor.txt),
+    never installed on a bare runner and not something this query has any use
+    for.
+
+    Standing in for that `__init__.py` with an empty stub, keyed into
+    sys.modules before the real import runs, satisfies Python's requirement
+    that the parent package exist without running its body. `services.upgrade`
+    then loads for real off disk under the stub's `__path__`, and its own
+    imports (requests, PyYAML, `services.storage` — sqlite3, stdlib) are light
+    enough for exactly the two packages this job installs.
+
+    Where the real `services/` dir IS depends on the caller: inside the
+    packager container it's baked at `/app/services` (see the sys.path insert
+    above); on the bare `resolve` runner it's wherever PYTHONPATH points,
+    `$GITHUB_WORKSPACE/modules/backend/services`. Rather than assume either,
+    find it the same way `import` itself would — the first sys.path entry that
+    actually has a `services/upgrade/` under it.
+    """
+    import types
+    if "services" not in sys.modules:
+        real_dir = next(
+            (os.path.join(p, "services") for p in sys.path
+             if os.path.isfile(os.path.join(p, "services", "upgrade", "__init__.py"))),
+            None,
+        )
+        if not real_dir:
+            raise RuntimeError(
+                "Can't find services/upgrade/__init__.py on any sys.path entry "
+                f"({sys.path}) — is INTACT_PATH/PYTHONPATH set to the checkout?")
+        stub = types.ModuleType("services")
+        stub.__path__ = [real_dir]
+        sys.modules["services"] = stub
+    from services.upgrade import UPGRADE_ORDER
+    return UPGRADE_ORDER
+
+
 # THE release scope. Order is irrelevant (UPGRADE_ORDER drives packaging); this
 # is purely the membership list. A module in NEITHER this set nor
 # EXCLUDED_FROM_RELEASE fails the membership test, so a new module cannot land
@@ -149,7 +196,7 @@ def release_module_set(tag: str, only: str = None) -> dict:
     exactly what you asked for.
     """
     import yaml
-    from services.upgrade import UPGRADE_ORDER
+    UPGRADE_ORDER = _upgrade_order()
     # config.yaml is the OPERATOR's file and is not tracked in git (it holds the
     # GitHub PAT, the dashboard login and every module password), so it does not
     # exist in a CI checkout — which is exactly where this builder runs. The
