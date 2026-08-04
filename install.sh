@@ -88,6 +88,336 @@ source "${SCRIPT_DIR}/lib/upgrade_check.sh"
 # Main Installation Flow
 # ============================================================================
 
+# ---------------------------------------------------------------------------
+# Air-gap: install from release assets instead of the internet.
+#
+#   sudo bash install.sh --package /path/to/intact-upgrade-<tag>.tar.gz
+#   sudo bash install.sh --package /path/to/dir-of-module-assets/
+#   sudo bash install.sh --package a.tar.gz --package b.tar.gz     (repeatable)
+#
+# A release publishes one asset per module plus a single bundle carrying all of
+# them. Either works here: the bundle because it is one file and that is easier
+# to carry into an air-gapped site, the module assets because they are what the
+# release is actually made of. Point --package at a directory and every
+# *.tar.gz in it is used.
+#
+# Loading the images up front means _pull_image_with_retry finds each one
+# already in the local store and skips the registry -- so every existing
+# deploy_* path works offline with no changes of its own. That is the whole
+# trick; there is no separate offline code path to keep in step with the online
+# one.
+#
+# An INSTALL always needs the complete module set. There is no baseline to
+# compare against on a box with nothing on it, so "only what changed" has no
+# meaning here -- that is an upgrade-side idea.
+INTACT_PACKAGES=()
+INTACT_AIRGAP=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --package)
+            INTACT_PACKAGES+=("${2:-}"); INTACT_AIRGAP=1; shift 2 ;;
+        --package=*)
+            INTACT_PACKAGES+=("${1#*=}"); INTACT_AIRGAP=1; shift ;;
+        --help|-h)
+            echo "Usage: sudo bash install.sh [--package <asset|dir> ...]"
+            echo ""
+            echo "  --package  install offline from release assets; no registry"
+            echo "             access is attempted. Accepts the single bundle"
+            echo "             (intact-upgrade-<tag>.tar.gz), a directory of"
+            echo "             per-module assets, or the flag repeated."
+            echo ""
+            echo "  With no arguments the release assets are downloaded from"
+            echo "  GitHub. Images come only from those assets either way --"
+            echo "  there is no per-image registry fallback."
+            exit 0 ;;
+        *)
+            echo "Unknown argument: $1" >&2
+            echo "Usage: sudo bash install.sh [--package <asset|dir> ...]" >&2
+            exit 2 ;;
+    esac
+done
+
+# Expand any directory into the assets inside it, so --package can point at a
+# folder someone copied off a USB stick without them having to list each file.
+if (( ${#INTACT_PACKAGES[@]} > 0 )); then
+    _expanded=()
+    for _p in "${INTACT_PACKAGES[@]}"; do
+        if [[ -d "$_p" ]]; then
+            while IFS= read -r _f; do _expanded+=("$_f"); done \
+                < <(find "$_p" -maxdepth 1 -name '*.tar.gz' | sort)
+        else
+            _expanded+=("$_p")
+        fi
+    done
+    INTACT_PACKAGES=("${_expanded[@]}")
+    unset _expanded _p _f
+fi
+
+export INTACT_AIRGAP
+
+# Load every image out of the package into the local docker store.
+#
+# Idempotent and non-fatal per image: `docker load` on an image that is already
+# present is a no-op, and one unreadable tar should not abort an install that
+# may not even need that module. What DOES abort is a package that yields no
+# images at all -- that is a wrong or corrupt file, and continuing would fall
+# through to registry pulls that cannot work on an air-gapped box.
+load_images_from_package() {
+    # Takes ONE OR MORE assets. Per-module assets share a top-level directory
+    # name, so extracting them all into one place merges them into the single
+    # tree the rest of this function expects -- the same contract the on-box
+    # assembler relies on. A single bundle is just the degenerate case of one.
+    local pkgs=("$@")
+    if (( ${#pkgs[@]} == 0 )); then
+        log_error "No release assets supplied"
+        return 1
+    fi
+    local pkg
+    for pkg in "${pkgs[@]}"; do
+        if [[ ! -f "$pkg" ]]; then
+            log_error "Asset not found: $pkg"
+            return 1
+        fi
+    done
+    log_info "Installing from ${#pkgs[@]} asset(s): $(basename "${pkgs[0]}")$( (( ${#pkgs[@]} > 1 )) && echo " (+$(( ${#pkgs[@]} - 1 )) more)")"
+    mkdir -p "${SCRIPT_DIR}/data/tmp" 2>/dev/null || true
+
+    # A DELTA package predates the per-module scheme: it carried only the
+    # modules whose versions had moved since some other release. Deltas are no
+    # longer produced, but one can still be sitting on a USB stick, and it must
+    # be refused by name rather than half-applied.
+    for pkg in "${pkgs[@]}"; do
+        local kind
+        kind="$(tar -xzOf "$pkg" --wildcards '*/manifest.json' 2>/dev/null \
+                | python3 -c 'import json,sys;print((json.load(sys.stdin).get("contents") or {}).get("package_kind",""))' 2>/dev/null || echo "")"
+        if [[ "$kind" == "delta" ]]; then
+            log_error "$(basename "$pkg") is a DELTA package: it carries only the"
+            log_error "modules whose versions moved since another release, so it"
+            log_error "cannot install a box from scratch. Use the release bundle"
+            log_error "or its per-module assets."
+            return 1
+        fi
+    done
+
+    # Extract onto the appliance's own disk, not /tmp. The assets total several
+    # GB and many hosts mount /tmp as a small tmpfs -- extracting there fills RAM
+    # and fails with a confusing ENOSPC partway through, after the download
+    # already succeeded. Fall back to /tmp only if the repo disk is unusable,
+    # which is the situation where nothing will work anyway.
+    local work
+    work="$(mktemp -d -p "${SCRIPT_DIR}/data/tmp" pkg-XXXXXX 2>/dev/null)" \
+        || work="$(mktemp -d)"
+    log_info "  Extracting (this takes a few minutes)..."
+    for pkg in "${pkgs[@]}"; do
+        if ! tar -xzf "$pkg" -C "$work" 2>>"$LOG_FILE"; then
+            log_error "  Could not extract $(basename "$pkg")"
+            rm -rf "$work"; return 1
+        fi
+    done
+
+    # One merged tree, or the assets did not share a root and each would be a
+    # separate half-package.
+    local roots
+    roots=$(find "$work" -mindepth 1 -maxdepth 1 -type d | wc -l)
+    if (( roots != 1 )); then
+        log_error "  The assets did not merge — got $roots top-level directories."
+        log_error "  They are not from the same release, or were built without"
+        log_error "  a shared --work-dir."
+        rm -rf "$work"; return 1
+    fi
+
+    local loaded=0 failed=0 tar_file
+    while IFS= read -r tar_file; do
+        if docker load -i "$tar_file" >>"$LOG_FILE" 2>&1; then
+            loaded=$((loaded + 1))
+        else
+            failed=$((failed + 1))
+            log_warn "  Could not load $(basename "$tar_file")"
+        fi
+    done < <(find "$work" -type f -name '*.tar' 2>/dev/null)
+
+    # Images are not the only thing an air-gapped box cannot fetch. The
+    # installer also downloads Velociraptor binaries (current + legacy clients,
+    # the offline collector) and clones SigmaHQ. Deliver whatever the package
+    # carries so the download_* functions find their work already done; each of
+    # them reports honestly if something is genuinely absent.
+    local dl_dir="${SCRIPT_DIR}/modules/nginx/html/downloads"
+    local staged_bin=0 bin
+    mkdir -p "$dl_dir"
+    while IFS= read -r bin; do
+        if cp -n "$bin" "$dl_dir/" 2>/dev/null; then staged_bin=$((staged_bin + 1)); fi
+    done < <(find "$work" -type d -name binaries -exec find {} -type f \; 2>/dev/null)
+    if (( staged_bin > 0 )); then
+        chmod 755 "$dl_dir"/* 2>/dev/null || true   # 755, not +x: umask filters symbolic modes
+        log_success "  Staged $staged_bin Velociraptor binary/binaries from the package"
+    fi
+
+    local sigma_src
+    sigma_src="$(find "$work" -type d -name 'sigma*' -maxdepth 4 2>/dev/null | head -1)"
+    if [[ -n "$sigma_src" && ! -d /opt/sigma-rules/rules ]]; then
+        mkdir -p /opt/sigma-rules
+        cp -rn "$sigma_src"/. /opt/sigma-rules/ 2>/dev/null \
+            && log_success "  Staged SIGMA rules from the package"
+    fi
+
+    rm -rf "$work"
+    if (( loaded == 0 )); then
+        log_error "  No images loaded from the package — wrong or corrupt file."
+        return 1
+    fi
+    if (( failed > 0 )); then
+        log_success "  Loaded $loaded image(s) from the package ($failed failed)"
+    else
+        log_success "  Loaded $loaded image(s) from the package"
+    fi
+    # Loading is not installing. config.yaml's per-module `enabled` flag still
+    # decides what gets deployed, exactly as on an online install -- a full
+    # package deliberately carries images for modules this box has turned OFF,
+    # so one can be enabled later and installed with no route to a registry.
+    # Said out loud because "20 images loaded, 6 modules running" otherwise
+    # reads as something having gone wrong.
+    # Every downstream pull helper keys off this: the per-image one and
+    # pull_compose_with_retry. Set only after images actually loaded, so a
+    # failed load never silently disables the fallback to registries.
+    INTACT_FROM_PACKAGE=1
+    export INTACT_FROM_PACKAGE
+
+    log_info "  Images are now local; config.yaml's enabled flags still decide"
+    log_info "  which modules are deployed. Disabled modules keep their images"
+    log_info "  on disk so they can be enabled later without internet access."
+    return 0
+}
+
+# Fetch the release package this checkout corresponds to, so an ONLINE install
+# runs the same code as an air-gapped one.
+#
+# THE POINT IS NOT THE DOWNLOAD, IT IS THE SHARED PATH. Installing from a
+# package means install and upgrade converge on one implementation: the same
+# images, loaded the same way, deployed by the same compose files. Two
+# implementations of "get this box running" are what let the installer and the
+# upgrade engine drift -- secrets generated in both bash and Python, chmod
+# policies that disagree, an ELK script one of them shipped and the other did
+# not. One path is one thing to test.
+#
+# Falls back to per-image registry pulls if the asset cannot be had. That is the
+# old behaviour, still correct, so a release without a published package (or a
+# GitHub outage) degrades to a slower install rather than no install.
+download_release_assets() {
+    # Fetch every asset this release needs into $2 and leave their paths in
+    # INTACT_PACKAGES.
+    #
+    # An INSTALL takes the COMPLETE module set. There is no baseline on a box
+    # with nothing installed, so "only what changed" has no meaning here.
+    #
+    # Two shapes, both supported permanently:
+    #   index present -> per-module assets (the current CI)
+    #   no index      -> the single bundle (older releases, and the one-file
+    #                    air-gap path)
+    local tag="$1" dest_dir="$2"
+    local repo="${INTACT_REPO:-TenrootOrg/IntactAI}"
+    local api="https://api.github.com/repos/${repo}/releases/tags/${tag}"
+    local hdr=(-H "Accept: application/vnd.github+json")
+    [[ -n "${GITHUB_TOKEN:-}" ]] && hdr+=(-H "Authorization: token ${GITHUB_TOKEN}")
+
+    log_info "Looking for release assets for ${tag}..."
+    local json
+    json="$(curl -sSL --max-time 60 "${hdr[@]}" "$api" 2>/dev/null)" || true
+    [[ -n "$json" ]] || { log_error "  Could not reach the GitHub releases API"; return 1; }
+
+    # Which asset names to fetch. Prefer the per-module set; fall back to the
+    # bundle. Emitted one per line.
+    local names
+    names="$(printf '%s' "$json" | INDEX_TAG="$tag" python3 -c '
+import json, os, sys
+tag = os.environ["INDEX_TAG"]
+try:
+    rel = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+names = [a.get("name", "") for a in (rel.get("assets") or [])]
+sidecars = (".sha256", ".manifest.json", ".meta.json", ".index.json")
+payload = [n for n in names if not n.endswith(sidecars)]
+
+# Per-module assets for THIS release. The index tells us the set is complete;
+# without it we take every module asset present, which is the same thing for a
+# release CI finished.
+if f"intact-release-{tag}.index.json" in names:
+    want = [n for n in payload if n.startswith(f"intact-{tag}-")]
+else:
+    want = []
+
+# Bundle (also the fallback for releases predating the index).
+if not want:
+    base = f"intact-upgrade-{tag}.tar.gz"
+    want = [n for n in payload if n == base or n.startswith(base + ".part-")]
+
+print("\n".join(sorted(set(want))))
+' 2>/dev/null)" || true
+
+    if [[ -z "$names" ]]; then
+        log_error "  Release ${tag} publishes no installable assets"
+        return 1
+    fi
+
+    mkdir -p "$dest_dir"
+    local n
+    while IFS= read -r n; do
+        [[ -n "$n" ]] || continue
+        log_info "  Downloading ${n}..."
+        if ! curl -fSL --retry 3 --retry-delay 5 --max-time 3600 \
+                 -o "${dest_dir}/${n}" \
+                 "https://github.com/${repo}/releases/download/${tag}/${n}" 2>>"$LOG_FILE"; then
+            log_error "  Download failed: ${n}"
+            return 1
+        fi
+        # The .sha256 sidecar is small and is what makes a truncated multi-GB
+        # download distinguishable from a good one before anything is applied.
+        curl -fsSL --max-time 120 -o "${dest_dir}/${n}.sha256" \
+             "https://github.com/${repo}/releases/download/${tag}/${n}.sha256" \
+             2>/dev/null || true
+    done <<< "$names"
+
+    # Reassemble any split assets. CI splits anything over the 2 GiB asset cap
+    # and publishes the sha256 of the WHOLE tarball, taken pre-split.
+    local part0
+    while IFS= read -r part0; do
+        [[ -n "$part0" ]] || continue
+        local whole="${part0%.part-00}"
+        log_info "  Reassembling $(basename "$whole")..."
+        cat "${whole}".part-* > "$whole" && rm -f "${whole}".part-*
+    done < <(find "$dest_dir" -maxdepth 1 -name '*.tar.gz.part-00' | sort)
+
+    # Verify everything BEFORE anything is applied.
+    INTACT_PACKAGES=()
+    local f verified=0 unverified=0
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        if [[ -f "${f}.sha256" ]]; then
+            local want got
+            want="$(awk '{print $1}' "${f}.sha256" | head -1)"
+            got="$(sha256sum "$f" | awk '{print $1}')"
+            if [[ "$want" != "$got" ]]; then
+                log_error "  $(basename "$f") FAILED its checksum (expected ${want:0:16}…, got ${got:0:16}…)"
+                return 1
+            fi
+            verified=$((verified + 1))
+        else
+            unverified=$((unverified + 1))
+        fi
+        INTACT_PACKAGES+=("$f")
+    done < <(find "$dest_dir" -maxdepth 1 -name '*.tar.gz' | sort)
+
+    if (( ${#INTACT_PACKAGES[@]} == 0 )); then
+        log_error "  Nothing downloaded"
+        return 1
+    fi
+    log_success "  ${#INTACT_PACKAGES[@]} asset(s) ready (${verified} checksum-verified)"
+    if (( unverified > 0 )); then
+        log_warn "  ${unverified} asset(s) had no published .sha256 — integrity unverified"
+    fi
+    return 0
+}
+
 main() {
     echo ""
     echo "=============================================="
@@ -132,9 +462,63 @@ main() {
         fi
     fi
     print_installation_config_summary
-    if ! check_network_connectivity; then
+    if [[ "$INTACT_AIRGAP" == "1" ]]; then
+        # No connectivity check: there is deliberately no route out. The
+        # package replaces every registry fetch, so reachability is irrelevant
+        # and the existing gate would abort a perfectly valid install.
+        log_info "Air-gapped mode — skipping the internet connectivity check"
+        if ! load_images_from_package "${INTACT_PACKAGES[@]}"; then
+            log_error "Could not load the release assets - aborting installation"
+            exit 1
+        fi
+    elif ! check_network_connectivity; then
         log_error "Network connectivity check failed - aborting installation"
         exit 1
+    else
+        # ONLINE — and STILL installing from the release package. This is the
+        # only way a box gets its images now; there is deliberately no
+        # per-image registry fallback.
+        #
+        # The point is not the download, it is that install and upgrade run ONE
+        # implementation: the same asset, the same loader, the same compose
+        # files. Two ways to "get this box running" is precisely what let the
+        # installer and the upgrade engine drift -- secrets generated in both
+        # bash and Python, chmod policies that disagree, an ELK script one of
+        # them shipped and the other did not. A fallback would quietly restore
+        # that second path and with it the second test matrix, which is the
+        # entire cost this change exists to remove.
+        #
+        # So a package that cannot be fetched or loaded is a FAILED INSTALL,
+        # stated plainly, rather than a silent downgrade to a different code
+        # path that nobody tested this release.
+        local _rel_tag; _rel_tag="$(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null || true)"
+        if [[ -z "$_rel_tag" ]]; then
+            log_error "=============================================="
+            log_error "No VERSION file in ${SCRIPT_DIR}, so there is no way to tell"
+            log_error "which release package to install."
+            log_error ""
+            log_error "Use a release checkout, or install offline with:"
+            log_error "    sudo bash install.sh --package <release-assets-dir>/"
+            log_error "=============================================="
+            exit 1
+        fi
+        if ! download_release_assets "$_rel_tag" "${SCRIPT_DIR}/data/tmp/install-pkg"; then
+            log_error "=============================================="
+            log_error "Could not obtain the release assets for ${_rel_tag}."
+            log_error ""
+            log_error "Images come only from those assets now, so the install"
+            log_error "cannot continue. Either fix connectivity to GitHub, or"
+            log_error "fetch them on another machine and run:"
+            log_error "    sudo bash install.sh --package <release-assets-dir>/"
+            log_error "=============================================="
+            exit 1
+        fi
+        if ! load_images_from_package "${INTACT_PACKAGES[@]}"; then
+            log_error "The release assets could not be loaded - aborting installation"
+            exit 1
+        fi
+        # Reclaim the downloads; their contents are in the docker store now.
+        rm -f "${INTACT_PACKAGES[@]}" 2>/dev/null || true
     fi
 
     # -------------------------------------------------------------------------
@@ -164,9 +548,35 @@ main() {
     # -------------------------------------------------------------------------
     # Core Dependencies
     # -------------------------------------------------------------------------
-    install_dependencies
-    prefer_ipv4_dns
-    if ! install_docker; then
+    # Air-gap: apt and the docker repo are both internet-only, so these have to
+    # be satisfied ALREADY. Check rather than attempt -- a failed `apt-get
+    # update` on a box with no route produces a confusing wall of DNS errors,
+    # where "docker is not installed and I cannot install it here" is the
+    # actual problem and is worth saying in one line.
+    if [[ "$INTACT_AIRGAP" == "1" ]]; then
+        local _missing=()
+        command -v docker >/dev/null 2>&1 || _missing+=("docker")
+        docker compose version >/dev/null 2>&1 || _missing+=("docker-compose-plugin")
+        command -v python3 >/dev/null 2>&1 || _missing+=("python3")
+        python3 -c 'import yaml' >/dev/null 2>&1 || _missing+=("python3-yaml")
+        command -v openssl >/dev/null 2>&1 || _missing+=("openssl")
+        if (( ${#_missing[@]} > 0 )); then
+            log_error "=============================================="
+            log_error "Air-gapped install needs these already present: ${_missing[*]}"
+            log_error ""
+            log_error "They come from apt and the Docker repository, which this"
+            log_error "install cannot reach by design. Install them on this host"
+            log_error "first (or use an image that ships them), then re-run with"
+            log_error "--package."
+            log_error "=============================================="
+            exit 1
+        fi
+        log_success "Host prerequisites present (docker, compose, python3, yaml, openssl)"
+    else
+        install_dependencies
+        prefer_ipv4_dns
+    fi
+    if [[ "$INTACT_AIRGAP" != "1" ]] && ! install_docker; then
         log_error "=============================================="
         log_error "Docker installation failed — aborting install."
         log_error ""

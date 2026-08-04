@@ -23,6 +23,7 @@ back to building on-box and every existing scenario keeps working.
 """
 import hashlib
 import os
+import shutil
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -51,6 +52,15 @@ _RETRIES = 4
 # asset cap by several parts -- and now that releases ship every module they
 # will have more, not fewer -- so this scales on its own.
 _PART_WORKERS = 4
+
+# Concurrent ASSET downloads. A release now ships one asset per module, so a
+# full fetch is ~9 separate downloads rather than one -- and GitHub throttles a
+# single connection well below what the link can carry, which made the
+# sequential version spend most of its wall-clock waiting instead of
+# transferring. Four rather than "all of them": past that the per-connection
+# share falls off faster than the concurrency wins it back, and each extra
+# stream is another multi-GB write competing for the same disk.
+_ASSET_WORKERS = 4
 
 # One status line for the whole download, rewritten on this interval, instead
 # of every part logging its own progress. With parts running concurrently the
@@ -413,3 +423,202 @@ def download_release_package(tag: str, dest_dir: str, run_id: str = None,
             "(the apply step still verifies every file against the in-package "
             "manifest).", "warning")
     return final_path
+
+
+# ===========================================================================
+# Per-module release assets
+# ===========================================================================
+#
+# A release publishes one asset per module plus an index describing them. The
+# box downloads only the modules it is actually installing or upgrading, then
+# assembles them into one package_dir (see base.assemble_release_package).
+#
+# find_release_index returning None is the whole transition strategy: releases
+# built before this existed have no index, the caller falls back to
+# download_release_package, and the legacy single-bundle path is untouched.
+
+def find_release_index(tag: str, logger: Callable = None) -> Optional[dict]:
+    """The per-module asset index for release ``tag``, or None if it has none.
+
+    Shape:
+        {"release_tag": …, "source_commit": …,
+         "assets": {"<module>": {"asset": name, "version": …,
+                                 "sha256": …, "size": n,
+                                 "parts": [name, …]}}}
+    """
+    log = logger or (lambda m, l="info": None)
+    rel = _get_release(tag, log)
+    if not rel:
+        return None
+    name = f"intact-release-{tag}.index.json"
+    assets = {a['name']: a for a in (rel.get('assets') or [])}
+    if name not in assets:
+        log(f"  Release '{tag}' has no per-module index ({name}) — "
+            f"using the single-package path.", "info")
+        return None
+    try:
+        r = requests.get(assets[name]['url'], headers=_headers(octet=True),
+                         timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT))
+        r.raise_for_status()
+        index = r.json()
+    except Exception as e:
+        log(f"  Could not read the release index ({type(e).__name__}: {e}) — "
+            f"falling back to the single package.", "warning")
+        return None
+
+    # Attach the live asset URLs; the index records names, not URLs, so it
+    # stays valid if the repo is renamed or mirrored.
+    for module, entry in (index.get('assets') or {}).items():
+        entry['urls'] = []
+        for n in ([entry['asset']] if entry.get('asset') in assets
+                  else (entry.get('parts') or [])):
+            if n in assets:
+                entry['urls'].append((n, assets[n]['url'],
+                                      assets[n].get('size') or 0))
+    return index
+
+
+def download_release_assets(tag: str, modules, dest_dir: str,
+                            run_id: str = None, logger: Callable = None,
+                            progress_cb: Optional[Callable] = None):
+    """Download the assets for ``modules`` from release ``tag``.
+
+    Returns ``(asset_paths, index)``. Raises IOError if any requested module has
+    no asset, or if one fails its checksum.
+
+    A MISSING ASSET IS FATAL, deliberately. The apply loop is driven by the
+    assembled manifest's ``versions``, so a module whose asset quietly failed to
+    download simply would not appear there — and the run would report success
+    having never touched it. That is the same silent-staleness failure the delta
+    scheme had, arriving through a different door, so it is refused here and
+    again in the assembler.
+    """
+    log = logger or (lambda m, l="info": print(f"[{l}] {m}"))
+    index = find_release_index(tag, logger=log)
+    if not index:
+        return None, None
+
+    available = index.get('assets') or {}
+    wanted = [m for m in modules if m in available]
+    missing = sorted(set(modules) - set(available))
+    if missing:
+        raise IOError(
+            f"release {tag} has no asset for: {', '.join(missing)}. "
+            f"Applying without them would leave those modules untouched while "
+            f"reporting success.")
+
+    os.makedirs(dest_dir, exist_ok=True)
+
+    total_bytes = sum((available[m].get('size') or 0) for m in wanted)
+    log(f"Downloading {len(wanted)} asset(s) from {tag} "
+        f"({total_bytes / (1024 ** 3):.2f} GB): {', '.join(sorted(wanted))}",
+        "info")
+
+    # PARALLEL ACROSS ASSETS. GitHub throttles a single connection well below
+    # what the link can carry, so nine sequential downloads spend most of their
+    # time waiting rather than transferring. Bounded at _ASSET_WORKERS because
+    # past that the per-connection share drops faster than the concurrency buys
+    # back, and every extra stream is another multi-GB write competing for the
+    # same disk.
+    #
+    # Progress is reported by a single reporter thread rather than by each
+    # worker: nine workers logging their own percentages interleave into
+    # something unreadable, and the operator only wants one question answered --
+    # how much of the whole download is left.
+    done_bytes = {m: 0 for m in wanted}
+    done_lock = threading.Lock()
+    finished = set()
+    results: Dict[str, str] = {}
+    errors: Dict[str, BaseException] = {}
+
+    def _progress_for(module):
+        def _cb(n):
+            with done_lock:
+                done_bytes[module] = n
+        return _cb
+
+    def _fetch(module):
+        entry = available[module]
+        urls = entry.get('urls') or []
+        if not urls:
+            raise IOError(f"release {tag} lists {module} in its index but the "
+                          f"asset itself is not attached to the release")
+        final = os.path.join(dest_dir, entry['asset'])
+
+        if len(urls) == 1 and urls[0][0] == entry['asset']:
+            name, url, size = urls[0]
+            _download_asset(url, final, size, run_id, log,
+                            _progress_for(module), label=f"{module} ",
+                            log_progress=False)
+        else:
+            # Split asset: fetch its parts, then concatenate, removing each as
+            # it is appended so peak disk stays at assembled + one part.
+            part_paths = []
+            for name, url, size in urls:
+                pp = os.path.join(dest_dir, name)
+                _download_asset(url, pp, size, run_id, log, None,
+                                label=f"{module} ", log_progress=False)
+                part_paths.append(pp)
+            with open(final, 'wb') as out:
+                for pp in part_paths:
+                    with open(pp, 'rb') as chunk:
+                        shutil.copyfileobj(chunk, out, 8 * 1024 * 1024)
+                    os.remove(pp)
+
+        want = entry.get('sha256')
+        if want:
+            _verify_sha256(final, want, run_id, log)
+        else:
+            log(f"  {module}: no sha256 in the index — integrity unverified",
+                "warning")
+        return final
+
+    stop_reporting = threading.Event()
+
+    def _report():
+        # One line every _PROGRESS_SECONDS, naming what is still in flight so a
+        # stall is attributable to a module rather than to "the download".
+        while not stop_reporting.wait(_PROGRESS_SECONDS):
+            with done_lock:
+                got = sum(done_bytes.values())
+                pending = sorted(set(wanted) - finished)
+            pct = (got * 100 // total_bytes) if total_bytes else 0
+            log(f"  … {got / (1024 ** 3):.2f}/{total_bytes / (1024 ** 3):.2f} GB "
+                f"({pct}%) — {len(finished)}/{len(wanted)} done"
+                + (f", fetching {', '.join(pending[:3])}"
+                   f"{'…' if len(pending) > 3 else ''}" if pending else ""),
+                "info")
+
+    reporter = threading.Thread(target=_report, daemon=True)
+    reporter.start()
+    try:
+        workers = max(1, min(_ASSET_WORKERS, len(wanted)))
+        with ThreadPoolExecutor(max_workers=workers,
+                                thread_name_prefix='asset-dl') as ex:
+            futures = {ex.submit(_fetch, m): m for m in sorted(wanted)}
+            for fut in as_completed(futures):
+                module = futures[fut]
+                try:
+                    results[module] = fut.result()
+                except BaseException as e:          # noqa: BLE001 - re-raised
+                    errors[module] = e
+                with done_lock:
+                    finished.add(module)
+                if module in results:
+                    log(f"  ✓ {module} ({os.path.getsize(results[module]) / (1024 ** 2):.0f} MB) "
+                        f"[{len(finished)}/{len(wanted)}]", "success")
+    finally:
+        stop_reporting.set()
+
+    if errors:
+        # Cancellation wins over any other failure: it is what the operator
+        # asked for, not something that went wrong.
+        for e in errors.values():
+            if isinstance(e, PackageDownloadCancelled):
+                raise e
+        first = sorted(errors)[0]
+        raise IOError(f"could not download the {first} asset: {errors[first]}")
+
+    paths = [results[m] for m in sorted(results)]
+    log(f"  {len(paths)} asset(s) ready", "success")
+    return paths, index

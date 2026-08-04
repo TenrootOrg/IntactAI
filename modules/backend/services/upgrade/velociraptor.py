@@ -770,14 +770,6 @@ def _velociraptor_collector_url(clean_version: str) -> str:
     return f"https://github.com/Velocidex/velociraptor/releases/download/v{clean_version}/velociraptor-collector"
 
 
-def _tools_dir() -> str:
-    """Velociraptor server's tools dir as seen from the intact_backend
-    container. /app/data/tools (container view) = /home/tenroot/intact/data/tools
-    (host view) = /tools (velociraptor container view via bind mount).
-    All three map to the same dir; we write from the backend's view."""
-    return os.path.join(WORKDIR, '..', 'data', 'tools') \
-        if not os.path.isdir(os.path.join(WORKDIR, 'data', 'tools')) \
-        else os.path.join(WORKDIR, 'data', 'tools')
 
 
 def _ensure_velociraptor_collector_tool(

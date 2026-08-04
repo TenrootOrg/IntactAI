@@ -65,8 +65,6 @@ def asset_id_from_host(hostname) -> str:
     return f"asset:endpoint:host={norm_host(hostname)}"
 
 
-def cloud_asset_id(provider: str, account: str) -> str:    # future
-    return f"asset:cloud_account:{provider}:{account}"
 
 
 # -- process (the headline cross-module merge) ----------------------------
@@ -146,8 +144,6 @@ def service_id(asset: str, name) -> str:
     return f"service:{asset}:{str(name).strip().lower()}"
 
 
-def regkey_id(asset: str, path) -> str:
-    return f"regkey:{asset}:{norm_path(path)}"
 
 
 def netconn_id(asset: str, laddr, lport, raddr, rport) -> str:
@@ -158,8 +154,6 @@ def yarahit_id(asset: str, rule, pid="") -> str:
     return f"yarahit:{asset}:{str(rule).strip()}:{pid}"
 
 
-def vuln_id(cve) -> str:
-    return f"vuln:{str(cve).strip().upper()}"
 
 
 def event_id(asset: str, ts, msg) -> str:

@@ -363,9 +363,6 @@ def _count_timesketch_rows(table: str, logger: Callable = None) -> Optional[int]
         return None
 
 
-def _count_timesketch_users(logger: Callable = None) -> Optional[int]:
-    """Convenience wrapper — kept for back-compat with earlier callers."""
-    return _count_timesketch_rows('user', logger=logger)
 
 
 def _snapshot_persistent_counts(logger: Callable = None) -> Dict[str, Optional[int]]:

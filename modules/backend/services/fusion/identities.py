@@ -55,32 +55,6 @@ def _norm_user(label) -> str:
 _DOMAIN_SUFFIX_SKIP = {"onmicrosoft", "com", "net", "org", "io", "local", "internal", "lan"}
 
 
-def _domain_root(label) -> str | None:
-    """Org/AD domain ROOT for an account, or None for a bare/local username. Unifies the
-    forms of ONE org: NT `contoso\\u`, email `u@contoso.com`, UPN
-    `azuread\\u@contoso.onmicrosoft.com` -> all root 'contoso'. This is what keeps two
-    DIFFERENT people who share a username stem in DIFFERENT domains (contoso\\ndahan vs
-    corp\\ndahan) from being merged, while still uniting one person's forms."""
-    s = (label or "").strip().lower()
-    dom = ""
-    if "\\" in s:
-        dom = s.split("\\", 1)[0]                 # NT domain (azuread\ is a placeholder, skip below)
-        rest = s.split("\\", 1)[1]
-    else:
-        rest = s
-    if "@" in rest:                               # email / UPN domain wins over an 'azuread\' placeholder
-        dom = rest.split("@", 1)[1]
-    elif dom in ("azuread", "azure ad", ""):
-        return None
-    if not dom or dom in ("azuread", "azure ad"):
-        return None
-    parts = [p for p in dom.split(".") if p]
-    # take the most-specific label that isn't a generic public suffix (contoso.com->contoso,
-    # contoso.onmicrosoft.com->contoso, corp->corp)
-    for p in parts:
-        if p not in _DOMAIN_SUFFIX_SKIP:
-            return p
-    return parts[0] if parts else None
 
 
 def _is_person(label) -> bool:

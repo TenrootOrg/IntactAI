@@ -817,7 +817,17 @@ def start_offline_upgrade():
         if not data:
             return jsonify({"error": "No data provided"}), 400
 
+        # ONE package, or N per-module assets. A release publishes both shapes
+        # (a bundle and one asset per module), and an operator carrying assets
+        # into an air-gapped site should not have to reassemble them by hand.
+        # `package_path` stays the scalar it always was; `package_paths` is the
+        # list form. Given a list of one, the two are identical.
+        package_paths = data.get('package_paths')
         package_path = data.get('package_path')
+        if package_paths and not isinstance(package_paths, list):
+            return jsonify({"error": "package_paths must be a list"}), 400
+        if package_paths and len(package_paths) == 1:
+            package_path, package_paths = package_paths[0], None
         db_overwrite = data.get('db_overwrite', {})  # Per-module fresh install flags
         selected_modules = data.get('selected_modules')  # None = no filter (apply all)
         # Optional operator-supplied digest for the uploaded archive. The
@@ -832,15 +842,17 @@ def start_offline_upgrade():
             from services.upgrade import LEGACY_MODULE_ALIASES
             selected_modules = [LEGACY_MODULE_ALIASES.get(m, m) for m in selected_modules]
 
-        if not package_path:
+        if not package_path and not package_paths:
             return jsonify({"error": "No package_path provided"}), 400
 
-        err = _reject_package_path(package_path)
-        if err:
-            return err
-
-        if not os.path.exists(package_path):
-            return jsonify({"error": f"Package not found: {package_path}"}), 400
+        # Every path goes through the SAME allowlist. A list must not be a way
+        # to smuggle in a path the scalar form would have rejected.
+        for _p in ([package_path] if package_path else package_paths):
+            err = _reject_package_path(_p)
+            if err:
+                return err
+            if not os.path.exists(_p):
+                return jsonify({"error": f"Package not found: {_p}"}), 400
 
         # Single-writer gate + run acquisition under one mutex: refuse when
         # another upgrade/prepare owns the system (concurrent upgrades mirror
@@ -871,8 +883,12 @@ def start_offline_upgrade():
             # therefore a durable join key that cannot be raced. The sidecar is
             # kept only as a fast path.
             run_id = None
-            sidecar = f"{package_path}.run"
-            if os.path.exists(sidecar):
+            # With N per-module assets the operator uploaded several files into
+            # ONE run; every one carries the same sidecar, so the first is as
+            # good as any.
+            _adopt_from = package_path or (package_paths[0] if package_paths else None)
+            sidecar = f"{_adopt_from}.run"
+            if _adopt_from and os.path.exists(sidecar):
                 try:
                     with open(sidecar) as _rf:
                         candidate = (_rf.read() or "").strip()
@@ -882,12 +898,12 @@ def start_offline_upgrade():
                 except Exception:
                     run_id = None
 
-            if not run_id:
+            if not run_id and _adopt_from:
                 # Durable fallback: find the upload's run by upload_id.
                 try:
                     from routes.upload_routes import _resolve_upload_run
                     from services.file_storage_service import get_workflow as _get_wf
-                    _uid = os.path.basename(package_path or '')
+                    _uid = os.path.basename(_adopt_from or '')
                     _rid = _resolve_upload_run(_uid) if _uid else None
                     if _rid:
                         _wf = _get_wf(_rid) or {}
@@ -994,12 +1010,40 @@ def start_offline_upgrade():
                 # Phase 2's cleanup (crash / failed resume / killed by the restart).
                 sweep_stale_upgrade_staging(logger=logger)
 
-                result = run_offline_upgrade_workflow(
-                    package_path, run_id=run_id, logger=logger,
-                    db_overwrite=db_overwrite,
-                    selected_modules=selected_modules,
-                    expected_sha256=expected_sha256,
-                )
+                if package_paths:
+                    # N per-module assets: merge them into one package_dir and
+                    # hand the workflow the prebuilt result. Same orchestration
+                    # either way -- the assembler returns exactly the shape
+                    # verify_upgrade_package does.
+                    from services.upgrade.base import assemble_release_package
+                    import shutil as _shutil
+                    # The tag is derived from the merged root rather than
+                    # parsed out of a filename -- the operator may have renamed
+                    # the files, and the assembler cross-checks it against every
+                    # asset's recorded release_tag anyway.
+                    _stage = f"/app/data/tmp/intact-assets-upload-{run_id}"
+                    _shutil.rmtree(_stage, ignore_errors=True)
+                    _asm = assemble_release_package(
+                        package_paths, extract_dir=_stage, logger=logger)
+                    if not _asm.get('success'):
+                        raise RuntimeError(
+                            f"could not assemble the uploaded assets: "
+                            f"{_asm.get('error')}")
+                    result = run_offline_upgrade_workflow(
+                        None, run_id=run_id, logger=logger,
+                        db_overwrite=db_overwrite,
+                        selected_modules=selected_modules,
+                        prebuilt_package_dir=_asm['package_dir'],
+                        prebuilt_manifest=_asm['manifest'],
+                        workflow_label="OFFLINE UPGRADE (uploaded module assets)",
+                    )
+                else:
+                    result = run_offline_upgrade_workflow(
+                        package_path, run_id=run_id, logger=logger,
+                        db_overwrite=db_overwrite,
+                        selected_modules=selected_modules,
+                        expected_sha256=expected_sha256,
+                    )
 
                 # Handle two-phase upgrade (backend restart pending)
                 if result.get('phase') == 'awaiting_restart':

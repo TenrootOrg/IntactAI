@@ -926,10 +926,10 @@ def migrate_basic_auth_to_app_login(logger: Callable = None) -> None:
 
     NO SHIPPED RELEASE EVER HAD IT. The gate was added and replaced by the app
     login inside the same unreleased window, so on every real appliance the
-    recovery found nothing, fell through to ensure_nginx_basic_auth_secret(),
-    and GENERATED a random 32-character password — then stored it as the login
-    and marked setup complete. The operator was locked out of their own box by
-    a credential that had never existed anywhere they could have seen it. That
+    recovery found nothing, fell through to a since-removed helper that
+    GENERATED a random 32-character password, and stored it as the login and
+    marked setup complete. The operator was locked out of their own box by a
+    credential that had never existed anywhere they could have seen it. That
     is what happened on the 20260726 -> 20260803 upgrade.
 
     With no prior credential there is nothing to preserve, and the appliance is
@@ -1007,70 +1007,6 @@ def migrate_basic_auth_to_app_login(logger: Callable = None) -> None:
             "error")
 
 
-def ensure_nginx_basic_auth_secret(logger: Callable = None) -> None:
-    """Seed modules/nginx/secrets/{nginx_basic_auth_password,htpasswd} if
-    missing — mirrors lib/modules.sh:generate_nginx_secrets() exactly.
-
-    RETAINED ONLY AS THE MIGRATION SOURCE. nginx no longer reads the htpasswd
-    (see modules/nginx/config/nginx.conf — the auth_basic gate is gone, replaced
-    by auth_request against the backend's session login), and the bind mount has
-    been removed from modules/nginx/docker-compose.yaml.
-
-    It still runs once, BEFORE migrate_basic_auth_to_app_login(), for one
-    reason: on a box whose secret was never generated, that function has no
-    existing password to migrate and would have to fall back to opening the
-    setup page. Generating here first means there is always something to hash,
-    so the upgrade never leaves the appliance claimable. Do not call it after
-    the migration, and do not re-add the nginx mount.
-
-      * dashboard.password set in config.yaml -> re-applied every run, so the
-        operator's chosen password is what the dashboard actually uses.
-      * dashboard.password empty (shipped default) -> generate once if the
-        secret is missing, otherwise leave the existing one strictly alone.
-        An upgrade must never silently rotate a working box's password.
-    """
-    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
-    secrets_dir = os.path.join(WORKDIR, 'modules', 'nginx', 'secrets')
-    password_path = os.path.join(secrets_dir, 'nginx_basic_auth_password')
-    htpasswd_path = os.path.join(secrets_dir, 'htpasswd')
-
-    # config.yaml wins whenever the operator filled in dashboard.password —
-    # rewritten on every upgrade so editing config.yaml actually changes the
-    # login, exactly like lib/modules.sh:generate_nginx_secrets does at install
-    # time. Left empty (the shipped default) we fall through to the
-    # generate-once-and-never-touch behaviour below.
-    dash_user, dash_password = _read_dashboard_credentials(log)
-    if dash_password:
-        os.makedirs(secrets_dir, exist_ok=True)
-        _write_nginx_htpasswd(dash_user, dash_password, password_path, htpasswd_path, log)
-        log(f"  Nginx Basic Auth password set from config.yaml (username: {dash_user})")
-        return
-
-    if (os.path.exists(password_path) and os.path.getsize(password_path) > 0
-            and os.path.exists(htpasswd_path) and os.path.getsize(htpasswd_path) > 0):
-        # Already present — still re-assert ownership in case a prior
-        # permissions sweep (or a manually-copied file) left it un-readable
-        # by the nginx worker (see the chown/chmod note below).
-        try:
-            os.chown(htpasswd_path, 0, 101)
-        except (PermissionError, OSError):
-            pass
-        try:
-            os.chmod(htpasswd_path, 0o640)
-        except OSError:
-            pass
-        return
-    os.makedirs(secrets_dir, exist_ok=True)
-
-    import secrets as _secrets
-    password = _secrets.token_hex(16)
-    _write_nginx_htpasswd(dash_user, password, password_path, htpasswd_path, log)
-
-    log(f"  Generated a random Nginx dashboard/API Basic Auth password "
-        f"(username: {dash_user})", "warning")
-    log(f"  Retrieve it with: cat {password_path}", "warning")
-    log("  Set dashboard.password in config.yaml to choose your own instead.",
-        "warning")
 
 
 def _read_dashboard_credentials(log: Callable) -> tuple:

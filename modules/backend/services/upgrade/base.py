@@ -1837,35 +1837,27 @@ def installed_release_version() -> str:
         return ''
 
 
-def _reject_delta_on_wrong_baseline(manifest: Dict,
-                                    logger: Callable = None) -> Optional[str]:
-    """Refuse a DELTA package unless this box is on the exact baseline it was
-    built against. Returns an error string to abort with, or None to proceed.
+def _reject_stale_delta_package(manifest: Dict,
+                                logger: Callable = None) -> Optional[str]:
+    """Refuse a DELTA package. Kept as a tombstone, not as a guard.
 
-    A delta contains only the modules whose pins moved between two consecutive
-    releases. Applied to a box on a DIFFERENT baseline, every module that moved
-    in the gap it skipped is simply absent -- and the run reports success,
-    because the orchestrator can only skip modules it was given. Measured on
-    real history for intact-20260803:
+    Deltas were an earlier scheme: an artifact carrying only the modules whose
+    pins moved since some OTHER release. That relativity was the problem -- the
+    online flow downloads one artifact for the target ref and does not walk the
+    upgrade chain, so a box that skipped a release got a package diffed against
+    the wrong starting point and everything in the gap was silently absent WHILE
+    THE RUN REPORTED SUCCESS.
 
-        vs intact-20260802 : elk 9.4.2 -> 9.4.4, backend_tusd v2.9.2 -> v2.10.0
-        vs intact-20260615 : 14 modules moved
-
-    So a 20260615 box handed a delta built against 20260802 keeps a dozen stale
-    modules and is told it succeeded. That is the failure mode the packager's
-    own docstring has warned about since the first delta release; this is the
-    check that finally makes it impossible rather than merely documented.
-
-    Full packages are always allowed: they carry every module, and the apply
-    side already skips the ones whose installed version matches, so a full
-    package self-deltas on arrival.
-
-    A package with no `package_kind` predates this field and is treated as
-    full -- old packages were all full, so that is the truthful reading.
+    Per-module assets replaced them and are absolute, so there is no baseline to
+    validate and nothing left to guard. What remains is this: a delta tarball
+    built during that window can still be sitting on someone's USB stick, and it
+    must not become applicable simply because the code that understood it is
+    gone. Refusing by name is the only way to say "this is not a thing any more"
+    rather than half-applying it.
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     contents = manifest.get('contents') or {}
-    kind = (contents.get('package_kind') or 'full').strip().lower()
+    kind = (contents.get('package_kind') or '').strip().lower()
 
     commit = contents.get('source_commit')
     if commit:
@@ -1873,33 +1865,11 @@ def _reject_delta_on_wrong_baseline(manifest: Dict,
 
     if kind != 'delta':
         return None
-
-    baseline = (contents.get('delta_from') or '').strip()
-    installed = installed_release_version()
-    log(f"  DELTA package — valid only for a box on {baseline or '(unrecorded)'}",
-        "info")
-
-    if not baseline:
-        return ("this package declares package_kind: delta but records no "
-                "delta_from, so there is no way to tell which baseline it is "
-                "valid for. Use the full package for this release.")
-
-    if not installed:
-        return (f"this is a DELTA package for boxes on {baseline}, and this "
-                f"appliance has no VERSION file, so its baseline cannot be "
-                f"confirmed. Use the full package for this release.")
-
-    if installed != baseline:
-        return (f"this is a DELTA package built for boxes on {baseline}, but "
-                f"this appliance is on {installed}. Applying it would leave "
-                f"every module that changed between {installed} and {baseline} "
-                f"stale while the upgrade reported success. Use the full "
-                f"package for this release instead.")
-
-    log(f"  Baseline matches ({installed}) — delta is valid for this box",
-        "success")
-    return None
-
+    baseline = (contents.get('delta_from') or 'an unrecorded release')
+    return (f"this is a DELTA package, built against {baseline}. Deltas are no "
+            f"longer produced or supported: they carried only the modules whose "
+            f"versions had moved, so applying one leaves everything else stale "
+            f"while reporting success. Use this release's assets or its bundle.")
 
 def verify_upgrade_package(package_path: str, logger: Callable = None,
                            expected_sha256: str = None) -> Dict:
@@ -2094,7 +2064,7 @@ def verify_upgrade_package(package_path: str, logger: Callable = None,
         log(f"  Package created: {manifest.get('created', 'unknown')}", "info")
         log(f"  Versions: {json.dumps(manifest.get('versions', {}))}", "info")
 
-        _kind_err = _reject_delta_on_wrong_baseline(manifest, logger=log)
+        _kind_err = _reject_stale_delta_package(manifest, logger=log)
         if _kind_err:
             return {"success": False, "error": _kind_err}
 
@@ -2588,3 +2558,338 @@ def install_module_compose_up(
 
     log(f"{module_id} first-time install complete", "success")
     return {"success": True, "version": version, "first_install": True}
+
+
+# ===========================================================================
+# Per-module release assets: assemble N of them into ONE package_dir
+# ===========================================================================
+#
+# A release ships one asset per module. The apply side is unchanged and still
+# consumes a single directory, because every asset's tarball uses the SAME
+# top-level directory name (intact-upgrade-<tag>/) -- so extracting N of them
+# into one place produces exactly that directory, with the union of their
+# images/, binaries/, source/ and so on. Verified against both `tar xzf` and
+# the member-by-member tarfile extraction this module uses.
+#
+# The file sets are disjoint by construction: image tar names are unique per
+# module (volweb ships volweb-postgres-*.tar precisely so it cannot collide
+# with timesketch's postgres-*.tar), source/ comes only from intact, binaries/
+# only from velociraptor, migrations/ only from timesketch. The ONE genuine
+# collision is the root manifest.json -- last extractor wins, silently -- which
+# is why each asset also carries manifests/<module>.json and why the assembler
+# writes the merged root manifest LAST.
+
+def _hash_file(path: str) -> str:
+    """sha256 of a file, streamed."""
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(4 * 1024 * 1024), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _extract_one_asset(asset_path: str, extract_dir: str,
+                       logger: Callable = None) -> None:
+    """Extract one asset into extract_dir, with the same tar-slip guard
+    verify_upgrade_package applies. Raises on anything suspicious."""
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    import tarfile
+    with tarfile.open(asset_path, 'r:gz') as tar:
+        members = tar.getmembers()
+        for m in members:
+            name = m.name
+            if not name:
+                continue
+            if name.startswith('/') or name.startswith('\\'):
+                raise RuntimeError(
+                    f"{os.path.basename(asset_path)} contains an absolute-path "
+                    f"member ({name!r}) — refusing to extract")
+            if '..' in name.replace('\\', '/').split('/'):
+                raise RuntimeError(
+                    f"{os.path.basename(asset_path)} contains a path-traversal "
+                    f"member ({name!r}) — refusing to extract")
+        for m in members:
+            tar.extract(m, extract_dir)
+    log(f"  Extracted {os.path.basename(asset_path)}", "info")
+
+
+def assemble_manifest(per_module: Dict[str, Dict],
+                      logger: Callable = None) -> Dict:
+    """Merge N per-module manifests into the single manifest the apply side reads.
+
+    Union everywhere, and ABORT on any key that two assets disagree about. A
+    conflict means the assets were built from different code, or that two files
+    with the same path had different bytes and whichever tar extracted last
+    silently won -- either way, applying would install something nobody built.
+
+    THE SHA MAP IS A UNION OF WHAT THE ASSETS PUBLISHED, never recomputed from
+    the merged tree. Re-hashing what is on disk would launder exactly the
+    corruption this is here to catch into a self-consistent manifest that
+    verifies perfectly. That is the single most important rule in this file.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+
+    merged: Dict = {"package_version": None, "versions": {}, "contents": {}}
+    c = merged["contents"]
+    for key in ("images", "binaries", "migrations"):
+        c[key] = []
+    c["sha256"] = {}
+    c["image_sizes"] = {}
+    c["transitive_versions"] = {}
+    c["rule_packs"] = []
+    c["include_source"] = False
+    created = []
+
+    def _conflict(what, key, a, b, mod):
+        return (f"assets disagree about {what} {key!r}: {a!r} vs {b!r} "
+                f"(while merging {mod}). They were not built from the same "
+                f"release; refusing to assemble.")
+
+    for module, man in sorted(per_module.items()):
+        mc = man.get("contents") or {}
+
+        pv = man.get("package_version")
+        if merged["package_version"] is None:
+            merged["package_version"] = pv
+        elif pv != merged["package_version"]:
+            raise ValueError(_conflict("package_version", module,
+                                       merged["package_version"], pv, module))
+
+        for k, v in (man.get("versions") or {}).items():
+            if k in merged["versions"] and merged["versions"][k] != v:
+                raise ValueError(_conflict("versions", k,
+                                           merged["versions"][k], v, module))
+            merged["versions"][k] = v
+
+        for k, v in (mc.get("sha256") or {}).items():
+            if k in c["sha256"] and c["sha256"][k] != v:
+                raise ValueError(_conflict("file hash", k,
+                                           c["sha256"][k], v, module))
+            c["sha256"][k] = v
+
+        for k, v in (mc.get("image_sizes") or {}).items():
+            if k in c["image_sizes"] and c["image_sizes"][k] != v:
+                raise ValueError(_conflict("image size", k,
+                                           c["image_sizes"][k], v, module))
+            c["image_sizes"][k] = v
+
+        for k, v in (mc.get("transitive_versions") or {}).items():
+            if k in c["transitive_versions"] and c["transitive_versions"][k] != v:
+                raise ValueError(_conflict("transitive pins", k,
+                                           c["transitive_versions"][k], v, module))
+            c["transitive_versions"][k] = v
+
+        for key in ("images", "binaries", "migrations"):
+            for item in (mc.get(key) or []):
+                if item not in c[key]:
+                    c[key].append(item)
+
+        c["rule_packs"].extend(mc.get("rule_packs") or [])
+        c["include_source"] = c["include_source"] or bool(mc.get("include_source"))
+
+        for passthrough in ("velociraptor_artifacts", "velociraptor_legacy",
+                            "yara_rulesets", "velociraptor_tools",
+                            "source_origin", "source_commit", "release_tag"):
+            if passthrough in mc and passthrough not in c:
+                c[passthrough] = mc[passthrough]
+
+        if mc.get("pins_source") == "local-fallback":
+            # One asset built against a local config instead of the release's
+            # own versions: block taints the whole set -- the pins it recorded
+            # may not be the release's.
+            c["pins_source"] = "local-fallback"
+        elif "pins_source" not in c:
+            c["pins_source"] = mc.get("pins_source")
+
+        if man.get("created"):
+            created.append(man["created"])
+
+    merged["created"] = max(created) if created else None
+    merged["created_by"] = "intact-assemble-release-assets"
+    c["package_kind"] = "assembled"
+    c["assembled_from"] = sorted(per_module)
+
+    log(f"  Merged {len(per_module)} module manifest(s): "
+        f"{len(c['images'])} image(s), {len(c['sha256'])} hashed file(s)",
+        "success")
+    return merged
+
+
+def assemble_release_package(asset_paths, tag: str = None, extract_dir: str = None,
+                             expected_modules=None,
+                             expected_sha256: Dict[str, str] = None,
+                             logger: Callable = None) -> Dict:
+    """Extract N module assets into one package_dir and merge their manifests.
+
+    Returns the SAME shape verify_upgrade_package returns, so the orchestrator
+    accepts it as prebuilt_package_dir + prebuilt_manifest with no change:
+        {success, extract_dir, package_dir, manifest}
+
+    A MISSING ASSET IS A HARD FAILURE, never a silent skip. The apply loop is
+    driven by manifest.versions, so an asset that failed to download simply
+    would not appear there and the run would report success having not upgraded
+    that module. That is the delta bug re-entering through a different door,
+    and it is the highest-severity risk in the whole per-module design.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    asset_paths = list(asset_paths or [])
+    if not asset_paths:
+        return {"success": False, "error": "no release assets supplied"}
+
+    # Refuse to assemble into a dirty directory. The offline flow's staging
+    # wipe used to guarantee no stale package_dir could be mistaken for this
+    # run's; assembling outside that glob means owning the guarantee here.
+    if os.path.isdir(extract_dir) and os.listdir(extract_dir):
+        return {"success": False,
+                "error": f"staging directory {extract_dir} is not empty — "
+                         f"refusing to assemble over a previous attempt"}
+    os.makedirs(extract_dir, exist_ok=True)
+
+    try:
+        # Verify every asset BEFORE extracting any of them. Half-extracting and
+        # then discovering a bad hash leaves a directory that looks assembled.
+        if expected_sha256:
+            log(f"Verifying {len(asset_paths)} asset checksum(s)...", "info")
+            for p in asset_paths:
+                want = expected_sha256.get(os.path.basename(p))
+                if not want:
+                    continue
+                got = _hash_file(p)
+                if got != want:
+                    return {"success": False,
+                            "error": (f"{os.path.basename(p)} failed its "
+                                      f"checksum (expected {want[:16]}…, got "
+                                      f"{got[:16]}…) — refusing to assemble")}
+            log("  All asset checksums verified", "success")
+
+        log(f"Assembling {len(asset_paths)} module asset(s)...", "info")
+        for p in asset_paths:
+            _extract_one_asset(p, extract_dir, logger=log)
+
+        subdirs = [d for d in os.listdir(extract_dir)
+                   if os.path.isdir(os.path.join(extract_dir, d))]
+        # Exactly one, or the merge did not happen. Two subdirectories means an
+        # asset was built without --work-dir and its root is a build timestamp;
+        # the apply side would then pick one arbitrarily (os.listdir order) and
+        # install a half package that verifies clean against its own manifest.
+        if len(subdirs) != 1:
+            return {"success": False,
+                    "error": (f"expected exactly one directory after merging, "
+                              f"found {len(subdirs)}: {sorted(subdirs)}. The "
+                              f"assets do not share a top-level directory, so "
+                              f"they did not merge — rebuild them with "
+                              f"--work-dir .../intact-upgrade-<tag>.")}
+        package_dir = os.path.join(extract_dir, subdirs[0])
+        if not tag:
+            # Uploaded assets: the operator picked files, nobody told us which
+            # release they are. The merged root is named intact-upgrade-<tag>,
+            # so take it from there and let the per-manifest release_tag check
+            # below confirm every asset agrees.
+            if subdirs[0].startswith('intact-upgrade-'):
+                tag = subdirs[0][len('intact-upgrade-'):]
+                log(f"  Assets are for release {tag}", "info")
+            else:
+                return {"success": False,
+                        "error": (f"cannot tell which release these assets are "
+                                  f"for: merged root is {subdirs[0]!r}, expected "
+                                  f"intact-upgrade-<tag>")}
+        want_root = f"intact-upgrade-{tag}"
+        if subdirs[0] != want_root:
+            return {"success": False,
+                    "error": (f"assets merged into {subdirs[0]!r} but this "
+                              f"release is {tag} (expected {want_root!r}) — "
+                              f"refusing to apply assets from another release")}
+
+        # ---- per-module manifests --------------------------------------
+        man_dir = os.path.join(package_dir, 'manifests')
+        if not os.path.isdir(man_dir):
+            return {"success": False,
+                    "error": ("no manifests/ directory in the assembled "
+                              "package — these are not per-module assets")}
+        per_module = {}
+        for fn in sorted(os.listdir(man_dir)):
+            if not fn.endswith('.json'):
+                continue
+            with open(os.path.join(man_dir, fn)) as f:
+                per_module[fn[:-5]] = json.load(f)
+        if not per_module:
+            return {"success": False,
+                    "error": "manifests/ is empty in the assembled package"}
+
+        if expected_modules is not None:
+            missing = sorted(set(expected_modules) - set(per_module))
+            extra = sorted(set(per_module) - set(expected_modules))
+            if missing:
+                return {"success": False,
+                        "error": (f"missing asset(s) for: {', '.join(missing)}. "
+                                  f"Applying now would leave those modules "
+                                  f"untouched while reporting success — "
+                                  f"refusing.")}
+            if extra:
+                log(f"  Note: assets supplied for unrequested module(s): "
+                    f"{', '.join(extra)}", "info")
+
+        # ---- coherence: one release, one commit ------------------------
+        commits, tags = set(), set()
+        for mod, man in per_module.items():
+            mc = man.get("contents") or {}
+            if mc.get("source_commit"):
+                commits.add(mc["source_commit"])
+            if mc.get("release_tag"):
+                tags.add(mc["release_tag"])
+        if len(commits) > 1:
+            return {"success": False,
+                    "error": (f"assets were built from {len(commits)} different "
+                              f"commits ({', '.join(sorted(c[:12] for c in commits))}). "
+                              f"A tag that moved mid-build produces exactly this; "
+                              f"refusing to mix them.")}
+        if len(tags) > 1:
+            return {"success": False,
+                    "error": (f"assets claim {len(tags)} different releases "
+                              f"({', '.join(sorted(tags))}) — refusing to mix.")}
+        if tags and tag not in tags:
+            return {"success": False,
+                    "error": (f"assets are for {next(iter(tags))} but this run "
+                              f"targets {tag} — refusing.")}
+        if commits:
+            log(f"  Built from commit {next(iter(commits))[:12]}", "info")
+
+        # ---- merge and write the root manifest -------------------------
+        manifest = assemble_manifest(per_module, logger=log)
+        with open(os.path.join(package_dir, 'manifest.json'), 'w') as f:
+            json.dump(manifest, f, indent=2)
+
+        log(f"  Assembled: {json.dumps(manifest.get('versions', {}))}", "info")
+
+        # ---- verify the merged tree against the union of published maps
+        sha_map = (manifest.get('contents') or {}).get('sha256') or {}
+        if sha_map:
+            log(f"  Verifying {len(sha_map)} file checksum(s)...", "info")
+            bad = []
+            for rel, want in sha_map.items():
+                # manifest.json and manifests/*.json cannot contain their own
+                # hashes, so the builder excludes them; they are covered by the
+                # asset-level sha256 verified before extraction.
+                if rel == 'manifest.json' or rel.startswith('manifests/'):
+                    continue
+                abs_p = os.path.join(package_dir, rel)
+                if not os.path.exists(abs_p):
+                    bad.append(f"{rel} (missing)")
+                    continue
+                if _hash_file(abs_p) != want:
+                    bad.append(f"{rel} (hash mismatch)")
+            if bad:
+                return {"success": False,
+                        "error": (f"assembled package failed verification: "
+                                  f"{'; '.join(bad[:5])}"
+                                  f"{' …' if len(bad) > 5 else ''}")}
+            log("  All file checksums verified", "success")
+
+        return {"success": True, "extract_dir": extract_dir,
+                "package_dir": package_dir, "manifest": manifest}
+
+    except Exception as e:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        return {"success": False,
+                "error": f"{type(e).__name__}: {e}"}

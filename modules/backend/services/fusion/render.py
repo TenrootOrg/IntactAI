@@ -445,28 +445,6 @@ def chat_subgraph(graph, question, *, window=None, min_severity="informational",
 
 
 # ------------------------------------------------------------------ report
-def _attack_story(graph, findings, assets, initial_access=None):
-    """A short templated narrative (this is where a live LLM would shine)."""
-    if not findings:
-        return ""
-    hosts = sorted(assets, key=lambda a: -sev.rank(a.severity))
-    crit = [f for f in findings if sev.at_least(f.severity, "high")]
-    bits = [f"Across **{len(assets)} host(s)**, the most affected is **"
-            f"{hosts[0].label if hosts else 'a host'}** "
-            f"({hosts[0].severity if hosts else '?'})"
-            + (f", with activity centred on the initial-access window (~{initial_access})"
-               if initial_access else "") + "."]
-    lead = [f for f in crit if f.kind in ("derived", "single")
-            and "vulnerab" not in f.title.lower()]
-    if lead:
-        bits.append(f"Lead: {lead[0].summary}")
-    xh = [f for f in findings if f.kind == "cross_host"]
-    if xh:
-        bits.append("Cross-host: " + "; ".join(f.title for f in xh[:3]) + ".")
-    pers = [f for f in findings if "service" in f.title.lower() or "persist" in f.title.lower()]
-    if pers:
-        bits.append(f"Persistence: {pers[0].title}.")
-    return " ".join(bits)
 
 
 def _sev_tally(findings):
@@ -550,28 +528,6 @@ def _exec_summary(graph, assets, findings, *, initial_access=None, window=None) 
     return " ".join(bits)
 
 
-def _attack_narrative(graph, window, initial_access) -> str:
-    """The kill chain as ordered prose, grouped by phase (deterministic)."""
-    tl = timeline(graph, window=window)
-    if not tl:
-        return ""
-    phases: dict[str, list] = {}
-    order: list[str] = []
-    for r in tl:
-        ph = r.get("phase") or "Activity"
-        if ph not in phases:
-            phases[ph] = []
-            order.append(ph)
-        phases[ph].append(r)
-    steps = []
-    for ph in order:
-        rows = phases[ph]
-        hosts = sorted({h.strip() for r in rows for h in (r["host"] or "").split(",") if h.strip()})
-        titles = list(dict.fromkeys(r["title"] for r in rows))
-        extra = f" (and {len(rows) - len(titles[:3])} more)" if len(rows) > 3 else ""
-        steps.append(f"**{ph}** — from `{rows[0]['ts'] or '—'}` on "
-                     f"{', '.join(hosts[:6])}: " + "; ".join(titles[:3]) + extra + ".")
-    return "\n".join(f"{i + 1}. {s}" for i, s in enumerate(steps))
 
 
 def narrative_md(graph, *, window=None, min_severity="informational",

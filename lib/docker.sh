@@ -355,8 +355,29 @@ create_network() {
 # Generic image pull with retry. Backoff: 5s, 15s, 45s.
 # Returns 0 if the image is local after the call (already present, or pulled);
 # non-zero if every attempt failed.
+# Already in the local store? Then there is nothing to fetch, and on an
+# air-gapped box there is nowhere to fetch it FROM. install.sh --package loads
+# every image out of a release package up front, so this one check is what makes
+# every existing deploy_* path work offline without rewriting any of them.
+#
+# Deliberately not gated on --package: an image that is already present is never
+# worth re-pulling, and skipping it makes an ONLINE reinstall faster too. The
+# registry is only consulted for something the box genuinely does not have.
+_image_present_locally() {
+    docker image inspect "$1" >/dev/null 2>&1
+}
+
 _pull_image_with_retry() {
     local image="$1"
+    if _image_present_locally "$image"; then
+        log_info "  $image already present locally — not pulling"
+        return 0
+    fi
+    if [[ "${INTACT_AIRGAP:-0}" == "1" ]]; then
+        log_error "  $image is not in the local image store and this is an "
+        log_error "  air-gapped install — the package did not contain it."
+        return 1
+    fi
     local max_attempts=3
     local delay=5
     local attempt=1
@@ -493,6 +514,16 @@ pull_plaso_image() {
 }
 
 pull_python_alpine_image() {
+    # Base images exist ONLY to feed `docker compose build`. When the release
+    # package supplied the images there is no build (run_docker_compose skips
+    # it), so pulling a base layer is pure waste online -- and offline it is a
+    # guaranteed failure that logs an alarming error for something the install
+    # does not need. Skip before either happens.
+    if [[ "${INTACT_FROM_PACKAGE:-0}" == "1" ]]; then
+        log_info "  Base image not needed — images came from the release package"
+        return 0
+    fi
+
     # Python Alpine image is used by Plaso decompression (plaso_service.py)
     # Pre-pull to avoid network access at runtime in air-gap environments
 
@@ -527,7 +558,32 @@ download_timesketch_packages() {
     log_info "Timesketch LLM packages: included in Timesketch image (no download needed)"
 }
 
+# In air-gap mode there is no route to GitHub, so a download cannot be
+# attempted -- but these assets are not all load-bearing, and failing the whole
+# install over an optional one would be wrong. install.sh --package stages
+# whatever the package carried; this reports precisely what is still missing and
+# what the consequence is, then lets the install continue.
+#
+# Returns 0 = "handled, skip the download", 1 = "carry on and download".
+_airgap_asset_check() {
+    local what="$1" probe="$2" consequence="$3"
+    [[ "${INTACT_AIRGAP:-0}" == "1" ]] || return 1
+    if [[ -e "$probe" ]] || compgen -G "$probe" >/dev/null 2>&1; then
+        log_info "  $what: already present (staged from the package) — not downloading"
+    else
+        log_warn "  $what: NOT in the package and cannot be downloaded offline."
+        log_warn "    Consequence: $consequence"
+        INSTALL_WARNINGS+=("  air-gap: $what unavailable — $consequence")
+    fi
+    return 0
+}
+
 download_offline_collector_binaries() {
+    _airgap_asset_check "Velociraptor offline-collector binaries" \
+        "${SCRIPT_DIR}/modules/nginx/html/downloads/velociraptor-*" \
+        "offline collectors cannot be generated until these are supplied" \
+        && return 0
+
     # Velociraptor offline-collector binaries — version follows
     # `versions.velociraptor` in `config.yaml` (single source of truth,
     # same pin used to build the server image). Bump that one value and
@@ -888,6 +944,11 @@ publish_velociraptor_binaries_to_tools() {
 }
 
 download_legacy_velociraptor_binaries() {
+    _airgap_asset_check "Legacy Velociraptor client (Win7 / 2008 R2)" \
+        "${SCRIPT_DIR}/modules/nginx/html/downloads/velociraptor-v0.7.*" \
+        "legacy Windows endpoints cannot be enrolled; current clients are unaffected" \
+        && return 0
+
     # Legacy Velociraptor binary for old Windows hosts (Server 2008 R2 SP1,
     # Win 7). Pin lives in `versions.velociraptor_legacy` in config.yaml.
     # Distinct namespace from the main pin so they coexist in the same
@@ -1079,6 +1140,10 @@ create_velociraptor_collector() {
 # =============================================================================
 
 download_sigma_rules() {
+    _airgap_asset_check "SIGMA detection rules" "/opt/sigma-rules/rules" \
+        "cloud detection packs (aws_sigma / o365rc) will have no rules" \
+        && return 0
+
     # Download SIGMA detection rules for Azure security automation
     # Clones SigmaHQ rules repository for offline use
 
@@ -1209,6 +1274,16 @@ pull_dfir_o365rc_image() {
 
 
 pull_velociraptor_base_image() {
+    # Base images exist ONLY to feed `docker compose build`. When the release
+    # package supplied the images there is no build (run_docker_compose skips
+    # it), so pulling a base layer is pure waste online -- and offline it is a
+    # guaranteed failure that logs an alarming error for something the install
+    # does not need. Skip before either happens.
+    if [[ "${INTACT_FROM_PACKAGE:-0}" == "1" ]]; then
+        log_info "  Base image not needed — images came from the release package"
+        return 0
+    fi
+
     # Velociraptor's Dockerfile builds FROM ubuntu:22.04. Pre-pulling the base
     # image on the host with retry keeps a transient Docker Hub DNS hiccup at
     # "compose build" time from killing the whole module install.
@@ -1235,6 +1310,16 @@ pull_velociraptor_base_image() {
 }
 
 pull_backend_base_image() {
+    # Base images exist ONLY to feed `docker compose build`. When the release
+    # package supplied the images there is no build (run_docker_compose skips
+    # it), so pulling a base layer is pure waste online -- and offline it is a
+    # guaranteed failure that logs an alarming error for something the install
+    # does not need. Skip before either happens.
+    if [[ "${INTACT_FROM_PACKAGE:-0}" == "1" ]]; then
+        log_info "  Base image not needed — images came from the release package"
+        return 0
+    fi
+
     # The Backend Dockerfile builds FROM python:3.11-slim. Pre-pulling on the
     # host means the ~46 MB base image doesn't count against `docker compose
     # build`'s wall-clock timeout — important on slow-uplink customer VMs

@@ -526,6 +526,7 @@ document.addEventListener('alpine:init', () => {
         loadingPackages: false,
         showApplyPackageModal: false,
         applyPackage: null,         // {path, name, size_bytes, mtime, source}
+        applyPackageFiles: [],      // all selected local assets (per-module import)
         applyManifest: null,        // result of /api/upgrade/package-info
         applySelectedModules: [],   // ticked module IDs (operator unchecks to skip)
         applyDbOverwrite: {},       // per-module fresh-install flags
@@ -663,6 +664,7 @@ document.addEventListener('alpine:init', () => {
         closeApplyPackageModal() {
             this.showApplyPackageModal = false;
             this.applyPackage = null;
+            this.applyPackageFiles = [];
             this.applyManifest = null;
         },
 
@@ -732,53 +734,86 @@ document.addEventListener('alpine:init', () => {
                 this.closeApplyPackageModal();
                 window.ActiveCase.gotoSystemWorkflows();
                 this.applying = false;
-                const upload = new tus.Upload(file, {
-                    endpoint: '/api/uploads/',
-                    retryDelays: [0, 1000, 3000, 5000],
-                    chunkSize: 5 * 1024 * 1024,
-                    // Clear the resume fingerprint once done so re-importing the
-                    // same file later doesn't silently re-open / re-upload a
-                    // stale entry (the "it uploaded again" artifact).
-                    removeFingerprintOnSuccess: true,
-                    metadata: {
-                        filename: file.name,
-                        filetype: file.type || 'application/gzip',
-                        purpose: 'upgrade_package',
-                        upload_run_id: uploadRunId,
-                    },
-                    onError: (error) => {
-                        console.error('Upload error:', error);
-                        this.showMessage('Upload failed: ' + error.message, 'error');
-                    },
-                    onSuccess: async () => {
-                        const parts = (upload.url || '').split('/').filter(Boolean);
-                        const uploadId = parts.length ? parts[parts.length - 1] : null;
-                        if (!uploadId) {
-                            this.showMessage('Upload succeeded but no ID returned', 'error');
-                            return;
-                        }
-                        try {
-                            const r = await fetch('/api/upgrade/offline', {
-                                method: 'POST',
-                                headers: {'Content-Type': 'application/json'},
-                                body: JSON.stringify({
-                                    package_path: '/data/uploads/' + uploadId,
-                                    selected_modules: selected,
-                                    db_overwrite: db_overwrite,
-                                }),
-                            });
-                            const d = await r.json();
-                            if (r.ok && d.success) {
-                                this.showMessage('Apply started — see Workflows for progress', 'success');
-                            } else {
-                                this.showMessage('Apply failed: ' + (d.error || 'unknown'), 'error');
-                            }
-                        } catch (e) {
-                            this.showMessage('Apply request failed: ' + e.message, 'error');
-                        }
-                    },
+                // A release publishes one asset per module as well as a single
+                // bundle, and an operator carrying assets into an air-gapped
+                // site should be able to hand over the whole set rather than
+                // reassembling it first. Upload each file under the SAME
+                // upload_run_id so they land in one workflow, then apply them
+                // together — the backend merges them into one package.
+                const files = (this.applyPackageFiles && this.applyPackageFiles.length)
+                    ? Array.from(this.applyPackageFiles) : [file];
+                const uploadedPaths = [];
+                let failed = false;
+
+                const uploadOne = (f) => new Promise((resolve) => {
+                    const up = new tus.Upload(f, {
+                        endpoint: '/api/uploads/',
+                        retryDelays: [0, 1000, 3000, 5000],
+                        chunkSize: 5 * 1024 * 1024,
+                        // Clear the resume fingerprint once done so re-importing
+                        // the same file later doesn't silently re-open /
+                        // re-upload a stale entry (the "it uploaded again"
+                        // artifact).
+                        removeFingerprintOnSuccess: true,
+                        metadata: {
+                            filename: f.name,
+                            filetype: f.type || 'application/gzip',
+                            purpose: 'upgrade_package',
+                            upload_run_id: uploadRunId,
+                        },
+                        onError: (error) => {
+                            console.error('Upload error:', error);
+                            this.showMessage('Upload failed (' + f.name + '): '
+                                             + error.message, 'error');
+                            failed = true;
+                            resolve();
+                        },
+                        onSuccess: () => {
+                            const parts = (up.url || '').split('/').filter(Boolean);
+                            const id = parts.length ? parts[parts.length - 1] : null;
+                            if (id) uploadedPaths.push('/data/uploads/' + id);
+                            else failed = true;
+                            resolve();
+                        },
+                    });
+                    up.start();
                 });
-                upload.start();
+
+                (async () => {
+                    // Sequential: N concurrent multi-GB uploads compete for the
+                    // same uplink and make every one slower.
+                    for (const f of files) {
+                        await uploadOne(f);
+                        if (failed) break;
+                    }
+                    if (failed || !uploadedPaths.length) {
+                        if (!failed) this.showMessage('Upload succeeded but no ID returned', 'error');
+                        return;
+                    }
+                    try {
+                        const body = {
+                            selected_modules: selected,
+                            db_overwrite: db_overwrite,
+                        };
+                        // One file keeps the scalar shape every existing caller
+                        // and every older backend understands.
+                        if (uploadedPaths.length === 1) body.package_path = uploadedPaths[0];
+                        else body.package_paths = uploadedPaths;
+                        const r = await fetch('/api/upgrade/offline', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(body),
+                        });
+                        const d = await r.json();
+                        if (r.ok && d.success) {
+                            this.showMessage('Apply started — see Workflows for progress', 'success');
+                        } else {
+                            this.showMessage('Apply failed: ' + (d.error || 'unknown'), 'error');
+                        }
+                    } catch (e) {
+                        this.showMessage('Apply request failed: ' + e.message, 'error');
+                    }
+                })();
                 return;
             }
 
@@ -1206,11 +1241,19 @@ document.addEventListener('alpine:init', () => {
         async importUpgradePackage(event) {
             const files = event.target.files;
             if (!files || files.length === 0) return;
-            const file = files[0];
+            // A release ships one asset per module AND a single bundle. Both are
+            // valid to import: the bundle because one file is easier to carry
+            // into an air-gapped site, the module assets because they are what
+            // the release is actually made of. Selecting several uploads them
+            // into one workflow and the backend merges them.
+            const selectedFiles = Array.from(files);
+            const file = selectedFiles[0];
             event.target.value = '';
 
-            if (!file.name.endsWith('.tar.gz') && !file.name.endsWith('.tgz')) {
-                this.showMessage('Please select a .tar.gz or .tgz file', 'error');
+            const bad = selectedFiles.filter(
+                f => !f.name.endsWith('.tar.gz') && !f.name.endsWith('.tgz'));
+            if (bad.length) {
+                this.showMessage('Not a .tar.gz / .tgz file: ' + bad[0].name, 'error');
                 return;
             }
 
@@ -1258,11 +1301,18 @@ document.addEventListener('alpine:init', () => {
             // (Apply button is what triggers the upload).
             this.applyPackage = {
                 _localFile: file,                          // kept for the upload step
-                name: file.name,
-                size_bytes: file.size,
+                name: (selectedFiles.length > 1
+                       ? `${selectedFiles.length} release assets`
+                       : file.name),
+                size_bytes: selectedFiles.reduce((n, f) => n + f.size, 0),
                 source: 'local-pending',
                 path: null,                                // filled in after upload
             };
+            // The full set, so the apply step uploads every one of them. The
+            // manifest above is peeked from the FIRST asset only -- enough to
+            // show the operator what release this is, while the backend
+            // assembles and re-validates the complete set before applying.
+            this.applyPackageFiles = selectedFiles;
             this.applyManifest = peek.manifest || peek;
             this.applyDbOverwrite = {};
             this.applyCurrentVersions = {};

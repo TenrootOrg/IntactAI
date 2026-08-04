@@ -7,11 +7,35 @@ Creates offline upgrade packages that can be transferred to air-gapped systems.
 import os
 import json
 import shutil
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from typing import Dict, Callable, List, Optional
+from typing import Dict, Callable, List, Optional, Tuple
 
 from .base import run_command, WORKDIR, HOST_PATH
+
+
+# How many images to pull+save at once within a module.
+#
+# Three, not more, because the two halves of the work scale differently.
+# `docker pull` is network-bound and overlaps almost perfectly -- that is where
+# the win is, and on a module like timesketch (five images) it is most of the
+# wall clock. `docker save` is disk-bound; running many at once mostly queues
+# on I/O while raising the peak free-space demand, since every in-flight save
+# holds a reservation. Three keeps a pull running behind every save without
+# turning the disk into the bottleneck.
+#
+# CI parallelises ACROSS modules already (one runner per module), so this only
+# shortens the slowest module -- which is exactly what sets the release's
+# critical path.
+_IMAGE_WORKERS = 3
+
+# One aggregate progress line this often while images are in flight. Same
+# cadence and same reasoning as the asset downloader: with several workers
+# running, each logging its own percentage produces noise nobody reads, so a
+# single reporter says what is happening overall.
+_IMAGE_PROGRESS_SECONDS = 30
 
 
 # Primary images per module — the deliverables the operator's
@@ -141,6 +165,13 @@ def image_owner_prefixes():
     # resolves to no owner and would be excluded from both pruning and the disk
     # budget.
     prefixes['velociraptor-'] = 'velociraptor'
+    # aws_sigma ships a DATA tar (the SigmaHQ rule pack), also written directly
+    # by the packager rather than coming from either table. It was ownerless
+    # until now, which was survivable only while aws_sigma was excluded from
+    # releases: an ownerless file is never pruned and never budgeted. Now that
+    # it ships as its own asset, that asset's entire payload would have been
+    # unattributable.
+    prefixes['cloudtrail-'] = 'aws_sigma'
     return prefixes
 
 
@@ -539,20 +570,72 @@ def _compress_with_progress(source_dir: str, source_name: str, output_file: str,
     return {"success": True}
 
 
+class _DiskBudget:
+    """Free-space accounting shared by concurrent `docker save`s.
+
+    Run serially, reading `disk_usage().free` immediately before each save is
+    sound. Run three at once and all three read the SAME free space, all three
+    conclude they fit, and the volume can still run out with every tar
+    truncated — `docker save` exits 0 on a short write, so nothing notices
+    until the apply side hits "unexpected EOF" on a customer's box weeks later.
+
+    Reserving up front makes the check mean what it says: a save only starts if
+    its space is still unclaimed by the saves already running.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._reserved = 0
+
+    def reserve(self, path: str, nbytes: int) -> Tuple[bool, Optional[int]]:
+        """(granted, unreserved_free). `unreserved_free` is None when free
+        space could not be read at all, in which case the caller proceeds
+        unchecked — exactly as it did before this class existed."""
+        with self._lock:
+            try:
+                free = shutil.disk_usage(path).free
+            except (FileNotFoundError, OSError):
+                return True, None
+            available = free - self._reserved
+            if available < nbytes:
+                return False, available
+            self._reserved += nbytes
+            return True, available
+
+    def release(self, nbytes: int) -> None:
+        with self._lock:
+            self._reserved = max(0, self._reserved - nbytes)
+
+
 def _pull_and_save_image(image: str, output_path: str, logger: Callable,
-                          run_id: Optional[str] = None) -> bool:
+                          run_id: Optional[str] = None,
+                          budget: Optional['_DiskBudget'] = None,
+                          quiet: bool = False) -> bool:
     """Pull a Docker image and save it to a tar file.
 
     `run_id` makes both subprocesses (docker pull, docker save)
     interruptible — a Stop click during a 20-minute pull terminates
     the docker CLI within a second instead of letting it run to
     completion and only then noticing the cancel flag.
+
+    `budget` serialises the pre-save free-space check across concurrent callers
+    (see :class:`_DiskBudget`). A private one is used when none is passed, which
+    reserves nothing anyone else can see and so behaves exactly as the serial
+    path always did.
+
+    `quiet` suppresses `docker pull`'s layer-progress stream. With several
+    images in flight those streams interleave into something unreadable, so the
+    caller reports aggregate progress instead; failures still carry the full
+    error text either way.
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    budget = budget or _DiskBudget()
+    tar_name = os.path.basename(output_path)
 
     # Pull the image with output shown
     log(f"  Pulling {image}...", "info")
-    result = run_command(f"docker pull {image}", timeout=1800, logger=log, run_id=run_id)
+    result = run_command(f"docker pull {image}", timeout=1800,
+                         logger=None if quiet else log, run_id=run_id)
     if result.get("cancelled"):
         return False
     if not result['success']:
@@ -575,31 +658,40 @@ def _pull_and_save_image(image: str, output_path: str, logger: Callable,
         f"docker inspect --format='{{{{.Size}}}}' {image}",
         timeout=30, logger=None, run_id=run_id,
     )
+    required = 0
     if size_check.get("success"):
         try:
             image_bytes = int((size_check.get('stdout', '0') or '0').strip().strip("'"))
             required = int(image_bytes * 1.2)
-            try:
-                free_bytes = shutil.disk_usage(os.path.dirname(output_path)).free
-            except (FileNotFoundError, OSError):
-                free_bytes = None
-            if free_bytes is not None and free_bytes < required:
-                log(
-                    f"  Not enough disk for {os.path.basename(output_path)}: "
-                    f"need ≥{_format_size(required)} (image × 1.2), "
-                    f"have {_format_size(free_bytes)}. Free disk and re-run prepare.",
-                    "error",
-                )
-                return False
         except (ValueError, TypeError):
             # docker inspect output unexpected — skip the check, fall
             # through to docker save (the silent-truncation risk is
             # still better than blocking the build on a parse error).
-            pass
+            required = 0
+
+    if required:
+        granted, available = budget.reserve(os.path.dirname(output_path), required)
+        if not granted:
+            log(
+                f"  Not enough disk for {tar_name}: need ≥{_format_size(required)} "
+                f"(image × 1.2), {_format_size(available or 0)} unreserved. "
+                f"Free disk and re-run prepare.",
+                "error",
+            )
+            return False
 
     # Save the image (increased timeout for large images)
-    log(f"  Saving to {os.path.basename(output_path)}...", "info")
-    result = run_command(f"docker save -o {output_path} {image}", timeout=1200, logger=None, run_id=run_id)
+    log(f"  Saving to {tar_name}...", "info")
+    try:
+        result = run_command(f"docker save -o {output_path} {image}",
+                             timeout=1200, logger=None, run_id=run_id)
+    finally:
+        # The tar now occupies real space, so the reservation has done its job
+        # either way — on success the bytes are accounted for by the filesystem,
+        # on failure they were never taken. Holding it would starve later saves.
+        if required:
+            budget.release(required)
+
     if result.get("cancelled"):
         return False
     if not result['success']:
@@ -609,12 +701,105 @@ def _pull_and_save_image(image: str, output_path: str, logger: Callable,
     # Check file size - warn if suspiciously small (less than 1MB)
     size = os.path.getsize(output_path)
     if size < 1024 * 1024:  # Less than 1MB
-        log(f"  WARNING: Image file is only {_format_size(size)} - may be corrupted!", "warning")
+        log(f"  WARNING: {tar_name} is only {_format_size(size)} - may be corrupted!", "warning")
         log(f"  This can happen with docker-in-docker setups. Try running on host.", "warning")
         return False
 
-    log(f"  Done ({_format_size(size)})", "success")
+    log(f"  Done: {tar_name} ({_format_size(size)})", "success")
     return True
+
+
+def _pull_and_save_images(images: List[Tuple[str, str]], images_dir: str,
+                          logger: Callable,
+                          run_id: Optional[str] = None) -> Tuple[List[str], bool]:
+    """Pull+save every (image, tar_name) concurrently. -> (saved_names, cancelled)
+
+    Serially this is the slowest part of building a module's asset, and it is
+    slow for a reason that parallelises well: most of the time is spent waiting
+    on a registry, not on the CPU. Timesketch pulls five images, iris and volweb
+    four each, and elk three large ones — so a module's build is mostly N round
+    trips taken one at a time.
+
+    Returned names preserve the DECLARED order, not completion order, so the
+    manifest's `contents.images` list does not shuffle from run to run based on
+    which registry answered first.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+
+    def _cancelled() -> bool:
+        try:
+            from services.workflow_service import is_cancelled
+            return bool(is_cancelled(run_id))
+        except Exception:
+            return False
+
+    if len(images) < 2:
+        saved = [name for image, name in images
+                 if _pull_and_save_image(image, os.path.join(images_dir, name),
+                                         log, run_id=run_id)]
+        return saved, _cancelled()
+
+    budget = _DiskBudget()
+    workers = min(_IMAGE_WORKERS, len(images))
+    done: Dict[str, bool] = {}
+    in_flight: Dict[str, str] = {}       # tar name -> image ref
+    state_lock = threading.Lock()
+    stop_reporting = threading.Event()
+
+    log(f"  Pulling {len(images)} images, {workers} at a time "
+        f"(progress every {_IMAGE_PROGRESS_SECONDS}s)...", "info")
+
+    def _one(entry: Tuple[str, str]) -> bool:
+        image, name = entry
+        with state_lock:
+            in_flight[name] = image
+        ok = False
+        try:
+            # quiet: N interleaved layer-progress streams are unreadable, so the
+            # reporter below speaks for all of them.
+            ok = _pull_and_save_image(image, os.path.join(images_dir, name),
+                                      log, run_id=run_id, budget=budget,
+                                      quiet=True)
+        except Exception as exc:
+            # One image raising must not take the other workers' results with
+            # it. Count it as failed and let the bundled-vs-declared gate below
+            # decide what that means for the module.
+            log(f"  Failed to bundle {image}: {type(exc).__name__}: {exc}", "error")
+        finally:
+            with state_lock:
+                in_flight.pop(name, None)
+                done[name] = ok
+        return ok
+
+    def _report() -> None:
+        while not stop_reporting.wait(_IMAGE_PROGRESS_SECONDS):
+            with state_lock:
+                n_done = len(done)
+                pending = sorted(in_flight)
+            try:
+                written = sum(
+                    os.path.getsize(os.path.join(images_dir, f))
+                    for f in os.listdir(images_dir)
+                    if os.path.isfile(os.path.join(images_dir, f))
+                )
+            except OSError:
+                written = 0
+            still = (", ".join(pending[:3]) + ("…" if len(pending) > 3 else "")
+                     if pending else "finishing")
+            log(f"  … {n_done}/{len(images)} images saved, "
+                f"{_format_size(written)} on disk — working on {still}", "info")
+
+    reporter = threading.Thread(target=_report, daemon=True)
+    reporter.start()
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(_one, images))
+    finally:
+        stop_reporting.set()
+        reporter.join(timeout=2)
+
+    saved = [name for _image, name in images if done.get(name)]
+    return saved, _cancelled()
 
 
 def _intact_first(modules: Dict):
@@ -730,7 +915,11 @@ def _prepare_backend_images(package_dir: str, target_version: str, manifest: Dic
 def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                             compress: bool = True,
                             work_dir: Optional[str] = None,
-                            manifest_extra: Optional[Dict] = None) -> Dict:
+                            manifest_extra: Optional[Dict] = None,
+                            manifest_sidecar_name: Optional[str] = None,
+                            source_dir: Optional[str] = None,
+                            source_commit: Optional[str] = None,
+                            packages_dir: Optional[str] = None) -> Dict:
     """Download and package upgrade components.
 
     Args:
@@ -749,6 +938,21 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                   /app/data/tmp/<...>/ so the dir survives the backend
                   restart that intact upgrades trigger between Phase 1
                   and Phase 2.
+        source_dir: Package the Intact.AI source from THIS directory instead of
+                  downloading it from GitHub. For CI, where the checkout is
+                  already on disk at the pinned commit — see the long note at
+                  the `intact` branch below for why that is a correctness fix
+                  and not just a saved download. A box leaves this None.
+        source_commit: The commit `source_dir` sits at, recorded in the
+                  manifest as the source's origin. Only meaningful with
+                  source_dir.
+        packages_dir: Where the finished .tar.gz lands. Defaults to
+                  /data/upgrade_packages — the persistent location an operator
+                  later downloads it from, which is why the atomic swap keeps
+                  the previous archive intact. CI points this straight at its
+                  output mount instead, so the asset is written ONCE rather
+                  than written there and copied out: at ~2.5 GB for elk, the
+                  second copy is not free.
 
     Returns:
         Dict with success status. Shape depends on `compress`:
@@ -763,7 +967,8 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
 
     # Compression-only state — skipped when compress=False (online flow
     # doesn't produce a tar.gz at all).
-    packages_dir = "/data/upgrade_packages"
+    _packages_dir_overridden = bool(packages_dir)
+    packages_dir = packages_dir or "/data/upgrade_packages"
     output_file = f"{packages_dir}/intact-upgrade-latest.tar.gz"
     output_file_tmp = f"{output_file}.new"
     if compress:
@@ -889,141 +1094,168 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                         "'Intact.AI Source Code' version field"
                     )
 
-                import urllib.request
-                import urllib.error
-                import json as _json
-                import tarfile
+                # WHERE THE SOURCE COMES FROM. On a box, nowhere but GitHub:
+                # the appliance has no checkout and no git, so Prepare downloads
+                # the ref the operator typed. In CI the source is already on
+                # disk, checked out at the commit `resolve` pinned — and going
+                # back to GitHub for it there is not merely redundant, it
+                # reopens the hole the pin exists to close. Every other asset is
+                # built from THE SHA; a codeload fetch is by REF, so a tag
+                # re-cut mid-run would ship different source than the rest of
+                # the release was built from, and `source_origin` would record
+                # the ref rather than the commit, leaving nothing to catch it.
+                #
+                # Copying the checkout was rejected once before, for a good
+                # reason: it was the RUNNING box's mounted source, so untracked
+                # local edits leaked into the package. A CI checkout has no such
+                # edits by construction — it is a fresh clone at one SHA — which
+                # is why this is opt-in via source_dir rather than a default.
+                if source_dir:
+                    if not os.path.isdir(source_dir):
+                        raise RuntimeError(
+                            f"source_dir {source_dir!r} is not a directory — "
+                            f"cannot package the Intact.AI source from it")
+                    extracted_root = source_dir
+                    resolved_ref = source_commit or version
+                    tar_path = extract_dir = None
+                    log(f"  Using the checkout at {source_dir} "
+                        f"(commit {(source_commit or '?')[:12]}) — no download", "info")
+                else:
+                    import urllib.request
+                    import urllib.error
+                    import json as _json
+                    import tarfile
 
-                repo = "TenrootOrg/IntactAI"
+                    repo = "TenrootOrg/IntactAI"
 
-                # If the operator typed a BRANCH name (`development`,
-                # `main`, a feature branch), resolve its current HEAD
-                # SHA via the GitHub branches API FIRST. Two reasons:
-                #
-                # 1. Codeload caches tarballs by ref. For branches —
-                #    which move — the cache can serve a stale or
-                #    truncated tarball captured before the latest
-                #    commit. We've hit this exact issue (memory note:
-                #    "push any commit to bust the per-SHA cache").
-                #    Downloading by resolved SHA bypasses the
-                #    branch-ref cache entirely.
-                #
-                # 2. The package becomes reproducible — the manifest
-                #    records the exact commit SHA shipped, so an
-                #    operator can correlate the apply log against
-                #    git history later.
-                #
-                # If `version` is already a release tag or commit SHA
-                # (the branches API 404s for those), skip the
-                # resolution and fall through to the existing
-                # codeload-by-ref path.
-                # `resolved_ref` is what we pass to codeload (SHA when
-                # we can resolve the branch — bypasses the codeload
-                # stale-cache bug for moving refs). The manifest +
-                # VERSION-file stamp still uses the operator's input
-                # verbatim (`development`, `intact-20260604`, etc.) —
-                # operators don't want to see SHAs in the UI; they want
-                # "the latest development" to read as exactly that.
-                resolved_ref = version
-                branch_api_url = (
-                    f"https://api.github.com/repos/{repo}/branches/{version}"
-                )
-                try:
-                    # Authenticate when a token is configured (env or
-                    # config.yaml options.github_token) — this api.github.com
-                    # call counts against the 60/hr anonymous per-IP cap.
-                    _gh_headers = {"Accept": "application/vnd.github+json"}
-                    try:
-                        from .resolver import _github_token
-                        _tok = _github_token()
-                        if _tok:
-                            _gh_headers["Authorization"] = f"token {_tok}"
-                    except Exception:
-                        pass
-                    req = urllib.request.Request(
-                        branch_api_url,
-                        headers=_gh_headers,
+                    # If the operator typed a BRANCH name (`development`,
+                    # `main`, a feature branch), resolve its current HEAD
+                    # SHA via the GitHub branches API FIRST. Two reasons:
+                    #
+                    # 1. Codeload caches tarballs by ref. For branches —
+                    #    which move — the cache can serve a stale or
+                    #    truncated tarball captured before the latest
+                    #    commit. We've hit this exact issue (memory note:
+                    #    "push any commit to bust the per-SHA cache").
+                    #    Downloading by resolved SHA bypasses the
+                    #    branch-ref cache entirely.
+                    #
+                    # 2. The package becomes reproducible — the manifest
+                    #    records the exact commit SHA shipped, so an
+                    #    operator can correlate the apply log against
+                    #    git history later.
+                    #
+                    # If `version` is already a release tag or commit SHA
+                    # (the branches API 404s for those), skip the
+                    # resolution and fall through to the existing
+                    # codeload-by-ref path.
+                    # `resolved_ref` is what we pass to codeload (SHA when
+                    # we can resolve the branch — bypasses the codeload
+                    # stale-cache bug for moving refs). The manifest +
+                    # VERSION-file stamp still uses the operator's input
+                    # verbatim (`development`, `intact-20260604`, etc.) —
+                    # operators don't want to see SHAs in the UI; they want
+                    # "the latest development" to read as exactly that.
+                    resolved_ref = version
+                    branch_api_url = (
+                        f"https://api.github.com/repos/{repo}/branches/{version}"
                     )
-                    with urllib.request.urlopen(req, timeout=30) as resp:
-                        branch_data = _json.load(resp)
-                    head_sha = (branch_data.get('commit') or {}).get('sha')
-                    if head_sha:
-                        resolved_ref = head_sha
-                        log(
-                            f"  Branch '{version}' resolved to HEAD "
-                            f"{head_sha[:7]} for download (manifest "
-                            f"keeps '{version}')",
-                            "info",
+                    try:
+                        # Authenticate when a token is configured (env or
+                        # config.yaml options.github_token) — this api.github.com
+                        # call counts against the 60/hr anonymous per-IP cap.
+                        _gh_headers = {"Accept": "application/vnd.github+json"}
+                        try:
+                            from .resolver import _github_token
+                            _tok = _github_token()
+                            if _tok:
+                                _gh_headers["Authorization"] = f"token {_tok}"
+                        except Exception:
+                            pass
+                        req = urllib.request.Request(
+                            branch_api_url,
+                            headers=_gh_headers,
                         )
-                except urllib.error.HTTPError as e:
-                    if e.code == 404:
-                        # Not a branch — could be a tag or SHA. Use
-                        # the operator's input verbatim. The codeload
-                        # call below will surface a clearer error if
-                        # the ref doesn't exist at all.
-                        pass
-                    else:
+                        with urllib.request.urlopen(req, timeout=30) as resp:
+                            branch_data = _json.load(resp)
+                        head_sha = (branch_data.get('commit') or {}).get('sha')
+                        if head_sha:
+                            resolved_ref = head_sha
+                            log(
+                                f"  Branch '{version}' resolved to HEAD "
+                                f"{head_sha[:7]} for download (manifest "
+                                f"keeps '{version}')",
+                                "info",
+                            )
+                    except urllib.error.HTTPError as e:
+                        if e.code == 404:
+                            # Not a branch — could be a tag or SHA. Use
+                            # the operator's input verbatim. The codeload
+                            # call below will surface a clearer error if
+                            # the ref doesn't exist at all.
+                            pass
+                        else:
+                            log(
+                                f"  Branch resolution returned HTTP {e.code} "
+                                f"(continuing with raw ref): {e.reason}",
+                                "warning",
+                            )
+                    except urllib.error.URLError as e:
+                        # GitHub API unreachable — try codeload directly.
+                        # If GitHub is fully down, codeload will fail with
+                        # a clearer error below.
                         log(
-                            f"  Branch resolution returned HTTP {e.code} "
-                            f"(continuing with raw ref): {e.reason}",
+                            f"  Branch resolution skipped (network: {e}). "
+                            "Will try codeload with the ref as-is.",
                             "warning",
                         )
-                except urllib.error.URLError as e:
-                    # GitHub API unreachable — try codeload directly.
-                    # If GitHub is fully down, codeload will fail with
-                    # a clearer error below.
+
+                    tar_url = (
+                        f"https://codeload.github.com/{repo}/tar.gz/{resolved_ref}"
+                    )
+                    tar_path = f"{package_dir}/_intact_source.tar.gz"
+                    extract_dir = f"{package_dir}/_intact_extracted"
+
                     log(
-                        f"  Branch resolution skipped (network: {e}). "
-                        "Will try codeload with the ref as-is.",
-                        "warning",
+                        f"Downloading Intact.AI source from "
+                        f"github.com/{repo} @ '{version}'...",
+                        "info",
                     )
+                    try:
+                        urllib.request.urlretrieve(tar_url, tar_path)
+                    except urllib.error.HTTPError as e:
+                        raise RuntimeError(
+                            f"GitHub ref '{resolved_ref}' not found at {repo} "
+                            f"(HTTP {e.code}). Make sure the release tag exists "
+                            f"at https://github.com/{repo}/releases — or if you "
+                            f"meant a branch, check it isn't deleted."
+                        ) from e
+                    except urllib.error.URLError as e:
+                        raise RuntimeError(
+                            f"Could not reach github.com to download the "
+                            f"Intact.AI source: {e}. The Prepare Upgrade flow "
+                            f"requires internet on the box running the prepare."
+                        ) from e
 
-                tar_url = (
-                    f"https://codeload.github.com/{repo}/tar.gz/{resolved_ref}"
-                )
-                tar_path = f"{package_dir}/_intact_source.tar.gz"
-                extract_dir = f"{package_dir}/_intact_extracted"
+                    size_mb = os.path.getsize(tar_path) / (1024 * 1024)
+                    log(f"  Downloaded {size_mb:.1f} MB", "info")
 
-                log(
-                    f"Downloading Intact.AI source from "
-                    f"github.com/{repo} @ '{version}'...",
-                    "info",
-                )
-                try:
-                    urllib.request.urlretrieve(tar_url, tar_path)
-                except urllib.error.HTTPError as e:
-                    raise RuntimeError(
-                        f"GitHub ref '{resolved_ref}' not found at {repo} "
-                        f"(HTTP {e.code}). Make sure the release tag exists "
-                        f"at https://github.com/{repo}/releases — or if you "
-                        f"meant a branch, check it isn't deleted."
-                    ) from e
-                except urllib.error.URLError as e:
-                    raise RuntimeError(
-                        f"Could not reach github.com to download the "
-                        f"Intact.AI source: {e}. The Prepare Upgrade flow "
-                        f"requires internet on the box running the prepare."
-                    ) from e
+                    # Extract — GitHub tarballs unpack into a single top-level
+                    # directory shaped like `IntactAI-<sha-or-tag>/`.
+                    os.makedirs(extract_dir, exist_ok=True)
+                    with tarfile.open(tar_path, "r:gz") as tar:
+                        tar.extractall(extract_dir)
 
-                size_mb = os.path.getsize(tar_path) / (1024 * 1024)
-                log(f"  Downloaded {size_mb:.1f} MB", "info")
-
-                # Extract — GitHub tarballs unpack into a single top-level
-                # directory shaped like `IntactAI-<sha-or-tag>/`.
-                os.makedirs(extract_dir, exist_ok=True)
-                with tarfile.open(tar_path, "r:gz") as tar:
-                    tar.extractall(extract_dir)
-
-                tops = [
-                    d for d in os.listdir(extract_dir)
-                    if os.path.isdir(os.path.join(extract_dir, d))
-                ]
-                if not tops:
-                    raise RuntimeError(
-                        f"Downloaded tarball from {tar_url} had no top-level "
-                        "directory — corrupt download?"
-                    )
-                extracted_root = os.path.join(extract_dir, tops[0])
+                    tops = [
+                        d for d in os.listdir(extract_dir)
+                        if os.path.isdir(os.path.join(extract_dir, d))
+                    ]
+                    if not tops:
+                        raise RuntimeError(
+                            f"Downloaded tarball from {tar_url} had no top-level "
+                            "directory — corrupt download?"
+                        )
+                    extracted_root = os.path.join(extract_dir, tops[0])
 
                 # Copy the WHOLE repo (matches the GitHub layout — `modules/`,
                 # `lib/`, `scripts/`, `install.sh`, `config.yaml`, etc.) to
@@ -1073,12 +1305,15 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     )
 
                 # Tear down the temp tarball + extraction so they don't end up
-                # inside the final .tar.gz output.
-                try:
-                    os.remove(tar_path)
-                    shutil.rmtree(extract_dir)
-                except Exception:
-                    pass
+                # inside the final .tar.gz output. Nothing to tear down when the
+                # source came from a checkout we do not own — deleting THAT
+                # would take the caller's working tree with it.
+                if tar_path or extract_dir:
+                    try:
+                        os.remove(tar_path)
+                        shutil.rmtree(extract_dir)
+                    except Exception:
+                        pass
 
                 # Record the operator's input verbatim in the manifest.
                 # `resolved_ref` (the SHA we actually downloaded) is
@@ -1088,7 +1323,8 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 manifest["versions"]["intact"] = version
                 manifest["contents"]["include_source"] = True
                 manifest["contents"]["source_origin"] = (
-                    f"github.com/{repo}@{resolved_ref}"
+                    f"checkout@{resolved_ref}" if source_dir
+                    else f"github.com/{repo}@{resolved_ref}"
                 )
 
                 # Belt-and-suspenders: stamp the VERSION file inside the
@@ -1892,22 +2128,16 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                         ', '.join(f'{k}={v}' for k, v in tv_env.items()),
                         "success")
 
-                # Pull and save Docker images
+                # Pull and save Docker images, several at a time — see
+                # _pull_and_save_images. Cancel is honoured inside each docker
+                # subprocess and re-checked once the pool drains.
                 declared = len(images_for_module)
-                bundled_for_module = 0
-                for image, output_name in images_for_module:
-                    output_path = f"{package_dir}/images/{output_name}"
-
-                    if _pull_and_save_image(image, output_path, log, run_id=run_id):
-                        manifest["contents"]["images"].append(output_name)
-                        bundled_for_module += 1
-                    # Honor cancel between images (fast-exit on Stop).
-                    try:
-                        from services.workflow_service import is_cancelled
-                        if is_cancelled(run_id):
-                            return {"success": False, "error": "cancelled", "cancelled": True}
-                    except Exception:
-                        pass
+                saved_names, was_cancelled = _pull_and_save_images(
+                    images_for_module, f"{package_dir}/images", log, run_id=run_id)
+                if was_cancelled:
+                    return {"success": False, "error": "cancelled", "cancelled": True}
+                manifest["contents"]["images"].extend(saved_names)
+                bundled_for_module = len(saved_names)
 
                 # Bundling-completeness gate. Three outcomes:
                 #
@@ -2165,6 +2395,12 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 _rel = os.path.relpath(_abs, package_dir)
                 if _rel == 'manifest.json':
                     continue  # the manifest can't contain its own hash
+                if _rel.startswith('manifests/'):
+                    # Per-module manifest sidecars are copies of this same
+                    # manifest, so they cannot contain their own hash either.
+                    # Both are covered by the ASSET-level sha256 published
+                    # alongside the tarball and verified before extraction.
+                    continue
                 _h = _hashlib.sha256()
                 with open(_abs, 'rb') as _fh:
                     for _chunk in iter(lambda: _fh.read(4 * 1024 * 1024), b''):
@@ -2207,6 +2443,25 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
         with open(f"{package_dir}/manifest.json", 'w') as f:
             json.dump(manifest, f, indent=2)
         log("  Created manifest.json", "success")
+
+        # PER-MODULE ASSET SIDECAR — written LAST, so it carries the COMPLETE
+        # manifest including the sha256 map.
+        #
+        # N module assets all extract into one directory (they share a
+        # top-level dir name), so their root manifest.json files overwrite each
+        # other -- last extractor wins, silently. Each asset therefore also
+        # carries manifests/<module>.json, and the apply-side assembler merges
+        # those into the root manifest. Writing this BEFORE the hash walk was
+        # the obvious-looking mistake: the sidecar then held a manifest with no
+        # sha map at all, so the assembled package had nothing to verify and
+        # said so only by silently checking zero files.
+        if manifest_sidecar_name:
+            _side_abs = os.path.join(package_dir, manifest_sidecar_name)
+            os.makedirs(os.path.dirname(_side_abs), exist_ok=True)
+            with open(_side_abs, 'w') as _sf:
+                json.dump(manifest, _sf, indent=2)
+            log(f"  Created {manifest_sidecar_name} (per-module asset manifest)",
+                "success")
 
         # Online-upgrade short-circuit: no tar.gz needed — return the
         # built package_dir directly. Caller (run_online_upgrade_workflow)
@@ -2301,7 +2556,11 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
         log(f"  Size: {_format_size(package_size)}", "info")
         log(f"  Modules: {', '.join(modules.keys())}", "info")
         log("", "info")
-        log("Click 'Download Package' to save the file.", "info")
+        # UI guidance, and only true when the archive landed in the operator's
+        # persistent packages dir with a button pointing at it. A CI build sends
+        # it somewhere else and nobody is going to click anything.
+        if not _packages_dir_overridden:
+            log("Click 'Download Package' to save the file.", "info")
 
         return {
             "success": True,
