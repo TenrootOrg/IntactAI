@@ -324,10 +324,37 @@ download_release_assets() {
     json="$(curl -sSL --max-time 60 "${hdr[@]}" "$api" 2>/dev/null)" || true
     [[ -n "$json" ]] || { log_error "  Could not reach the GitHub releases API"; return 1; }
 
-    # Which asset names to fetch. Prefer the per-module set; fall back to the
-    # bundle. Emitted one per line.
+    # The index, if this release has one. It is the ONLY place per-module
+    # checksums live -- CI stopped publishing a `.sha256` file beside every
+    # asset, because the release page then carried three files per module and
+    # two of them were digests nothing read. Fetch it before anything else so
+    # the payload can be verified against it below.
+    #
+    # Two spellings accepted: `<tag>.index.json`, and the older
+    # `intact-release-<tag>.index.json` that doubled the prefix on a tag
+    # already beginning with `intact-`.
+    local index_json="" index_name=""
+    local candidate
+    for candidate in "${tag}.index.json" "intact-release-${tag}.index.json"; do
+        if printf '%s' "$json" | grep -q "\"${candidate}\""; then
+            index_name="$candidate"
+            break
+        fi
+    done
+    if [[ -n "$index_name" ]]; then
+        log_info "  Reading the release index (${index_name})..."
+        index_json="$(curl -fsSL --max-time 120 \
+            "https://github.com/${repo}/releases/download/${tag}/${index_name}" \
+            2>/dev/null)" || index_json=""
+        [[ -n "$index_json" ]] || log_warn "  Could not read the release index — falling back to name matching"
+    fi
+
+    # What to fetch, and what it must hash to once whole. One
+    # "<file-to-download><TAB><whole-asset><TAB><sha256-or-empty>" per line --
+    # three columns because a split asset is downloaded as .part-NN pieces but
+    # verified as the reassembled tarball.
     local names
-    names="$(printf '%s' "$json" | INDEX_TAG="$tag" python3 -c '
+    names="$(printf '%s' "$json" | INDEX_TAG="$tag" INDEX_JSON="$index_json" python3 -c '
 import json, os, sys
 tag = os.environ["INDEX_TAG"]
 try:
@@ -335,34 +362,71 @@ try:
 except Exception:
     sys.exit(0)
 names = [a.get("name", "") for a in (rel.get("assets") or [])]
-sidecars = (".sha256", ".manifest.json", ".meta.json", ".index.json")
-payload = [n for n in names if not n.endswith(sidecars)]
 
-# Per-module assets for THIS release. The index tells us the set is complete;
-# without it we take every module asset present, which is the same thing for a
-# release CI finished.
-if f"intact-release-{tag}.index.json" in names:
-    want = [n for n in payload if n.startswith(f"intact-{tag}-")]
-else:
-    want = []
+# Per-module assets, straight from the index: it names the modules a release
+# carries and the sha256 of each WHOLE tarball (taken pre-split, so it is also
+# the only digest that covers a reassembled multi-part asset -- GitHub can only
+# digest each .part-NN it received).
+want = []
+try:
+    index = json.loads(os.environ.get("INDEX_JSON") or "")
+except Exception:
+    index = None
+if index:
+    attached, missing = set(names), []
+    for entry in (index.get("assets") or {}).values():
+        whole, sha = entry["asset"], entry.get("sha256") or ""
+        parts = [p for p in (entry.get("parts") or []) if p in attached]
+        if whole in attached:
+            want.append((whole, whole, sha))
+        elif parts:
+            want.extend((p, whole, sha) for p in parts)
+        else:
+            missing.append(whole)
+    if missing:
+        # Marker on STDOUT -- stderr is discarded by the caller, so a bare
+        # sys.exit(msg) here would read to the shell as "no assets found".
+        print("__MISSING__" + ", ".join(sorted(missing)))
+        sys.exit(0)
 
-# Bundle (also the fallback for releases predating the index).
+# No index: an older release, carrying the single bundle. GitHub publishes a
+# per-asset digest of its own ("sha256:...") -- exact for an unsplit file, and
+# all that shape ever is.
 if not want:
     base = f"intact-upgrade-{tag}.tar.gz"
-    want = [n for n in payload if n == base or n.startswith(base + ".part-")]
+    for a in (rel.get("assets") or []):
+        n = a.get("name") or ""
+        if n == base:
+            d = (a.get("digest") or "")
+            want.append((n, n, d.split(":", 1)[1] if d.startswith("sha256:") else ""))
+        elif n.startswith(base + ".part-"):
+            # A reassembled bundle has no published digest of the whole on a
+            # release this old; the parts are fetched and joined unverified.
+            want.append((n, base, ""))
 
-print("\n".join(sorted(set(want))))
+for n, whole, sha in sorted(set(want)):
+    print(f"{n}\t{whole}\t{sha}")
 ' 2>/dev/null)" || true
 
+    # An asset the index names but the release does not carry is fatal, not a
+    # thing to install around: the install would come up missing a module while
+    # reporting success.
+    if [[ "$names" == __MISSING__* ]]; then
+        log_error "  Release ${tag} indexes ${names#__MISSING__} but does not publish it"
+        return 1
+    fi
     if [[ -z "$names" ]]; then
         log_error "  Release ${tag} publishes no installable assets"
         return 1
     fi
 
     mkdir -p "$dest_dir"
-    local n
-    while IFS= read -r n; do
+    local n whole sha
+    # sha_of[<whole asset>] = expected sha256, from the index.
+    declare -A sha_of=()
+    while IFS=$'\t' read -r n whole sha; do
         [[ -n "$n" ]] || continue
+        sha_of["$whole"]="$sha"
         log_info "  Downloading ${n}..."
         if ! curl -fSL --retry 3 --retry-delay 5 --max-time 3600 \
                  -o "${dest_dir}/${n}" \
@@ -370,21 +434,17 @@ print("\n".join(sorted(set(want))))
             log_error "  Download failed: ${n}"
             return 1
         fi
-        # The .sha256 sidecar is small and is what makes a truncated multi-GB
-        # download distinguishable from a good one before anything is applied.
-        curl -fsSL --max-time 120 -o "${dest_dir}/${n}.sha256" \
-             "https://github.com/${repo}/releases/download/${tag}/${n}.sha256" \
-             2>/dev/null || true
     done <<< "$names"
 
-    # Reassemble any split assets. CI splits anything over the 2 GiB asset cap
-    # and publishes the sha256 of the WHOLE tarball, taken pre-split.
+    # Reassemble any split assets. CI splits anything over the 2 GiB asset cap;
+    # the index's sha256 is of the WHOLE tarball, taken pre-split, so it is the
+    # join that gets verified below, not the pieces.
     local part0
     while IFS= read -r part0; do
         [[ -n "$part0" ]] || continue
-        local whole="${part0%.part-00}"
-        log_info "  Reassembling $(basename "$whole")..."
-        cat "${whole}".part-* > "$whole" && rm -f "${whole}".part-*
+        local joined="${part0%.part-00}"
+        log_info "  Reassembling $(basename "$joined")..."
+        cat "${joined}".part-* > "$joined" && rm -f "${joined}".part-*
     done < <(find "$dest_dir" -maxdepth 1 -name '*.tar.gz.part-00' | sort)
 
     # Verify everything BEFORE anything is applied.
@@ -392,9 +452,9 @@ print("\n".join(sorted(set(want))))
     local f verified=0 unverified=0
     while IFS= read -r f; do
         [[ -n "$f" ]] || continue
-        if [[ -f "${f}.sha256" ]]; then
-            local want got
-            want="$(awk '{print $1}' "${f}.sha256" | head -1)"
+        local want="${sha_of[$(basename "$f")]:-}"
+        if [[ -n "$want" ]]; then
+            local got
             got="$(sha256sum "$f" | awk '{print $1}')"
             if [[ "$want" != "$got" ]]; then
                 log_error "  $(basename "$f") FAILED its checksum (expected ${want:0:16}…, got ${got:0:16}…)"
@@ -413,7 +473,7 @@ print("\n".join(sorted(set(want))))
     fi
     log_success "  ${#INTACT_PACKAGES[@]} asset(s) ready (${verified} checksum-verified)"
     if (( unverified > 0 )); then
-        log_warn "  ${unverified} asset(s) had no published .sha256 — integrity unverified"
+        log_warn "  ${unverified} asset(s) had no checksum in the release index — integrity unverified"
     fi
     return 0
 }

@@ -450,10 +450,17 @@ def find_release_index(tag: str, logger: Callable = None) -> Optional[dict]:
     rel = _get_release(tag, log)
     if not rel:
         return None
-    name = f"intact-release-{tag}.index.json"
     assets = {a['name']: a for a in (rel.get('assets') or [])}
-    if name not in assets:
-        log(f"  Release '{tag}' has no per-module index ({name}) — "
+    # `<tag>.index.json`. The older spelling glued a literal `intact-release-`
+    # onto a tag that already starts with `intact-`, producing
+    # `intact-release-intact-20260804.index.json` -- which reads like a module
+    # asset for a module named "release". Both are accepted so a release cut
+    # under the old name stays readable.
+    name = next((n for n in (f"{tag}.index.json",
+                             f"intact-release-{tag}.index.json")
+                 if n in assets), None)
+    if not name:
+        log(f"  Release '{tag}' has no per-module index ({tag}.index.json) — "
             f"using the single-package path.", "info")
         return None
     try:
