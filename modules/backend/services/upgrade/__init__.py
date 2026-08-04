@@ -30,11 +30,13 @@ from .base import (
     get_package_info,
     ensure_module_enabled_in_config,
     sweep_stale_upgrade_staging,
+    harden_secret_permissions,
 )
 
 # Module-specific upgrade functions
 from .elk import upgrade_elk, upgrade_elk_offline
-from .timesketch import upgrade_timesketch, upgrade_timesketch_offline
+from .timesketch import (upgrade_timesketch, upgrade_timesketch_offline,
+                         ensure_postgres_password as _ensure_ts_pg_password)
 from .iris import upgrade_iris, upgrade_iris_offline
 from .velociraptor import upgrade_velociraptor, upgrade_velociraptor_offline
 from .intact import (
@@ -45,7 +47,8 @@ from .plaso import upgrade_plaso, upgrade_plaso_offline
 from .aws import upgrade_aws, upgrade_aws_offline
 from .azure import upgrade_azure, upgrade_azure_offline
 from .volweb import upgrade_volweb, upgrade_volweb_offline, install_volweb_offline
-from .portainer import upgrade_portainer, upgrade_portainer_offline, install_portainer_offline
+from .portainer import (upgrade_portainer, upgrade_portainer_offline,
+                        install_portainer_offline, _ensure_agent_secret)
 from .elk import install_elk_offline
 from .timesketch import install_timesketch_offline
 from .velociraptor import install_velociraptor_offline
@@ -469,7 +472,39 @@ def post_upgrade_health_gate(logger: Callable = None, budget_s: int = 45,
                         f"{name} was in `created` and would not start "
                         f"(now {state})")
             elif state != 'running':
-                problems.append(f"{name} is {state} ({status[:40]})")
+                # Not every intact_* container is a service. Some are one-shot
+                # setup tasks that do a job and exit — intact_elk_setup
+                # provisions the Elasticsearch kibana_system user and stops
+                # (modules/elk/docker-compose.yaml: `restart: "no"`). For those,
+                # `Exited (0)` IS success, and reporting it as a problem made
+                # every single upgrade finish DEGRADED with a warning about a
+                # container that had done exactly what it was supposed to. A
+                # health gate that cries wolf on every run trains operators to
+                # ignore it, which costs more than the check is worth.
+                #
+                # The compose file already states the intent, so read it rather
+                # than hardcoding names: a container declared `restart: "no"`
+                # that exited ZERO ran to completion. Anything else that is not
+                # running is still a problem — a stopped nginx
+                # (restart: unless-stopped) and a setup task that exited 1 both
+                # still report, which is the whole point of the check.
+                policy, code = '', None
+                try:
+                    ri = run_command(
+                        "docker inspect -f '{{.HostConfig.RestartPolicy.Name}} "
+                        "{{.State.ExitCode}}' " + name,
+                        logger=None, timeout=min(10, max(5, int(_left()))))
+                    bits = (ri.get('stdout') or '').strip().strip("'").split()
+                    if len(bits) == 2:
+                        policy, code = bits[0], int(bits[1])
+                except Exception:
+                    policy, code = '', None
+                if state == 'exited' and policy == 'no' and code == 0:
+                    log(f"  [health] {name} exited 0 and is declared "
+                        f"restart:\"no\" — a one-shot setup task that "
+                        f"completed, not a fault.", "info")
+                else:
+                    problems.append(f"{name} is {state} ({status[:40]})")
             elif 'unhealthy' in status.lower():
                 problems.append(f"{name} reports unhealthy ({status[:40]})")
     except Exception as e:
@@ -600,7 +635,65 @@ def _upgrade_noop_module(module_name: str, target_ref: str = None) -> bool:
             continue
         if str(pre_merge.get(key)).strip() != str(tgt).strip():
             return False   # primary or a sidecar pin changed / was added
+
+    # Pins are identical -- but "same version" is not the same as "same image".
+    #
+    # velociraptor-server is BUILT from repo source (modules/velociraptor/
+    # Dockerfile + entrypoint.sh), so a source change produces a different image
+    # under an unchanged version pin. The orchestrator's pre-load then
+    # `docker load`s the new image and REASSIGNS the tag, while this function
+    # says "nothing to do" and the container is never recreated. The store and
+    # the running container silently disagree.
+    #
+    # That is not hypothetical: the 2026-08-02 `chmod +x` -> `chmod 755` fix in
+    # entrypoint.sh lives entirely inside the image and does not move the 0.77.1
+    # pin. Every operator already on 0.77.1 -- i.e. exactly the ones carrying the
+    # bug -- would be skipped and never receive the fix.
+    #
+    # So compare identity, not just labels: if the tag now resolves to a
+    # different image than the one the container is running, this module has
+    # work to do. Any failure to determine that returns False (do process),
+    # matching the rest of this function -- never skip something that might
+    # need work.
+    if _module_image_drifted(module_name):
+        return False
     return True
+
+
+def _module_image_drifted(module_name: str) -> bool:
+    """True iff the module's primary container is running an image that is no
+    longer what its tag points at.
+
+    Ask the daemon for both IDs. A tag that was reassigned by `docker load`
+    while the container kept running the old layers is invisible to any
+    version-pin comparison, because nothing about the version changed.
+    """
+    from .base import _MODULE_PRIMARY_CONTAINERS
+    name = _MODULE_PRIMARY_CONTAINERS.get(module_name)
+    if not name:
+        return False                     # no container concept -> nothing to compare
+    try:
+        running = run_command(
+            f"docker inspect -f '{{{{.Image}}}}' {name}",
+            logger=None, timeout=30)
+        ref = run_command(
+            f"docker inspect -f '{{{{.Config.Image}}}}' {name}",
+            logger=None, timeout=30)
+        if not (running.get('success') and ref.get('success')):
+            return False
+        running_id = (running.get('stdout') or '').strip().strip("'")
+        image_ref = (ref.get('stdout') or '').strip().strip("'")
+        if not running_id or not image_ref:
+            return False
+        tagged = run_command(
+            f"docker inspect -f '{{{{.Id}}}}' {image_ref}",
+            logger=None, timeout=30)
+        if not tagged.get('success'):
+            return False                 # tag gone entirely -> compose will pull/build
+        tagged_id = (tagged.get('stdout') or '').strip().strip("'")
+        return bool(tagged_id and running_id != tagged_id)
+    except Exception:
+        return False
 
 # Database volumes that can be reset for fresh install (schema compatibility)
 RESET_VOLUMES = {
@@ -923,6 +1016,25 @@ def prepare_recreate_handoff(run_id: str, swap_info: Dict, logger: Callable = No
         log(f"  Could not write recovery script ({e})", "warning")
     log(f"Recreating backend -> intact-backend:{new_tag}. If the box is left "
         f"down, recover with: {recover_host}", "info")
+
+    # THE LAST LINE THE OPERATOR SEES. Everything below this point happens after
+    # the backend has been replaced, so nothing more can reach a page that is
+    # still talking to the old one — this log view stops updating here and looks
+    # frozen. It is the single most-reported "the upgrade is stuck" moment, on
+    # runs that go on to complete with zero warnings. So the instruction has to
+    # be the last thing written, not a summary at the end nobody gets to read.
+    log("", "info")
+    log("THIS LOG STOPS UPDATING HERE — REFRESH THE PAGE TO KEEP READING IT.",
+        "warning")
+    log("  The backend is being replaced, so this page is talking to a process "
+        "that is about to be gone. It cannot receive the rest of the run.", "info")
+    log("  Press Ctrl+Shift+R (Cmd+Shift+R on Mac). The upgrade KEEPS RUNNING "
+        "meanwhile — refreshing, closing this tab, or losing the browser "
+        "entirely cannot interrupt it.", "info")
+    log("  After the refresh this run reopens where it left off and the log "
+        "continues. If a login or SETUP page appears first, sign in and it will "
+        "reattach.", "info")
+    log("", "info")
 
     # 4. write the helper script to the shared data bind, then spawn the helper
     #    container FROM THE OLD IMAGE (has docker + compose; survives our death).
@@ -1392,6 +1504,34 @@ def run_upgrade_workflow(modules: Dict[str, str], run_id: str = None, mode: str 
                                 return {"success": False,
                                         "error": "failed to persist Phase-2 resume state; "
                                                  "restart aborted"}
+                            # SAY IT BEFORE IT HAPPENS. The restart drops every
+                            # session, and on a pre-auth box the auth migration
+                            # additionally lands the operator on the SETUP page.
+                            # From the operator's chair that is: the progress view
+                            # freezes, then a login screen they were not expecting
+                            # appears, with nothing anywhere saying the upgrade is
+                            # still running. Reported as "it's stuck at some point"
+                            # -- on a run that was working perfectly. A warning
+                            # after the fact is no warning; this has to be the last
+                            # thing they read before the screen changes.
+                            log("", "info")
+                            log("YOU WILL NEED TO SIGN IN AGAIN — THIS IS EXPECTED.",
+                                "warning")
+                            log("  WHY: this release adds a dashboard login. Until "
+                                "now this appliance had no authentication at all, "
+                                "so there is no session to carry across — one has "
+                                "to be created, and creating it means signing in. "
+                                "Nothing has gone wrong.", "info")
+                            log("  The backend is also restarting to load the new "
+                                "code, which ends any session that did exist.", "info")
+                            log("  The upgrade KEEPS RUNNING in the background. It "
+                                "does not need this page to stay open, and closing "
+                                "or reloading it cannot interrupt the run.", "info")
+                            log("  Sign back in and this run reopens where it left "
+                                "off. If a SETUP page appears instead, that is this "
+                                "appliance getting its first login: choose your own "
+                                "username and password there.", "info")
+                            log("", "info")
                             log("Backend will restart to load new code. Upgrade will resume automatically.", "info")
                             schedule_backend_restart(run_id=run_id, logger=log)
 
@@ -1629,7 +1769,8 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
     # actually remain, and floor it at the same APPLY_MIN_FREE_GB the rest of
     # the apply path uses.
     try:
-        from .config_validate import APPLY_MIN_FREE_GB, preflight_environment as _pe
+        from .config_validate import (required_free_gb_after_extraction,
+                                      preflight_environment as _pe)
         _remaining = 0
         _images_dir = os.path.join(package_dir, 'images') if package_dir else None
         if _images_dir and os.path.isdir(_images_dir):
@@ -1639,9 +1780,13 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
                         _remaining += os.path.getsize(os.path.join(_images_dir, _fn))
                     except OSError:
                         pass
-        # Each still-present tar gets a second copy in the image store.
-        _need = max(float(APPLY_MIN_FREE_GB),
-                    round(_remaining / (1024 ** 3) * 1.15, 1))
+        # Same sizing as the Phase-1 post-extraction check, and for the same
+        # reason: cleanup_after_load reclaims each tar as its layers land in the
+        # store, so the two copies never coexist for the whole set. Charging
+        # 100% of the staged bytes on top of tars that are already on disk was
+        # the conservative-but-wrong half of the 2026-08-02 disk refusals.
+        _need = (required_free_gb_after_extraction(_images_dir)
+                 if _images_dir else required_free_gb_after_extraction(''))
         _ok2, _errs2 = _pe(logger=None, min_free_gb=_need)
         if not _ok2:
             log(f"Insufficient disk for the remaining modules (~{_need} GiB "
@@ -1857,6 +2002,52 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
                               progress=min(95, 50 + int(45 * _p2_done / _p2_total)))
         except Exception:
             pass
+
+    # Provision per-module secrets BEFORE the module loop, not after it.
+    #
+    # refresh_module_compose_file() runs for every sidecar on every upgrade, so
+    # a release shipping new compose files without bumping those modules' pins
+    # writes `env_file: ./secrets/postgres.env` (Timesketch) and
+    # `./secrets/agent.env` (Portainer) onto a box that has neither. This block
+    # creates them -- and it used to sit ~450 lines BELOW, after the very loop
+    # whose compose-up needs them.
+    #
+    # That ordering happens to work for an UPGRADE, because upgrade_timesketch()
+    # calls ensure_postgres_password() itself. It does not work for a FIRST-TIME
+    # install driven by the upgrade: install_timesketch_offline() never calls it,
+    # so `docker compose up` dies with "env file .../secrets/postgres.env not
+    # found" and the module is reported MODULE_FAILED while the run still ends
+    # `completed`. Observed 2026-08-02 installing Timesketch onto a backend-only
+    # intact-20260726 box -- the exact case the comment below already predicted.
+    #
+    # Both helpers are idempotent no-ops once their secret exists, so running
+    # them up here costs nothing and closes the gap for install and upgrade
+    # alike, regardless of pin movement.
+    # Elasticsearch credentials belong in this same block, and for the same
+    # reason: the release that turns on xpack.security has THREE consumers
+    # (Kibana, Logstash, the backend) and shipping the switch without the
+    # credentials leaves two of them 401'ing while every health signal stays
+    # green. Idempotent and non-rotating -- see ensure_elk_credentials.
+    try:
+        if os.path.isdir(os.path.join(WORKDIR, 'modules', 'elk')):
+            from .elk import ensure_elk_credentials
+            ensure_elk_credentials(logger=log)
+    except Exception as _e:
+        log(f"  (Elasticsearch credential provisioning skipped: "
+            f"{type(_e).__name__}: {_e})", "warning")
+
+    for _label, _fn, _mod in (
+        ("Portainer agent secret", _ensure_agent_secret, 'portainer'),
+        ("Timesketch DB password", _ensure_ts_pg_password, 'timesketch'),
+    ):
+        try:
+            _dir = os.path.join(WORKDIR, 'modules', _mod)
+            if os.path.isdir(_dir):
+                _fn(_dir if _mod == 'timesketch'
+                    else os.path.join(_dir, '.env'), logger=log)
+        except Exception as _e:
+            log(f"  ({_label} provisioning skipped: "
+                f"{type(_e).__name__}: {_e})", "warning")
 
     try:
         for module_name in upgrade_order:
@@ -2255,6 +2446,17 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
 
         log(f"{'='*50}", "info")
 
+        # Same note as the offline/online summary. Kept in sync deliberately:
+        # a Phase-2 resume is the whole run for an operator who was watching
+        # after the restart, and the note is guarded against double-logging
+        # via results['_llm_providers_note'].
+        try:
+            from .timesketch import log_llm_provider_container_note
+            log_llm_provider_container_note(results, logger=log)
+        except Exception as _lpe:
+            log(f"  (could not emit the LLM-provider note: "
+                f"{type(_lpe).__name__}: {_lpe})", "info")
+
     # Workflow done. Clean up the config.yaml pre-merge backup (if any
     # — only the online flow creates one). Per-module reverts have
     # already run for each FAILED module via the orchestrator's
@@ -2280,6 +2482,38 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
     # failed-module list, was never updated to skip them.
     all_success = all(r.get('success', False) for k, r in results.items()
                       if not isinstance(r, str) and not k.startswith('_'))
+
+    # Last thing before returning: re-assert 0600 on the secret files. Runs here,
+    # after every module handler, so anything a handler regenerated (Velociraptor
+    # configs, the Timesketch confs) is caught rather than left world-readable.
+    #
+    # This exists because the in-UI upgrade never executes install.sh, so the
+    # equivalent hardening block there does NOT protect an upgraded box. Both
+    # paths must do it; a parity test keeps the two lists identical.
+    #
+    # Best-effort and deliberately outside the success calculation — a chmod
+    # failure must not turn a clean upgrade into a failed one.
+    try:
+        harden_secret_permissions(logger=log)
+    except Exception as _e:
+        log(f"  (secret permission hardening skipped: "
+            f"{type(_e).__name__}: {_e})", "warning")
+
+    # Provision the secrets the REFRESHED compose files require -- unconditionally.
+    #
+    # This must not live inside upgrade_portainer()/upgrade_timesketch():
+    # _upgrade_noop_module() skips a module entirely when its version pins did
+    # not change, but refresh_module_compose_file() runs for every sidecar on
+    # every upgrade. So a release that ships the new compose files without
+    # bumping those modules' pins would write a compose declaring
+    # `env_file: ./secrets/agent.env` (Portainer) and `./secrets/postgres.env`
+    # (Timesketch) onto a box that has neither -- and the next `docker compose
+    # up` for that module dies with "env file not found". Upgrading from
+    # intact-20260726 is exactly that case.
+    #
+    # Both are idempotent no-ops once their secret exists, so running them here
+    # every time is free and closes the gap regardless of pin movement.
+
     return {
         "success": all_success,
         "status": overall_status,
@@ -2295,6 +2529,7 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                                   *,
                                   prebuilt_package_dir: Optional[str] = None,
                                   prebuilt_manifest: Optional[Dict] = None,
+                                  expected_sha256: Optional[str] = None,
                                   workflow_label: str = "OFFLINE UPGRADE WORKFLOW") -> Dict:
     """Run the apply-upgrade orchestration with two-phase support.
 
@@ -2361,7 +2596,8 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                 run_command(f"rm -rf {old_dir}", logger=log)
 
         # Verify and extract package
-        verify_result = verify_upgrade_package(package_path, logger=log)
+        verify_result = verify_upgrade_package(
+            package_path, logger=log, expected_sha256=expected_sha256)
         if not verify_result['success']:
             if package_path and os.path.exists(package_path):
                 try:
@@ -2402,7 +2638,21 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     log("-" * 40, "info")
     for module, target_ver in versions.items():
         current_ver = current_versions.get(module, {}).get('current', 'Not installed')
-        if current_ver in ('Not installed', 'unknown'):
+        if module in _unknown_manifest_modules:
+            # Same principle as the same-version branch below: say what actually
+            # happens. The module loop walks UPGRADE_ORDER, so an entry this
+            # installer does not know is never dispatched — and printing it as
+            # "installing X (fresh install)" directly contradicts the WARNING
+            # logged a few lines above, which says it will NOT be applied.
+            #
+            # An operator reading the summary would believe a module was
+            # installed that the previous screen said was skipped. Observed
+            # 2026-08-02 with a manifest carrying `velociraptor_legacy` in
+            # versions: (it is a version PIN, not a module — but the summary
+            # cannot know that, and should not claim work it will not do).
+            log(f"  {module.upper()}: {target_ver} in package but NOT APPLIED "
+                f"(unknown to this installer — see the warning above)", "warning")
+        elif current_ver in ('Not installed', 'unknown'):
             log(f"  {module.upper()}: installing {target_ver} (fresh install)", "info")
         elif current_ver == target_ver:
             # Say what actually happens. The dispatch below SKIPS same-version
@@ -2478,28 +2728,6 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         return {"success": False, "status": "failed", "error": _fmt,
                 "results": {}, "completed": 0, "total": 0, "versions": {}}
 
-    # Second disk check, now sized from THIS package instead of a fixed floor.
-    # The early check ran before extraction, when the real requirement was still
-    # unknown; a big package can clear a 10 GiB floor and then die of ENOSPC
-    # halfway through `docker load`. Advisory-but-blocking here is the right
-    # trade: it fails before the module loop, so nothing is half-applied.
-    try:
-        from .config_validate import required_free_gb_for_manifest, preflight_environment as _pe
-        _pkg_bytes = os.path.getsize(package_path) if (package_path and os.path.exists(package_path)) else 0
-        _need = required_free_gb_for_manifest(manifest, _pkg_bytes)
-        _ok2, _errs2 = _pe(logger=None, min_free_gb=_need)
-        if not _ok2:
-            log(f"Insufficient disk for this package (~{_need} GiB needed, "
-                f"sized from this package rather than a fixed floor):", "error")
-            for _e in _errs2:
-                log(f"  - {_e}", "error")
-            return {"success": False, "status": "failed",
-                    "error": "; ".join(_errs2),
-                    "results": {}, "completed": 0, "total": 0, "versions": {}}
-        log(f"  Disk preflight: ~{_need} GiB required for this package, satisfied.", "info")
-    except Exception as _de:
-        log(f"  manifest-sized disk check skipped ({type(_de).__name__}: {_de})", "warning")
-
     # Build modules dict for state tracking
     modules_dict = {k: v for k, v in versions.items()}
     if 'intact' not in modules_dict:
@@ -2520,8 +2748,9 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
             modules_dict['intact'] = 'from_package'
 
     # Refuse a package that would move any module BACKWARDS. Checked here —
-    # after the module set is known, before the loop touches anything — so a
-    # rejected run leaves the platform exactly as it was.
+    # after the module set is known, before the loop touches anything, and
+    # before the prune below deletes anything — so a rejected run leaves both
+    # the platform AND the extracted package exactly as they were.
     _dg = _reject_downgrades(modules_dict, current_versions, logger=log)
     if _dg:
         log("DOWNGRADE REFUSED — aborting with the platform untouched.", "error")
@@ -2545,6 +2774,17 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     # and the run reports "completed, 0 errors" while the platform quietly
     # never upgraded — discovered 2026-07-22 when a hand-built API call
     # omitted intact and got exactly that misleading result.
+    #
+    # THIS MUST STAY ABOVE THE PRUNE. It used to sit ~100 lines below it, so
+    # the prune computed its keep-set from the RAW operator subset while the
+    # module loop ran against the force-included one. An apply that deselected
+    # 'intact' therefore deleted images/intact-backend-<tag>.tar and
+    # images/tusd-<ver>.tar (both attributed to 'intact' by images_by_module)
+    # and then went on to upgrade intact anyway — which failed at
+    # ensure_backend_runtime_image with "neither present nor bundled in the
+    # package", pointing at CI for a file that WAS in the package and had been
+    # deleted locally seconds earlier. Any later addition to the effective
+    # apply set has to happen before the prune for the same reason.
     if selected_set is not None and 'intact' in modules_dict and 'intact' not in selected_set:
         log("'intact' was not in the selected subset but IS in this package — "
             "force-including it. A package without its own platform upgrade "
@@ -2554,6 +2794,87 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
 
     if selected_set is not None:
         log(f"Operator-selected subset: {sorted(selected_set)}", "info")
+
+    # Drop the image tars for modules the operator did not choose, BEFORE the
+    # disk check below and before any `docker load`. A package ships every
+    # module; an apply that installs two of them was still carrying the other
+    # eight on disk for the whole run. On a 5.8 GB package that is ~10 GiB of
+    # extracted tars held for nothing, at exactly the moment disk is tightest.
+    #
+    # Keyed off `selected_set` — the EFFECTIVE apply set after force-includes —
+    # never off the raw `selected_modules` argument. See the force-include
+    # comment above for what the raw set cost us.
+    #
+    # Safe because the tars are a copy: the package itself is untouched, so a
+    # retry re-extracts whatever was pruned. Runs before the budget so the
+    # requirement reflects what is actually left on disk.
+    if selected_set:
+        try:
+            from .package import images_by_module
+            _img_dir = os.path.join(package_dir, 'images')
+            if os.path.isdir(_img_dir):
+                _present = os.listdir(_img_dir)
+                _owned = images_by_module(_present)
+                _keep = set(selected_set)
+                _freed = 0
+                _dropped = 0
+                for _mod, _names in _owned.items():
+                    # Unattributable images are KEPT. An image nobody owns is a
+                    # packaging bug, and deleting one a module silently needs
+                    # turns that bug into a failed upgrade.
+                    if _mod is None or _mod in _keep:
+                        continue
+                    for _n in _names:
+                        _fp = os.path.join(_img_dir, _n)
+                        try:
+                            _freed += os.path.getsize(_fp)
+                            os.remove(_fp)
+                            _dropped += 1
+                        except OSError:
+                            pass
+                if _dropped:
+                    log(f"  Pruned {_dropped} image(s) for unselected modules, "
+                        f"freeing {_freed / (1024 ** 3):.1f} GiB before install", "info")
+        except Exception as _pe_err:
+            log(f"  Unselected-image prune skipped ({type(_pe_err).__name__}: "
+                f"{_pe_err}) — continuing with the full package", "warning")
+
+    # Second disk check. The early one ran before extraction against a fixed
+    # floor; a big package can clear 10 GiB and then die of ENOSPC halfway
+    # through `docker load`. Advisory-but-blocking here is the right trade: it
+    # fails before the module loop, so nothing is half-applied.
+    #
+    # Sized for what is STILL TO COME, not for the whole job. This used to call
+    # required_free_gb_for_manifest(), which budgets package + extracted tree +
+    # loaded images — correct before anything is unpacked, wrong here. By this
+    # point extraction has already happened (verify_upgrade_package above), so
+    # the tarball and the extracted tree are on disk and already subtracted
+    # from `free`; charging for them again double-counts every byte already
+    # spent. That demanded 37.7 GiB from a box with 23.1 GiB free and plenty of
+    # room for the remaining work (2026-08-02, upgrading from 20260726).
+    #
+    # required_free_gb_after_extraction measures the tars actually present, so
+    # it also picks up the unselected-module prune above for free — no need to
+    # re-derive the effective apply set here.
+    try:
+        from .config_validate import (required_free_gb_after_extraction,
+                                      preflight_environment as _pe)
+        _need = required_free_gb_after_extraction(
+            os.path.join(package_dir, 'images'))
+        _ok2, _errs2 = _pe(logger=None, min_free_gb=_need)
+        if not _ok2:
+            log(f"Insufficient disk to finish this upgrade (~{_need} GiB "
+                f"still needed to load the staged images; the package and its "
+                f"extracted tree are already on disk and are NOT counted "
+                f"again):", "error")
+            for _e in _errs2:
+                log(f"  - {_e}", "error")
+            return {"success": False, "status": "failed",
+                    "error": "; ".join(_errs2),
+                    "results": {}, "completed": 0, "total": 0, "versions": {}}
+        log(f"  Disk preflight: ~{_need} GiB required for this package, satisfied.", "info")
+    except Exception as _de:
+        log(f"  manifest-sized disk check skipped ({type(_de).__name__}: {_de})", "warning")
 
     # State persisted across the intact restart must carry ONLY the modules the
     # operator selected. The Phase-2 resume (resume_upgrade_workflow) applies
@@ -2851,6 +3172,34 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                                 return {"success": False,
                                         "error": "failed to persist Phase-2 resume state; "
                                                  "restart aborted"}
+                            # SAY IT BEFORE IT HAPPENS. The restart drops every
+                            # session, and on a pre-auth box the auth migration
+                            # additionally lands the operator on the SETUP page.
+                            # From the operator's chair that is: the progress view
+                            # freezes, then a login screen they were not expecting
+                            # appears, with nothing anywhere saying the upgrade is
+                            # still running. Reported as "it's stuck at some point"
+                            # -- on a run that was working perfectly. A warning
+                            # after the fact is no warning; this has to be the last
+                            # thing they read before the screen changes.
+                            log("", "info")
+                            log("YOU WILL NEED TO SIGN IN AGAIN — THIS IS EXPECTED.",
+                                "warning")
+                            log("  WHY: this release adds a dashboard login. Until "
+                                "now this appliance had no authentication at all, "
+                                "so there is no session to carry across — one has "
+                                "to be created, and creating it means signing in. "
+                                "Nothing has gone wrong.", "info")
+                            log("  The backend is also restarting to load the new "
+                                "code, which ends any session that did exist.", "info")
+                            log("  The upgrade KEEPS RUNNING in the background. It "
+                                "does not need this page to stay open, and closing "
+                                "or reloading it cannot interrupt the run.", "info")
+                            log("  Sign back in and this run reopens where it left "
+                                "off. If a SETUP page appears instead, that is this "
+                                "appliance getting its first login: choose your own "
+                                "username and password there.", "info")
+                            log("", "info")
                             log("Backend will restart to load new code. Upgrade will resume automatically.", "info")
                             schedule_backend_restart(run_id=run_id, logger=log)
 
@@ -3074,6 +3423,26 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                         status = 'upgraded'
                     log(f"  {mod}: {before_s} -> {after_s}   ({status})", "info")
             log("-" * 64, "info")
+
+            # How to sign in. The auth migration runs at backend boot and logs
+            # to `docker logs`, so a successful migration left the operator
+            # locked out of a working appliance with nothing in THIS log to
+            # explain it. See report_dashboard_login's docstring.
+            try:
+                from .intact import report_dashboard_login
+                report_dashboard_login(logger=log)
+            except Exception as _dle:
+                log(f"  (could not report the dashboard login state: "
+                    f"{type(_dle).__name__}: {_dle})", "info")
+
+            # We patch the vendor Timesketch container. Say so once, here, at
+            # info level — see the helper's docstring for why not "warning".
+            try:
+                from .timesketch import log_llm_provider_container_note
+                log_llm_provider_container_note(results, logger=log)
+            except Exception as _lpe:
+                log(f"  (could not emit the LLM-provider note: "
+                    f"{type(_lpe).__name__}: {_lpe})", "info")
 
     # Workflow done. Clean up the config.yaml pre-merge backup (if any
     # — only the online flow creates one). Per-module reverts have

@@ -8,6 +8,8 @@ services/fusion/store.py. Strictly additive; touches no existing pipeline.
 
 from __future__ import annotations
 
+import re
+
 from flask import Blueprint, jsonify, request, Response
 
 from services.fusion import store, render
@@ -684,12 +686,51 @@ def report(case_id):
                     "master_prompt": d.get("master_prompt", "")})
 
 
+_LOGO_MAX_B64_BYTES = 2 * 1024 * 1024      # ~1.5 MB of image; a cover logo
+_LOGO_DATA_URL_RE = re.compile(
+    r'^data:image/(png|jpeg|jpg|gif|webp);base64,[A-Za-z0-9+/\r\n]+={0,2}$')
+
+
+def _validate_logo_data_url(value: str):
+    """Return an operator-facing error string, or None when the logo is fine.
+
+    SVG is rejected on purpose even though it is an image: it can carry script
+    and external references. Inert under the renderer's data-only fetcher, but
+    there is no reason to store it, and the report is a customer deliverable.
+    """
+    if len(value) > _LOGO_MAX_B64_BYTES:
+        return (f"customer_logo_b64 is {len(value) // 1024} KB; the limit is "
+                f"{_LOGO_MAX_B64_BYTES // 1024} KB. Use a smaller cover logo.")
+    if value.lower().startswith('data:image/svg'):
+        return ("SVG logos are not accepted — they can carry script. Use PNG, "
+                "JPEG, GIF or WebP.")
+    if not _LOGO_DATA_URL_RE.match(value):
+        return ("customer_logo_b64 must be an embedded image data URL, e.g. "
+                "'data:image/png;base64,<...>'. Remote and local file "
+                "references are not fetched when the report is rendered.")
+    return None
+
+
 @case_bp.route("/api/cases/<case_id>/branding", methods=["POST"])
 def set_branding(case_id):
     """Set report branding/options: customer_name, customer_logo_b64, tlp, audience, language."""
     if not store.get_case(case_id):
         return jsonify({"error": "case not found"}), 404
     b = request.get_json(silent=True) or {}
+
+    # The logo is interpolated into an <img src> in the generated PDF, so it
+    # has to be an EMBEDDED image and nothing else. Unvalidated, a value like
+    # "file:///etc/passwd" or an internal http:// URL was stored and then
+    # fetched by the renderer. The renderer refuses non-data URLs now
+    # (services/engagement/pdf.py:_data_only_url_fetcher); this stops the bad
+    # value being persisted in the first place, so the operator finds out when
+    # they set it rather than when a report fails months later.
+    logo = b.get("customer_logo_b64")
+    if logo is not None and str(logo).strip():
+        err = _validate_logo_data_url(str(logo).strip())
+        if err:
+            return jsonify({"error": err}), 400
+
     saved = store.set_branding(
         case_id, customer_name=b.get("customer_name"),
         customer_logo_b64=b.get("customer_logo_b64"), tlp=b.get("tlp"),

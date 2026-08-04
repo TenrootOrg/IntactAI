@@ -1,0 +1,100 @@
+# QA harness configuration — the only file you edit before running a QA run.
+#
+# ---------------------------------------------------------------------------
+# THIS FILE IS TRACKED IN GIT, AND IT IS ALSO WHERE YOUR REAL PASSWORDS LIVE.
+#
+# Those two facts are only compatible because of one mechanism:
+# scripts/git-hooks/sanitize-config-yaml.sh rewrites the STAGED copy of this
+# file back to blanks on every commit. Your working copy is never touched, so
+# you fill this in once and forget about it, while git only ever receives the
+# empty template.
+#
+# It edits the git INDEX, not the file on disk. If it edited the file, every
+# commit would wipe the credentials you just typed in.
+#
+# Consequences worth knowing:
+#   * `git commit --no-verify` bypasses the hook. Don't, with this file staged.
+#   * The hook only exists if git-hooks are installed — install.sh does that,
+#     or run scripts/install-git-hooks.sh by hand after a clone. Verify with
+#     `git config core.hooksPath` (expected: scripts/git-hooks).
+#   * This file will show as MODIFIED in `git status` permanently, because
+#     HEAD holds blanks and your disk holds credentials. That is the mechanism
+#     working, not a bug. Do not "clean it up".
+#   * Consequently `git checkout -- qa/qa-config.yaml`, `git stash`, and
+#     `git reset --hard` all DESTROY your credentials by restoring the blank
+#     version. They are recoverable only by typing them in again.
+#
+# Same arrangement as the top-level config.yaml, for the same reason: a clone
+# should come with a ready-to-edit file rather than an .example you have to
+# know to copy.
+# ---------------------------------------------------------------------------
+#
+# Permissions: this file holds a sudo password, so it must be 0600. The harness
+# chmods it on startup and refuses to run if it is group- or world-readable.
+# Git cannot store 0600 (it only records 100644/100755), so a fresh clone
+# arrives 0644 — which is fine while it is still blank, and fixed the moment
+# the harness first runs.
+
+schema_version: 1
+
+# The appliance this QA installs onto and drives — i.e. the machine the harness
+# itself runs on. `host` is the address the platform is reachable at and gets
+# written into config.yaml's `domain`, so it must be an address the Windows
+# target can also reach: not 127.0.0.1, not localhost.
+platform:
+  host: ''
+  sudo_user: ''       # the account that runs install.sh
+  sudo_password: ''   # fed to `sudo -S` over stdin, never as an argv argument
+
+# The Windows endpoint the QA enrols, infects, collects from, and then cleans
+# up. Needs SSH (OpenSSH for Windows) and an account in Administrators — the
+# harness installs and later removes a Velociraptor service.
+#
+# Everything after enrolment runs THROUGH Velociraptor, deliberately. SSH is
+# used only to bootstrap the client and to tear it down at the end; a QA that
+# side-channelled around the product would prove nothing about the product.
+windows:
+  host: ''
+  username: ''        # must be a local Administrator
+  password: ''        # handed to paramiko's auth, never to `sshpass -p`
+  ssh_port: 22
+
+# Run-shaping knobs. Not secrets, so the sanitizer leaves these alone — only
+# the credential fields above are blanked on commit.
+run:
+  # Where run directories are written. Deliberately OUTSIDE the repo: phase 0a
+  # wipes the whole tree, so results written inside it would be destroyed by
+  # the run that produced them. `~` rather than a spelt-out /home/<user> so the
+  # tracked default does not carry one operator's username into the repo.
+  output_dir: '~/qa-runs'
+
+  # Send the redacted failure digest to an LLM for the phase-8 summary.
+  # Off by default: with no key configured the harness writes a structured
+  # local report instead, and nothing leaves the box unless you ask for it.
+  llm_summary: false
+
+  # Rotate the qa/123123 dashboard password to a random value at teardown.
+  #
+  # OFF by default: the QA credentials are always qa/123123 so the dashboard
+  # stays usable between runs without digging a password out of a run
+  # directory. Turning this on closes a real exposure -- a six-digit password
+  # on the account gating the dashboard, /api/, uploads and the
+  # /velociraptor/ proxy -- at the cost of that convenience. The ten-attempt
+  # lockout is what stands behind the password either way.
+  revoke_dashboard_account: false
+
+  # Keep the acquired memory image after teardown. Off by default because it
+  # is multi-GB and full of plaintext credentials scraped from the target's
+  # RAM — the single most dangerous artifact a run produces.
+  keep_memory: false
+
+  # Minutes to wait for the slow stages before declaring them failed. The
+  # defaults suit the fast-QA profile (4 GB image, two Volatility plugins, one
+  # yara rule); raise them if you point this at a larger target.
+  timeouts:
+    install: 90
+    kape_collection: 30
+    timesketch_ingest: 45
+    blueprint_hunt: 30
+    volweb_analysis: 60
+    fusion: 15

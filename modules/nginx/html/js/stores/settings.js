@@ -4,9 +4,14 @@ document.addEventListener('alpine:init', () => {
     Alpine.store('settings', {
         config: {
             agentic: {
-                llm_mode: 'offline',
+                // Must match DEFAULT_CONFIG in routes/config_routes.py. These
+                // two disagreed on llm_mode and on the online provider/model,
+                // so before a saved config existed the page showed Offline
+                // while the backend would have run Online against OpenRouter —
+                // the screen described a setup that was not the one in force.
+                llm_mode: 'online',
                 offline_llm: { provider: 'ollama', model: 'llama3.3:70b', url: 'http://localhost:11434' },
-                online_llm: { provider: 'claude', api_key: '', model: 'claude-sonnet-latest' },
+                online_llm: { provider: 'openrouter', api_key: '', model: '~anthropic/claude-haiku-latest' },
                 ollama_context_size: 65536,
                 ollama_timeout: 600
             },
@@ -15,7 +20,15 @@ document.addEventListener('alpine:init', () => {
                 google_ai_key: '',
                 google_ai_model: 'gemini-2.5-flash',
                 ollama_url: 'http://localhost:11434',
-                ollama_model: 'llama3.1:8b'
+                ollama_model: 'llama3.1:8b',
+                // openrouter and litellm_proxy are contrib providers IntactAI
+                // installs into the Timesketch container at start-up — see
+                // modules/timesketch/llm_providers/README.md.
+                openrouter_key: '',
+                openrouter_model: 'anthropic/claude-3.5-sonnet',
+                litellm_url: '',
+                litellm_model: '',
+                litellm_key: ''
             },
             cloud: {
                 provider: 'aws',
@@ -34,6 +47,13 @@ document.addEventListener('alpine:init', () => {
             },
         },
         saving: false,
+        // Offline model list, fetched live from whichever server the operator
+        // points at. Not cached: a different URL is a different machine.
+        offlineModels: [],
+        offlineModelsLoading: false,
+        offlineModelsError: '',
+        llmTesting: false,
+        llmTestResult: null,
         message: '',
         messageType: '',
 
@@ -50,7 +70,7 @@ document.addEventListener('alpine:init', () => {
                 if (agenticResponse.ok) {
                     const data = await agenticResponse.json();
                     this.config.agentic = {
-                        llm_mode: data.agentic?.llm_mode || 'offline',
+                        llm_mode: data.agentic?.llm_mode || 'online',
                         offline_llm: { ...this.config.agentic.offline_llm, ...data.agentic?.offline_llm },
                         online_llm: { ...this.config.agentic.online_llm, ...data.agentic?.online_llm },
                         ollama_context_size: data.agentic?.ollama_context_size || 65536,
@@ -67,7 +87,12 @@ document.addEventListener('alpine:init', () => {
                         google_ai_key: tsData.google_ai_key || '',
                         google_ai_model: tsData.google_ai_model || 'gemini-2.5-flash',
                         ollama_url: tsData.ollama_url || '',
-                        ollama_model: tsData.ollama_model || ''
+                        ollama_model: tsData.ollama_model || '',
+                        openrouter_key: tsData.openrouter_key || '',
+                        openrouter_model: tsData.openrouter_model || 'anthropic/claude-3.5-sonnet',
+                        litellm_url: tsData.litellm_url || '',
+                        litellm_model: tsData.litellm_model || '',
+                        litellm_key: tsData.litellm_key || ''
                     };
                 }
 
@@ -92,6 +117,66 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
+        // Ask the configured self-hosted server which models it has.
+        //
+        // The list used to be four hardcoded names in the markup, so an
+        // operator could pick a model their server had never pulled and only
+        // find out mid-case, when the report failed with model-not-found.
+        //
+        // Errors are shown, not swallowed: "unreachable" and "server has no
+        // models" need completely different fixes (check the URL vs pull a
+        // model), so the reason from the backend is surfaced verbatim.
+        async loadOfflineModels() {
+            const off = this.config.agentic.offline_llm || {};
+            const url = (off.url || '').trim();
+            this.offlineModelsError = '';
+            if (!url) { this.offlineModels = []; return; }
+            this.offlineModelsLoading = true;
+            try {
+                const qs = new URLSearchParams({ url, kind: off.provider || 'ollama' });
+                if (off.api_key) qs.set('api_key', off.api_key);
+                const r = await fetch('/api/config/ollama/models?' + qs.toString());
+                const d = await r.json();
+                if (d && d.ok) {
+                    this.offlineModels = d.models || [];
+                    if (!this.offlineModels.length) {
+                        this.offlineModelsError = 'That server has no models installed yet.';
+                    }
+                } else {
+                    this.offlineModels = [];
+                    this.offlineModelsError = (d && d.error) || 'Could not list models.';
+                }
+            } catch (e) {
+                this.offlineModels = [];
+                this.offlineModelsError = 'Could not reach the backend: ' + e.message;
+            }
+            this.offlineModelsLoading = false;
+        },
+
+        // Prove the LLM answers, before a report depends on it.
+        //
+        // Tests what is ON SCREEN rather than what is saved, so a key or URL
+        // can be checked before committing it. A catalog refresh only ever
+        // proved a key could LIST models — not that a completion works, that
+        // the chosen model is one this key may use, or anything at all for a
+        // self-hosted server.
+        async testLlmConnection() {
+            if (this.llmTesting) return;
+            this.llmTesting = true;
+            this.llmTestResult = null;
+            try {
+                const r = await fetch('/api/config/llm/test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ agentic: this.config.agentic }),
+                });
+                this.llmTestResult = await r.json();
+            } catch (e) {
+                this.llmTestResult = { success: false, error: e.message };
+            }
+            this.llmTesting = false;
+        },
+
         async saveAgentic() {
             this.saving = true;
             try {
@@ -103,6 +188,7 @@ document.addEventListener('alpine:init', () => {
                 if (response.ok) {
                     window.currentConfig = this.config;
                     this.showMessage('Agentic settings saved', 'success');
+                    this._refreshCaseAnalysis();
                     // Fire-and-forget catalog refresh for the just-saved
                     // provider so the model dropdown picks up the full
                     // live list (Anthropic / OpenAI / Gemini /v1/models
@@ -132,6 +218,24 @@ document.addEventListener('alpine:init', () => {
             this.saving = false;
         },
 
+        // Case Analysis runs in an IFRAME (cases.html?view=analysis), so it is a
+        // separate document holding whatever it fetched when it loaded. Its cost
+        // badge and "model max" default are priced from the CONFIGURED model, so
+        // after the model changes here they describe the old one until something
+        // reloads that frame — and nothing did. The operator saw Haiku pricing
+        // while Sonnet was selected, with no indication it was stale.
+        //
+        // Reloaded only on an actual save, not on every tab switch: a reload
+        // discards the frame's own state (open sub-tab, chat scroll position),
+        // which is a poor trade for a value that only changes when settings do.
+        // Same-origin, so this is a direct call rather than postMessage.
+        _refreshCaseAnalysis() {
+            try {
+                const frame = document.getElementById('analysis-frame');
+                if (frame && frame.contentWindow) frame.contentWindow.location.reload();
+            } catch (e) { /* cross-origin or not loaded — nothing to refresh */ }
+        },
+
         async saveTimesketch() {
             this.saving = true;
             try {
@@ -143,6 +247,18 @@ document.addEventListener('alpine:init', () => {
                 if (response.ok) {
                     window.currentConfig = this.config;
                     this.showMessage('Timesketch settings saved - containers restarting...', 'success');
+                    // Same fire-and-forget catalog refresh saveAgentic() does, so
+                    // the model combobox on this tab works for an operator who has
+                    // never opened Agentic. The OpenRouter catalog is shared and
+                    // its /models endpoint needs no key, so this is safe to call
+                    // whether or not one was just entered.
+                    if (this.config.timesketch?.llm_mode === 'openrouter') {
+                        try {
+                            await fetch('/api/maintenance/refresh-openrouter-models', { method: 'POST' });
+                        } catch (e) { /* best-effort */ }
+                        window.dispatchEvent(new CustomEvent('llm-catalog-refreshed',
+                            { detail: { provider: 'openrouter' } }));
+                    }
                     setTimeout(() => {
                         window.ActiveCase.gotoSystemWorkflows();
                     }, 1000);
@@ -754,7 +870,29 @@ document.addEventListener('alpine:init', () => {
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), timeoutMs);
             try {
-                return await fetch(url, { ...opts, signal: controller.signal });
+                const r = await fetch(url, { ...opts, signal: controller.signal });
+                // When the backend is down, nginx answers with an HTML error
+                // page. Callers immediately do `await r.json()`, which throws
+                // "Unexpected token '<', "<html>... is not valid JSON" — so a
+                // backend outage is reported to the operator as malformed JSON.
+                //
+                // That is actively misleading. Observed 2026-08-03: every
+                // /api/ call on the box was 502ing, and the Prepare Package
+                // modal said "Fetch releases failed: Unexpected token '<'",
+                // which reads like GitHub changed something and sent the
+                // operator looking for a scraper that does not exist (we use
+                // the REST API, not HTML).
+                //
+                // Label it here rather than at each call site: every caller
+                // already funnels through this helper and surfaces e.message,
+                // so one throw fixes the message everywhere at once.
+                if (r.status === 502 || r.status === 503 || r.status === 504) {
+                    throw new Error(
+                        `the backend is not responding (HTTP ${r.status}). `
+                        + 'This is a local problem, not a GitHub or network one — '
+                        + 'check `docker ps` and `docker logs intact_backend`.');
+                }
+                return r;
             } finally {
                 clearTimeout(timer);
             }
@@ -859,6 +997,18 @@ document.addEventListener('alpine:init', () => {
                 const d = await r.json();
                 if (d && d.success) {
                     this.upgradeRefs = d.refs || [];
+                    // The backend serves the last known list when a live fetch
+                    // fails, rather than emptying the picker. Say so -- a list
+                    // presented as current when it is an hour old is how an
+                    // operator misses a release that exists.
+                    if (d.stale) {
+                        const mins = Math.round((d.stale_age_s || 0) / 60);
+                        this.showTopToast(
+                            'Showing the last known release list'
+                            + (mins ? ` (${mins} min old)` : '')
+                            + '. ' + (d.error || 'Could not refresh from GitHub.'),
+                            'error');
+                    }
                 } else if (d && d.offline) {
                     this.showTopToast('No internet connection — cannot reach GitHub to list '
                                     + 'releases. Reconnect and press refresh.', 'error');
@@ -1383,6 +1533,193 @@ document.addEventListener('alpine:init', () => {
             this.cliRefresh();
         },
 
+        // Bash equivalent of Prepare Package, for the operator to run anywhere.
+        //
+        // Prepare is DOWNLOAD-ONLY: it fetches the CI-built artifact attached to
+        // the GitHub release and verifies it. Nothing is compiled on the
+        // appliance. So the manual fallback is genuinely just curl + sha256 --
+        // no docker, no Intact.AI install, no images to build.
+        //
+        // Worth shipping because the operator most likely to need a package is
+        // the one whose appliance cannot fetch it: no route to GitHub, a wedged
+        // backend, an exhausted API quota, or an air-gapped site where the
+        // download has to happen on a laptop and be carried in.
+        //
+        // Assets are `intact-upgrade-<tag>.tar.gz`, or `.part-00`/`.part-01`/...
+        // when the package exceeds GitHub's 2 GB per-asset limit, plus a
+        // whole-file `.sha256` (.github/workflows/build-release-package.yml).
+        // The parts must be concatenated in sort order or the checksum fails.
+        // WHY the emitted bash looks like this — kept HERE, not in the output.
+        // The operator pastes the script; they do not maintain it, and every
+        // line of rationale is a line they have to scroll past to find the one
+        // thing they must edit.
+        //
+        //   ( ... )   it is PASTED into a live shell, not saved and run. There
+        //             `set -e` aborts the operator's session on the first error
+        //             and `exit 1` closes their terminal. A subshell contains
+        //             both, and keeps the atomicity that stops a failure
+        //             cascading — the same job & { } does for PowerShell.
+        //   AUTH      only add Authorization when a token exists. An empty
+        //             Bearer is worse than none: GitHub rejects it outright
+        //             instead of falling back to the anonymous quota.
+        //   .part-*   packages over GitHub's 2 GB asset cap ship split. They
+        //             must be joined in sort order — any other order still
+        //             produces a file, just not a valid one.
+        //   octet-stream  asset bytes only come back with this Accept header;
+        //             browser_download_url returns JSON metadata instead.
+        prepareManualScript() {
+            const tag = this.selectedRef || 'intact-20260726';
+            return [
+                '# Download the Intact.AI offline upgrade package. Paste into a terminal.',
+                '# No GitHub token needed. Setting GITHUB_TOKEN only raises the API',
+                '# rate limit from 60/hr to 5000/hr.',
+                '(',
+                '  set -euo pipefail',
+                '',
+                '  TAG=' + tag + '        # <-- CHANGE to the release you want',
+                '  REPO=TenrootOrg/IntactAI',
+                '  API=https://api.github.com',
+                '  BASE="intact-upgrade-$TAG.tar.gz"',
+                '',
+                '  AUTH=(-H "X-GitHub-Api-Version: 2022-11-28")',
+                '  if [ -n "${GITHUB_TOKEN:-}" ]; then                 # optional: raises the rate limit',
+                '    AUTH+=(-H "Authorization: Bearer $GITHUB_TOKEN")',
+                '  fi',
+                '',
+                '  if ! REL=$(curl -fsSL "${AUTH[@]}" "$API/repos/$REPO/releases/tags/$TAG"); then',
+                '    echo "Cannot read release $TAG." >&2',
+                '    echo "  404 - no PUBLISHED release for that tag (a git tag alone is not" >&2',
+                '    echo "        enough; a DRAFT release needs a token to be visible)." >&2',
+                '    echo "  403 - rate limited (60/hr anonymous). Wait, or set GITHUB_TOKEN." >&2',
+                '    echo "  401 - the token you set is wrong or expired." >&2',
+                '    exit 1',
+                '  fi',
+                '',
+                '  if command -v jq >/dev/null; then',
+                '    ASSETS=$(printf \'%s\' "$REL" | jq -r --arg b "$BASE" \\',
+                '      \'.assets[] | select(.name|startswith($b)) | "\\(.name) \\(.url)"\')',
+                '  elif command -v python3 >/dev/null; then',
+                '    ASSETS=$(printf \'%s\' "$REL" | BASE="$BASE" python3 -c \'',
+                'import json, os, sys',
+                'base = os.environ["BASE"]',
+                'for a in json.load(sys.stdin).get("assets", []):',
+                '    if a["name"].startswith(base):',
+                '        print(a["name"], a["url"])',
+                '\')',
+                '  else',
+                '    echo "Need jq or python3 to read the release JSON." >&2; exit 1',
+                '  fi',
+                '  [ -n "$ASSETS" ] || { echo "Release $TAG has no package assets (CI may still be building)." >&2; exit 1; }',
+                '',
+                '  while read -r name url; do',
+                '    [ -n "$name" ] || continue',
+                '    echo "  -> $name"',
+                '    curl -fL --retry 3 --retry-delay 5 "${AUTH[@]}" \\',
+                '         -H "Accept: application/octet-stream" -o "$name" "$url"',
+                '  done <<< "$ASSETS"',
+                '',
+                '  if compgen -G "$BASE.part-*" >/dev/null; then',
+                '    echo "  joining parts"',
+                '    cat $(ls "$BASE".part-* | sort) > "$BASE"',
+                '    rm -f "$BASE".part-*',
+                '  fi',
+                '',
+                '  [ -f "$BASE.sha256" ] || { echo "No $BASE.sha256 downloaded - cannot verify." >&2; exit 1; }',
+                '  want=$(awk \'{print $1; exit}\' "$BASE.sha256")',
+                '  got=$(sha256sum "$BASE" | awk \'{print $1}\')',
+                '  [ "$want" = "$got" ] || { echo "CHECKSUM MISMATCH" >&2; echo "  want $want" >&2; echo "  got  $got" >&2; exit 1; }',
+                '',
+                '  echo',
+                '  echo "OK  $BASE"',
+                '  echo "sha256 $got"',
+                '  echo "Copy it to the appliance, then Settings -> Import Upgrade Package."',
+                ')',
+            ].join('\n');
+        },
+
+        // PowerShell twin of prepareManualScript(), for Windows operators.
+        //
+        // Worth having as a separate script rather than telling people to
+        // install WSL or Git Bash: PowerShell parses JSON natively
+        // (ConvertFrom-Json) and hashes natively (Get-FileHash), so this
+        // version needs NOTHING external -- no curl, no jq, no python. It is
+        // the only one of the two that is genuinely dependency-free.
+        //
+        // Same three steps and the same traps as the bash version: private-repo
+        // assets need the API url with an octet-stream Accept header, split
+        // parts must be joined in sort order, and the sha256 is checked.
+        // PowerShell twin. Rationale kept HERE rather than in the emitted text,
+        // for the same reason as the bash one — see above. PowerShell-specific:
+        //
+        //   & { }     pasted into an interactive prompt a bare script runs line
+        //             BY line, so `throw` aborts one statement and every later
+        //             line still runs against half-initialised state. A script
+        //             block is buffered to the closing brace and runs atomically.
+        //   'single'  quotes in any human-facing message: double quotes expand
+        //             $env:GITHUB_TOKEN inside the text, which once printed
+        //             "set  first" — advice with the crucial word deleted.
+        //   native    Invoke-RestMethod + Get-FileHash mean nothing needs
+        //             installing; this is the only genuinely dependency-free
+        //             version, which is the point on Windows.
+        prepareManualScriptPs() {
+            const tag = this.selectedRef || 'intact-20260726';
+            return [
+                '# Download the Intact.AI offline upgrade package. Paste into PowerShell.',
+                '# No GitHub token needed. Setting $env:GITHUB_TOKEN only raises the API',
+                '# rate limit from 60/hr to 5000/hr.',
+                '& {',
+                '  $ErrorActionPreference = \'Stop\'',
+                '  # Windows PowerShell 5.1 redraws an Invoke-WebRequest progress bar on',
+                '  # every chunk. On a ~2 GB asset that rendering dominates the transfer -',
+                '  # routinely 10-50x slower, and it looks like a hang, not a slow download.',
+                '  $ProgressPreference = \'SilentlyContinue\'',
+                '',
+                '  $Tag  = \'' + tag + '\'   # <-- CHANGE to the release you want',
+                '  $Repo = \'TenrootOrg/IntactAI\'',
+                '  $Api  = \'https://api.github.com\'',
+                '  $Base = "intact-upgrade-$Tag.tar.gz"',
+                '',
+                '  $Auth = @{ \'X-GitHub-Api-Version\' = \'2022-11-28\' }',
+                '  if ($env:GITHUB_TOKEN) { $Auth[\'Authorization\'] = "Bearer $env:GITHUB_TOKEN" }',
+                '',
+                '  try {',
+                '    $rel = Invoke-RestMethod -Headers $Auth -Uri "$Api/repos/$Repo/releases/tags/$Tag"',
+                '  } catch {',
+                '    throw \"Cannot read release $Tag - $($_.Exception.Message).`n  404 - no PUBLISHED release for that tag (a git tag alone is not enough; a DRAFT needs a token to be visible).`n  403 - rate limited (60/hr anonymous); wait, or set `$env:GITHUB_TOKEN.`n  401 - the token you set is wrong or expired.\"',
+                '  }',
+                '  $assets = @($rel.assets | Where-Object { $_.name -and $_.name.StartsWith($Base) })',
+                '  if (-not $assets) { throw "Release $Tag has no package assets (CI may still be building)." }',
+                '',
+                '  foreach ($a in $assets) {',
+                '    Write-Host "  -> $($a.name)  ($([math]::Round($a.size/1MB)) MB)"',
+                '    Invoke-WebRequest -UseBasicParsing -Headers ($Auth + @{ Accept = \'application/octet-stream\' }) `',
+                '      -Uri $a.url -OutFile $a.name',
+                '  }',
+                '',
+                '  $parts = @(Get-ChildItem "$Base.part-*" -ErrorAction SilentlyContinue | Sort-Object Name)',
+                '  if ($parts) {',
+                '    Write-Host "  joining $($parts.Count) parts"',
+                '    $out = [IO.File]::Create((Join-Path $PWD $Base))',
+                '    foreach ($p in $parts) {',
+                '      $in = [IO.File]::OpenRead($p.FullName); $in.CopyTo($out); $in.Close()',
+                '    }',
+                '    $out.Close()',
+                '    $parts | Remove-Item',
+                '  }',
+                '',
+                '  if (-not (Test-Path "$Base.sha256")) { throw "No $Base.sha256 downloaded - cannot verify." }',
+                '  $want = ((Get-Content "$Base.sha256" -Raw).Trim() -split \'\\s+\')[0].ToLower()',
+                '  $got  = (Get-FileHash $Base -Algorithm SHA256).Hash.ToLower()',
+                '  if ($want -ne $got) { throw "CHECKSUM MISMATCH`n  want $want`n  got  $got" }',
+                '',
+                '  Write-Host ""',
+                '  Write-Host "OK  $Base"',
+                '  Write-Host "sha256 $got"',
+                '  Write-Host "Copy it to the appliance, then Settings -> Import Upgrade Package."',
+                '}',
+            ].join('\n');
+        },
+
         cliCopy(text, what) {
             if (!text) return;
             const done = () => this.showMessage((what || 'Value') + ' copied', 'success');
@@ -1434,6 +1771,10 @@ document.addEventListener('alpine:init', () => {
             this.cliStopPolling();
 
             const route = provider === 'claude' ? 'anthropic' : provider;
+            // No entry for `ollama-cloud` on purpose: its line-up is set by
+            // Ollama and by the operator's plan, so any id hardcoded here
+            // would be a guess that 404s at report time. Falling through to
+            // list[0] picks something the account demonstrably has.
             const preferredId = {
                 'claude':     'claude-sonnet-latest',
                 'openai':     'gpt-latest',
@@ -1462,7 +1803,11 @@ document.addEventListener('alpine:init', () => {
                     'gemini':     'gemini-pro-latest',
                     'openrouter': '~anthropic/claude-sonnet-latest'
                 }[provider];
-                if (fallback) this.config.agentic.online_llm.model = fallback;
+                // Clear rather than leave the previous provider's model in
+                // place when there is no hardcoded fallback (ollama-cloud).
+                // A stale id from another vendor looks like a valid choice and
+                // fails later, at report time; an empty box asks to be filled.
+                this.config.agentic.online_llm.model = fallback || '';
             }
         }
     });

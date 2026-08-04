@@ -1,0 +1,101 @@
+name: Test gate
+
+# The repository verified that tests are EXCLUDED from a release
+# (verify-release-no-tests.yml) but never ran them. Secret-scanning and release
+# packaging were gated; product correctness was not, so a regression could merge
+# and ship with nothing objecting.
+#
+# Both suites are self-contained: verified to pass with `--network none` and no
+# Elasticsearch, Velociraptor or any other module running. Everything that used
+# to need a live service either stubs it or skips. So this job needs no service
+# containers — it builds the backend image and runs the suites inside it, which
+# is exactly how they run on a real host.
+#
+# NOT run here: tests/live/, which drives a running stack and real endpoints by
+# design. That belongs on a deployed host, not in CI.
+
+on:
+  pull_request:
+  push:
+    branches: [development, main]
+  workflow_dispatch:
+
+# A newer push supersedes an in-flight run on the same branch.
+concurrency:
+  group: test-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Backend test suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the backend image
+        # Same Dockerfile and context the platform uses (see
+        # modules/backend/docker-compose.yaml: context ../.., dockerfile
+        # modules/backend/Dockerfile). Building it here also exercises the
+        # docker-compose checksum verification added for F-011 — a tampered or
+        # moved binary fails the build before any test runs.
+        run: |
+          docker build -t intact-backend:ci -f modules/backend/Dockerfile .
+
+      - name: Standalone suite
+        # `--network none` is deliberate: it proves the suite has no hidden
+        # dependency on a reachable service, and stops a test quietly reaching
+        # the internet. The repo is mounted at /app/workdir because every test
+        # does sys.path.insert(0, "/app") and reads fixtures via INTACT_PATH.
+        run: |
+          docker run --rm --network none \
+            -v "$PWD:/app/workdir:rw" \
+            -e INTACT_PATH=/app/workdir \
+            --entrypoint python3 intact-backend:ci \
+            /app/workdir/tests/run_all.py
+
+      - name: Fusion suite
+        # Its own runner re-execs with INTACT_STORAGE_BASE pointed at a
+        # throwaway dir, so it never touches a real database. Needs
+        # -w /app/workdir: the image has no `tests` package under /app.
+        run: |
+          docker run --rm --network none \
+            -v "$PWD:/app/workdir:rw" \
+            -e INTACT_PATH=/app/workdir \
+            -w /app/workdir \
+            --entrypoint python3 intact-backend:ci \
+            -m tests.fusion.run_all
+
+      - name: Add pytest (separate layer, not the product image)
+        # tests/run_all.py skips files with no __main__ runner and files them
+        # under "pytest-style skipped". Nothing ran them anywhere — 43 tests
+        # across test_data_anonymizer, test_secret_store and test_workflow_service
+        # that were dead weight pretending to be coverage.
+        #
+        # pytest goes in a throwaway layer on top rather than into the product
+        # image, which deliberately ships no test dependencies. Installing here
+        # (with network) keeps the test RUN itself offline in the next step.
+        # Written with printf rather than a heredoc: inside a YAML block scalar
+        # every line carries the block's indentation, so the closing heredoc
+        # delimiter never matches at column 0 and the step hangs on stdin.
+        run: |
+          printf 'FROM intact-backend:ci\nRUN pip install --no-cache-dir --quiet pytest\n' \
+            > "$RUNNER_TEMP/pytest.Dockerfile"
+          docker build -t intact-backend:ci-pytest \
+            -f "$RUNNER_TEMP/pytest.Dockerfile" "$RUNNER_TEMP"
+
+      - name: Pytest-style suites
+        # PYTHONPATH=/app is required: these files have no `sys.path.insert`
+        # bootstrap (that is what the standalone runner files carry), so under
+        # pytest they cannot import `services` at all. Without it they fail at
+        # collection, which is a large part of why nothing ever ran them.
+        run: |
+          docker run --rm --network none \
+            -v "$PWD:/app/workdir:rw" \
+            -e INTACT_PATH=/app/workdir \
+            -e PYTHONPATH=/app \
+            -w /app/workdir \
+            --entrypoint python3 intact-backend:ci-pytest \
+            -m pytest tests/ -q -p no:cacheprovider \
+              --ignore=tests/live --ignore=tests/fusion

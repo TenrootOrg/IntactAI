@@ -278,7 +278,7 @@ function importWorkspace(ev){
 function loadCases(cb){
   api('/api/cases').then(d=>{const cs=d.cases||[]; const active=window.ActiveCase.get();
     $('#caselist').innerHTML=cs.map(c=>{const isAct=c.case_id===active;
-      const nm=esc(c.name||'').replace(/'/g,"\\'");
+      const nm=jsa(c.name||'');
       return `<div class="caseitem ${sel===c.case_id?'sel':''}" onclick="rowClick('${c.case_id}')">
       <div class="casehead"><span class="nm">${isAct?'● ':''}${esc(c.name||c.case_id)}</span>
         <div class="row" style="gap:6px">
@@ -543,7 +543,7 @@ function renderHosts(){
   let out='';
   order.forEach(os=>{
     out+=`<div style="font-size:10px;text-transform:uppercase;color:var(--muted);margin:6px 0 2px">${esc(os)} (${groups[os].length})</div>`;
-    out+=groups[os].map(h=>`<label class="hostrow"><input type="checkbox" ${_hostExc.has(h.host)?'':'checked'} style="width:auto" onchange="toggleHost('${esc(h.host).replace(/'/g,"\\'")}',this.checked)"/> <span class="t">${esc(h.host)}</span> <span style="color:var(--muted)">${esc((h.sources||[]).join('/'))}</span></label>`).join('');
+    out+=groups[os].map(h=>`<label class="hostrow"><input type="checkbox" ${_hostExc.has(h.host)?'':'checked'} style="width:auto" onchange="toggleHost('${jsa(h.host)}',this.checked)"/> <span class="t">${esc(h.host)}</span> <span style="color:var(--muted)">${esc((h.sources||[]).join('/'))}</span></label>`).join('');
   });
   $('#cf-hosts').innerHTML=out;
 }

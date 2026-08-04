@@ -41,6 +41,16 @@ _LLM_COST_PER_MTOK = {
     "openai/gpt-4o": (2.50, 10.00),
     "google/gemini-2.5-pro": (1.25, 10.00),
     "google/gemini-2.5-flash": (0.075, 0.30),
+    # Same Gemini rates under the bare ids the DIRECT google provider emits.
+    # The `google/...` rows above only match OpenRouter-style ids, so once
+    # Gemini became directly selectable its model ids (`gemini-2.5-flash`)
+    # matched nothing and every Gemini run reported $0 — the tokens were
+    # recorded, the spend was not.
+    "gemini-2.5-pro": (1.25, 10.00),
+    "gemini-2.5-flash": (0.075, 0.30),
+    # Ollama Cloud is deliberately absent: it bills by subscription tier, not
+    # per token, so any per-MTok figure here would be invented. Unknown models
+    # record token volume with $0 cost, which is the honest answer.
 }
 
 
@@ -112,6 +122,74 @@ def _case_log(run_id, action, status="info", detail=""):
         pass
 
 
+# Providers that speak the OpenAI chat-completions API. They differ ONLY by
+# base_url, so one adapter serves all of them — the openrouter branch was
+# already doing exactly this, just written out a second time.
+#
+# `openai` maps to None: the SDK's own default endpoint. Everything else is a
+# gateway that happens to implement the same wire format, which is why LiteLLM,
+# vLLM and LM Studio need no adapter of their own — they are URLs, not
+# integrations.
+OPENAI_COMPATIBLE_BASE_URLS = {
+    'openai': None,
+    'openrouter': 'https://openrouter.ai/api/v1',
+    'ollama-cloud': 'https://ollama.com/v1',
+}
+
+# Token accounting is identical for all of them (prompt_tokens /
+# completion_tokens), including the offline OpenAI-compatible endpoint.
+_OPENAI_SHAPED = set(OPENAI_COMPATIBLE_BASE_URLS) | {'openai-compatible'}
+
+
+def _wrap_decode_errors(provider_name, fn):
+    """Turn a proxy's HTML error page into a readable message.
+
+    Module-level rather than nested inside _call_llm_online: the shared
+    OpenAI-compatible adapter needs it too, and a nested definition is
+    invisible from there — which surfaced as
+    "NameError: name '_wrap_decode_errors' is not defined" on the first real
+    call through a self-hosted endpoint.
+    """
+    try:
+        return fn()
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"{provider_name} returned non-JSON response (likely upstream "
+            f"timeout on a large prompt; the proxy returned an HTML error "
+            f"page). Try a shorter prompt or raise ONLINE_LLM_TIMEOUT_SECONDS. "
+            f"Original parse error: {e}"
+        ) from e
+
+
+def _call_openai_compatible(provider, prompt, system_prompt, api_key, model,
+                            max_tokens, base_url=None, timeout=None, run_id=None):
+    """One request path for every OpenAI chat-completions endpoint.
+
+    `api_key` may be a placeholder for self-hosted servers that ignore auth —
+    the SDK refuses to construct a client without one, so callers pass a dummy
+    rather than leaving it empty.
+    """
+    import openai
+    kwargs = {'api_key': api_key or 'not-needed',
+              'timeout': timeout or ONLINE_LLM_TIMEOUT_SECONDS}
+    if base_url:
+        kwargs['base_url'] = base_url
+    client = openai.OpenAI(**kwargs)
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+    label = provider.replace('-', ' ').title()
+    response = _wrap_decode_errors(label, lambda: client.chat.completions.create(
+        model=model,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=0.1,
+    ))
+    _record_llm_usage(run_id, provider, model, response)
+    return response.choices[0].message.content
+
+
 def _record_llm_usage(run_id, provider, model, response):
     """Extract usage tokens from a provider response and persist to workflow row.
 
@@ -128,7 +206,7 @@ def _record_llm_usage(run_id, provider, model, response):
             if usage is not None:
                 in_tokens = int(getattr(usage, 'input_tokens', 0) or 0)
                 out_tokens = int(getattr(usage, 'output_tokens', 0) or 0)
-        elif provider in ('openai', 'openrouter'):
+        elif provider in _OPENAI_SHAPED:
             usage = getattr(response, 'usage', None)
             if usage is not None:
                 in_tokens = int(getattr(usage, 'prompt_tokens', 0) or 0)
@@ -254,6 +332,11 @@ def get_model_max_output_tokens(model_input: str, provider: str):
             from services.llm_catalogs import openai as catalog_module
         elif provider == "gemini":
             from services.llm_catalogs import gemini as catalog_module
+        elif provider == "codex-subscription":
+            # Present in get_model_context_length but was missing here, so a
+            # subscription model got the constant default output cap instead of
+            # its real one — silently truncating long reports.
+            from services.llm_catalogs import codex as catalog_module
     except Exception:
         catalog_module = None
 
@@ -497,17 +580,6 @@ def _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id=
     # SDK fails with a confusing json.JSONDecodeError. Catch that
     # specifically and surface a clearer message; bump every client's
     # timeout to ONLINE_LLM_TIMEOUT_SECONDS (default 600s).
-    def _wrap_decode_errors(provider_name, fn):
-        try:
-            return fn()
-        except json.JSONDecodeError as e:
-            raise RuntimeError(
-                f"{provider_name} returned non-JSON response (likely upstream "
-                f"timeout on a large prompt; the proxy returned an HTML error "
-                f"page). Try a shorter prompt or raise ONLINE_LLM_TIMEOUT_SECONDS. "
-                f"Original parse error: {e}"
-            ) from e
-
     if provider == 'claude':
         import anthropic
         client = anthropic.Anthropic(api_key=api_key, timeout=ONLINE_LLM_TIMEOUT_SECONDS)
@@ -519,40 +591,10 @@ def _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id=
         ))
         _record_llm_usage(run_id, 'claude', model, response)
         return response.content[0].text
-    elif provider == 'openai':
-        import openai
-        client = openai.OpenAI(api_key=api_key, timeout=ONLINE_LLM_TIMEOUT_SECONDS)
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
-        response = _wrap_decode_errors('OpenAI', lambda: client.chat.completions.create(
-            model=model,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=0.1
-        ))
-        _record_llm_usage(run_id, 'openai', model, response)
-        return response.choices[0].message.content
-    elif provider == 'openrouter':
-        import openai
-        client = openai.OpenAI(
-            api_key=api_key,
-            base_url="https://openrouter.ai/api/v1",
-            timeout=ONLINE_LLM_TIMEOUT_SECONDS,
-        )
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
-        response = _wrap_decode_errors('OpenRouter', lambda: client.chat.completions.create(
-            model=model,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=0.1
-        ))
-        _record_llm_usage(run_id, 'openrouter', model, response)
-        return response.choices[0].message.content
+    elif provider in OPENAI_COMPATIBLE_BASE_URLS:
+        return _call_openai_compatible(
+            provider, prompt, system_prompt, api_key, model, max_tokens,
+            base_url=OPENAI_COMPATIBLE_BASE_URLS[provider], run_id=run_id)
     elif provider == 'gemini':
         import google.generativeai as genai
         genai.configure(api_key=api_key)
@@ -626,5 +668,20 @@ def _call_llm_offline(prompt, system_prompt, provider_config, context_size, time
         body = response.json()
         _record_llm_usage(run_id, 'ollama', model, body)
         return body.get('response', '')
+    elif provider == 'openai-compatible':
+        # LiteLLM proxy / vLLM / LM Studio / Ollama's own /v1 — all speak the
+        # OpenAI wire format, so they are one provider distinguished by URL
+        # rather than one integration each. "Offline" here means self-hosted,
+        # not local: the server is usually a different host on the network.
+        #
+        # `url` is the OpenAI-style base (…/v1). Unlike the native ollama branch
+        # this cannot carry num_ctx — the OpenAI schema has no equivalent — so a
+        # server needing a larger context window must be configured for it
+        # server-side. That is the reason the native branch above is kept.
+        api_key = provider_config.get('api_key') or ''
+        return _call_openai_compatible(
+            'openai-compatible', prompt, system_prompt, api_key, model,
+            max_tokens=provider_config.get('max_tokens') or MAX_LLM_TOKENS,
+            base_url=url, timeout=timeout, run_id=run_id)
     else:
         raise ValueError(f"Unsupported offline provider: {provider}")

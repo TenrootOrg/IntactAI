@@ -170,7 +170,8 @@ APPLY_MIN_FREE_GB = 10
 
 
 def required_free_gb_for_manifest(manifest: dict, package_bytes: int = 0,
-                                  floor_gb: int = APPLY_MIN_FREE_GB) -> float:
+                                  floor_gb: int = APPLY_MIN_FREE_GB,
+                                  selected_modules=None) -> float:
     """Disk an apply of THIS package actually needs, in GiB.
 
     The fixed floor is a guess that is wrong in both directions: too strict for a
@@ -185,9 +186,36 @@ def required_free_gb_for_manifest(manifest: dict, package_bytes: int = 0,
     counted twice — once extracted under images/, once in the image store. The
     floor still applies as a lower bound so a tiny package cannot claim an
     implausibly small requirement.
+
+    `selected_modules` narrows the image budget to what the operator actually
+    chose. None (the default) budgets the whole package, which is the right
+    answer before the selection is known.
     """
     images = ((manifest or {}).get('contents') or {}).get('image_sizes') or {}
-    img_bytes = sum(int(v or 0) for v in images.values()) if isinstance(images, dict) else 0
+    if not isinstance(images, dict):
+        images = {}
+
+    # Budget only what will actually be loaded. A package ships every module,
+    # but an operator applying two of them pays for two -- charging them for
+    # all ten turned a 22 GiB job into a 37 GiB one and refused the upgrade on
+    # a box that had ample room for the work it was asked to do.
+    #
+    # Unattributable images (no owner in the packaging tables) are always
+    # counted: they are a packaging bug, and under-budgeting is the failure
+    # mode that ends in ENOSPC halfway through `docker load`.
+    if selected_modules is not None:
+        try:
+            from .package import images_by_module
+            owned = images_by_module(list(images))
+            keep = set()
+            for module, names in owned.items():
+                if module is None or module in set(selected_modules):
+                    keep.update(names)
+            images = {k: v for k, v in images.items() if k in keep}
+        except Exception:
+            pass          # attribution failed -> budget the whole package
+
+    img_bytes = sum(int(v or 0) for v in images.values())
     if not img_bytes:
         # Older manifests record only image NAMES, not sizes. Fall back to the
         # package size, which is dominated by those same images.
@@ -195,6 +223,50 @@ def required_free_gb_for_manifest(manifest: dict, package_bytes: int = 0,
     need = int(package_bytes or 0) + img_bytes * 2
     need_gb = need / (1024 ** 3)
     return max(float(floor_gb), round(need_gb * 1.15, 1))   # 15% headroom
+
+
+def required_free_gb_after_extraction(images_dir: str,
+                                      floor_gb: int = APPLY_MIN_FREE_GB) -> float:
+    """Disk still needed once the package is ALREADY EXTRACTED, in GiB.
+
+    required_free_gb_for_manifest() sizes the WHOLE job from a clean start:
+    package + extracted tree + loaded images. That is the right answer for the
+    check that runs BEFORE anything is downloaded or unpacked.
+
+    It is the wrong answer for the check that runs after extraction, which is
+    where it was being used. By then the tarball and the extracted tree are
+    both on disk and have already been subtracted from `free` -- so charging
+    for them again compares a from-scratch total against post-extraction free
+    space and double-counts every byte already spent. On a 5.8 GB / 10-module
+    package that demanded 37.7 GiB from a box with 23.1 GiB free and ample room
+    for the work actually remaining (2026-08-02, upgrading 20260726).
+
+    What is genuinely still to come is the docker image store growing as
+    `docker load` runs. And load_all_bundled_images(cleanup_after_load=True)
+    deletes each tar the moment its layers are in the store, so the extracted
+    copy and the store copy never coexist for the whole set -- only for the one
+    tar in flight. Worst case a store copy runs ~1.5x its tar (layers land
+    decompressed where the tar held them compressed), which makes the run's net
+    growth about half the staged bytes, plus one tar's transient peak:
+
+        need = staged_bytes * 0.5 + largest_single_tar
+
+    Measured from the tars ACTUALLY on disk rather than from the manifest, so
+    it automatically reflects the unselected-module prune and any tar a
+    previous attempt already loaded and reclaimed. The floor still applies:
+    module upgrades do more than load images (pg_dump backups, compose churn,
+    rollback snapshots) and that work needs room the image maths cannot see.
+    """
+    import os as _os
+    try:
+        sizes = [_os.path.getsize(_os.path.join(images_dir, f))
+                 for f in _os.listdir(images_dir) if f.endswith('.tar')]
+    except OSError:
+        return float(floor_gb)        # unreadable -> fall back to the floor
+    if not sizes:
+        return float(floor_gb)        # nothing left to load
+    need = sum(sizes) * 0.5 + max(sizes)
+    return max(float(floor_gb), round(need / (1024 ** 3) * 1.15, 1))
 
 
 def preflight_environment(logger: Callable = None,

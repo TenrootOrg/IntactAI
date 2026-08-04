@@ -28,6 +28,10 @@ def _ensure_portainer_admin_secret(logger: Callable = None) -> None:
     the seeded password even via --admin-password-file; short/missing
     values silently never create the admin account, so this must match
     the bash version's fallback exactly."""
+    # Same shipped default rejected by lib/modules.sh:generate_portainer_secrets()
+    # (config.yaml's modules.portainer.password) — it's exactly 12 chars, so the
+    # length check alone lets it slip through; it must be denied explicitly.
+    _KNOWN_DEFAULT_PASSWORD = "1234qwer!@#$"
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     secrets_dir = os.path.join(WORKDIR, 'modules', 'portainer', 'secrets')
     secret_path = os.path.join(secrets_dir, 'admin_password')
@@ -37,7 +41,7 @@ def _ensure_portainer_admin_secret(logger: Callable = None) -> None:
     from config import load_main_config
     cfg = load_main_config() or {}
     password = ((cfg.get('modules') or {}).get('portainer') or {}).get('password')
-    if not password or len(password) < 12:
+    if not password or len(password) < 12 or password == _KNOWN_DEFAULT_PASSWORD:
         # A hardcoded fallback here would ship the same publicly-known
         # password to every install that hits this path — generate a random
         # one instead, same as every other auto-provisioned secret in this
@@ -45,8 +49,8 @@ def _ensure_portainer_admin_secret(logger: Callable = None) -> None:
         # secrets.token_hex). Must match lib/modules.sh's bash version.
         import secrets as _secrets
         password = _secrets.token_hex(16)
-        log("  Portainer password missing or < 12 chars in config.yaml; "
-            "generated a random one instead", "warning")
+        log("  Portainer password missing, < 12 chars, or matches the shipped "
+            "config.yaml default; generated a random one instead", "warning")
         log(f"  Retrieve it with: cat {secret_path}", "warning")
         log("  Change it from the Portainer UI after first login "
             "(Settings -> Users)", "warning")
@@ -61,6 +65,60 @@ def _update_portainer_versions(env_file: str, version: str, logger: Callable) ->
     require the agent to run the exact same version as the server."""
     update_env_file(env_file, 'PORTAINER_VERSION', version, logger=logger)
     update_env_file(env_file, 'PORTAINER_AGENT_VERSION', version, logger=logger)
+    # Called from here rather than from each of the three upgrade entry points,
+    # so no path can be added later that stamps versions but forgets the secret
+    # — which would leave that path unable to start Portainer at all.
+    _ensure_agent_secret(env_file, logger)
+
+
+def _ensure_agent_secret(env_file: str, logger: Callable = None) -> None:
+    """Create modules/portainer/secrets/agent.env if absent.
+
+    AGENT_SECRET is the only thing authenticating callers to portainer-agent,
+    which is a full Docker API proxy running as root with docker.sock mounted —
+    unauthenticated access to it is a container-to-host-root path. It was
+    previously never set at all.
+
+    This MUST run on the upgrade path, not just in lib/modules.sh: the compose
+    file now declares `env_file: ./secrets/agent.env` for BOTH services, so a
+    box upgraded without it fails `docker compose up` outright. The bash
+    bootstrap never runs again after the first install, so this is the only
+    thing standing between an upgraded box and a dead Portainer.
+
+    Written to secrets/ rather than the module .env on purpose: that .env is
+    git-tracked, and a credential written there would be staged by the next
+    `git add`. secrets/* is gitignored.
+
+    Generated once and then left alone — rotating it would unpair a working
+    server/agent until both were recreated together.
+    """
+    log = logger or (lambda m, l="info": None)
+    secrets_dir = os.path.join(os.path.dirname(env_file), 'secrets')
+    agent_env = os.path.join(secrets_dir, 'agent.env')
+    try:
+        if os.path.exists(agent_env) and os.path.getsize(agent_env) > 0:
+            return
+        os.makedirs(secrets_dir, exist_ok=True)
+        import secrets as _secrets
+        with open(agent_env, 'w') as f:
+            f.write(f"AGENT_SECRET={_secrets.token_hex(32)}\n")
+        os.chmod(agent_env, 0o600)
+        # `env_file:` is read by the COMPOSE CLIENT, not the container, so this
+        # must be readable by whoever runs `docker compose`. We write it as root
+        # from inside the backend container; left root-owned 0600 it fails with
+        # "permission denied" as soon as the operator runs compose by hand.
+        try:
+            st = os.stat(os.path.dirname(env_file))
+            os.chown(agent_env, st.st_uid, st.st_gid)
+        except Exception:
+            pass
+        log("  Generated Portainer agent secret (the agent was previously "
+            "unauthenticated)", "success")
+    except Exception as e:
+        # Loud: without this file Portainer will not start at all, so a silent
+        # failure here would look like an unrelated Portainer outage later.
+        log(f"  Could not write {agent_env} ({type(e).__name__}: {e}) — "
+            f"Portainer will fail to start until it exists", "error")
 
 
 def upgrade_portainer(version: str, logger: Callable = None) -> Dict:

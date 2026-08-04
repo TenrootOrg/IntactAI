@@ -1,4 +1,4 @@
-name: Verify release excludes tests
+name: Verify release excludes tests and the QA harness
 
 # Guard: a published release must NOT ship the test suite. The actual exclusion is
 # done by `.gitattributes` (`/tests export-ignore`), which `git archive` — and thus
@@ -25,14 +25,14 @@ jobs:
           curl -fsSL --retry 3 -o release-src.tar.gz \
             "https://codeload.github.com/${{ github.repository }}/tar.gz/refs/tags/${tag}"
 
-      - name: Assert no tests/ folder is in the release
+      - name: Assert no tests/ or qa/ folder is in the release
         run: |
           # codeload tarballs are prefixed with a top-level <repo>-<sha>/ dir.
-          leaked="$(tar tzf release-src.tar.gz | grep -E '^[^/]+/tests/' || true)"
+          leaked="$(tar tzf release-src.tar.gz | grep -E '^[^/]+/(tests|qa)/' || true)"
           if [ -n "$leaked" ]; then
-            echo "::error::Release tarball for ${{ github.event.release.tag_name }} contains a tests/ folder."
+            echo "::error::Release tarball for ${{ github.event.release.tag_name }} contains a tests/ or qa/ folder."
             echo "$leaked" | head -20
-            echo "Fix: ensure '/tests export-ignore' is in .gitattributes at the released ref."
+            echo "Fix: ensure '/tests export-ignore' and '/qa export-ignore' are in .gitattributes at the released ref."
             exit 1
           fi
-          echo "OK — no tests/ folder in the release source tarball."
+          echo "OK — no tests/ or qa/ folder in the release source tarball."

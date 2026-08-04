@@ -7,8 +7,21 @@
 # ============================================================================
 
 check_config() {
+    # config.yaml is the OPERATOR'S file and is deliberately not tracked in git
+    # config.yaml is TRACKED. There is no config.yaml.example any more: the
+    # pre-commit hook (scripts/git-hooks/sanitize-config-yaml.sh) rewrites the
+    # STAGED copy back to shipping defaults on every commit -- empty
+    # github_token, module passwords 123123, first_login: true -- so what is in
+    # git is always the template while the operator's working file keeps their
+    # real values. That means a clone or an extracted release already has a
+    # config.yaml to edit before install, which the old seed-on-first-run dance
+    # could not provide (it created the file and then immediately carried on,
+    # so its own "review it before continuing" advice was impossible to follow).
     if [[ ! -f "$CONFIG_FILE" ]]; then
         log_error "Config file not found: $CONFIG_FILE"
+        log_error "  config.yaml is tracked in git — a complete checkout or"
+        log_error "  release package always contains one. Restore it with:"
+        log_error "    git checkout -- config.yaml"
         exit 1
     fi
     log_success "Config file found"
@@ -129,6 +142,11 @@ update_env_files() {
             local velo_pass=$(read_config "['modules']['velociraptor']['password']")
             local velo_api_user=$(read_config "['modules']['velociraptor']['api_id']")
             local velo_api_pass=$(read_config "['modules']['velociraptor']['api_password']")
+            # Elasticsearch credentials (config.yaml modules.elk) — consumed by
+            # the Custom.Elastic.Flows.Upload server artifact via environ(), so
+            # the auto-upload keeps working now that Elasticsearch requires auth.
+            local es_user=$(read_config "['modules']['elk']['id']")
+            local es_pass=$(read_config "['modules']['elk']['password']")
 
             # Extract major.minor tag from version (e.g., "0.75.6" -> "0.75")
             local velo_tag=$(echo "$velo_version" | sed 's/^\([0-9]*\.[0-9]*\).*/\1/')
@@ -141,6 +159,8 @@ update_env_files() {
             update_env_var "$velo_env" "VELOX_FRONTEND_HOSTNAME" "$domain"
             update_env_var "$velo_env" "VELOX_PUBLIC_IP" "$domain"
             update_env_var "$velo_env" "VELOX_SERVER_URL" "https://${domain}:8000/"
+            [[ -n "$es_user" && "$es_user" != "None" ]] && update_env_var "$velo_env" "ELASTIC_USER" "$es_user"
+            [[ -n "$es_pass" && "$es_pass" != "None" ]] && update_env_var "$velo_env" "ELASTIC_PASSWORD" "$es_pass"
             log_success "Updated Velociraptor .env"
         else
             log_warn "Velociraptor .env not found, skipping"
@@ -184,10 +204,12 @@ update_env_files() {
         local elk_env="${SCRIPT_DIR}/modules/elk/.env"
         if [[ -f "$elk_env" ]]; then
             local elk_version=$(read_config "['versions']['elk']")
+            local elk_user=$(read_config "['modules']['elk']['id']")
             local elk_pass=$(read_config "['modules']['elk']['password']")
 
             update_env_var "$elk_env" "ELASTIC_VERSION" "$elk_version"
             update_env_var "$elk_env" "KIBANA_VERSION" "$elk_version"
+            update_env_var "$elk_env" "ELASTIC_USER" "$elk_user"
             update_env_var "$elk_env" "ELASTIC_PASSWORD" "$elk_pass"
             update_env_var "$elk_env" "KIBANA_PASSWORD" "$elk_pass"
             log_success "Updated ELK .env"
@@ -232,6 +254,8 @@ update_env_files() {
     if [[ -f "$backend_env" ]]; then
         local ts_user=$(read_config "['modules']['timesketch']['id']")
         local ts_pass=$(read_config "['modules']['timesketch']['password']")
+        local es_user=$(read_config "['modules']['elk']['id']")
+        local es_pass=$(read_config "['modules']['elk']['password']")
         local plaso_version=$(read_config "['versions']['plaso']")
         local cloudtrail_version=$(read_config "['versions']['aws_sigma']")
         local o365rc_version=$(read_config "['versions']['o365rc']")
@@ -240,6 +264,8 @@ update_env_files() {
 
         update_env_var "$backend_env" "TIMESKETCH_USER" "$ts_user"
         update_env_var "$backend_env" "TIMESKETCH_PASS" "$ts_pass"
+        [[ -n "$es_user" && "$es_user" != "None" ]] && update_env_var "$backend_env" "ELASTICSEARCH_USER" "$es_user"
+        [[ -n "$es_pass" && "$es_pass" != "None" ]] && update_env_var "$backend_env" "ELASTICSEARCH_PASSWORD" "$es_pass"
         update_env_var "$backend_env" "PLASO_VERSION" "$plaso_version"
         # tusd sidecar pin (versions.backend_tusd) -> TUSD_VERSION in the backend
         # compose. Guarded so an older config without the key keeps the compose default.

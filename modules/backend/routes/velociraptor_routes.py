@@ -472,6 +472,13 @@ def run_bestpractice_hunts():
         # Build artifact list and spec for bulk hunt
         artifacts_list = json.dumps(artifacts)
         spec_parts = ", ".join([f'`{a}`=dict()' for a in artifacts])
+        # blueprint_name is free-form (unlike artifacts, which are
+        # shape-validated above), so it must never be spliced into the VQL
+        # literal raw. JSON-encode it exactly like _create_single_velo_hunt()
+        # does for hunt_desc, closing the same VQL-injection class described
+        # in this codebase's own security history (unescaped hunt
+        # description/name reaching execve()).
+        bulk_description = json.dumps(f"{blueprint_name} ({len(artifacts)} artifacts)")
 
         # hunt() rejects max_logs (collect_client-only arg), so we omit it.
         # flow_max_logs is still honored on the TimeSketch / collect_client path.
@@ -479,7 +486,7 @@ def run_bestpractice_hunts():
         # Create single bulk hunt with all artifacts
         query = f"""
 LET collection = hunt(
-    description='{blueprint_name} ({len(artifacts)} artifacts)',
+    description={bulk_description},
     artifacts={artifacts_list},
     spec=dict({spec_parts}),
     expires=now() + {expire_seconds},

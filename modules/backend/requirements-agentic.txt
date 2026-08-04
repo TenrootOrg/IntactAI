@@ -1,3 +1,9 @@
 # Agentic (LLM) Module Dependencies
 anthropic==0.79.0
 openai==2.21.0
+
+# Google Gemini. The `gemini` provider branch in
+# services/agentic/analyzers/_llm.py does `import google.generativeai`, which
+# was in no requirements file — selecting Gemini raised ModuleNotFoundError at
+# call time, so the provider was supported on paper only.
+google-generativeai==0.8.5

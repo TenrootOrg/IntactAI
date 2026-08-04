@@ -108,6 +108,58 @@ TRANSITIVE_IMAGES = {
 # right `.env` line before `docker compose up`, and by the prepare side
 # to record bundled tags in the manifest. Keys live in
 # modules/<module>/docker-compose.yaml as `${VAR:?...}` references.
+def image_owner_prefixes():
+    """{tar-filename prefix: owning module}, derived from the tables above.
+
+    The manifest records `contents.image_sizes` keyed by FILENAME with no
+    module attribution, so anything that needs to know which module an image
+    belongs to has to reconstruct it. Matching on the PREFIX -- the part of
+    the tar pattern before the version placeholder -- rather than rendering
+    the exact filename avoids depending on version-string normalisation:
+    velociraptor strips a leading 'v', o365rc uses the literal 'latest', and
+    a rendering mismatch would silently orphan an image (counted as nobody's,
+    so never pruned and never budgeted).
+
+    Prefixes are collision-free by construction -- volweb's sidecars are named
+    volweb-postgres-/volweb-redis- precisely so they do not collide with
+    timesketch's postgres-/redis-, and iris-nginx- does not collide with
+    timesketch's nginx-. Callers resolve longest-prefix-first anyway.
+    """
+    prefixes = {}
+    for module, entries in PRIMARY_IMAGES.items():
+        for _image, tar_pattern in entries:
+            prefixes[tar_pattern.split('{')[0]] = module
+    for module, entries in TRANSITIVE_IMAGES.items():
+        for _dep, _image, tar_pattern in entries:
+            prefixes[tar_pattern.split('{')[0]] = module
+    # The platform's own images. Not in either table: they are written
+    # directly by the packager (see the intact-backend / tusd blocks below).
+    prefixes['intact-backend-'] = 'intact'
+    prefixes['tusd-'] = 'intact'
+    # Velociraptor's server image is BUILT locally rather than pulled, so it is
+    # in neither table -- the packager names the tar itself. Without this it
+    # resolves to no owner and would be excluded from both pruning and the disk
+    # budget.
+    prefixes['velociraptor-'] = 'velociraptor'
+    return prefixes
+
+
+def images_by_module(image_names):
+    """{module: [filename, ...]} for the given image tar names.
+
+    Unattributable names map under None so callers can see them rather than
+    silently dropping them -- an image nobody owns is a packaging bug, and
+    treating it as ownerless is safer than guessing (pruning it could delete
+    something a module needs).
+    """
+    prefixes = sorted(image_owner_prefixes().items(), key=lambda kv: -len(kv[0]))
+    out = {}
+    for name in image_names or []:
+        owner = next((m for p, m in prefixes if name.startswith(p)), None)
+        out.setdefault(owner, []).append(name)
+    return out
+
+
 TRANSITIVE_ENV_KEYS = {
     'timesketch': {
         'opensearch': 'OPENSEARCH_VERSION',
@@ -994,6 +1046,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 )
                 log("  Full repo copied", "success")
 
+
                 # Mirror the historical `source/backend` and `source/frontend`
                 # entry points so the apply side (services/upgrade/intact.py +
                 # __init__.py) keeps working unchanged for the offline
@@ -1240,7 +1293,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
 
                     run_command(f"cp {pkg_path} {staged_dest}", logger=None)
                     if not fname.endswith('.msi'):
-                        run_command(f"chmod +x {staged_dest}", logger=None)
+                        run_command(f"chmod 755 {staged_dest}", logger=None)
                     if fname == required_binary:
                         required_ok = True
 

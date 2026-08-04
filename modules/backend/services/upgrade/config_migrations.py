@@ -91,25 +91,54 @@ def set_schema_version(config_path: str, value: int, logger: Callable = None) ->
 
 
 def _write_lines(path: str, lines: List[str], log: Callable) -> bool:
-    """Atomic write: temp file in the same directory + os.replace, so a crash
-    mid-write can never leave a truncated/corrupt config.yaml — the file is
-    always either the old or the new content. (The migration runner does
-    multiple sequential writes, so this matters more here than in the
-    single-write base.py helpers, which are additionally covered by the
-    runner's whole-file backup.)"""
+    """Crash-safe write that PRESERVES THE INODE.
+
+    config.yaml is bind-mounted into the backend container AS A FILE
+    (modules/backend/docker-compose.yaml: ../../config.yaml:/app/config.yaml).
+    Docker binds by inode, so the original `os.replace(tmp, path)` swapped the
+    file out from under the mount: the migration wrote correctly to disk, the
+    host saw the new content, and the running container went on reading the OLD
+    file for the rest of its life. A config migration during an upgrade would
+    report success and have no effect on the running platform — the worst kind
+    of failure, because everything says it worked.
+
+    Keeping the crash-safety the original was written for, without the rename:
+
+      1. Write the full new content to a temp file in the same directory and
+         fsync it. After this point the new content is durable on disk.
+      2. Truncate the real file IN PLACE and write from that buffer, then
+         fsync. The inode never changes, so the container's mount still points
+         at the file being written.
+      3. Only then remove the temp.
+
+    Step 2 has a torn-write window the rename did not, so the temp file is
+    deliberately kept until step 3 succeeds: a crash mid-write leaves
+    `.config.yaml.*` next to config.yaml holding the complete intended content,
+    which is recoverable by hand. That is a strictly better position than a
+    silently-ignored migration, which is not recoverable because nobody knows
+    it happened."""
     import tempfile
     try:
         d = os.path.dirname(os.path.abspath(path)) or '.'
+        content = '\n'.join(lines)
         fd, tmp = tempfile.mkstemp(prefix='.config.yaml.', dir=d)
         try:
             with os.fdopen(fd, 'w') as f:
-                f.write('\n'.join(lines))
-            # preserve the original file's mode
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())
+            # preserve the original file's mode on the temp too, so a
+            # hand-recovered copy is not world-readable
             try:
                 os.chmod(tmp, os.stat(path).st_mode)
             except OSError:
                 pass
-            os.replace(tmp, path)
+            # Truncate in place — NOT os.replace. See the docstring.
+            with open(path, 'w') as f:
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())
+            os.unlink(tmp)
         except Exception:
             try:
                 os.unlink(tmp)

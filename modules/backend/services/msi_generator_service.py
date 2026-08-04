@@ -21,6 +21,11 @@ CLIENT_INSTALLER_DIR = "/app/client_installers"
 # MSI filename (always same name, overwritten on regeneration)
 MSI_FILENAME = "velociraptor-client-windows.msi"
 
+# Where Server.Utils.CreateMSI drops its output inside the Velociraptor
+# container. Note the literal `/var.` — that is the real path on this image,
+# not a typo.
+_SERVER_COLLECTIONS = "/var./clients/server/collections"
+
 
 def setup_velociraptor_connection():
     """Setup gRPC connection to Velociraptor API"""
@@ -118,6 +123,58 @@ def generate_msi_via_artifact():
         return False
 
 
+def _discard(path):
+    """Remove a staged file, ignoring the case where it never appeared."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def purge_msi_collection_uploads():
+    """Drop the MSI payloads left behind by past CreateMSI runs.
+
+    Every generation schedules a fresh server-artifact collection, and each one
+    parks a ~26 MB MSI under its own flow directory forever. Nothing read those
+    copies — the file the Downloads page serves is the one copied out to
+    CLIENT_INSTALLER_DIR — so on a box where operators pull the installer
+    regularly they were pure growth (measured: 180 KB -> 53 MB over two
+    downloads). Now each run leaves nothing, so successive builds overwrite
+    rather than accumulate.
+
+    Deletes only the `uploads/` subtree, and only from collections that
+    actually hold an MSI. The flow's own record is left alone: Velociraptor's
+    audit trail of what ran stays intact, and the bytes are what mattered.
+
+    Best-effort by design — this is disk hygiene, and failing it must never
+    fail the download or the upgrade that triggered it.
+    """
+    script = (
+        f'n=0; '
+        f'for d in {_SERVER_COLLECTIONS}/F.*/; do '
+        f'  if ls "$d"uploads/scope/*.msi >/dev/null 2>&1; then '
+        f'    rm -rf "$d"uploads && n=$((n+1)); '
+        f'  fi; '
+        f'done; echo "$n"'
+    )
+    try:
+        result = subprocess.run(
+            ["docker", "exec", VELOCIRAPTOR_CONTAINER, "sh", "-c", script],
+            capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            print(f"[MSI-GEN] Upload purge failed: {result.stderr.strip()[:200]}",
+                  flush=True)
+            return 0
+        purged = int((result.stdout or "0").strip() or 0)
+        if purged:
+            print(f"[MSI-GEN] Reclaimed MSI uploads from {purged} collection(s)",
+                  flush=True)
+        return purged
+    except Exception as e:
+        print(f"[MSI-GEN] Upload purge raised: {e}", flush=True)
+        return 0
+
+
 def copy_msi_from_collection(flow_id):
     """Copy MSI from server artifact collection folder"""
     print(f"[MSI-GEN] Looking for MSI in flow {flow_id}...", flush=True)
@@ -139,25 +196,41 @@ def copy_msi_from_collection(flow_id):
 
         print(f"[MSI-GEN] Found: {msi_path_in_container}", flush=True)
 
-        # Copy to client_installers
+        # Copy to client_installers. Land it on a temp name in the SAME
+        # directory and rename into place: every generation overwrites one
+        # fixed path that the download route serves straight to the browser,
+        # so writing in place means a second request can be handed a
+        # half-written installer — and a truncated MSI fails on the endpoint,
+        # not here. os.replace is atomic within a filesystem, so a reader sees
+        # either the old file or the new one, never a partial. This matters
+        # more now that a Velociraptor upgrade regenerates in the background.
         local_msi_path = os.path.join(CLIENT_INSTALLER_DIR, MSI_FILENAME)
+        staged_path = local_msi_path + ".partial"
 
         copy_result = subprocess.run([
             "docker", "cp",
             f"{VELOCIRAPTOR_CONTAINER}:{msi_path_in_container}",
-            local_msi_path
+            staged_path
         ], capture_output=True, text=True, timeout=30)
 
         if copy_result.returncode != 0:
             print(f"[MSI-GEN] Copy failed: {copy_result.stderr}", flush=True)
+            _discard(staged_path)
             return False
 
-        if os.path.exists(local_msi_path):
-            file_size = os.path.getsize(local_msi_path)
-            print(f"[MSI-GEN] ✓ MSI ready: {local_msi_path} ({file_size} bytes)", flush=True)
-            return True
+        if not (os.path.exists(staged_path) and os.path.getsize(staged_path) > 0):
+            print("[MSI-GEN] Copy produced no data", flush=True)
+            _discard(staged_path)
+            return False
 
-        return False
+        file_size = os.path.getsize(staged_path)
+        os.replace(staged_path, local_msi_path)
+        print(f"[MSI-GEN] ✓ MSI ready: {local_msi_path} ({file_size} bytes)", flush=True)
+
+        # The payload is now in CLIENT_INSTALLER_DIR; the server-side copy has
+        # no further reader, so reclaim it instead of stacking another ~26 MB.
+        purge_msi_collection_uploads()
+        return True
 
     except Exception as e:
         print(f"[MSI-GEN] Error: {e}", flush=True)

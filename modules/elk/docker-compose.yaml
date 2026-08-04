@@ -9,7 +9,14 @@ services:
       - node.name=elasticsearch
       - cluster.name=${ELK_CLUSTER_NAME:-intact-cluster}
       - discovery.type=single-node
-      - xpack.security.enabled=false
+      - xpack.security.enabled=true
+      # Single-node cluster: no inter-node transport traffic ever occurs, so
+      # transport TLS isn't required (ES only mandates it for multi-node
+      # clusters). Keeping HTTP/transport TLS off preserves the existing
+      # plain-http://elasticsearch:9200 wiring used by every caller in this
+      # repo — only authentication (ELASTIC_PASSWORD below) is being added.
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
       - xpack.license.self_generated.type=basic
       - "ES_JAVA_OPTS=-Xms${ES_HEAP_SIZE:-512m} -Xmx${ES_HEAP_SIZE:-512m}"
       - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:-changeme}
@@ -17,16 +24,45 @@ services:
       - elasticsearch_data:/usr/share/elasticsearch/data
     ports:
       - "9200:9200"
-      - "9300:9300"
+      # 9300 (the inter-node TRANSPORT port) is deliberately NOT published.
+      # This is a discovery.type=single-node cluster, so there is no peer node
+      # to talk to and no legitimate external consumer -- transport is only for
+      # node-to-node traffic and remote-cluster search. Elastic's own multi-node
+      # compose publishes 9200 on one node and nothing at all on the others;
+      # 9300 appears in no official Elastic example. It was reachable from the
+      # LAN with xpack.security.transport.ssl.enabled=false below.
+      # Container-to-container traffic is unaffected: that uses intact_network,
+      # not the published port.
     restart: unless-stopped
     networks:
       - intact_network
     healthcheck:
-      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
+      test: ["CMD-SHELL", "curl -s -u elastic:${ELASTIC_PASSWORD:-changeme} http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 60s
+
+  # One-shot init: sets the built-in `kibana_system` service account's
+  # password via the Elasticsearch Security API. Kibana refuses to run as
+  # the `elastic` superuser (Elasticsearch/Kibana reject it outright), and
+  # `kibana_system` has no password until one is set here. Idempotent —
+  # safe to (and does) run again on every `docker compose up`.
+  setup:
+    container_name: intact_elk_setup
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION}
+    environment:
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:-changeme}
+      - KIBANA_PASSWORD=${KIBANA_PASSWORD:-changeme}
+    volumes:
+      - ./config/setup-kibana-user.sh:/usr/local/bin/setup-kibana-user.sh:ro
+    entrypoint: ["/bin/bash", "/usr/local/bin/setup-kibana-user.sh"]
+    restart: "no"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - intact_network
 
   logstash:
     container_name: intact_logstash
@@ -34,13 +70,28 @@ services:
     environment:
       - "LS_JAVA_OPTS=-Xms${LS_HEAP_SIZE:-256m} -Xmx${LS_HEAP_SIZE:-256m}"
       - ELASTIC_HOST=elasticsearch:9200
+      - ELASTIC_USER=${ELASTIC_USER:-elastic}
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:-changeme}
     volumes:
       - ./config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
       - ./config/pipeline:/usr/share/logstash/pipeline:ro
     ports:
-      - "5044:5044"      # Beats input
-      - "50000:50000"    # TCP input
-      - "9600:9600"      # API
+      # Loopback-only. Both ingestion inputs accept events with NO TLS and NO
+      # authentication (see config/pipeline/main.conf) and index everything
+      # straight into intact-*, the index analysts pivot on — so anyone who
+      # could route to this host could forge or flood incident evidence. The
+      # management API on 9600 answers unauthenticated too and fingerprints the
+      # service. Elasticsearch itself requires credentials, which made the open
+      # input side the weak edge rather than the store.
+      #
+      # Nothing in this repo ships to these ports: no filebeat/winlogbeat
+      # config exists, and the Velociraptor Elastic upload artifact writes
+      # directly to intact_elasticsearch:9200. If a deployment does add a beats
+      # agent later, publish the port deliberately WITH TLS and auth rather
+      # than reverting this.
+      - "127.0.0.1:5044:5044"      # Beats input
+      - "127.0.0.1:50000:50000"    # TCP input
+      - "127.0.0.1:9600:9600"      # API
     restart: unless-stopped
     depends_on:
       elasticsearch:
@@ -53,7 +104,14 @@ services:
     image: docker.elastic.co/kibana/kibana:${KIBANA_VERSION}
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
-      - xpack.security.enabled=false
+      # Kibana connects to Elasticsearch as the dedicated, reserved
+      # `kibana_system` service account (its password is set by the `setup`
+      # container above) — never as `elastic`: Elasticsearch/Kibana 9.x
+      # explicitly refuse "elastic" for this setting ("Use a service
+      # account token instead").
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD:-changeme}
+      - xpack.security.enabled=true
       - xpack.spaces.enabled=false
       - SERVER_NAME=kibana
       - SERVER_SHOWINSECURECLUSTERWARNING=false
@@ -76,6 +134,8 @@ services:
     depends_on:
       elasticsearch:
         condition: service_healthy
+      setup:
+        condition: service_completed_successfully
     networks:
       - intact_network
     healthcheck:

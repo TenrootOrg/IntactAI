@@ -448,27 +448,83 @@
                         <div class="mb-4">
                             <label class="block text-sm text-gray-400 mb-1">Mode</label>
                             <select x-model="$store.settings.config.agentic.llm_mode" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm">
-                                <option value="offline">Offline (Ollama)</option>
+                                <!-- Just "Offline": the server type below offers Ollama AND any
+                                     OpenAI-compatible server (LiteLLM / vLLM / LM Studio), so
+                                     naming Ollama here read as though it were the only option. -->
+                                <option value="offline">Offline</option>
                                 <option value="online">Online (Cloud API)</option>
                             </select>
                         </div>
 
                         <!-- Offline LLM -->
                         <div x-show="$store.settings.config.agentic.llm_mode === 'offline'" x-transition>
-                            <div class="text-xs text-gray-500 mb-2 border-b border-gray-700 pb-1">Ollama Configuration</div>
+                            <div class="text-xs text-gray-500 mb-2 border-b border-gray-700 pb-1">Self-Hosted LLM Configuration</div>
                             <div class="grid grid-cols-5 gap-3">
                                 <div>
-                                    <label class="block text-xs text-gray-400 mb-1">Model</label>
-                                    <select x-model="$store.settings.config.agentic.offline_llm.model" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
-                                        <option value="llama3.3:70b">llama3.3:70b</option>
-                                        <option value="llama3.1:8b">llama3.1:8b</option>
-                                        <option value="deepseek-r1:14b">deepseek-r1:14b</option>
-                                        <option value="mistral:7b">mistral:7b</option>
+                                    <label class="block text-xs text-gray-400 mb-1">Server type</label>
+                                    <select x-model="$store.settings.config.agentic.offline_llm.provider"
+                                            @change="$store.settings.loadOfflineModels()"
+                                            class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                        <option value="ollama">Ollama (native)</option>
+                                        <option value="openai-compatible">OpenAI-compatible (LiteLLM / vLLM / LM Studio)</option>
                                     </select>
                                 </div>
                                 <div>
-                                    <label class="block text-xs text-gray-400 mb-1">Ollama URL</label>
-                                    <input type="text" x-model="$store.settings.config.agentic.offline_llm.url" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                    <label class="block text-xs text-gray-400 mb-1">Server URL</label>
+                                    <input type="text" x-model="$store.settings.config.agentic.offline_llm.url"
+                                           @change="$store.settings.loadOfflineModels()"
+                                           placeholder="http://ollama-host:11434"
+                                           title="The LLM server as the INTACT BACKEND sees it, not as your browser sees it. 'localhost' will not work — inside the backend container that resolves to the backend itself. Use the container name for a server on the same docker network (e.g. http://intact_ollama:11434) or the host's LAN IP. For OpenAI-compatible servers include the /v1 suffix."
+                                           class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                    <p x-show="/^https?:\/\/(localhost|127\.0\.0\.1)/i.test($store.settings.config.agentic.offline_llm.url || '')"
+                                       x-transition class="text-[11px] text-yellow-600 mt-1">
+                                        Inside the backend container "localhost" is the backend itself. Use the
+                                        container name or the host's LAN IP.
+                                    </p>
+                                </div>
+                                <div>
+                                    <!-- Free-text input with the server's own models offered as
+                                         suggestions -- NOT a bare <select>.
+                                         It was a select whose only <option> was the saved value
+                                         tagged "(not on this server)" whenever the server could not
+                                         be listed. With an unreachable URL (the common case, since
+                                         `localhost` resolves to the backend itself) that left one
+                                         unpickable option and no way to type a name at all: the
+                                         field was unusable exactly when you most needed to fix it.
+                                         Typing must always work; the list is an aid, not a gate. -->
+                                    <label class="block text-xs text-gray-400 mb-1">
+                                        Model
+                                        <button type="button" @click="$store.settings.loadOfflineModels()"
+                                                class="ml-1 text-blue-400 hover:text-blue-300" title="Re-query the server">&#8635;</button>
+                                    </label>
+                                    <div x-data="{ open: false }" class="relative">
+                                        <input type="text"
+                                               x-model="$store.settings.config.agentic.offline_llm.model"
+                                               @focus="open = true; if (!$store.settings.offlineModels.length) $store.settings.loadOfflineModels()"
+                                               @click.away="open = false"
+                                               @keydown.escape="open = false"
+                                               placeholder="e.g. qwen2.5:0.5b"
+                                               class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                        <div x-show="open &amp;&amp; $store.settings.offlineModels.length > 0" x-transition
+                                             class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded shadow-lg max-h-56 overflow-y-auto">
+                                            <template x-for="m in $store.settings.offlineModels" :key="m.id">
+                                                <div @mousedown.prevent="$store.settings.config.agentic.offline_llm.model = m.id; open = false"
+                                                     class="px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-700 border-b border-gray-700/50 text-white"
+                                                     x-text="m.id"></div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                    <p x-show="$store.settings.offlineModelsLoading" class="text-xs text-gray-500 mt-1">Asking the server…</p>
+                                    <p x-show="!$store.settings.offlineModelsLoading &amp;&amp; $store.settings.offlineModelsError"
+                                       class="text-xs text-yellow-600 mt-1">
+                                        <span x-text="$store.settings.offlineModelsError"></span>
+                                        <span class="text-gray-500">You can still type the model name.</span>
+                                    </p>
+                                    <p x-show="!$store.settings.offlineModelsLoading &amp;&amp; !$store.settings.offlineModelsError
+                                               &amp;&amp; $store.settings.config.agentic.offline_llm.model
+                                               &amp;&amp; $store.settings.offlineModels.length > 0
+                                               &amp;&amp; !$store.settings.offlineModels.some(m => m.id === $store.settings.config.agentic.offline_llm.model)"
+                                       class="text-xs text-yellow-600 mt-1">Not installed on that server.</p>
                                 </div>
                                 <div>
                                     <label class="block text-xs text-gray-400 mb-1">Context Size</label>
@@ -488,8 +544,20 @@
                                 <div>
                                     <label class="block text-xs text-gray-400 mb-1">Provider</label>
                                     <select x-model="$store.settings.config.agentic.online_llm.provider" @change="$store.settings.onProviderChange()" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
-                                        <option value="openrouter">OpenRouter</option>
-                                        <option value="codex-subscription">Codex (Subscription)</option>
+                                        <option value="openrouter">OpenRouter (API)</option>
+                                        <option value="openai">OpenAI (API)</option>
+                                        <option value="claude">Anthropic (API)</option>
+                                        <option value="gemini">Google (API)</option>
+                                        <option value="ollama-cloud">Ollama Cloud (API)</option>
+                                        <!-- Every label is <vendor> (<how you pay>). The suffix is
+                                             the only thing that varies between entries, so it is
+                                             the only thing the parentheses carry: a vendor's model
+                                             brand (Claude, Gemini) just repeated the vendor name.
+                                             OpenAI appears twice and the suffix is what tells the
+                                             two apart. "Codex" is dropped from the label; the CLI
+                                             panel below still reports the codex-cli version, so the
+                                             link to the binary survives where it is needed. -->
+                                        <option value="codex-subscription">OpenAI (Subscription)</option>
                                     </select>
                                 </div>
                                 <div>
@@ -840,6 +908,23 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
 
                         <!-- Save Button -->
                         <div class="mt-4 pt-4 border-t border-gray-700 flex justify-end">
+                            <!-- Test connection: a real one-token round-trip through whatever
+                                 is currently on screen. Hidden for Codex, which has its own
+                                 staged tester in the subscription panel above. -->
+                            <button x-show="!$store.settings.isSubscription()"
+                                    @click="$store.settings.testLlmConnection()"
+                                    :disabled="$store.settings.llmTesting"
+                                    class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-4 py-2 rounded text-sm font-medium mr-2"
+                                    title="Sends a 1-token prompt to the configured model — proves the key, the URL, the model id and the response shape, at effectively zero cost.">
+                                <span x-text="$store.settings.llmTesting ? 'Testing…' : 'Test connection'"></span>
+                            </button>
+                            <template x-if="$store.settings.llmTestResult">
+                                <span class="text-sm mr-3"
+                                      :class="$store.settings.llmTestResult.success ? 'text-green-400' : 'text-red-400'"
+                                      x-text="$store.settings.llmTestResult.success
+                                        ? ('OK — replied in ' + $store.settings.llmTestResult.elapsed_ms + 'ms')
+                                        : ('Failed: ' + ($store.settings.llmTestResult.error || 'unknown'))"></span>
+                            </template>
                             <button @click="$store.settings.saveAgentic()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium">
                                 <span x-text="$store.settings.saving ? 'Saving...' : 'Save Agentic Settings'"></span>
                             </button>
@@ -856,7 +941,10 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                             <select x-model="$store.settings.config.timesketch.llm_mode" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm">
                                 <option value="google">Google AI Studio</option>
                                 <option value="ollama">Ollama (Local)</option>
+                                <option value="openrouter">OpenRouter (API)</option>
+                                <option value="litellm">LiteLLM Proxy (Self-hosted)</option>
                             </select>
+                            <p class="text-xs text-gray-500 mt-1">Applies to NL2Q, summarization, synthesis and the default fallback.</p>
                         </div>
 
                         <!-- Google AI Studio -->
@@ -867,23 +955,102 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                     <label class="block text-xs text-gray-400 mb-1">API Key</label>
                                     <input type="password" x-model="$store.settings.config.timesketch.google_ai_key" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="AIza...">
                                 </div>
-                                <div x-data="{ presets: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-pro'] }">
+                                <div>
                                     <label class="block text-xs text-gray-400 mb-1">Model</label>
-                                    <select
-                                        :value="presets.includes($store.settings.config.timesketch.google_ai_model) ? $store.settings.config.timesketch.google_ai_model : '__custom'"
-                                        @change="$store.settings.config.timesketch.google_ai_model = $event.target.value === '__custom' ? '' : $event.target.value"
-                                        class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
-                                        <option value="gemini-2.5-flash">gemini-2.5-flash</option>
-                                        <option value="gemini-2.5-pro">gemini-2.5-pro</option>
-                                        <option value="gemini-1.5-pro">gemini-1.5-pro</option>
-                                        <option value="__custom">Custom…</option>
-                                    </select>
-                                    <input
-                                        x-show="!presets.includes($store.settings.config.timesketch.google_ai_model)"
-                                        type="text"
-                                        x-model="$store.settings.config.timesketch.google_ai_model"
-                                        placeholder="e.g. gemini-3.0-flash"
-                                        class="mt-2 w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                                    <!-- Live Gemini catalog, same as Settings -> Agentic. This was a
+                                         hardcoded list of three (gemini-2.5-flash / 2.5-pro /
+                                         1.5-pro) plus a Custom box, which went stale the moment
+                                         Google shipped a new model — 1.5-pro is retired outright,
+                                         and nothing in the UI said so.
+                                         /api/config/gemini/models is already filtered to
+                                         generateContent-capable models, which is exactly the set
+                                         Timesketch's aistudio provider can use: it passes `model`
+                                         straight to client.models.generate_content(), so there is
+                                         no Timesketch-side restriction to model against.
+                                         NOTE: no double quotes anywhere inside x-data. -->
+                                    <div x-data="{
+                                             selectedModel: null, results: [], total: 0,
+                                             open: false, loading: false, _debounce: null,
+                                             async query() {
+                                                 const q = $store.settings.config.timesketch.google_ai_model || '';
+                                                 this.loading = true;
+                                                 try {
+                                                     const resp = await fetch('/api/config/gemini/models?limit=10&q=' + encodeURIComponent(q));
+                                                     const data = await resp.json();
+                                                     this.results = data.models || [];
+                                                     this.total = data.total || 0;
+                                                 } catch(e) { this.results = []; this.total = 0; }
+                                                 this.loading = false;
+                                             },
+                                             async loadSelected() {
+                                                 const id = $store.settings.config.timesketch.google_ai_model;
+                                                 if (!id) { this.selectedModel = null; return; }
+                                                 try {
+                                                     const resp = await fetch('/api/config/gemini/models?limit=10&q=' + encodeURIComponent(id));
+                                                     const data = await resp.json();
+                                                     const list = data.models || [];
+                                                     this.selectedModel = list.find(m => m.id === id)
+                                                         || list.find(m => m.canonical_id === id) || null;
+                                                 } catch(e) { this.selectedModel = null; }
+                                             },
+                                             schedule() {
+                                                 clearTimeout(this._debounce);
+                                                 this._debounce = setTimeout(() => this.query(), 150);
+                                             },
+                                             select(model) {
+                                                 this.selectedModel = model;
+                                                 $store.settings.config.timesketch.google_ai_model = model.id;
+                                                 this.open = false;
+                                             }
+                                         }"
+                                         x-init="loadSelected(); query();
+                                                 $watch('$store.settings.config.timesketch.google_ai_model', () => { loadSelected(); });
+                                                 window.addEventListener('llm-catalog-refreshed', (ev) => {
+                                                     if (ev.detail?.provider === 'gemini') { results = []; total = 0; query(); loadSelected(); }
+                                                 });"
+                                         class="relative">
+                                        <input type="text"
+                                               x-model="$store.settings.config.timesketch.google_ai_model"
+                                               @focus="query(); open = true"
+                                               @input="open = true; schedule()"
+                                               @click.away="open = false"
+                                               @keydown.escape="open = false"
+                                               class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm"
+                                               placeholder="Type to search Gemini models">
+                                        <div x-show="loading" class="absolute right-2 top-2 text-xs text-gray-500">Loading…</div>
+                                        <div x-show="open && results.length > 0"
+                                             class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded shadow-lg max-h-64 overflow-y-auto">
+                                            <template x-for="m in results" :key="m.id">
+                                                <div @mousedown.prevent="select(m)"
+                                                     class="px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-700 border-b border-gray-700/50">
+                                                    <div class="text-white" x-text="m.name"></div>
+                                                    <div class="flex justify-between text-xs text-gray-500">
+                                                        <span x-text="m.id"></span>
+                                                        <span x-show="m.max_output_tokens">
+                                                            max&nbsp;<span x-text="m.max_output_tokens.toLocaleString()"></span>
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                            <div x-show="total > results.length"
+                                                 class="px-3 py-1 text-[11px] text-gray-500 italic border-t border-gray-700/50">
+                                                Showing <span x-text="results.length"></span> of <span x-text="total"></span> matches — keep typing to narrow down.
+                                            </div>
+                                        </div>
+                                        <div x-show="open && results.length === 0 && !loading && ($store.settings.config.timesketch.google_ai_model || '').length > 0"
+                                             class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded px-3 py-2 text-xs text-gray-400">
+                                            No matching Gemini models in the catalog.
+                                            Run <span class="text-blue-400">Maintenance → Refresh</span> to update it.
+                                        </div>
+                                        <div x-show="selectedModel" class="mt-1 text-[11px] text-gray-500 flex flex-wrap gap-x-4">
+                                            <span x-show="selectedModel?.context_length">
+                                                Context: <span class="text-gray-300" x-text="(selectedModel?.context_length ?? 0).toLocaleString()"></span>
+                                            </span>
+                                            <span x-show="selectedModel?.max_output_tokens">
+                                                Max output: <span class="text-gray-300" x-text="(selectedModel?.max_output_tokens ?? 0).toLocaleString()"></span>
+                                            </span>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -898,12 +1065,203 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                 </div>
                                 <div>
                                     <label class="block text-xs text-gray-400 mb-1">Model</label>
-                                    <input type="text" x-model="$store.settings.config.timesketch.ollama_model" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="llama3.1:8b">
+                                    <!-- Asks the operator's OWN server what it has, rather than
+                                         making them remember an exact tag. A typo here fails at
+                                         request time with an unhelpful 404 from Ollama, which is
+                                         a poor way to learn you wrote llama3.1 instead of
+                                         llama3.1:8b. Still a free-text input so an un-pulled
+                                         model can be named deliberately.
+                                         NOTE: no double quotes inside x-data. -->
+                                    <div x-data="{
+                                             models: [], err: '', loading: false, open: false,
+                                             async load() {
+                                                 const url = ($store.settings.config.timesketch.ollama_url || '').trim();
+                                                 if (!url) { this.err = 'Enter the server URL first.'; this.models = []; return; }
+                                                 this.loading = true; this.err = '';
+                                                 try {
+                                                     const qs = new URLSearchParams({ url: url, kind: 'ollama' });
+                                                     const resp = await fetch('/api/config/ollama/models?' + qs.toString());
+                                                     const d = await resp.json();
+                                                     this.models = d.models || [];
+                                                     if (!this.models.length) {
+                                                         this.err = (d && (d.error || d.reason)) || 'That server reports no models.';
+                                                     } else { this.open = true; }
+                                                 } catch(e) { this.err = 'Could not reach that server.'; this.models = []; }
+                                                 this.loading = false;
+                                             }
+                                         }" class="relative">
+                                        <input type="text"
+                                               x-model="$store.settings.config.timesketch.ollama_model"
+                                               @click.away="open = false"
+                                               class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm"
+                                               placeholder="llama3.1:8b">
+                                        <button type="button" @click="load()" :disabled="loading"
+                                                class="mt-1 text-[11px] text-blue-400 hover:text-blue-300 disabled:text-gray-600">
+                                            <span x-text="loading ? 'Asking the server…' : 'List models on this server'"></span>
+                                        </button>
+                                        <div x-show="open && models.length > 0"
+                                             class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded shadow-lg max-h-64 overflow-y-auto">
+                                            <template x-for="m in models" :key="m.id || m">
+                                                <div @mousedown.prevent="$store.settings.config.timesketch.ollama_model = (m.id || m); open = false"
+                                                     class="px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-700 border-b border-gray-700/50 text-white"
+                                                     x-text="m.id || m"></div>
+                                            </template>
+                                        </div>
+                                        <p x-show="err" x-transition class="mt-1 text-[11px] text-yellow-600" x-text="err"></p>
+                                    </div>
                                 </div>
                             </div>
+                            <p class="text-xs text-gray-500 mt-2">The URL must be reachable <span class="text-gray-400">from inside the Timesketch container</span> — "localhost" will not work.</p>
+                        </div>
+
+                        <!-- OpenRouter (API) -->
+                        <div x-show="$store.settings.config.timesketch.llm_mode === 'openrouter'" x-transition>
+                            <div class="text-xs text-gray-500 mb-2 border-b border-gray-700 pb-1">OpenRouter Configuration</div>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">API Key</label>
+                                    <input type="password" x-model="$store.settings.config.timesketch.openrouter_key" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="sk-or-v1-...">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Model</label>
+                                    <!-- Same searchable catalog combobox as Settings -> Agentic, against
+                                         the same /api/config/openrouter/models endpoint. Typing a raw id
+                                         by hand is how you end up with a model OpenRouter renamed six
+                                         months ago and a 404 at request time; the catalog is the list
+                                         that is actually servable.
+
+                                         Simpler than the Agentic one on purpose: the provider here is
+                                         always openrouter, so there is no route translation, no
+                                         subscription branch and no token autofill.
+
+                                         NOTE: never use a double quote anywhere in this x-data block —
+                                         it lives inside an attribute and one would terminate it,
+                                         dumping the script onto the page. -->
+                                    <div x-data="{
+                                             selectedModel: null,
+                                             results: [],
+                                             total: 0,
+                                             open: false,
+                                             loading: false,
+                                             _debounce: null,
+                                             async query() {
+                                                 const q = $store.settings.config.timesketch.openrouter_model || '';
+                                                 this.loading = true;
+                                                 try {
+                                                     const resp = await fetch('/api/config/openrouter/models?limit=10&q=' + encodeURIComponent(q));
+                                                     const data = await resp.json();
+                                                     this.results = data.models || [];
+                                                     this.total = data.total || 0;
+                                                 } catch(e) { this.results = []; this.total = 0; }
+                                                 this.loading = false;
+                                             },
+                                             async loadSelected() {
+                                                 const id = $store.settings.config.timesketch.openrouter_model;
+                                                 if (!id) { this.selectedModel = null; return; }
+                                                 try {
+                                                     const resp = await fetch('/api/config/openrouter/models?limit=10&q=' + encodeURIComponent(id));
+                                                     const data = await resp.json();
+                                                     const list = data.models || [];
+                                                     this.selectedModel = list.find(m => m.id === id)
+                                                         || list.find(m => m.canonical_id === id)
+                                                         || null;
+                                                 } catch(e) { this.selectedModel = null; }
+                                             },
+                                             schedule() {
+                                                 clearTimeout(this._debounce);
+                                                 this._debounce = setTimeout(() => this.query(), 150);
+                                             },
+                                             select(model) {
+                                                 this.selectedModel = model;
+                                                 $store.settings.config.timesketch.openrouter_model = model.id;
+                                                 this.open = false;
+                                             }
+                                         }"
+                                         x-init="loadSelected(); query();
+                                                 $watch('$store.settings.config.timesketch.openrouter_model', () => { loadSelected(); });
+                                                 window.addEventListener('llm-catalog-refreshed', (ev) => {
+                                                     if (ev.detail?.provider === 'openrouter') {
+                                                         results = []; total = 0;
+                                                         query(); loadSelected();
+                                                     }
+                                                 });"
+                                         class="relative">
+                                        <input type="text"
+                                               x-model="$store.settings.config.timesketch.openrouter_model"
+                                               @focus="query(); open = true"
+                                               @input="open = true; schedule()"
+                                               @click.away="open = false"
+                                               @keydown.escape="open = false"
+                                               class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm"
+                                               placeholder="Type to search OpenRouter models">
+                                        <div x-show="loading" class="absolute right-2 top-2 text-xs text-gray-500">Loading…</div>
+                                        <div x-show="open && results.length > 0"
+                                             class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded shadow-lg max-h-64 overflow-y-auto">
+                                            <template x-for="m in results" :key="m.id">
+                                                <div @mousedown.prevent="select(m)"
+                                                     class="px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-700 border-b border-gray-700/50">
+                                                    <div class="text-white" x-text="m.name"></div>
+                                                    <div class="flex justify-between text-xs text-gray-500">
+                                                        <span x-text="m.id"></span>
+                                                        <span x-show="m.max_output_tokens">
+                                                            max&nbsp;<span x-text="m.max_output_tokens.toLocaleString()"></span>
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                            <div x-show="total > results.length"
+                                                 class="px-3 py-1 text-[11px] text-gray-500 italic border-t border-gray-700/50">
+                                                Showing <span x-text="results.length"></span> of <span x-text="total"></span> matches — keep typing to narrow down.
+                                            </div>
+                                        </div>
+                                        <div x-show="open && results.length === 0 && !loading && ($store.settings.config.timesketch.openrouter_model || '').length > 0"
+                                             class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded px-3 py-2 text-xs text-gray-400">
+                                            No matching models in the OpenRouter catalog.
+                                            Run <span class="text-blue-400">Maintenance → Refresh</span> to update it.
+                                        </div>
+                                        <div x-show="selectedModel" class="mt-1 text-[11px] text-gray-500 flex flex-wrap gap-x-4">
+                                            <span x-show="selectedModel?.context_length">
+                                                Context: <span class="text-gray-300" x-text="(selectedModel?.context_length ?? 0).toLocaleString()"></span>
+                                            </span>
+                                            <span x-show="selectedModel?.max_output_tokens">
+                                                Max output: <span class="text-gray-300" x-text="(selectedModel?.max_output_tokens ?? 0).toLocaleString()"></span>
+                                            </span>
+                                            <span x-show="selectedModel?.pricing?.prompt">
+                                                $<span x-text="(parseFloat(selectedModel?.pricing?.prompt ?? 0) * 1000000).toFixed(2)"></span>/M&nbsp;in
+                                                ·
+                                                $<span x-text="(parseFloat(selectedModel?.pricing?.completion ?? 0) * 1000000).toFixed(2)"></span>/M&nbsp;out
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <p class="text-xs text-gray-500 mt-2">Model list comes from the same OpenRouter catalog as Settings → Agentic.</p>
+                        </div>
+
+                        <!-- LiteLLM Proxy (Self-hosted) -->
+                        <div x-show="$store.settings.config.timesketch.llm_mode === 'litellm'" x-transition>
+                            <div class="text-xs text-gray-500 mb-2 border-b border-gray-700 pb-1">LiteLLM Proxy Configuration</div>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Server URL</label>
+                                    <input type="text" x-model="$store.settings.config.timesketch.litellm_url" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="http://litellm.internal:4000">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Model</label>
+                                    <input type="text" x-model="$store.settings.config.timesketch.litellm_model" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="gpt-4o-mini">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-gray-400 mb-1">Proxy Key <span class="text-gray-600">(optional)</span></label>
+                                    <input type="password" x-model="$store.settings.config.timesketch.litellm_key" class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm" placeholder="leave empty if unauthenticated">
+                                </div>
+                            </div>
+                            <p class="text-xs text-gray-500 mt-2">The URL must be reachable <span class="text-gray-400">from inside the Timesketch container</span> — "localhost" will not work.</p>
                         </div>
 
                         <p class="text-xs text-gray-500 mt-4">Note: These settings require Timesketch container restart to take effect.</p>
+                        <p x-show="['openrouter','litellm'].includes($store.settings.config.timesketch.llm_mode)" x-transition class="text-xs text-gray-500 mt-1">
+                            OpenRouter and LiteLLM are IntactAI add-on providers installed into the Timesketch container at start-up.
+                        </p>
 
                         <!-- Save Button -->
                         <div class="mt-4 pt-4 border-t border-gray-700 flex justify-end">
@@ -1076,7 +1434,7 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                         <p class="text-gray-400 text-sm mb-4"
                            x-text="$store.settings.prepareModalMode === 'online'
                                    ? 'Select modules to download and apply right now (no intermediate package file):'
-                                   : 'Select modules to include in the offline upgrade package:'"></p>
+                                   : 'Download the prebuilt offline package for a release. Nothing is built here — you pick modules when you import it.'"></p>
 
                         <!-- Scroll wrapper — flex-1 + overflow-y-auto means
                              when content overflows the modal's 90vh budget,
@@ -1113,7 +1471,25 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                 </span>
                                 <span x-show="$store.settings.githubQuota && $store.settings.githubQuota.remaining <= 10">
                                     ⚠ GitHub quota low: <span class="font-mono" x-text="($store.settings.githubQuota?.remaining || 0) + '/' + ($store.settings.githubQuota?.limit || 60)"></span> calls left
-                                    (resets <span class="font-mono" x-text="$store.settings.githubQuota?.reset_hm || ''"></span>). The upgrade flow needs a couple more — wait for reset if you hit a 429.
+                                    (resets <span class="font-mono" x-text="$store.settings.githubQuota?.reset_hm || ''"></span>). Each time this dialog opens costs 2.
+                                    <!-- The full walkthrough lives HERE, not in the error toast.
+                                         It used to be ~200 words of numbered steps and URLs inside
+                                         a popup that vanishes and cannot be copied from. This
+                                         banner is persistent, on screen while the operator acts,
+                                         and sits next to the number it explains. -->
+                                    <template x-if="$store.settings.githubQuota && !$store.settings.githubQuota.authed">
+                                        <span>
+                                            <br>
+                                            <span class="text-gray-300">Raise the cap 60 → 5000/hr:</span>
+                                            create a token at
+                                            <a href="https://github.com/settings/tokens/new" target="_blank" rel="noopener"
+                                               class="text-blue-400 hover:underline font-mono">github.com/settings/tokens/new</a>
+                                            with <span class="text-gray-300">every scope left unchecked</span> — the platform only reads a
+                                            public repo, so a scopeless token is enough and harmless if it leaks. Put it in
+                                            <span class="font-mono">config.yaml</span> under
+                                            <span class="font-mono">options.github_token</span>; it takes effect immediately, no restart.
+                                        </span>
+                                    </template>
                                 </span>
                             </div>
 
@@ -1172,6 +1548,7 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                 <div class="text-xs text-gray-300 bg-blue-900/30 border border-blue-700/40 rounded p-2">
                                     This release ships a <span class="text-blue-400">prebuilt package</span> (<span class="font-mono" x-text="$store.settings.selectedRefPackageMb + ' MB'"></span>), built in CI from the release's own code. It is <span class="text-blue-400">downloaded and verified</span> as one <span class="font-mono">.tar.gz</span> — nothing is built on this machine. Every module it ships is included; you pick which to install when you import it.
                                 </div>
+
                             </div>
 
                             <!-- Step 3 (ONLINE mode): plan preview -->
@@ -1257,10 +1634,57 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                             </button>
                         </div>
 
+                        <!-- Manual fallback — ALWAYS visible, not behind a disclosure.
+                             The operator who needs this is the one whose appliance
+                             cannot fetch the package: no route to GitHub, a wedged
+                             backend, an exhausted API quota, or an air-gapped site
+                             where the download happens on a laptop and is carried in.
+                             Hiding it behind a click assumes the dialog is working,
+                             which is exactly the assumption that fails. Shown without
+                             a release picked too — the tag is a placeholder until
+                             one is chosen. -->
+                        <div x-show="$store.settings.prepareModalMode === 'prepare' && !$store.settings.prepareLoading && !$store.settings.preparePackageReady"
+                             x-data="{ shell: 'bash' }"
+                             class="bg-gray-900 rounded border border-gray-700 p-3 mt-4">
+                            <div class="flex items-center justify-between mb-2">
+                                <label class="text-gray-300 text-xs uppercase tracking-wide">Or run it yourself</label>
+                                <div class="flex gap-1">
+                                    <button @click="shell = 'bash'"
+                                            :class="shell === 'bash' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'"
+                                            class="text-xs px-2 py-1 rounded border border-gray-600">Bash</button>
+                                    <button @click="shell = 'ps'"
+                                            :class="shell === 'ps' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'"
+                                            class="text-xs px-2 py-1 rounded border border-gray-600">PowerShell</button>
+                                </div>
+                            </div>
+                            <p class="text-gray-500 text-xs mb-2">
+                                Prepare only <em>downloads</em> the CI-built package and verifies its hash, so this
+                                is the whole of it — runs on any machine, no Intact.AI needed.
+                                <span class="text-gray-400">No GitHub token needed</span> — releases are public.
+                                Setting <span class="font-mono">GITHUB_TOKEN</span> is optional and only raises the
+                                API rate limit from 60/hr to 5000/hr.
+                                <span x-show="shell === 'bash'"><span class="font-mono">curl</span> plus <span class="font-mono">jq</span> or <span class="font-mono">python3</span>.</span>
+                                <span x-show="shell === 'ps'">PowerShell 5+ — nothing to install.</span>
+                                <span x-show="!$store.settings.selectedRef" class="text-yellow-500">Pick a release above to fill in the tag.</span>
+                            </p>
+                            <div class="relative">
+                                <button @click="$store.settings.cliCopy(shell === 'ps' ? $store.settings.prepareManualScriptPs() : $store.settings.prepareManualScript(), 'Script')"
+                                        class="absolute top-2 right-2 bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs px-2 py-1 rounded border border-gray-600">Copy</button>
+                                <textarea readonly rows="14" spellcheck="false"
+                                          @focus="$event.target.select()"
+                                          class="w-full bg-gray-950 border border-gray-700 rounded p-3 pr-16 text-xs text-gray-300 font-mono resize-y"
+                                          x-text="shell === 'ps' ? $store.settings.prepareManualScriptPs() : $store.settings.prepareManualScript()"></textarea>
+                            </div>
+                            <p class="text-gray-500 text-xs mt-2">
+                                Then copy the <span class="font-mono">.tar.gz</span> to this appliance and use
+                                <span class="text-gray-400">Import Upgrade Package</span> — the import path is identical either way.
+                            </p>
+                        </div>
+
                         <!-- Warning -->
                         <div x-show="!$store.settings.prepareLoading && !$store.settings.preparePackageReady" class="bg-yellow-900/30 border border-yellow-700/50 rounded p-3 mt-4">
                             <p class="text-yellow-400 text-xs">
-                                <strong>Note:</strong> This will download Docker images and binaries for selected modules. This may take several minutes and require significant disk space.
+                                <strong>Note:</strong> Downloads the prebuilt package for the selected release and verifies its checksum — nothing is built here. Expect several minutes and a few GB of free space.
                             </p>
                         </div>
 

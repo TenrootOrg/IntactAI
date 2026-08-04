@@ -503,7 +503,10 @@ def create_case(name, *, time_window=None, initial_access=None,
 
 
 def get_case(case_id) -> dict:
-    return (_ws().get_automation_run(case_id) or {}).get("details") or {}
+    run = _ws().get_automation_run(case_id)
+    if not run or run.get("automation_type") != CASE_TYPE:
+        return {}
+    return run.get("details") or {}
 
 
 def _members_for_case(case_id, d=None) -> list:
@@ -755,13 +758,27 @@ def _memory_contribution(rid, det):
     if plugins is None:
         from services.memory.volweb_client import VolWebClient
         from services.memory.analyzers import _build_plugin_payload, _build_yara_payload
-        client = VolWebClient()
         evid = det.get("evidence_id")
-        plugins, _w = _build_plugin_payload(client, evid)
-        try:                              # yara is optional — never lose plugins over it
-            hits, _t = _build_yara_payload(client, evid)
-        except Exception:
-            hits = []
+        if not evid:
+            # A memory run that never produced evidence — cancelled during
+            # acquisition, or failed before VolWeb registered anything. Without
+            # this guard the id flows straight into
+            # `/api/evidence/{evid}/plugins/`, requesting the literal path
+            # `/api/evidence/None/plugins/`, which 404s. Fusion then surfaces a
+            # page of HTML in a case warning, so a run with simply nothing to
+            # contribute reads like a VolWeb outage.
+            #
+            # Falls through with empty payloads rather than returning early, so
+            # the asset anchor is still created and the return shape stays
+            # whatever map_memory produces.
+            plugins, hits = [], []
+        else:
+            client = VolWebClient()
+            plugins, _w = _build_plugin_payload(client, evid)
+            try:                          # yara is optional — never lose plugins over it
+                hits, _t = _build_yara_payload(client, evid)
+            except Exception:
+                hits = []
     return map_memory({"plugins": plugins, "yara": hits, "host": host},
                       run_id=rid, asset=asset, hostname=host)
 
@@ -814,6 +831,7 @@ def _cloud_contribution(rid, det, provider):
         fb = det.get("findings_by_severity")
         if isinstance(fb, dict):
             raw = fb
+    synthetic = bool(det.get("synthetic"))
     if not raw:
         import json
         import os
@@ -821,10 +839,19 @@ def _cloud_contribution(rid, det, provider):
             if os.path.exists(base):
                 try:
                     with open(base) as f:
-                        raw = (json.load(f) or {}).get("findings")
+                        _persisted = json.load(f) or {}
+                    raw = _persisted.get("findings")
+                    synthetic = synthetic or bool(_persisted.get("synthetic"))
                 except Exception:
                     raw = None
                 break
+    # Demo data must never become case evidence. AWS ships attack-shaped
+    # fixtures for development, and the cloud mapper turns their IPs into
+    # `ioc:ip` nodes — which are GLOBAL, so a fictional address would collapse
+    # with real endpoint NetScan hits and cross-correlate against actual
+    # evidence. A run that used them is marked at the pipeline; drop it here.
+    if synthetic:
+        return [], []
     finds = _flatten_cloud_findings(raw)
     if not finds:
         return [], []

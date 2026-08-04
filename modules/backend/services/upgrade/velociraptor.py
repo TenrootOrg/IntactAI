@@ -1394,7 +1394,8 @@ def _stage_binaries_for_build(
 
         if ok:
             if not dest.endswith('.msi'):
-                run_command(f"chmod +x {dest}", logger=log)
+                # Explicit mode: `chmod +x` is umask-masked (see velo_bin below).
+                run_command(f"chmod 755 {dest}", logger=log)
             staged.append(rel_dest)
             if is_required:
                 linux_ok = True
@@ -1504,6 +1505,53 @@ def get_velociraptor_download_url(version: str, logger: Callable = None) -> Tupl
     log(f"  Binary: {binary_name}", "info")
 
     return download_url, clean_version
+
+
+def regenerate_client_installers(logger: Callable = None,
+                                  run_id: Optional[str] = None) -> Dict:
+    """Rebuild the pre-configured client installers (MSI / EXE / Linux / Mac).
+
+    The installers in client_installers/ embed the Velociraptor BINARY they
+    were repacked from, so a server upgrade leaves every one of them shipping
+    the previous agent. Fresh installs already ran this; the two upgrade paths
+    did not, so an upgraded server kept handing out the old agent from the
+    Downloads page indefinitely — the version gap only shows up later, per
+    host, in the client's Agent Version.
+
+    Best-effort on purpose. The upgrade itself has already completed and been
+    health-checked by the time this runs; stale installers are a real problem
+    but not a reason to roll back a working server. Failures log a warning
+    naming the manual command.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    script = os.path.join(WORKDIR, 'scripts', 'generate_clients.sh')
+
+    if not os.path.isfile(script):
+        log(f"  generate_clients.sh not found at {script}. Client installers "
+            f"still contain the PREVIOUS agent until it is run manually.",
+            "warning")
+        return {"success": False, "error": "script not found"}
+
+    log("Regenerating client installers (MSI / EXE / Linux / Mac / musl) "
+        "against the new version...", "info")
+    try:
+        cg = run_command(f"bash {script}", logger=log, timeout=600, run_id=run_id)
+    except Exception as e:
+        log(f"  generate_clients.sh raised: {e}. Client installers still "
+            f"contain the PREVIOUS agent; re-run "
+            f"`bash scripts/generate_clients.sh` on the host.", "warning")
+        return {"success": False, "error": str(e)}
+
+    if cg.get('success'):
+        log("  Client installers regenerated; the Downloads page now serves "
+            "the new agent.", "success")
+        return {"success": True}
+
+    err = (cg.get('error') or '')[:200]
+    log(f"  generate_clients.sh returned non-zero: {err}. Client installers "
+        f"still contain the PREVIOUS agent; re-run "
+        f"`bash scripts/generate_clients.sh` on the host.", "warning")
+    return {"success": False, "error": err}
 
 
 def upgrade_velociraptor(version: str, logger: Callable = None,
@@ -1658,7 +1706,17 @@ def upgrade_velociraptor(version: str, logger: Callable = None,
         staged_linux = os.path.join(work_dir, 'clients', 'linux', 'velociraptor')
         if os.path.exists(staged_linux):
             run_command(f"cp {staged_linux} {velo_bin}", logger=log)
-            run_command(f"chmod +x {velo_bin}", logger=log)
+            # `chmod 755`, NOT `chmod +x`. A symbolic mode with no "who" is
+            # masked by the umask, so under a umask carrying execute bits this
+            # silently leaves the binary non-executable -- and every VQL call
+            # made via `docker exec intact_velociraptor /velociraptor/
+            # velociraptor ... query` then fails rc=126 (found, not
+            # executable). That takes out memory acquisition and the
+            # flow-cancel path, while the Velociraptor SERVER stays healthy
+            # because it runs from the image's own copy, so nothing looks
+            # wrong. Same bug was fixed in modules/velociraptor/entrypoint.sh;
+            # this is the upgrade path that could reintroduce it.
+            run_command(f"chmod 755 {velo_bin}", logger=log)
 
         # Rebuild container — offline-safe now (COPY-only Dockerfile).
         log("Rebuilding container...", "info")
@@ -1739,6 +1797,13 @@ def upgrade_velociraptor(version: str, logger: Callable = None,
         except Exception as e:
             log(f"Offline-collector downloads refresh raised: {e}", "warning")
 
+        # Repack the client installers against the NEW binary. Without this an
+        # upgraded server keeps serving the old agent from the Downloads page.
+        try:
+            regenerate_client_installers(logger=log, run_id=run_id)
+        except Exception as e:
+            log(f"Client installer regeneration raised: {e}", "warning")
+
         remove_old_module_image('velociraptor', current_version, actual_version, logger=log)
         return {"success": True, "version": actual_version, "health": health["health"], "health_detail": health["detail"]}
 
@@ -1754,7 +1819,7 @@ def upgrade_velociraptor(version: str, logger: Callable = None,
         # Restore binary backup
         if os.path.exists(f"{backup_dir}/velociraptor.backup"):
             run_command(f"cp {backup_dir}/velociraptor.backup {velo_bin}", logger=log)
-            run_command(f"chmod +x {velo_bin}", logger=log)
+            run_command(f"chmod 755 {velo_bin}", logger=log)
 
         # Restart on the old version. Only REBUILD if the old image is actually
         # gone: a rollback is the worst possible moment to need the network, and
@@ -1962,7 +2027,7 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         staged_linux = os.path.join(work_dir, 'clients', 'linux', 'velociraptor')
         if os.path.exists(staged_linux):
             run_command(f"cp {staged_linux} {velo_bin}", logger=log)
-            run_command(f"chmod +x {velo_bin}", logger=log)
+            run_command(f"chmod 755 {velo_bin}", logger=log)
         _publish_client_binaries_to_tools(work_dir, actual_version, logger=log)
         log("  Binaries staged successfully", "info")
 
@@ -2154,6 +2219,13 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         except Exception as e:
             log(f"velociraptor tool restore raised: {e}", "warning")
 
+        # Repack the client installers against the NEW binary. Without this an
+        # upgraded server keeps serving the old agent from the Downloads page.
+        try:
+            regenerate_client_installers(logger=log, run_id=run_id)
+        except Exception as e:
+            log(f"Client installer regeneration raised: {e}", "warning")
+
         remove_old_module_image('velociraptor', current_version, actual_version, logger=log)
         return {"success": True, "version": actual_version, "health": health["health"], "health_detail": health["detail"]}
 
@@ -2169,7 +2241,7 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         # Restore binary backup
         if os.path.exists(f"{backup_dir}/velociraptor.backup"):
             run_command(f"cp {backup_dir}/velociraptor.backup {velo_bin}", logger=log)
-            run_command(f"chmod +x {velo_bin}", logger=log)
+            run_command(f"chmod 755 {velo_bin}", logger=log)
 
         # Restart on the old version. Only REBUILD if the old image is actually
         # gone: a rollback is the worst possible moment to need the network, and
@@ -2363,47 +2435,13 @@ def install_velociraptor_offline(package_dir: str, version: str, logger=None, ru
     except Exception as _ve:
         log(f"  Artifact verify/backfill raised: {_ve}", "warning")
 
-    # Generate pre-configured client installers (MSI / EXE / Linux /
-    # Mac / musl). lib/modules.sh:730-739 does this for the install.sh
-    # path; the offline-apply path was missing the parallel step, so
-    # operators who installed via the UI got a fully-functional
-    # Velociraptor server but the Downloads page returned "Client
-    # installer not found for platform: windows-msi". The script does a
-    # `docker exec intact_velociraptor velociraptor config client …`
-    # per platform and dumps the binaries into client_installers/. We
-    # reach it through the WORKDIR bind-mount (the repo root inside the
-    # backend container). Best-effort — failures log warnings; the
-    # operator can re-run the script manually.
-    client_gen_script = os.path.join(WORKDIR, 'scripts', 'generate_clients.sh')
-    if os.path.isfile(client_gen_script):
-        log("Generating pre-configured client installers (MSI / EXE / Linux / Mac / musl)...", "info")
-        try:
-            cg = run_command(
-                f"bash {client_gen_script}",
-                logger=log, timeout=600, run_id=run_id,
-            )
-            if cg.get('success'):
-                log("  Client installers generated; Downloads page is ready.",
-                    "success")
-            else:
-                err = (cg.get('error') or '')[:200]
-                log(
-                    f"  generate_clients.sh returned non-zero: {err}. The "
-                    f"Downloads page will return 404 for client installers "
-                    f"until the operator re-runs `bash scripts/generate_clients.sh` "
-                    f"on the host.",
-                    "warning",
-                )
-        except Exception as e:
-            log(f"  generate_clients.sh raised: {e} (Downloads page will "
-                f"404 until operator re-runs the script)", "warning")
-    else:
-        log(
-            f"  generate_clients.sh not found at {client_gen_script}. "
-            f"Downloads page client-installer endpoints will 404 until "
-            f"the operator runs the script manually on the host.",
-            "warning",
-        )
+    # Generate pre-configured client installers (MSI / EXE / Linux / Mac /
+    # musl). lib/modules.sh does this for the install.sh path; the
+    # offline-apply path was missing the parallel step, so operators who
+    # installed via the UI got a working Velociraptor server but a Downloads
+    # page that 404'd on windows-msi. Shares one implementation with the two
+    # upgrade paths — this was a third copy of the same block.
+    regenerate_client_installers(logger=log, run_id=run_id)
 
     # Stage velociraptor-collector for Hunt-collector generation. Same
     # call as upgrade_velociraptor_offline — fresh installs from a

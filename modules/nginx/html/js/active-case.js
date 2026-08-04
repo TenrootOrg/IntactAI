@@ -28,6 +28,30 @@
     try { window.alert(msg); } catch (e) { /* headless / no window.alert */ }
   }
 
+  // Redirect to the login page on the first 401 and swallow the rest.
+  //
+  // Debounced with a hard latch rather than the 3s window used above: the
+  // dashboard runs 8 independent setInterval pollers, so a single expiry
+  // produces a burst of simultaneous 401s and without the latch they would race
+  // each other assigning location.href.
+  let _redirecting = false;
+  function _handleUnauthenticated(resp) {
+    if (_redirecting) return;
+    _redirecting = true;
+    // Prefer the backend's reason ('expired' / 'credentials_changed'); fall back
+    // to a bare login page if the body isn't readable.
+    const go = function (reason) {
+      const q = reason ? ('?reason=' + encodeURIComponent(reason)) : '';
+      try { location.replace('/login.html' + q); }
+      catch (e) { location.href = '/login.html' + q; }
+    };
+    try {
+      resp.clone().json()
+        .then(function (d) { go(d && d.reason); })
+        .catch(function () { go(''); });
+    } catch (e) { go(''); }
+  }
+
   // --- the tagging hook -----------------------------------------------------
   window.fetch = function (input, init) {
     let isApi = false;
@@ -57,6 +81,17 @@
     // never hit this 409.
     return p.then(function (resp) {
       if (!resp) return resp;
+      // Session gone (expired, or the password was changed) — bounce to the
+      // login page, carrying the backend's reason so it can say WHICH of those
+      // happened instead of showing a bare form.
+      //
+      // Hooked here rather than in api-client.js because this is the one place
+      // every /api call passes through: there are ~116 raw fetch() call sites
+      // across the frontend versus 3 that use api.get/api.post (api-client.js
+      // says as much: "Existing code can gradually adopt these helpers"). Wiring
+      // it there would cover 3 of them and leave every other panel silently
+      // rendering empty on an expired session.
+      if (resp.status === 401) { _handleUnauthenticated(resp); return resp; }
       // PRIMARY path: the backend redirects a module launched from the System
       // workspace to Default and echoes the effective workspace here. Follow it
       // so the UI + later requests use Default (the run already ran there). This
@@ -97,8 +132,23 @@
   };
 
   // --- helpers --------------------------------------------------------------
+  // These three use the PRISTINE `_fetch` deliberately (bootstrap runs before
+  // an active case exists, and the 409 retry must not re-enter itself), which
+  // also means they skip the 401 branch in the hook above. Check it explicitly
+  // here — ensureActiveCase() runs on every page load, so without this an
+  // expired session would sit on a blank dashboard instead of redirecting.
+  async function _guard401(r) {
+    if (r && r.status === 401) { _handleUnauthenticated(r); return true; }
+    return false;
+  }
+
   async function listCases() {
-    try { const r = await _fetch('/api/cases'); const d = await r.json(); return d.cases || []; }
+    try {
+      const r = await _fetch('/api/cases');
+      if (await _guard401(r)) return [];
+      const d = await r.json();
+      return d.cases || [];
+    }
     catch (e) { return []; }
   }
 
@@ -155,11 +205,13 @@
     const r = await _fetch('/api/cases', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
     });
+    await _guard401(r);
     return r.json();
   }
 
   async function deleteCase(id) {
     const r = await _fetch('/api/cases/' + id, { method: 'DELETE' });
+    await _guard401(r);
     return { status: r.status, body: await r.json().catch(() => ({})) };
   }
 

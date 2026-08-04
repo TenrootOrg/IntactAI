@@ -1,5 +1,32 @@
 schema_version: 2
-domain: 192.168.120.10
+
+# Dashboard / API login — set up in the browser, not in this file.
+#
+# true  = this appliance has no login yet. Browsing to https://<domain>/ shows
+#         a one-time setup page where you choose the username and password.
+#         Completing setup flips this to false automatically.
+# false = a login is configured. The setup page is closed and https://<domain>/
+#         shows the login page.
+#
+# THIS IS ALSO THE RECOVERY SWITCH. There is one operator account and the
+# password is stored only as a hash, so it cannot be read back. If you forget
+# it, or ten wrong attempts in a row trigger the lockout and you don't want to
+# wait it out, set this back to true and reload the page — you'll get the setup
+# page again and can choose new credentials. It takes effect immediately; no
+# restart needed.
+#
+# Because flipping this re-opens the setup page to whoever loads it first, it
+# deliberately requires access to this file on the appliance host. That host
+# access IS the authentication for a password reset. Don't leave it true on a
+# box you haven't just set up.
+#
+# The login gates the dashboard, /api/, the upload endpoint and the
+# /velociraptor/ proxy. The other bundled tools (Kibana, IRIS, Portainer,
+# Timesketch, VolWeb) listen on their own ports and keep their own separate
+# logins — see the `modules:` section below.
+first_login: true
+
+domain: 192.168.120.11
 
 # Installation options
 options:
@@ -91,7 +118,7 @@ modules:
   plaso:
     enabled: true
   elk:
-    enabled: true
+    enabled: false
     id: elastic
     password: '123123'
   iris:
@@ -99,7 +126,7 @@ modules:
     id: administrator #Cant be changed
     password: '123123'
   portainer:
-    enabled: true
+    enabled: false
     id: admin
     password: '1234qwer!@#$' # Portainer requires >=12 chars; shorter values get a randomly-generated one instead (see lib/modules.sh)
   timesketch:
@@ -123,7 +150,7 @@ modules:
     password: '123123'
 project_name: intact
 versions:
-  elk: 9.4.2
+  elk: '9.4.4'
   iris: v2.4.27
   plaso: '20260512'
   portainer: 2.39.5
@@ -218,7 +245,7 @@ versions:
   # here so install/upgrade drive one reproducible tag; a bump recreates the
   # container (docker restart alone keeps the old image). Docker Hub:
   # tusproject/tusd — v2.9.2 current.
-  backend_tusd:          'v2.9.2'
+  backend_tusd:          'v2.10.0'
   volweb_postgres:       '14.1'
   # Was floating '7' — pinned to the exact patch (debian variant, matches the
   # currently-deployed redis:7). Reproducible; bump deliberately.

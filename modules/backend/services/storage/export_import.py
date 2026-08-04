@@ -33,6 +33,42 @@ def _redact_frontend_config_secrets(config: Dict[str, Any]) -> Dict[str, Any]:
     return redacted
 
 
+def _protect_frontend_config_credentials(config: Dict[str, Any]) -> Dict[str, Any]:
+    """import_db() has no authentication/authorization of its own — any
+    caller who can reach POST /api/db/import can otherwise supply a
+    frontend_config blob that overwrites the live AWS/Azure credentials and
+    the LLM provider/api_key, silently redirecting cloud collection and LLM
+    analysis traffic to an attacker-controlled endpoint. Credential fields
+    may only be changed through the dedicated config endpoints
+    (config_routes.py), which validate and mask them; a database import
+    must never be able to set them. Overwrites the credential fields in a
+    deep copy of `config` with whatever is currently stored (or blanks
+    if nothing is stored yet) before it reaches save_frontend_config();
+    every other imported field passes through unchanged."""
+    import copy
+    protected = copy.deepcopy(config or {})
+    existing = load_frontend_config() or {}
+
+    cloud = protected.get("cloud")
+    if isinstance(cloud, dict):
+        existing_cloud = existing.get("cloud") if isinstance(existing.get("cloud"), dict) else {}
+        if isinstance(cloud.get("aws"), dict):
+            existing_aws = existing_cloud.get("aws", {}) if isinstance(existing_cloud.get("aws"), dict) else {}
+            cloud["aws"]["secret_access_key"] = existing_aws.get("secret_access_key", "")
+            cloud["aws"]["session_token"] = existing_aws.get("session_token", "")
+        if isinstance(cloud.get("azure"), dict):
+            existing_azure = existing_cloud.get("azure", {}) if isinstance(existing_cloud.get("azure"), dict) else {}
+            cloud["azure"]["client_secret"] = existing_azure.get("client_secret", "")
+
+    agentic = protected.get("agentic")
+    if isinstance(agentic, dict) and isinstance(agentic.get("online_llm"), dict):
+        existing_agentic = existing.get("agentic") if isinstance(existing.get("agentic"), dict) else {}
+        existing_llm = existing_agentic.get("online_llm", {}) if isinstance(existing_agentic.get("online_llm"), dict) else {}
+        agentic["online_llm"]["api_key"] = existing_llm.get("api_key", "")
+
+    return protected
+
+
 def export_db() -> Dict[str, Any]:
     """Export all tables to a JSON-serializable dict"""
     conn = get_connection()
@@ -136,9 +172,12 @@ def import_db(data: Dict[str, Any]) -> bool:
                 (report.get('run_id'), report.get('content'), report.get('created_at'))
             )
 
-        # Import frontend config
+        # Import frontend config — never let an import overwrite live
+        # credentials (AWS/Azure secrets, LLM api_key); see
+        # _protect_frontend_config_credentials().
         fc = data.get("frontend_config", {})
         if fc:
+            fc = _protect_frontend_config_credentials(fc)
             save_frontend_config(fc)
 
         conn.commit()

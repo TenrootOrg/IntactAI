@@ -423,8 +423,18 @@ def upload_logs():
                 # member's basename as the filename hint so files named
                 # `Azure.<source>.json` are tagged correctly.
                 import zipfile as _zf
+                from services.archive_guard import guard_zip, ArchiveRejected
                 extracted_dir = os.path.join(run_dir, 'extracted')
                 os.makedirs(extracted_dir, exist_ok=True)
+                # Judge the archive before touching it. Below, each member is
+                # read with src.read() — the WHOLE member into RAM before it is
+                # written — so an oversized entry exhausts backend memory, not
+                # just disk. Nothing bounded that.
+                try:
+                    guard_zip(file_path, extracted_dir)
+                except ArchiveRejected as e:
+                    add_log_to_run(run_id, f"Archive rejected: {e}", "error")
+                    return jsonify({"error": f"Archive rejected: {e}"}), 400
                 try:
                     with _zf.ZipFile(file_path, 'r') as zf:
                         for member in zf.namelist():

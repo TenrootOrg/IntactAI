@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="intactdark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Set up your login — TenRoot Intact.AI</title>
+    <link rel="icon" type="image/png" href="img/tenroot-logo.png">
+    <link rel="stylesheet" href="css/tailwind.css?v=10">
+    <link rel="stylesheet" href="css/styles.css?v=12">
+    <!-- Standalone by design — see the note in login.html. -->
+</head>
+<body class="bg-gray-900 text-white">
+<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px">
+  <div style="width:100%;max-width:460px">
+
+    <div style="text-align:center;margin-bottom:28px">
+      <img src="img/tenroot-logo.png" alt="TenRoot" style="width:140px;height:auto;opacity:.9">
+      <h1 style="margin-top:16px;font-size:20px;font-weight:600">Create your login</h1>
+      <p style="margin-top:8px;font-size:13px;color:#9ca3af;line-height:1.5">
+        This appliance has no login yet. Choose the operator username and password —
+        there is a single account, no roles.
+      </p>
+    </div>
+
+    <div id="notice" style="display:none;margin-bottom:16px;padding:12px 14px;border-radius:8px;
+         background:#1f2937;border:1px solid #374151;font-size:13px;line-height:1.5"></div>
+
+    <!-- Anyone who can load this page can claim the account. Say so plainly
+         rather than letting it look like a routine form. -->
+    <div style="margin-bottom:16px;padding:12px 14px;border-radius:8px;background:#3a2d12;
+                border:1px solid #92400e;font-size:12px;color:#fcd34d;line-height:1.6">
+      Until this is done, anyone who can reach this appliance on the network can
+      claim it. Finish setup now, on this machine.
+    </div>
+
+    <form id="setupForm" style="background:#111827;border:1px solid #1f2937;border-radius:10px;padding:20px">
+      <label for="username" style="display:block;font-size:12px;color:#9ca3af;margin-bottom:6px">Username</label>
+      <input id="username" name="username" type="text" autocomplete="username" value="admin" autofocus
+             style="width:100%;padding:10px 12px;margin-bottom:14px;border-radius:6px;
+                    background:#0d1117;border:1px solid #374151;color:#fff">
+
+      <label for="password" style="display:block;font-size:12px;color:#9ca3af;margin-bottom:6px">Password</label>
+      <input id="password" name="password" type="password" autocomplete="new-password"
+             style="width:100%;padding:10px 12px;margin-bottom:14px;border-radius:6px;
+                    background:#0d1117;border:1px solid #374151;color:#fff">
+
+      <label for="confirm" style="display:block;font-size:12px;color:#9ca3af;margin-bottom:6px">Confirm password</label>
+      <input id="confirm" name="confirm" type="password" autocomplete="new-password"
+             style="width:100%;padding:10px 12px;margin-bottom:6px;border-radius:6px;
+                    background:#0d1117;border:1px solid #374151;color:#fff">
+
+      <p style="font-size:11px;color:#6b7280;margin-top:8px">Minimum 8 characters.</p>
+
+      <div id="error" style="display:none;color:#f87171;font-size:13px;margin:10px 0"></div>
+
+      <button id="submitBtn" type="submit"
+              style="width:100%;margin-top:14px;padding:11px;border-radius:6px;border:none;
+                     background:#2563eb;color:#fff;font-weight:600;cursor:pointer">
+        Create login and sign in
+      </button>
+    </form>
+
+    <div style="margin-top:18px;padding:12px 14px;border-radius:8px;background:#111827;
+                border:1px solid #1f2937;font-size:12px;color:#9ca3af;line-height:1.6">
+      <strong style="color:#d1d5db">Keep this password somewhere safe.</strong><br>
+      It is stored only as a hash and cannot be recovered. If you lose it, set
+      <code style="color:#93c5fd">first_login: true</code> in
+      <code style="color:#93c5fd">config.yaml</code> on the appliance host to get
+      this page back.
+    </div>
+
+  </div>
+</div>
+
+<script>
+(function () {
+  var notice   = document.getElementById('notice');
+  var errorBox = document.getElementById('error');
+  var form     = document.getElementById('setupForm');
+  var btn      = document.getElementById('submitBtn');
+
+  function show(el, text) { el.textContent = text; el.style.display = 'block'; }
+  function hide(el) { el.style.display = 'none'; }
+
+  // Don't offer a setup form on an appliance that is already claimed — the
+  // backend would refuse it anyway, but showing the form implies it would work.
+  fetch('/api/auth/status', { credentials: 'same-origin' })
+    .then(function (r) { return r.json(); })
+    .then(function (s) {
+      if (s.mode === 'login') { location.replace('/login.html'); return; }
+      if (s.mode === 'error') {
+        form.style.display = 'none';
+        show(notice, s.message || 'config.yaml could not be read on the appliance.');
+      }
+    })
+    .catch(function () {
+      show(notice, 'Cannot reach the Intact.AI backend. It may still be starting up.');
+    });
+
+  form.addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    hide(errorBox);
+    btn.disabled = true;
+    btn.textContent = 'Creating…';
+
+    fetch('/api/auth/setup', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: document.getElementById('username').value,
+        password: document.getElementById('password').value,
+        confirm:  document.getElementById('confirm').value
+      })
+    })
+      .then(function (r) { return r.json().then(function (b) { return { status: r.status, body: b }; }); })
+      .then(function (res) {
+        btn.textContent = 'Create login and sign in';
+        if (res.status === 200 && res.body.success) {
+          location.replace('/');
+          return;
+        }
+        btn.disabled = false;
+        if (res.body.error === 'setup_closed') {
+          location.replace('/login.html');
+          return;
+        }
+        show(errorBox, res.body.message || 'Setup failed.');
+      })
+      .catch(function () {
+        btn.disabled = false;
+        btn.textContent = 'Create login and sign in';
+        show(errorBox, 'Could not reach the backend. Try again in a moment.');
+      });
+  });
+})();
+</script>
+</body>
+</html>

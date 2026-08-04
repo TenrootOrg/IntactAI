@@ -18,13 +18,27 @@ services:
     image: postgres:${POSTGRES_VERSION:?must be set via modules/timesketch/.env — see versions.timesketch_postgres in config.yaml}
     environment:
       - POSTGRES_USER=timesketch
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-timesketch}
       - POSTGRES_DB=timesketch
+    # POSTGRES_PASSWORD was `${POSTGRES_PASSWORD:-timesketch}`, and the fallback
+    # was LIVE: modules/timesketch/.env contains no such key and nothing set it,
+    # so every deployment ran the timeline database on timesketch/timesketch.
+    # Note the asymmetry that hid it -- the version pins above fail loudly with
+    # `:?`, while the password silently defaulted. A stale image tag is
+    # recoverable; a default database password is not.
+    #
+    # Delivered via secrets/ rather than the module .env because that .env is
+    # git-TRACKED and a credential there would be staged by the next `git add`.
+    # Written by deploy_timesketch() in lib/modules.sh and by
+    # _ensure_postgres_password() on the upgrade path.
+    env_file:
+      - ./secrets/postgres.env
     volumes:
       - timesketch_postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
     networks:
-      - intact_network
+      # Data store: reachable ONLY by the Timesketch app containers.
+      # Was on intact_network, where all 25 containers could reach it.
+      - timesketch_internal
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U timesketch"]
       interval: 10s
@@ -57,7 +71,9 @@ services:
       - timesketch_opensearch_data:/usr/share/opensearch/data
     restart: unless-stopped
     networks:
-      - intact_network
+      # Data store: reachable ONLY by the Timesketch app containers.
+      # Was on intact_network, where all 25 containers could reach it.
+      - timesketch_internal
     healthcheck:
       test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
       interval: 30s
@@ -88,7 +104,9 @@ services:
     command: redis-server
     restart: unless-stopped
     networks:
-      - intact_network
+      # Data store: reachable ONLY by the Timesketch app containers.
+      # Was on intact_network, where all 25 containers could reach it.
+      - timesketch_internal
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -102,11 +120,20 @@ services:
     command:
       - |
         mkdir -p /var/log/timesketch
+        [ -r /opt/intact/llm_providers/apply.sh ] && bash /opt/intact/llm_providers/apply.sh; true
         exec /docker-entrypoint.sh timesketch-web
     environment:
       - NUM_WSGI_WORKERS=${NUM_WSGI_WORKERS:-4}
     volumes:
       - ./config:/etc/timesketch
+      # IntactAI's contrib LLM providers (openrouter, litellm_proxy). apply.sh
+      # writes them into the vendor image's site-packages on every start —
+      # /opt/venv has no volume, so a one-off docker cp would be destroyed by
+      # the next recreate. Read-only: the container never writes back here.
+      # The `[ -r ] && … ; true` guard above is load-bearing — on a partially
+      # applied upgrade docker bind-mounts an empty dir, and Timesketch must
+      # still start. See llm_providers/README.md.
+      - ./llm_providers:/opt/intact/llm_providers:ro
       - timesketch_upload:/usr/share/timesketch/upload
       - timesketch_logs:/var/log/timesketch
     restart: unless-stopped
@@ -118,44 +145,62 @@ services:
       timesketch-redis:
         condition: service_healthy
     networks:
-      - intact_network
+      - intact_network        # reached by timesketch-nginx
+      - timesketch_internal   # reaches postgres / opensearch / redis
 
   timesketch-web-legacy:
     container_name: intact_timesketch_web_legacy
     image: us-docker.pkg.dev/osdfir-registry/timesketch/timesketch:${TIMESKETCH_VERSION:-latest}
-    entrypoint: ["/docker-entrypoint.sh"]
-    command: ["timesketch-web-legacy"]
+    # Converted from `entrypoint: ["/docker-entrypoint.sh"]` to the bash -c
+    # form so the contrib-LLM-provider prologue runs first. Cosmetic, not
+    # behavioural: /docker-entrypoint.sh runs gunicorn as a child rather than
+    # exec'ing it, so the process tree is identical either way.
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        mkdir -p /var/log/timesketch
+        [ -r /opt/intact/llm_providers/apply.sh ] && bash /opt/intact/llm_providers/apply.sh; true
+        exec /docker-entrypoint.sh timesketch-web-legacy
     environment:
       - NUM_WSGI_WORKERS=${NUM_WSGI_WORKERS:-2}
       - TIMESKETCH_UI_MODE=legacy
       - TIMESKETCH_SETTINGS=/etc/timesketch/timesketch_legacy.conf
     volumes:
       - ./config:/etc/timesketch
+      - ./llm_providers:/opt/intact/llm_providers:ro
       - timesketch_upload:/usr/share/timesketch/upload
       - timesketch_logs:/var/log/timesketch
     restart: unless-stopped
     depends_on:
       - timesketch-web
     networks:
-      - intact_network
+      - intact_network        # reached by timesketch-nginx
+      - timesketch_internal   # reaches postgres / opensearch / redis
 
   timesketch-web-v3:
     container_name: intact_timesketch_web_v3
     image: us-docker.pkg.dev/osdfir-registry/timesketch/timesketch:${TIMESKETCH_VERSION:-latest}
-    entrypoint: ["/docker-entrypoint.sh"]
-    command: ["timesketch-web-v3"]
+    # Same conversion as timesketch-web-legacy above.
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        mkdir -p /var/log/timesketch
+        [ -r /opt/intact/llm_providers/apply.sh ] && bash /opt/intact/llm_providers/apply.sh; true
+        exec /docker-entrypoint.sh timesketch-web-v3
     environment:
       - NUM_WSGI_WORKERS=${NUM_WSGI_WORKERS:-2}
       - TIMESKETCH_UI_MODE=v3
     volumes:
       - ./config:/etc/timesketch
+      - ./llm_providers:/opt/intact/llm_providers:ro
       - timesketch_upload:/usr/share/timesketch/upload
       - timesketch_logs:/var/log/timesketch
     restart: unless-stopped
     depends_on:
       - timesketch-web
     networks:
-      - intact_network
+      - intact_network        # reached by timesketch-nginx
+      - timesketch_internal   # reaches postgres / opensearch / redis
 
   timesketch-nginx:
     container_name: intact_timesketch_nginx
@@ -190,18 +235,23 @@ services:
     command:
       - |
         mkdir -p /var/log/timesketch
+        [ -r /opt/intact/llm_providers/apply.sh ] && bash /opt/intact/llm_providers/apply.sh; true
         exec /docker-entrypoint.sh timesketch-worker
     environment:
       - WORKER_LOG_LEVEL=${WORKER_LOG_LEVEL:-INFO}
     volumes:
       - ./config:/etc/timesketch
+      # The worker runs the Celery-side LLM features (summarize/synthesize),
+      # so it needs the providers just as much as the web frontends do.
+      - ./llm_providers:/opt/intact/llm_providers:ro
       - timesketch_upload:/usr/share/timesketch/upload
       - timesketch_logs:/var/log/timesketch
     restart: unless-stopped
     depends_on:
       - timesketch-web
     networks:
-      - intact_network
+      - intact_network        # reached by timesketch-nginx
+      - timesketch_internal   # reaches postgres / opensearch / redis
 
 volumes:
   timesketch_postgres_data:
@@ -212,3 +262,30 @@ volumes:
 networks:
   intact_network:
     external: true
+  # Private network for the Timesketch data stores.
+  #
+  # OpenSearch runs with DISABLE_SECURITY_PLUGIN=true, i.e. NO authentication
+  # at all. While it sat on intact_network, any of the ~25 containers there
+  # could read, modify or DELETE every forensic timeline with no credentials
+  # and no audit trail -- verified by reading the full index list from
+  # intact_nginx. For a DFIR platform that is an evidence-integrity problem,
+  # not merely a confidentiality one. Postgres (which held timesketch/
+  # timesketch) and Redis (no requirepass) were equally exposed.
+  #
+  # Isolation rather than enabling the security plugin: with
+  # DISABLE_INSTALL_DEMO_CONFIG=true, turning the plugin on requires transport
+  # TLS certs, a hand-authored internal_users.yml, securityadmin.sh to
+  # initialise, and credentials threaded into timesketch.conf (where
+  # OPENSEARCH_USER/PASSWORD are currently None) plus a migration for existing
+  # indices. This shrinks the blast radius from 25 containers to 4 as a
+  # compose-only change. It does NOT add authentication -- compromise
+  # timesketch-web itself and OpenSearch is still open. Real auth remains
+  # worth doing; this is the cheap 80%.
+  #
+  # Safe because nothing outside this module reaches OpenSearch over the
+  # network: the backend's only access is
+  # `docker exec intact_timesketch_opensearch curl localhost:9200`
+  # (maintenance_routes.py:816,836,1063), and docker exec does not traverse
+  # the Docker network.
+  timesketch_internal:
+    name: timesketch_internal

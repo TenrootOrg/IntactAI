@@ -225,6 +225,14 @@ def build_artifact_spec(artifacts, settings=None):
 def get_client_hostnames(stub, client_ids):
     """Get hostname mapping for a list of client IDs."""
     hostnames = {}
+    # Defense-in-depth, same rule as get_existing_collection_results below:
+    # these IDs are joined into a VQL string literal with no escaping, so one
+    # quote breaks out of the IN (...) list. The scheduler's PUT route is
+    # validated now, but a job POISONED BEFORE THAT FIX is still on disk and
+    # will fire on its next tick — the route guard cannot reach it, this can.
+    client_ids = [c for c in (client_ids or []) if is_valid_client_id(c)]
+    if not client_ids:
+        return hostnames
     try:
         # Query client info for all clients
         client_list = "', '".join(client_ids)
@@ -261,6 +269,10 @@ def get_client_os(stub, client_ids):
     broad Generic scanner crawls that endpoint's filesystem). Best-effort — clients
     we can't resolve are left out of the map and treated as 'unknown' by callers."""
     os_map = {}
+    # Same VQL-literal join as get_client_hostnames — validate before building it.
+    client_ids = [c for c in (client_ids or []) if is_valid_client_id(c)]
+    if not client_ids:
+        return os_map
     try:
         client_list = "', '".join(client_ids)
         query = f"""
@@ -322,6 +334,17 @@ def resolve_hostnames(client_ids):
 def create_collections(run_id, artifacts, settings, client_ids):
     """Create a collection on each selected client with all artifacts bundled.
     Returns list of {client_id, flow_id, hostname}."""
+    # Defense-in-depth before ANY query runs: each id is interpolated into
+    # `client_id='{client_id}'` below with no escaping. Reject loudly rather
+    # than filtering silently — reaching here with a bad id means a job was
+    # persisted before the scheduler's PUT route was validated, and the
+    # operator needs to see which job to fix.
+    bad = [c for c in (client_ids or []) if not is_valid_client_id(c)]
+    if bad:
+        add_log_to_run(run_id,
+                       f"[Velociraptor] Rejecting invalid client_ids: {bad!r}", "error")
+        return []
+
     channel = setup_velociraptor_connection()
     if not channel:
         add_log_to_run(run_id, "[Velociraptor] Failed to connect to server", "error")

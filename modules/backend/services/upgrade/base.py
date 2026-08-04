@@ -21,6 +21,116 @@ HOST_PATH = os.environ.get('INTACT_HOST_PATH', WORKDIR)
 MODULES_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+# Secret files that install.sh's blanket `chmod 644` sweep resets to
+# world-readable on every run, and which this Python path must harden too.
+#
+# The in-UI upgrade NEVER executes install.sh (see intact.py's
+# "install.sh's bash bootstrap never runs again"), so an installer-only fix
+# leaves every upgraded box exposed. This list must stay byte-for-byte in step
+# with the `chmod 600` block in install.sh's fix_source_permissions();
+# tests/test_secret_files_are_not_world_readable.py asserts the two sets are
+# equal, because the realistic failure is someone adding a secret to one side
+# only and upgraded boxes silently staying at 644.
+#
+# NOTE: IRIS secrets are deliberately absent. install.sh chmods them 600 while
+# this path chmods them 644 (iris.py:399-423) to keep iris_app — which runs as
+# nobody/65534 — able to read them. Reconciling that is a separate ticket;
+# pulling them in here would risk the documented crashloop.
+_SECRET_PATHS_0600 = (
+    "data/velociraptor/server.config.yaml",   # CA private key: signs every endpoint
+    "data/velociraptor/api.config.yaml",      # API client private key
+    "data/intact.db",                         # `secrets` table is plaintext
+    "data/intact.db-wal",                     # same rows as the DB
+    "data/intact.db-shm",
+    "modules/timesketch/config/timesketch.conf",         # SECRET_KEY, OPENSEARCH_PASSWORD
+    "modules/timesketch/config/timesketch_legacy.conf",
+    "data/auth/audit.jsonl",                  # login / lockout history
+)
+
+
+def harden_secret_permissions(logger: Callable = None) -> Dict:
+    """chmod 600 the secret files the 644 sweep would otherwise leave open.
+
+    Safe at 600 because every consuming container runs as root and root ignores
+    file mode bits (verified with `docker top`, not Config.User). Runs as root
+    inside intact_backend, so the resulting host files are root:root — still
+    readable by those same root containers.
+
+    Best-effort by design: a chmod failure must never abort an upgrade, so every
+    path is attempted independently and errors are swallowed per-file.
+    """
+    log = logger or (lambda m, l="info": None)
+    hardened, skipped = [], []
+    for rel in _SECRET_PATHS_0600:
+        path = os.path.join(WORKDIR, rel)
+        try:
+            if not os.path.exists(path):
+                continue          # not every deployment has every file
+            if (os.stat(path).st_mode & 0o777) == 0o600:
+                skipped.append(rel)
+                continue
+            os.chmod(path, 0o600)
+            hardened.append(rel)
+        except Exception:
+            # Never fatal. A permission error here is far less bad than a
+            # half-finished upgrade.
+            continue
+    if hardened:
+        log(f"  Hardened {len(hardened)} secret file(s) to 0600: "
+            f"{', '.join(hardened)}", "success")
+    elif skipped:
+        log(f"  Secret file permissions already correct ({len(skipped)} file(s))", "info")
+    return {"hardened": hardened, "already_correct": skipped}
+
+
+_SECRET_ARG_PATTERNS = (
+    # `-e NAME=secret` / bare `NAME=secret` env assignments, where NAME looks
+    # like a credential. This is the shape that actually leaked: iris.py builds
+    # `docker exec -e IRIS_RESET_PW=<pw> ...` and the echo below put the
+    # password into the backend's stdout, hence `docker logs`, hence every
+    # support bundle collected afterwards.
+    re.compile(r'((?:-e\s+)?[A-Za-z_][A-Za-z0-9_]*'
+               r'(?:PASSWORD|PASSWD|_PW|TOKEN|SECRET|APIKEY|API_KEY|KEY|CREDENTIAL)'
+               r'\s*=\s*)(\S+)', re.IGNORECASE),
+    # `--password value`, `--password=value`, `--token ...`, `-p value`
+    re.compile(r'(--(?:password|passwd|token|secret|api-key|apikey)[=\s]+)(\S+)',
+               re.IGNORECASE),
+    # curl's `-u user:password` / `--user user:password`. This one leaked in
+    # plain sight: the ELK health gate shells out to
+    #   docker exec intact_elasticsearch curl -sf -u elastic:<password> http://...
+    # and the whole command line was logged verbatim, so the Elasticsearch
+    # password landed in the upgrade run log -- the artifact operators download
+    # and paste into tickets -- and from there into the SQLite workflows table
+    # and the intact_workflow_runs index. Keeps the username, which is the part
+    # that makes the log useful, and drops everything after the colon.
+    re.compile(r'((?:-u|--user)\s+[^\s:]+:)(\S+)'),
+)
+
+
+def redact_command(cmd: str) -> str:
+    """Mask credential-looking values in a command string before it is logged.
+
+    Applied UNCONDITIONALLY by run_command below, deliberately: the one call
+    site that tried to keep a password out of the logs (iris.py's IRIS admin
+    reset) did so by passing `logger=None` — which does not silence anything,
+    because run_command falls back to printing when no logger is given. The
+    result was the operator's IRIS password sitting in
+    containers/intact_backend.log inside a support bundle, i.e. the one artifact
+    designed to be sent to other people. Redacting at the choke point means a
+    future call site cannot make that mistake at all.
+
+    Worth keeping broad: run logs also reach the SQLite `workflows` table and
+    the `intact_workflow_runs` Elasticsearch index (whose mapping carries a
+    nested `logs` array), so a leaked credential here does not stay in one file.
+    """
+    if not cmd:
+        return cmd
+    out = cmd
+    for pattern in _SECRET_ARG_PATTERNS:
+        out = pattern.sub(lambda m: m.group(1) + '[REDACTED]', out)
+    return out
+
+
 def run_command(cmd: str, cwd: str = None, timeout: int = 300, logger: Callable = None,
                 run_id: Optional[str] = None) -> Dict:
     """Run a shell command and return result.
@@ -54,7 +164,9 @@ def run_command(cmd: str, cwd: str = None, timeout: int = 300, logger: Callable 
                 cmd = cmd.replace("docker compose", f"docker compose -f {compose_file} --project-directory {host_cwd}", 1)
                 cwd = None
 
-        log(f"  Running: {cmd[:80]}...", "info")
+        # Redact BEFORE truncating: the password that leaked previously sat
+        # inside the first 80 characters, so slicing is not a mitigation.
+        log(f"  Running: {redact_command(cmd)[:80]}...", "info")
 
         try:
             from services.workflow_service import (
@@ -147,8 +259,24 @@ def run_command(cmd: str, cwd: str = None, timeout: int = 300, logger: Callable 
             time.sleep(1.0)
         stdout, stderr = _collect(5)
         if process.returncode != 0:
-            log(f"  Command failed: {(stderr or '')[:200]}", "warning")
-            return {"success": False, "error": stderr or "", "stdout": stdout or ""}
+            # Report what FAILED, not what happened first. `docker compose`
+            # writes "Container X Creating/Created/Starting" progress to stderr
+            # interleaved with real diagnostics, so a head truncation shows
+            # nothing but chatter: the ELK failure's decisive line — service
+            # "setup" didn't complete successfully: exit 126 — was the last one
+            # in the stream, and the old [:200] cut it off. Three diagnoses of
+            # that failure were wrong before anyone opened the raw log.
+            # Deferred import: compose_assets imports WORKDIR from this module.
+            try:
+                from .compose_assets import strip_compose_progress
+                detail = strip_compose_progress(stderr or '')
+            except Exception:
+                detail = (stderr or '')[-600:]
+            log(f"  Command failed: {detail}", "warning")
+            # "error" stays the raw stream — callers parse it for specific
+            # substrings. "error_summary" is the operator-facing one.
+            return {"success": False, "error": stderr or "",
+                    "error_summary": detail, "stdout": stdout or ""}
         return {"success": True, "stdout": stdout or "", "stderr": stderr or ""}
     except Exception as e:
         log(f"  Command error: {str(e)}", "error")
@@ -250,27 +378,36 @@ def cleanup_backup(backup_file: str, logger: Callable = None):
 # template. Single-file copy on purpose — never directory-mirrors the module
 # dir, which also holds real per-install state (config/, secrets/, data).
 def refresh_module_compose_file(module_name: str, intact_root: str,
-                                 logger: Callable = None) -> bool:
-    """Refresh modules/<module_name>/docker-compose.yaml from the new
-    release's source tree. No-op (returns False) if the source lacks the
-    file or its content already matches — never deletes a working compose
-    file over an incomplete package, never touches anything else in the
-    module directory."""
+                                 logger: Callable = None,
+                                 relative_path: str = 'docker-compose.yaml') -> bool:
+    """Refresh modules/<module_name>/<relative_path> from the new release's
+    source tree. No-op (returns False) if the source lacks the file or its
+    content already matches — never deletes a working file over an
+    incomplete package, never touches anything else in the module
+    directory.
+
+    `relative_path` defaults to docker-compose.yaml (the only file this was
+    originally written for); it also accepts a path under a subdirectory
+    (e.g. 'config/nginx.conf') for the rare structural change — like the
+    auth_basic gate in nginx.conf — that lives outside the compose file and
+    genuinely needs to reach already-installed boxes on an offline-package
+    upgrade, not just fresh installs."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
-    src = os.path.join(intact_root, 'modules', module_name, 'docker-compose.yaml')
+    label = f"{module_name}/{relative_path}"
+    src = os.path.join(intact_root, 'modules', module_name, relative_path)
     if not os.path.isfile(src):
         return False
-    dst_dir = os.path.join(WORKDIR, 'modules', module_name)
-    dst = os.path.join(dst_dir, 'docker-compose.yaml')
+    dst = os.path.join(WORKDIR, 'modules', module_name, relative_path)
+    dst_dir = os.path.dirname(dst)
     try:
         if os.path.isfile(dst) and filecmp.cmp(src, dst, shallow=False):
             return False
         os.makedirs(dst_dir, exist_ok=True)
         shutil.copy2(src, dst)
-        log(f"  Refreshed {module_name}/docker-compose.yaml from the new release", "success")
+        log(f"  Refreshed {label} from the new release", "success")
         return True
     except Exception as e:
-        log(f"  Could not refresh {module_name}/docker-compose.yaml "
+        log(f"  Could not refresh {label} "
             f"({type(e).__name__}: {e})", "warning")
         return False
 
@@ -494,8 +631,13 @@ def _container_state(name: str) -> str:
 
 
 def _probe_elk():
+    import shlex
+    elk_env = read_env_file(os.path.join(WORKDIR, 'modules', 'elk', '.env'))
+    es_user = elk_env.get('ELASTIC_USER', 'elastic')
+    es_pass = elk_env.get('ELASTIC_PASSWORD', 'changeme')
     r = run_command(
         "docker exec intact_elasticsearch curl -sf --max-time 8 "
+        f"-u {shlex.quote(f'{es_user}:{es_pass}')} "
         "http://localhost:9200/_cluster/health", logger=None, timeout=30)
     if not r.get('success'):
         return ('down', 'elasticsearch _cluster/health unreachable')
@@ -1679,19 +1821,74 @@ def preflight_offline_images(module: str, version: str, images_dir: str,
     return {"success": True, "missing": []}
 
 
-def verify_upgrade_package(package_path: str, logger: Callable = None) -> Dict:
+# Extraction progress is logged every N percent. Low enough that a multi-GB
+# package never looks hung, high enough that a small one does not spam the run
+# log with twenty lines of noise.
+_EXTRACT_LOG_STEP = 5
+
+
+def verify_upgrade_package(package_path: str, logger: Callable = None,
+                           expected_sha256: str = None) -> Dict:
     """Extract and verify an upgrade package.
+
+    Two different questions, and it is worth being clear which one this answers.
+
+    The manifest's per-file sha256 map proves the archive is INTACT — nothing
+    was truncated or corrupted in transit. It cannot prove the archive is
+    AUTHENTIC, because the map travels inside the archive it validates: anyone
+    who can rewrite the files can rewrite the hashes, or drop the block
+    entirely. Applying a package is a privileged operation on a host whose
+    backend holds the Docker socket, so that distinction matters.
+
+    The online path is anchored: `services/upgrade/download.py` fetches the
+    `.sha256` sidecar published with the GitHub release and checks the whole
+    tarball against it. The offline path — an operator uploading a package by
+    hand, typically into an air-gapped site — had no anchor at all.
+
+    So: the archive digest is now always computed and logged, and
+    ``expected_sha256`` lets an operator supply the value published on the
+    release page. Same digest CI produces (it is computed pre-split, and
+    reassembling the parts reproduces the whole file byte for byte), so an
+    air-gap operator who carried the parts in can compare against the number
+    from the same page. Absent that value this still cannot authenticate
+    anything — it just makes the digest available to compare by eye.
 
     Args:
         package_path: Path to the .tar.gz package file
+        expected_sha256: Optional operator-supplied digest. Mismatch aborts
+            BEFORE anything is extracted; the uploaded file is left in place.
 
     Returns:
-        Dict with success, extract_dir, and manifest info
+        Dict with success, extract_dir, manifest info, and sha256.
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
 
     if not os.path.exists(package_path):
         return {"success": False, "error": f"Package not found: {package_path}"}
+
+    # Compute once, up front, before a single byte is extracted.
+    import hashlib as _hl
+    _h = _hl.sha256()
+    with open(package_path, 'rb') as _fh:
+        for _chunk in iter(lambda: _fh.read(8 * 1024 * 1024), b''):
+            _h.update(_chunk)
+    archive_sha256 = _h.hexdigest()
+    log(f"Package sha256: {archive_sha256}", "info")
+
+    if expected_sha256:
+        want = str(expected_sha256).strip().lower()
+        if want != archive_sha256:
+            err = (f"Package digest does not match the value you supplied. "
+                   f"Expected {want}, got {archive_sha256}. The upload was NOT "
+                   f"applied and the file was left in place — re-download it, "
+                   f"or check the digest against the release page.")
+            log(err, "error")
+            return {"success": False, "error": err, "sha256": archive_sha256}
+        log("  Digest matches the value supplied by the operator", "success")
+    else:
+        log("  No expected digest supplied — the package is checked for "
+            "corruption, NOT authenticity. Compare the sha256 above against "
+            "the .sha256 published with the release.", "warning")
 
     # Pre-extract integrity check. Catches archives that were
     # produced corrupt by an old prepare (pre-`gzip -t` fix) or
@@ -1783,7 +1980,26 @@ def verify_upgrade_package(package_path: str, logger: Callable = None) -> Dict:
                         f"package contains path-traversal member ({name!r}) "
                         f"— refusing to extract"
                     )
-            tar.extractall(extract_dir)
+            # Extract member-by-member so progress is reportable. A 5.8 GB
+            # package takes minutes and extractall() is a single opaque call —
+            # the operator watched a silent log and reasonably concluded it had
+            # hung. Percentage is by BYTES, not member count: the image tars are
+            # a handful of members carrying almost all the weight, so counting
+            # files would sit at "3%" for minutes and then jump to done.
+            members = tar.getmembers()          # already materialised above
+            total_bytes = sum(m.size for m in members) or 1
+            done_bytes = 0
+            next_pct = _EXTRACT_LOG_STEP
+            log(f"  Extracting {len(members)} entries "
+                f"({total_bytes / 1024 / 1024 / 1024:.1f} GB uncompressed)…", "info")
+            for m in members:
+                tar.extract(m, extract_dir)
+                done_bytes += m.size
+                pct = done_bytes * 100 // total_bytes
+                if pct >= next_pct:
+                    log(f"    … extracted {done_bytes // (1024 * 1024)}/"
+                        f"{total_bytes // (1024 * 1024)} MB ({pct}%)", "info")
+                    next_pct = pct + _EXTRACT_LOG_STEP
         log(f"  Extracted to {extract_dir}", "info")
 
         subdirs = [d for d in os.listdir(extract_dir) if os.path.isdir(os.path.join(extract_dir, d))]
@@ -1828,18 +2044,25 @@ def verify_upgrade_package(package_path: str, logger: Callable = None) -> Dict:
                 err = (f"Package integrity check failed for {len(bad)} file(s): "
                        f"{'; '.join(bad[:5])}"
                        + (f" (+{len(bad)-5} more)" if len(bad) > 5 else "")
-                       + ". The package is corrupt — re-prepare/re-upload it. "
-                         "No module was touched.")
+                       + ". Re-prepare or re-download the package. No module "
+                         "was touched.")
                 log(f"  {err}", "error")
                 shutil.rmtree(extract_dir, ignore_errors=True)
                 return {"success": False, "error": err}
             log(f"  All {len(sha_map)} checksums verified", "success")
         else:
-            log("  Package has no sha256 map (older prepare) — integrity is "
-                "archive-level only", "info")
+            # Not a footnote: this is the bypass. The map lives INSIDE the
+            # archive being checked, so anyone who can modify the package can
+            # also drop this block and skip verification entirely. Say so at
+            # warning level rather than filing it under back-compat trivia.
+            log("  Package carries no sha256 map — per-file integrity NOT "
+                "verified (older prepare, or the block was removed). Compare "
+                "the archive digest logged above against the .sha256 published "
+                "with the release before applying.", "warning")
 
         return {
             "success": True,
+            "sha256": archive_sha256,
             "extract_dir": extract_dir,
             "package_dir": package_dir,
             "manifest": manifest
@@ -2263,13 +2486,27 @@ def install_module_compose_up(
     # working in an air-gapped environment. The pre-existing
     # `upgrade_*_offline` paths already pass --pull never for the
     # same reason; only the install helper was missing it.
+    # Preflight the compose file's own dependencies. A bind source that does
+    # not exist is not an error to Docker — it silently creates an empty
+    # DIRECTORY there, and a service that execs the mount then dies with a bare
+    # exit 126 naming nothing. Refuse here, where we can name the file.
+    try:
+        from .compose_assets import verify_referenced_assets
+        fatal = verify_referenced_assets(module_id, logger=log)
+        if fatal:
+            return {"success": False, "error": "; ".join(fatal)}
+    except Exception as e:
+        log(f"  Mount preflight skipped ({type(e).__name__}: {e})", "warning")
+
     r = run_command(
         f"docker compose -f {host_work_dir}/docker-compose.yaml "
         f"--project-directory {host_work_dir} up -d --pull never",
         timeout=300, logger=log, run_id=run_id,
     )
     if not r.get('success'):
-        return {"success": False, "error": f"compose up failed: {r.get('error')}"}
+        return {"success": False,
+                "error": f"compose up failed: "
+                         f"{r.get('error_summary') or r.get('error')}"}
 
     log(f"{module_id} first-time install complete", "success")
     return {"success": True, "version": version, "first_install": True}

@@ -13,6 +13,11 @@ services:
       - ./html:/usr/share/nginx/html:ro
       - ./ssl/nginx-cert.crt:/etc/nginx/cert.crt:ro
       - ./ssl/nginx-cert.key:/etc/nginx/cert.key:ro
+      # No htpasswd mount any more. The site's Basic Auth gate was replaced by
+      # a session login owned by the backend (see nginx.conf's auth_request
+      # block and modules/backend/services/auth_service.py). Do not re-add a
+      # bind mount for a file that is no longer generated — docker would create
+      # a DIRECTORY at the missing source path and nginx would fail to start.
     ports:
       - "80:80"
       - "8080:8080"
@@ -25,7 +30,10 @@ services:
     networks:
       - intact_network
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:80/"]
+      # Port 80 now redirects to HTTPS (see nginx.conf); wget's --spider
+      # would follow that redirect and then fail on the self-signed cert,
+      # so use curl -f, which treats the 301 itself as a healthy response.
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:80/"]
       interval: 30s
       timeout: 10s
       retries: 3

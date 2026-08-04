@@ -120,13 +120,34 @@ def _cache_get(key: str):
         return None
     stamped_at, value = entry
     if (time.time() - stamped_at) > CACHE_TTL_SECONDS:
-        _cache.pop(key, None)
+        # Return None, but do NOT evict. _cache_get_stale() serves this entry
+        # as a last-resort fallback when a live fetch fails, and popping here
+        # destroyed it at precisely the moment it became useful: the cache
+        # expires, the next fetch fails, and the fallback finds nothing.
+        # The keyspace is a handful of fixed keys, so retaining costs nothing.
         return None
     return value
 
 
 def _cache_put(key: str, value):
     _cache[key] = (time.time(), value)
+
+
+def _cache_get_stale(key: str):
+    """The cached value REGARDLESS of age, or (None, 0).
+
+    A last resort for when a live fetch fails. A release list from an hour ago
+    is very nearly as useful as one from a minute ago -- releases are cut
+    weekly at most -- and it is enormously more useful than the empty dropdown
+    the operator sees today when GitHub is unreachable or the anonymous
+    60/hr quota is spent. The caller marks the answer stale so the UI can say
+    so rather than pretending it is current.
+    """
+    entry = _cache.get(key)
+    if not entry:
+        return None, 0
+    stamped_at, value = entry
+    return value, int(time.time() - stamped_at)
 
 
 def _gh_call_log(path: str, action: str):
@@ -249,38 +270,25 @@ def check_quota_or_raise(needed: int, action_name: str,
     if remaining < needed:
         _emit(f"[GH-QUOTA] {action_name}: REFUSED — needs {needed}, have {remaining}/{limit} "
               f"(resets {reset_hm}, in {reset_min}m)", "error")
-        # Multi-line actionable instructions in the error message so
-        # the UI's "showMessage(d.error)" surfaces a path the operator
-        # can actually follow, not just "set GITHUB_TOKEN" with no
-        # context. Two options shown — wait OR raise the cap — with
-        # exact commands for the raise-the-cap path.
+        # ONE sentence. This lands in a transient toast, and the previous
+        # version put ~200 words there -- three numbered steps, two URLs and a
+        # config snippet -- which is unreadable in a popup that disappears and
+        # cannot be copied from. The instinct was right (give the operator a
+        # path, not just "set GITHUB_TOKEN") but a toast is the wrong place for
+        # it: the full walkthrough lives in the modal's quota banner, which is
+        # persistent, on-screen while they act, and next to the thing it fixes.
         if state['authed']:
-            fix_block = (
-                " (Token IS authed against /5000 cap; "
-                "you're rate-limited by an unusually high call volume — "
-                "wait until reset.)"
-            )
+            fix_block = (" The token is already authenticated against the "
+                         "5000/hr cap, so this is unusual call volume — wait "
+                         "for the reset.")
         else:
-            fix_block = (
-                "\n\nTo raise the cap from 60 → 5000/hr:\n"
-                "  1) Get a token: https://github.com/settings/tokens/new "
-                "(classic). Leave ALL scopes UNCHECKED — the platform only "
-                "READS a public repo, so an empty-scope token authenticates "
-                "fine and is harmless if it leaks. (Fine-grained alt: "
-                "https://github.com/settings/personal-access-tokens/new with "
-                "'Public repositories (read-only)' and no permissions.)\n"
-                "  2) Put it in config.yaml under options:\n"
-                "       github_token: 'ghp_YOUR_TOKEN'\n"
-                "     (picked up immediately — no restart needed; install.sh "
-                "also persists it to the backend .env on the next run)\n"
-                "  3) Confirm — open this modal again; the [GH-QUOTA] log "
-                "should now show have N/5000 instead of N/60.\n"
-                "Otherwise, wait until reset."
-            )
+            fix_block = (" Set options.github_token in config.yaml to raise the "
+                         "cap to 5000/hr (no restart needed), or wait for the "
+                         "reset.")
         raise ResolverQuotaError(
-            f"GitHub rate limit too low for {action_name}: "
-            f"need {needed}, have {remaining}. "
-            f"Quota resets at {reset_hm} (in {reset_min} minutes).{fix_block}"
+            f"GitHub rate limit reached — {action_name} needs {needed} calls, "
+            f"{remaining} left. Resets at {reset_hm}, in {reset_min} min."
+            f"{fix_block}"
         )
     _emit(f"[GH-QUOTA] {action_name}: needs {needed} calls, "
           f"have {remaining}/{limit} remaining (resets {reset_hm})", "info")
@@ -349,13 +357,30 @@ def list_github_refs(user_action: str = 'fetch', force: bool = False) -> List[Di
     token = _github_token()
     if token:
         headers['Authorization'] = f'token {token}'
-    try:
-        resp = requests.get(
-            f'{GITHUB_API}/releases',
-            headers=headers, timeout=GH_TIMEOUT,
-        )
-    except requests.RequestException as e:
-        raise ResolverError(f'GitHub unreachable: {e}')
+    # Retry the transient shapes before giving up. A single dropped TCP
+    # connection or a GitHub 5xx currently empties the operator's dropdown and
+    # costs them a manual retry -- which spends MORE quota than the retry would
+    # have. Deliberately does NOT retry 403 (rate limit) or 404: those are
+    # answers, not accidents, and hammering them makes the situation worse.
+    resp = None
+    last_exc = None
+    for attempt in range(3):
+        try:
+            resp = requests.get(
+                f'{GITHUB_API}/releases',
+                headers=headers, timeout=GH_TIMEOUT,
+            )
+            if resp.status_code < 500:
+                break
+            last_exc = ResolverError(
+                f'GitHub /releases returned {resp.status_code}')
+        except requests.RequestException as e:
+            last_exc = ResolverError(f'GitHub unreachable: {e}')
+            resp = None
+        if attempt < 2:
+            time.sleep(1.5 * (attempt + 1))
+    if resp is None:
+        raise last_exc or ResolverError('GitHub unreachable')
     if resp.status_code == 403:
         raise ResolverError(
             'GitHub rate-limit reached. Wait until the limit resets '
@@ -408,7 +433,16 @@ def list_github_refs(user_action: str = 'fetch', force: bool = False) -> List[Di
             'label': 'development branch (rolling)',
         })
 
-    _cache_put('refs', items)
+    # Cache only a list that actually has releases in it.
+    #
+    # `items` can come back with nothing but the synthetic development entry --
+    # when CI has not finished attaching package assets yet, every release is
+    # filtered out by the `pkg_bytes is None` test above. Caching that pinned an
+    # empty dropdown for the full 30-minute TTL, so every non-forced call
+    # returned nothing and the operator's instinct (open it again) could not
+    # clear it. An empty answer is exactly the one worth re-asking.
+    if any(i.get('kind') == 'tag' for i in items):
+        _cache_put('refs', items)
     return items
 
 

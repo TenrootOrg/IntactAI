@@ -14,6 +14,56 @@ import zipfile
 from services.offline_collector.constants import VELOCIRAPTOR_CONTAINER, get_velo_client_path
 
 
+def _ensure_executable(path, log=None):
+    """Return a runnable path for `path`, repairing the execute bit if needed.
+
+    install.sh finishes with a recursive `find … -exec chmod 644` that excludes
+    secrets but not binaries, so it strips +x off the Velociraptor clients under
+    modules/nginx/html/downloads/. lib/docker.sh only chmods +x on a FRESH
+    download, so re-running the installer never repairs it. The result: on every
+    host that has run install.sh, decrypting a password-protected offline
+    collection died with an uncaught PermissionError — the guard above checks
+    that the binary EXISTS, never that it can be run.
+
+    Repair in place is the default because it is the only option that fixes
+    already-deployed hosts without a reinstall: the backend runs as root and
+    mounts that directory rw. Where it can't (a read-only or foreign-owned
+    mount), fall back to a private 0700 copy — correct, just pays a ~85 MB copy
+    per decrypt, so it says so in the log.
+    """
+    _log = log or (lambda m, level="info": None)
+    if os.access(path, os.X_OK):
+        return path
+
+    mode = os.stat(path).st_mode
+    try:
+        os.chmod(path, mode | 0o111)
+        if os.access(path, os.X_OK):
+            _log(f"Repaired the execute bit on {os.path.basename(path)} "
+                 f"(was {oct(mode & 0o777)} — install.sh strips it).", "warning")
+            return path
+    except OSError as e:
+        _log(f"Could not chmod {path} ({e}); using a temporary executable copy.",
+             "warning")
+
+    import shutil
+    import tempfile
+    try:
+        tmpdir = tempfile.mkdtemp(prefix="velobin_")
+        tmp = os.path.join(tmpdir, os.path.basename(path))
+        shutil.copy2(path, tmp)
+        os.chmod(tmp, 0o700)
+        if os.access(tmp, os.X_OK):
+            return tmp
+    except OSError as e:
+        _log(f"Temporary copy failed: {e}", "error")
+
+    raise ValueError(
+        f"The Velociraptor binary at {path} is not executable "
+        f"(mode {oct(os.stat(path).st_mode & 0o777)}) and the execute bit could "
+        f"not be restored. Run: chmod +x {path}")
+
+
 def _decrypt_container_if_needed(zip_file_path, password, log):
     """Return a path to a PLAINTEXT collection container, decrypting first if the
     upload is an encrypted Velociraptor container.
@@ -64,6 +114,7 @@ def _decrypt_container_if_needed(zip_file_path, password, log):
     velo = get_velo_client_path('linux')
     if not velo or not os.path.exists(velo):
         raise ValueError("Velociraptor binary not found — cannot decrypt the container.")
+    velo = _ensure_executable(velo, log)
 
     import tempfile
     import shutil

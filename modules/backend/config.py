@@ -132,8 +132,39 @@ def get_dfir_o365rc_image():
 VELOCIRAPTOR_DATA_PATH = "/var."
 
 # Elasticsearch configuration
+#
+# The credentials fall back to modules/elk/.env because a box upgrading ONTO
+# Elasticsearch authentication has no other way to receive them. The ELK module
+# runs in Phase 2 of an upgrade, i.e. AFTER the backend has already restarted,
+# so an environment variable written there reaches this process on its next
+# restart -- which is not going to happen mid-upgrade. The observed result was
+# AuthenticationException(401) on /intact_workflow_runs/_search repeating
+# indefinitely while every health signal stayed green.
+#
+# The environment always wins; this only fills a blank. Reading the file is
+# specifically what lets the RUNNING backend recover the moment ELK is
+# configured, instead of waiting for a restart to be told.
+def _elk_env_credential(key: str) -> str:
+    for root in ('/app/workdir', os.environ.get('INTACT_PATH', '')):
+        if not root:
+            continue
+        try:
+            with open(os.path.join(root, 'modules', 'elk', '.env')) as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith(key + '='):
+                        return line.split('=', 1)[1].strip().strip('"').strip("'")
+        except Exception:
+            continue
+    return ''
+
+
 ELASTICSEARCH_CONFIG = {
     'host': os.environ.get('ELASTICSEARCH_HOST', 'elasticsearch'),
-    'port': int(os.environ.get('ELASTICSEARCH_PORT', '9200'))
+    'port': int(os.environ.get('ELASTICSEARCH_PORT', '9200')),
+    'user': (os.environ.get('ELASTICSEARCH_USER', '').strip()
+             or _elk_env_credential('ELASTIC_USER') or 'elastic'),
+    'password': (os.environ.get('ELASTICSEARCH_PASSWORD', '').strip()
+                 or _elk_env_credential('ELASTIC_PASSWORD'))
 }
 

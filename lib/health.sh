@@ -118,7 +118,9 @@ verify_installation() {
     # Test elasticsearch (with timeout) - check if ELK module is enabled
     local elk_enabled=$(read_config "['modules']['elk']['enabled']")
     if is_enabled "$elk_enabled"; then
-        if curl -sf --max-time 5 http://localhost:9200 > /dev/null 2>&1; then
+        local elk_user=$(read_config "['modules']['elk']['id']")
+        local elk_pass=$(read_config "['modules']['elk']['password']")
+        if curl -sf --max-time 5 -u "${elk_user:-elastic}:${elk_pass}" http://localhost:9200 > /dev/null 2>&1; then
             log_success "Elasticsearch: Running"
         else
             log_warn "Elasticsearch: Not responding"
@@ -230,6 +232,31 @@ print_summary() {
         log_success "Intact.AI Platform Installation Complete!"
     fi
     log_success "=============================================="
+}
+
+# ============================================================================
+# Installation Notes
+# ============================================================================
+
+# Prints the neutral notes recorded via record_install_note(). Separate from
+# print_final_issues_report() on purpose: that block is for things that went
+# wrong and is styled to alarm. This is for expected behaviour worth
+# remembering, and is styled not to. Called between print_summary and
+# print_final_issues_report, so it reads after the success banner and before
+# any ATTENTION block.
+print_install_notes() {
+    [[ ${#INSTALL_NOTES[@]} -eq 0 ]] && return 0
+
+    echo ""
+    echo "=============================================="
+    echo -e "${BLUE}For your information${NC}"
+    echo "=============================================="
+    local note
+    for note in "${INSTALL_NOTES[@]}"; do
+        echo ""
+        echo -e "$note"
+    done
+    echo ""
 }
 
 # ============================================================================

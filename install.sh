@@ -8,6 +8,14 @@
 
 set -o pipefail
 
+# Every file this installer creates inherits this. Without it the operator's
+# umask decides the mode: on a umask-000 host (common on Vagrant/dev VMs)
+# install.sh was creating world-WRITABLE files — including its own
+# install_*.log, which carries command output that has leaked credentials
+# before. Must precede the LOG_FILE definition below, because the log is
+# created by later redirects and would otherwise land 0666.
+umask 022
+
 # ============================================================================
 # Script Configuration
 # ============================================================================
@@ -21,6 +29,49 @@ LOG_FILE="${SCRIPT_DIR}/install_$(date +%Y%m%d_%H%M%S).log"
 # project outside the default /home/tenroot/intact (the backend compose
 # reads ${INTACT_HOST_PATH:-...}).
 export INTACT_HOST_PATH="$SCRIPT_DIR"
+
+# ============================================================================
+# Harden the code we are about to source, BEFORE sourcing it
+# ============================================================================
+# This installer runs as root, so a group/world-writable lib/*.sh is a local
+# root-escalation path: anyone who can write there between extraction and
+# `sudo bash install.sh` gets their code executed as root.
+#
+# It is reachable in practice. actions/upload-artifact strips every Unix mode
+# bit from the release zip, so the extracted tree's modes come from the target
+# box's umask — on a umask-000 host that is 0777 dirs / 0666 files.
+#
+# fix_source_permissions() does the full sweep, but it is called from main(),
+# hundreds of lines AFTER the source statements below. This block is the only
+# thing protecting the sourcing itself.
+#
+# Scoped deliberately to executable code. A blanket `chmod -R` over SCRIPT_DIR
+# would also hit data/, client_installers/ and modules/timesketch/config/ —
+# writable bind mounts holding live container-written files — and install.sh
+# re-runs on every upgrade, so that would strip group-write from a populated
+# appliance, not just a fresh extract.
+#
+# go-w only: removes group/other WRITE, preserves read and the execute bit, so
+# sourcing here and the `chmod +x` in fix_source_permissions are unaffected.
+chmod go-w "${SCRIPT_DIR}/install.sh" 2>/dev/null || true
+chmod go-w "${SCRIPT_DIR}"/lib/*.sh 2>/dev/null || true
+chmod go-w "${SCRIPT_DIR}"/scripts/*.sh 2>/dev/null || true
+
+# Best-effort by design — warn, never abort. On a VirtualBox vboxsf / 9p / NTFS
+# mount chmod is a silent no-op and every file is forced 0777, so failing closed
+# would refuse to install on exactly those test VMs. Be honest about the limit:
+# this warning makes the exposure visible, it does not close it. chmod cannot
+# fix a filesystem that ignores chmod.
+_writable_libs="$(find "${SCRIPT_DIR}/lib" -maxdepth 1 -name '*.sh' -perm /022 2>/dev/null)"
+if [[ -n "$_writable_libs" ]]; then
+    echo "" >&2
+    echo "WARNING: these files are group/world-writable and are about to be sourced as root:" >&2
+    while IFS= read -r _wl; do echo "    $_wl" >&2; done <<< "$_writable_libs"
+    echo "         chmod could not fix them, which usually means a vboxsf/9p/NTFS mount." >&2
+    echo "         Anyone who can write them can run code as root. Prefer a local ext4 path." >&2
+    echo "" >&2
+fi
+unset _writable_libs _wl
 
 # ============================================================================
 # Load Library Modules
@@ -55,6 +106,18 @@ main() {
     check_initialization_marker
     check_ubuntu
     check_config
+
+    # Point this clone's git at scripts/git-hooks so the pre-commit secret
+    # guard actually runs. core.hooksPath lives in .git/config, which is
+    # per-clone and untracked — so the guard shipped in the repo was off by
+    # default on every fresh clone. Best-effort: a tarball install has no .git
+    # and the script exits cleanly, and a hook-install failure must never stop
+    # a platform install.
+    if [[ -f "${SCRIPT_DIR}/scripts/install-git-hooks.sh" ]]; then
+        bash "${SCRIPT_DIR}/scripts/install-git-hooks.sh" >/dev/null 2>&1 \
+            && log_info "Git pre-commit secret guard: installed" \
+            || true
+    fi
     # Authenticate this install's GitHub API calls (module-update polling,
     # quota pre-flights, release lookups) when the operator set
     # options.github_token in config.yaml — raises the shared anonymous
@@ -210,6 +273,10 @@ main() {
     refresh_nginx_upstreams
 
     verify_installation
+    # Runs after verify_installation so the backend is known to be up and can be
+    # asked whether a credential exists, and before the report so a repair shows
+    # up in the final ATTENTION block instead of scrolling past.
+    ensure_dashboard_login_is_reachable
     print_installation_report
     create_initialization_marker
 
@@ -219,6 +286,10 @@ main() {
     fix_source_permissions
 
     print_summary
+    # Neutral "this is expected" notes recorded during the install. Kept
+    # separate from — and printed before — the ATTENTION block so that
+    # deliberate behaviour is never mistaken for something that went wrong.
+    print_install_notes
     # Final ATTENTION block listing every warning/error tracked anywhere
     # during the install. Operators currently miss yellow [WARN] lines
     # that scrolled past — this surfaces them right after the success
@@ -243,8 +314,116 @@ fix_source_permissions() {
     # Fix directory permissions (755 = rwxr-xr-x)
     find "${SCRIPT_DIR}" -type d -exec chmod 755 {} \; 2>/dev/null || true
 
-    # Fix file permissions (644 = rw-r--r--)
-    find "${SCRIPT_DIR}" -type f -exec chmod 644 {} \; 2>/dev/null || true
+    # Fix file permissions (644 = rw-r--r--), but leave secret material that
+    # earlier steps in this same run deliberately hardened to a tighter mode
+    # untouched: module secrets/ dirs (Portainer admin password, IRIS
+    # IRIS_SECRET_KEY/POSTGRES_*_PASSWORD, ...), module .env files (DB/
+    # session secrets, GitHub token), the shared Nginx/Kibana TLS private
+    # key, the IRIS web TLS private key (a copy of that same shared key),
+    # the IRIS Root CA private key, and the Azure cert bundle. Without
+    # these exclusions this blanket sweep silently reverted all of that
+    # hardening to world-readable 644 on every install/upgrade.
+    #
+    # The downloads/ exclusion is a different kind: those are the Velociraptor
+    # client BINARIES, and 644 strips their execute bit. The backend runs one
+    # of them to decrypt password-protected offline collections, so this sweep
+    # broke that import on every installed host — and because lib/docker.sh only
+    # chmods +x on a fresh download, re-running the installer never repaired it.
+    find "${SCRIPT_DIR}" -type f \
+        -not -path "*/modules/*/secrets/*" \
+        -not -path "*/modules/*/.env" \
+        -not -path "*/modules/nginx/ssl/*.key" \
+        -not -path "*/modules/iris/config/certificates/rootCA/irisRootCAKey.pem" \
+        -not -path "*/modules/iris/config/certificates/web_certificates/iris_dev_key.pem" \
+        -not -path "*/modules/nginx/html/downloads/*" \
+        -not -path "*/data/azure_cert.pfx" \
+        -not -path "*/data/azure_cert.pfx.pass" \
+        -not -path "${SCRIPT_DIR}/config.yaml" \
+        -exec chmod 644 {} \; 2>/dev/null || true
+
+    # Re-assert the restrictive modes (and, for the IRIS web key, the
+    # root:33 ownership the iris-nginx container's www-data gid needs) on
+    # those same secret files in case any of them predate this run and
+    # weren't already at the intended mode (e.g. left over from an older
+    # install), or had their ownership reset by the chown -R above.
+    find "${SCRIPT_DIR}/modules" -type f \( -path "*/secrets/*" -o -name ".env" \) -exec chmod 600 {} \; 2>/dev/null || true
+    # config.yaml is as sensitive as anything under secrets/: it carries
+    # options.github_token (a real GitHub PAT), the dashboard login and every
+    # module password. It was landing at 664/644 — readable by every local
+    # account on the box — because the sweep above treats it as ordinary source.
+    # config.yaml is tracked but sanitized on commit, so git only ever holds
+    # shipping defaults; the live file here still needs 600.
+    [[ -f "${SCRIPT_DIR}/config.yaml" ]] && chmod 600 "${SCRIPT_DIR}/config.yaml" 2>/dev/null || true
+    [[ -f "${SCRIPT_DIR}/modules/nginx/ssl/nginx-cert.key" ]] && chmod 640 "${SCRIPT_DIR}/modules/nginx/ssl/nginx-cert.key" 2>/dev/null || true
+    # No htpasswd override needed any more. nginx used to evaluate auth_basic in
+    # its worker process (uid/gid 101), so the file had to be root:101/640 rather
+    # than the blanket "secrets/* -> 600" this sweep applies. That gate is gone —
+    # the dashboard login is an application-level session now (see
+    # modules/backend/services/auth_service.py). Any leftover htpasswd from a
+    # pre-upgrade install is simply an unused file and the 600 sweep above is the
+    # correct treatment for it.
+    [[ -f "${SCRIPT_DIR}/modules/iris/config/certificates/rootCA/irisRootCAKey.pem" ]] && chmod 600 "${SCRIPT_DIR}/modules/iris/config/certificates/rootCA/irisRootCAKey.pem" 2>/dev/null || true
+    if [[ -f "${SCRIPT_DIR}/modules/iris/config/certificates/web_certificates/iris_dev_key.pem" ]]; then
+        chown root:33 "${SCRIPT_DIR}/modules/iris/config/certificates/web_certificates/iris_dev_key.pem" 2>/dev/null || true
+        chmod 640 "${SCRIPT_DIR}/modules/iris/config/certificates/web_certificates/iris_dev_key.pem" 2>/dev/null || true
+    fi
+    [[ -f "${SCRIPT_DIR}/data/azure_cert.pfx" ]] && chmod 600 "${SCRIPT_DIR}/data/azure_cert.pfx" 2>/dev/null || true
+    [[ -f "${SCRIPT_DIR}/data/azure_cert.pfx.pass" ]] && chmod 600 "${SCRIPT_DIR}/data/azure_cert.pfx.pass" 2>/dev/null || true
+
+    # ---- secrets created AFTER the exclusion list above was written ---------
+    # These are NOT umask drift: the blanket `chmod 644` sweep above has no
+    # exclusion for data/velociraptor/, data/intact.db, modules/*/config/ or
+    # data/auth/, so it ACTIVELY reset them to world-readable on every install
+    # and upgrade. Hand-fixing the modes never survived the next run.
+    #
+    # Hardened here as a positive pass rather than by adding more exclusions:
+    # an exclusion list only protects secrets that existed when it was written,
+    # and this file has now been bitten by that twice (the gitleaks pre-commit
+    # hook was the other). A corrective pass means a newly added secret ends up
+    # restrictive by default.
+    #
+    # What is at stake:
+    #   server.config.yaml  - the Velociraptor CA private key, which signs every
+    #                         enrolled endpoint. World-readable = anyone local
+    #                         can mint client certs and impersonate the server.
+    #   api.config.yaml     - API client private key (arbitrary VQL on all hosts)
+    #   intact.db           - the `secrets` table is plaintext and holds
+    #                         auth_session_key, which SIGNS the dashboard session
+    #                         cookie. Readable = forge a session, bypassing the
+    #                         login, the lockout and the audit log entirely.
+    #                         -wal/-shm carry the same rows and are recreated by
+    #                         SQLite, so they must be hardened alongside it.
+    #   timesketch*.conf    - live SECRET_KEY + OPENSEARCH_PASSWORD
+    #   auth/audit.jsonl    - login/lockout history
+    #
+    # Safe at 600: every consuming container runs as root (verified with
+    # `docker top`, not Config.User) and root ignores mode bits. Keep this list
+    # in sync with _SECRET_PATHS_0600 in
+    # modules/backend/services/upgrade/base.py — the in-UI upgrade never runs
+    # install.sh, so both paths must harden the same files. A parity test
+    # enforces it (tests/test_secret_files_are_not_world_readable.py).
+    #
+    # IRIS secrets are deliberately NOT here: install.sh and the upgrade path
+    # disagree on their mode (600 vs 644) for a documented reason — see
+    # services/upgrade/iris.py:399-423. Adding them here would risk the
+    # iris_app crashloop.
+    # BEGIN shared-secret-hardening  (parity-checked against base.py)
+    chmod 600 "${SCRIPT_DIR}/data/velociraptor/server.config.yaml" 2>/dev/null || true
+    chmod 600 "${SCRIPT_DIR}/data/velociraptor/api.config.yaml" 2>/dev/null || true
+    # The Velociraptor CLI binary must stay EXECUTABLE. Everything that runs
+    # VQL via `docker exec intact_velociraptor /velociraptor/velociraptor ...`
+    # depends on it -- memory acquisition, flow cancellation -- and when it is
+    # not, the failure surfaces as an opaque "VQL query failed (rc=126)".
+    # Cheap to assert here so a hardening pass can never quietly clear it.
+    [ -f "${SCRIPT_DIR}/data/velociraptor/velociraptor" ] && \
+        chmod 755 "${SCRIPT_DIR}/data/velociraptor/velociraptor" 2>/dev/null || true
+    chmod 600 "${SCRIPT_DIR}/data/intact.db" 2>/dev/null || true
+    chmod 600 "${SCRIPT_DIR}/data/intact.db-wal" 2>/dev/null || true
+    chmod 600 "${SCRIPT_DIR}/data/intact.db-shm" 2>/dev/null || true
+    chmod 600 "${SCRIPT_DIR}/modules/timesketch/config/timesketch.conf" 2>/dev/null || true
+    chmod 600 "${SCRIPT_DIR}/modules/timesketch/config/timesketch_legacy.conf" 2>/dev/null || true
+    chmod 600 "${SCRIPT_DIR}/data/auth/audit.jsonl" 2>/dev/null || true
+    # END shared-secret-hardening
 
     # Restore execute permission on scripts
     chmod +x "${SCRIPT_DIR}/install.sh" 2>/dev/null || true
@@ -252,6 +431,19 @@ fix_source_permissions() {
     chmod +x "${SCRIPT_DIR}/scripts/"*.sh 2>/dev/null || true
     chmod +x "${SCRIPT_DIR}/modules/iris/scripts/"*.sh 2>/dev/null || true
     chmod +x "${SCRIPT_DIR}/modules/backend/scripts/"*.py 2>/dev/null || true
+    # git SILENTLY skips a hook that is not executable — no error, no warning
+    # from the hook itself. The 644 sweep above stripped +x from
+    # scripts/git-hooks/pre-commit on every single install, which switched the
+    # gitleaks secret guard off and left it looking installed. `git commit` says
+    # "hook was ignored because it's not set as executable" and that is the only
+    # sign. The glob (not *.sh) is deliberate: hooks have no extension.
+    chmod +x "${SCRIPT_DIR}/scripts/git-hooks/"* 2>/dev/null || true
+    # Subdirectories the `scripts/*.sh` glob above does not reach, plus two
+    # module-level helpers the sweep also de-executed.
+    chmod +x "${SCRIPT_DIR}/scripts/migrate/"*.sh 2>/dev/null || true
+    chmod +x "${SCRIPT_DIR}/scripts/migrate/"*.py 2>/dev/null || true
+    chmod +x "${SCRIPT_DIR}/modules/elk/config/"*.sh 2>/dev/null || true
+    chmod +x "${SCRIPT_DIR}/modules/nginx/build-tailwind.sh" 2>/dev/null || true
 
     log_info "Source file permissions fixed"
 }

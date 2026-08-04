@@ -49,6 +49,38 @@ modules/iris/secrets/*
 modules/portainer/secrets/*
 !modules/portainer/secrets/.gitkeep
 
+# VolWeb admin password file (generated on install)
+modules/volweb/secrets/*
+!modules/volweb/secrets/.gitkeep
+
+# Timesketch Postgres password (generated on install). NOT modules/timesketch/
+# .env — that file is tracked, so a credential written there gets staged by the
+# next `git add`.
+modules/timesketch/secrets/*
+!modules/timesketch/secrets/.gitkeep
+
+# Legacy Nginx Basic Auth password + htpasswd. No longer generated (the
+# dashboard login is an app-level session now — see
+# modules/backend/services/auth_service.py), but a box upgraded from an older
+# release still has these on disk and they must never be committed: the upgrade
+# path reads the plaintext one to migrate the operator's existing password.
+modules/nginx/secrets/*
+!modules/nginx/secrets/.gitkeep
+
+# Dashboard login audit trail (who signed in, from where, and what failed).
+# Operational data, not source — and it names real usernames and source IPs.
+data/auth/
+
+# The operator's live config. NOT tracked: it accumulates real credentials —
+# options.github_token (a GitHub PAT), the dashboard login, and every module
+# password. Tracking it meant one careless `git add config.yaml` from publishing
+# them, and the installer rewrites it through yaml.dump anyway, so a tracked copy
+# also lost all of its documentation comments on every install.
+#
+# config.yaml is TRACKED; scripts/git-hooks/sanitize-config-yaml.sh resets
+# config.yaml from it on a fresh checkout, and the backend image is built from
+# the example so no operator secret is ever baked into an image layer.
+
 # Certificates (generated on install)
 modules/iris/config/certificates/rootCA/*
 modules/iris/config/certificates/web_certificates/*
@@ -76,6 +108,7 @@ modules/velociraptor/velociraptor/
 
 # Azure app-auth cert (generated at install)
 data/azure_cert.pfx
+data/azure_cert.pfx.pass
 data/azure_cert_public.pem
 
 # Azure scan results (runtime data)
@@ -181,3 +214,30 @@ data/fusion_graphs/
 # re-adds live-reload code bind-mounts on a dev box. See
 # modules/backend/docker-compose.override.yaml.example for the template.
 /modules/backend/docker-compose.override.yaml
+
+# Runtime state the backend writes to track what it has actually applied
+# (source/compose fingerprints for drift detection, the previous image tag for
+# rollback). Per-host facts, never repo content.
+data/backend-source.applied.sha256
+data/backend-compose.applied.sha256
+data/backend-image.previous
+modules/backend/data/
+
+# Console captures from install/upgrade runs. These routinely contain whatever
+# the run printed -- which has included a GitHub PAT -- and being untracked but
+# NOT ignored is the worst of both: invisible to `git status` discipline, yet
+# one `git add -A` from being committed.
+/*.out
+/*.log
+
+# Scratch output from external code-review tooling.
+/.codex/
+
+# QA harness run directories. A run produces container logs, a support bundle,
+# collected Windows event logs and a multi-GB memory image full of plaintext
+# credentials scraped from the target's RAM -- the most sensitive material this
+# platform ever holds. qa-config.yaml points output_dir OUTSIDE the repo by
+# default (phase 0a wipes the tree, so in-repo results would be destroyed by
+# the run that produced them); this covers anyone who repoints it inward.
+qa/qa-runs/
+qa/**/qa-runs/

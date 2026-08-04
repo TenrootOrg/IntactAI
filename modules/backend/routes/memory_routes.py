@@ -77,6 +77,20 @@ def _get_run(run_id: str) -> dict | None:
     return file_get_workflow(run_id)
 
 
+def _run_visible_in_active_workspace(run: dict) -> bool:
+    """Mirror dashboard_routes.py's / azure_routes.py's own workspace check:
+    run_id is a predictable ``{automation_type}_{millis}`` string, so without
+    this an operator in one case could read the status/logs of, or stop,
+    another case's memory-forensics run just by guessing/reusing a run_id.
+    No active case_id means no filtering (admin/no-workspace-concept
+    context)."""
+    from flask import g
+    case_id = getattr(g, "case_id", None)
+    if not case_id:
+        return True
+    return run.get("case_id") == case_id
+
+
 def _llm_config() -> dict:
     """Reuse the agentic LLM config block (the chat module reads from
     ``cfg['agentic']`` already)."""
@@ -378,7 +392,7 @@ def upload_memory_dump():
 @memory_bp.route("/api/memory/run/<run_id>/status", methods=["GET"])
 def get_memory_status(run_id):
     run = _get_run(run_id)
-    if not run:
+    if not run or not _run_visible_in_active_workspace(run):
         return jsonify({"error": "Run not found"}), 404
     # Trim logs to last 200 to keep the polling payload reasonable —
     # the workflows table modal pulls full logs via the dashboard
@@ -405,7 +419,7 @@ def get_memory_status(run_id):
 @memory_bp.route("/api/memory/run/<run_id>/stop", methods=["POST"])
 def stop_memory_run(run_id):
     run = _get_run(run_id)
-    if not run:
+    if not run or not _run_visible_in_active_workspace(run):
         return jsonify({"error": "Run not found"}), 404
     request_stop(run_id)
     return jsonify({"ok": True})
@@ -426,7 +440,26 @@ def create_memory_blueprint():
     data = request.get_json(silent=True) or {}
     if not data.get("name"):
         return jsonify({"error": "name is required"}), 400
+    # Every write must have a real id — without this, save_blueprint()
+    # inserts (id=NULL, ...), the follow-up get-by-id lookup finds nothing,
+    # and the route returns {"blueprint": null} with a 201 while silently
+    # clobbering the same NULL-id row on every subsequent create. Mirrors
+    # the id-generation already done by the sibling /api/blueprints/memory
+    # route (routes/blueprint_routes.py), which writes the SAME table.
+    if not data.get("id"):
+        import time
+        data["id"] = f"custom_{int(time.time() * 1000)}"
     bp = save_blueprint(_BLUEPRINT_TYPE, data)
+    # A failed save must not report 201. save_blueprint swallows storage errors
+    # and returns falsy (it logs "[STORAGE] Error saving ..."), so this returned
+    # {"blueprint": null} with 201 Created — the operator's blueprint silently
+    # did not exist, and the UI had nothing to show but no error to report.
+    # Observed live when the backend's SQLite connection went stale and every
+    # write raised "disk I/O error" while the route kept answering 201.
+    # The sibling /api/blueprints/memory route already 500s on the same
+    # condition; this makes the two agree.
+    if not bp:
+        return jsonify({"error": "Failed to save blueprint"}), 500
     return jsonify({"blueprint": bp}), 201
 
 

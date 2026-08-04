@@ -1,7 +1,11 @@
 """Run every fusion test module + print the calibrate.py F1 — the one-command
 'fix test fix test' loop.
 
-    docker exec -w /app intact_backend python3 -m tests.fusion.run_all
+    docker exec -w /app/workdir intact_backend python3 -m tests.fusion.run_all
+
+(-w /app/workdir, not /app: the release image has no `tests` package under
+/app — the repo is bind-mounted at /app/workdir — so the old form failed with
+"No module named 'tests'".)
 """
 
 # Test isolation: these tests import services.* (which boots SQLite storage at

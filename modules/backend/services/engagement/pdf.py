@@ -464,7 +464,7 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
   <section class="cover">
     <div class="logo-wrap">
       {f'<img src="{tenroot_logo}" alt="Tenroot">' if tenroot_logo else '<div style="font-weight:800;font-size:18pt;color:#38bdf8;">TENROOT</div>'}
-      {f'<div class="sep"></div><img src="{cust_logo}" alt="Customer">' if cust_logo else ''}
+      {f'<div class="sep"></div><img src="{_html_escape(cust_logo)}" alt="Customer">' if cust_logo else ''}
     </div>
     <div class="tlp-badge">TLP:{_html_escape(meta['tlp'])}</div>
     <h1>Engagement Report<br><span class="accent">{_html_escape(meta['name'])}</span></h1>
@@ -487,6 +487,46 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
   {body_html}
 </body>
 </html>"""
+
+
+class BlockedResourceError(Exception):
+    """A report referenced a resource the renderer refuses to fetch."""
+
+
+def _data_only_url_fetcher(url, *args, **kwargs):
+    """Let the report embed data: URLs and fetch nothing else.
+
+    The renderer previously ran with ``base_url='/'``, so every relative or
+    absolute URL in the document resolved against the FILESYSTEM ROOT. Combined
+    with the markdown pipeline passing raw HTML through untouched, an
+    ``<img src="/etc/hostname">`` or an external ``src`` in report content would
+    be fetched and embedded — local file inclusion into a customer deliverable,
+    and an outbound request from the render host.
+
+    Escaping the content would have been the weaker fix: it has to be right
+    everywhere, forever, against LLM-generated narrative built over attacker-
+    influenced forensic artifacts. Refusing to fetch is one rule, and it holds
+    whatever the markdown contains.
+
+    Nothing legitimate is lost. The only resources these reports reference are
+    the Tenroot logo (``_logo_data_url()``) and the customer logo, both data
+    URLs. WeasyPrint runs no JavaScript, so with fetching locked the residual
+    risk of raw-HTML passthrough is layout and content spoofing — not
+    execution, exfiltration or SSRF.
+
+    On what a refusal looks like: for an ``<img>``, WeasyPrint catches the
+    error, logs it and renders the document WITHOUT that image — verified, the
+    file contents do not reach the PDF. So the usual outcome is a report that
+    renders fine and is simply missing a resource it should never have had.
+    The caller still translates the exception for the paths WeasyPrint does
+    propagate (stylesheets, and anything raised before layout).
+    """
+    if not str(url).lower().startswith('data:'):
+        raise BlockedResourceError(
+            f"report referenced a non-embedded resource, which the renderer "
+            f"does not fetch: {str(url)[:120]}")
+    from weasyprint import default_url_fetcher
+    return default_url_fetcher(url, *args, **kwargs)
 
 
 def _html_escape(s) -> str:
@@ -523,5 +563,14 @@ def render_engagement_pdf(markdown_text: str, run_id: str, logo_b64: str = '') -
     body = "## Table of Contents {.toc-heading}\n\n[TOC]\n\n" + body
     html = _build_html(body, meta, run_id, customer_logo=logo_b64)
     buf = io.BytesIO()
-    HTML(string=html, base_url='/').write_pdf(buf)
+    try:
+        HTML(string=html, base_url=None,
+             url_fetcher=_data_only_url_fetcher).write_pdf(buf)
+    except BlockedResourceError as e:
+        # Surface it as something an operator can act on rather than a 500.
+        raise ValueError(
+            f"Report render blocked: {e}. Report images must be embedded "
+            f"(data: URLs); the renderer does not fetch local or remote "
+            f"resources. Check the case's customer logo and any image in the "
+            f"report body.") from e
     return buf.getvalue()

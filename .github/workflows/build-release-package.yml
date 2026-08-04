@@ -24,9 +24,6 @@ on:
       tag:
         description: "Release tag to build (e.g. intact-20260722)"
         required: true
-      since:
-        description: "Baseline release to diff against (e.g. intact-20260615). Leave empty to auto-resolve the previous intact-* tag."
-        required: false
 
 permissions:
   contents: write            # upload the package as a Release asset
@@ -38,8 +35,9 @@ jobs:
     steps:
       - name: Resolve tag
         id: tag
+        env:
+          TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
         run: |
-          TAG="${{ github.event.release.tag_name || github.event.inputs.tag }}"
           case "$TAG" in
             intact-*) ;;
             *) echo "::error::Not an intact-* release tag ($TAG) — nothing to build"; exit 1 ;;
@@ -51,32 +49,36 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.tag.outputs.tag }}
-          fetch-depth: 0        # need all tags to resolve the diff baseline
 
-      # The package ships only what CHANGED since the baseline (plus intact +
-      # which a version diff structurally cannot see). An explicit
-      # `since` input wins; otherwise the script falls back to
-      # DEFAULT_SINCE_REF — the OLDEST release a customer may still be
-      # upgrading FROM, not merely the previous tag.
+      # We add two LLM providers to Timesketch by writing into the vendor
+      # container's site-packages and appending imports to a file UPSTREAM
+      # owns. This compares the Timesketch version this release pins against
+      # the version a human last verified those providers on -- upstream
+      # against upstream -- and warns if anything they depend on moved.
       #
-      # Deliberately NOT auto-resolved as "the tag before this one". The online
-      # flow downloads ONE package for the target ref; it does not walk the
-      # chain. So diffing against the immediately-preceding tag silently drops
-      # every module that changed in the gap a customer skipped. Concretely:
-      # 0721 -> 0722 has ZERO module pin changes, so that baseline would ship
-      # intact only, and a box on 0615 would upgrade the platform
-      # while staying on old timesketch/plaso/iris/portainer/velociraptor with
-      # no aws_sigma at all — reporting success the whole way.
-      - name: Resolve diff baseline
-        id: since
+      # Run here rather than at the end so it still produces a verdict when
+      # the 90-minute package build fails. Position in the log does not affect
+      # visibility: ::warning:: annotations and $GITHUB_STEP_SUMMARY are
+      # job-level and render at the top of the run page wherever they are
+      # written. The tail step below is what puts it at the end of the log.
+      #
+      # continue-on-error AND the script's own exit-code contract (0 clean /
+      # 10 drift / 20 could-not-verify, all mapped to success here): a
+      # heads-up must never fail a release build. The package is already
+      # valid; this only says it is worth testing before shipping.
+      - name: Check upstream Timesketch LLM-provider drift
+        id: ts_drift
+        continue-on-error: true
         run: |
-          SINCE="${{ github.event.inputs.since }}"
-          if [ -n "$SINCE" ]; then
-            echo "Diffing module scope against explicit baseline $SINCE"
-          else
-            echo "No explicit baseline — script will use its DEFAULT_SINCE_REF"
-          fi
-          echo "since=$SINCE" >> "$GITHUB_OUTPUT"
+          python3 scripts/ci/check_timesketch_provider_drift.py --github \
+            | tee "$RUNNER_TEMP/ts-drift.txt" || true
+
+      # Every release ships EVERY module -- no baseline, no diff. The online
+      # flow downloads ONE package for the target ref and does not walk the
+      # upgrade chain, so a diffed package silently omits whatever changed in
+      # the gap a release-skipping customer jumped, and the run still reports
+      # success. Size is the cost; the apply side already skips modules whose
+      # installed version matches the target.
 
       # The full package saves several GB of sidecar images (timesketch/
       # opensearch/plaso/...) as tars; a stock runner's ~14GB free disk is
@@ -99,8 +101,11 @@ jobs:
         run: docker build -f modules/backend/Dockerfile -t intact-backend:ci-packager .
 
       - name: Build the release package
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           mkdir -p "$GITHUB_WORKSPACE/ci-output"
+          args=(--tag "$TAG" --out /output)
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
@@ -109,9 +114,7 @@ jobs:
             -v /opt/sigma-rules:/opt/sigma-rules:ro \
             -v "$GITHUB_WORKSPACE/ci-output:/output" \
             intact-backend:ci-packager \
-            python3 "$GITHUB_WORKSPACE/scripts/ci/build_release_package.py" \
-              --tag "${{ steps.tag.outputs.tag }}" --out /output \
-              ${{ steps.since.outputs.since && format('--since {0}', steps.since.outputs.since) || '' }}
+            python3 "$GITHUB_WORKSPACE/scripts/ci/build_release_package.py" "${args[@]}"
           echo "== built =="; ls -lh "$GITHUB_WORKSPACE/ci-output"
 
       # A GitHub Release asset is capped at 2 GiB per file. The full package
@@ -145,8 +148,8 @@ jobs:
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          TAG="${{ steps.tag.outputs.tag }}"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$GITHUB_WORKSPACE"/ci-output/* --clobber
             echo "Attached package parts to release $TAG"
@@ -161,3 +164,17 @@ jobs:
           name: release-package-${{ steps.tag.outputs.tag }}
           path: ci-output/*
           retention-days: 7
+
+      # Repeat the drift verdict as the last thing in the log, so whoever
+      # scrolls to the bottom of a release build to check it succeeded also
+      # sees whether the Timesketch LLM providers are worth re-testing before
+      # this package goes to a customer. if: always() so it survives a failed
+      # build -- that is exactly when the earlier verdict is easiest to miss.
+      - name: Timesketch provider drift verdict
+        if: always()
+        run: |
+          echo "=================================================="
+          echo " Upstream Timesketch LLM-provider drift verdict"
+          echo "=================================================="
+          cat "$RUNNER_TEMP/ts-drift.txt" 2>/dev/null \
+            || echo "(the drift check did not produce a verdict)"

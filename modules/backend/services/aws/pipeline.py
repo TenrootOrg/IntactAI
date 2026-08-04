@@ -125,6 +125,16 @@ def _run_post_collection_phases(
         add_log_to_run(run_id, f"[AWS] After time filter: {filtered_count} records", "info")
 
     result['collected_data'] = collected_data
+    # Mark the RUN if any record in it is demo data. Individual records carry
+    # SYNTHETIC_KEY, but consumers (the Case fuser, the export, the UI) need one
+    # authoritative answer to "is this evidence?" without walking every record.
+    from services.aws.collectors import SYNTHETIC_KEY
+    if any(r.get(SYNTHETIC_KEY) for recs in collected_data.values() for r in recs
+           if isinstance(r, dict)):
+        result['synthetic'] = True
+        add_log_to_run(run_id,
+                       "[AWS] This run contains SYNTHETIC demo records. It is not "
+                       "evidence and is excluded from Case fusion.", "warning")
     _set_progress(run_id, 60)
     if is_cancelled(run_id):
         return result

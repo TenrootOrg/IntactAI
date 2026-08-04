@@ -21,7 +21,23 @@ if "/app" not in sys.path:
 
 ROOT = os.environ.get("INTACT_PATH", "/app/workdir")
 BACKEND_COMPOSE = os.path.join(ROOT, "modules", "backend", "docker-compose.yaml")
-CONFIG_YAML = os.path.join(ROOT, "config.yaml")
+
+def _config_yaml():
+    """config.yaml if this is an installed box, else the shipped template.
+
+    config.yaml is the operator's own file and is gitignored (it holds the GitHub
+    PAT, the dashboard login and every module password), so a fresh checkout — CI
+    — has config.yaml tracked. It declares the versions: block this file
+    asserts on.
+    """
+    for name in ("config.yaml",):
+        path = os.path.join(ROOT, name)
+        if os.path.isfile(path):
+            return path
+    return os.path.join(ROOT, "config.yaml")   # let the caller's error be clear
+
+
+CONFIG_YAML = _config_yaml()
 
 # The sentinel backend_full_mode() keys off. Kept as a literal (not imported)
 # ON PURPOSE: if someone changes the constant AND the compose together, the

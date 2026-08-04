@@ -10,16 +10,22 @@ import traceback
 # Elasticsearch client instance
 es_client = None
 
-def init_elasticsearch(host='elasticsearch', port=9200):
+def init_elasticsearch(host='elasticsearch', port=9200, user=None, password=None):
     """Initialize Elasticsearch connection"""
     global es_client
 
     try:
+        client_kwargs = {
+            'request_timeout': 10,
+            'retry_on_timeout': True,
+            'max_retries': 3
+        }
+        if user and password:
+            client_kwargs['basic_auth'] = (user, password)
+
         es_client = Elasticsearch(
             [f'http://{host}:{port}'],
-            request_timeout=10,
-            retry_on_timeout=True,
-            max_retries=3
+            **client_kwargs
         )
 
         # Test connection

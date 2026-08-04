@@ -57,6 +57,49 @@ def _log_default(msg: str, level: str = "info") -> None:
     print(f"[{level}] {msg}", flush=True)
 
 
+def _get_volweb_admin_password(logger: Callable = None) -> str:
+    """Return the VolWeb admin password, generating + persisting a random
+    one on first use if config.yaml doesn't set ``modules.volweb.password``.
+
+    Persisted to ``modules/volweb/secrets/ADMIN_PASSWORD`` — the same file
+    lib/modules.sh:get_volweb_admin_password() reads/writes — so whichever
+    path seeds the admin user first (bash install.sh or this upgrade-driven
+    fresh install) and whatever later reads the creds (e.g. the backend's
+    VolWeb API client) all agree. A hardcoded fallback here would ship the
+    same publicly-known password to every install that hits this path
+    (mirrors lib/modules.sh and _ensure_portainer_admin_secret()).
+    """
+    log = logger or _log_default
+    secrets_dir = os.path.join(_VOLWEB_DIR, "secrets")
+    secret_path = os.path.join(secrets_dir, "ADMIN_PASSWORD")
+    if os.path.exists(secret_path) and os.path.getsize(secret_path) > 0:
+        with open(secret_path) as f:
+            return f.read().strip()
+
+    os.makedirs(secrets_dir, exist_ok=True)
+    admin_pass = None
+    try:
+        import yaml
+        config_path = os.path.join(HOST_PATH, "config.yaml")
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f)
+        volweb_cfg = (cfg.get("modules") or {}).get("volweb") or {}
+        admin_pass = volweb_cfg.get("password") or None
+    except Exception as e:
+        log(f"Could not read VolWeb creds from config.yaml: {e}", "warning")
+
+    if not admin_pass:
+        import secrets as _secrets
+        admin_pass = _secrets.token_hex(16)
+        log("  No VolWeb password set in config.yaml; generated a random one instead", "warning")
+        log(f"  Retrieve it with: cat {secret_path}", "warning")
+
+    with open(secret_path, "w") as f:
+        f.write(admin_pass)
+    os.chmod(secret_path, 0o600)
+    return admin_pass
+
+
 # Transient compose-up error substrings that a retry resolves. The
 # big one is the shared-volume init race: VolWeb's image ships
 # /home/app/web/media/{symbols,temp_uploads} baked in, so when the 4-6
@@ -835,6 +878,7 @@ def install_volweb_offline(
 
     # Stage 2: seed the platform's tenroot admin user from config.yaml.
     # Same payload + Django shell call lib/modules.sh:seed_volweb_admin uses.
+    admin_user = "tenroot"
     try:
         import yaml
         config_path = os.path.join(HOST_PATH, "config.yaml")
@@ -842,10 +886,9 @@ def install_volweb_offline(
             cfg = yaml.safe_load(f)
         volweb_cfg = (cfg.get("modules") or {}).get("volweb") or {}
         admin_user = volweb_cfg.get("id") or "tenroot"
-        admin_pass = volweb_cfg.get("password") or "123123"
     except Exception as e:
         log(f"Could not read VolWeb creds from config.yaml: {e}", "warning")
-        admin_user, admin_pass = "tenroot", "123123"
+    admin_pass = _get_volweb_admin_password(logger=log)
 
     log(f"  Seeding VolWeb admin user ({admin_user})...", "info")
     # Pass the script via stdin (manage.py shell reads from stdin) and

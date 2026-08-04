@@ -25,9 +25,12 @@ from services.file_storage_service import get_agentic_blueprint, get_workflow, s
 from services.agentic.collectors import (
     create_collections,
     stream_collect_and_analyze,
-    cancel_collections,
     persist_pipeline_artifacts,
 )
+# cancel_collections is deliberately NOT imported here any more. The pipeline no
+# longer cancels flows when the collection window closes — see the note at the
+# timeout branch below. The only remaining canceller is the cleanup callback
+# _stream.py registers for a user-requested Stop.
 from services.agentic.pipeline._helpers import *  # noqa: F401,F403
 from services.agentic.pipeline._helpers import (_start_watchdog, _update_phase, _PIPELINE_SYNTHESIS_GRACE_SECONDS)  # underscore members
 
@@ -128,15 +131,50 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, c
             run_id, success_collections, artifacts, collection_minutes, _update_phase, cancel_event,
         )
 
-        # 4. Cancel any remaining collections ONLY if we timed out
+        # 4. The window is a deadline for US, not for the endpoints.
+        #
+        # This used to cancel_collections() on timeout, which killed flows that
+        # were still writing. Collection Time is meant to bound how long the
+        # pipeline WAITS before snapshotting and handing off to fusion — not to
+        # truncate work already running on a host. Cancelling threw away
+        # everything a slow client had left to send, and on a big artifact set
+        # that is most of it, so the operator paid the collection cost and got a
+        # fraction of the data with no way to recover it short of re-running the
+        # whole hunt.
+        #
+        # Now the flows are left alone: they run to completion in Velociraptor
+        # and their full output stays queryable there. Note the consequence,
+        # because it is not obvious — persist_pipeline_artifacts() below snapshots
+        # what was retrieved BY THIS POINT, so rows a flow writes after the window
+        # do not reach this run's Case. They are in Velociraptor, not lost.
+        #
+        # A user-requested Stop still cancels the flows: _stream.py registers
+        # cancel_collections as a cleanup callback, and cleanups run only from
+        # stop_workflow() — never on normal completion.
+        # Reaching the window is a NORMAL outcome, not a fault — the operator
+        # chose the limit. Logged once, at info level, and deliberately not
+        # repeated by the three lines further down that all used to restate it:
+        # five near-identical messages inside two seconds is the same log-noise
+        # pattern already cut from the streaming heartbeat.
         if timed_out:
-            add_log_to_run(run_id, "[Velociraptor] Collection timed out - stopping remaining collections...", "warning")
-            cancel_collections(run_id, success_collections)
+            add_log_to_run(
+                run_id,
+                f"[Velociraptor] Reached the {collection_minutes}m collection time. "
+                f"Some flows had not finished yet — they keep running in Velociraptor "
+                f"and finish there. Increase Collection Time to capture more of them "
+                f"in the run itself.", "info")
         else:
             add_log_to_run(run_id, "[Velociraptor] All flows completed naturally", "success")
 
+        # One row-count summary, same shape either way. The timed-out case does
+        # NOT restate the time-limit note logged above — that was said once
+        # already, and repeating it here (plus twice more below) is what made a
+        # normal outcome read like a fault.
         total_rows = sum(len(rows) for rows in all_results.values())
-        add_log_to_run(run_id, f"[Pipeline] Collection complete: {total_rows} total rows across {len(all_results)} artifacts", "success")
+        add_log_to_run(
+            run_id,
+            f"[Pipeline] Collected {total_rows} row(s) across "
+            f"{len(all_results)} artifact(s)", "success")
 
         if total_rows == 0:
             # No data at all from Velociraptor — this IS a fatal outcome, not
@@ -173,7 +211,16 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, c
             print(f"[AGENTIC] persist_pipeline_artifacts failed (non-fatal): {_e}", flush=True)
 
         _update_phase(run_id, "completed", 100)
-        add_log_to_run(run_id, "[Collection] Collection complete — fuse into a Case for analysis.", "success")
+        # The run ends the same way whether or not the time limit was reached: it
+        # completed, and hitting a limit the operator set is not a failure.
+        #
+        # An earlier version shouted here instead ("NOT the full collection", in
+        # orange) on the reasoning that a green "complete" was untrue while flows
+        # were still running. But by this point the time-limit note has already
+        # been logged once, plainly, so the context is there — and repeating it as
+        # the closing line made a normal, chosen outcome look like something had
+        # gone wrong. Say it once, then finish normally.
+        add_log_to_run(run_id, "[Collection] Collection completed — fuse into a Case for analysis.", "success")
         if not is_cancelled(run_id):
             update_run_status(run_id, "completed", progress=100)
 

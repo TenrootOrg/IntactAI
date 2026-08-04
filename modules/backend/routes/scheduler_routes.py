@@ -159,6 +159,36 @@ def update_job(job_id):
             if data['interval_unit'] not in INTERVAL_UNITS:
                 return jsonify({"error": f"interval_unit must be one of {list(INTERVAL_UNITS)}"}), 400
 
+        # Same shape validation the CREATE route applies. Without it, a job
+        # created with valid IDs could be EDITED to carry a quote-bearing value
+        # that is stored verbatim and later interpolated into VQL string
+        # literals by services/agentic/collectors/_base.py — so an attacker
+        # needed only an edit, not a create, to get arbitrary VQL onto the next
+        # cron tick.
+        #
+        # Gated on presence, not just truthiness: validate_client_ids_list(None)
+        # returns ([], None), so validating unconditionally would let a partial
+        # PUT that never mentions client_ids silently wipe the job's target list
+        # to empty.
+        if 'client_ids' in data:
+            from services.vql_safety import validate_client_ids_list
+            cleaned, _cid_err = validate_client_ids_list(data['client_ids'])
+            if _cid_err:
+                return jsonify({"error": _cid_err}), 400
+            data['client_ids'] = cleaned
+
+        # CREATE enforces >= 1; UPDATE fed this straight into the scheduler
+        # trigger. A zero or negative interval is not an injection, just a job
+        # that misbehaves forever.
+        if 'interval_value' in data:
+            try:
+                _iv = int(data['interval_value'])
+            except (TypeError, ValueError):
+                return jsonify({"error": "interval_value must be an integer"}), 400
+            if _iv < 1:
+                return jsonify({"error": "interval_value must be at least 1"}), 400
+            data['interval_value'] = _iv
+
         job = update_scheduled_job(job_id, data)
         if not job:
             return jsonify({"error": "Job not found"}), 404

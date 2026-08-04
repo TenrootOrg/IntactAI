@@ -174,6 +174,16 @@ SUPPORTED_ARTIFACTS = frozenset({
     "detectraptor.windows.detection.loldriversmalicious",
     "detectraptor.windows.detection.bootloaders",
     "windows.analysis.suspiciouswmiconsumers",
+    # Windows process listing. Its absence here was an accidental gap, not a
+    # policy: the mapper has a full pslist branch, the contract docstring below
+    # advertises Windows.System.Pslist, and all three offline-collector profiles
+    # (default / safe / quick-triage) collect it — so every Windows offline or
+    # ad-hoc collection was contributing ZERO process evidence to a case, and a
+    # multi-run case built from them fused to an empty graph.
+    # The NOTE below is the proof it was accidental: untrustedbinaries was
+    # dropped *because* its signal is "already covered by the pslist branch",
+    # which was only true if this line existed. It didn't.
+    "windows.system.pslist",
     # NOTE: windows.system.untrustedbinaries dropped from fusion — it's a
     # per-file Authenticode STATE check (no timestamp, no hash), ~95% benign
     # 'trusted' rows, and its only real signal (an unsigned running image) is
@@ -761,7 +771,14 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 ev = _ent(keys.event_id(asset, f"{asset}:{path}", f"mft:{dname}"),
                           "event", f"MFT: {str(dname)[:70]}", asset, run_id, loc,
                           anomaly=_level_anomaly(crit), first=mft_ts, artifact=artifact,
-                          flags=["mft_detection", "detection"],
+                          # NOT "detection" — that flag is the correlator's
+                          # promote-me signal (correlate.py: "Keyed by the
+                          # 'detection' flag the mapper stamps"), so stamping it
+                          # here contradicted this branch's own rule three lines
+                          # up and turned every rule-author "High" on a routine
+                          # BAU file into a case finding. The event still lands
+                          # on the timeline; nothing filters events on flags.
+                          flags=["mft_detection"],
                           title=f"MFT: {str(dname)[:60]}", detection=str(dname),
                           criticality=str(crit).lower(), path=str(path)[:200])
                 ev.severity = from_string(str(crit))

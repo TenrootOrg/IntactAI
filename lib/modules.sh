@@ -23,16 +23,20 @@ generate_iris_secrets() {
 
     local secrets_created=false
 
-    # IRIS_ADM_PASSWORD should come from config.yaml, not be random
+    # IRIS_ADM_PASSWORD comes from config.yaml when the operator set one;
+    # otherwise generate a random per-install password instead of shipping
+    # the same fixed, publicly-documented string to every default install
+    # (the same pattern used for the Portainer admin password below).
     if [[ ! -f "$secrets_dir/IRIS_ADM_PASSWORD" ]] || [[ ! -s "$secrets_dir/IRIS_ADM_PASSWORD" ]]; then
         local iris_password=$(read_config "['modules']['iris']['password']")
         if [[ -n "$iris_password" && "$iris_password" != "None" ]]; then
             echo -n "$iris_password" > "$secrets_dir/IRIS_ADM_PASSWORD"
             log_info "  Created IRIS_ADM_PASSWORD from config.yaml"
         else
-            # Fallback to default if not in config
-            echo -n "123123" > "$secrets_dir/IRIS_ADM_PASSWORD"
-            log_warn "  Created IRIS_ADM_PASSWORD with default (set in config.yaml)"
+            iris_password=$(openssl rand -hex 16)
+            echo -n "$iris_password" > "$secrets_dir/IRIS_ADM_PASSWORD"
+            log_warn "  No IRIS password set in config.yaml; generated a random one instead"
+            log_warn "  Retrieve it with: cat ${secrets_dir}/IRIS_ADM_PASSWORD"
         fi
         secrets_created=true
     else
@@ -98,7 +102,7 @@ generate_portainer_secrets() {
         # seeded via --admin-password-file. Short values silently cause the
         # admin user to never be created and the UI falls back to the
         # timed-out "initial setup" state — exactly what we're trying to avoid.
-        if [[ -z "$portainer_password" || "$portainer_password" == "None" || ${#portainer_password} -lt 12 ]]; then
+        if [[ -z "$portainer_password" || "$portainer_password" == "None" || ${#portainer_password} -lt 12 || "$portainer_password" == "1234qwer!@#\$" ]]; then
             # A hardcoded fallback here would ship the same publicly-known
             # password to every default install (the exact string is visible
             # in this open-source file) — generate a random one instead, the
@@ -117,7 +121,118 @@ generate_portainer_secrets() {
         log_info "  Portainer admin password file exists, skipping"
     fi
 
+    # AGENT_SECRET — the ONLY thing authenticating callers to portainer-agent.
+    # The agent is a full Docker API proxy holding /var/run/docker.sock as root
+    # (its own README documents /browse/* endpoints that read anywhere on the
+    # host filesystem), so an unauthenticated agent reachable over the network
+    # is a direct container-to-host-root path: create a container binding / and
+    # you own the box.
+    #
+    # It was previously unset. `docker inspect intact_portainer_agent` showed an
+    # environment of exactly PATH — no secret — while the agent sat on the
+    # shared intact_network alongside 24 other containers.
+    #
+    # Both server and agent load this same file; a mismatch means Portainer
+    # cannot see its environment, which is loud and immediate rather than
+    # silent. Generated once and then left alone -- rotating it on every install
+    # would unpair an already-working server/agent.
+    #
+    # Deliberately NOT modules/portainer/.env: that file is git-TRACKED, so a
+    # credential written there gets staged by the next `git add` (the same trap
+    # that once staged a live GitHub PAT). secrets/ is gitignored.
+    local agent_env="$secrets_dir/agent.env"
+    if [[ ! -s "$agent_env" ]]; then
+        printf 'AGENT_SECRET=%s\n' "$(openssl rand -hex 32)" > "$agent_env"
+        chmod 600 "$agent_env"
+        sync
+        log_info "  Generated Portainer agent secret"
+    else
+        log_info "  Portainer agent secret exists, skipping"
+    fi
+
     log_success "Portainer secrets ready"
+}
+
+# Nginx HTTP Basic Auth generation used to live here (generate_nginx_secrets +
+# _write_nginx_htpasswd, ~80 lines). Both are gone: nginx no longer gates the
+# site with auth_basic, so nothing reads an htpasswd file. The dashboard login is
+# now an application-level session the operator creates in the browser on first
+# visit, driven by config.yaml's top-level `first_login: true` — see
+# modules/backend/services/auth_service.py and modules/nginx/config/nginx.conf.
+#
+# A box installed BEFORE that change still has its old generated password on disk
+# at modules/nginx/secrets/nginx_basic_auth_password. It is not orphaned: the
+# upgrade path hashes it into the new login so the operator keeps signing in with
+# the password they already use, rather than being shown a claimable setup page
+# mid-upgrade. That migration is the last remaining consumer of these files and
+# lives in services/upgrade/intact.py:migrate_basic_auth_to_app_login().
+
+ensure_dashboard_login_is_reachable() {
+    # Guard against a silent total lockout: config.yaml saying the login is
+    # already set up (first_login: false) while the backend holds NO credential.
+    # auth_service fails closed on that combination by design, so nobody can sign
+    # in, and the only way out is knowing to set first_login: true by hand.
+    #
+    # It is easy to reach and gives no warning at install time:
+    #   - restoring a config.yaml backup onto a fresh/wiped data/intact.db
+    #     (exactly what happened on 2026-07-30 after a wipe-and-reinstall),
+    #   - carrying config.yaml over to a rebuilt box,
+    #   - any purge/restore that recreates the DB without the secrets table.
+    #
+    # Repairing it here beats handing back a finished install nobody can log in
+    # to. It can only ever open setup on a box with NO credential at all, so it
+    # cannot displace a working login.
+    #
+    # Deliberately NOT done from the app at runtime: the lockout path must never
+    # auto-flip first_login, or an attacker fails 10 logins on purpose to claim
+    # the setup page. An installer run is explicit and operator-initiated.
+
+    local first_login
+    first_login=$(read_config "['first_login']" 2>/dev/null)
+
+    # Act only on an explicit false — absent or true already means setup mode.
+    [[ "$first_login" == "False" || "$first_login" == "false" ]] || return 0
+
+    # Ask the backend whether a credential actually exists.
+    # Importing services.storage prints "[STORAGE] ..." banners to STDOUT, not
+    # stderr, so the answer must be fished out by sentinel rather than read as
+    # the whole of stdout — a plain capture yields banner text glued to the
+    # answer and silently never matches.
+    local has_cred
+    has_cred=$(docker exec intact_backend python3 -c "
+import sys; sys.path.insert(0,'/app')
+from services.storage.secret_store import get_secret
+print('INTACT_CRED:' + ('yes' if get_secret('auth_password_hash') else 'no'))
+" 2>/dev/null | grep -o 'INTACT_CRED:[a-z]*' | tail -1)
+
+    # Anything inconclusive (backend down, import failure, no sentinel) — leave
+    # it alone rather than guess. Only a definite "no credential" repairs.
+    [[ "$has_cred" == "INTACT_CRED:no" ]] || return 0
+
+    log_warn "  Dashboard login: config.yaml says it is configured (first_login: false),"
+    log_warn "  but no credential is stored — nobody would be able to sign in."
+    log_warn "  Setting first_login: true so you can create one in the browser."
+
+    # Truncate IN PLACE. config.yaml is bind-mounted into the backend BY INODE,
+    # so write-temp-then-rename would leave the container's /app/config.yaml
+    # pinned to the old bytes and it would read first_login: false forever.
+    if python3 - "$CONFIG_FILE" <<'PYFIX'
+import sys
+p = sys.argv[1]
+with open(p) as f:
+    lines = f.read().splitlines(keepends=True)
+hits = [i for i, l in enumerate(lines) if l.startswith("first_login:")]
+if len(hits) != 1:
+    sys.exit(1)
+lines[hits[0]] = "first_login: true\n"
+with open(p, "w") as f:          # truncate in place -- preserves the inode
+    f.write("".join(lines))
+PYFIX
+    then
+        log_warn "  Done — open the dashboard to set your username and password."
+    else
+        log_error "  Could not edit config.yaml; set 'first_login: true' there by hand."
+    fi
 }
 
 generate_certificates() {
@@ -178,14 +293,27 @@ generate_certificates() {
         if [[ -f "$nginx_ssl/nginx-cert.crt" ]]; then
             log_info "  Copying shared TLS certificate to IRIS..."
             cp "$nginx_ssl/nginx-cert.crt" "$iris_web/iris_dev_cert.pem"
+            chmod 644 "$iris_web/iris_dev_cert.pem"
             cp "$nginx_ssl/nginx-cert.key" "$iris_web/iris_dev_key.pem"
-            chmod 644 "$iris_web"/*.pem
+            # iris-nginx (ghcr.io/dfir-iris/iriswebapp_nginx) runs as
+            # www-data (uid/gid 33), not root, so it doesn't need — and must
+            # not get — world-read access to this shared private key. Own it
+            # root:33 and restrict to group-read (640), matching the
+            # restriction already applied to the source nginx-cert.key.
+            chown root:33 "$iris_web/iris_dev_key.pem" 2>/dev/null || true
+            chmod 640 "$iris_web/iris_dev_key.pem"
             log_success "  IRIS web certificate synced with Nginx certificate"
         fi
 
-        # Ensure IRIS certificates are readable (fix permissions if needed)
+        # Ensure IRIS certificates are readable (fix permissions if needed).
+        # Cert stays world-readable; the private key stays group-restricted
+        # to the iris-nginx container's gid (33), never world-readable.
         if [[ -d "$iris_web" ]]; then
-            chmod 644 "$iris_web"/*.pem 2>/dev/null || true
+            [[ -f "$iris_web/iris_dev_cert.pem" ]] && chmod 644 "$iris_web/iris_dev_cert.pem" 2>/dev/null || true
+            if [[ -f "$iris_web/iris_dev_key.pem" ]]; then
+                chown root:33 "$iris_web/iris_dev_key.pem" 2>/dev/null || true
+                chmod 640 "$iris_web/iris_dev_key.pem" 2>/dev/null || true
+            fi
         fi
     else
         log_info "  IRIS disabled — skipping IRIS Root CA + web cert sync"
@@ -607,10 +735,12 @@ deploy_elk() {
 
     # Wait for Elasticsearch to be ready
     log_info "  Waiting for Elasticsearch API (http://localhost:9200)..."
+    local elk_user=$(read_config "['modules']['elk']['id']")
+    local elk_pass=$(read_config "['modules']['elk']['password']")
     local es_wait=0
     local es_max_wait=90
     while [[ $es_wait -lt $es_max_wait ]]; do
-        if curl -sf --max-time 5 "http://localhost:9200/_cluster/health" > /dev/null 2>&1; then
+        if curl -sf --max-time 5 -u "${elk_user:-elastic}:${elk_pass}" "http://localhost:9200/_cluster/health" > /dev/null 2>&1; then
             log_success "  Elasticsearch is ready! (${es_wait}s)"
             track_module_success "ELK Stack"
             return 0
@@ -683,12 +813,57 @@ _stamp_transitive_env_from_config() {
 # TimeSketch Module
 # ============================================================================
 
+# We modify a vendor container. Say so, once, where someone will find it.
+#
+# TimeSketch ships as an image we do not build, so the only way to add an LLM
+# provider is to write into the running container's site-packages. That is a
+# legitimate thing to do and it is fully automatic, but it is exactly the kind
+# of invisible behaviour that costs somebody a day of debugging after an
+# upstream change. This is that day's head start.
+#
+# Recorded as a NOTE, never a warning: record_install_note() does not feed
+# INSTALL_WARNINGS, so this cannot colour the summary banner or land in the
+# ATTENTION block. Nothing is wrong. The wording also deliberately avoids
+# every token record_child_output_issue() scrapes for ("WARNING:", "[WARN]",
+# "[ERROR]", ...) so it stays inert even if that scanner gains call sites.
+record_timesketch_llm_provider_note() {
+    record_install_note "\
+${YELLOW}TimeSketch container modification — expected, by design${NC}
+
+  IntactAI adds two LLM provider modules to the vendor TimeSketch image:
+    openrouter, litellm_proxy
+
+  On every container start, a prologue in
+  modules/timesketch/docker-compose.yaml copies them into the container's
+  Python site-packages under
+    timesketch/lib/llms/providers/contrib/
+  and appends two guarded import lines to that package's __init__.py.
+
+  Source of truth: modules/timesketch/llm_providers/ (bind-mounted read-only)
+  Scope:           the container's writable layer only. Nothing on this host
+                   is changed, and the edit is re-applied automatically on
+                   every up / recreate / restart.
+  Fail-safe:       if anything goes wrong the prologue logs it and TimeSketch
+                   starts unmodified. To see what it decided:
+                     docker exec intact_timesketch_web \\
+                       cat /var/log/timesketch/intact_llm_providers.log
+
+  This is recorded so that a future TimeSketch upgrade which changes
+  timesketch/lib/llms/providers/ is understood rather than debugged from
+  scratch. CI checks upstream for exactly that change on every release build
+  (scripts/ci/check_timesketch_provider_drift.py). No action is needed now."
+}
+
 deploy_timesketch() {
     local ts_enabled=$(read_config "['modules']['timesketch']['enabled']")
     if ! is_enabled "$ts_enabled"; then
         log_info "[2/8] TimeSketch: SKIPPED (disabled in config)"
         return
     fi
+
+    # Recorded before the skip-already-installed return below, so a re-run of
+    # install.sh still surfaces it. Printed at the end by print_install_notes.
+    record_timesketch_llm_provider_note
 
     # Skip-already-installed: install.sh re-runs after a partial failure
     # should reuse what's healthy instead of re-pulling + re-creating
@@ -735,6 +910,26 @@ deploy_timesketch() {
     # via the dashboard Settings → Timesketch tab (no env var, no secret
     # baked into install). Idempotent: existing conf is preserved so
     # post-install edits (manual or via the Settings UI) survive re-runs.
+    # Timesketch's Postgres password. The compose file used to read
+    # `${POSTGRES_PASSWORD:-timesketch}` and the fallback was LIVE — nothing set
+    # the variable, so every install ran the timeline database on
+    # timesketch/timesketch. Generated once here and reused; rotating it on a
+    # re-run would leave the existing database unreachable (the credential is
+    # baked into the DB at initdb time).
+    #
+    # secrets/, not modules/timesketch/.env: that .env is git-tracked.
+    local ts_secrets="${SCRIPT_DIR}/modules/timesketch/secrets"
+    local ts_pg_env="$ts_secrets/postgres.env"
+    mkdir -p "$ts_secrets"
+    if [[ ! -s "$ts_pg_env" ]]; then
+        printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 32)" > "$ts_pg_env"
+        chmod 600 "$ts_pg_env"
+        sync
+        log_info "  Generated Timesketch Postgres password"
+    fi
+    local ts_pg_pass
+    ts_pg_pass=$(sed -n 's/^POSTGRES_PASSWORD=//p' "$ts_pg_env" | head -1)
+
     for base in timesketch.conf timesketch_legacy.conf; do
         local ts_template="${SCRIPT_DIR}/modules/timesketch/config/${base}.template"
         local ts_out="${SCRIPT_DIR}/modules/timesketch/config/${base}"
@@ -750,7 +945,13 @@ deploy_timesketch() {
             local random_key
             random_key=$(openssl rand -hex 32)
             sed -i "s|^SECRET_KEY = '[^']*'|SECRET_KEY = '${random_key}'|" "$ts_out"
-            log_success "  ${base} created from template (api_key empty — set via Settings → Timesketch; SECRET_KEY randomized)"
+            # The template ships the DB URI with the literal timesketch:timesketch
+            # credential. Point it at the generated password, or the app cannot
+            # authenticate to its own database now that the default is gone.
+            if [[ -n "$ts_pg_pass" ]]; then
+                sed -i "s|postgresql://timesketch:[^@]*@|postgresql://timesketch:${ts_pg_pass}@|" "$ts_out"
+            fi
+            log_success "  ${base} created from template (api_key empty — set via Settings → Timesketch; SECRET_KEY + DB password randomized)"
         else
             log_warn "  Template missing: $ts_template"
         fi
@@ -1572,15 +1773,48 @@ deploy_volweb() {
 }
 
 
+# Ensures modules/volweb/secrets/ADMIN_PASSWORD exists and returns its
+# content on stdout. Uses the operator's modules.volweb.password from
+# config.yaml when set; otherwise generates a random per-install password
+# instead of falling back to a fixed, publicly-documented string (same
+# pattern as generate_iris_secrets' IRIS_ADM_PASSWORD / the Portainer admin
+# password). Persisted so seed_volweb_admin() and seed_yara_rulesets()
+# (which authenticates as the same user) always agree, and re-runs stay
+# idempotent. Callers capture this via `$(get_volweb_admin_password)`, so
+# any log output MUST go to stderr — only the password itself goes to
+# stdout.
+get_volweb_admin_password() {
+    local secrets_dir="${SCRIPT_DIR}/modules/volweb/secrets"
+    mkdir -p "$secrets_dir"
+    local pass_file="$secrets_dir/ADMIN_PASSWORD"
+
+    if [[ ! -s "$pass_file" ]]; then
+        local volweb_pass
+        volweb_pass=$(read_config "['modules']['volweb']['password']")
+        if [[ -z "$volweb_pass" || "$volweb_pass" == "None" ]]; then
+            volweb_pass=$(openssl rand -hex 16)
+            {
+                log_warn "  No VolWeb password set in config.yaml; generated a random one instead"
+                log_warn "  Retrieve it with: cat ${pass_file}"
+            } >&2
+        fi
+        printf '%s' "$volweb_pass" > "$pass_file"
+        chmod 600 "$pass_file"
+    fi
+    cat "$pass_file"
+}
+
+
 seed_volweb_admin() {
     # Use the platform's VolWeb admin creds from config.yaml. Reads
-    # ``modules.volweb.id`` + ``modules.volweb.password`` so VolWeb
-    # has its own settable creds (instead of borrowing Timesketch's).
-    # Falls back to ``tenroot:123123`` only if the keys are missing.
+    # ``modules.volweb.id`` for the username, and the persisted
+    # admin password from get_volweb_admin_password() (config.yaml's
+    # password when the operator set one, otherwise a random per-install
+    # value generated on first run).
     local tenroot_user=$(read_config "['modules']['volweb']['id']")
     [[ -z "$tenroot_user" ]] && tenroot_user="tenroot"
-    local tenroot_pass=$(read_config "['modules']['volweb']['password']")
-    [[ -z "$tenroot_pass" ]] && tenroot_pass="123123"
+    local tenroot_pass
+    tenroot_pass=$(get_volweb_admin_password)
 
     log_info "  Seeding VolWeb admin user (${tenroot_user})..."
     docker exec --user app -w /home/app/web -i intact_volweb_backend python3 manage.py shell <<EOF 2>&1 | tail -3
@@ -1603,8 +1837,8 @@ seed_yara_rulesets() {
     # ingests every .yar / .yara file recursively.
     local volweb_user=$(read_config "['modules']['volweb']['id']")
     [[ -z "$volweb_user" ]] && volweb_user="tenroot"
-    local volweb_pass=$(read_config "['modules']['volweb']['password']")
-    [[ -z "$volweb_pass" ]] && volweb_pass="123123"
+    local volweb_pass
+    volweb_pass=$(get_volweb_admin_password)
 
     log_info "  Seeding YARA rulesets (~3 min)..."
 
@@ -1803,6 +2037,10 @@ start_services() {
     echo ""
     generate_portainer_secrets
     echo ""
+    # No nginx Basic Auth secret to generate any more — the dashboard login is
+    # now an application-level session set up in the browser on first visit
+    # (config.yaml's top-level `first_login: true`, handled by
+    # modules/backend/services/auth_service.py). Nothing reads an htpasswd file.
     generate_certificates
     echo ""
     ensure_shared_volumes

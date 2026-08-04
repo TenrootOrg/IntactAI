@@ -12,6 +12,30 @@ document.addEventListener('alpine:init', () => {
         autoScroll: true,
         refreshInterval: null,
         currentRunId: null,
+        rerunning: null,        // run_id currently being relaunched
+
+        // An upgrade signs the operator out halfway through: the backend
+        // restarts to load the new code, every session dies with it, and on a
+        // pre-auth box the auth migration lands them on the SETUP page as well.
+        // The run id lived only in this store, so the page that came back after
+        // signing in had nothing to poll and just sat there. Operators read that
+        // as "the upgrade is stuck at some point" -- on runs that were finishing
+        // normally. Ask the SERVER what is in flight instead of trying to
+        // remember across a page we know is about to be destroyed.
+        async reattachToActiveRun() {
+            if (this.modalOpen) return false;
+            try {
+                const r = await fetch('/api/upgrade/active');
+                if (!r.ok) return false;
+                const data = await r.json();
+                const active = data && data.active;
+                if (!active || !active.run_id) return false;
+                await this.viewLogs(active.run_id);
+                return true;
+            } catch (e) {
+                return false;   // never let this break the page it runs on
+            }
+        },
 
         async load() {
             // Only show loading spinner on initial load
@@ -31,8 +55,13 @@ document.addEventListener('alpine:init', () => {
                 if (this.initialLoad || JSON.stringify(this.allRuns) !== JSON.stringify(newRuns)) {
                     this.allRuns = newRuns;
                 }
+                const wasFirst = this.initialLoad;
                 this.applyFilter();
                 this.initialLoad = false;
+                // First listing after a (re)load — including the one that
+                // follows the mid-upgrade sign-out. If a run is still in
+                // flight, reopen it instead of leaving a frozen page.
+                if (wasFirst) this.reattachToActiveRun();
             } catch (e) {
                 console.error('Failed to load workflows:', e);
                 // Only blank the list on the very first load. On a transient poll
@@ -47,6 +76,47 @@ document.addEventListener('alpine:init', () => {
                 this.runs = this.allRuns;
             } else {
                 this.runs = this.allRuns.filter(run => run.type === this.typeFilter);
+            }
+        },
+
+        // Relaunch a finished run with its ORIGINAL configuration.
+        //
+        // Two steps on purpose. The server returns a SPEC (endpoint + payload)
+        // rebuilt from what the run persisted, and the browser POSTs it — so the
+        // rerun goes through the exact same route the launch page uses, with the
+        // same validation and the same active-workspace header. Re-dispatching
+        // server-side would mean a second copy of the launch logic that drifts
+        // the first time a route gains a parameter.
+        //
+        // A run that never recorded its configuration (died early, or was made
+        // by an older release that stored less) reports supported:false with a
+        // reason, rather than quietly relaunching with defaults — which would be
+        // a different job wearing the same name.
+        async rerun(runId) {
+            if (this.rerunning) return;              // one at a time
+            this.rerunning = runId;
+            try {
+                const specRes = await fetch(`/api/dashboard/automation/${runId}/rerun-spec`);
+                const spec = await specRes.json();
+                if (!spec || !spec.supported) {
+                    alert(spec?.reason || spec?.error || 'This run cannot be relaunched.');
+                    return;
+                }
+                const res = await fetch(spec.endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(spec.payload),
+                });
+                const d = await res.json();
+                if (!res.ok || d.error) {
+                    alert('Rerun failed: ' + (d.error || res.status));
+                    return;
+                }
+                await this.load();
+            } catch (e) {
+                alert('Rerun failed: ' + e.message);
+            } finally {
+                this.rerunning = null;
             }
         },
 

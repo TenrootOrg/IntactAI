@@ -852,6 +852,355 @@ def _format_value(v: str) -> str:
     return f"'{s}'"
 
 
+def report_dashboard_login(logger: Callable = None) -> None:
+    """Tell the operator how to sign in, in the log they are actually reading.
+
+    migrate_basic_auth_to_app_login() runs at backend BOOT — it has to, because
+    Phase 1 executes the OLD code and the migration belongs to the new one. So
+    everything it says goes to `docker logs intact_backend` under a [STARTUP]
+    prefix. On the 20260726 -> 20260803 upgrade the migration worked perfectly
+    and `grep -c STARTUP` on the operator's upgrade log returned 0: it recovered
+    the existing nginx Basic Auth credential, wrote first_login: false, and the
+    operator — who had never needed that password, because nginx had been
+    prompting for it — was locked out of an appliance that was functioning
+    exactly as designed.
+
+    A correct migration nobody can see is indistinguishable from a broken one.
+    This runs at the END of the upgrade, unconditionally, and states the
+    outcome. It reports the username and the FILE holding the password, never
+    the password itself: the upgrade log is downloaded, pasted into tickets and
+    attached to QA reports.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    try:
+        from services import auth_service
+    except Exception as e:
+        log(f"  (could not read dashboard login state: "
+            f"{type(e).__name__}: {e})", "info")
+        return
+
+    flag = auth_service.read_first_login()
+    log("", "info")
+    log("DASHBOARD LOGIN:", "info")
+    if flag == auth_service.FIRST_LOGIN_TRUE:
+        log("  This appliance will show the SETUP page on next load. Create "
+            "your account IMMEDIATELY — until you do, anyone who can reach it "
+            "can claim it.", "warning")
+        return
+    if flag == auth_service.FIRST_LOGIN_ERROR:
+        log("  config.yaml could not be read, so the login state is unknown. "
+            "The login page explains how to recover.", "warning")
+        return
+    if flag == auth_service.FIRST_LOGIN_ABSENT:
+        log("  No first_login key in config.yaml — the login migration has "
+            "not run yet. It runs on the next backend start.", "info")
+        return
+
+    user = auth_service.username() or 'admin'
+    log(f"  Sign in as: {user}", "success")
+    secret = os.path.join(WORKDIR, 'modules', 'nginx', 'secrets',
+                          'nginx_basic_auth_password')
+    if os.path.isfile(secret):
+        log("  Your password is UNCHANGED — it is the same one the browser "
+            "used to prompt for. On boxes upgraded from a pre-login release "
+            "it is a generated 32-character secret; read it on the appliance "
+            "with:", "info")
+        log(f"    sudo cat {secret}", "info")
+    else:
+        log("  Your password is unchanged from before this upgrade.", "info")
+    log("  Change it under Settings once you are in.", "info")
+
+
+def migrate_basic_auth_to_app_login(logger: Callable = None) -> None:
+    """Move a pre-auth box onto the new session login, landing the operator on
+    the setup page so THEY choose the credentials.
+
+    This function used to do the opposite, and the reasoning was wrong on a
+    point of fact. It assumed the box it was upgrading had nginx Basic Auth —
+    a password the operator was already typing — and argued that replacing it
+    with a claimable setup page was strictly worse. Checked against the tags:
+
+        auth_basic in intact-20260615 : 0
+        auth_basic in intact-20260726 : 0
+        auth_basic in development     : 3
+
+    NO SHIPPED RELEASE EVER HAD IT. The gate was added and replaced by the app
+    login inside the same unreleased window, so on every real appliance the
+    recovery found nothing, fell through to ensure_nginx_basic_auth_secret(),
+    and GENERATED a random 32-character password — then stored it as the login
+    and marked setup complete. The operator was locked out of their own box by
+    a credential that had never existed anywhere they could have seen it. That
+    is what happened on the 20260726 -> 20260803 upgrade.
+
+    With no prior credential there is nothing to preserve, and the appliance is
+    serving an unauthenticated dashboard TODAY — so the setup page is strictly
+    an improvement over the status quo, not a regression from it. Hence: never
+    generate a password nobody has seen. Carry one across only when the operator
+    explicitly set `dashboard.password` in config.yaml, which is a real choice
+    they made; otherwise write first_login: true and let them pick.
+
+    Detection is the absence of the top-level `first_login:` key. The shipped
+    config.yaml carries it, so a fresh install always has it; only a box that
+    predates this feature does not. Idempotent — once the key exists this is a
+    no-op, so it is safe on every upgrade, and a box already on the new scheme
+    never has its credentials touched.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+
+    # This module already lives under /app/services/upgrade/, so the sibling
+    # import resolves without any sys.path juggling.
+    try:
+        from services import auth_service
+    except Exception as e:
+        log(f"  Could not load auth_service ({type(e).__name__}: {e}) — "
+            f"skipping login migration", "warning")
+        return
+
+    flag = auth_service.read_first_login()
+    if flag == auth_service.FIRST_LOGIN_ERROR:
+        log("  config.yaml unreadable — skipping login migration (the login "
+            "page will explain how to recover)", "warning")
+        return
+    if flag != auth_service.FIRST_LOGIN_ABSENT:
+        # Already on the new scheme (or deliberately left in setup mode).
+        return
+
+    log("  Pre-auth install detected — moving to the new dashboard login", "info")
+
+    # ONLY an explicitly operator-chosen password is carried across. Deleting
+    # the old fallback (read a generated secret off disk, and failing that
+    # GENERATE one) is the entire fix: that branch is what silently minted a
+    # 32-character password nobody had ever seen and then locked the operator
+    # out behind it. A password the operator did not choose and cannot know is
+    # not a credential — it is a lockout with extra steps.
+    user, password = _read_dashboard_credentials(log)
+
+    if password:
+        if auth_service.set_credential(user, password):
+            if auth_service.write_first_login(False):
+                log(f"  Dashboard login carried across (username: {user}) — the "
+                    f"password you set in config.yaml under dashboard.password "
+                    f"signs you in to the new login page.", "success")
+                auth_service.audit('migrated_from_basic_auth',
+                                   username_value=user,
+                                   source="config.yaml dashboard.password")
+                return
+            log("  Stored the credential but could not write first_login to "
+                "config.yaml — the setup page may still be served. Set "
+                "first_login: false by hand.", "error")
+            return
+        log("  Could not store the credential from config.yaml — falling back "
+            "to the setup page", "warning")
+
+    # The normal path for every real appliance: no operator-chosen password, so
+    # the operator picks their own on the setup page.
+    if auth_service.write_first_login(True):
+        log("  This appliance will show the SETUP page on next load, where you "
+            "choose your own username and password. Complete it IMMEDIATELY — "
+            "until you do, anyone who can reach the appliance can claim the "
+            "account. (It has been serving an unauthenticated dashboard up to "
+            "now, so this is not a new exposure, but it is your chance to end "
+            "it.)", "warning")
+    else:
+        log("  Could not write first_login to config.yaml. Add "
+            "'first_login: true' at the top level by hand to set up a login.",
+            "error")
+
+
+def ensure_nginx_basic_auth_secret(logger: Callable = None) -> None:
+    """Seed modules/nginx/secrets/{nginx_basic_auth_password,htpasswd} if
+    missing — mirrors lib/modules.sh:generate_nginx_secrets() exactly.
+
+    RETAINED ONLY AS THE MIGRATION SOURCE. nginx no longer reads the htpasswd
+    (see modules/nginx/config/nginx.conf — the auth_basic gate is gone, replaced
+    by auth_request against the backend's session login), and the bind mount has
+    been removed from modules/nginx/docker-compose.yaml.
+
+    It still runs once, BEFORE migrate_basic_auth_to_app_login(), for one
+    reason: on a box whose secret was never generated, that function has no
+    existing password to migrate and would have to fall back to opening the
+    setup page. Generating here first means there is always something to hash,
+    so the upgrade never leaves the appliance claimable. Do not call it after
+    the migration, and do not re-add the nginx mount.
+
+      * dashboard.password set in config.yaml -> re-applied every run, so the
+        operator's chosen password is what the dashboard actually uses.
+      * dashboard.password empty (shipped default) -> generate once if the
+        secret is missing, otherwise leave the existing one strictly alone.
+        An upgrade must never silently rotate a working box's password.
+    """
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+    secrets_dir = os.path.join(WORKDIR, 'modules', 'nginx', 'secrets')
+    password_path = os.path.join(secrets_dir, 'nginx_basic_auth_password')
+    htpasswd_path = os.path.join(secrets_dir, 'htpasswd')
+
+    # config.yaml wins whenever the operator filled in dashboard.password —
+    # rewritten on every upgrade so editing config.yaml actually changes the
+    # login, exactly like lib/modules.sh:generate_nginx_secrets does at install
+    # time. Left empty (the shipped default) we fall through to the
+    # generate-once-and-never-touch behaviour below.
+    dash_user, dash_password = _read_dashboard_credentials(log)
+    if dash_password:
+        os.makedirs(secrets_dir, exist_ok=True)
+        _write_nginx_htpasswd(dash_user, dash_password, password_path, htpasswd_path, log)
+        log(f"  Nginx Basic Auth password set from config.yaml (username: {dash_user})")
+        return
+
+    if (os.path.exists(password_path) and os.path.getsize(password_path) > 0
+            and os.path.exists(htpasswd_path) and os.path.getsize(htpasswd_path) > 0):
+        # Already present — still re-assert ownership in case a prior
+        # permissions sweep (or a manually-copied file) left it un-readable
+        # by the nginx worker (see the chown/chmod note below).
+        try:
+            os.chown(htpasswd_path, 0, 101)
+        except (PermissionError, OSError):
+            pass
+        try:
+            os.chmod(htpasswd_path, 0o640)
+        except OSError:
+            pass
+        return
+    os.makedirs(secrets_dir, exist_ok=True)
+
+    import secrets as _secrets
+    password = _secrets.token_hex(16)
+    _write_nginx_htpasswd(dash_user, password, password_path, htpasswd_path, log)
+
+    log(f"  Generated a random Nginx dashboard/API Basic Auth password "
+        f"(username: {dash_user})", "warning")
+    log(f"  Retrieve it with: cat {password_path}", "warning")
+    log("  Set dashboard.password in config.yaml to choose your own instead.",
+        "warning")
+
+
+def _read_dashboard_credentials(log: Callable) -> tuple:
+    """Return (username, password) from config.yaml's ``dashboard:`` block.
+
+    Username defaults to 'admin'; password defaults to '' meaning "operator
+    did not choose one — generate/keep a random secret". A malformed or
+    unreadable config.yaml must never break the upgrade, so any failure
+    degrades to the generated-secret path rather than raising.
+    """
+    config_path = os.path.join(WORKDIR, 'config.yaml')
+    user, password = 'admin', ''
+    try:
+        import yaml  # local import — mirrors base.py's read-config idiom
+        with open(config_path, 'r') as f:
+            cfg = yaml.safe_load(f) or {}
+        dash = cfg.get('dashboard') or {}
+        if isinstance(dash, dict):
+            # str() so a YAML-numeric password (e.g. `password: 123123`, which
+            # safe_load hands back as an int) still hashes to what the operator
+            # typed instead of blowing up on .encode().
+            user = str(dash.get('id') or 'admin').strip() or 'admin'
+            raw = dash.get('password')
+            password = '' if raw is None else str(raw).strip()
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log(f"  Could not read dashboard credentials from config.yaml "
+            f"({type(e).__name__}: {e}) — falling back to a generated password",
+            "warning")
+    return user, password
+
+
+def _write_nginx_htpasswd(user: str, password: str, password_path: str,
+                          htpasswd_path: str, log: Callable) -> None:
+    """Write the plaintext + htpasswd pair for one user/password.
+
+    SHA-1 htpasswd format ("{SHA}<base64 sha1 digest>") — natively supported
+    by nginx's auth_basic module, computed in-process so the plaintext
+    password never touches a subprocess argv (see run_command's shell=True —
+    a CLI arg there would be briefly visible via `ps`).
+
+    Written with open(...,'w') (truncate in place, same inode) because docker
+    bind-mounts these BY PATH — replacing the inode would leave the running
+    nginx pinned to the old file and a changed password silently inert.
+    """
+    with open(password_path, 'w') as f:
+        f.write(password)
+    os.chmod(password_path, 0o600)
+
+    import hashlib
+    import base64
+    digest = hashlib.sha1(password.encode()).digest()
+    with open(htpasswd_path, 'w') as f:
+        f.write(f"{user}:{{SHA}}{base64.b64encode(digest).decode()}\n")
+
+    # The htpasswd file is read by the nginx WORKER process (uid/gid 101 —
+    # nginx:alpine's compiled --user=nginx --group=nginx default), not the
+    # root master, so owner-only 600 would make every request 500. Mirrors
+    # the root:33/640 pattern already used for the IRIS web TLS key (gid 33
+    # = iris-nginx's www-data).
+    try:
+        os.chown(htpasswd_path, 0, 101)
+    except (PermissionError, OSError) as e:
+        log(f"  Could not chown nginx htpasswd to root:101 ({type(e).__name__}: {e})",
+            "warning")
+    os.chmod(htpasswd_path, 0o640)
+
+
+def recreate_nginx(logger: Callable = None) -> bool:
+    """Recreate intact_nginx via `docker compose up -d nginx`.
+
+    `docker restart` (used elsewhere purely to refresh nginx's cached
+    upstream DNS — see restart_nginx() in services/upgrade/__init__.py)
+    reuses the container's EXISTING mount table and does NOT pick up a
+    docker-compose.yaml change such as the new htpasswd bind mount added
+    alongside the auth_basic gate — mirrors recreate_tusd()'s reasoning for
+    tusd below. `docker compose up -d` only recreates when the resolved
+    config actually differs from the running container, so this is a safe
+    no-op once nginx is already current.
+
+    Non-fatal by design — a hiccup here must not roll back the whole intact
+    upgrade. Safe to call on every intact upgrade (online + offline).
+    """
+    log = logger or (lambda m, l="info": None)
+    nginx_dir = os.path.join(WORKDIR, 'modules', 'nginx')
+    try:
+        # Stamp versions.nginx into modules/nginx/.env before converging.
+        #
+        # lib/config.sh:248 does this at INSTALL time, in bash, which never runs
+        # again. So an upgrade merges the new pin into config.yaml and mirrors a
+        # compose whose default is the new tag, while the .env keeps whatever
+        # the original install wrote — and `image: nginx:${NGINX_VERSION:-...}`
+        # resolves to the STALE value, so the default is never reached.
+        #
+        # A box installed at intact-20260615 has NGINX_VERSION=alpine (that
+        # release had no versions.nginx pin at all and defaulted to the floating
+        # tag). It then runs nginx:alpine forever, however many times it is
+        # upgraded — observed 2026-08-02, where every other sidecar converted to
+        # its pin and the platform nginx alone stayed floating. A floating tag
+        # on the component terminating TLS for the whole appliance is the one
+        # place an unreviewed upstream bump should not silently arrive.
+        try:
+            cfg_path = os.path.join(WORKDIR, 'config.yaml')
+            if os.path.isfile(cfg_path):
+                import yaml
+                with open(cfg_path) as f:
+                    pin = ((yaml.safe_load(f) or {}).get('versions') or {}).get('nginx')
+                if pin:
+                    update_env_file(os.path.join(nginx_dir, '.env'),
+                                    'NGINX_VERSION', str(pin), logger=log)
+        except Exception as e:                                  # noqa: BLE001
+            # Never block the recreate on the pin write: a stale-but-working
+            # nginx beats no nginx.
+            log(f"  could not stamp NGINX_VERSION ({type(e).__name__}: {e}) — "
+                f"converging on the existing pin", "warning")
+
+        r = run_command("docker compose up -d nginx", cwd=nginx_dir,
+                        logger=None, timeout=120)
+        if not r.get('success'):
+            log(f"nginx recreate returned nonzero (continuing): "
+                f"{(r.get('stderr') or r.get('stdout') or '')[:200]}", "warning")
+            return False
+        log("nginx container recreated (picked up compose/mount changes)", "success")
+        return True
+    except Exception as e:
+        log(f"nginx recreate skipped ({type(e).__name__}: {e})", "warning")
+        return False
+
+
 def recreate_tusd(logger: Callable = None) -> bool:
     """Apply the pinned tusd tag to the intact_tusd sidecar.
 
@@ -880,13 +1229,34 @@ def recreate_tusd(logger: Callable = None) -> bool:
         if tag:
             update_env_file(os.path.join(backend_dir, '.env'), 'TUSD_VERSION',
                             str(tag), logger=log)
+        # Capture the container's identity before and after so the log can say
+        # what actually happened. `docker compose up -d` is a CONVERGENCE, not a
+        # recreate: when nothing about the service changed it is a no-op and the
+        # container keeps running untouched. Reporting that as "recreated" is
+        # the same class of overstatement as the VERSION SUMMARY claiming it
+        # installed a module the loop never dispatched — an operator reading
+        # "recreated at v2.9.2" reasonably concludes the sidecar restarted on
+        # that version, when it may have been running since before the upgrade.
+        def _tusd_id():
+            p = run_command("docker inspect -f '{{.Id}}' intact_tusd",
+                            logger=None, timeout=30)
+            return (p.get('stdout') or '').strip().strip("'") if p.get('success') else ''
+
+        before = _tusd_id()
         r = run_command("docker compose up -d tusd", cwd=backend_dir,
                         logger=None, timeout=120)
         if not r.get('success'):
             log(f"tusd recreate returned nonzero (sidecar — continuing): "
                 f"{(r.get('stderr') or r.get('stdout') or '')[:200]}", "warning")
             return False
-        log(f"tusd sidecar recreated at {tag or 'pinned default'}", "success")
+        after = _tusd_id()
+        version = tag or 'pinned default'
+        if before and after and before == after:
+            log(f"tusd sidecar already at {version} — no change needed", "info")
+        elif not before and after:
+            log(f"tusd sidecar created at {version}", "success")
+        else:
+            log(f"tusd sidecar recreated at {version}", "success")
         return True
     except Exception as e:
         log(f"tusd recreate skipped ({type(e).__name__}: {e})", "warning")
@@ -962,8 +1332,18 @@ def upgrade_intact(version: str = None, logger: Callable = None) -> Dict:
     # restart handoff only `docker restart`s tusd (keeps the old image).
     recreate_tusd(logger=log)
 
-    # NOTE: Nginx and backend restarts are handled by the upgrade orchestrator
-    # to support two-phase upgrades
+    # git pull above already refreshed nginx.conf (whole WORKDIR) and
+    # docker-compose.yaml, so an existing install upgrading online needs the
+    # login migration and an actual recreate — `docker restart`, used elsewhere
+    # purely to clear nginx's cached upstream DNS, does not pick up a changed
+    # mount list (this upgrade REMOVES the old htpasswd mount).
+    #
+    # No-op unless this box predates the app login (see its docstring).
+    migrate_basic_auth_to_app_login(logger=log)
+    recreate_nginx(logger=log)
+
+    # NOTE: Backend restart (and the nginx DNS-cache refresh restart) is
+    # handled by the upgrade orchestrator to support two-phase upgrades
 
     log("Intact.AI Platform code updated", "success")
 
@@ -1169,19 +1549,36 @@ def ensure_backend_runtime_image(package_dir: str, target_tag: str,
     """Make `intact-backend:<target_tag>` present locally BEFORE any recreate.
 
     Order (idempotent — safe on crash-resume): already-present → refresh from the
-    bundled tar if one ships (loads a moved dev tag's new bits) → load the bundled
-    tar → FAIL. Runs in Phase 1 before the snapshot/mirror, so a FAIL leaves the
-    platform fully up and untouched.
+    bundled tar if one ships (loads a moved dev tag's new bits) → load the exactly
+    named tar → load ANY intact-backend-*.tar in the package and retag → FAIL.
+    Runs in Phase 1 before the snapshot/mirror, so a FAIL leaves the platform fully
+    up and untouched.
+
+    The retag fallback is what makes this work ACROSS releases in both directions.
+    The tar's filename tag comes from the packager's `be_tag`
+    (``_release_tag or versions.backend or target_version``) while the tag we look
+    for here comes from the manifest's ``versions.intact``. Those agree for a
+    package built by a current prepare from a tagged release, and disagree
+    whenever they were resolved differently — an older package built while
+    ``versions.backend`` was still a moving pin like 'development', or a newer one
+    that changes how the release tag is derived. Requiring an exact filename match
+    turned that cosmetic disagreement into a hard abort on a package that
+    contained a perfectly good image. Resolve by CONTENT — load whatever backend
+    image the package ships and tag it as the release being applied.
 
     Returns {"available": bool, "error": str}.
     """
     log = logger or (lambda m, l="info": None)
     image = f"intact-backend:{target_tag}"
-    tar = (os.path.join(package_dir, 'images', f'intact-backend-{target_tag}.tar')
-           if package_dir else None)
+    images_dir = os.path.join(package_dir, 'images') if package_dir else None
+    tar = (os.path.join(images_dir, f'intact-backend-{target_tag}.tar')
+           if images_dir else None)
 
-    present = run_command(f"docker image inspect {image}",
-                          logger=None, timeout=30).get('success')
+    def _have(ref):
+        return run_command(f"docker image inspect {ref}",
+                           logger=None, timeout=30).get('success')
+
+    present = _have(image)
     if present:
         # Full mode always ships a freshly-baked image; refresh from the tar so a
         # moved tag (dev 'development') picks up new bits. Offline already loaded
@@ -1193,15 +1590,66 @@ def ensure_backend_runtime_image(package_dir: str, target_tag: str,
     if tar and os.path.isfile(tar):
         log(f"  Loading bundled backend image {os.path.basename(tar)}...", "info")
         res = load_docker_image(tar, logger=log, run_id=run_id)
-        if res.get('success') and run_command(
-                f"docker image inspect {image}", logger=None, timeout=30).get('success'):
+        if res.get('success') and _have(image):
             return {"available": True, "error": ""}
 
+    # Fallback: any backend tar in the package, whatever tag its filename or its
+    # own metadata carries. `docker load` prints "Loaded image: <ref>" (or
+    # "Loaded image ID: <sha>" for an untagged save) — take that ref and tag it
+    # as the release we are applying.
+    candidates = []
+    if images_dir and os.path.isdir(images_dir):
+        try:
+            candidates = sorted(fn for fn in os.listdir(images_dir)
+                                if fn.startswith('intact-backend-') and fn.endswith('.tar')
+                                and fn != f'intact-backend-{target_tag}.tar')
+        except OSError:
+            candidates = []
+    for fn in candidates:
+        log(f"  No intact-backend-{target_tag}.tar, but the package ships {fn} — "
+            f"loading it and retagging as {image}", "warning")
+        res = load_docker_image(os.path.join(images_dir, fn), logger=log, run_id=run_id)
+        if not res.get('success'):
+            continue
+        ref = ''
+        for line in (res.get('stdout') or '').splitlines():
+            line = line.strip()
+            for prefix in ('Loaded image: ', 'Loaded image ID: '):
+                if line.startswith(prefix):
+                    ref = line[len(prefix):].strip()
+        if not ref:
+            # Older docker prints nothing useful; fall back to the tag the
+            # filename claims, which is what the packager named it after.
+            ref = f"intact-backend:{fn[len('intact-backend-'):-len('.tar')]}"
+        if not _have(ref):
+            continue
+        if run_command(f"docker tag {ref} {image}",
+                       logger=log, timeout=60).get('success') and _have(image):
+            log(f"  Retagged {ref} -> {image}", "info")
+            return {"available": True, "error": ""}
+
+    # Say what is actually on disk. The old message named CI ("re-prepare the
+    # package") for a failure whose real cause was local — the unselected-image
+    # prune had deleted the tar minutes earlier — and that misdirection cost
+    # hours. Report the evidence and let the reader draw the conclusion.
+    listing = "images/ directory not present"
+    if images_dir and os.path.isdir(images_dir):
+        try:
+            names = sorted(fn for fn in os.listdir(images_dir) if fn.endswith('.tar'))
+            listing = (", ".join(names) if names else "no .tar files")
+        except OSError as e:
+            listing = f"unreadable ({e})"
+    local = run_command("docker images --format '{{.Repository}}:{{.Tag}}' intact-backend",
+                        logger=None, timeout=30).get('stdout', '').strip()
     return {"available": False,
-            "error": (f"backend runtime image {image} is neither present nor "
-                      f"bundled in the package — this Full-mode release cannot be "
-                      f"applied. Re-prepare the package with a Wave-F-capable "
-                      f"release (the prepare step bakes + bundles the image).")}
+            "error": (f"backend runtime image {image} is not in the local docker "
+                      f"store and no loadable intact-backend tar was found in the "
+                      f"package. images/ contains: {listing}. "
+                      f"Local intact-backend tags: {local or 'none'}. "
+                      f"If the package tarball DOES contain an intact-backend tar, "
+                      f"it was deleted after extraction — check the "
+                      f"unselected-image prune. Otherwise re-prepare the package "
+                      f"with a release whose prepare step bakes + bundles the image.")}
 
 
 def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callable = None,
@@ -1246,8 +1694,17 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
     # bundle the wrong opensearch image. Merge is text-level so
     # operator-local fields (domain, passwords, modules.*.enabled)
     # outside the versions: block are preserved verbatim.
-    new_config_path = os.path.join(intact_root, 'config.yaml') \
-        if os.path.isdir(intact_root) else None
+    # The release's tracked config.yaml carries the versions: block
+    # (it is the operator's own file — PAT, dashboard login, module passwords), so
+    # a package built from a current release ships only the template. Fall back to
+    # config.yaml so packages built from an older release still merge their pins.
+    new_config_path = None
+    if os.path.isdir(intact_root):
+        for candidate in ('config.yaml',):
+            path = os.path.join(intact_root, candidate)
+            if os.path.isfile(path):
+                new_config_path = path
+                break
     operator_config_path = os.path.join(WORKDIR, 'config.yaml')
     if new_config_path and os.path.isfile(new_config_path):
         log("Merging versions: block from new release config.yaml...", "info")
@@ -1373,12 +1830,71 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
         # the module dir. Takes effect the next time that module's compose
         # comes up (its own version bump, or an operator restart) — this
         # step alone does not recreate any container.
+        # ...and then DELIVER the files that new compose file bind-mounts.
+        # Shipping the compose file alone is what produced the ELK exit 126:
+        # the new `setup` service mounted config/setup-kibana-user.sh and
+        # exec'd it, the script was never copied, and Docker answered a missing
+        # bind source the way it always does — by creating an empty DIRECTORY
+        # there. `/bin/bash <a directory>` is exit 126, with nothing in the log
+        # naming the file. Order matters: the compose file is the manifest, so
+        # it has to land before we can read what it needs.
+        from .compose_assets import (deliver_referenced_assets,
+                                     verify_referenced_assets)
         for _sidecar in ('velociraptor', 'iris', 'timesketch', 'elk',
                           'portainer', 'volweb', 'nginx'):
             try:
                 refresh_module_compose_file(_sidecar, intact_root, logger=log)
             except Exception as e:
                 log(f"  Could not refresh {_sidecar} compose file: {e}", "warning")
+            try:
+                deliver_referenced_assets(_sidecar, intact_root, logger=log)
+                # Report anything still missing NOW, while the operator is
+                # reading the upgrade log, rather than as a bare exit code from
+                # a container twenty minutes later.
+                verify_referenced_assets(_sidecar, logger=log)
+            except Exception as e:
+                log(f"  Could not sync {_sidecar} compose assets: {e}", "warning")
+
+        # nginx.conf carries the server-level auth_basic gate (CWE-306 fix
+        # for the unauthenticated /api/, /api/uploads/, /velociraptor/
+        # proxies) — it lives under config/, which the file-only compose
+        # refresh above deliberately never touches. Without this explicit
+        # refresh, a box that installed before this fix stays permanently
+        # unauthenticated across every future offline-package upgrade, even
+        # though the compose file (and thus the htpasswd mount) gets
+        # refreshed. Same no-op-if-unchanged, never-deletes-over-incomplete
+        # behavior as the compose refresh; takes effect once recreate_nginx()
+        # (below) recreates the container.
+        try:
+            refresh_module_compose_file('nginx', intact_root, logger=log,
+                                        relative_path=os.path.join('config', 'nginx.conf'))
+        except Exception as e:
+            log(f"  Could not refresh nginx/config/nginx.conf: {e}", "warning")
+
+        # modules/timesketch/llm_providers/ is the payload the timesketch
+        # compose prologue bind-mounts into the vendor image to register our
+        # contrib LLM providers. Nothing else reaches it: the mirror above
+        # only covers modules/backend and modules/nginx/html, and the sidecar
+        # loop copies exactly ONE file per module (docker-compose.yaml).
+        #
+        # Without these calls an upgraded box gets the new compose file — WITH
+        # the new bind mount — pointing at a directory that does not exist.
+        # Docker then silently creates an empty one and the providers never
+        # install, on every upgraded host, online and offline. The compose
+        # guard makes that a no-op rather than an outage, but the feature
+        # would simply never arrive.
+        #
+        # Same targeted, never-deletes, no-op-if-identical refresh as
+        # nginx.conf above; refresh_module_compose_file() makes the parent
+        # directory itself.
+        for _rel in ('apply.sh', 'openrouter.py', 'litellm_proxy.py', 'README.md'):
+            try:
+                refresh_module_compose_file(
+                    'timesketch', intact_root, logger=log,
+                    relative_path=os.path.join('llm_providers', _rel))
+            except Exception as e:
+                log(f"  Could not refresh timesketch/llm_providers/{_rel}: {e}",
+                    "warning")
 
     # Importability gate — BEFORE stamping VERSION and before the orchestrator
     # can schedule the restart. The orchestrator only saves awaiting_restart +
@@ -1418,8 +1934,21 @@ def upgrade_intact_offline(package_dir: str, version: str = None, logger: Callab
     # restart handoff only `docker restart`s tusd (keeps the old image).
     recreate_tusd(logger=log)
 
-    # NOTE: Nginx and backend restarts are handled by the upgrade orchestrator
-    # to support two-phase upgrades
+    # The sidecar loop above (when the package uses the full-repo layout)
+    # already refreshed nginx/docker-compose.yaml and nginx/config/nginx.conf
+    # from the new release — which is what REMOVES the old auth_basic gate and
+    # its htpasswd mount. Carry the operator's existing Basic Auth password over
+    # to the new session login before nginx comes back up, so the appliance is
+    # never briefly unauthenticated-and-claimable; an offline upgrade never runs
+    # install.sh's bash bootstrap, so this Python path is the only thing that
+    # will do it. Then force an actual recreate: `docker restart`, used
+    # elsewhere purely to clear nginx's cached upstream DNS, does not pick up a
+    # changed mount list or config file.
+    migrate_basic_auth_to_app_login(logger=log)
+    recreate_nginx(logger=log)
+
+    # NOTE: Backend restart (and the nginx DNS-cache refresh restart) is
+    # handled by the upgrade orchestrator to support two-phase upgrades
 
     log("Intact.AI Platform files updated", "success")
 

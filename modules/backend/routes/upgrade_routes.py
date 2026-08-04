@@ -592,17 +592,55 @@ def list_upgrade_refs():
         except Exception:
             pass          # probe itself failed — fall through and let the real call decide
 
+    from services.upgrade.resolver import (
+        list_github_refs, ResolverError, _cache_get_stale)
+
+    def _stale_or(err_msg, status):
+        """Serve the last known list rather than an empty dropdown.
+
+        Every failure below -- quota exhausted, GitHub unreachable, a 5xx that
+        survived the retries -- used to return nothing, so the operator saw an
+        empty picker with no way forward. Releases are cut weekly at most, so a
+        list from an hour ago is very nearly as good as a live one and is
+        enormously better than none. Marked `stale` with its age so the UI says
+        where it came from instead of implying it is current.
+        """
+        cached, age = _cache_get_stale('refs')
+        if cached and any(i.get('kind') == 'tag' for i in cached):
+            return jsonify({
+                "success": True, "refs": cached, "stale": True,
+                "stale_age_s": age, "error": err_msg,
+            }), 200
+        return jsonify({"success": False, "error": err_msg}), status
+
     err = _quota_preflight_or_jsonify(2 if force else 1, "refs fetch")
-    if err: return err
+    if err:
+        # The quota gate is the single most common reason this comes back
+        # empty: 2 calls per modal open against an anonymous 60/hr cap.
+        return _stale_or(
+            "GitHub API quota is spent, so the release list could not be "
+            "refreshed. It resets within the hour; setting GITHUB_TOKEN in "
+            "modules/backend/.env raises the cap from 60/hr to 5000/hr.", 429)
     try:
-        from services.upgrade.resolver import list_github_refs, ResolverError
         try:
             refs = list_github_refs(user_action='fetch', force=force)
         except ResolverError as e:
-            return jsonify({"success": False, "error": str(e)}), 502
+            return _stale_or(str(e), 502)
+
+        # An empty list is a real answer, but a useless one on its own. Say
+        # WHICH empty it is: GitHub had no releases at all, or it had releases
+        # and none of them carries a package asset yet because CI is still
+        # building. The second is the common case right after a tag is pushed,
+        # and looks identical to a broken dialog without this.
+        if not any(r.get('kind') == 'tag' for r in refs):
+            return _stale_or(
+                "GitHub returned no installable releases. A release only "
+                "appears once CI has attached its upgrade package, which takes "
+                "a few minutes after the tag is pushed.", 200)
+
         return jsonify({"success": True, "refs": refs})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return _stale_or(f"Unexpected error listing releases: {e}", 500)
 
 
 @upgrade_bp.route('/api/upgrade/plan', methods=['POST'])
@@ -782,6 +820,13 @@ def start_offline_upgrade():
         package_path = data.get('package_path')
         db_overwrite = data.get('db_overwrite', {})  # Per-module fresh install flags
         selected_modules = data.get('selected_modules')  # None = no filter (apply all)
+        # Optional operator-supplied digest for the uploaded archive. The
+        # package's own manifest can only prove it is INTACT — the hashes
+        # travel inside the archive they validate. This is the one value
+        # that comes from outside it: the .sha256 published alongside the
+        # release. When absent the apply proceeds exactly as before, with
+        # the computed digest logged so it can be compared by eye.
+        expected_sha256 = (data.get('expected_sha256') or '').strip() or None
         if selected_modules:
             # Accept legacy module ids from external automation (e.g. 'cloudtrail')
             from services.upgrade import LEGACY_MODULE_ALIASES
@@ -953,6 +998,7 @@ def start_offline_upgrade():
                     package_path, run_id=run_id, logger=logger,
                     db_overwrite=db_overwrite,
                     selected_modules=selected_modules,
+                    expected_sha256=expected_sha256,
                 )
 
                 # Handle two-phase upgrade (backend restart pending)
@@ -1422,3 +1468,55 @@ def download_prepared_package(run_id):
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@upgrade_bp.route('/api/upgrade/active', methods=['GET'])
+def get_active_upgrade_run():
+    """The upgrade run currently in flight, if any.
+
+    Exists because an upgrade signs the operator out halfway through. The
+    backend restarts to load the new code, every session dies with it, and on a
+    pre-auth box the auth migration additionally lands them on the SETUP page.
+    The frontend held the run id only in memory, so after signing back in it had
+    nothing to poll and simply sat there -- reported as "it's stuck at some
+    point", on a run that was completing normally.
+
+    So the run has to be discoverable from the SERVER rather than remembered by
+    a page that is about to be thrown away. Returns the newest upgrade workflow
+    still running or waiting to resume, so the UI can reattach itself.
+    """
+    ACTIVE = ('running', 'awaiting_restart', 'phase2', 'pending')
+    try:
+        from services.workflow_service import get_all_automation_runs
+    except Exception:
+        try:
+            from routes.dashboard_routes import get_all_automation_runs
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e), "active": None}), 200
+    try:
+        runs = get_all_automation_runs() or []
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e), "active": None}), 200
+
+    best = None
+    for run in runs:
+        rid = run.get('run_id') or ''
+        if not rid.startswith(('upgrade_', 'prepare_package_')):
+            continue
+        if (run.get('status') or '').lower() not in ACTIVE:
+            continue
+        if best is None or (run.get('updated_at') or '') > (best.get('updated_at') or ''):
+            best = run
+    if not best:
+        return jsonify({"success": True, "active": None}), 200
+    return jsonify({
+        "success": True,
+        "active": {
+            "run_id": best.get('run_id'),
+            "status": best.get('status'),
+            "phase": best.get('phase'),
+            "progress": best.get('progress'),
+            "name": best.get('name'),
+            "updated_at": best.get('updated_at'),
+        },
+    }), 200

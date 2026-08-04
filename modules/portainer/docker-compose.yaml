@@ -21,10 +21,28 @@ services:
     # narrower, already-partially-covered threat model.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    # AGENT_SECRET is the ONLY authentication between a caller and this agent.
+    # Without it the agent accepts commands from anyone who can reach :9001 --
+    # and it is a full Docker API proxy running as root with docker.sock
+    # mounted, so that is a direct path to host root. It was previously unset:
+    # `docker inspect` showed an environment of exactly PATH.
+    #
+    # Delivered via secrets/ rather than the module .env because that .env is
+    # git-TRACKED -- writing a credential there stages it on the next commit
+    # (the same trap that once staged a live GitHub PAT). modules/portainer/
+    # secrets/* is gitignored. Written by generate_portainer_secrets() in
+    # lib/modules.sh and by _ensure_agent_secret() on the upgrade path; the
+    # server below must load the identical file.
+    env_file:
+      - ./secrets/agent.env
     restart: unless-stopped
     networks:
+      # portainer_internal ONLY -- deliberately NOT on intact_network.
+      # The agent's sole peer is the Portainer server, which is also on this
+      # network. Nothing else has any business reaching it, and while it sat on
+      # the shared network all 24 other containers could. It uses docker.sock,
+      # not the Docker network, to manage containers, so this costs it nothing.
       - portainer_internal
-      - intact_network
 
   portainer:
     container_name: intact_portainer
@@ -48,6 +66,10 @@ services:
       - ../nginx/ssl/nginx-cert.crt:/certs/cert.pem:ro
       - ../nginx/ssl/nginx-cert.key:/certs/key.pem:ro
       - ./secrets/admin_password:/run/secrets/portainer_admin_password:ro
+    # Same file as the agent -- the two values must be identical or Portainer
+    # reports the environment as unreachable. Loud, not silent.
+    env_file:
+      - ./secrets/agent.env
     ports:
       - "9443:9443"
     restart: unless-stopped

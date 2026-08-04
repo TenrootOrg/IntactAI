@@ -10,17 +10,19 @@ import os
 import sys
 import time
 import traceback
-import ssl
 import warnings
 
 from services.workflow_service import get_cancel_event
 
-# Disable SSL warnings for self-signed certificates
+# Disable SSL warnings for self-signed certificates. Certificate verification
+# itself is disabled per-call via verify=False when constructing the
+# TimesketchApi client below (urllib3's InsecureRequestWarning is what that
+# produces) -- NOT by weakening the process-wide default SSL context, which
+# would silently strip certificate validation from every other unrelated
+# urllib-based HTTPS call in this backend process (upgrade package downloads,
+# CVE feed refresh, DFIQ ZIP download, etc).
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-# Modify SSL context for self-signed certs
-ssl._create_default_https_context = ssl._create_unverified_context
 
 
 def _connect_timesketch_api(timesketch_config, logger=None):

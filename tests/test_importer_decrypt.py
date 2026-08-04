@@ -76,9 +76,38 @@ def test_non_zip_upload_passes_through():
     assert _decrypt_container_if_needed(p, "pw", log) == p
 
 
+def test_ensure_executable_repairs_a_stripped_execute_bit():
+    """install.sh's `find … -exec chmod 644` strips +x off the Velociraptor
+    clients, so the decrypt path used to die with an uncaught PermissionError.
+    Existence was checked; runnability was not."""
+    import os
+    import stat
+    import tempfile
+    from services.offline_collector.importer import _ensure_executable
+
+    fd, p = tempfile.mkstemp(prefix="fakevelo_")
+    os.close(fd)
+    os.chmod(p, 0o644)
+    try:
+        assert not os.access(p, os.X_OK), "fixture should start non-executable"
+        logs, log = _collector()
+        out = _ensure_executable(p, log)
+        assert os.access(out, os.X_OK), f"{out} still not executable"
+        assert os.stat(p).st_mode & stat.S_IXUSR, "should repair in place, not copy"
+        assert any("execute bit" in m for _lvl, m in logs), logs
+    finally:
+        os.unlink(p)
+
+
 def test_encrypted_with_password_but_bogus_blob_raises():
     # A password is supplied and the shape is encrypted, but 'data.zip' is garbage,
     # so `velociraptor unzip --password` recovers nothing -> ValueError (clear error).
+    # Skips where the binary isn't downloaded (a dev box) — but deliberately keeps
+    # driving the REAL binary otherwise: this test is what caught the 644 bug, and
+    # swapping it for a temp fixture would remove the only automated detection.
+    from services.offline_collector.constants import get_velo_client_path
+    if not get_velo_client_path('linux'):
+        return
     z = _mkzip({"data.zip": b"not-a-real-encrypted-container"})
     logs, log = _collector()
     raised = False

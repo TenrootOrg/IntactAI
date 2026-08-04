@@ -24,6 +24,32 @@ from services.workflow_service import add_log_to_run, is_cancelled
 
 _FAKE_DATA_DIR = Path(__file__).parent / "fake_data"
 
+# Opt-in, and OFF by default. The bundled fixtures are deliberately
+# attack-shaped — a Tor exit node, an IAM backdoor, a GuardDuty
+# "UnauthorizedAccess:IAMUser/MaliciousIPCaller" at severity 8.5 — engineered to
+# fire SIGMA rules so the pipeline has something to chew on in development.
+#
+# They used to load whenever a live collector returned nothing, which is exactly
+# what a CLEAN ACCOUNT looks like. A real, fully-credentialed scan of a tenant
+# with no findings therefore produced invented critical findings, and the
+# persisted run said mode=online with no marker distinguishing them. Those
+# records reach the Case graph as `ioc:ip` nodes, which are GLOBAL, so a
+# fictional IP could then correlate against real endpoint evidence.
+#
+# Azure already fails closed in the same situation (see routes/azure_routes.py:
+# missing credentials fail the run). This brings AWS into line.
+_DEMO_FIXTURES_ENV = "INTACT_AWS_DEMO_FIXTURES"
+
+# Stamped on every fixture record and carried through findings, the persisted
+# run and the export, so "is this real?" is answerable from the data instead of
+# from a log line the operator has to have been watching.
+SYNTHETIC_KEY = "_synthetic"
+
+
+def demo_fixtures_enabled() -> bool:
+    """True only when an operator explicitly asked for demo data."""
+    return os.environ.get(_DEMO_FIXTURES_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
 
 # =============================================================================
 # LOG_SOURCES — provider-agnostic source registry
@@ -237,9 +263,21 @@ def _stub_collect(
         except Exception as e:
             log(f"[AWS] {cfg['name']}: iam_runner call raised {e!r} — using fixture", "error")
 
-    # --- Fixture fallback ---------------------------------------------
+    # --- Fixture fallback (opt-in only) --------------------------------
+    # Reached when the live runner was unavailable, raised, or returned
+    # nothing. Only the first two are problems; the third — an empty result —
+    # is a legitimate answer that a clean account gives, and inventing
+    # findings for it is the worst case this guard exists to stop.
     fixture = cfg.get('fixture')
     if not fixture:
+        return []
+    if not demo_fixtures_enabled():
+        log(f"[AWS] {cfg['name']}: no live data and demo fixtures are off — "
+            f"reporting zero records. This is the correct result for a clean "
+            f"account; if the source should have returned data, check the "
+            f"credentials and the reason logged above. Set "
+            f"{_DEMO_FIXTURES_ENV}=1 to run with bundled demo data instead.",
+            "warning")
         return []
     records = _load_fixture(fixture)
     for r in records:
@@ -247,7 +285,9 @@ def _stub_collect(
         # expects. Real collectors will do the same.
         r.setdefault('_source', source)
         r.setdefault('EventSource', sigma_prefix)
-    log(f"[AWS] {cfg['name']}: {len(records)} records (fixture: {fixture})", "info")
+        r[SYNTHETIC_KEY] = True
+    log(f"[AWS] {cfg['name']}: {len(records)} SYNTHETIC records from fixture "
+        f"{fixture} — demo data, NOT from this account.", "warning")
     return records
 
 

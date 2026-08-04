@@ -2,6 +2,7 @@
 Routes package for Intact.AI Dashboard Backend
 """
 
+from routes.auth_routes import auth_bp
 from routes.client_routes import client_bp
 from routes.velociraptor_routes import velociraptor_bp
 from routes.velociraptor_offline_routes import velociraptor_offline_bp
@@ -25,6 +26,7 @@ from routes.memory_routes import memory_bp
 from routes.case_routes import case_bp
 
 __all__ = [
+    'auth_bp',
     'case_bp',
     'client_bp',
     'velociraptor_bp',

@@ -444,10 +444,24 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
         os.makedirs(extract_dir)
         add_log_to_run(run_id, f"Working directory: {temp_dir}")
 
-        # Extract ZIP
+        # Extract ZIP — but judge it first. This was a bare extractall: the
+        # entry count was computed and used only for a log line, never compared
+        # against anything, and nothing bounded uncompressed size or checked
+        # that PLASO_OUTPUT_DIR (a shared volume) could hold the result. A
+        # small archive could fill it and take the Plaso pipeline down for
+        # every case on the host.
+        from services.archive_guard import guard_zip, ArchiveRejected
+        add_log_to_run(run_id, "Inspecting ZIP file...")
+        try:
+            stats = guard_zip(zip_path, extract_dir,
+                              log=lambda m: add_log_to_run(run_id, m))
+        except ArchiveRejected as e:
+            add_log_to_run(run_id, f"Archive rejected: {e}", "error")
+            raise ValueError(f"Archive rejected: {e}") from e
+
         add_log_to_run(run_id, "Extracting ZIP file...")
         with zipfile.ZipFile(zip_path, 'r') as zf:
-            file_count = len(zf.namelist())
+            file_count = stats["members"]
             zf.extractall(extract_dir)
             add_log_to_run(run_id, f"Extracted {file_count} files from archive")
 
