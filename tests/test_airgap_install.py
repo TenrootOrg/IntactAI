@@ -354,6 +354,44 @@ def test_a_checksum_mismatch_refuses_the_package():
           "-delta" in fn, "a delta could be chosen and cannot install a box")
 
 
+def test_the_package_image_is_never_rebuilt_locally():
+    """THE FAILURE THIS PREVENTS, and it is subtle.
+
+    install.sh builds the backend (`run_docker_compose "build"`). Two problems
+    once images come from a package:
+
+      1. A build needs base layers -- python:3.11-slim for the backend,
+         ubuntu:22.04 for velociraptor -- which the package does NOT carry, so
+         an air-gapped install simply cannot complete.
+      2. The package already contains the backend image CI built and TESTED.
+         Building locally produces a different image under the same tag: other
+         base digest, other wheel versions, other build date. Shipping a tested
+         artifact and then silently replacing it with an untested local rebuild
+         is invisible, because the tag looks identical either way.
+
+    The upgrade engine already refuses to build (ensure_backend_runtime_image:
+    present -> load tar -> never build). This keeps install in line with it."""
+    src = open(os.path.join(REPO, "lib", "modules.sh")).read()
+    fn = src[src.index("run_docker_compose() {"):]
+    fn = fn[:fn.index("\n}")]
+    check("build is skipped when images came from the package",
+          "INTACT_FROM_PACKAGE" in fn, "it would rebuild over the shipped image")
+    check("only for the build action",
+          '"build"' in fn, "it would skip up/down as well")
+    check("and it returns before any compose invocation",
+          fn.index("INTACT_FROM_PACKAGE") < fn.index("docker compose"),
+          "a build could start before the check runs")
+
+
+def test_the_engine_and_the_installer_agree_about_building():
+    """Both sides must refuse, or the divergence just moves."""
+    eng = open(os.path.join(REPO, "modules/backend/services/upgrade/intact.py")).read()
+    fn = eng[eng.index("def ensure_backend_runtime_image"):]
+    fn = fn[:fn.index("\ndef ")]
+    check("the upgrade engine never builds",
+          "docker build" not in fn, "the engine builds too -- premise broken")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
