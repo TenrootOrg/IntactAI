@@ -2092,23 +2092,64 @@ deploy_backend() {
     # provider refreshes enrich their entries from the OpenRouter catalog.
     log_info "  Bootstrapping LLM model catalogs (best-effort)..."
 
+    # IN-CONTAINER, not over HTTP.
+    #
+    # This used to POST to http://localhost:5001/api/maintenance/refresh-<x>-models
+    # and every install reported:
+    #
+    #     [WARN] OpenRouter: deferred (no API key, network issue, or provider
+    #                                  unreachable)
+    #
+    # All three of those are wrong. The catalog endpoint is public (no key), the
+    # network is fine, and the provider is reachable. The call was simply
+    # getting a 401.
+    #
+    # WHY: the API auth gate exempts loopback (services/auth_service.py,
+    # LOOPBACK_ADDRS = {127.0.0.1, ::1}) on the reasoning that a request from
+    # the box itself is trusted. But the backend port is published as
+    # `127.0.0.1:5001:5001`, and Docker's proxy rewrites the source address, so
+    # what actually arrives inside the container is the bridge gateway:
+    #
+    #     172.18.0.1 - - "POST /api/maintenance/refresh-openrouter-models" 401
+    #
+    # remote_addr is never 127.0.0.1 for a host-originated call, so that
+    # exemption cannot fire and the route is unreachable from install.sh. The
+    # bootstrap then read any non-success as "no models" and warned about an API
+    # key that this catalog does not even use.
+    #
+    # Calling the underlying function inside the container sidesteps HTTP
+    # entirely -- same approach as every other install-time backend operation
+    # here (see the `docker exec intact_backend python3` calls above, and
+    # scripts/run_maintenance.py). Deliberately NOT fixed by adding the route to
+    # EXEMPT_PATHS: that would make it callable unauthenticated through nginx
+    # from off-box too, which is a real widening of the auth surface to work
+    # around a local plumbing detail.
     _bootstrap_one_catalog() {
         local label="$1"
-        local route="$2"
-        local resp count
-        resp=$(curl -s --max-time 30 -X POST "http://localhost:5001${route}" 2>/dev/null)
-        count=$(echo "$resp" | python3 -c "
-import sys, json
+        local module="$2"
+        local count
+        count=$(docker exec intact_backend python3 -c "
+import json, sys, io, contextlib
+buf = io.StringIO()
 try:
-    d = json.load(sys.stdin)
-    print(d.get('model_count', 0) if d.get('success') else 0)
+    # The catalog modules log to stdout on import + refresh; capture it so only
+    # the count reaches the shell.
+    with contextlib.redirect_stdout(buf):
+        from services.llm_catalogs import ${module} as catalog
+        result = catalog.refresh_catalog()
+    print(result.get('model_count', 0) if result.get('success') else 0)
 except Exception:
     print(0)
-" 2>/dev/null)
+" 2>/dev/null | tail -1)
         if [[ "${count:-0}" -gt 0 ]]; then
             log_success "    ${label}: ${count} models cached"
         else
-            log_warn "    ${label}: deferred (no API key, network issue, or provider unreachable)"
+            # Genuinely could not fetch: no network from the container, upstream
+            # down, or a provider that does need a key and has none configured.
+            # A note, not a warning -- the catalog refreshes on demand the first
+            # time Settings is opened, and the maintenance workflow retries it.
+            log_info "    ${label}: not cached yet (will fetch on demand)"
+            record_install_note "${label} model catalog was not seeded at install. It refreshes automatically the first time Settings → LLM is opened, or via System Maintenance."
         fi
     }
 
@@ -2116,7 +2157,7 @@ except Exception:
     # paths (Anthropic / OpenAI / Gemini) are gated behind the UI and
     # remain unused by default. Bootstrapping them produced "deferred"
     # warnings on every install since no API keys were configured.
-    _bootstrap_one_catalog "OpenRouter" "/api/maintenance/refresh-openrouter-models"
+    _bootstrap_one_catalog "OpenRouter" "openrouter"
 
     track_module_success "Backend API"
 }
