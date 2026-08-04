@@ -792,8 +792,12 @@ def configure_inventory(tools_dir: str, config: Dict, logger: Callable = None,
         )
         for response in stub.Query(request, timeout=35):
             if response.Response:
-                data = json.loads(response.Response)
-                inventory_table = data
+                # EXTEND, not assign. Query() is a STREAM: a large inventory
+                # arrives as several responses, each carrying a batch of rows.
+                # Assigning kept only the final batch and silently dropped
+                # every earlier one, so the "N tool(s) served locally" summary
+                # under-reported on exactly the boxes with the most tools.
+                inventory_table.extend(json.loads(response.Response))
     except Exception as e:
         log(f"Could not query final inventory: {str(e)[:50]}", "warning")
 
@@ -803,9 +807,17 @@ def configure_inventory(tools_dir: str, config: Dict, logger: Callable = None,
     # from the server). The not-served entries are external-URL artifacts we
     # don't bundle by default — listing them just adds noise.
     if inventory_table:
-        served = sorted(
-            (it.get('name', 'Unknown') for it in inventory_table if it.get('serve_locally')),
-        )
+        # Deduplicate by NAME. A tool name is the inventory's key, so the same
+        # name twice is always the same tool -- it happens when two paths
+        # register it (the tools_inventory.yaml pass and the Velociraptor
+        # binary publisher both claim VelociraptorLinux / VelociraptorWindows /
+        # VelociraptorWindowsMSI). Listing it twice, and counting it twice in
+        # the total, is noise either way, and the count is what an operator
+        # reads to decide whether the tool set is complete.
+        served = sorted({
+            it.get('name', 'Unknown')
+            for it in inventory_table if it.get('serve_locally')
+        })
         log("=" * 60)
         log("TOOLS SERVED LOCALLY")
         log("=" * 60)
