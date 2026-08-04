@@ -308,13 +308,15 @@ jobs:
             !out/*.json
           retention-days: 3
 
-      # .meta.json ONLY. The per-asset `.manifest.json` the builder writes is
-      # deliberately left behind here: nothing in CI reads it, and anything
-      # that reached this artifact store also reached the release page.
+      # .meta.json + .manifest.json. The per-asset `.manifest.json` the builder
+      # writes stays in CI only — not on the release page — but the index job
+      # needs it to check for collisions across modules.
       - uses: actions/upload-artifact@v4
         with:
           name: meta-${{ matrix.module }}
-          path: out/*.meta.json
+          path: |
+            out/*.meta.json
+            out/*.manifest.json
           retention-days: 3
 
   # ------------------------------------------------------------------ index
