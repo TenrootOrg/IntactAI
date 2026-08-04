@@ -122,18 +122,18 @@ def _upgrade_order():
 # EXCLUDED_FROM_RELEASE fails the membership test, so a new module cannot land
 # without someone deciding whether it ships.
 RELEASE_MODULES = {
-    # "intact",         # backend + frontend source, the intact-backend image, and
+    "intact",         # backend + frontend source, the intact-backend image, and
                       # tusd -- both `intact-backend-` and `tusd-` are attributed
                       # to `intact` by image_owner_prefixes, so this one entry
                       # carries the platform and its upload sidecar.
-    # "elk",
-    # "iris",
-    # "timesketch",
-    # "plaso",
-    # "velociraptor",   # both kinds -- 0.77.1 and the legacy 0.7.1 client
-    # "volweb",
+    "elk",
+    "iris",
+    "timesketch",
+    "plaso",
+    "velociraptor",   # both kinds -- 0.77.1 and the legacy 0.7.1 client
+    "volweb",
     "aws_sigma",
-    # "portainer",
+    "portainer",
 }
 
 # Deliberately NOT shipped.
