@@ -241,14 +241,19 @@ jobs:
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
             -e INTACT_PATH="$GITHUB_WORKSPACE" \
             -e INTACT_HOST_PATH="$GITHUB_WORKSPACE" \
+            -e TAG="$TAG" -e MODULE="$MODULE" -e COMMIT="$COMMIT" \
+            -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
             -v /opt/sigma-rules:/opt/sigma-rules:ro \
             -v "$GITHUB_WORKSPACE/out:/output" \
             intact-backend:ci-packager \
-            python3 "$GITHUB_WORKSPACE/scripts/ci/build_release_package.py" \
-              --tag "$TAG" --module "$MODULE" --commit "$COMMIT" \
-              --work-dir "/tmp/intact-upgrade-$TAG" --out /output
-          # Docker container runs as root; make output files writable by host user
-          sudo chmod -R u+w "$GITHUB_WORKSPACE/out"
+            sh -c '
+              python3 "$INTACT_PATH/scripts/ci/build_release_package.py" \
+                --tag "$TAG" --module "$MODULE" --commit "$COMMIT" \
+                --work-dir "/tmp/intact-upgrade-$TAG" --out /output
+              rc=$?
+              chown -R "$HOST_UID:$HOST_GID" /output || true
+              exit $rc
+            '
           ls -lh "$GITHUB_WORKSPACE/out"
 
       # 2 GiB per release asset. sha256 is of the WHOLE tarball, taken
