@@ -542,7 +542,7 @@ def main() -> int:
     # intact-upgrade-latest.tar.gz, and leaving that behind in the output dir
     # would give CI's `ls *.tar.gz | head -1` two files to choose between.
     src = result["package_path"]
-    name = (f"intact-{args.tag}-{args.module}.tar.gz" if args.module
+    name = (f"{args.tag}-{args.module}.tar.gz" if args.module
             else f"intact-upgrade-{args.tag}.tar.gz")
     dest = os.path.join(args.out, name)
     shutil.move(src, dest)

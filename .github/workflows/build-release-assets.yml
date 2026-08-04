@@ -133,9 +133,46 @@ jobs:
         run: |
           python3 scripts/ci/check_timesketch_provider_drift.py --github || true
 
+  # ----------------------------------------------------------- build-image
+  build-image:
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+          fetch-depth: 0
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          docker image prune -af || true
+          df -h /
+
+      - name: Build the packager image
+        run: docker build -f modules/backend/Dockerfile -t intact-backend:ci-packager .
+
+      # The image is built locally; save it so the matrix jobs can load it
+      # without rebuilding. This is critical for matrix jobs since each one
+      # is an independent runner with a fresh Docker daemon.
+      - name: Save packager image as artifact
+        run: |
+          mkdir -p /tmp/docker-images
+          docker save intact-backend:ci-packager | gzip > /tmp/docker-images/intact-backend-ci-packager.tar.gz
+          ls -lh /tmp/docker-images/
+
+      - name: Upload packager image
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-packager
+          path: /tmp/docker-images/intact-backend-ci-packager.tar.gz
+          retention-days: 1
+
   # ------------------------------------------------------------------ build
   build:
-    needs: resolve
+    needs: [resolve, build-image]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -151,12 +188,19 @@ jobs:
           ref: ${{ needs.resolve.outputs.commit }}
           fetch-depth: 0
 
-      - name: Free up disk space
+      - name: Load packager image
         run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
-                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
-          docker image prune -af || true
-          df -h /
+          mkdir -p /tmp/docker-images
+          cd /tmp/docker-images
+
+      - name: Download packager image
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-packager
+          path: /tmp/docker-images
+
+      - name: Load Docker image
+        run: docker load < /tmp/docker-images/intact-backend-ci-packager.tar.gz
 
       # Only aws_sigma consumes the rule pack; cloning it for every module
       # would be ~9x the work for nothing.
@@ -181,9 +225,6 @@ jobs:
             echo "::error::only $N bundled artifacts — the image would ship without them"
             exit 1
           fi
-
-      - name: Build the packager image
-        run: docker build -f modules/backend/Dockerfile -t intact-backend:ci-packager .
 
       - name: Build the ${{ matrix.module }} asset
         env:
