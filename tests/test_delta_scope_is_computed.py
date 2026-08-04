@@ -15,20 +15,31 @@ operator change this pin", not "is this newer" -- so a bump, a revert and a
 reformat all count, and none of them depend on parsing a scheme that differs
 per module (9.4.4, v2.10.0, 20260630, 0.77.1, latest).
 
+A TAG IS NOT AN IDENTITY
+-----------------------
+The numbers this docstring first carried were WRONG, and the way they were
+wrong is the point. intact-20260803 was re-cut, moving from 6316e05 to 25effd5.
+`git fetch` does not move an existing local tag, so a stale checkout measured
+the delta against code the release no longer contained and reported "nothing
+changed" -- while elk had gone 9.4.2 -> 9.4.4 and tusd v2.9.2 -> v2.10.0.
+
+Two packages, same tag, same manifest, different code, and no way to tell them
+apart from the outside. Hence: refresh tags forcibly before choosing a
+baseline, and record the resolved COMMIT for both the release and its baseline.
+
 THE DANGER THIS DOES NOT REMOVE
 -------------------------------
-A delta is computed against the IMMEDIATELY PREVIOUS release. Measured on this
-repo's real history, target intact-20260803:
+A delta is computed against the IMMEDIATELY PREVIOUS release, so it is only
+valid for a box sitting on exactly that baseline. Measured on real history,
+target intact-20260803:
 
-    vs intact-20260802 : nothing but intact
-    vs intact-20260726 : nothing but intact
+    vs intact-20260802 : elk 9.4.2 -> 9.4.4, backend_tusd v2.9.2 -> v2.10.0
     vs intact-20260615 : 14 modules moved
 
-A box on 20260615 handed the 20260803 delta would silently keep 14 stale
-modules while the run reported success. That is why `delta_from` is recorded in
-the manifest and enforced on apply -- a delta is only valid for the exact
-baseline it was diffed against. Computing the set correctly does not make it
-safe to apply anywhere; the guard does.
+A box on 20260615 handed a delta built against 20260802 would silently keep a
+dozen stale modules while the run reported success. That is why `delta_from` is
+recorded in the manifest and enforced on apply. Computing the set correctly
+does not make it safe to apply anywhere; the guard does.
 
 WHY A FIXTURE REPO
 ------------------
@@ -81,7 +92,7 @@ def _load(*names):
 
 
 NS = _load("previous_release_tag", "_versions_at_ref", "delta_module_set",
-           "RELEASE_MODULES", "EXCLUDED_FROM_RELEASE")
+           "commit_of", "RELEASE_MODULES", "EXCLUDED_FROM_RELEASE")
 
 
 def _fixture_repo():
@@ -234,6 +245,55 @@ def test_a_module_absent_from_the_baseline_counts_as_changed():
         check("an absent module compares as changed", changed, "it would be skipped")
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+def test_a_moved_tag_is_detectable():
+    """A TAG IS NOT AN IDENTITY, and this is not hypothetical: intact-20260803
+    was re-cut and moved from 6316e05 to 25effd5. `git fetch` does not move an
+    existing local tag, so a stale checkout measured the delta against code the
+    release no longer contained and reported "nothing changed" -- while elk had
+    gone 9.4.2 -> 9.4.4 and tusd v2.9.2 -> v2.10.0. Two packages, same tag, same
+    manifest, different code.
+
+    Recording the commit is what turns that from archaeology into a glance."""
+    d = _fixture_repo()
+    try:
+        first = _in(d, NS["commit_of"], "intact-20260803")
+        check("a tag resolves to a commit", len(first) == 40, repr(first))
+        # move the tag, exactly as a re-cut release does
+        subprocess.run(["git", "tag", "-f", "intact-20260803", "intact-20260726"],
+                       cwd=d, capture_output=True, check=True)
+        second = _in(d, NS["commit_of"], "intact-20260803")
+        check("moving the tag changes the recorded commit", first != second,
+              f"{first[:7]} == {second[:7]} -- a moved tag would be invisible")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_an_unresolvable_ref_does_not_crash_the_build():
+    d = _fixture_repo()
+    try:
+        check("a bad ref yields empty, not an exception",
+              _in(d, NS["commit_of"], "no-such-ref") == "", "")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_tags_are_refreshed_before_the_baseline_is_chosen():
+    """Two ways a baseline goes wrong silently, both observed: `git fetch` will
+    not move an existing local tag (stale re-cut release), and
+    actions/checkout@v4 defaults to a shallow single-ref fetch, so a CI runner
+    has no other release tags at all and every lookup returns None."""
+    src = open(BUILDER).read()
+    fn = src[src.index("def previous_release_tag"):]
+    fn = fn[:fn.index("\ndef ")]
+    fn_nc = "\n".join(l.split("#")[0] for l in fn.splitlines())
+    check("it fetches tags first", '"fetch"' in fn_nc, "stale tags go undetected")
+    check("forcibly, or an existing tag would not move", '"--force"' in fn_nc,
+          "fetch without --force leaves a re-cut tag pointing at old code")
+    check("and before listing them",
+          fn_nc.index('"fetch"') < fn_nc.index('"--list"'),
+          "the refresh happens too late to matter")
 
 
 # ------------------------------------------------------------- scope guards

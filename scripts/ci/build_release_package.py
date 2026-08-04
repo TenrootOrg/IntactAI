@@ -177,6 +177,30 @@ def previous_release_tag(tag: str) -> "str | None":
     """
     import re
     import subprocess
+
+    # REFRESH TAGS FIRST, FORCIBLY. Two ways this goes wrong without it, both
+    # observed:
+    #
+    #  1. `git fetch` does NOT move an existing local tag. A re-cut release
+    #     leaves the old target in place, so the diff runs against code that
+    #     release no longer contains -- silently, with no error. This exact
+    #     staleness made intact-20260803 measure as "nothing but elk-and-tusd
+    #     unchanged" while the real tag had moved from 6316e05 to 25effd5.
+    #  2. actions/checkout@v4 defaults to a SHALLOW, single-ref fetch, so a CI
+    #     runner has no other release tags at all and every baseline lookup
+    #     returns None -- the delta quietly degrades to "first release ever".
+    #     The workflow also sets fetch-depth: 0; this is the belt to that brace,
+    #     since the builder is run locally too.
+    #
+    # Best-effort: an air-gapped or network-less build still proceeds on
+    # whatever tags are local.
+    try:
+        subprocess.run(["git", "fetch", "--tags", "--force", "--quiet", "origin"],
+                       capture_output=True, timeout=120)
+    except Exception as e:
+        print(f"[ci-package] tag refresh skipped ({type(e).__name__}: {e}) — "
+              f"baseline is whatever this checkout already has", flush=True)
+
     try:
         out = subprocess.run(
             ["git", "tag", "--list", "intact-*"],
@@ -190,6 +214,25 @@ def previous_release_tag(tag: str) -> "str | None":
                   if shape.match(t.strip()))
     earlier = [t for t in tags if t < tag]
     return earlier[-1] if earlier else None
+
+
+def commit_of(ref: str) -> str:
+    """The commit ``ref`` resolves to right now, or '' if it cannot be read.
+
+    Recorded in the manifest for both the release tag and the delta baseline,
+    because a TAG IS NOT AN IDENTITY. intact-20260803 was rebuilt against a
+    moved tag and the two packages were indistinguishable from the outside --
+    same name, same manifest, different code. Diagnosing it took comparing a
+    shipped tusd-v2.9.2 against a pinned v2.10.0. A commit makes the same
+    question a glance.
+    """
+    import subprocess
+    try:
+        return subprocess.run(["git", "rev-list", "-n1", ref],
+                              capture_output=True, text=True,
+                              check=True).stdout.strip()
+    except Exception:
+        return ""
 
 
 def _versions_at_ref(ref: str) -> dict:
