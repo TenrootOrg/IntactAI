@@ -355,8 +355,29 @@ create_network() {
 # Generic image pull with retry. Backoff: 5s, 15s, 45s.
 # Returns 0 if the image is local after the call (already present, or pulled);
 # non-zero if every attempt failed.
+# Already in the local store? Then there is nothing to fetch, and on an
+# air-gapped box there is nowhere to fetch it FROM. install.sh --package loads
+# every image out of a release package up front, so this one check is what makes
+# every existing deploy_* path work offline without rewriting any of them.
+#
+# Deliberately not gated on --package: an image that is already present is never
+# worth re-pulling, and skipping it makes an ONLINE reinstall faster too. The
+# registry is only consulted for something the box genuinely does not have.
+_image_present_locally() {
+    docker image inspect "$1" >/dev/null 2>&1
+}
+
 _pull_image_with_retry() {
     local image="$1"
+    if _image_present_locally "$image"; then
+        log_info "  $image already present locally — not pulling"
+        return 0
+    fi
+    if [[ "${INTACT_AIRGAP:-0}" == "1" ]]; then
+        log_error "  $image is not in the local image store and this is an "
+        log_error "  air-gapped install — the package did not contain it."
+        return 1
+    fi
     local max_attempts=3
     local delay=5
     local attempt=1

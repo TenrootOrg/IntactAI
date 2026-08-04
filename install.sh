@@ -88,6 +88,97 @@ source "${SCRIPT_DIR}/lib/upgrade_check.sh"
 # Main Installation Flow
 # ============================================================================
 
+# ---------------------------------------------------------------------------
+# Air-gap: install from a release package instead of the internet.
+#
+#   sudo bash install.sh --package /path/to/intact-upgrade-<tag>-full.tar.gz
+#
+# The package carries every image this release needs as a tar. Loading them up
+# front means _pull_image_with_retry finds each one already in the local store
+# and skips the registry -- so every existing deploy_* path works offline with
+# no changes of its own. That is the whole trick; there is no separate offline
+# code path to keep in step with the online one.
+#
+# Use the FULL asset. A delta contains only the modules whose pins moved since
+# the previous release, which is meaningless for a box that has nothing
+# installed yet.
+INTACT_PACKAGE=""
+INTACT_AIRGAP=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --package)
+            INTACT_PACKAGE="${2:-}"; INTACT_AIRGAP=1; shift 2 ;;
+        --package=*)
+            INTACT_PACKAGE="${1#*=}"; INTACT_AIRGAP=1; shift ;;
+        --help|-h)
+            echo "Usage: sudo bash install.sh [--package <full-release-package.tar.gz>]"
+            echo ""
+            echo "  --package  install offline from a release package; no registry"
+            echo "             access is attempted. Use the -full asset, not -delta."
+            exit 0 ;;
+        *)
+            echo "Unknown argument: $1" >&2
+            echo "Usage: sudo bash install.sh [--package <package.tar.gz>]" >&2
+            exit 2 ;;
+    esac
+done
+export INTACT_AIRGAP
+
+# Load every image out of the package into the local docker store.
+#
+# Idempotent and non-fatal per image: `docker load` on an image that is already
+# present is a no-op, and one unreadable tar should not abort an install that
+# may not even need that module. What DOES abort is a package that yields no
+# images at all -- that is a wrong or corrupt file, and continuing would fall
+# through to registry pulls that cannot work on an air-gapped box.
+load_images_from_package() {
+    local pkg="$1"
+    if [[ ! -f "$pkg" ]]; then
+        log_error "Package not found: $pkg"
+        return 1
+    fi
+    log_info "Air-gapped install from $(basename "$pkg")"
+
+    local kind
+    kind="$(tar -xzOf "$pkg" --wildcards '*/manifest.json' 2>/dev/null \
+            | python3 -c 'import json,sys;print((json.load(sys.stdin).get("contents") or {}).get("package_kind","full"))' 2>/dev/null || echo full)"
+    if [[ "$kind" == "delta" ]]; then
+        log_error "This is a DELTA package. It carries only the modules whose"
+        log_error "versions moved since the previous release, so it cannot install"
+        log_error "a box from scratch. Use the -full asset."
+        return 1
+    fi
+
+    local work; work="$(mktemp -d)"
+    log_info "  Extracting images (this takes a few minutes for a full package)..."
+    if ! tar -xzf "$pkg" -C "$work" 2>>"$LOG_FILE"; then
+        log_error "  Could not extract $pkg"
+        rm -rf "$work"; return 1
+    fi
+
+    local loaded=0 failed=0 tar_file
+    while IFS= read -r tar_file; do
+        if docker load -i "$tar_file" >>"$LOG_FILE" 2>&1; then
+            loaded=$((loaded + 1))
+        else
+            failed=$((failed + 1))
+            log_warn "  Could not load $(basename "$tar_file")"
+        fi
+    done < <(find "$work" -type f -name '*.tar' 2>/dev/null)
+
+    rm -rf "$work"
+    if (( loaded == 0 )); then
+        log_error "  No images loaded from the package — wrong or corrupt file."
+        return 1
+    fi
+    if (( failed > 0 )); then
+        log_success "  Loaded $loaded image(s) from the package ($failed failed)"
+    else
+        log_success "  Loaded $loaded image(s) from the package"
+    fi
+    return 0
+}
+
 main() {
     echo ""
     echo "=============================================="
@@ -132,7 +223,16 @@ main() {
         fi
     fi
     print_installation_config_summary
-    if ! check_network_connectivity; then
+    if [[ "$INTACT_AIRGAP" == "1" ]]; then
+        # No connectivity check: there is deliberately no route out. The
+        # package replaces every registry fetch, so reachability is irrelevant
+        # and the existing gate would abort a perfectly valid install.
+        log_info "Air-gapped mode — skipping the internet connectivity check"
+        if ! load_images_from_package "$INTACT_PACKAGE"; then
+            log_error "Could not load the release package - aborting installation"
+            exit 1
+        fi
+    elif ! check_network_connectivity; then
         log_error "Network connectivity check failed - aborting installation"
         exit 1
     fi
@@ -164,9 +264,35 @@ main() {
     # -------------------------------------------------------------------------
     # Core Dependencies
     # -------------------------------------------------------------------------
-    install_dependencies
-    prefer_ipv4_dns
-    if ! install_docker; then
+    # Air-gap: apt and the docker repo are both internet-only, so these have to
+    # be satisfied ALREADY. Check rather than attempt -- a failed `apt-get
+    # update` on a box with no route produces a confusing wall of DNS errors,
+    # where "docker is not installed and I cannot install it here" is the
+    # actual problem and is worth saying in one line.
+    if [[ "$INTACT_AIRGAP" == "1" ]]; then
+        local _missing=()
+        command -v docker >/dev/null 2>&1 || _missing+=("docker")
+        docker compose version >/dev/null 2>&1 || _missing+=("docker-compose-plugin")
+        command -v python3 >/dev/null 2>&1 || _missing+=("python3")
+        python3 -c 'import yaml' >/dev/null 2>&1 || _missing+=("python3-yaml")
+        command -v openssl >/dev/null 2>&1 || _missing+=("openssl")
+        if (( ${#_missing[@]} > 0 )); then
+            log_error "=============================================="
+            log_error "Air-gapped install needs these already present: ${_missing[*]}"
+            log_error ""
+            log_error "They come from apt and the Docker repository, which this"
+            log_error "install cannot reach by design. Install them on this host"
+            log_error "first (or use an image that ships them), then re-run with"
+            log_error "--package."
+            log_error "=============================================="
+            exit 1
+        fi
+        log_success "Host prerequisites present (docker, compose, python3, yaml, openssl)"
+    else
+        install_dependencies
+        prefer_ipv4_dns
+    fi
+    if [[ "$INTACT_AIRGAP" != "1" ]] && ! install_docker; then
         log_error "=============================================="
         log_error "Docker installation failed — aborting install."
         log_error ""
