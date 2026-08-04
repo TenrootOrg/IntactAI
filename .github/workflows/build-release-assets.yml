@@ -261,8 +261,12 @@ jobs:
             '
           ls -lh "$GITHUB_WORKSPACE/out"
 
-      # 2 GiB per release asset. sha256 is of the WHOLE tarball, taken
-      # pre-split, so a consumer can reassemble and verify.
+      # 2 GiB per release asset. The sha256 of the WHOLE tarball, taken
+      # pre-split, already lives in the builder's .meta.json and from there in
+      # the index -- it is NOT written out as a per-asset `.sha256` file. The
+      # index is the single place a consumer reads hashes from, and publishing
+      # a second copy of every digest as its own release asset only tripled the
+      # file count on the release page for no reader.
       #
       # The part list is recorded INTO the .meta.json because splitting happens
       # here, after the builder wrote it, and because the sidecars now travel
@@ -273,7 +277,7 @@ jobs:
         run: |
           set -euo pipefail
           PKG="$(ls *.tar.gz | head -1)"
-          sha256sum "$PKG" > "$PKG.sha256"
+          echo "sha256 $(sha256sum "$PKG" | cut -d' ' -f1)  $PKG"
           SIZE=$(stat -c%s "$PKG")
           if [ "$SIZE" -gt $((1900 * 1024 * 1024)) ]; then
             echo "$PKG is $((SIZE/1024/1024)) MiB — splitting"
@@ -301,16 +305,16 @@ jobs:
           name: asset-${{ matrix.module }}
           path: |
             out/*
-            !out/*.meta.json
-            !out/*.manifest.json
+            !out/*.json
           retention-days: 3
 
+      # .meta.json ONLY. The per-asset `.manifest.json` the builder writes is
+      # deliberately left behind here: nothing in CI reads it, and anything
+      # that reached this artifact store also reached the release page.
       - uses: actions/upload-artifact@v4
         with:
           name: meta-${{ matrix.module }}
-          path: |
-            out/*.meta.json
-            out/*.manifest.json
+          path: out/*.meta.json
           retention-days: 3
 
   # ------------------------------------------------------------------ index
@@ -387,8 +391,7 @@ jobs:
           json.dump(index, open(out, "w"), indent=2)
           print(f"indexed {len(entries)} module(s): {', '.join(sorted(entries))}")
           PY
-          cd out && sha256sum "intact-release-$TAG.index.json" > "intact-release-$TAG.index.json.sha256"
-          cat "intact-release-$TAG.index.json"
+          cat "out/intact-release-$TAG.index.json"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -406,9 +409,20 @@ jobs:
           ref: ${{ needs.resolve.outputs.commit }}
           fetch-depth: 0
 
+      # BY PATTERN, not "everything". An unfiltered download also pulls
+      # `docker-image-packager` -- a 371 MB `docker save` of the build
+      # container, a CI implementation detail -- and the upload step below then
+      # attached it to the release as `intact-backend-ci-packager.tar.gz`,
+      # where it looked like something a customer was meant to install.
       - uses: actions/download-artifact@v4
         with:
           path: all
+          pattern: asset-*
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: all
+          pattern: release-index
 
       # No toolchain-reclaiming step here, deliberately. This job holds ONE
       # copy of the release (~8 GB) on a runner with ~21 GB free -- it used to
@@ -478,7 +492,18 @@ jobs:
             echo "Publishing draft release $TAG..."
             gh release edit "$TAG" --draft=false
           fi
-          find all -type f ! -name '*.meta.json' -print0 \
+          # ALLOWLIST, not a denylist. A release page carries exactly two kinds
+          # of file: one tarball per module (or its .part-NN pieces), and the
+          # index that names them. Everything else -- .meta.json, the
+          # per-asset .manifest.json, a stray CI image -- is build scaffolding.
+          # The previous `! -name '*.meta.json'` denylist let each of those
+          # through the moment it appeared, which is how one aws_sigma module
+          # turned into six assets.
+          find all -type f \( \
+                 -name "$TAG-*.tar.gz" \
+              -o -name "$TAG-*.tar.gz.part-*" \
+              -o -name "intact-release-$TAG.index.json" \
+            \) -print0 \
             | sort -z \
             | xargs -0 gh release upload "$TAG" --clobber
           echo "== attached =="
@@ -490,7 +515,11 @@ jobs:
           TAG: ${{ needs.resolve.outputs.tag }}
           COMMIT: ${{ needs.resolve.outputs.commit }}
         run: |
-          IDX="$(find all -name "intact-release-$TAG.index.json.sha256" | head -1)"
+          # Computed here rather than published as its own release asset --
+          # the index is 347 bytes and GitHub prints a sha256 beside every
+          # asset on the release page, so a `.index.json.sha256` file was one
+          # more row saying what the row above it already said.
+          IDX="$(find all -name "intact-release-$TAG.index.json" | head -1)"
           {
             echo "### Release assets for \`$TAG\`"
             echo ""
@@ -501,7 +530,7 @@ jobs:
             echo "for the assets:"
             echo ""
             echo '```'
-            cut -d' ' -f1 "$IDX"
+            sha256sum "$IDX" | cut -d' ' -f1
             echo '```'
             echo ""
             echo "No single-file bundle is published. Build one with"
