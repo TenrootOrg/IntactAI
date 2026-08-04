@@ -405,10 +405,40 @@ run_docker_compose() {
         # build (image not on registry), and IRIS first-time DB init can
         # take 5+ min. Without heartbeat, those minutes look like a hang.
         local up_cwd="$PWD"
+        # --no-build WHEN THE IMAGES CAME FROM THE PACKAGE.
+        #
+        # The `build`-action guard above is not enough on its own: both the
+        # backend and velociraptor composes set `pull_policy: build`, which
+        # makes `up -d` build the image REGARDLESS of whether it is already in
+        # the local store. Observed 2026-08-04: the installer loaded the
+        # shipped intact-backend:intact-20260804 (1.2 GB), deploy_backend
+        # correctly logged "present ... not building", and `up -d` then rebuilt
+        # it from source anyway over ~290 lines of live PyPI -- replacing the
+        # tested artifact with an untested local build under the same tag, and
+        # needing an internet connection to do it.
+        #
+        # deploy_backend has already asserted the image exists before we get
+        # here, so --no-build cannot strand us: either the image is present and
+        # is used, or compose fails loudly naming what is missing, which is the
+        # outcome we want on an air-gapped box.
+        #
+        # NOT `--pull never` (yet). That is the other half of the same idea, but
+        # it would break the one image nothing bundles: the platform's own
+        # nginx. The packager now bundles it, so once a release built from that
+        # change exists, --pull never can be added here and the last silent
+        # network dependency closes.
+        local up_flags=()
+        if [[ "${INTACT_FROM_PACKAGE:-0}" == "1" ]]; then
+            up_flags+=(--no-build)
+        fi
         run_with_heartbeat "${module_name} compose up" "$build_timeout" \
             bash -c '
                 cd "$1" || exit 2
-                docker compose up -d 2>&1 | tee -a "$2" | \
+                # Bind the log path before shifting it away; everything after
+                # the shift is the compose flag list ("$@").
+                LOGF="$2"
+                shift 2
+                docker compose up -d "$@" 2>&1 | tee -a "$LOGF" | \
                     grep -vE "^\s*[0-9a-f]{12} (Downloading|Extracting|Waiting|Download complete|Pull complete|Pulling fs layer) " | \
                     while IFS= read -r line; do
                         if [[ -n "$line" ]]; then
@@ -419,7 +449,7 @@ run_docker_compose() {
                 # On failure, dump the full last 30 lines from the log file to
                 # the terminal so the operator sees the actual error
                 # immediately, not just a generic "deploy failed" line. The log
-                # file already has the full output via `tee -a "$2"` above —
+                # file already has the full output via `tee -a "$LOGF"` above —
                 # this just makes it visible without forcing a hunt through
                 # thousands of lines. Real-world bug: the volume-mount race
                 # `failed to mkdir .../volweb_media/_data/symbols: file exists`
@@ -430,13 +460,13 @@ run_docker_compose() {
                     echo "    ============================================================"
                     echo "    docker compose up FAILED (exit $rc) — last 30 lines of full output:"
                     echo "    ============================================================"
-                    tail -30 "$2" | sed "s/^/      /"
+                    tail -30 "$LOGF" | sed "s/^/      /"
                     echo "    ============================================================"
-                    echo "    Full log: $2"
+                    echo "    Full log: $LOGF"
                     echo "    ============================================================"
                 fi
                 exit "$rc"
-            ' _ "$up_cwd" "$LOG_FILE"
+            ' _ "$up_cwd" "$LOG_FILE" "${up_flags[@]}"
         return $?
     fi
 }
