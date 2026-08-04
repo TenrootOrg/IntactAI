@@ -182,13 +182,14 @@ load_images_from_package() {
     log_info "Installing from ${#pkgs[@]} asset(s): $(basename "${pkgs[0]}")$( (( ${#pkgs[@]} > 1 )) && echo " (+$(( ${#pkgs[@]} - 1 )) more)")"
     mkdir -p "${SCRIPT_DIR}/data/tmp" 2>/dev/null || true
 
-    # A DELTA package predates the per-module scheme and carries only the
-    # modules whose versions moved since some other release. It cannot install a
-    # box from scratch, and it is refused rather than half-applied.
+    # A DELTA package predates the per-module scheme: it carried only the
+    # modules whose versions had moved since some other release. Deltas are no
+    # longer produced, but one can still be sitting on a USB stick, and it must
+    # be refused by name rather than half-applied.
     for pkg in "${pkgs[@]}"; do
         local kind
         kind="$(tar -xzOf "$pkg" --wildcards '*/manifest.json' 2>/dev/null \
-                | python3 -c 'import json,sys;print((json.load(sys.stdin).get("contents") or {}).get("package_kind","full"))' 2>/dev/null || echo full)"
+                | python3 -c 'import json,sys;print((json.load(sys.stdin).get("contents") or {}).get("package_kind",""))' 2>/dev/null || echo "")"
         if [[ "$kind" == "delta" ]]; then
             log_error "$(basename "$pkg") is a DELTA package: it carries only the"
             log_error "modules whose versions moved since another release, so it"
