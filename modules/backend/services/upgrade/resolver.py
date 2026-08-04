@@ -85,7 +85,22 @@ def _release_package_bytes(rel: dict, tag: str):
     the bundle is installable by every box. Both must remain visible.
     """
     bundle = f'intact-upgrade-{tag}.tar.gz'
-    module_prefix = f'intact-{tag}-'
+    # `<tag>-<module>.tar.gz`. The tag ALREADY begins with "intact-", so the
+    # asset name is intact-20260804-elk.tar.gz -- not intact-intact-20260804-elk.
+    #
+    # This read `f'intact-{tag}-'` and so looked for the doubled prefix. The
+    # builder had that same bug and was fixed; this copy was missed, and the
+    # consequence is silent and total: _release_package_bytes returns None for
+    # every per-module release, the caller treats None as "nothing installable
+    # here" and skips it, and the release simply DOES NOT APPEAR in the upgrade
+    # picker. Observed on intact-20260804, where the dialog offered only
+    # intact-20260726 -- the one older release still carrying a legacy bundle,
+    # which matched the other pattern.
+    #
+    # Both spellings are accepted: a release cut while the builder still doubled
+    # the prefix is just as installable, and there is no reason to make it
+    # invisible now.
+    module_prefixes = (f'{tag}-', f'intact-{tag}-')
     sidecars = ('.sha256', '.manifest.json', '.meta.json', '.index.json')
     total = 0
     found = False
@@ -94,7 +109,7 @@ def _release_package_bytes(rel: dict, tag: str):
         if name.endswith(sidecars):
             continue
         is_bundle = name == bundle or name.startswith(bundle + '.part-')
-        is_module = (name.startswith(module_prefix)
+        is_module = (name.startswith(module_prefixes)
                      and ('.tar.gz' in name))
         if is_bundle or is_module:
             total += a.get('size') or 0
