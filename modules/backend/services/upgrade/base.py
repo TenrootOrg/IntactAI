@@ -2020,19 +2020,28 @@ def verify_upgrade_package(package_path: str, logger: Callable = None,
         # Disk preflight, BEFORE a byte is written. Failing here with a number
         # beats ENOSPC halfway through a multi-GB extract.
         #
-        # 3.6x, from measurement rather than guesswork: a real module asset
-        # (plaso, intact-20260805) extracts to 3.23x its compressed size, and
-        # the images dominate every asset, so the whole tree lands near that.
-        # Add ~0.4x of headroom for the single largest asset, which is on disk
-        # alongside the tree while it is being read -- the others are deleted
-        # as they are extracted (assemble_release_package(consume=True)).
+        # 2.2x, down from 3.6x, because the assemble below now loads and drops
+        # each module's images as its asset lands rather than extracting all N
+        # first (assemble_release_package(load_images=True)).
         #
-        # Without that consume, the requirement would be ~4.2x: every inner
-        # asset held until the end. That is 3+ GB more on a full release, and
-        # it is what turned this into a hard stop on a box with 13 GB free.
+        # Where the number comes from. A module asset extracts to ~3.23x its
+        # compressed size -- measured on a real one, images dominate. The old
+        # figure had to cover the ENTIRE uncompressed tree at once. Now the
+        # tree only ever holds the small non-image content plus the module
+        # being loaded, so the peak is:
+        #
+        #     (inner assets not yet consumed) + 3.23 x (largest single asset)
+        #
+        # On the 9-module release that is ~1.6x the package, worst case, and
+        # the largest module is nowhere near the whole payload. 2.2x leaves
+        # real headroom on top of that without going back to reserving space
+        # for a tree that is never built. It is a REFUSAL threshold, so it
+        # should be generous enough not to block a box that would have
+        # succeeded, and honest enough to stop one that would have hit ENOSPC
+        # mid-extract.
         try:
             _wrap_size = os.path.getsize(package_path)
-            _need = int(_wrap_size * 3.6)
+            _need = int(_wrap_size * 2.2)
             _free = shutil.disk_usage("/app/data/tmp").free
             if _free < _need:
                 return {
@@ -2100,6 +2109,11 @@ def verify_upgrade_package(package_path: str, logger: Callable = None,
                 extract_dir=f"/app/data/tmp/intact-upgrade-{int(time.time())}",
                 expected_sha256=_expected or None,
                 consume=True,
+                # Load each module's images as its asset lands, instead of
+                # extracting all N first. This is the path that hits the disk
+                # wall -- a hand-carried wrapper is applied on whatever box the
+                # operator has, and the whole-tree peak is ~3.2x the package.
+                load_images=True,
                 logger=log)
             # The inner tarballs are consumed; the assembled tree is what the
             # apply loop reads from here on.
@@ -3003,6 +3017,8 @@ def assemble_release_package(asset_paths, tag: str = None, extract_dir: str = No
                              expected_modules=None,
                              expected_sha256: Dict[str, str] = None,
                              consume: bool = False,
+                             load_images: bool = False,
+                             run_id: str = None,
                              logger: Callable = None) -> Dict:
     """Extract N module assets into one package_dir and merge their manifests.
 
@@ -3047,9 +3063,109 @@ def assemble_release_package(asset_paths, tag: str = None, extract_dir: str = No
                                       f"{got[:16]}…) — refusing to assemble")}
             log("  All asset checksums verified", "success")
 
+        # THE PLATFORM ASSET GOES FIRST, ALWAYS.
+        #
+        # Callers hand these over sorted by filename, which puts
+        # "<tag>-aws_sigma.tar.gz" ahead of "<tag>-intact.tar.gz" — alphabetical
+        # order, and precisely the wrong one. intact carries the backend image
+        # and the source tree every other module is applied from, so it is the
+        # asset that must be on disk and in the image store before anything
+        # else: if a run dies partway through (disk, crash, an operator
+        # stopping it), the box can still come up on the new backend and
+        # finish, instead of being left with a handful of module images and no
+        # code that knows what to do with them.
+        #
+        # Same rule and same reason as _intact_first() on the packaging side
+        # (services/upgrade/package.py) — this is the apply-side half of it.
+        # Stable: every other asset keeps the order it arrived in.
+        asset_paths = sorted(
+            asset_paths,
+            key=lambda p: '-intact.tar' not in os.path.basename(p))
+
         log(f"Assembling {len(asset_paths)} module asset(s)...", "info")
+
+        # Paths verified and then deliberately removed by the per-asset
+        # load below, so the whole-tree pass at the end knows they are gone
+        # on purpose rather than reporting each one "(missing)".
+        loaded_and_removed = set()
+
         for p in asset_paths:
+            # Which manifests exist BEFORE this asset lands, so the ones that
+            # appear after it are known to be this asset's. Derived rather
+            # than parsed out of the filename: the filename is a convention,
+            # the manifest is the artifact, and only one of those is checked.
+            # Resolved by scanning rather than built from `tag`: callers are
+            # not required to pass one (the wrapper-unwrap path does not), and
+            # every asset shares the same top-level dir by contract, so the
+            # scan is exact and the tag is redundant.
+            def _pkg_dir_now():
+                if tag:
+                    _t = os.path.join(extract_dir, f"intact-upgrade-{tag}")
+                    if os.path.isdir(_t):
+                        return _t
+                _subs = [d for d in os.listdir(extract_dir)
+                         if os.path.isdir(os.path.join(extract_dir, d))]
+                return os.path.join(extract_dir, _subs[0]) if _subs else None
+
+            _mans_before = set()
+            if load_images:
+                _pd = _pkg_dir_now()
+                _md = os.path.join(_pd, 'manifests') if _pd else None
+                if _md and os.path.isdir(_md):
+                    _mans_before = set(os.listdir(_md))
+
             _extract_one_asset(p, extract_dir, logger=log)
+
+            # Extract -> verify -> load -> delete, one module at a time.
+            #
+            # Without this the whole release is extracted before a single
+            # image is loaded, so peak disk is the ENTIRE uncompressed tree
+            # (~3.2x the package: measured 3.23x on a real module asset) even
+            # though `docker load` then walks it deleting as it goes. Doing it
+            # per asset caps the peak at the largest single module plus the
+            # small non-image content -- roughly 6.5 GB instead of 17.8 GB on
+            # a 5.5 GB release, which is the difference between needing ~8 GB
+            # free and ~20 GB.
+            #
+            # Verification stays AHEAD of the delete. The per-asset manifest
+            # carries the sha256 of that asset's own files, so each image is
+            # still hashed against a published digest before its bytes are
+            # handed to docker and the tar is dropped -- the same coverage as
+            # the whole-tree pass, just earlier. Skipping straight to the load
+            # would trade the disk win for an unverified install.
+            if load_images:
+                _pkg_dir = _pkg_dir_now()
+                _md = os.path.join(_pkg_dir, 'manifests') if _pkg_dir else None
+                _new = (set(os.listdir(_md)) - _mans_before) if _md and os.path.isdir(_md) else set()
+                _sha = {}
+                for _mn in sorted(_new):
+                    try:
+                        with open(os.path.join(_md, _mn)) as _mf:
+                            _sha.update(((json.load(_mf).get('contents') or {})
+                                         .get('sha256') or {}))
+                    except (OSError, ValueError) as _me:
+                        log(f"  Could not read {_mn} ({_me}) — falling back to "
+                            f"the whole-tree verification at the end", "warning")
+                        _sha = {}
+                        break
+                _imgs = {r: h for r, h in _sha.items() if r.startswith('images/')}
+                if _imgs:
+                    _bad = []
+                    for _rel, _want in sorted(_imgs.items()):
+                        _abs = os.path.join(_pkg_dir, _rel)
+                        if not os.path.exists(_abs):
+                            continue        # another asset already loaded it
+                        if _hash_file(_abs) != _want:
+                            _bad.append(_rel)
+                    if _bad:
+                        return {"success": False,
+                                "error": (f"assembled package failed "
+                                          f"verification: "
+                                          f"{'; '.join(_bad[:5])} (hash "
+                                          f"mismatch) — refusing to load")}
+                    load_all_bundled_images(_pkg_dir, logger=log, run_id=run_id,
+                                            cleanup_after_load=True)
+                    loaded_and_removed.update(_imgs)
             # `consume`: the caller owns these files and does not need them
             # after extraction (they are a temporary unwrap of a wrapper
             # package). Deleting each as it lands keeps peak disk at
@@ -3171,6 +3287,14 @@ def assemble_release_package(asset_paths, tag: str = None, extract_dir: str = No
                 # asset-level sha256 verified before extraction.
                 if rel == 'manifest.json' or rel.startswith('manifests/'):
                     continue
+                # Already hashed against the same published digest during the
+                # per-asset load above, and the tar deleted once its layers
+                # were in the docker store. Verified, not skipped — the count
+                # logged below says so explicitly, because "N fewer files
+                # checked" is exactly the kind of quiet coverage loss that
+                # should never be inferred from silence.
+                if rel in loaded_and_removed:
+                    continue
                 abs_p = os.path.join(package_dir, rel)
                 if not os.path.exists(abs_p):
                     bad.append(f"{rel} (missing)")
@@ -3182,7 +3306,14 @@ def assemble_release_package(asset_paths, tag: str = None, extract_dir: str = No
                         "error": (f"assembled package failed verification: "
                                   f"{'; '.join(bad[:5])}"
                                   f"{' …' if len(bad) > 5 else ''}")}
-            log("  All file checksums verified", "success")
+            if loaded_and_removed:
+                log(f"  All file checksums verified "
+                    f"({len(sha_map) - len(loaded_and_removed)} here, "
+                    f"{len(loaded_and_removed)} image(s) verified earlier then "
+                    f"loaded and dropped, module-by-module, to bound peak disk)",
+                    "success")
+            else:
+                log("  All file checksums verified", "success")
 
         return {"success": True, "extract_dir": extract_dir,
                 "package_dir": package_dir, "manifest": manifest}
