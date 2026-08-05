@@ -439,6 +439,69 @@ def run_startup_initialization():
             except Exception as _pe:
                 print(f"[STARTUP] backend-image retention prune skipped: {_pe}", flush=True)
 
+            # Images for modules that are switched OFF. A release package
+            # carries every module and the loader writes them all into the
+            # docker store, so a box with (say) IRIS disabled still carries
+            # its four images -- 2.0 GB observed on a dev appliance, for
+            # containers that will never exist. install.sh now skips these at
+            # load time; this reclaims what earlier installs already wrote,
+            # and what an upgrade applied without a module selection leaves.
+            #
+            # Only touches images NO container references, so anything
+            # actually in use is safe regardless of what config.yaml says.
+            try:
+                import subprocess as _sp
+                from services.upgrade.package import module_image_repos
+                cfg = load_main_config() or {}
+                mods = cfg.get('modules') or {}
+                disabled = set()
+                for _name, _val in mods.items():
+                    _en = _val.get('enabled', True) if isinstance(_val, dict) else _val
+                    if not (_en is True or str(_en).lower() in ('true', 'yes', '1')):
+                        disabled.add(_name)
+                if disabled:
+                    _inuse = set(
+                        (_sp.run(["docker", "ps", "-a", "--format", "{{.Image}}"],
+                                 capture_output=True, text=True, timeout=15).stdout or ''
+                         ).split())
+                    _freed = 0
+                    for _mod in sorted(disabled):
+                        for _repo in module_image_repos(_mod):
+                            _out = _sp.run(
+                                ["docker", "images", _repo, "--format",
+                                 "{{.Repository}}:{{.Tag}}\t{{.Size}}"],
+                                capture_output=True, text=True, timeout=15).stdout or ''
+                            for _line in _out.splitlines():
+                                _ref = _line.split('\t')[0].strip()
+                                if not _ref or _ref in _inuse:
+                                    continue
+                                _sp.run(["docker", "rmi", _ref],
+                                        capture_output=True, timeout=60)
+                                _freed += 1
+                                print(f"[STARTUP] Pruned {_ref} — module "
+                                      f"'{_mod}' is disabled", flush=True)
+                    if _freed:
+                        print(f"[STARTUP] Reclaimed {_freed} image(s) for "
+                              f"disabled module(s): {', '.join(sorted(disabled))}",
+                              flush=True)
+            except Exception as _de:
+                print(f"[STARTUP] disabled-module image prune skipped: {_de}", flush=True)
+
+            # Dangling images: untagged, unreferenced layers left by builds and
+            # image swaps. Ten of them (1.26 GB each) accumulated on this
+            # appliance from repeated backend rebuilds. `prune` only removes
+            # what has no tag and no container, so it cannot take anything
+            # reachable -- unlike a tag-based sweep, which needs a keep-set.
+            try:
+                import subprocess as _sp
+                _pr = _sp.run(["docker", "image", "prune", "-f"],
+                              capture_output=True, text=True, timeout=300)
+                _last = [l for l in (_pr.stdout or '').splitlines() if 'Total reclaimed' in l]
+                if _last and 'Total reclaimed space: 0B' not in _last[-1]:
+                    print(f"[STARTUP] Dangling image sweep — {_last[-1].strip()}", flush=True)
+            except Exception as _dpe:
+                print(f"[STARTUP] dangling image prune skipped: {_dpe}", flush=True)
+
             # Self-heal a backend stranded on the wrong image for a Full-mode
             # release (e.g. an 'intact'-alone upgrade run by OLD, pre-Wave-F
             # code — that code mirrors files + restarts the SAME container

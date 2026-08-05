@@ -132,6 +132,33 @@ TRANSITIVE_IMAGES = {
 # right `.env` line before `docker compose up`, and by the prepare side
 # to record bundled tags in the manifest. Keys live in
 # modules/<module>/docker-compose.yaml as `${VAR:?...}` references.
+def module_image_repos(module: str):
+    """Docker repository names a module's images live under, tags stripped.
+
+    For reclaiming images belonging to a module that is switched off. The
+    tables store full patterns ("ghcr.io/dfir-iris/iriswebapp_app:{version}");
+    what a `docker images <repo>` filter wants is the part before the tag.
+
+    Includes TRANSITIVE deps, which is where the space actually is -- IRIS's
+    rabbitmq is 176 MB on its own. Several of those repos are SHARED (both
+    timesketch and volweb use postgres and redis), so a caller must never
+    delete on the strength of this list alone: check that no container
+    references the image first. Naming a repo here says "this module can own
+    images under it", not "this module owns them exclusively".
+    """
+    # rsplit on the LAST ':' -- the tag placeholder is always final, and a
+    # registry host may legitimately carry a port (host:5000/repo:{version}).
+    repos = [p.rsplit(':', 1)[0] for p, _tar in (PRIMARY_IMAGES.get(module) or [])]
+    repos += [p.rsplit(':', 1)[0]
+              for _dep, p, _tar in (TRANSITIVE_IMAGES.get(module) or [])]
+    # dedupe, preserve order
+    seen, out = set(), []
+    for r in repos:
+        if r and r not in seen:
+            seen.add(r); out.append(r)
+    return out
+
+
 def image_owner_prefixes():
     """{tar-filename prefix: owning module}, derived from the tables above.
 

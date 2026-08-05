@@ -436,12 +436,40 @@ for img in sorted(set(owner) | set(size)):
     done
     log_info "Package contents: ${#image_tars[@]} image tar(s) ($(_human_size "$images_total_size")), ${#data_tars[@]} rule pack(s)"
 
-    local loaded=0 failed=0 img_i=0 img_total=${#image_tars[@]}
+    # Which modules' images are worth loading. A release package carries every
+    # module; a box installs the ones it has enabled. Loading the rest writes
+    # gigabytes into the docker store that no container will ever reference --
+    # observed on this appliance: IRIS is disabled and its four images (2.0 GB)
+    # were sitting there anyway, because this loop knew the owning module (it
+    # prints it on every line) and never asked whether it was wanted.
+    #
+    # The upgrade path already does this, pruning unselected modules' tars
+    # before the load (services/upgrade/__init__.py, "Pruned N image(s) for
+    # unselected modules"); the installer simply never got the same treatment.
+    #
+    # Unattributed images are ALWAYS loaded. An image nobody owns is a
+    # packaging gap, and skipping one a module silently needs turns that into
+    # a failed install -- the same reasoning the upgrade-side prune uses.
+    declare -A _MOD_WANTED=()
+    local _m _en
+    for _m in "${!INTACT_MODULE_DISPLAY[@]}"; do
+        [[ "$_m" == "intact" ]] && { _MOD_WANTED[$_m]=1; continue; }   # platform: always
+        _en="$(read_config "['modules']['${_m}']['enabled']" 2>/dev/null || echo "")"
+        if [[ -z "$_en" ]] || is_enabled "$_en"; then _MOD_WANTED[$_m]=1; fi
+    done
+
+    local loaded=0 failed=0 skipped=0 skipped_bytes=0 img_i=0 img_total=${#image_tars[@]}
     for tar_file in "${image_tars[@]}"; do
         img_i=$((img_i + 1))
         base="$(basename "$tar_file")"
         mod_id="${IMG_OWNER[$base]:-}"
         display="$(_module_display "$mod_id" "(unattributed)")"
+        if [[ -n "$mod_id" && -z "${_MOD_WANTED[$mod_id]:-}" ]]; then
+            pkg_size="${IMG_SIZE[$base]:-$(stat -c%s "$tar_file" 2>/dev/null || echo 0)}"
+            skipped=$((skipped + 1)); skipped_bytes=$((skipped_bytes + pkg_size))
+            log_info "  [${img_i}/${img_total}] ${display} — skipped, module disabled in config.yaml ($(_human_size "$pkg_size"))"
+            continue
+        fi
         pkg_size="${IMG_SIZE[$base]:-$(stat -c%s "$tar_file" 2>/dev/null || echo 0)}"
         log_info "  [${img_i}/${img_total}] ${display} / ${base} ($(_human_size "$pkg_size")) — loading..."
         local load_log; load_log="$(mktemp -p "${SCRIPT_DIR}/data/tmp" load-XXXXXX)"
@@ -570,6 +598,10 @@ for p in glob.glob(f'{work}/*/manifests/intact.json') + glob.glob(f'{work}/*/man
         log_success "  Loaded $loaded image(s) from the package ($failed failed)"
     else
         log_success "  Loaded $loaded image(s) from the package"
+    fi
+    if (( skipped > 0 )); then
+        log_info "  Skipped $skipped image(s) for disabled modules, keeping $(_human_size "$skipped_bytes") out of the docker store"
+        log_info "  Enable a module in config.yaml and re-run to load its images."
     fi
     # Loading is not installing. config.yaml's per-module `enabled` flag still
     # decides what gets deployed, exactly as on an online install -- a full
