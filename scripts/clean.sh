@@ -38,7 +38,10 @@ check_root() {
 stop_containers() {
     log_info "Stopping all Intact.AI containers..."
 
-    local modules=("elk" "timesketch" "velociraptor" "iris" "portainer" "backend" "nginx")
+    # volweb was missing here: its six containers were only ever caught by the
+    # `name=intact_` force-rm below, so `docker compose down` never ran for it
+    # and its networks/volumes were left behind.
+    local modules=("elk" "timesketch" "velociraptor" "iris" "portainer" "volweb" "backend" "nginx")
 
     for module in "${modules[@]}"; do
         local module_dir="${SCRIPT_DIR}/modules/${module}"
@@ -71,13 +74,20 @@ remove_containers() {
 remove_volumes() {
     log_info "Removing all Intact.AI Docker volumes..."
 
-    # List of volume prefixes to remove
+    # List of volume prefixes to remove.
+    #
+    # `volweb_` was absent, so a "full" clean left volweb_volweb_postgres_data,
+    # _media, _redis_data and _staticfiles behind -- observed on 2026-08-05,
+    # where --all reported success and 7 volumes survived. A prefix list also
+    # cannot match ANONYMOUS volumes (bare 64-hex names), of which that same
+    # run left three; those are swept separately below.
     local volume_patterns=(
         "elk_"
         "timesketch_"
         "velociraptor_"
         "iris_"
         "portainer_"
+        "volweb_"
         "backend_"
         "nginx_"
         "intact_"
@@ -92,6 +102,23 @@ remove_volumes() {
             done
         fi
     done
+
+    # Anonymous volumes: a compose service with an unnamed volume gets a
+    # 64-hex-character name no prefix can match, and they are pure Intact.AI
+    # leftovers once the containers above are gone. `docker volume prune`
+    # only ever removes volumes no container references, so this cannot touch
+    # anything still in use by something else on the box.
+    local dangling
+    dangling=$(docker volume ls -qf dangling=true 2>/dev/null \
+               | grep -E '^[0-9a-f]{64}$' || true)
+    if [[ -n "$dangling" ]]; then
+        local anon=0
+        for vol in $dangling; do
+            docker volume rm "$vol" 2>/dev/null && anon=$((anon + 1)) || true
+        done
+        (( anon > 0 )) && log_success "Removed $anon anonymous volume(s)"
+        removed=$((removed + anon))
+    fi
 
     if [[ $removed -gt 0 ]]; then
         log_success "Removed $removed volumes"
@@ -120,16 +147,71 @@ remove_network() {
     fi
 }
 
+# Remove the state install.sh writes OUTSIDE the install tree.
+#
+# Neither of these was ever cleaned, so "--all then reinstall" was not a fresh
+# install: the marker made install.sh prompt "Re-initialize? (y/N)" (QA works
+# around it with an explicit `rm -f`, see qa/phases/platform.py), and
+# /opt/sigma-rules survived to be reused instead of re-cloned at the pinned
+# tag. Both are created by the installer and belong to it alone.
+remove_host_state() {
+    log_info "Removing host-level Intact.AI state..."
+
+    if [[ -e /etc/intact-initialized ]]; then
+        rm -f /etc/intact-initialized && \
+            log_success "  Removed /etc/intact-initialized (next install runs clean)"
+    fi
+
+    # Cloned by download_sigma_rules() into a fixed path; nothing else owns it.
+    if [[ -d /opt/sigma-rules ]]; then
+        rm -rf /opt/sigma-rules && log_success "  Removed /opt/sigma-rules"
+    fi
+}
+
 # Remove Intact.AI images
 remove_images() {
     log_info "Removing Intact.AI Docker images..."
 
+    # ASK COMPOSE, don't guess. These two patterns matched only the images we
+    # BUILD -- every upstream image the platform pulls (elasticsearch, kibana,
+    # logstash, timesketch, opensearch, iris, rabbitmq, postgres, redis, nginx,
+    # portainer, volweb, tusd, plaso) is named by its own vendor and matched
+    # neither. Measured 2026-08-05: `--all` reported success having removed
+    # 1 image of 29, leaving 15.5 GB on disk.
+    #
+    # `docker compose config --images` resolves each module's compose file
+    # with its .env and prints exactly the images that module uses -- which is
+    # the authoritative list, stays correct when a pin changes, and cannot
+    # sweep up an unrelated `nginx:latest` the operator happens to have.
     local image_patterns=(
         "velociraptor-server"
         "intact_"
+        "intact-backend"
     )
 
+    local -a compose_images=()
+    local _m _img
+    for _m in elk timesketch velociraptor iris portainer volweb backend nginx; do
+        local _dir="${SCRIPT_DIR}/modules/${_m}"
+        [[ -f "$_dir/docker-compose.yaml" ]] || continue
+        while IFS= read -r _img; do
+            [[ -n "$_img" ]] && compose_images+=("$_img")
+        done < <(cd "$_dir" && docker compose config --images 2>/dev/null || true)
+    done
+
     local removed=0
+    for _img in "${compose_images[@]}"; do
+        # By exact reference: no globbing, so `nginx:1.31.2-alpine` goes and a
+        # different nginx tag stays.
+        local ids
+        ids=$(docker images -q "$_img" 2>/dev/null)
+        if [[ -n "$ids" ]]; then
+            for img in $ids; do
+                docker rmi -f "$img" 2>/dev/null && ((removed++)) || true
+            done
+        fi
+    done
+
     for pattern in "${image_patterns[@]}"; do
         local images=$(docker images --filter "reference=*${pattern}*" -q 2>/dev/null)
         if [[ -n "$images" ]]; then
@@ -189,12 +271,13 @@ clean_all() {
     echo ""
     log_warn "This will remove ALL Intact.AI components:"
     echo "  - All containers"
-    echo "  - All Docker volumes (DATA WILL BE LOST)"
-    echo "  - Intact.AI network"
-    echo "  - Docker images"
+    echo "  - All Docker volumes (DATA WILL BE LOST), incl. anonymous ones"
+    echo "  - Intact.AI networks"
+    echo "  - Docker images used by every module's compose file"
     echo "  - Client installers"
     echo "  - Log files"
-    echo "  (Note: .env files are preserved)"
+    echo "  - /etc/intact-initialized and /opt/sigma-rules"
+    echo "  (Note: .env files and config.yaml are preserved)"
     echo ""
 
     if [[ "$FORCE" != "true" ]]; then
@@ -214,6 +297,7 @@ clean_all() {
     remove_data
     remove_client_installers
     remove_logs
+    remove_host_state
 
     echo ""
     log_success "=============================================="
@@ -291,32 +375,21 @@ main() {
 
     FORCE=false
 
-    # Parse arguments
+    # TWO PASSES, and it matters. This loop used to run the action AND
+    # `exit 0` inline, so `--force` was only honoured when it came FIRST:
+    # the documented `clean.sh --all --force` dispatched clean_all before it
+    # ever reached the --force case, hit the confirmation prompt, and aborted.
+    # A "skip confirmation" flag that silently does nothing depending on
+    # argument order is worse than no flag. Collect flags first, then act.
+    local action=""
     while [[ $# -gt 0 ]]; do
         case $1 in
-            --all)
-                clean_all
-                exit 0
-                ;;
-            --containers)
-                clean_containers_only
-                exit 0
-                ;;
-            --volumes)
-                remove_volumes
-                exit 0
-                ;;
-            --images)
-                remove_images
-                exit 0
-                ;;
-            --data)
-                remove_data
-                exit 0
-                ;;
-            --logs)
-                remove_logs
-                exit 0
+            --all|--containers|--volumes|--images|--data|--logs)
+                if [[ -n "$action" && "$action" != "$1" ]]; then
+                    log_error "Pick one action; got both $action and $1"
+                    exit 1
+                fi
+                action="$1"
                 ;;
             --force)
                 FORCE=true
@@ -334,8 +407,16 @@ main() {
         shift
     done
 
-    # If no arguments, run interactive mode
-    interactive_mode
+    case "$action" in
+        --all)        clean_all ;;
+        --containers) clean_containers_only ;;
+        --volumes)    remove_volumes ;;
+        --images)     remove_images ;;
+        --data)       remove_data ;;
+        --logs)       remove_logs ;;
+        # If no action was given, run interactive mode
+        "")           interactive_mode ;;
+    esac
 }
 
 main "$@"
