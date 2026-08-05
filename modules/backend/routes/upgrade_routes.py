@@ -1367,6 +1367,29 @@ def prepare_upgrade_package():
                     raise RuntimeError(
                         f"prepare_package.sh not found at {script} — the "
                         f"appliance's repo mount is missing or incomplete")
+                # Only ONE prepared package exists at a time -- the UI says so
+                # ("Preparing a new package will replace this one") and
+                # _save_package_info tracks exactly one. Clear the staging dir
+                # first: releases before this one wrote N per-module tarballs
+                # here, and every leftover shows up in the Apply-Uploaded-
+                # Package list as if it were a package of its own.
+                stale = []
+                try:
+                    for _n in sorted(os.listdir('/data/upgrade_packages')):
+                        if _n.endswith(('.tar.gz', '.tgz', '.tar.gz.manifest.json')):
+                            stale.append(_n)
+                except OSError:
+                    pass
+                if stale:
+                    logger(f"Clearing {len(stale)} file(s) from a previous "
+                           f"preparation: {', '.join(stale[:6])}"
+                           + ('…' if len(stale) > 6 else ''), "info")
+                    for _n in stale:
+                        try:
+                            os.remove(os.path.join('/data/upgrade_packages', _n))
+                        except OSError:
+                            pass
+
                 cmd = ['bash', script, target, '/data/upgrade_packages']
                 if selected_modules:
                     cmd.append(','.join(sorted(selected_modules)))

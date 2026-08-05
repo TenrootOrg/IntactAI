@@ -124,12 +124,34 @@ for mod, e in sorted(available.items()):
 NFILES="$(printf '%s\n' "$PLAN" | grep -c . || true)"
 log "$NFILES asset file(s) to fetch (up to 4 in parallel)"
 
+> .expected_bytes
+while IFS="$(printf '\t')" read -r name mod url sha; do
+    [ -n "$name" ] || continue
+    python3 -c "
+import json,os,sys
+idx=json.load(open(sys.argv[1]))
+for e in (idx.get('assets') or {}).values():
+    if e.get('asset')==sys.argv[2] or sys.argv[2] in (e.get('parts') or []):
+        print(e.get('size') or 0); break
+else:
+    print(0)
+" "$TAG.index.json" "$name" >> .expected_bytes
+done <<< "$PLAN"
+TOTAL_BYTES="$(awk '{s+=$1} END {print s+0}' .expected_bytes)"
+rm -f .expected_bytes
+log "total download: $(numfmt --to=iec "$TOTAL_BYTES" 2>/dev/null || echo "$TOTAL_BYTES bytes")"
+
+# -sS, NOT curl's progress meter. Four parallel curls each redrawing a meter
+# interleave into unreadable garbage, and this script's stdout is piped
+# straight into the appliance's workflow log -- thousands of meter redraws
+# would bury the lines that matter. Progress comes from the watcher below
+# instead: one line per interval covering the whole download.
 _dl_one() {
     name="$1"; mod="$2"; url="$3"
     printf '[prepare]   -> [%s] %s\n' "$mod" "$name"
     hdrs=(-H "X-GitHub-Api-Version: 2022-11-28" -H "Accept: application/octet-stream")
     [ -n "${GITHUB_TOKEN:-}" ] && hdrs+=(-H "Authorization: Bearer $GITHUB_TOKEN")
-    if ! curl -fL --retry 3 --retry-delay 5 "${hdrs[@]}" -o "$name" "$url"; then
+    if ! curl -fL -sS --retry 3 --retry-delay 5 "${hdrs[@]}" -o "$name" "$url"; then
         printf '[prepare][ERROR]   [%s] %s failed to download\n' "$mod" "$name" >&2
         return 1
     fi
@@ -137,10 +159,33 @@ _dl_one() {
 }
 export -f _dl_one
 export GITHUB_TOKEN
+
+# One aggregate progress line every 20s, so a multi-GB fetch is never silent
+# for minutes at a time (which reads as a hang) without flooding the log.
+(
+    while :; do
+        sleep 20
+        got=$(du -cb ./*.tar.gz ./*.part-* 2>/dev/null | tail -1 | cut -f1)
+        got="${got:-0}"
+        if [ "$TOTAL_BYTES" -gt 0 ] 2>/dev/null; then
+            printf '[prepare]   ... %s / %s (%d%%)\n' \
+                "$(numfmt --to=iec "$got" 2>/dev/null || echo "$got")" \
+                "$(numfmt --to=iec "$TOTAL_BYTES" 2>/dev/null || echo "$TOTAL_BYTES")" \
+                "$(( got * 100 / TOTAL_BYTES ))"
+        fi
+    done
+) &
+WATCHER=$!
+trap 'kill "$WATCHER" 2>/dev/null; rm -rf "$WORK"' EXIT
+
 if ! printf '%s\n' "$PLAN" | cut -f1,2,3 | xargs -P 4 -L 1 bash -c '_dl_one "$1" "$2" "$3"' _; then
+    kill "$WATCHER" 2>/dev/null || true
     err "one or more downloads failed"
     exit 1
 fi
+kill "$WATCHER" 2>/dev/null || true
+trap 'rm -rf "$WORK"' EXIT
+log "all downloads complete"
 
 log "joining any split parts..."
 for part0 in *.tar.gz.part-00; do
