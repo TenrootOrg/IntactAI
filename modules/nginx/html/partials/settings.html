@@ -1657,11 +1657,21 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                              a release picked too — the tag is a placeholder until
                              one is chosen. -->
                         <div x-show="$store.settings.prepareModalMode === 'prepare' && !$store.settings.prepareLoading && !$store.settings.preparePackageReady"
-                             x-data="{ shell: 'bash' }"
+                             x-data="{ shell: 'bash', open: false }"
                              class="bg-gray-900 rounded border border-gray-700 p-3 mt-4">
-                            <div class="flex items-center justify-between mb-2">
-                                <label class="text-gray-300 text-xs uppercase tracking-wide">Or run it yourself</label>
-                                <div class="flex gap-1">
+                            <!-- Collapsed by default. This is the escape hatch for building the
+                                 package on a machine that is not the appliance; the common path
+                                 is the button below, and a 100-line script sitting open pushes
+                                 everything that matters off-screen. -->
+                            <div class="flex items-center justify-between"
+                                 :class="open ? 'mb-2' : ''">
+                                <button type="button" @click="open = !open"
+                                        class="flex items-center gap-2 text-gray-300 text-xs uppercase tracking-wide hover:text-white">
+                                    <span x-text="open ? '▾' : '▸'" class="text-gray-500"></span>
+                                    Or run it yourself
+                                    <span x-show="!open" class="normal-case text-gray-500 tracking-normal">— download it on another machine</span>
+                                </button>
+                                <div class="flex gap-1" x-show="open">
                                     <button @click="shell = 'bash'"
                                             :class="shell === 'bash' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'"
                                             class="text-xs px-2 py-1 rounded border border-gray-600">Bash</button>
@@ -1670,6 +1680,7 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                             class="text-xs px-2 py-1 rounded border border-gray-600">PowerShell</button>
                                 </div>
                             </div>
+                            <div x-show="open" x-cloak>
                             <p class="text-gray-500 text-xs mb-2">
                                 Prepare only <em>downloads</em> the CI-built package and verifies its hash, so this
                                 is the whole of it — runs on any machine, no Intact.AI needed.
@@ -1692,6 +1703,7 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                 Then copy the <span class="font-mono">.tar.gz</span> to this appliance and use
                                 <span class="text-gray-400">Import Upgrade Package</span> — the import path is identical either way.
                             </p>
+                            </div>
                         </div>
 
                         <!-- Warning -->
