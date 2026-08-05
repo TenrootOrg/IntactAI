@@ -1933,7 +1933,10 @@ def verify_upgrade_package(package_path: str, logger: Callable = None,
                    f"applied and the file was left in place — re-download it, "
                    f"or check the digest against the release page.")
             log(err, "error")
-            return {"success": False, "error": err, "sha256": archive_sha256}
+            # retryable: the message above promises the file is left in place
+            # so the operator can compare digests against the release page.
+            return {"success": False, "error": err, "sha256": archive_sha256,
+                    "retryable": True}
         log("  Digest matches the value supplied by the operator", "success")
     else:
         log("  No expected digest supplied — the package is checked for "
@@ -1978,19 +1981,27 @@ def verify_upgrade_package(package_path: str, logger: Callable = None,
             f"asset(s) — unwrapping", "info")
         os.makedirs("/app/data/tmp", exist_ok=True)
 
-        # Disk preflight, BEFORE a byte is written. The non-wrapper path below
-        # has had one of these since a half-extracted carcass filled a disk;
-        # a wrapper needs MORE, not less: the inner assets are written out
-        # (~1x the package) and then extracted (~3x, images are already-
-        # compressed layers). Failing here with a number beats ENOSPC halfway
-        # through a multi-GB extract.
+        # Disk preflight, BEFORE a byte is written. Failing here with a number
+        # beats ENOSPC halfway through a multi-GB extract.
+        #
+        # 3.6x, from measurement rather than guesswork: a real module asset
+        # (plaso, intact-20260805) extracts to 3.23x its compressed size, and
+        # the images dominate every asset, so the whole tree lands near that.
+        # Add ~0.4x of headroom for the single largest asset, which is on disk
+        # alongside the tree while it is being read -- the others are deleted
+        # as they are extracted (assemble_release_package(consume=True)).
+        #
+        # Without that consume, the requirement would be ~4.2x: every inner
+        # asset held until the end. That is 3+ GB more on a full release, and
+        # it is what turned this into a hard stop on a box with 13 GB free.
         try:
             _wrap_size = os.path.getsize(package_path)
-            _need = int(_wrap_size * 4)
+            _need = int(_wrap_size * 3.6)
             _free = shutil.disk_usage("/app/data/tmp").free
             if _free < _need:
                 return {
                     "success": False,
+                    "retryable": True,   # about this host, not the package
                     "error": (
                         f"Not enough free space to unwrap this package. It is "
                         f"{_wrap_size // (1024*1024)} MB and needs about "
@@ -2040,6 +2051,7 @@ def verify_upgrade_package(package_path: str, logger: Callable = None,
                 inner_paths,
                 extract_dir=f"/app/data/tmp/intact-upgrade-{int(time.time())}",
                 expected_sha256=_expected or None,
+                consume=True,
                 logger=log)
             # The inner tarballs are consumed; the assembled tree is what the
             # apply loop reads from here on.
@@ -2049,7 +2061,7 @@ def verify_upgrade_package(package_path: str, logger: Callable = None,
             return result
         except Exception as e:
             shutil.rmtree(unwrap_dir, ignore_errors=True)
-            return {"success": False,
+            return {"success": False, "retryable": True,
                     "error": f"could not unwrap the single-file package: {e}"}
 
     log("Extracting upgrade package...", "info")
@@ -2078,6 +2090,7 @@ def verify_upgrade_package(package_path: str, logger: Callable = None,
             have_human = f"{free_bytes // (1024 * 1024)} MB"
             return {
                 "success": False,
+                "retryable": True,   # about this host, not the package
                 "error": (
                     f"Not enough free space in {extract_dir} for extraction. "
                     f"Package is {from_human}, extracted size needs ~{need_human} "
@@ -2874,6 +2887,7 @@ def assemble_manifest(per_module: Dict[str, Dict],
 def assemble_release_package(asset_paths, tag: str = None, extract_dir: str = None,
                              expected_modules=None,
                              expected_sha256: Dict[str, str] = None,
+                             consume: bool = False,
                              logger: Callable = None) -> Dict:
     """Extract N module assets into one package_dir and merge their manifests.
 
@@ -2921,6 +2935,20 @@ def assemble_release_package(asset_paths, tag: str = None, extract_dir: str = No
         log(f"Assembling {len(asset_paths)} module asset(s)...", "info")
         for p in asset_paths:
             _extract_one_asset(p, extract_dir, logger=log)
+            # `consume`: the caller owns these files and does not need them
+            # after extraction (they are a temporary unwrap of a wrapper
+            # package). Deleting each as it lands keeps peak disk at
+            # "extracted tree + the one asset being read" instead of
+            # "extracted tree + every asset at once" -- on a full release
+            # that is several GB of difference, on exactly the air-gapped
+            # boxes least likely to have it spare. Safe to delete: the
+            # wrapper they came from is still on disk, so a failed assembly
+            # can simply be unwrapped again.
+            if consume:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
 
         subdirs = [d for d in os.listdir(extract_dir)
                    if os.path.isdir(os.path.join(extract_dir, d))]

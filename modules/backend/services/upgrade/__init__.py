@@ -2599,12 +2599,23 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
         verify_result = verify_upgrade_package(
             package_path, logger=log, expected_sha256=expected_sha256)
         if not verify_result['success']:
-            if package_path and os.path.exists(package_path):
+            # Delete the upload only when the PACKAGE is the problem (corrupt
+            # archive, wrong shape). A `retryable` failure is about this BOX,
+            # not the file -- out of disk, most obviously -- and destroying a
+            # multi-GB upload the operator carried across an air gap, because
+            # the appliance was temporarily short of space, means re-carrying
+            # it by hand to retry something that would now succeed.
+            if (package_path and os.path.exists(package_path)
+                    and not verify_result.get('retryable')):
                 try:
                     os.remove(package_path)
                     log(f"Removed uploaded package: {os.path.basename(package_path)}", "info")
                 except Exception:
                     pass
+            elif verify_result.get('retryable'):
+                log(f"Keeping {os.path.basename(package_path)} — the package is "
+                    f"fine, this host was not ready. Fix the problem above and "
+                    f"apply it again; no re-upload needed.", "info")
             return {"success": False, "error": verify_result.get('error', 'Package verification failed')}
 
         package_dir = verify_result['package_dir']
