@@ -860,7 +860,9 @@ document.addEventListener('alpine:init', () => {
         upgradePlan: null,          // ONLINE mode: forced/optional table from /api/upgrade/plan
         optedInOptional: [],        // ONLINE mode: module IDs the operator ticked in the optional table
         optedInReinstall: [],       // ONLINE mode: no-change module IDs ticked to FORCE a reinstall (bug recovery)
-        prepareSelectedModules: [], // PREPARE mode: module IDs to bundle (seeded to the delta; intact always in)
+        prepareSelectedModules: [], // PREPARE mode: module IDs to bundle
+        prepareFromRef: '',         // PREPARE mode: release the TARGET (air-gap) box is on; '' = unknown
+        prepareDelta: null,         // PREPARE mode: {rows, hops} from /api/upgrade/prepare-delta
         fetchingRefs: false,
         computingPlan: false,
         showingPrepareModules: false,
@@ -981,14 +983,48 @@ document.addEventListener('alpine:init', () => {
             return ref.name === cur ? 'same' : 'older';
         },
 
-        // Dropdown source: filter out 'older' refs so the operator
-        // can't pick a downgrade target. Online mode applies the
-        // filter; prepare mode keeps everything (the operator may
-        // legitimately want to build a package for an older air-gap
-        // host). `development` always survives the filter.
+        // Dropdown source.
+        //
+        // ONLINE: the current release plus exactly ONE step forward. Online
+        // upgrades run ON this box, and an upgrade is only ever verified a
+        // single hop at a time (N -> N+1); offering N+3 invites a jump nobody
+        // has tested. Keeping the CURRENT release on the list is deliberate and
+        // not a downgrade — re-applying it is how you pick up a fix or add a
+        // module you skipped the first time.
+        //
+        // "Next" means the NEAREST newer release, not the newest one. Sorting
+        // is by the tag's own date (intact-YYYYMMDD), which orders correctly as
+        // plain strings, so it does not depend on the API's ordering or on
+        // releases having been published in date order.
+        //
+        // PREPARE: unfiltered on purpose. That package is built here and
+        // applied on a DIFFERENT machine which may legitimately be on any
+        // release, including an older one.
         filteredUpgradeRefs() {
             if (this.prepareModalMode !== 'online') return this.upgradeRefs;
-            return this.upgradeRefs.filter(r => this.classifyUpgradeRef(r) !== 'older');
+            const dateOf = (r) => {
+                const m = (r.name || '').match(/(\d{8})/);
+                return m ? m[1] : null;
+            };
+            const same  = this.upgradeRefs.filter(r => this.classifyUpgradeRef(r) === 'same');
+            const newer = this.upgradeRefs
+                .filter(r => this.classifyUpgradeRef(r) === 'newer' && dateOf(r))
+                .sort((a, b) => dateOf(a).localeCompare(dateOf(b)));   // oldest-first
+            const nextHop = newer.length ? [newer[0]] : [];
+            // Anything undated (e.g. the synthetic `development` entry) is not
+            // part of the hop sequence and is passed through untouched.
+            const undated = this.upgradeRefs.filter(
+                r => !dateOf(r) && this.classifyUpgradeRef(r) !== 'older');
+            return [...nextHop, ...same, ...undated];
+        },
+
+        // The one release an online upgrade may move to, or null at the newest.
+        get nextHopRef() {
+            if (this.prepareModalMode !== 'online') return null;
+            const cur = this.currentIntactVersion;
+            const hit = this.filteredUpgradeRefs()
+                .find(r => r.name !== cur && /\d{8}/.test(r.name || ''));
+            return hit ? hit.name : null;
         },
 
         async fetchGithubQuota() {
@@ -1070,6 +1106,8 @@ document.addEventListener('alpine:init', () => {
             this.optedInOptional = [];
             this.optedInReinstall = [];
             this.prepareSelectedModules = [];
+            this.prepareFromRef = '';
+            this.prepareDelta = null;
             try {
                 const r = await this._fetchWithTimeout('/api/upgrade/plan', {
                     method: 'POST',
@@ -1126,6 +1164,62 @@ document.addEventListener('alpine:init', () => {
             }
             for (const row of (p.optional || [])) sel.push(row.module);
             this.prepareSelectedModules = sel;
+        },
+
+        // The operator names the release the AIR-GAPPED box is on, and the
+        // delta is computed between that release and the target. That is the
+        // only correct reference: this machine is a downloader, and the one
+        // party who knows what the remote runs is the person asked.
+        //
+        // '' means "not known" and is a first-class answer -- it keeps every
+        // module ticked. Guessing is what produced the silent failure this
+        // exists to prevent: a package built against the wrong baseline
+        // upgrades the platform, leaves every module behind, and reports
+        // success.
+        async fetchPrepareDelta() {
+            this.prepareDelta = null;
+            if (!this.selectedRef) return;
+            if (!this.prepareFromRef) { this.seedPrepareSelection(); return; }
+            try {
+                const r = await this._fetchWithTimeout('/api/upgrade/prepare-delta', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({target: this.selectedRef,
+                                          from_ref: this.prepareFromRef}),
+                });
+                const d = await r.json();
+                if (d && d.success) {
+                    this.prepareDelta = d;
+                    // changed === null means the backend had no baseline; treat
+                    // it as "keep it" rather than silently dropping the module.
+                    const sel = (d.rows || [])
+                        .filter(row => row.changed === true || row.changed === null)
+                        .map(row => row.module);
+                    if (!sel.includes('intact')) sel.push('intact');
+                    this.prepareSelectedModules = sel;
+                } else {
+                    this.showTopToast('Delta failed: ' + (d.error || 'unknown') +
+                                      ' — keeping every module selected', 'error');
+                    this.seedPrepareSelection();
+                }
+            } catch (e) {
+                this.showTopToast('Delta request failed — keeping every module '
+                                  + 'selected', 'error');
+                this.seedPrepareSelection();
+            }
+        },
+
+        // Per-row note for the bundle table. With a baseline it states the
+        // actual transition; without one it says so rather than implying the
+        // module is unchanged.
+        prepareRowNote(moduleId) {
+            const d = this.prepareDelta;
+            if (!d) return '';
+            const row = (d.rows || []).find(r => r.module === moduleId);
+            if (!row) return '';
+            if (row.changed === null) return 'no baseline';
+            if (!row.present_in_from) return 'new to that release';
+            return row.changed ? `${row.from} → ${row.to}` : 'already current there';
         },
 
         togglePrepareModule(moduleId) {

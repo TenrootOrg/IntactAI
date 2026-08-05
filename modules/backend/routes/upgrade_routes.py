@@ -643,6 +643,110 @@ def list_upgrade_refs():
         return _stale_or(f"Unexpected error listing releases: {e}", 500)
 
 
+@upgrade_bp.route('/api/upgrade/prepare-delta', methods=['POST'])
+def prepare_delta():
+    """What a DIFFERENT machine needs to get from ``from_ref`` to ``target``.
+
+    Body: ``{"target": "<tag>", "from_ref": "<tag>"|""}``
+
+    Prepare builds a package here and applies it on an air-gapped box
+    elsewhere. THIS machine's installed versions are therefore irrelevant --
+    it is a downloader, not the subject. The only party who knows what the
+    target box runs is the operator, so they say, and the delta is computed
+    between the two RELEASES rather than against local state.
+
+    Empty/absent ``from_ref`` means "not known": no delta is returned and the
+    caller keeps every module selected. Guessing is what produced the silent
+    failure this endpoint exists to prevent -- a package built against the
+    wrong baseline upgrades the platform, leaves every module behind, and
+    reports success.
+
+    Scoped to modules the TARGET release actually publishes as an asset
+    (the index), because those are the only ones that can be bundled at all.
+
+    Returns::
+
+        {success, target, from_ref, hops, rows: [
+            {module, from, to, changed, present_in_from}
+        ]}
+
+    ``hops`` is how many releases apart the two are; upgrades are verified one
+    hop at a time, so the UI warns when it is >1.
+    """
+    try:
+        data = request.json or {}
+        target = (data.get('target') or '').strip()
+        if not target:
+            return jsonify({"error": "target required"}), 400
+        from_ref = (data.get('from_ref') or '').strip()
+
+        from services.upgrade.resolver import fetch_upstream_config
+        from services.upgrade.download import find_release_index
+
+        index = find_release_index(target)
+        if not index:
+            # Legacy single-bundle release: it ships one file, so there is
+            # nothing to select and no delta to compute.
+            return jsonify({"success": True, "target": target,
+                            "from_ref": from_ref, "hops": None, "rows": []})
+        available = sorted((index.get('assets') or {}).keys())
+
+        tgt_v = (fetch_upstream_config(target, user_action='prepare-delta')
+                 or {}).get('versions') or {}
+        src_v = ((fetch_upstream_config(from_ref, user_action='prepare-delta')
+                  or {}).get('versions') or {}) if from_ref else None
+
+        def _key(m):
+            # config.yaml calls the platform's own pin `backend`; the asset and
+            # every module-facing API call it `intact`.
+            return 'backend' if m == 'intact' else m
+
+        rows = []
+        for m in available:
+            to_v = str(tgt_v.get(_key(m), '')) or None
+            if src_v is None:
+                rows.append({'module': m, 'from': None, 'to': to_v,
+                             'changed': None, 'present_in_from': None})
+                continue
+            frm = src_v.get(_key(m))
+            frm_v = str(frm) if frm is not None else None
+            rows.append({
+                'module': m,
+                'from': frm_v,
+                'to': to_v,
+                # A module the source release never pinned is new to that box:
+                # treat it as changed so it is offered rather than silently
+                # dropped from the package.
+                'changed': (frm_v is None) or (frm_v != to_v),
+                'present_in_from': frm_v is not None,
+            })
+
+        # How many releases apart they are, counted by POSITION in the release
+        # list. Deliberately NOT resolve_upgrade_chain(): that returns
+        # [target] and nothing else now that upgrades are download-only, so it
+        # reports 1 hop for any distance and cannot answer this.
+        #
+        # Upgrades are verified one hop at a time (N -> N+1). Knowing the real
+        # distance is what lets the UI say "you are 2 releases behind, step
+        # through" instead of a generic caution nobody reads.
+        hops = None
+        if from_ref:
+            try:
+                from services.upgrade.resolver import list_github_refs
+                tags = [r['name'] for r in list_github_refs(user_action='prepare-delta')
+                        if r.get('kind') == 'tag']
+                if from_ref in tags and target in tags:
+                    # list is newest-first, so older = larger index
+                    hops = tags.index(from_ref) - tags.index(target)
+            except Exception:
+                hops = None
+
+        return jsonify({"success": True, "target": target, "from_ref": from_ref,
+                        "hops": hops, "rows": rows})
+    except Exception as e:
+        return jsonify({"error": f"delta failed: {e}"}), 502
+
+
 @upgrade_bp.route('/api/upgrade/plan', methods=['POST'])
 def compute_upgrade_plan():
     """Operator-triggered (Compute Plan button). Returns the work plan.
