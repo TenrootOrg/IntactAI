@@ -289,6 +289,42 @@ def peek_manifest_from_blob():
         try:
             with _tarfile.open(fileobj=_io.BytesIO(blob), mode='r|gz') as tar:
                 for member in tar:
+                    # A WRAPPER package (scripts/prepare_package.sh output for
+                    # air-gap hand-carry) carries no manifest.json of its own --
+                    # it holds the release's N per-module assets unextracted,
+                    # and the merged manifest only comes into existence when
+                    # the apply side assembles them. Its <tag>.index.json is
+                    # packed FIRST precisely so this peek can read it, and it
+                    # names every module and version the file contains, which
+                    # is what the review modal needs.
+                    if member.name.endswith('.index.json') and member.isfile():
+                        f = tar.extractfile(member)
+                        if f is None:
+                            continue
+                        index = json.load(f)
+                        assets = index.get('assets') or {}
+                        versions = {m: (e or {}).get('version')
+                                    for m, e in assets.items()}
+                        return jsonify({
+                            "success": True,
+                            "manifest": {
+                                "versions": versions,
+                                "contents": {
+                                    "package_kind": "wrapper",
+                                    "assembled_from": sorted(assets),
+                                    "source_commit": index.get('source_commit'),
+                                    "release_tag": index.get('release_tag'),
+                                },
+                            },
+                            "versions": versions,
+                            "contents": {
+                                "package_kind": "wrapper",
+                                "assembled_from": sorted(assets),
+                                "source_commit": index.get('source_commit'),
+                                "release_tag": index.get('release_tag'),
+                            },
+                            "created": None,
+                        })
                     if member.name.endswith('manifest.json') and member.isfile():
                         f = tar.extractfile(member)
                         if f is None:
@@ -1305,8 +1341,7 @@ def prepare_upgrade_package():
         # Download the package in the background
         def run_prepare():
             # Imported first so the except clause below can always name it.
-            from services.upgrade.download import (
-                download_release_package, PackageDownloadCancelled)
+            from services.upgrade.download import PackageDownloadCancelled
             try:
                 from services.connectivity import require_internet
                 if not require_internet(run_id, "Prepare upgrade package"):
@@ -1315,73 +1350,73 @@ def prepare_upgrade_package():
                 def logger(msg, level="info"):
                     add_log_to_run(run_id, msg, level)
 
-                # DOWNLOAD-ONLY: the package is the CI-built artifact attached
-                # to the GitHub Release, produced from that release's OWN code.
-                # Nothing is built on this machine — building on-box is what
-                # produced the factor-5 / "Unknown module" bug class.
-                # /api/upgrade/refs only offers releases that ship a package, so
-                # a miss here means the release was retargeted, or its CI build
-                # has not run yet.
-                _dl_pct = [5]
+                # ONE IMPLEMENTATION, NOT TWO. Everything Prepare does --
+                # read the release index, fetch each module asset in
+                # parallel, verify sha256, wrap the set into a single
+                # tar.gz -- lives in scripts/prepare_package.sh, which is
+                # also what an operator runs by hand on a machine that
+                # isn't the appliance (the "Or run it yourself" panel emits
+                # the same command). Shelling out to it means the on-box
+                # feature and the manual escape hatch cannot drift apart,
+                # and the operator's log shows exactly what the script
+                # printed.
+                import subprocess as _subprocess
+                from services.upgrade.base import WORKDIR
+                script = os.path.join(WORKDIR, 'scripts', 'prepare_package.sh')
+                if not os.path.isfile(script):
+                    raise RuntimeError(
+                        f"prepare_package.sh not found at {script} — the "
+                        f"appliance's repo mount is missing or incomplete")
+                cmd = ['bash', script, target, '/data/upgrade_packages']
+                if selected_modules:
+                    cmd.append(','.join(sorted(selected_modules)))
+                logger(f"Running {os.path.basename(script)} {target}", "info")
 
-                def _dl_progress(frac):
-                    p = min(95, 5 + int(frac * 90))
-                    if p > _dl_pct[0]:
-                        _dl_pct[0] = p
-                        update_run_status(run_id, "running", progress=p)
+                # Line-buffered so the operator sees progress as it happens
+                # rather than one dump at the end; the script logs every
+                # asset it fetches and verifies. stderr is folded in so its
+                # failures land in the same place.
+                proc = _subprocess.Popen(
+                    cmd, stdout=_subprocess.PIPE, stderr=_subprocess.STDOUT,
+                    text=True, bufsize=1, cwd=WORKDIR)
+                last_line = ''
+                _pct = [5]
+                from services.workflow_service import is_cancelled
+                for raw in proc.stdout:
+                    # Stop button: the download is a child process now, so
+                    # cancellation has to be delivered to it explicitly --
+                    # nothing else will interrupt a multi-GB curl.
+                    if is_cancelled(run_id):
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=10)
+                        except _subprocess.TimeoutExpired:
+                            proc.kill()
+                        raise PackageDownloadCancelled()
+                    line = raw.rstrip('\n')
+                    if not line.strip():
+                        continue
+                    last_line = line.strip()
+                    lvl = 'error' if '[ERROR]' in line else 'info'
+                    logger(line, lvl)
+                    # Nudge progress on each completed asset so the bar
+                    # moves during the long download phase.
+                    if '<-' in line and _pct[0] < 90:
+                        _pct[0] = min(90, _pct[0] + 8)
+                        update_run_status(run_id, "running", progress=_pct[0])
+                rc = proc.wait()
+                if rc != 0:
+                    raise RuntimeError(
+                        f"prepare_package.sh failed (exit {rc}). See the log "
+                        f"above for the failing step.")
 
-                # PER-MODULE FIRST, bundle second.
-                #
-                # download_release_package() only ever looks for the legacy
-                # single bundle `intact-upgrade-<tag>.tar.gz`. Releases built by
-                # the per-module CI do not publish one, so Prepare failed on
-                # EVERY current release with "ships no downloadable upgrade
-                # package" -- verified on intact-20260804, where the bundle
-                # lookup returns None while the index is right there. Prepare
-                # simply never got wired to the per-module scheme when it landed.
-                #
-                # An index means per-module assets: fetch the selected ones (or
-                # all of them) and hand the operator that set. Import already
-                # accepts N files, and each carries its own sha256 from the
-                # index, so nothing is re-derived here.
-                from services.upgrade.download import (
-                    find_release_index, download_release_assets)
-                pkg_path = None
-                asset_paths = []
-                index = find_release_index(target, logger=logger)
-                if index:
-                    available = sorted((index.get('assets') or {}).keys())
-                    wanted = ([m for m in selected_modules if m in available]
-                              if selected_modules else available)
-                    skipped = sorted(set(available) - set(wanted))
-                    logger(f"Release {target} publishes {len(available)} module "
-                           f"asset(s); fetching {len(wanted)}: "
-                           f"{', '.join(wanted)}", "info")
-                    if skipped:
-                        logger(f"  not selected (will NOT be in the package): "
-                               f"{', '.join(skipped)}", "info")
-                    asset_paths, _idx = download_release_assets(
-                        target, wanted, dest_dir="/data/upgrade_packages",
-                        run_id=run_id, logger=logger, progress_cb=_dl_progress)
-                    pkg_path = asset_paths[0] if asset_paths else None
-                else:
-                    pkg_path = download_release_package(
-                        target, dest_dir="/data/upgrade_packages",
-                        run_id=run_id, logger=logger, progress_cb=_dl_progress)
+                # The script prints the package path as its LAST line.
+                pkg_path = last_line
+                if not pkg_path or not os.path.isfile(pkg_path):
+                    raise RuntimeError(
+                        f"prepare_package.sh reported success but its output "
+                        f"path is not a file: {pkg_path!r}")
 
-                if not pkg_path:
-                    msg = (f"Release '{target}' ships no downloadable upgrade "
-                           f"package, and nothing is built on this machine. "
-                           f"Run the build-release-package workflow for this "
-                           f"tag, then retry.")
-                    add_log_to_run(run_id, msg, "error")
-                    update_run_status(run_id, "failed", progress=0, error=msg)
-                    return
-
-                # A per-module prepare produces N files, not one. Record them all
-                # so the download UI can offer the whole set -- handing back only
-                # the first would look like a complete package and silently be
-                # one module.
                 _info = {
                     'run_id': run_id,
                     'path': pkg_path,
@@ -1389,29 +1424,16 @@ def prepare_upgrade_package():
                     'size': os.path.getsize(pkg_path),
                     'created_at': time.time(),
                 }
-                if len(asset_paths) > 1:
-                    _info['assets'] = [
-                        {'path': p, 'name': os.path.basename(p),
-                         'size': os.path.getsize(p)}
-                        for p in asset_paths if os.path.exists(p)
-                    ]
-                    _info['size'] = sum(a['size'] for a in _info['assets'])
-                    _info['name'] = (f"{target} — {len(_info['assets'])} module "
-                                     f"asset(s)")
                 _save_package_info(_info)
-                if len(asset_paths) > 1:
-                    add_log_to_run(run_id,
-                                   f"Package ready: {len(asset_paths)} module "
-                                   f"asset(s), "
-                                   f"{_info['size'] / 1024**3:.2f} GB total. "
-                                   f"Copy ALL of them to the target box and "
-                                   f"import them together.", "success")
-                else:
-                    add_log_to_run(run_id, f"Package ready for download: "
-                                           f"{os.path.basename(pkg_path)}", "success")
+                add_log_to_run(run_id, f"Package ready for download: "
+                                       f"{os.path.basename(pkg_path)} "
+                                       f"({_info['size'] / 1024**3:.2f} GB)",
+                               "success")
                 add_log_to_run(run_id, "Note: Preparing a new package will "
                                        "replace this one", "info")
                 update_run_status(run_id, "completed", progress=100)
+                return
+
 
             except PackageDownloadCancelled:
                 return  # 'cancelled' already set by request_stop()

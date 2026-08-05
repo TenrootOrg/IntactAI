@@ -1605,322 +1605,38 @@ document.addEventListener('alpine:init', () => {
             this.cliRefresh();
         },
 
-        // Bash equivalent of Prepare Package, for the operator to run anywhere.
+        // Bash equivalent of Prepare Package, for an operator to run on a
+        // machine that is not the appliance -- an air-gapped site's laptop,
+        // or a box whose backend cannot reach GitHub.
         //
-        // Prepare is DOWNLOAD-ONLY: it fetches the CI-built artifact attached to
-        // the GitHub release and verifies it. Nothing is compiled on the
-        // appliance. So the manual fallback is genuinely just curl + sha256 --
-        // no docker, no Intact.AI install, no images to build.
-        //
-        // Worth shipping because the operator most likely to need a package is
-        // the one whose appliance cannot fetch it: no route to GitHub, a wedged
-        // backend, an exhausted API quota, or an air-gapped site where the
-        // download has to happen on a laptop and be carried in.
-        //
-        // Assets are `intact-upgrade-<tag>.tar.gz`, or `.part-00`/`.part-01`/...
-        // when the package exceeds GitHub's 2 GB per-asset limit, plus a
-        // whole-file `.sha256` (.github/workflows/build-release-package.yml).
-        // The parts must be concatenated in sort order or the checksum fails.
-        // WHY the emitted bash looks like this — kept HERE, not in the output.
-        // The operator pastes the script; they do not maintain it, and every
-        // line of rationale is a line they have to scroll past to find the one
-        // thing they must edit.
-        //
-        //   ( ... )   it is PASTED into a live shell, not saved and run. There
-        //             `set -e` aborts the operator's session on the first error
-        //             and `exit 1` closes their terminal. A subshell contains
-        //             both, and keeps the atomicity that stops a failure
-        //             cascading — the same job & { } does for PowerShell.
-        //   AUTH      only add Authorization when a token exists. An empty
-        //             Bearer is worse than none: GitHub rejects it outright
-        //             instead of falling back to the anonymous quota.
-        //   .part-*   packages over GitHub's 2 GB asset cap ship split. They
-        //             must be joined in sort order — any other order still
-        //             produces a file, just not a valid one.
-        //   octet-stream  asset bytes only come back with this Accept header;
-        //             browser_download_url returns JSON metadata instead.
-        // Manual download script (bash). INDEX-FIRST.
-        //
-        // The old version hardcoded BASE="intact-upgrade-$TAG.tar.gz" and
-        // required a matching $BASE.sha256. Neither exists on a per-module
-        // release: the payload is one asset per module plus <tag>.index.json,
-        // and the hashes live IN the index rather than in sidecar files. So
-        // this script matched nothing and aborted with "no package assets
-        // (CI may still be building)" on a release whose build had in fact
-        // succeeded and published ten assets.
-        //
-        // Now: read the index, pull the assets it names, verify each against
-        // the sha256 the index records. Falls back to the legacy single
-        // bundle so older releases keep working.
+        // This emits a command that FETCHES AND RUNS scripts/prepare_package.sh
+        // rather than embedding a copy of it. The appliance's own Prepare
+        // Package runs that same script (routes/upgrade_routes.py shells out to
+        // it), so there is exactly one implementation of "download the release
+        // assets and wrap them into one file" -- no second copy here to drift
+        // out of step with it.
         prepareManualScript() {
-            const tag = this.selectedRef || 'intact-20260804';
+            const tag = this.selectedRef || 'intact-20260805';
             return [
-                '# Download the Intact.AI offline upgrade package. Paste into a terminal.',
-                '# Needs curl + python3. No GitHub token required; setting GITHUB_TOKEN',
-                '# only raises the API rate limit from 60/hr to 5000/hr.',
-                '(',
-                '  set -euo pipefail',
+                '# Build the Intact.AI offline package on any Linux/macOS machine.',
+                '# Needs curl, python3 and tar. No GitHub token required; setting',
+                '# GITHUB_TOKEN only raises the API rate limit from 60/hr to 5000/hr.',
+                '#',
+                '# Produces ONE file: intact-upgrade-' + tag + '.tar.gz',
                 '',
-                '  TAG=' + tag + '        # <-- CHANGE to the release you want',
-                '  REPO=TenrootOrg/IntactAI',
-                '  API=https://api.github.com',
+                'TAG=' + tag + '        # <-- CHANGE to the release you want',
+                'REPO=TenrootOrg/IntactAI',
                 '',
-                '  AUTH=(-H "X-GitHub-Api-Version: 2022-11-28")',
-                '  if [ -n "${GITHUB_TOKEN:-}" ]; then',
-                '    AUTH+=(-H "Authorization: Bearer $GITHUB_TOKEN")',
-                '  fi',
+                '# Fetch the packaging script straight from that release, so the',
+                '# script always matches the release it is packaging.',
+                'AUTH=()',
+                '[ -n "${GITHUB_TOKEN:-}" ] && AUTH=(-H "Authorization: Bearer $GITHUB_TOKEN")',
+                'curl -fsSL "${AUTH[@]}" -o prepare_package.sh \\',
+                '  "https://raw.githubusercontent.com/$REPO/$TAG/scripts/prepare_package.sh"',
                 '',
-                '  if ! REL=$(curl -fsSL "${AUTH[@]}" "$API/repos/$REPO/releases/tags/$TAG"); then',
-                '    echo "Cannot read release $TAG." >&2',
-                '    echo "  404 - no PUBLISHED release for that tag (a git tag alone is not" >&2',
-                '    echo "        enough; a DRAFT release needs a token to be visible)." >&2',
-                '    echo "  403 - rate limited (60/hr anonymous). Wait, or set GITHUB_TOKEN." >&2',
-                '    echo "  401 - the token you set is wrong or expired." >&2',
-                '    exit 1',
-                '  fi',
-                '',
-                '  # The index names every module asset and carries the sha256 of each',
-                '  # WHOLE tarball (taken pre-split), which is the only digest that',
-                '  # covers a reassembled multi-part asset.',
-                '  IDX_URL=$(printf %s "$REL" | TAG="$TAG" python3 -c \'',
-                'import json, os, sys',
-                'want = os.environ["TAG"] + ".index.json"',
-                'for a in json.load(sys.stdin).get("assets", []):',
-                '    if a["name"] == want:',
-                '        print(a["url"]); break',
-                '\')',
-                '',
-                '  if [ -n "$IDX_URL" ]; then',
-                '    echo "Per-module release. Reading the index..."',
-                '    curl -fsSL "${AUTH[@]}" -H "Accept: application/octet-stream" \\',
-                '         -o "$TAG.index.json" "$IDX_URL"',
-                '',
-                '    # name<TAB>url<TAB>sha256-of-the-whole-asset, one line per FILE to',
-                '    # fetch (a split asset contributes one line per .part-NN).',
-                '    PLAN=$(printf %s "$REL" | IDX="$TAG.index.json" python3 -c \'',
-                'import json, os, sys',
-                'rel = json.load(sys.stdin)',
-                'urls = {a["name"]: a["url"] for a in rel.get("assets", [])}',
-                'idx = json.load(open(os.environ["IDX"]))',
-                'for mod, e in sorted((idx.get("assets") or {}).items()):',
-                '    whole, sha = e["asset"], e.get("sha256", "")',
-                '    files = [whole] if whole in urls else [p for p in (e.get("parts") or []) if p in urls]',
-                '    if not files:',
-                '        sys.exit("index lists %s but the release does not publish it" % whole)',
-                '    for f in files:',
-                '        print("%s\\t%s\\t%s" % (f, urls[f], sha))',
-                '\')',
-                '',
-                '    while IFS=$(printf \\\\t) read -r name url sha; do',
-                '      [ -n "$name" ] || continue',
-                '      echo "  -> $name"',
-                '      curl -fL --retry 3 --retry-delay 5 "${AUTH[@]}" \\',
-                '           -H "Accept: application/octet-stream" -o "$name" "$url"',
-                '    done <<< "$PLAN"',
-                '',
-                '    # Join split assets, then verify the JOIN (never the pieces).',
-                '    for part0 in *.tar.gz.part-00; do',
-                '      [ -e "$part0" ] || continue',
-                '      whole="${part0%.part-00}"',
-                '      echo "  joining $whole"',
-                '      cat "$whole".part-* > "$whole" && rm -f "$whole".part-*',
-                '    done',
-                '',
-                '    fail=0',
-                '    while IFS=$(printf \\\\t) read -r name url sha; do',
-                '      whole="${name%.part-*}"',
-                '      [ -f "$whole" ] || continue',
-                '      [ -n "$sha" ] || continue',
-                '      got=$(sha256sum "$whole" | awk \'{print $1}\')',
-                '      if [ "$sha" != "$got" ]; then',
-                '        echo "CHECKSUM MISMATCH: $whole" >&2',
-                '        echo "  want $sha" >&2; echo "  got  $got" >&2; fail=1',
-                '      fi',
-                '    done <<< "$PLAN" ',
-                '    [ "$fail" -eq 0 ] || exit 1',
-                '',
-                '    echo',
-                '    echo "OK  $(ls -1 "$TAG"-*.tar.gz | wc -l) module asset(s) verified"',
-                '    ls -1sh "$TAG"-*.tar.gz',
-                '    echo "Copy ALL of them (and nothing else) to the appliance,"',
-                '    echo "then Settings -> Import Upgrade Package."',
-                '    exit 0',
-                '  fi',
-                '',
-                '  # ---- legacy single-bundle release (pre per-module CI) ----',
-                '  BASE="intact-upgrade-$TAG.tar.gz"',
-                '  ASSETS=$(printf %s "$REL" | BASE="$BASE" python3 -c \'',
-                'import json, os, sys',
-                'base = os.environ["BASE"]',
-                'for a in json.load(sys.stdin).get("assets", []):',
-                '    if a["name"].startswith(base):',
-                '        print(a["name"], a["url"])',
-                '\')',
-                '  [ -n "$ASSETS" ] || { echo "Release $TAG publishes neither an index nor a bundle." >&2; exit 1; }',
-                '',
-                '  while read -r name url; do',
-                '    [ -n "$name" ] || continue',
-                '    echo "  -> $name"',
-                '    curl -fL --retry 3 --retry-delay 5 "${AUTH[@]}" \\',
-                '         -H "Accept: application/octet-stream" -o "$name" "$url"',
-                '  done <<< "$ASSETS"',
-                '',
-                '  if compgen -G "$BASE.part-*" >/dev/null; then',
-                '    echo "  joining parts"',
-                '    cat $(ls "$BASE".part-* | sort) > "$BASE"',
-                '    rm -f "$BASE".part-*',
-                '  fi',
-                '',
-                '  if [ -f "$BASE.sha256" ]; then',
-                '    want=$(awk \'{print $1; exit}\' "$BASE.sha256")',
-                '    got=$(sha256sum "$BASE" | awk \'{print $1}\')',
-                '    [ "$want" = "$got" ] || { echo "CHECKSUM MISMATCH" >&2; exit 1; }',
-                '    echo "sha256 OK"',
-                '  fi',
-                '',
-                '  echo',
-                '  echo "OK  $BASE"',
-                '  echo "Copy it to the appliance, then Settings -> Import Upgrade Package."',
-                ')',
-            ].join('\n');
-        },
-
-
-        // PowerShell twin of prepareManualScript(), for Windows operators.
-        //
-        // Worth having as a separate script rather than telling people to
-        // install WSL or Git Bash: PowerShell parses JSON natively
-        // (ConvertFrom-Json) and hashes natively (Get-FileHash), so this
-        // version needs NOTHING external -- no curl, no jq, no python. It is
-        // the only one of the two that is genuinely dependency-free.
-        //
-        // Same three steps and the same traps as the bash version: private-repo
-        // assets need the API url with an octet-stream Accept header, split
-        // parts must be joined in sort order, and the sha256 is checked.
-        // PowerShell twin. Rationale kept HERE rather than in the emitted text,
-        // for the same reason as the bash one — see above. PowerShell-specific:
-        //
-        //   & { }     pasted into an interactive prompt a bare script runs line
-        //             BY line, so `throw` aborts one statement and every later
-        //             line still runs against half-initialised state. A script
-        //             block is buffered to the closing brace and runs atomically.
-        //   'single'  quotes in any human-facing message: double quotes expand
-        //             $env:GITHUB_TOKEN inside the text, which once printed
-        //             "set  first" — advice with the crucial word deleted.
-        //   native    Invoke-RestMethod + Get-FileHash mean nothing needs
-        //             installing; this is the only genuinely dependency-free
-        //             version, which is the point on Windows.
-        prepareManualScriptPs() {
-            const tag = this.selectedRef || 'intact-20260804';
-            return [
-                '# Download the Intact.AI offline upgrade package (PowerShell 5.1+).',
-                '# Needs nothing external - JSON and SHA256 are native.',
-                '# No GitHub token required; $env:GITHUB_TOKEN only raises the rate limit.',
-                '& {',
-                '  $ErrorActionPreference = \'Stop\'',
-                '  # 5.1 redraws a progress bar per chunk; on a 2 GB asset that dominates',
-                '  # the transfer and looks like a hang.',
-                '  $ProgressPreference = \'SilentlyContinue\'',
-                '',
-                '  $Tag  = \'' + tag + '\'   # <-- CHANGE to the release you want',
-                '  $Repo = \'TenrootOrg/IntactAI\'',
-                '  $Api  = \'https://api.github.com\'',
-                '',
-                '  $Auth = @{ \'X-GitHub-Api-Version\' = \'2022-11-28\' }',
-                '  if ($env:GITHUB_TOKEN) { $Auth[\'Authorization\'] = "Bearer $env:GITHUB_TOKEN" }',
-                '',
-                '  try {',
-                '    $rel = Invoke-RestMethod -Headers $Auth -Uri "$Api/repos/$Repo/releases/tags/$Tag"',
-                '  } catch {',
-                '    throw "Cannot read release $Tag - $($_.Exception.Message).`n  404 - no PUBLISHED release for that tag (a git tag alone is not enough; a DRAFT needs a token to be visible).`n  403 - rate limited (60/hr anonymous); wait, or set `$env:GITHUB_TOKEN.`n  401 - the token you set is wrong or expired."',
-                '  }',
-                '',
-                '  $byName = @{}; foreach ($a in $rel.assets) { $byName[$a.name] = $a }',
-                '',
-                '  # Per-module release: the index names the assets and carries the',
-                '  # sha256 of each WHOLE tarball (pre-split), which is the only digest',
-                '  # covering a reassembled multi-part asset.',
-                '  $idxName = "$Tag.index.json"',
-                '  if ($byName.ContainsKey($idxName)) {',
-                '    Write-Host "Per-module release. Reading the index..."',
-                '    Invoke-WebRequest -UseBasicParsing -Headers ($Auth + @{ Accept = \'application/octet-stream\' }) `',
-                '      -Uri $byName[$idxName].url -OutFile $idxName',
-                '    $idx = Get-Content $idxName -Raw | ConvertFrom-Json',
-                '',
-                '    $wholes = @()',
-                '    foreach ($mod in $idx.assets.PSObject.Properties) {',
-                '      $whole = $mod.Value.asset',
-                '      $sha   = $mod.Value.sha256',
-                '      $files = @()',
-                '      if ($byName.ContainsKey($whole)) { $files = @($whole) }',
-                '      elseif ($mod.Value.parts) { $files = @($mod.Value.parts | Where-Object { $byName.ContainsKey($_) }) }',
-                '      if (-not $files) { throw "index lists $whole but the release does not publish it" }',
-                '      foreach ($f in $files) {',
-                '        Write-Host "  -> $f  ($([math]::Round($byName[$f].size/1MB)) MB)"',
-                '        Invoke-WebRequest -UseBasicParsing -Headers ($Auth + @{ Accept = \'application/octet-stream\' }) `',
-                '          -Uri $byName[$f].url -OutFile $f',
-                '      }',
-                '      $wholes += [pscustomobject]@{ Name = $whole; Sha = $sha }',
-                '    }',
-                '',
-                '    # Join split assets, then verify the JOIN (never the pieces).',
-                '    foreach ($w in $wholes) {',
-                '      $parts = @(Get-ChildItem "$($w.Name).part-*" -ErrorAction SilentlyContinue | Sort-Object Name)',
-                '      if ($parts) {',
-                '        Write-Host "  joining $($parts.Count) parts -> $($w.Name)"',
-                '        $out = [IO.File]::Create((Join-Path $PWD $w.Name))',
-                '        foreach ($p in $parts) { $in = [IO.File]::OpenRead($p.FullName); $in.CopyTo($out); $in.Close() }',
-                '        $out.Close(); $parts | Remove-Item',
-                '      }',
-                '    }',
-                '',
-                '    $bad = 0',
-                '    foreach ($w in $wholes) {',
-                '      if (-not $w.Sha) { continue }',
-                '      $got = (Get-FileHash $w.Name -Algorithm SHA256).Hash.ToLower()',
-                '      if ($got -ne $w.Sha.ToLower()) {',
-                '        Write-Host "CHECKSUM MISMATCH: $($w.Name)"; Write-Host "  want $($w.Sha)"; Write-Host "  got  $got"',
-                '        $bad++',
-                '      }',
-                '    }',
-                '    if ($bad) { throw "$bad asset(s) failed verification." }',
-                '',
-                '    Write-Host ""',
-                '    Write-Host "OK  $($wholes.Count) module asset(s) verified"',
-                '    Write-Host "Copy ALL of them to the appliance, then Settings -> Import Upgrade Package."',
-                '    return',
-                '  }',
-                '',
-                '  # ---- legacy single-bundle release (pre per-module CI) ----',
-                '  $Base = "intact-upgrade-$Tag.tar.gz"',
-                '  $assets = @($rel.assets | Where-Object { $_.name -and $_.name.StartsWith($Base) })',
-                '  if (-not $assets) { throw "Release $Tag publishes neither an index nor a bundle." }',
-                '',
-                '  foreach ($a in $assets) {',
-                '    Write-Host "  -> $($a.name)  ($([math]::Round($a.size/1MB)) MB)"',
-                '    Invoke-WebRequest -UseBasicParsing -Headers ($Auth + @{ Accept = \'application/octet-stream\' }) `',
-                '      -Uri $a.url -OutFile $a.name',
-                '  }',
-                '',
-                '  $parts = @(Get-ChildItem "$Base.part-*" -ErrorAction SilentlyContinue | Sort-Object Name)',
-                '  if ($parts) {',
-                '    Write-Host "  joining $($parts.Count) parts"',
-                '    $out = [IO.File]::Create((Join-Path $PWD $Base))',
-                '    foreach ($p in $parts) { $in = [IO.File]::OpenRead($p.FullName); $in.CopyTo($out); $in.Close() }',
-                '    $out.Close(); $parts | Remove-Item',
-                '  }',
-                '',
-                '  if (Test-Path "$Base.sha256") {',
-                '    $want = ((Get-Content "$Base.sha256" -Raw).Trim() -split \'\\s+\')[0].ToLower()',
-                '    $got  = (Get-FileHash $Base -Algorithm SHA256).Hash.ToLower()',
-                '    if ($want -ne $got) { throw "CHECKSUM MISMATCH`n  want $want`n  got  $got" }',
-                '    Write-Host "sha256 OK"',
-                '  }',
-                '',
-                '  Write-Host ""',
-                '  Write-Host "OK  $Base"',
-                '  Write-Host "Copy it to the appliance, then Settings -> Import Upgrade Package."',
-                '}',
+                '# Package every module in the release (add a 3rd argument like',
+                '# "elk,iris" to pick a subset -- intact is always included).',
+                'bash prepare_package.sh "$TAG" .',
             ].join('\n');
         },
 

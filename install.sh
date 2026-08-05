@@ -153,6 +153,48 @@ if (( ${#INTACT_PACKAGES[@]} > 0 )); then
     unset _expanded _p _f
 fi
 
+# Unwrap a single-file WRAPPER package. scripts/prepare_package.sh (and the
+# UI's Prepare Package feature, which just runs that script) produce one
+# tar.gz containing N per-module *.tar.gz assets plus an <tag>.index.json --
+# flat, no shared top-level directory, no manifest.json of its own. It is
+# deliberately NOT extracted/merged before being carried across the air gap;
+# see that script's header for why. Detect that shape and splice its N inner
+# assets into INTACT_PACKAGES exactly as the directory case above does, so
+# load_images_from_package() merges them by the same shared-top-level-
+# directory construction it already relies on for a folder of assets -- no
+# change needed there.
+#
+# The unwrapped copies are temporary duplicates of bytes the operator already
+# has, so they are tracked in INTACT_UNWRAP_DIRS and deleted once the images
+# are in the docker store -- several GB that would otherwise sit in data/tmp
+# forever. The operator's own file is never touched.
+INTACT_UNWRAP_DIRS=()
+if (( ${#INTACT_PACKAGES[@]} > 0 )); then
+    _expanded=()
+    for _p in "${INTACT_PACKAGES[@]}"; do
+        _wrapper_listing=""
+        if [[ -f "$_p" ]]; then
+            _wrapper_listing="$(tar -tzf "$_p" 2>/dev/null)" || _wrapper_listing=""
+        fi
+        if [[ -n "$_wrapper_listing" ]] \
+           && ! grep -q '/' <<< "$_wrapper_listing" \
+           && ! grep -qx 'manifest.json' <<< "$_wrapper_listing" \
+           && grep -q '\.tar\.gz$' <<< "$_wrapper_listing"; then
+            _unwrap_dir="$(mktemp -d -p "${SCRIPT_DIR}/data/tmp" unwrap-XXXXXX 2>/dev/null)" \
+                || _unwrap_dir="$(mktemp -d)"
+            INTACT_UNWRAP_DIRS+=("$_unwrap_dir")
+            log_info "$(basename "$_p") is a single-file package -- unwrapping its module assets"
+            grep '\.tar\.gz$' <<< "$_wrapper_listing" | tar -xzf "$_p" -C "$_unwrap_dir" -T -
+            while IFS= read -r _f; do _expanded+=("$_f"); done \
+                < <(find "$_unwrap_dir" -maxdepth 1 -name '*.tar.gz' | sort)
+        else
+            _expanded+=("$_p")
+        fi
+    done
+    INTACT_PACKAGES=("${_expanded[@]}")
+    unset _expanded _p _f _wrapper_listing _unwrap_dir
+fi
+
 export INTACT_AIRGAP
 
 # Display names for progress lines below. Keys are module ids, matched
@@ -782,6 +824,11 @@ main() {
         if ! load_images_from_package "${INTACT_PACKAGES[@]}"; then
             log_error "Could not load the release assets - aborting installation"
             exit 1
+        fi
+        # Copies we made while unwrapping a single-file package; the images are
+        # in the docker store now. The operator's own file is left alone.
+        if (( ${#INTACT_UNWRAP_DIRS[@]} > 0 )); then
+            rm -rf "${INTACT_UNWRAP_DIRS[@]}" 2>/dev/null || true
         fi
     elif ! check_network_connectivity; then
         log_error "Network connectivity check failed - aborting installation"

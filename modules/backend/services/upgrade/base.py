@@ -1960,6 +1960,45 @@ def verify_upgrade_package(package_path: str, logger: Callable = None,
         }
     log("  Integrity OK", "success")
 
+    # A WRAPPER package (one file carrying the release's N per-module assets,
+    # produced by scripts/prepare_package.sh for air-gap hand-carry) is
+    # unwrapped and handed to the assembler -- the same code path N
+    # separately-uploaded assets already take. Done here because every apply
+    # route funnels through this function, so one check covers the upload
+    # card, the pending-package list, and the resume-after-restart path.
+    _inner_names = wrapper_package_members(package_path)
+    if _inner_names:
+        log(f"Single-file package containing {len(_inner_names)} module "
+            f"asset(s) — unwrapping", "info")
+        os.makedirs("/app/data/tmp", exist_ok=True)
+        unwrap_dir = f"/app/data/tmp/intact-unwrap-{int(time.time())}"
+        shutil.rmtree(unwrap_dir, ignore_errors=True)
+        os.makedirs(unwrap_dir, exist_ok=True)
+        try:
+            _extract_one_asset(package_path, unwrap_dir, logger=log)
+            inner_paths = sorted(
+                os.path.join(unwrap_dir, n) for n in _inner_names
+                if os.path.isfile(os.path.join(unwrap_dir, n)))
+            if not inner_paths:
+                shutil.rmtree(unwrap_dir, ignore_errors=True)
+                return {"success": False,
+                        "error": ("the package unwrapped to no module assets — "
+                                  "it is empty or was truncated in transit")}
+            result = assemble_release_package(
+                inner_paths,
+                extract_dir=f"/app/data/tmp/intact-upgrade-{int(time.time())}",
+                logger=log)
+            # The inner tarballs are consumed; the assembled tree is what the
+            # apply loop reads from here on.
+            shutil.rmtree(unwrap_dir, ignore_errors=True)
+            if result.get('success'):
+                result.setdefault('sha256', archive_sha256)
+            return result
+        except Exception as e:
+            shutil.rmtree(unwrap_dir, ignore_errors=True)
+            return {"success": False,
+                    "error": f"could not unwrap the single-file package: {e}"}
+
     log("Extracting upgrade package...", "info")
 
     # Use /app/data/tmp/ (mounted from host's data/) for persistence across container restarts
@@ -2160,6 +2199,35 @@ def get_package_info(package_path: str) -> Dict:
     try:
         with tarfile.open(package_path, 'r:gz') as tar:
             for member in tar.getmembers():
+                # A WRAPPER package has no manifest.json of its own -- the
+                # merged manifest only exists once the apply side assembles
+                # its inner assets. Its <tag>.index.json names every module
+                # and version it carries, which is what this function's
+                # callers actually display.
+                if member.name.endswith('.index.json') and member.isfile():
+                    f = tar.extractfile(member)
+                    if not f:
+                        continue
+                    index = json.load(f)
+                    assets = index.get('assets') or {}
+                    versions = {m: (e or {}).get('version')
+                                for m, e in assets.items()}
+                    manifest = {
+                        'versions': versions,
+                        'contents': {
+                            'package_kind': 'wrapper',
+                            'assembled_from': sorted(assets),
+                            'source_commit': index.get('source_commit'),
+                            'release_tag': index.get('release_tag'),
+                        },
+                    }
+                    return {
+                        "success": True,
+                        "manifest": manifest,
+                        "versions": versions,
+                        "created": None,
+                        "contents": manifest['contents'],
+                    }
                 if member.name.endswith('manifest.json'):
                     f = tar.extractfile(member)
                     if f:
@@ -2612,6 +2680,40 @@ def _extract_one_asset(asset_path: str, extract_dir: str,
         for m in members:
             tar.extract(m, extract_dir)
     log(f"  Extracted {os.path.basename(asset_path)}", "info")
+
+
+def wrapper_package_members(package_path: str):
+    """The inner ``*.tar.gz`` names if ``package_path`` is a WRAPPER package,
+    else None.
+
+    ``scripts/prepare_package.sh`` (and the UI's Prepare Package, which just
+    runs that script) produce a single file for hand-carry across an air gap:
+    one tar.gz holding the release's N per-module assets plus its index.json,
+    FLAT and unextracted. It deliberately does not merge them -- the merge is
+    :func:`assemble_release_package`, which already exists and is already what
+    runs for N separately-uploaded assets, so a wrapper is unwrapped back into
+    those N files and handed to that one implementation.
+
+    The shape is unambiguous against everything else that reaches this code:
+    a per-module asset and a CI bundle both extract to a top-level
+    ``intact-upgrade-<tag>/`` directory, so every member name contains a
+    ``/``. A wrapper's members are bare filenames at depth 0, and at least one
+    is itself a ``.tar.gz``. Returns None rather than raising for anything
+    unreadable -- the caller then treats it as an ordinary package, which is
+    the pre-existing behaviour.
+    """
+    import tarfile
+    try:
+        with tarfile.open(package_path, 'r:gz') as tar:
+            names = [m.name for m in tar.getmembers() if m.isfile()]
+    except Exception:
+        return None
+    if not names:
+        return None
+    if any('/' in n or '\\' in n for n in names):
+        return None
+    inner = [n for n in names if n.endswith('.tar.gz')]
+    return inner or None
 
 
 def assemble_manifest(per_module: Dict[str, Dict],
