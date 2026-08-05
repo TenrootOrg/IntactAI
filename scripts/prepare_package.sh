@@ -58,8 +58,54 @@ fi
 
 mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd)"
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+
+# Stage INSIDE the output directory, not /tmp.
+#
+# `mktemp -d` puts several GB of module assets on whatever filesystem backs
+# /tmp -- which on plenty of hosts is a small partition or a tmpfs, i.e. RAM.
+# The operator already told us where the result should go and that location
+# must hold a full copy of it, so it is the one place we know is sized for
+# this. It also means the free-space check below measures the filesystem the
+# work will actually land on.
+#
+# Named (not mktemp's random suffix alone) so an orphan is self-explaining:
+# a killed run used to leave "/tmp/tmp.f2LCsQ6rnE" holding 14 GB with nothing
+# to say what it was or whether it mattered.
+# Reap staging from a run that died where no trap could help -- SIGKILL, the
+# OOM killer, a power cut. Those cannot be trapped by anything, so the only
+# reliable cleanup is the NEXT run finding the debris and removing it. Matched
+# by our own fixed prefix, so nothing else in the operator's directory is ever
+# touched. Done before creating this run's dir so it can never remove itself.
+for _stale in "$OUT_DIR"/.intact-prepare-*; do
+    [ -d "$_stale" ] || continue
+    printf '[prepare] %-9s %s (from an interrupted run)\n' "cleaning" "$(basename "$_stale")"
+    rm -rf "$_stale"
+done
+
+WORK="$(mktemp -d -p "$OUT_DIR" .intact-prepare-XXXXXX 2>/dev/null)" \
+    || WORK="$(mktemp -d)"
+
+# ONE cleanup, on every path out of the script.
+#
+# EXIT alone does not fire when the run is signalled, and this script is
+# routinely stopped by the operator (the UI's Stop button terminates it) --
+# that is precisely how the 14 GB orphan happened. SIGKILL still cannot be
+# trapped; nothing can fix that, which is why the staging directory is named
+# and sits beside the output, where the next run reaps it.
+#
+# The half-written OUT is removed too unless the run got all the way through.
+# A truncated tar.gz is worse than no file: it is the right name and a
+# plausible size, so it looks like a package until it fails to extract on the
+# air-gapped box it was carried to.
+OUT_OK=0
+_cleanup() {
+    rm -rf "$WORK"
+    if [ "$OUT_OK" -eq 0 ] && [ -n "${OUT:-}" ] && [ -f "$OUT" ]; then
+        rm -f "$OUT"
+        printf '[prepare] %-9s %s (incomplete)\n' "removed" "$(basename "$OUT")"
+    fi
+}
+trap _cleanup EXIT INT TERM HUP
 cd "$WORK"
 
 # Settings block: one "key: value" per line, aligned, so the head of every run
@@ -135,6 +181,28 @@ for mod, e in sorted(available.items()):
 NFILES="$(printf '%s\n' "$PLAN" | grep -c . || true)"
 TOTAL_BYTES="$(printf '%s\n' "$PLAN" | awk -F'\t' '{s+=$5} END {print s+0}')"
 
+# Free-space check BEFORE the first byte. The assets are downloaded into WORK
+# and then wrapped into a tarball beside them, so both copies exist at once:
+# roughly 2x the download, plus a little slack. Discovering that after
+# fetching 4 GB -- which is what happened before this check existed -- wastes
+# the download and leaves the operator to work out what went wrong from a
+# tar error.
+# `|| true`, and no -P: `df -P --output=...` is rejected outright ("options -P
+# and --output are mutually exclusive"), and under `set -e` + `pipefail` a
+# non-zero df takes the whole script down at a command substitution -- silently,
+# right after "reading the release index". Any df that cannot answer must leave
+# _AVAIL empty and skip the check, never abort the run.
+_AVAIL="$( { df --output=avail -B1 "$WORK" 2>/dev/null || true; } | tail -1 | tr -d ' ')"
+_NEED=$(( TOTAL_BYTES * 21 / 10 ))
+if [ -n "$_AVAIL" ] && [ "$_AVAIL" -lt "$_NEED" ] 2>/dev/null; then
+    err "not enough free space in $OUT_DIR"
+    err "  need  ~$(_h "$_NEED") (assets $(_h "$TOTAL_BYTES") + the wrapped copy)"
+    err "  have   $(_h "$_AVAIL")"
+    err "  Free space, or pass a different output directory, or package fewer"
+    err "  modules with the 3rd argument (e.g. elk,iris)."
+    exit 1
+fi
+
 log "downloading $NFILES asset(s), $(_h "$TOTAL_BYTES") total, 4 at a time"
 
 # EVERY line in this phase is "<verb> <module> <size> [detail]", one fixed
@@ -188,7 +256,7 @@ export GITHUB_TOKEN
     done
 ) &
 WATCHER=$!
-trap 'kill "$WATCHER" 2>/dev/null; rm -rf "$WORK"' EXIT
+trap 'kill "$WATCHER" 2>/dev/null; _cleanup' EXIT INT TERM HUP
 
 DL_STARTED=$(date +%s)
 if ! printf '%s\n' "$PLAN" | cut -f1,2,3,5 \
@@ -198,7 +266,9 @@ if ! printf '%s\n' "$PLAN" | cut -f1,2,3,5 \
     exit 1
 fi
 kill "$WATCHER" 2>/dev/null || true
-trap 'rm -rf "$WORK"' EXIT
+# Re-arm without the watcher-kill, but keep every signal: resetting this to a
+# bare EXIT left Ctrl-C during the wrap phase leaking the staging directory.
+trap _cleanup EXIT INT TERM HUP
 log "downloaded $NFILES asset(s), $(_h "$TOTAL_BYTES") in $(_elapsed $(( $(date +%s) - DL_STARTED )))"
 
 if ls ./*.tar.gz.part-00 >/dev/null 2>&1; then
@@ -222,7 +292,9 @@ while IFS="$(printf '\t')" read -r name mod url sha size; do
             "SKIPPED" "$mod" "$(_h "$bytes")"
         continue
     fi
-    got="$(sha256sum "$whole" | awk '{print $1}')"
+    # || true: a read error here must report a mismatch, not kill the run at
+    # a command substitution (set -e + pipefail).
+    got="$( { sha256sum "$whole" 2>/dev/null || true; } | awk '{print $1}')"
     if [ "$sha" != "$got" ]; then
         printf '[prepare][ERROR]   %-9s %-14s want %s... got %s...\n' \
             "MISMATCH" "$mod" "${sha:0:16}" "${got:0:16}" >&2
@@ -233,7 +305,9 @@ while IFS="$(printf '\t')" read -r name mod url sha size; do
 done <<< "$PLAN"
 [ "$fail" -eq 0 ] || { err "checksum verification failed -- refusing to package"; exit 1; }
 
-NASSETS="$(ls -1 "$TAG"-*.tar.gz 2>/dev/null | wc -l)"
+# find, not `ls glob | wc -l`: an unmatched glob makes ls exit non-zero, which
+# under pipefail aborts the script silently at this assignment.
+NASSETS="$(find . -maxdepth 1 -name "$TAG-*.tar.gz" 2>/dev/null | wc -l)"
 log "verified $NASSETS module asset(s)"
 
 # Trim the index to the modules actually packed. The release's index names
@@ -265,6 +339,22 @@ log "wrapping into a single file"
 # downloading all of it. Listing it first puts it in the opening KB.
 WRAP_STARTED=$(date +%s)
 tar -czf "$OUT" "$TAG.index.json" "$TAG"-*.tar.gz
+
+# Prove the archive is readable before calling it a package. tar can exit 0
+# having written something the far end cannot open (a disk that filled at the
+# last block, a truncated write). Everything downstream -- install.sh, Import
+# Upgrade Package -- starts by decompressing this file, so it costs one pass
+# here to find out now rather than after it has been carried to a site with no
+# way to re-fetch it.
+log "verifying the wrapped package"
+if ! gzip -t "$OUT" 2>/dev/null; then
+    err "the wrapped package failed its gzip integrity check"
+    err "  usually a full disk at the final write -- check space and re-run"
+    exit 1
+fi
+
+# Only now is OUT a real package; before this line the trap deletes it.
+OUT_OK=1
 printf '[prepare]   %-9s %-14s %8s  in %s\n' "wrote" "$(basename "$OUT")" \
     "$(_h "$(stat -c%s "$OUT" 2>/dev/null || echo 0)")" \
     "$(_elapsed $(( $(date +%s) - WRAP_STARTED )))"

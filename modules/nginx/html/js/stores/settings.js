@@ -1293,6 +1293,59 @@ document.addEventListener('alpine:init', () => {
                 return;
             }
 
+            // ─── DISK PREFLIGHT ─────────────────────────────────────────
+            // Ask the appliance whether it can take this file BEFORE pushing
+            // several GB at it. The apply refuses on low disk, and finding
+            // that out afterwards means the operator spent the upload (and,
+            // at an air-gapped site, a hand-carried copy) to be told no.
+            // Also surfaces leftovers, so "free 4 GB" comes with "here is
+            // where 6 GB of it already went".
+            const totalBytes = selectedFiles.reduce((n, f) => n + f.size, 0);
+            try {
+                const pf = await (await fetch('/api/upgrade/upload-preflight', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({size_bytes: totalBytes}),
+                })).json();
+                const gb = (n) => (n / 1024 ** 3).toFixed(1) + ' GB';
+                if (pf && pf.success) {
+                    const stale = (pf.leftovers || []);
+                    if (stale.length) {
+                        console.info('[upgrade] package dirs already hold:',
+                                     stale.map(l => `${l.dir}${l.name} (${gb(l.size_bytes)}, ${l.kind})`));
+                    }
+                    if (!pf.ok) {
+                        // reclaimable_ok: clearing the leftovers alone would
+                        // be enough, so name that rather than "free disk".
+                        const advice = pf.reclaimable_ok && stale.length
+                            ? `Removing what is already there would free ${gb(pf.leftover_bytes)} and be enough:\n  `
+                              + stale.map(l => `${l.name} — ${gb(l.size_bytes)} (${l.kind})`).join('\n  ')
+                            : 'Free disk space on the appliance and try again.';
+                        this.showMessage(
+                            `Not enough space: this ${gb(totalBytes)} package needs about `
+                            + `${gb(pf.needed_bytes)} free (the upload plus unpacking it), `
+                            + `but only ${gb(pf.free_bytes)} is available.`, 'error');
+                        alert(
+                            `Not enough disk space on the appliance\n\n`
+                            + `Package        ${gb(totalBytes)}\n`
+                            + `Needs about    ${gb(pf.needed_bytes)}  (upload + unpack)\n`
+                            + `Free now       ${gb(pf.free_bytes)}\n\n`
+                            + advice);
+                        return;
+                    }
+                    if (stale.length) {
+                        this.showMessage(
+                            `Note: ${stale.length} leftover file(s) using ${gb(pf.leftover_bytes)} `
+                            + `in the package folders. ${gb(pf.free_bytes)} free — enough to continue.`,
+                            'info');
+                    }
+                }
+            } catch (e) {
+                // The check is an early warning, not a gate — a broken probe
+                // must not stop an upload that would have worked.
+                console.warn('upload preflight skipped:', e);
+            }
+
             // ─── PEEK PHASE ─────────────────────────────────────────────
             // Read just the first 5 MB of the local file, POST it to
             // /api/upgrade/peek-manifest, get the manifest back, open

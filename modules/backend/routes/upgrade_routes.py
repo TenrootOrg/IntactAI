@@ -349,6 +349,91 @@ def peek_manifest_from_blob():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@upgrade_bp.route('/api/upgrade/upload-preflight', methods=['POST'])
+def upload_preflight():
+    """Can this host take an upload of ``size_bytes``, and is anything already
+    sitting in the package directories?
+
+    Called BEFORE the browser starts pushing a multi-GB file. Without it the
+    operator uploads for several minutes, and only then does the apply refuse
+    for want of disk -- having just consumed several GB proving it. Worse on an
+    air-gapped site, where that upload is a hand-carried copy.
+
+    The number that matters is not the upload alone. The file lands in
+    /data/uploads and stays there while the apply unwraps and extracts it
+    beside itself, so the host needs the package PLUS what unpacking it costs
+    (see verify_upgrade_package: ~3.6x, measured). Hence ~4.6x up front.
+
+    Returns free/needed/ok plus any leftovers, so the UI can say what to delete
+    rather than just refusing.
+    """
+    try:
+        import shutil as _shutil
+        data = request.json or {}
+        try:
+            size = int(data.get('size_bytes') or 0)
+        except (TypeError, ValueError):
+            size = 0
+
+        leftovers, leftover_bytes = [], 0
+        for prefix in ALLOWED_PACKAGE_DIRS:
+            if not os.path.isdir(prefix):
+                continue
+            try:
+                names = os.listdir(prefix)
+            except OSError:
+                continue
+            for name in sorted(names):
+                full = os.path.join(prefix, name)
+                try:
+                    st = os.stat(full)
+                except OSError:
+                    continue
+                if os.path.isdir(full):
+                    # Staging from an interrupted prepare — reported so it can
+                    # be cleared, since it is pure dead weight.
+                    if not name.startswith('.intact-prepare-'):
+                        continue
+                    total = 0
+                    for root, _d, files in os.walk(full):
+                        for f in files:
+                            try:
+                                total += os.path.getsize(os.path.join(root, f))
+                            except OSError:
+                                pass
+                    leftovers.append({'name': name, 'dir': prefix,
+                                      'size_bytes': total,
+                                      'kind': 'interrupted prepare'})
+                    leftover_bytes += total
+                elif name.endswith(('.tar.gz', '.tgz')):
+                    leftovers.append({'name': name, 'dir': prefix,
+                                      'size_bytes': st.st_size,
+                                      'kind': 'package'})
+                    leftover_bytes += st.st_size
+
+        target = '/data/uploads' if os.path.isdir('/data/uploads') else '/data'
+        try:
+            free = _shutil.disk_usage(target).free
+        except OSError:
+            free = 0
+
+        needed = int(size * 4.6) if size else 0
+        return jsonify({
+            "success": True,
+            "free_bytes": free,
+            "needed_bytes": needed,
+            "upload_bytes": size,
+            # Nothing to weigh it against without a size; report, don't judge.
+            "ok": (free >= needed) if size else True,
+            "leftovers": leftovers,
+            "leftover_bytes": leftover_bytes,
+            "reclaimable_ok": (free + leftover_bytes >= needed) if size else True,
+        })
+    except Exception as e:
+        # Never block an upload because the check itself broke.
+        return jsonify({"success": False, "error": str(e), "ok": True}), 200
+
+
 @upgrade_bp.route('/api/upgrade/list-packages', methods=['POST'])
 def list_pending_packages():
     """Return the inventory of tarballs currently sitting on disk in the
