@@ -410,6 +410,30 @@ def upload_preflight():
                                       'size_bytes': st.st_size,
                                       'kind': 'package'})
                     leftover_bytes += st.st_size
+                elif name.endswith(('.info', '.run', '.lock')):
+                    # tus sidecars — bookkeeping, not payload.
+                    continue
+                else:
+                    # A tus upload payload. It is stored under a bare upload id
+                    # with NO extension, so an extension test misses it
+                    # entirely -- which is how a cancelled 4.6 GB upload sat
+                    # here while this endpoint cheerfully reported "0
+                    # leftovers". These are the biggest thing in the directory
+                    # and the whole reason to look.
+                    if st.st_size < 1024 * 1024:
+                        continue        # stray small file, not an upload
+                    label = name
+                    try:
+                        with open(full + '.info') as _inf:
+                            meta = (json.load(_inf).get('MetaData') or {})
+                        if meta.get('filename'):
+                            label = f"{meta['filename']} (upload {name[:12]}…)"
+                    except (OSError, ValueError):
+                        pass
+                    leftovers.append({'name': label, 'dir': prefix,
+                                      'size_bytes': st.st_size,
+                                      'kind': 'interrupted upload'})
+                    leftover_bytes += st.st_size
 
         target = '/data/uploads' if os.path.isdir('/data/uploads') else '/data'
         try:
