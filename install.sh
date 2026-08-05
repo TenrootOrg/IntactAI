@@ -340,15 +340,19 @@ load_images_from_package() {
         mod_id="$(_module_from_asset_name "$base")"
         display="$(_module_display "$mod_id" "$base")"
         pkg_size=$(stat -c%s "$pkg" 2>/dev/null || echo 0)
-        log_info "  [${ext_i}/${#pkgs[@]}] ${display} — extracting $(_human_size "$pkg_size")..."
         # -xf, not -xzf: tar auto-detects, so this one call reads a plain-tar
         # asset and a .tar.gz asset from an older release without the caller
         # having to know which it was handed.
-        if ! run_with_heartbeat "extracting ${display} asset" 1800 \
+        #
+        # QUIET + a single after-the-fact line, same as the image-load loop
+        # below: the start line and the wrapper's "completed in Ns" said the
+        # same thing twice per asset.
+        if ! RUN_HEARTBEAT_QUIET=1 run_with_heartbeat "extracting ${display} asset" 1800 \
                 bash -c 'tar -xf "$1" -C "$2" 2>>"$3"' _ "$pkg" "$work" "$LOG_FILE"; then
             log_error "  Could not extract ${display} (${base})"
             rm -rf "$work"; return 1
         fi
+        log_info "  [${ext_i}/${#pkgs[@]}] ${display} — extracted $(_human_size "$pkg_size") in ${RUN_HEARTBEAT_ELAPSED:-?}s"
     done
     log_success "Extraction complete: ${#pkgs[@]} asset(s), $(_human_size "$total_size")"
 
@@ -500,13 +504,18 @@ for img in sorted(set(owner) | set(size)):
             continue
         fi
         pkg_size="${IMG_SIZE[$base]:-$(stat -c%s "$tar_file" 2>/dev/null || echo 0)}"
-        log_info "  [${img_i}/${img_total}] ${display} / ${base} ($(_human_size "$pkg_size")) — loading..."
         local load_log; load_log="$(mktemp -p "${SCRIPT_DIR}/data/tmp" load-XXXXXX)"
-        if run_with_heartbeat "loading ${display}/${base}" 1800 \
+        # ONE line per image on success, not four. The start line is dropped
+        # (the success line carries the same counter and more information), the
+        # wrapper's generic "completed in Ns" is suppressed via QUIET with its
+        # duration folded in here, and docker's own "Loaded image: <ref>" is no
+        # longer echoed into the log because ${ref} below already IS that value
+        # parsed out of it. See lib/common.sh:run_with_heartbeat.
+        if RUN_HEARTBEAT_QUIET=1 run_with_heartbeat "loading ${display}/${base}" 1800 \
                 bash -c 'docker load -i "$1" >"$2" 2>&1' _ "$tar_file" "$load_log"; then
             loaded=$((loaded + 1))
             local ref; ref="$(sed -n 's/^Loaded image: //p' "$load_log" | tail -1)"
-            log_success "  [${img_i}/${img_total}] ${display} — ${ref:-loaded} ($(_human_size "$pkg_size"))"
+            log_success "  [${img_i}/${img_total}] ${display} — ${ref:-loaded} ($(_human_size "$pkg_size"), ${RUN_HEARTBEAT_ELAPSED:-?}s)"
             # Capture what the package actually shipped as the backend image,
             # so the caller can correct a stale config.yaml versions.backend
             # instead of trusting it (see lib/config.sh + lib/modules.sh).
@@ -518,11 +527,26 @@ for img in sorted(set(owner) | set(size)):
                     INTACT_PKG_BACKEND_TAG="${INTACT_PKG_BACKEND_TAG%.tar}"
                 fi
             fi
+            # FREE AS WE GO. Once an image is in the docker store its extracted
+            # tar is dead weight, but all 23 of them used to sit here until the
+            # whole loop finished -- 13 GB of extracted tars coexisting with the
+            # 5.5 GB of source assets AND the images being written into
+            # /var/lib/docker. Measured peak on a 9-module install: ~22 GB of
+            # scratch before the first byte of image store.
+            #
+            # Safe to delete: $work is a mktemp copy this function extracted, so
+            # an operator's --package files on a USB stick are never touched.
+            # The merged-tree invariant is untouched too -- only already-loaded
+            # image tars go; binaries/, tools/, yara_rulesets/ and manifests/
+            # all survive for the staging step below.
+            rm -f "$tar_file"
         else
             failed=$((failed + 1))
             log_warn "  [${img_i}/${img_total}] ${display} — could not load ${base}: $(tail -1 "$load_log" 2>/dev/null)"
+            # Only on failure: here it is diagnostic. On success it repeated
+            # the image ref the line above already printed.
+            cat "$load_log" >> "$LOG_FILE" 2>/dev/null
         fi
-        cat "$load_log" >> "$LOG_FILE" 2>/dev/null
         rm -f "$load_log"
     done
 
@@ -615,6 +639,77 @@ for p in glob.glob(f'{work}/*/manifests/intact.json') + glob.glob(f'{work}/*/man
             mkdir -p "${SCRIPT_DIR}/data/tools"
             cp -f "$_collector_src" "${SCRIPT_DIR}/data/tools/velociraptor-collector"
             log_success "  Staged velociraptor-collector into data/tools"
+        fi
+    fi
+
+    # Stage the remaining payload directories the release ships. Until now this
+    # function looked at `binaries/` and nothing else, then `rm -rf "$work"`
+    # below deleted the rest -- so three directories that CI deliberately packs
+    # were carried across the air gap and thrown away, and the installer went
+    # to the internet for the exact same bytes. Verified on intact-20260805:
+    # tools/lolrmm.csv (137755), tools/lastactivityview.zip (89801) and
+    # tools/autorunsc64.exe (1460024) shipped in the velociraptor asset, and
+    # the install re-downloaded all three at byte-identical sizes.
+    #
+    # Each destination is where the ALREADY-EXISTING consumer looks, so no
+    # consumer changes: tools_download_service skips files already in
+    # data/tools, velociraptor_init_service reads the artifacts zip from the
+    # same place, and seed_yara_rulesets (lib/modules.sh) prefers
+    # data/yara_rulesets over a GitHub clone.
+    #
+    # cp -n throughout: a package must never clobber something a previous run
+    # or the operator put there. Counting only what landed keeps the log honest
+    # on re-runs, same rule as the binaries loop above.
+    # The YARA destination mirrors a package layout on purpose --
+    # `<dir>/manifest.json` + `<dir>/yara_rulesets/*.zip` -- because that is
+    # exactly what services/upgrade/volweb.py:_seed_yara_from_bundle() already
+    # consumes. Staging into that shape lets seed_yara_rulesets() delegate to
+    # the tested importer instead of reimplementing ORM ingest in bash.
+    local _yara_seed="${SCRIPT_DIR}/data/yara-seed"
+    local _stage_pairs=(
+        # <find-path-under-work>|<destination dir>|<label>
+        "tools|${SCRIPT_DIR}/data/tools|Velociraptor tool"
+        "artifacts/velociraptor|${SCRIPT_DIR}/data/tools|Velociraptor artifact bundle"
+        "yara_rulesets|${_yara_seed}/yara_rulesets|VolWeb YARA ruleset"
+    )
+    local _sp _srcdir _destdir _label _f _n
+    for _sp in "${_stage_pairs[@]}"; do
+        IFS='|' read -r _srcdir _destdir _label <<< "$_sp"
+        # The asset root is intact-upgrade-<tag>/, so match at any depth.
+        _srcdir="$(find "$work" -type d -path "*/${_srcdir}" 2>/dev/null | head -1)"
+        [[ -n "$_srcdir" && -d "$_srcdir" ]] || continue
+        mkdir -p "$_destdir"
+        _n=0
+        while IFS= read -r _f; do
+            if [[ ! -e "$_destdir/$(basename "$_f")" ]] \
+                    && cp -n "$_f" "$_destdir/" 2>/dev/null; then
+                _n=$((_n + 1))
+            fi
+        done < <(find "$_srcdir" -maxdepth 1 -type f 2>/dev/null)
+        if (( _n > 0 )); then
+            chmod 755 "$_destdir"/* 2>/dev/null || true
+            log_success "  Staged ${_n} ${_label}(s) into ${_destdir#"${SCRIPT_DIR}/"}"
+        fi
+    done
+
+    # Pair the staged zips with the manifest that describes them (name,
+    # description, source_url per ruleset). Prefer the per-module
+    # manifests/volweb.json: assets all extract under ONE shared top-level
+    # directory, so the root manifest.json is whichever module landed last,
+    # while manifests/<module>.json survives the merge intact.
+    if [[ -d "${_yara_seed}/yara_rulesets" ]] \
+            && ! ls "${_yara_seed}"/yara_rulesets/*.zip >/dev/null 2>&1; then
+        rmdir "${_yara_seed}/yara_rulesets" "${_yara_seed}" 2>/dev/null || true
+    elif [[ -d "${_yara_seed}/yara_rulesets" ]]; then
+        local _ymf
+        _ymf="$(find "$work" -type f -path '*/manifests/volweb.json' 2>/dev/null | head -1)"
+        [[ -n "$_ymf" ]] || _ymf="$(find "$work" -maxdepth 2 -type f -name manifest.json 2>/dev/null | head -1)"
+        if [[ -n "$_ymf" ]] && cp -f "$_ymf" "${_yara_seed}/manifest.json" 2>/dev/null; then
+            log_success "  Staged VolWeb YARA seed manifest into data/yara-seed"
+        else
+            # Without it the importer has no ruleset names; say so rather than
+            # letting the seed silently no-op later.
+            log_warn "  Bundled YARA zips staged but no manifest found — VolWeb seeding will fall back to online"
         fi
     fi
 
@@ -786,17 +881,51 @@ for n, whole, sha in sorted(set(want)):
     local n whole sha
     # sha_of[<whole asset>] = expected sha256, from the index.
     declare -A sha_of=()
+    local _dl_list; _dl_list="$(mktemp -p "${SCRIPT_DIR}/data/tmp" dl-list-XXXXXX)"
+    local _count=0
     while IFS=$'\t' read -r n whole sha; do
         [[ -n "$n" ]] || continue
         sha_of["$whole"]="$sha"
-        log_info "  Downloading ${n}..."
-        if ! curl -fSL --retry 3 --retry-delay 5 --max-time 3600 \
-                 -o "${dest_dir}/${n}" \
-                 "https://github.com/${repo}/releases/download/${tag}/${n}" 2>>"$LOG_FILE"; then
-            log_error "  Download failed: ${n}"
+        printf '%s\n' "$n" >> "$_dl_list"
+        _count=$((_count + 1))
+    done <<< "$names"
+
+    # FOUR AT A TIME. This fetched one asset at a time while both other paths
+    # that download the same assets already parallelise -- prepare_package.sh
+    # with `xargs -P 4`, the backend's download.py with _ASSET_WORKERS = 4 --
+    # so a first install was the slowest way to get the bytes. Measured on
+    # intact-20260805: 5.85 GB serially in ~12 min, on a link that reached
+    # 12 MB/s per stream.
+    #
+    # 4, matching the other two, because release assets come from one host and
+    # more streams mostly steal bandwidth from each other.
+    log_info "  Downloading ${_count} asset(s), 4 at a time..."
+    _intact_fetch_asset() {
+        local name="$1"
+        if curl -fsSL --retry 3 --retry-delay 5 --max-time 3600 \
+                -o "${_DL_DEST}/${name}" \
+                "https://github.com/${_DL_REPO}/releases/download/${_DL_TAG}/${name}" \
+                2>>"${_DL_LOG}"; then
+            printf '[install]   done      %s\n' "$name"
+        else
+            printf '[install]   FAILED    %s\n' "$name" >&2
             return 1
         fi
-    done <<< "$names"
+    }
+    export -f _intact_fetch_asset
+    export _DL_DEST="$dest_dir" _DL_REPO="$repo" _DL_TAG="$tag" _DL_LOG="$LOG_FILE"
+
+    # xargs exits 123 if ANY invocation failed, so one bad asset still fails
+    # the install -- "a package that cannot be fetched is a FAILED INSTALL".
+    if ! xargs -P 4 -I{} -a "$_dl_list" bash -c '_intact_fetch_asset "$@"' _ {}; then
+        log_error "  One or more asset downloads failed — see $LOG_FILE"
+        rm -f "$_dl_list"
+        unset -f _intact_fetch_asset
+        return 1
+    fi
+    rm -f "$_dl_list"
+    unset -f _intact_fetch_asset
+    unset _DL_DEST _DL_REPO _DL_TAG _DL_LOG
 
     # Reassemble any split assets. CI splits anything over the 2 GiB asset cap;
     # the index's sha256 is of the WHOLE tarball, taken pre-split, so it is the

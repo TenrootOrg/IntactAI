@@ -1926,7 +1926,58 @@ EOF
 
 
 seed_yara_rulesets() {
-    # Three sources for the curated YARA corpus. Each is POSTed to
+    # BUNDLED FIRST. The release ships these rule zips inside the volweb asset
+    # (package.py bundles them precisely "so apply can seed VolWeb's
+    # yararulesets table without needing internet at apply time"), and
+    # load_images_from_package() stages them to data/yara-seed/. Going to
+    # github.com anyway meant every install re-downloaded ~5.4 MB it already
+    # had, spent ~3 minutes doing it, and -- the part that actually broke --
+    # an air-gapped install could not seed YARA at all. The clone happens
+    # INSIDE the volweb container, so INTACT_AIRGAP could never have stopped
+    # it from out here; it just failed slowly against an unreachable host.
+    #
+    # Delegates to services/upgrade/volweb.py:_seed_yara_from_bundle, the same
+    # importer the upgrade path uses, rather than reimplementing ORM ingest in
+    # bash. It reads <dir>/manifest.json + <dir>/yara_rulesets/*.zip, which is
+    # the shape install.sh staged.
+    local _seed_dir="${SCRIPT_DIR}/data/yara-seed"
+    if [[ -f "${_seed_dir}/manifest.json" ]] \
+            && ls "${_seed_dir}"/yara_rulesets/*.zip >/dev/null 2>&1; then
+        log_info "  Seeding YARA rulesets from the release package (no download)..."
+        # Capture THEN print. `docker exec ... | sed` would report sed's exit
+        # status, so the success branch would be taken even when the seed
+        # failed -- the failure would be invisible and the online fallback
+        # would never run.
+        local _yout _yrc
+        _yout="$(docker exec intact_backend python3 -c "
+import sys
+sys.path.insert(0, '/app')
+from services.upgrade.volweb import _seed_yara_from_bundle
+r = _seed_yara_from_bundle('${_seed_dir}', lambda m, l='info': print(m))
+sys.exit(0 if r.get('success') else 1)
+" 2>&1)"
+        _yrc=$?
+        [[ -n "$_yout" ]] && printf '%s\n' "$_yout" | sed 's/^/    /'
+        if (( _yrc == 0 )); then
+            log_success "  YARA seeded from the bundled rule sets"
+            return 0
+        fi
+        # Fall through to the online path: a bundled seed that fails on a box
+        # WITH internet should still end up with rules.
+        log_warn "    Bundled YARA seed failed — falling back to online import"
+    fi
+
+    # No bundled copy. On an air-gapped install there is nothing to fall back
+    # to, and the operator needs to know the corpus is empty rather than
+    # discover it during an investigation.
+    if [[ "${INTACT_AIRGAP:-0}" == "1" ]]; then
+        log_warn "  No bundled YARA rule sets in this package — VolWeb starts with an empty"
+        log_warn "  rule corpus. Seed later from Maintenance → Refresh YARA Rulesets"
+        log_warn "  once this box has internet access."
+        return 0
+    fi
+
+    # Two sources for the curated YARA corpus. Each is POSTed to
     # /api/yararulesets/import/github/ which clones the repo +
     # ingests every .yar / .yara file recursively.
     local volweb_user=$(read_config "['modules']['volweb']['id']")
