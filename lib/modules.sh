@@ -1856,12 +1856,10 @@ deploy_volweb() {
         log_warn "  VolWeb admin seeding had issues — operator may need to do it manually"
     fi
 
-    # Seed YARA rulesets via the VolWeb GitHub-import API. ~50 MB of
-    # text into VolWeb's postgres; ~3 min on a fast link. Idempotent
-    # — VolWeb dedupes on the (name, source) tuple.
-    if ! seed_yara_rulesets; then
-        log_warn "  YARA ruleset seeding had issues — refresh via Maintenance later"
-    fi
+    # YARA seeding does NOT run here. Its bundled-package path needs
+    # intact_backend (see seed_yara_rulesets), which does not exist yet at
+    # this point in start_services() -- deploy_backend runs AFTER
+    # deploy_volweb. Called separately, post-backend; see main sequence.
 
     track_module_success "VolWeb"
 }
@@ -1940,6 +1938,24 @@ seed_yara_rulesets() {
     # importer the upgrade path uses, rather than reimplementing ORM ingest in
     # bash. It reads <dir>/manifest.json + <dir>/yara_rulesets/*.zip, which is
     # the shape install.sh staged.
+    #
+    # SELF-GUARDED, same reasoning as bootstrap_iris_api_key: this is no
+    # longer called from inside deploy_volweb (which already knew volweb was
+    # enabled and up), but from the main sequence after deploy_backend --
+    # the bundled path needs intact_backend, which deploy_volweb runs before.
+    # So the checks deploy_volweb used to guarantee for free now have to be
+    # made explicit here.
+    local volweb_enabled
+    volweb_enabled=$(read_config "['modules']['volweb']['enabled']")
+    if ! is_enabled "$volweb_enabled"; then
+        log_info "  VolWeb disabled — skipping YARA ruleset seeding"
+        return 0
+    fi
+    if ! is_module_installed intact_volweb_backend; then
+        log_warn "  intact_volweb_backend not running — skipping YARA ruleset seeding"
+        return 1
+    fi
+
     local _seed_dir="${SCRIPT_DIR}/data/yara-seed"
     if [[ -f "${_seed_dir}/manifest.json" ]] \
             && ls "${_seed_dir}"/yara_rulesets/*.zip >/dev/null 2>&1; then
@@ -2300,6 +2316,13 @@ start_services() {
     # Re-assert the IRIS admin password from config.yaml (IRIS only honours it at
     # first-init, so this fixes the "config password doesn't work" case).
     enforce_iris_admin_password
+    echo ""
+    # Same reason as the IRIS bootstrap above: seed_yara_rulesets' bundled
+    # path needs intact_backend, which does not exist until the deploy_backend
+    # call above. Self-guards on volweb enabled/running (see its own comment).
+    if ! seed_yara_rulesets; then
+        log_warn "  YARA ruleset seeding had issues — refresh via Maintenance later"
+    fi
     echo ""
     deploy_nginx
     echo ""
