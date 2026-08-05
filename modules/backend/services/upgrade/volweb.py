@@ -516,7 +516,23 @@ def upgrade_volweb(version: str, logger: Callable = None, run_id: str | None = N
 
     cur = read_env_file(_VOLWEB_ENV).get("VOLWEB_BACKEND_VERSION", "unknown")
     if cur == version:
-        log(f"VolWeb already at {version}; no change", "info")
+        # PRIMARY unchanged -- but the SIDECAR pins may still have moved, and
+        # returning here left them unapplied. Observed upgrading a 0615-pinned
+        # box to 20260804: volweb stayed at 3.16.0 in both, so this returned
+        # immediately, while versions.volweb_redis went 7 -> 7.4.9. The .env was
+        # rewritten to 7.4.9 by the config re-render, nothing recreated the
+        # container, and the box ran redis:7 while every version report said
+        # 7.4.9 -- silent drift, reported as a successful upgrade.
+        #
+        # `compose up -d` is the reconciler: it recreates only the containers
+        # whose resolved config actually changed, so on a genuine no-op it does
+        # nothing and costs a second. That makes it safe to run unconditionally
+        # and is the only thing that closes an .env-vs-container gap.
+        log(f"VolWeb already at {version}; reconciling sidecar pins...", "info")
+        up = _compose_up(log, run_id=run_id)
+        if not up.get("success"):
+            return {"success": False,
+                    "error": f"sidecar reconcile failed: {up.get('error')}"}
         return {"success": True, "version": version, "noop": True}
 
     # 1. Pull both images
@@ -595,7 +611,27 @@ def upgrade_volweb_offline(
 
     cur = read_env_file(_VOLWEB_ENV).get("VOLWEB_BACKEND_VERSION", "unknown")
     if cur == version:
-        log(f"VolWeb already at {version}; no change", "info")
+        # PRIMARY unchanged, SIDECARS may not be -- see the matching guard in
+        # upgrade_volweb(). This path is the worse of the two: the block below
+        # exists precisely because volweb_postgres/volweb_redis "can drift
+        # between install and upgrade", and returning here skipped exactly that
+        # handling whenever the app version happened to hold still.
+        #
+        # All three steps are idempotent (docker load on a present image, an
+        # .env stamp to the same value, and a compose up with nothing changed),
+        # so running them on a no-op is safe and costs a second.
+        log(f"VolWeb already at {version}; reconciling sidecar pins...", "info")
+        from .base import load_all_bundled_images, stamp_transitive_env_from_manifest
+        load_all_bundled_images(package_dir, logger=log, run_id=run_id)
+        try:
+            stamp_transitive_env_from_manifest('volweb', package_dir, logger=log)
+        except Exception as _e:
+            log(f"  transitive .env stamp raised ({type(_e).__name__}: {_e})",
+                "warning")
+        up = _compose_up(log, run_id=run_id)
+        if not up.get("success"):
+            return {"success": False,
+                    "error": f"sidecar reconcile failed: {up.get('error')}"}
         return {"success": True, "version": version, "noop": True}
 
     # 1. Load every bundled image. Same rationale as timesketch's
