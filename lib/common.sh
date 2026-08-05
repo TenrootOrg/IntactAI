@@ -397,14 +397,29 @@ run_with_heartbeat() {
     wait "${heartbeat_pid}" 2>/dev/null
 
     local total_elapsed=$(( SECONDS - start_ts ))
+
+    # Published for callers that print their own completion line, so the
+    # duration is not lost when the one below is suppressed.
+    RUN_HEARTBEAT_ELAPSED="$total_elapsed"
+
     if [[ $rc -eq 124 ]]; then
         log_error "  ${description} exceeded ${timeout_secs}s timeout — killed (ran ${total_elapsed}s)"
     elif [[ $rc -eq 0 ]]; then
         # Concrete finish-time + budget headroom: helps the operator see
         # how close they ran to the timeout and decide whether the cap
         # needs to be raised again next release.
-        local pct=$(( total_elapsed * 100 / timeout_secs ))
-        log_info "  ${description} completed in ${total_elapsed}s (${pct}% of ${timeout_secs}s budget)"
+        #
+        # RUN_HEARTBEAT_QUIET exists because this is a GENERIC wrapper whose
+        # callers often announce completion themselves. In the image-load loop
+        # that produced THREE "done" lines per image -- this one, the caller's
+        # log_success, and docker's own "Loaded image:" echoed from the load
+        # log -- i.e. 92 lines for 23 images where 46 say the same thing. A
+        # caller that reports its own success sets QUIET and folds
+        # RUN_HEARTBEAT_ELAPSED into that line. Failures are never suppressed.
+        if [[ "${RUN_HEARTBEAT_QUIET:-0}" != "1" ]]; then
+            local pct=$(( total_elapsed * 100 / timeout_secs ))
+            log_info "  ${description} completed in ${total_elapsed}s (${pct}% of ${timeout_secs}s budget)"
+        fi
     else
         log_info "  ${description} exited rc=$rc after ${total_elapsed}s"
     fi
