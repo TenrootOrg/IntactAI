@@ -1384,6 +1384,27 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     ignore=shutil.ignore_patterns(
                         '__pycache__', '*.pyc', '.env*', '*.db*',
                         '.git', 'data', 'backups',
+                        # Key material and per-box secrets. Today `source_dir`
+                        # is only ever a pristine CI checkout or a codeload
+                        # tarball, so none of this exists to copy -- see the
+                        # note at the top of this function about why packaging
+                        # a RUNNING box's tree was rejected. This list is
+                        # defence in depth for the day someone wires
+                        # source_dir to a live install anyway: certs and
+                        # secrets are generated per-install (nginx cert, IRIS
+                        # root CA, Velociraptor CA, module passwords), so
+                        # shipping them inside a release would hand every
+                        # customer the same private keys.
+                        #
+                        # Both directory names AND extensions: a Portainer
+                        # admin password is an extensionless file, so
+                        # extension globs alone would miss it. The only
+                        # tracked content in these dirs is .gitkeep, and the
+                        # apply side copies source/intact/ OVER an existing
+                        # install -- an absent empty dir means "leave the live
+                        # one alone", which is exactly right.
+                        'ssl', 'certificates', 'secrets',
+                        '*.key', '*.pem', '*.crt', '*.pfx', '*.p12',
                     ),
                 )
                 log("  Full repo copied", "success")
