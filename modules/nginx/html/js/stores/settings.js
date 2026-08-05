@@ -1092,32 +1092,39 @@ document.addEventListener('alpine:init', () => {
             this.computingPlan = false;
         },
 
-        // PREPARE: which modules go into the package. Seeded to the DELTA —
-        // intact plus every installed module whose version actually moves —
-        // because that is what an operator upgrading this box needs to carry,
-        // and it is the difference between a ~400 MB package and a 5.5 GB one.
+        // PREPARE: which modules go into the package. Seeded to EVERYTHING the
+        // release ships.
         //
-        // Everything else in the release is still listed and still tickable.
-        // That matters: Prepare's original design deliberately bundled the FULL
-        // upstream list, on the grounds that a package is often carried to a
-        // DIFFERENT air-gapped box whose installed set this machine knows
-        // nothing about. Defaulting to the delta without leaving the rest
-        // reachable would quietly produce a package missing modules the target
-        // needs. Delta is the default, not the limit.
+        // NOT to the delta, and the reason is the whole point of this feature:
+        // Prepare exists to build a package on an internet-connected box and
+        // carry it to a DIFFERENT, air-gapped one. This machine is a
+        // downloader. Its installed versions have nothing to do with the
+        // target's, so "what changed here" is not a smaller answer to the right
+        // question — it is an answer to a question nobody asked.
         //
-        // intact is always in and cannot be unticked (the backend force-adds it
-        // too): every other module needs the platform to drive it.
+        // Getting it wrong fails silently, which is what makes it dangerous.
+        // Prepare on a box already at the target release and the delta is just
+        // `intact`; the air-gapped machine three releases behind then imports a
+        // package containing only the platform, upgrades that, and leaves every
+        // module where it was. Import lists what the PACKAGE holds, so nothing
+        // on that screen says the rest were left behind: a new platform driving
+        // old modules, reported as success.
+        //
+        // Online is the mirror image and may absolutely use the delta — it runs
+        // ON the target, so local state IS the reference.
+        //
+        // The checkboxes stay: narrowing deliberately (one module for a known
+        // box, or trimming a 5.5 GB transfer) is a real need. It just has to be
+        // a decision, not a default. intact cannot be unticked, and the backend
+        // force-adds it regardless.
         seedPrepareSelection() {
             const p = this.upgradePlan;
             if (!p) { this.prepareSelectedModules = []; return; }
             const sel = ['intact'];
             for (const row of (p.forced || [])) {
-                // 'upgrade' = installed and the version moves. 'noop' = already
-                // at target, so it is dead weight in the package unless ticked.
-                if (row.module !== 'intact' && row.action === 'upgrade') {
-                    sel.push(row.module);
-                }
+                if (row.module !== 'intact') sel.push(row.module);
             }
+            for (const row of (p.optional || [])) sel.push(row.module);
             this.prepareSelectedModules = sel;
         },
 
@@ -1141,9 +1148,11 @@ document.addEventListener('alpine:init', () => {
                     module: r.module,
                     current: r.current,
                     target: r.target,
+                    // Context only. This box's state does NOT decide the tick --
+                    // see seedPrepareSelection() for why.
                     reason: r.module === 'intact' ? 'platform (always included)'
-                          : r.action === 'upgrade' ? 'version changed'
-                          : 'already up to date',
+                          : r.action === 'upgrade' ? 'differs here'
+                          : 'same as here',
                     locked: r.module === 'intact',
                 });
             }

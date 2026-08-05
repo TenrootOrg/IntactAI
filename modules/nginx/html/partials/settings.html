@@ -1540,11 +1540,10 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                  (you'd have a bunch of module images and no Intact to drive
                                  them). Renders with a locked-checked indicator instead of a
                                  toggleable checkbox. -->
-                        <!-- Module selection. Seeded to the DELTA (intact + whatever
-                             actually moves on THIS box); everything else the release
-                             ships is listed and tickable, because a package is often
-                             carried to a DIFFERENT air-gapped box whose installed set
-                             this machine cannot know. Delta is the default, not the cap. -->
+                        <!-- Module selection. ALL ticked: the package is built here and applied
+                             on a DIFFERENT air-gapped box, so this machine's installed set is
+                             not the reference. The per-row note reports state HERE purely as
+                             context; it deliberately does not drive the tick. -->
                         <div x-show="$store.settings.prepareModalMode !== 'online'
                                      && $store.settings.upgradePlan
                                      && !$store.settings.preparePackageReady"
@@ -1555,8 +1554,10 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                       x-text="$store.settings.prepareSelectedModules.length + ' of ' + $store.settings.prepareModuleRows.length + ' selected'"></span>
                             </div>
                             <div class="text-xs text-gray-500 mb-2">
-                                Pre-ticked: the platform plus every module whose version changes here.
-                                Tick more if this package is for a different box.
+                                All modules ticked by default &mdash; this package is for a
+                                <em>different</em>, air-gapped machine, and what is installed on
+                                <em>this</em> box says nothing about what that one needs. Untick only
+                                if you know the target already has a module at this release.
                             </div>
                             <template x-for="row in $store.settings.prepareModuleRows" :key="'prep-' + row.module">
                                 <label class="flex items-center gap-2 py-1 text-xs cursor-pointer"
