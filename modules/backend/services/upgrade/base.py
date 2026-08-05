@@ -1984,9 +1984,31 @@ def verify_upgrade_package(package_path: str, logger: Callable = None,
                 return {"success": False,
                         "error": ("the package unwrapped to no module assets — "
                                   "it is empty or was truncated in transit")}
+            # The wrapper carries the release index, so each inner asset can be
+            # checked against the sha256 the RELEASE published rather than only
+            # against the manifest travelling inside it. Whoever could tamper
+            # with an asset could also rewrite its own manifest; the index is a
+            # second, independent record of what the bytes should be.
+            _expected = {}
+            _idx_names = [n for n in os.listdir(unwrap_dir)
+                          if n.endswith('.index.json')]
+            if _idx_names:
+                try:
+                    with open(os.path.join(unwrap_dir, _idx_names[0])) as _f:
+                        for _e in (json.load(_f).get('assets') or {}).values():
+                            if _e.get('asset') and _e.get('sha256'):
+                                _expected[_e['asset']] = _e['sha256']
+                except Exception as _ie:
+                    log(f"  Could not read the packaged index ({_ie}) — the "
+                        f"assets are still verified against their own "
+                        f"manifests", "warning")
+            if _expected:
+                log(f"  Checking {len(_expected)} asset(s) against the "
+                    f"packaged release index", "info")
             result = assemble_release_package(
                 inner_paths,
                 extract_dir=f"/app/data/tmp/intact-upgrade-{int(time.time())}",
+                expected_sha256=_expected or None,
                 logger=log)
             # The inner tarballs are consumed; the assembled tree is what the
             # apply loop reads from here on.
