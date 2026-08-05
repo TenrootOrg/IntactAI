@@ -1084,11 +1084,26 @@ download_legacy_velociraptor_binaries() {
     # deps — runs on ANY Linux x86_64 with kernel >= 2.6.32. The legacy
     # service prefers -musl for the linux-legacy target; the non-musl
     # build is kept too for parity / debug.
+    # ONLY the two builds something actually serves. This used to also fetch
+    # the plain linux-amd64 and darwin-amd64 legacy builds -- 113 MB, ~16 min
+    # on the 120 kB/s uplinks this codebase elsewhere plans around -- and
+    # nothing consumed either:
+    #
+    #   * darwin-amd64: no UI button, no route, no service path. The
+    #     validation loop below already skips it as "a nice to have".
+    #   * linux-amd64 (non-musl): referenced only as a FALLBACK in
+    #     legacy_velociraptor_service.py (:292-294 and _TARGET_FALLBACK) for
+    #     "installs that pre-date the musl download". That fallback cannot
+    #     fire on a box this installer touched, because this very loop always
+    #     fetches the musl build -- so the preferred tag is always cached and
+    #     the except-branch is dead.
+    #
+    # The release package bundles exactly these two as well, which is what
+    # made the mismatch visible: the packager shipped the served set, the
+    # downloader fetched a superset.
     local binaries=(
         "velociraptor-v${legacy_version}-windows-amd64.exe"
-        "velociraptor-v${legacy_version}-linux-amd64"
         "velociraptor-v${legacy_version}-linux-amd64-musl"
-        "velociraptor-v${legacy_version}-darwin-amd64"
     )
 
     # Clean up stale legacy binaries from prior pin changes. Pattern is the
@@ -1185,11 +1200,13 @@ create_velociraptor_collector() {
     local dest_path="${tools_dir}/velociraptor-collector"
     local min_size=50000  # ~80KB expected
 
-    log_info "Downloading Velociraptor collector template..."
-
     mkdir -p "$tools_dir"
 
-    # Check if already exists with valid size
+    # Check FIRST, announce second -- same rule pull_plaso_image follows. The
+    # "Downloading..." line used to print before this check, so a run that
+    # staged the collector from the release package still logged a download it
+    # never performed. Reading the log, that is indistinguishable from the
+    # package having been ignored.
     if [[ -f "$dest_path" ]]; then
         local current_size=$(stat -c%s "$dest_path" 2>/dev/null || echo "0")
         if [[ "$current_size" -gt "$min_size" ]]; then
@@ -1200,6 +1217,18 @@ create_velociraptor_collector() {
             rm -f "$dest_path"
         fi
     fi
+
+    # Nothing staged it and there is no network: say so once, clearly, instead
+    # of burning two curl timeouts (pinned URL, then the 'latest' fallback
+    # below) to arrive at the same place. Parity with the _airgap_asset_check
+    # its two sibling downloaders already use.
+    if [[ "${INTACT_AIRGAP:-0}" == "1" ]]; then
+        log_warn "Velociraptor collector template is not in this package and this is an"
+        log_warn "  offline install — Hunt-collector generation will be unavailable."
+        return 1
+    fi
+
+    log_info "Downloading Velociraptor collector template..."
 
     # Download the collector template from GitHub.
     #
@@ -1417,6 +1446,22 @@ pull_dfir_o365rc_image() {
         return 0
     fi
 
+    # No release asset ships this image -- the index lists nine modules and
+    # o365rc is not one of them -- so on an air-gapped box the pull below is a
+    # guaranteed reach for Docker Hub. Every other pre-pull in this file guards
+    # on INTACT_FROM_PACKAGE / INTACT_AIRGAP; this one did not, which made
+    # "supported offline install" quietly untrue the moment an operator
+    # enabled o365rc. Fail visibly and keep going: the module is optional and
+    # the rest of the platform is unaffected.
+    if [[ "${INTACT_AIRGAP:-0}" == "1" ]]; then
+        log_warn "DFIR-O365RC is enabled but its image is not in the release package,"
+        log_warn "  and this is an offline install — skipping the registry pull."
+        log_warn "  Unified Audit Log collection will be unavailable until this box can"
+        log_warn "  reach a registry, or until ${o365rc_image} is loaded by hand:"
+        log_warn "    docker load -i <o365rc-image>.tar"
+        return 0
+    fi
+
     log_info "Pulling DFIR-O365RC image (${o365rc_image}, Unified Audit Log collection)..."
 
     local pull_start=$SECONDS
@@ -1512,6 +1557,17 @@ pull_iris_images() {
     local iris_enabled
     iris_enabled=$(read_config "['modules']['iris']['enabled']")
     if ! is_enabled "$iris_enabled"; then
+        return 0
+    fi
+
+    # The package already loaded all four IRIS images, so pre-pulling is at
+    # best a no-op and at worst four registry round-trips on a box that may
+    # have no registry. The per-image `docker image inspect` below short
+    # -circuits in practice, but this is the only runtime-image pre-pull
+    # without the early return its siblings (backend / velociraptor / python
+    # -alpine base images) all have -- so make it consistent and cheap.
+    if [[ "${INTACT_FROM_PACKAGE:-0}" == "1" ]]; then
+        log_info "IRIS images came from the release package — skipping pre-pull"
         return 0
     fi
 
