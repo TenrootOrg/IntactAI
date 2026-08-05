@@ -180,6 +180,13 @@ if (( ${#INTACT_PACKAGES[@]} > 0 )); then
            && ! grep -q '/' <<< "$_wrapper_listing" \
            && ! grep -qx 'manifest.json' <<< "$_wrapper_listing" \
            && grep -q '\.tar\.gz$' <<< "$_wrapper_listing"; then
+            # data/tmp is NOT in the repo (only data/.gitkeep is), so on a
+            # fresh checkout mktemp -p would fail and fall back to /tmp --
+            # which many hosts mount as a small tmpfs, so unwrapping a
+            # multi-GB package there fills RAM and dies with a confusing
+            # ENOSPC. Same reasoning as load_images_from_package's own
+            # extraction dir; create it rather than rely on it existing.
+            mkdir -p "${SCRIPT_DIR}/data/tmp" 2>/dev/null || true
             _unwrap_dir="$(mktemp -d -p "${SCRIPT_DIR}/data/tmp" unwrap-XXXXXX 2>/dev/null)" \
                 || _unwrap_dir="$(mktemp -d)"
             INTACT_UNWRAP_DIRS+=("$_unwrap_dir")
