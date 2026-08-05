@@ -1564,7 +1564,7 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                 </div>
 
                                 <!-- Forced rows (no checkbox) -->
-                                <template x-if="$store.settings.upgradePlan && $store.settings.upgradePlan.forced.length">
+                                <template x-if="$store.settings.prepareModalMode === 'online' && $store.settings.upgradePlan && $store.settings.upgradePlan.forced.length">
                                     <div class="mb-3">
                                         <div class="text-gray-400 text-xs mb-1">Installed modules (upgrades applied automatically; tick a “no change” one to reinstall):</div>
                                         <template x-for="row in $store.settings.upgradePlan.forced" :key="row.module">
@@ -1592,7 +1592,7 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                 </template>
 
                                 <!-- Optional rows (checkbox to opt-in) -->
-                                <template x-if="$store.settings.upgradePlan && $store.settings.upgradePlan.optional.length">
+                                <template x-if="$store.settings.prepareModalMode === 'online' && $store.settings.upgradePlan && $store.settings.upgradePlan.optional.length">
                                     <div class="mb-3">
                                         <div class="text-gray-400 text-xs mb-1">Optional new modules (tick to install on this host):</div>
                                         <template x-for="row in $store.settings.upgradePlan.optional" :key="row.module">
@@ -1611,7 +1611,7 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                     </div>
                                 </template>
 
-                                <div x-show="$store.settings.upgradePlan && !$store.settings.upgradePlan.forced.length && !$store.settings.upgradePlan.optional.length"
+                                <div x-show="$store.settings.prepareModalMode === 'online' && $store.settings.upgradePlan && !$store.settings.upgradePlan.forced.length && !$store.settings.upgradePlan.optional.length"
                                      class="text-gray-500 text-xs italic">Nothing to do — local config.yaml matches the target's versions.</div>
                             </div>
 
@@ -1681,10 +1681,50 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                             </p>
                         </div>
 
+                        <!-- Module selection. Seeded to the DELTA (intact + whatever
+                             actually moves on THIS box); everything else the release
+                             ships is listed and tickable, because a package is often
+                             carried to a DIFFERENT air-gapped box whose installed set
+                             this machine cannot know. Delta is the default, not the cap. -->
+                        <div x-show="$store.settings.prepareModalMode !== 'online'
+                                     && $store.settings.upgradePlan
+                                     && !$store.settings.preparePackageReady"
+                             class="bg-gray-800/40 border border-gray-700 rounded p-3 mt-4">
+                            <div class="flex items-center justify-between mb-2">
+                                <span class="text-xs font-semibold text-gray-300 uppercase tracking-wide">2. Modules to bundle</span>
+                                <span class="text-xs text-gray-500"
+                                      x-text="$store.settings.prepareSelectedModules.length + ' of ' + $store.settings.prepareModuleRows.length + ' selected'"></span>
+                            </div>
+                            <div class="text-xs text-gray-500 mb-2">
+                                Pre-ticked: the platform plus every module whose version changes here.
+                                Tick more if this package is for a different box.
+                            </div>
+                            <template x-for="row in $store.settings.prepareModuleRows" :key="'prep-' + row.module">
+                                <label class="flex items-center gap-2 py-1 text-xs cursor-pointer"
+                                       :class="row.locked ? 'opacity-70 cursor-not-allowed' : ''">
+                                    <input type="checkbox"
+                                           :checked="$store.settings.prepareSelectedModules.includes(row.module)"
+                                           :disabled="row.locked"
+                                           @change="$store.settings.togglePrepareModule(row.module)"
+                                           class="rounded border-gray-600 bg-gray-900 text-blue-500">
+                                    <span class="flex-1 font-mono text-gray-200" x-text="row.module"></span>
+                                    <span class="font-mono text-gray-500" x-text="row.current"></span>
+                                    <span class="text-gray-600">→</span>
+                                    <span class="font-mono text-gray-300" x-text="row.target"></span>
+                                    <span class="w-40 text-right text-gray-500" x-text="row.reason"></span>
+                                </label>
+                            </template>
+                        </div>
+
                         <!-- Warning -->
                         <div x-show="!$store.settings.prepareLoading && !$store.settings.preparePackageReady" class="bg-yellow-900/30 border border-yellow-700/50 rounded p-3 mt-4">
                             <p class="text-yellow-400 text-xs">
                                 <strong>Note:</strong> Downloads the prebuilt package for the selected release and verifies its checksum — nothing is built here. Expect several minutes and a few GB of free space.
+                            </p>
+                            <p class="text-yellow-400 text-xs mt-2">
+                                <strong>One release at a time.</strong> Upgrades are tested a single hop at a
+                                time (N → N+1). Jumping several releases in one go has not been verified —
+                                if you are more than one release behind, step through them.
                             </p>
                         </div>
 

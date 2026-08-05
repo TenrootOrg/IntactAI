@@ -1166,6 +1166,18 @@ def prepare_upgrade_package():
         if not target:
             return jsonify({"error": "target (release tag) required"}), 400
 
+        # Which modules to bundle. Empty/absent = the whole release, which is
+        # what every caller predating per-module assets sends and what the
+        # legacy single-bundle path can only ever produce.
+        #
+        # `intact` is force-added regardless: a package without the platform
+        # itself cannot drive any other module, and an air-gapped target needs
+        # it to receive the upgrade at all. The UI disables that checkbox, but
+        # an external automation could POST a list that omits it.
+        selected_modules = data.get('selected_modules') or []
+        if selected_modules:
+            selected_modules = sorted(set(selected_modules) | {'intact'})
+
         # Create workflow run — behind the single-writer gate (prepare writes
         # into the package staging dir, so it serializes with upgrades). The
         # mutex closes the double-click TOCTOU.
@@ -1214,9 +1226,44 @@ def prepare_upgrade_package():
                         _dl_pct[0] = p
                         update_run_status(run_id, "running", progress=p)
 
-                pkg_path = download_release_package(
-                    target, dest_dir="/data/upgrade_packages",
-                    run_id=run_id, logger=logger, progress_cb=_dl_progress)
+                # PER-MODULE FIRST, bundle second.
+                #
+                # download_release_package() only ever looks for the legacy
+                # single bundle `intact-upgrade-<tag>.tar.gz`. Releases built by
+                # the per-module CI do not publish one, so Prepare failed on
+                # EVERY current release with "ships no downloadable upgrade
+                # package" -- verified on intact-20260804, where the bundle
+                # lookup returns None while the index is right there. Prepare
+                # simply never got wired to the per-module scheme when it landed.
+                #
+                # An index means per-module assets: fetch the selected ones (or
+                # all of them) and hand the operator that set. Import already
+                # accepts N files, and each carries its own sha256 from the
+                # index, so nothing is re-derived here.
+                from services.upgrade.download import (
+                    find_release_index, download_release_assets)
+                pkg_path = None
+                asset_paths = []
+                index = find_release_index(target, logger=logger)
+                if index:
+                    available = sorted((index.get('assets') or {}).keys())
+                    wanted = ([m for m in selected_modules if m in available]
+                              if selected_modules else available)
+                    skipped = sorted(set(available) - set(wanted))
+                    logger(f"Release {target} publishes {len(available)} module "
+                           f"asset(s); fetching {len(wanted)}: "
+                           f"{', '.join(wanted)}", "info")
+                    if skipped:
+                        logger(f"  not selected (will NOT be in the package): "
+                               f"{', '.join(skipped)}", "info")
+                    asset_paths, _idx = download_release_assets(
+                        target, wanted, dest_dir="/data/upgrade_packages",
+                        run_id=run_id, logger=logger, progress_cb=_dl_progress)
+                    pkg_path = asset_paths[0] if asset_paths else None
+                else:
+                    pkg_path = download_release_package(
+                        target, dest_dir="/data/upgrade_packages",
+                        run_id=run_id, logger=logger, progress_cb=_dl_progress)
 
                 if not pkg_path:
                     msg = (f"Release '{target}' ships no downloadable upgrade "
@@ -1227,15 +1274,37 @@ def prepare_upgrade_package():
                     update_run_status(run_id, "failed", progress=0, error=msg)
                     return
 
-                _save_package_info({
+                # A per-module prepare produces N files, not one. Record them all
+                # so the download UI can offer the whole set -- handing back only
+                # the first would look like a complete package and silently be
+                # one module.
+                _info = {
                     'run_id': run_id,
                     'path': pkg_path,
                     'name': os.path.basename(pkg_path),
                     'size': os.path.getsize(pkg_path),
                     'created_at': time.time(),
-                })
-                add_log_to_run(run_id, f"Package ready for download: "
-                                       f"{os.path.basename(pkg_path)}", "success")
+                }
+                if len(asset_paths) > 1:
+                    _info['assets'] = [
+                        {'path': p, 'name': os.path.basename(p),
+                         'size': os.path.getsize(p)}
+                        for p in asset_paths if os.path.exists(p)
+                    ]
+                    _info['size'] = sum(a['size'] for a in _info['assets'])
+                    _info['name'] = (f"{target} — {len(_info['assets'])} module "
+                                     f"asset(s)")
+                _save_package_info(_info)
+                if len(asset_paths) > 1:
+                    add_log_to_run(run_id,
+                                   f"Package ready: {len(asset_paths)} module "
+                                   f"asset(s), "
+                                   f"{_info['size'] / 1024**3:.2f} GB total. "
+                                   f"Copy ALL of them to the target box and "
+                                   f"import them together.", "success")
+                else:
+                    add_log_to_run(run_id, f"Package ready for download: "
+                                           f"{os.path.basename(pkg_path)}", "success")
                 add_log_to_run(run_id, "Note: Preparing a new package will "
                                        "replace this one", "info")
                 update_run_status(run_id, "completed", progress=100)

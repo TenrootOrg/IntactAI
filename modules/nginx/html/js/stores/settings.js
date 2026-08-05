@@ -860,6 +860,7 @@ document.addEventListener('alpine:init', () => {
         upgradePlan: null,          // ONLINE mode: forced/optional table from /api/upgrade/plan
         optedInOptional: [],        // ONLINE mode: module IDs the operator ticked in the optional table
         optedInReinstall: [],       // ONLINE mode: no-change module IDs ticked to FORCE a reinstall (bug recovery)
+        prepareSelectedModules: [], // PREPARE mode: module IDs to bundle (seeded to the delta; intact always in)
         fetchingRefs: false,
         computingPlan: false,
         showingPrepareModules: false,
@@ -1068,6 +1069,7 @@ document.addEventListener('alpine:init', () => {
             this.upgradePlan = null;
             this.optedInOptional = [];
             this.optedInReinstall = [];
+            this.prepareSelectedModules = [];
             try {
                 const r = await this._fetchWithTimeout('/api/upgrade/plan', {
                     method: 'POST',
@@ -1077,6 +1079,7 @@ document.addEventListener('alpine:init', () => {
                 const d = await r.json();
                 if (d && d.success) {
                     this.upgradePlan = d.plan;
+                    this.seedPrepareSelection();
                 } else {
                     this.showTopToast('Plan failed: ' + (d.error || 'unknown'), 'error');
                 }
@@ -1087,6 +1090,71 @@ document.addEventListener('alpine:init', () => {
                 this.showTopToast(msg, 'error');
             }
             this.computingPlan = false;
+        },
+
+        // PREPARE: which modules go into the package. Seeded to the DELTA —
+        // intact plus every installed module whose version actually moves —
+        // because that is what an operator upgrading this box needs to carry,
+        // and it is the difference between a ~400 MB package and a 5.5 GB one.
+        //
+        // Everything else in the release is still listed and still tickable.
+        // That matters: Prepare's original design deliberately bundled the FULL
+        // upstream list, on the grounds that a package is often carried to a
+        // DIFFERENT air-gapped box whose installed set this machine knows
+        // nothing about. Defaulting to the delta without leaving the rest
+        // reachable would quietly produce a package missing modules the target
+        // needs. Delta is the default, not the limit.
+        //
+        // intact is always in and cannot be unticked (the backend force-adds it
+        // too): every other module needs the platform to drive it.
+        seedPrepareSelection() {
+            const p = this.upgradePlan;
+            if (!p) { this.prepareSelectedModules = []; return; }
+            const sel = ['intact'];
+            for (const row of (p.forced || [])) {
+                // 'upgrade' = installed and the version moves. 'noop' = already
+                // at target, so it is dead weight in the package unless ticked.
+                if (row.module !== 'intact' && row.action === 'upgrade') {
+                    sel.push(row.module);
+                }
+            }
+            this.prepareSelectedModules = sel;
+        },
+
+        togglePrepareModule(moduleId) {
+            if (moduleId === 'intact') return;   // never removable
+            const i = this.prepareSelectedModules.indexOf(moduleId);
+            if (i >= 0) this.prepareSelectedModules.splice(i, 1);
+            else this.prepareSelectedModules.push(moduleId);
+        },
+
+        // Every module the release ships, each tagged with why it is (or is not)
+        // pre-ticked, so the table can explain itself rather than just showing
+        // boxes. `forced` = installed here; `optional` = in the release but not
+        // installed on this box.
+        get prepareModuleRows() {
+            const p = this.upgradePlan;
+            if (!p) return [];
+            const rows = [];
+            for (const r of (p.forced || [])) {
+                rows.push({
+                    module: r.module,
+                    current: r.current,
+                    target: r.target,
+                    reason: r.module === 'intact' ? 'platform (always included)'
+                          : r.action === 'upgrade' ? 'version changed'
+                          : 'already up to date',
+                    locked: r.module === 'intact',
+                });
+            }
+            for (const r of (p.optional || [])) {
+                rows.push({
+                    module: r.module, current: 'not installed',
+                    target: r.target, reason: 'not installed here',
+                    locked: false,
+                });
+            }
+            return rows;
         },
 
         toggleOptionalModule(moduleId) {
@@ -1143,7 +1211,8 @@ document.addEventListener('alpine:init', () => {
             const body = isOnline
                 ? {target: this.selectedRef, opted_in_optional: this.optedInOptional,
                    opted_in_reinstall: this.optedInReinstall}
-                : {target: this.selectedRef};
+                : {target: this.selectedRef,
+                   selected_modules: this.prepareSelectedModules};
             this.prepareLoading = true;
             try {
                 const r = await fetch(endpoint, {
@@ -1209,10 +1278,13 @@ document.addEventListener('alpine:init', () => {
         // for prepare). Saves a click; matches the "auto-show" UX.
         async onSelectedRefChange() {
             if (!this.selectedRef) return;
-            if (this.prepareModalMode === 'online') {
-                await this.computeUpgradePlan();
-            } else {
-            }
+            // BOTH modes need the plan now. Online has always used it for the
+            // forced/optional tables; prepare used to compute nothing (this
+            // branch was empty), which is why it had no module selection and
+            // simply pulled the entire release. The same plan tells prepare
+            // which modules actually move on this box, i.e. the delta to
+            // pre-tick.
+            await this.computeUpgradePlan();
         },
 
         closePreparePackageModal() {
