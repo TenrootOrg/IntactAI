@@ -412,8 +412,108 @@ def check_package_format(manifest: Dict, logger: Callable = None):
     return None
 
 
+# Compose project name -> the module id the upgrade orchestrator uses. Every
+# container on the box carries com.docker.compose.project, and for almost every
+# module the project name IS the module id (elk, iris, timesketch, volweb,
+# portainer, velociraptor), so only the exceptions are listed here.
+#
+# The exception is the platform itself: it ships as two compose projects,
+# `backend` (intact_backend, intact_tusd) and `nginx` (intact_nginx), while the
+# upgrade calls that single module `intact`. Mapping them explicitly matters —
+# leaving them unmapped would make the backend's own containers look like they
+# belong to a module no upgrade ever touches, and the health gate would stop
+# reporting a dead backend, which is the one thing it exists to catch.
+#
+# Deliberately preferred over base.py's _MODULE_PRIMARY_CONTAINERS: that table
+# maps elk to intact_elasticsearch ONLY, so it cannot attribute intact_kibana or
+# intact_logstash to anything — which is exactly the pair that produced the
+# false DEGRADED verdict on 2026-08-05.
+_COMPOSE_PROJECT_TO_MODULE_ID = {
+    'backend': 'intact',
+    'nginx': 'intact',
+}
+
+
+def _compose_project_to_module_id(project: str) -> Optional[str]:
+    """Module id owning a container's compose project, or None if unlabelled.
+
+    None means "cannot attribute" and callers must treat it as in-scope: a
+    container we cannot place must never be silently excluded from a health
+    check just because its label is missing.
+    """
+    project = (project or '').strip().strip("'")
+    if not project:
+        return None
+    return _COMPOSE_PROJECT_TO_MODULE_ID.get(project, project)
+
+
+def _docker_time_to_epoch(raw: str) -> Optional[float]:
+    """Parse a docker timestamp (e.g. .State.FinishedAt) into an epoch float.
+
+    Docker emits RFC3339Nano in UTC — "2026-08-05T12:04:47.90433029Z" — with
+    NINE fractional digits, and a container that has never exited carries Go's
+    zero time, "0001-01-01T00:00:00Z". The zero time parses happily and yields a
+    hugely negative epoch, which would make a live container look like it died
+    before every conceivable upgrade, so it is rejected by name rather than
+    trusted. The Z suffix and the nanosecond tail are normalised by hand instead
+    of leaning on fromisoformat's 3.11+ tolerance, so this keeps working if the
+    backend image's Python is ever rolled back.
+
+    Returns None when the value is unusable — callers must then fall back to
+    reporting the container, never to assuming it was fine.
+    """
+    raw = (raw or '').strip().strip("'")
+    if not raw or raw.startswith('0001-01-01'):
+        return None
+    try:
+        from datetime import datetime as _dtc
+        txt = raw[:-1] + '+00:00' if raw.endswith('Z') else raw
+        if '.' in txt:
+            head, _, tail = txt.partition('.')
+            digits = ''
+            while tail and tail[0].isdigit():
+                digits, tail = digits + tail[0], tail[1:]
+            txt = f"{head}.{digits[:6] or '0'}{tail}"
+        return _dtc.fromisoformat(txt).timestamp()
+    except Exception:
+        return None
+
+
+def _as_epoch(value) -> Optional[float]:
+    """Normalise a run-start marker (epoch number or ISO string) to a float.
+
+    Both call sites hand this in from a different source — the offline workflow
+    times itself, the Phase-2 resume reads upgrade_state.created_at, which is a
+    NAIVE local-time ISO string written by datetime.now(). Parsing it naive and
+    calling .timestamp() interprets it in local time, the exact inverse of how
+    it was written in this same container, so the absolute instant survives the
+    round trip regardless of the box's timezone.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value) or None
+    try:
+        from datetime import datetime as _dtc
+        return _dtc.fromisoformat(str(value).strip().replace('Z', '+00:00')).timestamp()
+    except Exception:
+        return None
+
+
+def _human_gap(seconds: float) -> str:
+    """Compact 's/m/h' rendering of a duration, for health-gate messages."""
+    seconds = int(max(0, seconds))
+    if seconds < 90:
+        return f"{seconds}s"
+    if seconds < 5400:
+        return f"{seconds // 60}m"
+    return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}m"
+
+
 def post_upgrade_health_gate(logger: Callable = None, budget_s: int = 45,
-                            expected_backend_tag: str = None) -> Dict:
+                            expected_backend_tag: str = None,
+                            run_started_at=None,
+                            touched_modules=None) -> Dict:
     """Observe whether the platform is actually serving after an upgrade.
 
     Every module reporting success is not the same as a working platform. On
@@ -426,29 +526,60 @@ def post_upgrade_health_gate(logger: Callable = None, budget_s: int = 45,
     operator is told to look. Hard-bounded by `budget_s` (default 45s) because a
     health check that hangs is worse than one that is briefly wrong.
 
-    Returns {"healthy": bool, "checked": int, "problems": [str]}.
+    `run_started_at` (epoch float or ISO string) and `touched_modules` (module
+    ids this run actually acted on) exist because the gate spent its first weeks
+    blaming the upgrade for damage that predated it — see the 2026-08-05 note on
+    the container loop below. Both are optional and both default to the original
+    behaviour when absent: no timestamp means every down container is reported,
+    no module list means every module counts as in-scope. The gate can only ever
+    become quieter with MORE information, never louder with less.
+
+    Returns {"healthy": bool, "checked": int, "problems": [str],
+             "preexisting": [str]}.
     """
     import time as _t
     log = logger or (lambda m, l="info": None)
     started = _t.time()
     problems = []
+    # Containers that were already down before this run began. Kept OUT of
+    # `problems` on purpose: they are real operational facts an operator may
+    # want to know, but they are not evidence about this upgrade, so they must
+    # not flip the verdict to DEGRADED.
+    preexisting = []
     checked = 0
+    run_epoch = _as_epoch(run_started_at)
+    touched = None
+    if touched_modules is not None:
+        touched = {str(m).strip().lower() for m in touched_modules if m}
 
     def _left():
         return max(0.0, budget_s - (_t.time() - started))
 
     # 1. Container health — anything created but not running, or reporting
     #    unhealthy. `docker ps -a` so a container that died is not invisible.
+    #
+    #    com.docker.compose.project is pulled in the same call so every
+    #    container can be attributed to the module that owns it (see
+    #    _COMPOSE_PROJECT_TO_MODULE_ID). One `docker ps` rather than one
+    #    `docker inspect` per container, because this whole section runs inside
+    #    a shared budget_s and N round-trips is how a health check starts
+    #    timing out on a box with twenty containers.
     try:
         r = run_command(
             "docker ps -a --filter name=intact_ --format "
-            "'{{.Names}}\t{{.State}}\t{{.Status}}'",
+            "'{{.Names}}\t{{.State}}\t{{.Status}}\t"
+            "{{.Label \"com.docker.compose.project\"}}'",
             logger=None, timeout=min(15, max(5, int(_left()))))
         for line in (r.get('stdout') or '').splitlines():
             parts = line.strip().split('\t')
             if len(parts) < 3:
                 continue
             name, state, status = parts[0], parts[1], parts[2]
+            module_id = _compose_project_to_module_id(
+                parts[3] if len(parts) > 3 else '')
+            # Unattributable containers count as in-scope: a missing label is
+            # ignorance, not an alibi.
+            in_scope = touched is None or module_id is None or module_id in touched
             checked += 1
             if state == 'created':
                 # `created` means docker built the container and nothing ever
@@ -488,25 +619,66 @@ def post_upgrade_health_gate(logger: Callable = None, budget_s: int = 45,
                 # running is still a problem — a stopped nginx
                 # (restart: unless-stopped) and a setup task that exited 1 both
                 # still report, which is the whole point of the check.
-                policy, code = '', None
+                #
+                # .State.FinishedAt is read in the SAME inspect because of
+                # 2026-08-05: the gate reported "DEGRADED — 2 problem(s) after
+                # an otherwise successful upgrade: intact_kibana is exited,
+                # intact_logstash is exited" for two containers that had taken
+                # SIGTERM at 12:04:46, four minutes BEFORE the run was even
+                # created at 12:08:30 (OOMKilled=false on both; logstash logged
+                # "SIGTERM received. Shutting down." — a deliberate `docker
+                # stop`). The same run had logged "ELK: already at 9.4.4 — no
+                # version/sidecar change, skipping", so the upgrade had not gone
+                # near them. The age was literally sitting in the {{.Status}}
+                # string it was truncating to 40 chars ("Exited (0) 17 minutes
+                # ago") and pasting in unread. Now it is parsed and compared.
+                policy, code, finished = '', None, None
                 try:
                     ri = run_command(
                         "docker inspect -f '{{.HostConfig.RestartPolicy.Name}} "
-                        "{{.State.ExitCode}}' " + name,
+                        "{{.State.ExitCode}} {{.State.FinishedAt}}' " + name,
                         logger=None, timeout=min(10, max(5, int(_left()))))
                     bits = (ri.get('stdout') or '').strip().strip("'").split()
-                    if len(bits) == 2:
+                    if len(bits) >= 2:
                         policy, code = bits[0], int(bits[1])
+                    if len(bits) >= 3:
+                        finished = _docker_time_to_epoch(bits[2])
                 except Exception:
-                    policy, code = '', None
+                    policy, code, finished = '', None, None
+                owner = module_id or 'unattributed'
                 if state == 'exited' and policy == 'no' and code == 0:
                     log(f"  [health] {name} exited 0 and is declared "
                         f"restart:\"no\" — a one-shot setup task that "
                         f"completed, not a fault.", "info")
+                elif run_epoch and finished and finished < run_epoch:
+                    # Hard evidence beats attribution: whatever module owns it,
+                    # a container that stopped before the run existed cannot
+                    # have been stopped by the run.
+                    preexisting.append(
+                        f"{name} [{owner}] was ALREADY DOWN "
+                        f"{_human_gap(run_epoch - finished)} before this upgrade "
+                        f"started — {status[:40]}")
+                elif not in_scope:
+                    # Went down during the run, but the run never touched this
+                    # module. Still reported — collateral damage is real and the
+                    # gate's job is to make the operator look — but named as
+                    # untouched so nobody spends an hour auditing a module the
+                    # upgrade skipped.
+                    problems.append(
+                        f"{name} is {state} ({status[:40]}) — module {owner} was "
+                        f"NOT touched by this run, so this is a coincident "
+                        f"failure, not an upgrade regression")
                 else:
                     problems.append(f"{name} is {state} ({status[:40]})")
             elif 'unhealthy' in status.lower():
-                problems.append(f"{name} reports unhealthy ({status[:40]})")
+                if in_scope:
+                    problems.append(f"{name} reports unhealthy ({status[:40]})")
+                else:
+                    # No FinishedAt to lean on — it is running — so module
+                    # attribution is the only signal available here.
+                    problems.append(
+                        f"{name} reports unhealthy ({status[:40]}) — module "
+                        f"{module_id} was NOT touched by this run")
     except Exception as e:
         log(f"  [health] container check skipped ({type(e).__name__}: {e})", "warning")
 
@@ -552,6 +724,17 @@ def post_upgrade_health_gate(logger: Callable = None, budget_s: int = 45,
         except Exception as e:
             log(f"  [health] api check skipped ({type(e).__name__}: {e})", "warning")
 
+    # Reported at info level, and BEFORE the verdict, so the operator reads
+    # "these were already broken when you started" before reading anything the
+    # upgrade is accused of. Never warning level: a pre-existing outage is not
+    # news this run is qualified to break.
+    if preexisting:
+        log(f"  [health] {len(preexisting)} container(s) were already down "
+            f"BEFORE this upgrade began — pre-existing, not caused by it:",
+            "info")
+        for pe in preexisting[:8]:
+            log(f"    - {pe}", "info")
+
     healthy = not problems
     if healthy:
         log(f"  Post-upgrade health: OK ({checked} checks, "
@@ -563,7 +746,8 @@ def post_upgrade_health_gate(logger: Callable = None, budget_s: int = 45,
             log(f"    - {pr}", "warning")
         log("    The upgrade itself completed; these are runtime symptoms worth "
             "checking before you rely on the platform.", "warning")
-    return {"healthy": healthy, "checked": checked, "problems": problems}
+    return {"healthy": healthy, "checked": checked, "problems": problems,
+            "preexisting": preexisting}
 
 
 def _reject_downgrades(modules_dict: Dict, current_versions: Dict,
@@ -2424,7 +2608,23 @@ def resume_upgrade_workflow(run_id: str, logger: Callable = None) -> Dict:
         # image would still have gone unreported.
         try:
             _target = (state.get('modules') or {}).get('intact')
-            _hg = post_upgrade_health_gate(logger=log, expected_backend_tag=_target)
+            # The run started in PHASE 1, in the previous backend process —
+            # `now` would be minutes late and would let every container Phase 1
+            # stopped look pre-existing. upgrade_state.created_at is written at
+            # Phase 1 entry (services/storage/base.py:save_upgrade_state), which
+            # is the instant the operator actually kicked this off.
+            _hg = post_upgrade_health_gate(
+                logger=log, expected_backend_tag=_target,
+                run_started_at=state.get('created_at'),
+                # completed_modules carries Phase 1's work (intact) across the
+                # restart; `results` only ever holds this process's Phase-2
+                # modules, so neither alone describes the whole run. Skipped
+                # modules are excluded — a module the run declined to touch
+                # cannot have been broken by it.
+                touched_modules=set(completed_modules) | {
+                    m for m, r in results.items()
+                    if not m.startswith('_') and isinstance(r, dict)
+                    and not r.get('skipped')})
             results["_health"] = _hg
             if not _hg.get("healthy") and overall_status == "success":
                 overall_status = "completed_with_warnings"
@@ -2551,6 +2751,14 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
     """
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     db_overwrite = db_overwrite or {}
+
+    # Stamped before anything is verified, extracted or touched, so the
+    # post-upgrade health gate can tell a container this run stopped from one
+    # that was already down when the operator pressed Apply. On 2026-08-05 the
+    # gate had no such reference point and reported two containers that had been
+    # stopped by hand four minutes EARLIER as symptoms of the upgrade.
+    import time as _wf_t
+    _run_started_at = _wf_t.time()
 
     log("=" * 50, "info")
     log(workflow_label, "info")
@@ -3354,7 +3562,13 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
             try:
                 _hg = post_upgrade_health_gate(
                     logger=log,
-                    expected_backend_tag=(modules_dict or {}).get('intact'))
+                    expected_backend_tag=(modules_dict or {}).get('intact'),
+                    run_started_at=_run_started_at,
+                    # `succeeded` is already the non-skipped, non-underscore
+                    # set computed just above; failed modules belong here too —
+                    # a module whose upgrade blew up is precisely the one whose
+                    # containers the run IS responsible for.
+                    touched_modules=set(succeeded) | set(failed))
                 results["_health"] = _hg
                 if not _hg.get("healthy") and overall_status == "success":
                     overall_status = "completed_with_warnings"

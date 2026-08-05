@@ -265,13 +265,22 @@ def handle_tus_hook():
 
             # Validate file extension based on purpose
             if purpose == 'upgrade_package':
-                if not (filename.lower().endswith('.tar.gz') or filename.lower().endswith('.tgz')):
-                    print(f"[TUS HOOK] Rejected: Not a tar.gz file '{filename}'", flush=True)
+                # '.tar' is accepted alongside the compressed forms. A wrapper
+                # package carries the release's per-module assets unchanged, and
+                # those are already-gzipped docker layers: re-gzipping the
+                # wrapper measured 0.55% smaller (31 MB on 5.44 GB) for a full
+                # single-threaded deflate pass over 5.4 GB, so prepare may hand
+                # the operator a plain .tar. Rejecting it here would refuse the
+                # upload before any of the readers downstream ever saw it.
+                if not (filename.lower().endswith('.tar.gz')
+                        or filename.lower().endswith('.tgz')
+                        or filename.lower().endswith('.tar')):
+                    print(f"[TUS HOOK] Rejected: Not a tar file '{filename}'", flush=True)
                     return jsonify({
                         "RejectUpload": True,
                         "HTTPResponse": {
                             "StatusCode": 400,
-                            "Body": json.dumps({"error": "Upgrade packages must be .tar.gz or .tgz files"})
+                            "Body": json.dumps({"error": "Upgrade packages must be .tar.gz, .tgz or .tar files"})
                         }
                     }), 200
             elif purpose == 'agentic_external':
@@ -323,6 +332,24 @@ def handle_tus_hook():
                     from services.file_storage_service import get_workflow as _get_wf
                     if _get_wf(provided_run):
                         _upload_runs[upload_id] = provided_run
+                        # Write the id into the RUN as well, not just the
+                        # in-memory map. The map is popped at post-finish and
+                        # lost on restart, and details.upload_id is the only
+                        # durable join anyone else has: _resolve_upload_run's
+                        # storage fallback, _close_orphan_upload_run, and
+                        # sweep_applied_upload_packages' 4 GiB reclaim all key
+                        # off it. A pre-created row never had it, so all three
+                        # matched nothing and silently did nothing — the reason
+                        # an upload row sat at running/10% for 40+ minutes on
+                        # 2026-08-05 while a second run did the apply.
+                        try:
+                            from services.workflow_service import mutate_run_details
+                            mutate_run_details(
+                                provided_run,
+                                lambda d, _u=upload_id: d.__setitem__("upload_id", _u))
+                        except Exception as _be:
+                            print(f"[TUS HOOK] could not record upload_id on run "
+                                  f"{provided_run}: {_be}", flush=True)
                         add_log_to_run(provided_run, f"Upload started: {filename} ({size_mb:.1f} MB)")
                         add_log_to_run(provided_run, f"Upload ID: {upload_id}")
                         update_run_status(provided_run, "running", progress=0)

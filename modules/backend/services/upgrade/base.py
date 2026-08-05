@@ -1890,10 +1890,20 @@ def verify_upgrade_package(package_path: str, logger: Callable = None,
     entirely. Applying a package is a privileged operation on a host whose
     backend holds the Docker socket, so that distinction matters.
 
-    The online path is anchored: `services/upgrade/download.py` fetches the
-    `.sha256` sidecar published with the GitHub release and checks the whole
-    tarball against it. The offline path — an operator uploading a package by
-    hand, typically into an air-gapped site — had no anchor at all.
+    The online path is anchored: `services/upgrade/download.py` reads each
+    asset's sha256 out of the release's `<tag>.index.json` and checks the
+    downloaded bytes against it. The offline path — an operator uploading a
+    package by hand, typically into an air-gapped site — had no anchor at all.
+
+    It has one now, for the shape that actually reaches this function. A
+    WRAPPER package (scripts/prepare_package.sh) carries that same
+    `<tag>.index.json` beside the assets it wraps, so the unwrap branch below
+    verifies every INNER asset against the hashes the RELEASE published. The
+    outer wrapper itself is built on the operator's own machine and therefore
+    has no published digest to compare against — correctly so — which means
+    only its contents can be anchored, never the wrapping. The log says that
+    now instead of the old blanket "authenticity NOT checked", which was false
+    on exactly the packages air-gap sites hand-carry.
 
     So: the archive digest is now always computed and logged, and
     ``expected_sha256`` lets an operator supply the value published on the
@@ -1938,10 +1948,19 @@ def verify_upgrade_package(package_path: str, logger: Callable = None,
             return {"success": False, "error": err, "sha256": archive_sha256,
                     "retryable": True}
         log("  Digest matches the value supplied by the operator", "success")
-    else:
-        log("  No expected digest supplied — the package is checked for "
-            "corruption, NOT authenticity. Compare the sha256 above against "
-            "the .sha256 published with the release.", "warning")
+    _digest_unanchored = not expected_sha256
+    # Deliberately NOT reported here. This point in the function is before
+    # extraction and before any wrapper handling, so it cannot yet know what
+    # will be verified -- and the message that used to print here got it wrong
+    # twice. It told every operator that authenticity was unchecked even when
+    # the index-backed check further down had verified each inner asset against
+    # the release's own hashes, and it told them to compare against "the .sha256
+    # published with the release", a file that does not exist:
+    # .github/workflows/build-release-assets.yml puts every per-asset sha256 in
+    # <tag>.index.json and says outright that no per-asset .sha256 is written.
+    # The UI never passes expected_sha256, so that false instruction printed on
+    # EVERY UI-initiated offline apply. Each branch below now reports what it
+    # actually checked.
 
     # Pre-extract integrity check. Catches archives that were
     # produced corrupt by an old prepare (pre-`gzip -t` fix) or
@@ -1951,23 +1970,40 @@ def verify_upgrade_package(package_path: str, logger: Callable = None,
     # `gzip -t` reads the whole file and validates every deflate
     # block — corrupt archives fail HERE with a clear instruction
     # to re-prepare, before we touch the filesystem.
-    log("Verifying package integrity (gzip -t)...", "info")
-    import subprocess as _subprocess
-    verify = _subprocess.run(
-        ["gzip", "-t", package_path],
-        capture_output=True, text=True,
-    )
-    if verify.returncode != 0:
-        err = (verify.stderr or "").strip() or "gzip integrity check failed"
-        return {
-            "success": False,
-            "error": (
-                f"Uploaded package failed gzip integrity check: {err[:200]}. "
-                "The archive is corrupt. Re-prepare the package on the "
-                "source machine and re-upload."
-            ),
-        }
-    log("  Integrity OK", "success")
+    #
+    # Gated on the gzip magic number because packages are no longer necessarily
+    # gzipped. Re-gzipping assets that are already gzip-compressed at rest
+    # (Docker image layers) was measured at 0.55% -- 31 MB off 5.44 GB -- for a
+    # full single-threaded deflate pass over 5.4 GB, so a plain .tar wrapper is
+    # now a legitimate shape to receive. `gzip -t` on one exits non-zero, which
+    # would have turned every uncompressed package into "the archive is
+    # corrupt". An uncompressed archive has no deflate blocks to validate, so
+    # there is nothing to run here; the per-file sha256 map (and, for a wrapper,
+    # the release index) is what catches truncation on that path.
+    with open(package_path, 'rb') as _mh:
+        _is_gzip = _mh.read(2) == b'\x1f\x8b'
+    if _is_gzip:
+        log("Verifying package integrity (gzip -t)...", "info")
+        import subprocess as _subprocess
+        verify = _subprocess.run(
+            ["gzip", "-t", package_path],
+            capture_output=True, text=True,
+        )
+        if verify.returncode != 0:
+            err = (verify.stderr or "").strip() or "gzip integrity check failed"
+            return {
+                "success": False,
+                "error": (
+                    f"Uploaded package failed gzip integrity check: {err[:200]}. "
+                    "The archive is corrupt. Re-prepare the package on the "
+                    "source machine and re-upload."
+                ),
+            }
+        log("  Integrity OK", "success")
+    else:
+        log("  Package is not gzip-compressed — skipping gzip -t; integrity "
+            "rests on the per-file sha256 map and, for a wrapper, the packaged "
+            "release index", "info")
 
     # A WRAPPER package (one file carrying the release's N per-module assets,
     # produced by scripts/prepare_package.sh for air-gap hand-carry) is
@@ -2047,6 +2083,18 @@ def verify_upgrade_package(package_path: str, logger: Callable = None,
             if _expected:
                 log(f"  Checking {len(_expected)} asset(s) against the "
                     f"packaged release index", "info")
+            elif _digest_unanchored:
+                # A wrapper whose index is missing or unreadable is the one
+                # wrapper case with no anchor: the assets are then checked only
+                # against the manifests travelling inside them, which whoever
+                # rewrote an asset could rewrite too. Point at the index by its
+                # real name -- there is no per-asset .sha256 to point at.
+                log("  This wrapper carries no readable release index, so its "
+                    "assets are checked for corruption against their own "
+                    "manifests, NOT for authenticity. The release publishes "
+                    "every asset's sha256 in <tag>.index.json — re-prepare the "
+                    "package so the index travels with it, or compare the "
+                    "assets against that file by hand.", "warning")
             result = assemble_release_package(
                 inner_paths,
                 extract_dir=f"/app/data/tmp/intact-upgrade-{int(time.time())}",
@@ -2058,11 +2106,38 @@ def verify_upgrade_package(package_path: str, logger: Callable = None,
             shutil.rmtree(unwrap_dir, ignore_errors=True)
             if result.get('success'):
                 result.setdefault('sha256', archive_sha256)
+                if _expected:
+                    # assemble_release_package aborts on any mismatch, so
+                    # reaching here with a non-empty _expected means every
+                    # asset it covered matched the release's published hash.
+                    # Be precise about the boundary: the CONTENTS are anchored
+                    # to the release, the wrapping is not and cannot be --
+                    # prepare_package.sh builds the outer tar on the operator's
+                    # machine, so no digest for it was ever published.
+                    log(f"  Authenticity: all {len(_expected)} inner asset(s) "
+                        f"matched the sha256 values in the packaged "
+                        f"<tag>.index.json, which is the hash source the "
+                        f"release publishes. The outer wrapper is operator-"
+                        f"generated and has no published digest to compare "
+                        f"against, so its CONTENTS are anchored to the release "
+                        f"even though the wrapping itself is not.", "success")
             return result
         except Exception as e:
             shutil.rmtree(unwrap_dir, ignore_errors=True)
             return {"success": False, "retryable": True,
                     "error": f"could not unwrap the single-file package: {e}"}
+
+    # Not a wrapper, so nothing here carries the release index and nothing was
+    # compared against a release-published hash. The honest warning still
+    # belongs on this path -- an operator applying an arbitrary tarball to a
+    # host whose backend holds the Docker socket deserves to be told that
+    # authenticity was never established.
+    if _digest_unanchored:
+        log("No expected digest supplied and this package carries no release "
+            "index — it is checked for corruption, NOT authenticity. The "
+            "release publishes each asset's sha256 in its <tag>.index.json "
+            "(there is no per-asset .sha256 file); compare the digest above "
+            "against this asset's entry there before trusting it.", "warning")
 
     log("Extracting upgrade package...", "info")
 
@@ -2101,7 +2176,15 @@ def verify_upgrade_package(package_path: str, logger: Callable = None,
         log(f"  Disk-space preflight skipped: {e}", "warning")
 
     try:
-        with tarfile.open(package_path, 'r:gz') as tar:
+        # Mode 'r' is deliberate, do not "tidy" it back to 'r:gz'. Plain 'r'
+        # auto-detects the compression and reads BOTH .tar.gz and plain .tar;
+        # 'r:gz' raises ReadError on an uncompressed archive. Packages stopped
+        # being unconditionally gzipped once we measured that re-gzipping
+        # already-compressed image layers buys 0.55%, so this side has to read
+        # either. Every .tar.gz already published keeps working unchanged --
+        # this is a strict superset, the same "write new, read both" rule the
+        # cloudtrail -> aws_sigma rename follows.
+        with tarfile.open(package_path, 'r') as tar:
             # TAR-SLIP defense (Mythos finding #7). Reject any member
             # whose name starts with `/` or contains `..` — neither
             # appears in legitimate IntactAI upgrade packages produced
@@ -2208,10 +2291,14 @@ def verify_upgrade_package(package_path: str, logger: Callable = None,
             # archive being checked, so anyone who can modify the package can
             # also drop this block and skip verification entirely. Say so at
             # warning level rather than filing it under back-compat trivia.
+            # Wording only: this used to send the operator to a ".sha256
+            # published with the release", which has never been published --
+            # the release's hashes live in <tag>.index.json. Behaviour is
+            # unchanged, the pointer now names a file that exists.
             log("  Package carries no sha256 map — per-file integrity NOT "
                 "verified (older prepare, or the block was removed). Compare "
-                "the archive digest logged above against the .sha256 published "
-                "with the release before applying.", "warning")
+                "the archive digest logged above against this asset's entry in "
+                "the release's <tag>.index.json before applying.", "warning")
 
         return {
             "success": True,
@@ -2263,7 +2350,9 @@ def get_package_info(package_path: str) -> Dict:
             print(f"[PACKAGE-INFO] sidecar unreadable ({e}); falling back to tar scan", flush=True)
 
     try:
-        with tarfile.open(package_path, 'r:gz') as tar:
+        # 'r' not 'r:gz', deliberately: auto-detect reads both .tar.gz and the
+        # plain .tar packages we now also produce. Do not narrow it back.
+        with tarfile.open(package_path, 'r') as tar:
             for member in tar.getmembers():
                 # A WRAPPER package has no manifest.json of its own -- the
                 # merged manifest only exists once the apply side assembles
@@ -2729,7 +2818,10 @@ def _extract_one_asset(asset_path: str, extract_dir: str,
     verify_upgrade_package applies. Raises on anything suspicious."""
     log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
     import tarfile
-    with tarfile.open(asset_path, 'r:gz') as tar:
+    # 'r' not 'r:gz', deliberately: auto-detect reads both .tar.gz and plain
+    # .tar. A wrapper may now carry uncompressed module assets, and this is the
+    # function that opens each one. Do not narrow it back.
+    with tarfile.open(asset_path, 'r') as tar:
         members = tar.getmembers()
         for m in members:
             name = m.name
@@ -2749,8 +2841,8 @@ def _extract_one_asset(asset_path: str, extract_dir: str,
 
 
 def wrapper_package_members(package_path: str):
-    """The inner ``*.tar.gz`` names if ``package_path`` is a WRAPPER package,
-    else None.
+    """The inner ``*.tar.gz`` / ``*.tar`` names if ``package_path`` is a
+    WRAPPER package, else None.
 
     ``scripts/prepare_package.sh`` (and the UI's Prepare Package, which just
     runs that script) produce a single file for hand-carry across an air gap:
@@ -2764,13 +2856,27 @@ def wrapper_package_members(package_path: str):
     a per-module asset and a CI bundle both extract to a top-level
     ``intact-upgrade-<tag>/`` directory, so every member name contains a
     ``/``. A wrapper's members are bare filenames at depth 0, and at least one
-    is itself a ``.tar.gz``. Returns None rather than raising for anything
-    unreadable -- the caller then treats it as an ordinary package, which is
-    the pre-existing behaviour.
+    is itself a ``.tar.gz`` or ``.tar``. Returns None rather than raising for
+    anything unreadable -- the caller then treats it as an ordinary package,
+    which is the pre-existing behaviour.
+
+    The inner suffix accepts plain ``.tar`` as well as ``.tar.gz`` because a
+    wrapper may now carry uncompressed module assets -- re-gzipping assets that
+    are already gzip-compressed at rest was measured at 0.55% for a full
+    deflate pass over 5.4 GB, so prepare no longer always pays it. What keeps
+    that widening safe is the depth-0 test ABOVE, not the suffix test: a
+    per-module asset's members all live under ``intact-upgrade-<tag>/`` and so
+    all contain a ``/``, which returns None before the suffix is ever looked
+    at. That is unchanged, in either format -- a per-module asset still cannot
+    be mistaken for a wrapper.
     """
     import tarfile
     try:
-        with tarfile.open(package_path, 'r:gz') as tar:
+        # 'r' not 'r:gz', deliberately: auto-detect reads both .tar.gz and
+        # plain .tar, so an uncompressed wrapper is still recognised as one
+        # rather than falling through to the ordinary-package path. Do not
+        # narrow it back.
+        with tarfile.open(package_path, 'r') as tar:
             names = [m.name for m in tar.getmembers() if m.isfile()]
     except Exception:
         return None
@@ -2778,7 +2884,16 @@ def wrapper_package_members(package_path: str):
         return None
     if any('/' in n or '\\' in n for n in names):
         return None
-    inner = [n for n in names if n.endswith('.tar.gz')]
+    # A `docker save` / OCI archive is the one other thing with flat depth-0
+    # members, and accepting a bare `.tar` suffix is what brings it into range
+    # (the v1 format's layer tars). Its markers are exact names -- a wrapper's
+    # index is `<tag>.index.json`, never a bare `index.json` -- so this rejects
+    # image archives without touching any real wrapper. Same marker set as
+    # _tar_is_docker_image().
+    if any(n.lstrip('./') in ('manifest.json', 'index.json', 'oci-layout')
+           for n in names):
+        return None
+    inner = [n for n in names if n.endswith('.tar.gz') or n.endswith('.tar')]
     return inner or None
 
 

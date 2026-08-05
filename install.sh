@@ -91,15 +91,22 @@ source "${SCRIPT_DIR}/lib/upgrade_check.sh"
 # ---------------------------------------------------------------------------
 # Air-gap: install from release assets instead of the internet.
 #
-#   sudo bash install.sh --package /path/to/intact-upgrade-<tag>.tar.gz
+#   sudo bash install.sh --package /path/to/intact-upgrade-<tag>.tar
 #   sudo bash install.sh --package /path/to/dir-of-module-assets/
-#   sudo bash install.sh --package a.tar.gz --package b.tar.gz     (repeatable)
+#   sudo bash install.sh --package a.tar --package b.tar           (repeatable)
 #
 # A release publishes one asset per module plus a single bundle carrying all of
 # them. Either works here: the bundle because it is one file and that is easier
 # to carry into an air-gapped site, the module assets because they are what the
 # release is actually made of. Point --package at a directory and every
-# *.tar.gz in it is used.
+# *.tar / *.tar.gz in it is used.
+#
+# BOTH suffixes, everywhere below. Assets and the wrapper are plain tar now --
+# their contents are already-compressed image layers, so the outer gzip bought
+# 0.55% for a full deflate pass over 5.4 GB -- but every package cut before that
+# is a .tar.gz sitting on a USB stick in a site with no way to re-fetch it, and
+# has to keep installing. `tar -xf`/`tar -tf` auto-detect the compression, so
+# reading both costs nothing but the extra -name in the discovery globs.
 #
 # Loading the images up front means _pull_image_with_retry finds each one
 # already in the local store and skips the registry -- so every existing
@@ -123,7 +130,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "  --package  install offline from release assets; no registry"
             echo "             access is attempted. Accepts the single bundle"
-            echo "             (intact-upgrade-<tag>.tar.gz), a directory of"
+            echo "             (intact-upgrade-<tag>.tar), a directory of"
             echo "             per-module assets, or the flag repeated."
             echo ""
             echo "  With no arguments the release assets are downloaded from"
@@ -144,7 +151,8 @@ if (( ${#INTACT_PACKAGES[@]} > 0 )); then
     for _p in "${INTACT_PACKAGES[@]}"; do
         if [[ -d "$_p" ]]; then
             while IFS= read -r _f; do _expanded+=("$_f"); done \
-                < <(find "$_p" -maxdepth 1 -name '*.tar.gz' | sort)
+                < <(find "$_p" -maxdepth 1 \
+                         \( -name '*.tar.gz' -o -name '*.tar' \) | sort)
         else
             _expanded+=("$_p")
         fi
@@ -155,7 +163,7 @@ fi
 
 # Unwrap a single-file WRAPPER package. scripts/prepare_package.sh (and the
 # UI's Prepare Package feature, which just runs that script) produce one
-# tar.gz containing N per-module *.tar.gz assets plus an <tag>.index.json --
+# tar containing N per-module assets plus an <tag>.index.json --
 # flat, no shared top-level directory, no manifest.json of its own. It is
 # deliberately NOT extracted/merged before being carried across the air gap;
 # see that script's header for why. Detect that shape and splice its N inner
@@ -174,12 +182,23 @@ if (( ${#INTACT_PACKAGES[@]} > 0 )); then
     for _p in "${INTACT_PACKAGES[@]}"; do
         _wrapper_listing=""
         if [[ -f "$_p" ]]; then
-            _wrapper_listing="$(tar -tzf "$_p" 2>/dev/null)" || _wrapper_listing=""
+            # -tf, not -tzf: the wrapper is a plain tar now and -tzf would fail
+            # on it outright, leaving the listing empty and the package handed
+            # to load_images_from_package as if it were a single module asset --
+            # which would extract N tarballs into one directory, find no shared
+            # root, and report "the assets did not merge". -tf reads gzip and
+            # plain alike, so a .tar.gz wrapper carried into a site before this
+            # change is still detected by exactly the same three tests below.
+            _wrapper_listing="$(tar -tf "$_p" 2>/dev/null)" || _wrapper_listing=""
         fi
+        # The suffix test accepts .tar as well as .tar.gz for the same reason:
+        # the members are whatever CI published. Note this runs on assets too,
+        # not just wrappers -- a module asset lists a shared top-level directory
+        # and so is rejected by the '/' test above it, exactly as before.
         if [[ -n "$_wrapper_listing" ]] \
            && ! grep -q '/' <<< "$_wrapper_listing" \
            && ! grep -qx 'manifest.json' <<< "$_wrapper_listing" \
-           && grep -q '\.tar\.gz$' <<< "$_wrapper_listing"; then
+           && grep -q '\.tar\(\.gz\)\?$' <<< "$_wrapper_listing"; then
             # data/tmp is NOT in the repo (only data/.gitkeep is), so on a
             # fresh checkout mktemp -p would fail and fall back to /tmp --
             # which many hosts mount as a small tmpfs, so unwrapping a
@@ -191,9 +210,10 @@ if (( ${#INTACT_PACKAGES[@]} > 0 )); then
                 || _unwrap_dir="$(mktemp -d)"
             INTACT_UNWRAP_DIRS+=("$_unwrap_dir")
             log_info "$(basename "$_p") is a single-file package -- unwrapping its module assets"
-            grep '\.tar\.gz$' <<< "$_wrapper_listing" | tar -xzf "$_p" -C "$_unwrap_dir" -T -
+            grep '\.tar\(\.gz\)\?$' <<< "$_wrapper_listing" | tar -xf "$_p" -C "$_unwrap_dir" -T -
             while IFS= read -r _f; do _expanded+=("$_f"); done \
-                < <(find "$_unwrap_dir" -maxdepth 1 -name '*.tar.gz' | sort)
+                < <(find "$_unwrap_dir" -maxdepth 1 \
+                         \( -name '*.tar.gz' -o -name '*.tar' \) | sort)
         else
             _expanded+=("$_p")
         fi
@@ -205,7 +225,7 @@ fi
 export INTACT_AIRGAP
 
 # Display names for progress lines below. Keys are module ids, matched
-# against each asset's filename by suffix ("...-<id>.tar.gz") -- a --package
+# against each asset's filename by suffix ("...-<id>.tar[.gz]") -- a --package
 # install can point at files carrying no release tag at all, so this cannot
 # assume the "intact-<tag>-<module>" shape and parse the tag back out.
 declare -A INTACT_MODULE_DISPLAY=(
@@ -215,7 +235,13 @@ declare -A INTACT_MODULE_DISPLAY=(
 )
 
 _module_from_asset_name() {
+    # Strip .tar.gz first, then .tar, so both asset shapes reduce to the same
+    # "...-<module>" stem. Without the second strip a plain-tar asset keeps its
+    # ".tar" suffix, matches no module id, and every progress line for it reads
+    # as the raw filename with no display name -- cosmetic, but it is the line
+    # an operator watches for 20 minutes during an air-gapped install.
     local base="${1%.tar.gz}" id
+    base="${base%.tar}"
     for id in "${!INTACT_MODULE_DISPLAY[@]}"; do
         [[ "$base" == *"-${id}" ]] && { echo "$id"; return 0; }
     done
@@ -315,8 +341,11 @@ load_images_from_package() {
         display="$(_module_display "$mod_id" "$base")"
         pkg_size=$(stat -c%s "$pkg" 2>/dev/null || echo 0)
         log_info "  [${ext_i}/${#pkgs[@]}] ${display} — extracting $(_human_size "$pkg_size")..."
+        # -xf, not -xzf: tar auto-detects, so this one call reads a plain-tar
+        # asset and a .tar.gz asset from an older release without the caller
+        # having to know which it was handed.
         if ! run_with_heartbeat "extracting ${display} asset" 1800 \
-                bash -c 'tar -xzf "$1" -C "$2" 2>>"$3"' _ "$pkg" "$work" "$LOG_FILE"; then
+                bash -c 'tar -xf "$1" -C "$2" 2>>"$3"' _ "$pkg" "$work" "$LOG_FILE"; then
             log_error "  Could not extract ${display} (${base})"
             rm -rf "$work"; return 1
         fi
@@ -778,7 +807,8 @@ for n, whole, sha in sorted(set(want)):
         local joined="${part0%.part-00}"
         log_info "  Reassembling $(basename "$joined")..."
         cat "${joined}".part-* > "$joined" && rm -f "${joined}".part-*
-    done < <(find "$dest_dir" -maxdepth 1 -name '*.tar.gz.part-00' | sort)
+    done < <(find "$dest_dir" -maxdepth 1 \
+                  \( -name '*.tar.gz.part-00' -o -name '*.tar.part-00' \) | sort)
 
     # Verify everything BEFORE anything is applied.
     INTACT_PACKAGES=()
@@ -798,7 +828,8 @@ for n, whole, sha in sorted(set(want)):
             unverified=$((unverified + 1))
         fi
         INTACT_PACKAGES+=("$f")
-    done < <(find "$dest_dir" -maxdepth 1 -name '*.tar.gz' | sort)
+    done < <(find "$dest_dir" -maxdepth 1 \
+                  \( -name '*.tar.gz' -o -name '*.tar' \) | sort)
 
     if (( ${#INTACT_PACKAGES[@]} == 0 )); then
         log_error "  Nothing downloaded"

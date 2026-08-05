@@ -276,7 +276,18 @@ jobs:
         working-directory: out
         run: |
           set -euo pipefail
-          PKG="$(ls *.tar.gz | head -1)"
+          # Both extensions: the builder stopped gzipping module assets (their
+          # payload is `docker save` output, already-gzipped layers -- the
+          # outer deflate bought 0.55%, 31 MB on 5.44 GB, for a single-threaded
+          # pass over all of it), but a re-run of an older commit still emits
+          # .tar.gz. A build produces exactly ONE of the two, so `head -1` is
+          # picking from a one-element list and the glob order does not matter.
+          # `|| true` because ls exits non-zero for whichever pattern found no
+          # match, and this step runs under `set -e`; the emptiness check below
+          # is what actually catches "the builder produced nothing", instead of
+          # letting an empty $PKG sail into sha256sum.
+          PKG="$(ls -1 *.tar *.tar.gz 2>/dev/null | head -1 || true)"
+          test -n "$PKG" || { echo "::error::no asset tarball in out/"; exit 1; }
           echo "sha256 $(sha256sum "$PKG" | cut -d' ' -f1)  $PKG"
           SIZE=$(stat -c%s "$PKG")
           if [ "$SIZE" -gt $((1900 * 1024 * 1024)) ]; then
@@ -501,8 +512,20 @@ jobs:
           # The previous `! -name '*.meta.json'` denylist let each of those
           # through the moment it appeared, which is how one aws_sigma module
           # turned into six assets.
+          #
+          # BOTH extensions are allowed even though a build emits only one of
+          # them. Module assets are plain .tar now (their payload is already-
+          # gzipped docker layers; the outer deflate bought 0.55%), but a re-run
+          # of an older commit still produces .tar.gz, and an allowlist that
+          # matched only the shape of the day would attach ZERO assets and
+          # still exit 0 -- a green release page with nothing on it, which is
+          # far worse than being permissive. The patterns are disjoint: a
+          # `.tar.gz` name has no `.tar.part-` in it and vice versa, so nothing
+          # is uploaded twice.
           find all -type f \( \
-                 -name "$TAG-*.tar.gz" \
+                 -name "$TAG-*.tar" \
+              -o -name "$TAG-*.tar.part-*" \
+              -o -name "$TAG-*.tar.gz" \
               -o -name "$TAG-*.tar.gz.part-*" \
               -o -name "$TAG.index.json" \
             \) -print0 \

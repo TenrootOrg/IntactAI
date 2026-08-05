@@ -121,7 +121,13 @@ def _read_package_manifest(package_path):
     """Read manifest.json from a prepared package to get version info."""
     import tarfile
     try:
-        with tarfile.open(package_path, 'r:gz') as tar:
+        # Mode 'r' (not 'r:gz') so this reads a plain .tar as well as a .tar.gz.
+        # A wrapper package holds N already-gzipped module assets, so re-gzipping
+        # the wrapper buys 0.55% (31 MB on 5.44 GB) for a single-threaded deflate
+        # pass over the whole 5.4 GB — prepare now has the option of leaving it
+        # uncompressed. 'r' auto-detects, so every package published to date keeps
+        # opening exactly as before.
+        with tarfile.open(package_path, 'r') as tar:
             # Find manifest.json in the archive
             for member in tar.getmembers():
                 if member.name.endswith('manifest.json'):
@@ -268,7 +274,7 @@ def peek_manifest_from_blob():
     ordering, this will fail gracefully and the JS falls back to the
     post-upload review path.
 
-    Body: raw gzip+tar bytes (Content-Type: application/octet-stream).
+    Body: raw tar bytes, gzipped or not (Content-Type: application/octet-stream).
     Returns: {"success": True, "manifest": {...}} on hit,
              {"success": False, "error": "..."} on miss.
     """
@@ -283,11 +289,16 @@ def peek_manifest_from_blob():
 
         import io as _io
         import tarfile as _tarfile
-        # Streaming mode (mode='r|gz') reads entry-by-entry from the
-        # bytes object without seeking — perfect for a partial gzip
-        # stream that ends mid-entry beyond manifest.json.
+        # Streaming mode (mode='r|*') reads entry-by-entry from the
+        # bytes object without seeking — perfect for a partial stream
+        # that ends mid-entry beyond manifest.json. The '*' is the
+        # compression wildcard: it peeks at the magic and handles a
+        # plain .tar as readily as a .tar.gz, which matters now that a
+        # wrapper package may ship uncompressed (its members are already
+        # gzipped docker layers; re-gzipping gained 0.55%). 'r|gz' would
+        # raise ReadError on the plain form.
         try:
-            with _tarfile.open(fileobj=_io.BytesIO(blob), mode='r|gz') as tar:
+            with _tarfile.open(fileobj=_io.BytesIO(blob), mode='r|*') as tar:
                 for member in tar:
                     # A WRAPPER package (scripts/prepare_package.sh output for
                     # air-gap hand-carry) carries no manifest.json of its own --
@@ -405,7 +416,7 @@ def upload_preflight():
                                       'size_bytes': total,
                                       'kind': 'interrupted prepare'})
                     leftover_bytes += total
-                elif name.endswith(('.tar.gz', '.tgz')):
+                elif name.endswith(('.tar.gz', '.tgz', '.tar')):
                     leftovers.append({'name': name, 'dir': prefix,
                                       'size_bytes': st.st_size,
                                       'kind': 'package'})
@@ -482,8 +493,14 @@ def list_pending_packages():
             for name in sorted(names):
                 # tarballs only — silently skip anything else (the
                 # upload + prepare flows can leave .info files and
-                # subdirectories around that aren't applicable).
-                if not (name.endswith('.tar.gz') or name.endswith('.tgz')):
+                # subdirectories around that aren't applicable). '.tar'
+                # counts: a wrapper package's members are already-gzipped
+                # docker layers, so prepare may leave the outer archive
+                # uncompressed (re-gzipping gained 0.55% for a full deflate
+                # pass over 5.4 GB), and such a package must still be
+                # offered in the Apply list.
+                if not (name.endswith('.tar.gz') or name.endswith('.tgz')
+                        or name.endswith('.tar')):
                     continue
                 full = _os.path.join(prefix, name)
                 try:
@@ -525,8 +542,14 @@ def _quota_preflight_or_jsonify(needed: int, action: str):
         return (jsonify({"success": False, "error": str(e)}), 429)
 
 
-def _close_orphan_upload_run(package_path: str) -> None:
+def _close_orphan_upload_run(package_path: str, run_id: str = None) -> None:
     """Close an upload run for ``package_path`` that is still `running`.
+
+    ``run_id`` names the row directly when the caller already knows it (the
+    apply now receives it from the browser, and knows which row it declined to
+    claim). That beats deriving it: derivation needs a package_path, which a
+    multi-asset apply does not have, and needs details.upload_id, which rows
+    pre-created by /api/upgrade/upload-run went without until 2026-08-05.
 
     The tus hook leaves the upload's run open (progress=10) on purpose, because
     the apply is meant to adopt it via the `<package>.run` sidecar and continue
@@ -549,12 +572,14 @@ def _close_orphan_upload_run(package_path: str) -> None:
         # path, carrying only filename/purpose/size. Matching on package_path
         # would silently never fire.) _resolve_upload_run also recovers the
         # mapping from storage when the in-memory map was lost to a restart.
-        upload_id = os.path.basename(package_path or '')
-        if not upload_id:
-            return
-        from routes.upload_routes import _resolve_upload_run
         from services.file_storage_service import get_workflow
-        rid = _resolve_upload_run(upload_id)
+        rid = (run_id or '').strip() or None
+        if not rid:
+            upload_id = os.path.basename(package_path or '')
+            if not upload_id:
+                return
+            from routes.upload_routes import _resolve_upload_run
+            rid = _resolve_upload_run(upload_id)
         if not rid:
             return
         wf = get_workflow(rid) or {}
@@ -566,6 +591,20 @@ def _close_orphan_upload_run(package_path: str) -> None:
         # at .849, hook at .843).
         if wf.get('status') in ('completed', 'failed', 'cancelled'):
             return          # already closed — nothing to tidy
+        # A row that has already been CLAIMED (details.applied) belongs to
+        # whichever apply won the consume-once race, and that apply may still
+        # be running in it right now — a re-apply with force=true is the way
+        # to get here. Closing it would stamp "completed" on a live upgrade;
+        # the owning apply would then overwrite the status on its next update,
+        # so the row briefly lies about a run that is still going.
+        #
+        # This only became reachable when details["upload_id"] started being
+        # populated: before that _resolve_upload_run could not find these rows
+        # at all, so the whole function silently no-opped and the bug was
+        # invisible. Leave a claimed row alone — its owner finalizes it, and
+        # the startup sweep in app.py closes it if that owner died.
+        if (wf.get('details') or {}).get('applied'):
+            return
         add_log_to_run(rid, "Upload complete. This package was applied in a "
                             "separate workflow — closing this row so it does "
                             "not read as still-running.", "info")
@@ -992,12 +1031,25 @@ def create_upgrade_upload_run():
         filename = (data.get('filename') or 'upgrade package').strip()
         size_bytes = int(data.get('size_bytes') or 0)
         size_mb = size_bytes / (1024 * 1024) if size_bytes else 0
+        # Carry an `upload_id` key from the very first write, even though it is
+        # normally EMPTY here: tusd has not assigned an id yet when the browser
+        # pre-creates this row. Rows born on this path therefore had no
+        # details.upload_id at all, and every durable join that keys off it
+        # silently no-opped — _resolve_upload_run's storage fallback,
+        # _close_orphan_upload_run, and sweep_applied_upload_packages' 4 GiB
+        # reclaim all matched nothing (observed 2026-08-05 on a row stuck at
+        # running/10% for 40+ minutes). The post-create hook backfills the real
+        # id the moment it knows it; the key is written here so the shape is the
+        # same whoever created the row, and so an automation that already knows
+        # the id can supply it up front.
+        upload_id = (data.get('upload_id') or '').strip()
         run_id = create_automation_run(
             'upgrade_package_upload',
             f"Upload: {filename}",
             {
                 "filename": filename,
                 "purpose": "upgrade_package",
+                "upload_id": upload_id,
                 "size_bytes": size_bytes,
                 "size_mb": round(size_mb, 2),
             },
@@ -1053,7 +1105,8 @@ def start_offline_upgrade():
     Body: {
         "package_path": "/data/uploads/...",
         "db_overwrite": {"timesketch": true, "iris": false},  // optional: fresh install per module
-        "selected_modules": ["elk", "velociraptor"]  // optional: only apply these modules from the tarball
+        "selected_modules": ["elk", "velociraptor"],  // optional: only apply these modules from the tarball
+        "upload_run_id": "<run id>"  // optional: continue THIS upload's workflow row
     }
 
     ``selected_modules`` is the new Apply Uploaded Package shape — when
@@ -1131,13 +1184,55 @@ def start_offline_upgrade():
             # earlier, entirely outside the contested window. The basename is
             # therefore a durable join key that cannot be raced. The sidecar is
             # kept only as a fast path.
+            #
+            # Better still: STOP INFERRING. The browser created the upload run
+            # itself (POST /api/upgrade/upload-run) and has held its id ever
+            # since, so it can simply say which row this apply belongs to. Both
+            # inference routes failed together on 2026-08-05 — the pre-created
+            # row never carried details.upload_id (nothing backfilled it), so
+            # the durable join could not match, and the sidecar write raced the
+            # apply POST inside the same second — leaving the upload row at
+            # running/10% for 40+ minutes beside a second "upgrade_<ts>" run
+            # doing the actual work. The explicit id is checked FIRST; the
+            # sidecar and upload_id joins stay behind it because a cached older
+            # frontend sends no upload_run_id at all.
             run_id = None
+            _unclaimed = None
             # With N per-module assets the operator uploaded several files into
             # ONE run; every one carries the same sidecar, so the first is as
             # good as any.
             _adopt_from = package_path or (package_paths[0] if package_paths else None)
             sidecar = f"{_adopt_from}.run"
-            if _adopt_from and os.path.exists(sidecar):
+
+            _requested_run = (data.get('upload_run_id') or '').strip()
+            if _requested_run:
+                try:
+                    from services.file_storage_service import get_workflow as _get_wf
+                    _rwf = _get_wf(_requested_run)
+                    if not _rwf:
+                        print(f"[UPGRADE] requested upload_run_id {_requested_run} "
+                              f"does not exist — falling back to inference", flush=True)
+                    elif _rwf.get('status') in ('completed', 'failed', 'cancelled'):
+                        # A finished row belongs to a previous apply. Same rule
+                        # as the upload_id fallback below: never write into it.
+                        print(f"[UPGRADE] requested upload_run_id {_requested_run} is "
+                              f"{_rwf.get('status')} — this apply gets its own run",
+                              flush=True)
+                    elif _rwf.get('automation_type') != 'upgrade_package_upload':
+                        # The id arrives in a request body, so it is only ever
+                        # allowed to name the kind of row this flow creates.
+                        # Otherwise an arbitrary run id in the body would make
+                        # the upgrade log itself into somebody else's workflow
+                        # and mark that workflow's status when it finished.
+                        print(f"[UPGRADE] requested upload_run_id {_requested_run} is a "
+                              f"{_rwf.get('automation_type')} run, not an upload — "
+                              f"ignoring", flush=True)
+                    else:
+                        run_id = _requested_run
+                except Exception as _re:
+                    print(f"[UPGRADE] upload_run_id lookup failed: {_re}", flush=True)
+
+            if not run_id and _adopt_from and os.path.exists(sidecar):
                 try:
                     with open(sidecar) as _rf:
                         candidate = (_rf.read() or "").strip()
@@ -1191,6 +1286,11 @@ def start_offline_upgrade():
                 if not _claimed["ok"]:
                     # Someone already applied this package — give this attempt
                     # its own row instead of writing into the finished one.
+                    # Remember which row we walked away from: it is exactly the
+                    # row the orphan-closer below needs, and inferring it a
+                    # second time from the path is what failed in the first
+                    # place.
+                    _unclaimed = run_id
                     run_id = None
 
             if run_id:
@@ -1214,7 +1314,17 @@ def start_offline_upgrade():
                 # sees a permanently-in-progress upload next to a finished upgrade
                 # and reasonably concludes something hung (reported 2026-07-23).
                 # Same class as the Stop-button bug in 654799a: the status lied.
-                _close_orphan_upload_run(package_path)
+                #
+                # Hand it the row we actually looked at when we have one. Passing
+                # only package_path made this a no-op in two shapes that matter:
+                # a multi-asset apply, where package_path is None and there is
+                # nothing to take a basename of, and a pre-created row that never
+                # carried details.upload_id to join on.
+                # Only ever the row we ourselves resolved and then declined to
+                # claim — never the raw upload_run_id from the body, which at
+                # this point is one we REJECTED (missing, terminal, or not an
+                # upload run) and therefore have no business closing.
+                _close_orphan_upload_run(_adopt_from or package_path, _unclaimed)
 
                 run_id = create_automation_run(
                     automation_type="upgrade",
@@ -1485,7 +1595,13 @@ def prepare_upgrade_package():
                 stale = []
                 try:
                     for _n in sorted(os.listdir('/data/upgrade_packages')):
-                        if _n.endswith(('.tar.gz', '.tgz', '.tar.gz.manifest.json')):
+                        # '.tar' and its manifest sidecar are listed too: a
+                        # package left by a prepare that skipped the outer gzip
+                        # is just as stale as a '.tar.gz' one, and leaving it
+                        # behind puts a phantom entry in the Apply list.
+                        if _n.endswith(('.tar.gz', '.tgz', '.tar',
+                                        '.tar.gz.manifest.json',
+                                        '.tar.manifest.json')):
                             stale.append(_n)
                 except OSError:
                     pass

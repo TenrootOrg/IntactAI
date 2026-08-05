@@ -11,7 +11,7 @@
 #                  force-added -- a package without the platform itself
 #                  cannot drive any other module's upgrade.
 #
-# Writes <output_dir>/intact-upgrade-<tag>.tar.gz and prints its path as the
+# Writes <output_dir>/intact-upgrade-<tag>.tar and prints its path as the
 # LAST line of stdout on success.
 #
 # Deliberately standalone: no import of this repo's Python backend. This is
@@ -23,7 +23,15 @@
 # reimplementing any of this in Python -- one implementation, not two.
 #
 # NO MERGE. This does not extract or merge the module assets -- it wraps the
-# N verified tar.gz files (+ the index) into one outer tar.gz, unchanged.
+# N verified module assets (+ the index) into one outer tar, unchanged.
+#
+# The outer wrap is a PLAIN tar, not tar.gz. Every byte inside it is already
+# compressed (docker image layers are gzip at rest, and CI publishes each
+# module asset compressed), so the outer deflate pass measured 0.55% -- 31 MB
+# saved on a 5.44 GB package -- in exchange for a full single-threaded pass
+# over all 5.4 GB on the operator's laptop. Readers were made format-agnostic
+# first (tar -xf and tarfile.open(f,'r') both auto-detect), so every package
+# already carried into a site as .tar.gz still opens exactly as before.
 # The merge (union per-module manifests into one manifest.json) happens once,
 # server-side, in services.upgrade.base.assemble_release_package() -- the
 # same function that already merges N separately-uploaded assets. install.sh
@@ -94,7 +102,7 @@ WORK="$(mktemp -d -p "$OUT_DIR" .intact-prepare-XXXXXX 2>/dev/null)" \
 # and sits beside the output, where the next run reaps it.
 #
 # The half-written OUT is removed too unless the run got all the way through.
-# A truncated tar.gz is worse than no file: it is the right name and a
+# A truncated tarball is worse than no file: it is the right name and a
 # plausible size, so it looks like a package until it fails to extract on the
 # air-gapped box it was carried to.
 OUT_OK=0
@@ -112,7 +120,7 @@ cd "$WORK"
 # reads the same way and a wrong tag or output path is obvious at a glance.
 printf '[prepare] %-9s %s\n' "release:" "$TAG"
 printf '[prepare] %-9s %s\n' "repo:"    "$REPO"
-printf '[prepare] %-9s %s\n' "output:"  "$OUT_DIR/intact-upgrade-$TAG.tar.gz"
+printf '[prepare] %-9s %s\n' "output:"  "$OUT_DIR/intact-upgrade-$TAG.tar"
 printf '[prepare] %-9s %s\n' "modules:" "${MODULES_CSV:-all in this release}"
 
 AUTH=(-H "X-GitHub-Api-Version: 2022-11-28")
@@ -241,11 +249,17 @@ export GITHUB_TOKEN
 # -- silently, because it is a background subshell. The result was a 5.5 GB
 # download with no progress output at all, which is the exact failure this
 # watcher exists to prevent. find matches nothing without erroring.
+#
+# Both '*.tar.gz' and '*.tar' are counted: CI publishes plain-tar assets now,
+# but every release cut before that is still .tar.gz and must still show
+# progress. A name ends in one or the other, never both, so nothing is
+# double-counted.
 (
     set +e
     while :; do
         sleep 20
-        got=$(find . -maxdepth 1 \( -name '*.tar.gz' -o -name '*.part-*' \) \
+        got=$(find . -maxdepth 1 \
+                   \( -name '*.tar.gz' -o -name '*.tar' -o -name '*.part-*' \) \
                    -printf '%s\n' 2>/dev/null | awk '{s+=$1} END {print s+0}')
         got="${got:-0}"
         if [ "${TOTAL_BYTES:-0}" -gt 0 ] 2>/dev/null; then
@@ -271,9 +285,16 @@ kill "$WATCHER" 2>/dev/null || true
 trap _cleanup EXIT INT TERM HUP
 log "downloaded $NFILES asset(s), $(_h "$TOTAL_BYTES") in $(_elapsed $(( $(date +%s) - DL_STARTED )))"
 
-if ls ./*.tar.gz.part-00 >/dev/null 2>&1; then
+# Both suffixes, because CI's split assets follow whatever the whole asset is:
+# a plain-tar release splits into "<asset>.tar.part-NN", a release cut before
+# that change into "<asset>.tar.gz.part-NN". Each glob is tested with -e rather
+# than relying on it matching, since an unmatched glob is left literal by bash
+# and would otherwise be joined as if it were a filename.
+if find . -maxdepth 1 \( -name '*.tar.gz.part-00' -o -name '*.tar.part-00' \) \
+        2>/dev/null | grep -q .; then
     log "joining split assets"
-    for part0 in *.tar.gz.part-00; do
+    for part0 in *.tar.gz.part-00 *.tar.part-00; do
+        [ -e "$part0" ] || continue
         whole="${part0%.part-00}"
         printf '[prepare]   %-9s %-14s\n' "joining" "$(basename "$whole")"
         cat "$whole".part-* > "$whole" && rm -f "$whole".part-*
@@ -305,9 +326,39 @@ while IFS="$(printf '\t')" read -r name mod url sha size; do
 done <<< "$PLAN"
 [ "$fail" -eq 0 ] || { err "checksum verification failed -- refusing to package"; exit 1; }
 
+# The list of module assets to wrap, resolved ONCE and reused by the tar
+# command below, so the count that gets logged and the set that gets packed can
+# never disagree.
+#
 # find, not `ls glob | wc -l`: an unmatched glob makes ls exit non-zero, which
-# under pipefail aborts the script silently at this assignment.
-NASSETS="$(find . -maxdepth 1 -name "$TAG-*.tar.gz" 2>/dev/null | wc -l)"
+# under pipefail aborts the script silently at this assignment. Not a bare glob
+# on the tar command line either, for the same reason in reverse -- bash leaves
+# an unmatched glob literal and tar would be handed "intact-20260805-*.tar.gz"
+# as a filename.
+#
+# Both suffixes are matched: CI publishes plain-tar assets, every release cut
+# before that publishes .tar.gz, and prepare_package.sh has to be able to
+# package either. Matching only one of them is the failure this guards against
+# -- the globs would hit nothing, NASSETS would be 0, the checksum loop above
+# would have had nothing to check, and the run would write a package containing
+# only the index: correct name, plausible-looking log, no images.
+# -printf '%P' so the members are stored as "intact-<tag>-elk.tar", not
+# "./intact-<tag>-elk.tar" -- readers on the far side match member names by
+# suffix and a "./" prefix is a needless difference from what the bare glob
+# produced before.
+ASSETS=()
+while IFS= read -r -d '' _a; do
+    ASSETS+=("$_a")
+done < <(find . -maxdepth 1 \
+              \( -name "$TAG-*.tar.gz" -o -name "$TAG-*.tar" \) \
+              -printf '%P\0' 2>/dev/null | sort -z)
+NASSETS=${#ASSETS[@]}
+if [ "$NASSETS" -eq 0 ]; then
+    err "no module assets to package"
+    err "  $NFILES file(s) were downloaded for $TAG but none of them is named"
+    err "  $TAG-<module>.tar[.gz] -- refusing to write an index-only package"
+    exit 1
+fi
 log "verified $NASSETS module asset(s)"
 
 # Trim the index to the modules actually packed. The release's index names
@@ -331,24 +382,32 @@ if dropped:
     print("[prepare]   %-9s %s" % ("excluded", ", ".join(dropped)))
 PY
 
-OUT="$OUT_DIR/intact-upgrade-$TAG.tar.gz"
+OUT="$OUT_DIR/intact-upgrade-$TAG.tar"
 log "wrapping into a single file"
 # index.json FIRST, deliberately. The Import UI peeks at only the first few MB
 # of the uploaded file to show the operator what they are about to apply; with
 # the index at the end of a multi-GB stream there is nothing to read without
 # downloading all of it. Listing it first puts it in the opening KB.
 WRAP_STARTED=$(date +%s)
-tar -czf "$OUT" "$TAG.index.json" "$TAG"-*.tar.gz
+tar -cf "$OUT" "$TAG.index.json" "${ASSETS[@]}"
 
 # Prove the archive is readable before calling it a package. tar can exit 0
 # having written something the far end cannot open (a disk that filled at the
 # last block, a truncated write). Everything downstream -- install.sh, Import
-# Upgrade Package -- starts by decompressing this file, so it costs one pass
-# here to find out now rather than after it has been carried to a site with no
-# way to re-fetch it.
+# Upgrade Package -- starts by reading this file end to end, so it costs one
+# pass here to find out now rather than after it has been carried to a site
+# with no way to re-fetch it.
+#
+# `tar -tf`, not `gzip -t`: the wrap is a plain tar now and gzip -t on it is not
+# a weaker check, it is no check at all -- it either errors on a file it was
+# never going to be able to read or, worse, would have to be dropped and leave
+# this step verifying nothing. Listing every member forces tar to walk the whole
+# file and read every header, which is what catches the truncation this exists
+# to catch. Output to /dev/null: the listing itself is noise, only the exit
+# status matters.
 log "verifying the wrapped package"
-if ! gzip -t "$OUT" 2>/dev/null; then
-    err "the wrapped package failed its gzip integrity check"
+if ! tar -tf "$OUT" >/dev/null 2>&1; then
+    err "the wrapped package failed its integrity check (tar cannot read it back)"
     err "  usually a full disk at the final write -- check space and re-run"
     exit 1
 fi

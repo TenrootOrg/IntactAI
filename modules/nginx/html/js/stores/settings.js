@@ -809,6 +809,17 @@ document.addEventListener('alpine:init', () => {
                             selected_modules: selected,
                             db_overwrite: db_overwrite,
                         };
+                        // Tell the backend WHICH workflow row this apply
+                        // belongs to. We created it ourselves above, so there
+                        // is nothing to deduce — and deduction is what failed:
+                        // the backend used to recover the row from a sidecar
+                        // the upload hook writes, and this POST fires from the
+                        // tus success path in the same second the hook runs, so
+                        // it lost the race and opened a SECOND run while the
+                        // upload row sat at 10% forever (2026-08-05). Sent only
+                        // when we actually have one; the backend still falls
+                        // back to its old inference for callers that don't.
+                        if (uploadRunId) body.upload_run_id = uploadRunId;
                         // One file keeps the scalar shape every existing caller
                         // and every older backend understands.
                         if (uploadedPaths.length === 1) body.package_path = uploadedPaths[0];
@@ -831,7 +842,12 @@ document.addEventListener('alpine:init', () => {
                 return;
             }
 
-            // Legacy-flow: tarball already on disk, just apply.
+            // Legacy-flow: tarball already on disk, just apply. No
+            // upload_run_id goes with it — this path never uploaded anything,
+            // so there is no upload row to continue. (A tarball uploaded in an
+            // EARLIER session and picked from the list still has its .run
+            // sidecar / details.upload_id, which the backend can find on its
+            // own; sending a made-up id would be worse than sending none.)
             try {
                 const r = await fetch('/api/upgrade/offline', {
                     method: 'POST',

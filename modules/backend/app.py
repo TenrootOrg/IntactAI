@@ -390,6 +390,116 @@ def run_startup_initialization():
             except Exception as _se:
                 print(f"[STARTUP] staging sweep skipped: {_se}", flush=True)
 
+            # An `upgrade_package_upload` row is left OPEN at progress=10 on
+            # purpose (see routes/upload_routes.py): the apply is meant to adopt
+            # it so upload+apply read as ONE workflow. When adoption fails
+            # nothing closes it — the watchdog above only reaps upgrade /
+            # online_upgrade / prepare_package, and cleanup_orphan_workflows
+            # waits for 10 idle HOURS. Observed 2026-08-05: an upload row still
+            # `running` at 10% forty minutes after a separate "upgrade_<ts>" run
+            # had applied its package, so the operator saw an upload that never
+            # finished next to an upgrade that plainly had.
+            #
+            # Close only what is DEMONSTRABLY over, never merely old — age is
+            # the reaper's job and it already does it. tusd is a separate
+            # container that does NOT restart with us, so an upload can be
+            # genuinely mid-flight right now; the tests below are all positive
+            # evidence that this particular row's work has ended. A finished
+            # upload whose package is still sitting on disk unapplied is the
+            # legitimate "waiting for the operator to press Apply" state and is
+            # deliberately left running.
+            try:
+                import json as _json
+                from services.workflow_service import (get_all_automation_runs,
+                                                       update_run_status,
+                                                       add_log_to_run)
+                _runs = get_all_automation_runs() or []
+                # tusd keeps <id>.info beside an upload for its whole life, and
+                # the browser puts the pre-created run id in the upload
+                # metadata. That is the only way back to the file for a row
+                # whose details.upload_id was never written — which was every
+                # row created by /api/upgrade/upload-run before 2026-08-05.
+                _uploads_dir = '/data/uploads'
+                _run_to_upload = {}
+                try:
+                    _names = os.listdir(_uploads_dir)
+                except OSError:
+                    _names = []
+                for _n in _names:
+                    if not _n.endswith('.info'):
+                        continue
+                    try:
+                        with open(os.path.join(_uploads_dir, _n)) as _inf:
+                            _meta = (_json.load(_inf).get('MetaData') or {})
+                    except (OSError, ValueError):
+                        continue
+                    _mrid = (_meta.get('upload_run_id') or '').strip()
+                    if _mrid:
+                        _run_to_upload[_mrid] = _n[:-len('.info')]
+                # Packages some OTHER run applied. A second run holding this
+                # package in details.package_path is proof the apply happened
+                # without this row — the exact split this sweep exists to clean
+                # up after, and what separates it from an upload nobody has
+                # applied yet.
+                _applied_paths = set()
+                for _r in _runs:
+                    if _r.get('automation_type') == 'upgrade_package_upload':
+                        continue
+                    _rd = _r.get('details') or {}
+                    if _rd.get('package_path'):
+                        _applied_paths.add(_rd['package_path'])
+                    for _pp in (_rd.get('package_paths') or []):
+                        if _pp:
+                            _applied_paths.add(_pp)
+
+                for _r in _runs:
+                    if _r.get('automation_type') != 'upgrade_package_upload':
+                        continue
+                    if _r.get('status') not in ('running', 'pending'):
+                        continue
+                    _rid = _r.get('run_id') or _r.get('id')
+                    if not _rid:
+                        continue
+                    _det = _r.get('details') or {}
+                    _uid = (_det.get('upload_id') or '').strip() or _run_to_upload.get(_rid)
+                    _payload = os.path.join(_uploads_dir, _uid) if _uid else None
+
+                    if _det.get('applied'):
+                        # This row was carrying the APPLY too (it was adopted),
+                        # and no Phase-2 resume is pending, so that apply died
+                        # with the restart. Same verdict and wording as the
+                        # upgrade watchdog above — calling it "completed" would
+                        # dress a dead upgrade up as a successful one.
+                        _why = ("the apply that adopted this row was orphaned by "
+                                "a backend restart")
+                        print(f"[STARTUP] Failing orphaned upload run {_rid}: {_why}",
+                              flush=True)
+                        add_log_to_run(_rid, f"Closed on startup — {_why}.", "error")
+                        update_run_status(_rid, "failed",
+                                          error="Orphaned by a backend restart — the "
+                                                "apply this upload continued into did "
+                                                "not survive it.")
+                        continue
+
+                    if _uid and not os.path.exists(_payload):
+                        _why = f"its uploaded file {_payload} no longer exists"
+                    elif _uid and _payload in _applied_paths:
+                        _why = ("its package was applied by a separate upgrade run")
+                    else:
+                        # Either the package is still on disk (in flight, or
+                        # uploaded and waiting to be applied) or nothing on disk
+                        # refers to this row at all. Neither proves the work is
+                        # over, so leave it to cleanup_orphan_workflows.
+                        continue
+                    print(f"[STARTUP] Closing orphaned upload run {_rid}: {_why}",
+                          flush=True)
+                    add_log_to_run(_rid,
+                                   f"Closing this upload row on startup — {_why}, "
+                                   f"so it stops reading as still-running.", "info")
+                    update_run_status(_rid, "completed", progress=100)
+            except Exception as _ou:
+                print(f"[STARTUP] orphaned upload-run sweep skipped: {_ou}", flush=True)
+
             # Wave F: sweep any leaked recreate-helper container from a run that
             # never cleaned up (the helper is --rm, but a killed/orphaned one can
             # linger), and prune old intact-backend images beyond the running tag
