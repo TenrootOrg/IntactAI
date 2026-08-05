@@ -1540,13 +1540,48 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                  (you'd have a bunch of module images and no Intact to drive
                                  them). Renders with a locked-checked indicator instead of a
                                  toggleable checkbox. -->
+                        <!-- Module selection. Seeded to the DELTA (intact + whatever
+                             actually moves on THIS box); everything else the release
+                             ships is listed and tickable, because a package is often
+                             carried to a DIFFERENT air-gapped box whose installed set
+                             this machine cannot know. Delta is the default, not the cap. -->
+                        <div x-show="$store.settings.prepareModalMode !== 'online'
+                                     && $store.settings.upgradePlan
+                                     && !$store.settings.preparePackageReady"
+                             class="bg-gray-800/40 border border-gray-700 rounded p-3 mt-4">
+                            <div class="flex items-center justify-between mb-2">
+                                <span class="text-xs font-semibold text-gray-300 uppercase tracking-wide">2. Modules to bundle</span>
+                                <span class="text-xs text-gray-500"
+                                      x-text="$store.settings.prepareSelectedModules.length + ' of ' + $store.settings.prepareModuleRows.length + ' selected'"></span>
+                            </div>
+                            <div class="text-xs text-gray-500 mb-2">
+                                Pre-ticked: the platform plus every module whose version changes here.
+                                Tick more if this package is for a different box.
+                            </div>
+                            <template x-for="row in $store.settings.prepareModuleRows" :key="'prep-' + row.module">
+                                <label class="flex items-center gap-2 py-1 text-xs cursor-pointer"
+                                       :class="row.locked ? 'opacity-70 cursor-not-allowed' : ''">
+                                    <input type="checkbox"
+                                           :checked="$store.settings.prepareSelectedModules.includes(row.module)"
+                                           :disabled="row.locked"
+                                           @change="$store.settings.togglePrepareModule(row.module)"
+                                           class="rounded border-gray-600 bg-gray-900 text-blue-500">
+                                    <span class="flex-1 font-mono text-gray-200" x-text="row.module"></span>
+                                    <span class="font-mono text-gray-500" x-text="row.current"></span>
+                                    <span class="text-gray-600">→</span>
+                                    <span class="font-mono text-gray-300" x-text="row.target"></span>
+                                    <span class="w-40 text-right text-gray-500" x-text="row.reason"></span>
+                                </label>
+                            </template>
+                        </div>
+
                             <!-- Step 3 (PREPARE mode): DOWNLOAD-ONLY. Nothing is built on this
-                                 box, so there is no module selection — the whole CI-built package
-                                 comes down and the operator picks what to install on import. -->
+                                 box — the CI-built assets for the modules picked in step 2 come
+                                 down as-is, and the operator picks what to APPLY on import. -->
                             <div x-show="$store.settings.prepareModalMode === 'prepare' && $store.settings.selectedRef" class="bg-gray-900 rounded border border-blue-700/50 p-3">
                                 <label class="text-gray-300 text-xs uppercase tracking-wide block mb-2">3. Prebuilt package</label>
                                 <div class="text-xs text-gray-300 bg-blue-900/30 border border-blue-700/40 rounded p-2">
-                                    This release ships a <span class="text-blue-400">prebuilt package</span> (<span class="font-mono" x-text="$store.settings.selectedRefPackageMb + ' MB'"></span>), built in CI from the release's own code. It is <span class="text-blue-400">downloaded and verified</span> as one <span class="font-mono">.tar.gz</span> — nothing is built on this machine. Every module it ships is included; you pick which to install when you import it.
+                                    This release ships prebuilt per-module assets, built in CI from the release's own code (<span class="font-mono" x-text="$store.settings.selectedRefPackageMb + ' MB'"></span> for the complete set; you download only what you ticked). The assets you selected above are <span class="text-blue-400">downloaded and verified</span> against the release index — nothing is built on this machine. You still pick which of them to APPLY when you import.
                                 </div>
 
                             </div>
@@ -1679,41 +1714,6 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                 Then copy the <span class="font-mono">.tar.gz</span> to this appliance and use
                                 <span class="text-gray-400">Import Upgrade Package</span> — the import path is identical either way.
                             </p>
-                        </div>
-
-                        <!-- Module selection. Seeded to the DELTA (intact + whatever
-                             actually moves on THIS box); everything else the release
-                             ships is listed and tickable, because a package is often
-                             carried to a DIFFERENT air-gapped box whose installed set
-                             this machine cannot know. Delta is the default, not the cap. -->
-                        <div x-show="$store.settings.prepareModalMode !== 'online'
-                                     && $store.settings.upgradePlan
-                                     && !$store.settings.preparePackageReady"
-                             class="bg-gray-800/40 border border-gray-700 rounded p-3 mt-4">
-                            <div class="flex items-center justify-between mb-2">
-                                <span class="text-xs font-semibold text-gray-300 uppercase tracking-wide">2. Modules to bundle</span>
-                                <span class="text-xs text-gray-500"
-                                      x-text="$store.settings.prepareSelectedModules.length + ' of ' + $store.settings.prepareModuleRows.length + ' selected'"></span>
-                            </div>
-                            <div class="text-xs text-gray-500 mb-2">
-                                Pre-ticked: the platform plus every module whose version changes here.
-                                Tick more if this package is for a different box.
-                            </div>
-                            <template x-for="row in $store.settings.prepareModuleRows" :key="'prep-' + row.module">
-                                <label class="flex items-center gap-2 py-1 text-xs cursor-pointer"
-                                       :class="row.locked ? 'opacity-70 cursor-not-allowed' : ''">
-                                    <input type="checkbox"
-                                           :checked="$store.settings.prepareSelectedModules.includes(row.module)"
-                                           :disabled="row.locked"
-                                           @change="$store.settings.togglePrepareModule(row.module)"
-                                           class="rounded border-gray-600 bg-gray-900 text-blue-500">
-                                    <span class="flex-1 font-mono text-gray-200" x-text="row.module"></span>
-                                    <span class="font-mono text-gray-500" x-text="row.current"></span>
-                                    <span class="text-gray-600">→</span>
-                                    <span class="font-mono text-gray-300" x-text="row.target"></span>
-                                    <span class="w-40 text-right text-gray-500" x-text="row.reason"></span>
-                                </label>
-                            </template>
                         </div>
 
                         <!-- Warning -->
