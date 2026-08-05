@@ -763,7 +763,7 @@ document.addEventListener('alpine:init', () => {
                     const up = new tus.Upload(f, {
                         endpoint: '/api/uploads/',
                         retryDelays: [0, 1000, 3000, 5000],
-                        chunkSize: 5 * 1024 * 1024,
+                        chunkSize: 32 * 1024 * 1024,  // see js/upload.js for why 32
                         // Clear the resume fingerprint once done so re-importing
                         // the same file later doesn't silently re-open /
                         // re-upload a stale entry (the "it uploaded again"
@@ -1383,7 +1383,7 @@ document.addEventListener('alpine:init', () => {
             const upload = new tus.Upload(file, {
                 endpoint: '/api/uploads/',
                 retryDelays: [0, 1000, 3000, 5000],
-                chunkSize: 5 * 1024 * 1024,
+                chunkSize: 32 * 1024 * 1024,  // see js/upload.js for why 32
                 removeFingerprintOnSuccess: true,
                 metadata: {
                     filename: file.name,

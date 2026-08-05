@@ -95,7 +95,14 @@ class TusUploader {
         const upload = new tus.Upload(file, {
             endpoint: this.endpoint,
             retryDelays: [0, 1000, 3000, 5000, 10000],
-            chunkSize: 5 * 1024 * 1024, // 5MB chunks
+            // 32 MB, not 5. tus sends one PATCH per chunk, serialized, and
+            // nginx fires an auth_request subrequest into Flask for every one
+            // of them. Measured on a 5.5 GB upload: 1109 chunks at ~95 ms
+            // each, of which only ~40 ms was transfer -- ~60 s of the 105 s
+            // total went on per-request overhead. 32 MB cuts the request count
+            // 6x while keeping resume granularity sane (a broken upload
+            // restarts at most 32 MB, not the whole file).
+            chunkSize: 32 * 1024 * 1024,
             metadata: uploadMetadata,
 
             onError: (error) => {
