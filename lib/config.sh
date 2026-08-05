@@ -94,10 +94,33 @@ emit("SUCCESS", f"Enabled modules ({len(enabled)}): {', '.join(enabled) if enabl
 emit("INFO", f"Disabled modules ({len(disabled)}): {', '.join(disabled) if disabled else 'none'}")
 
 options = cfg.get("options") or {}
+
+# NEVER print a secret's value here. This summary goes to stdout AND is teed
+# into install_<ts>.log, which operators routinely attach to support tickets --
+# .gitignore already warns those logs "have included a GitHub PAT", and this
+# loop is how it got there. A token is only ever useful to confirm as
+# "set / not set" plus enough of a tail to tell two tokens apart, so that is
+# all we emit. Substring match, not an exact name list: a future
+# `options.foo_token` or `options.api_secret` must be covered the day it is
+# added, not the day someone remembers to update a list here.
+SECRET_HINTS = ("token", "secret", "password", "passwd", "apikey", "api_key")
+
+
+def redact(name, value):
+    if not any(h in name.lower() for h in SECRET_HINTS):
+        return value
+    text = "" if value is None else str(value)
+    if not text.strip():
+        return "not set"
+    # Last 4 chars only: enough to distinguish tokens in a support thread,
+    # useless to anyone who intercepts the log.
+    return f"set (…{text[-4:]}, {len(text)} chars)"
+
+
 if options:
     emit("INFO", "Options:")
     for name in sorted(options):
-        emit("INFO", f"  {name}: {options[name]}")
+        emit("INFO", f"  {name}: {redact(name, options[name])}")
 PYCONFIG
 
     log_info "=========================================="
