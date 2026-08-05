@@ -6,6 +6,7 @@ Upgrade Routes - System upgrade endpoints (online and offline)
 from flask import Blueprint, jsonify, request, send_file
 import threading
 import os
+import re
 import time
 import json
 
@@ -62,6 +63,14 @@ def _upgrade_gate(force: bool = False):
 # `/data/uploads/foo/../../tmp/evil.tar.gz` resolves outside the
 # allowlist and is rejected.
 ALLOWED_PACKAGE_DIRS = ('/data/uploads/', '/data/upgrade_packages/')
+
+# One finished asset download in prepare_package.sh's aligned verb column:
+#   "[prepare]   done      elk                1.8G  in 2m 30s"
+# The verb is printf'd with %-9s so the trailing spaces vary; anchor on the
+# prefix and the word, not on column positions. Kept next to the parser that
+# uses it so the two move together -- the previous marker drifted out of sync
+# with the script and silently froze the progress bar.
+_PREPARE_ASSET_DONE_RE = re.compile(r'^\[prepare\]\s+done\s+\S')
 
 
 def _reject_package_path(package_path):
@@ -1667,9 +1676,23 @@ def prepare_upgrade_package():
                     last_line = line.strip()
                     lvl = 'error' if '[ERROR]' in line else 'info'
                     logger(line, lvl)
-                    # Nudge progress on each completed asset so the bar
-                    # moves during the long download phase.
-                    if '<-' in line and _pct[0] < 90:
+                    # Nudge progress on each completed asset so the bar moves
+                    # during the long download phase.
+                    #
+                    # This keyed on `'<-' in line` and had silently stopped
+                    # working: prepare_package.sh used to mark a finished
+                    # download with a `<-` arrow, and that was replaced by an
+                    # aligned verb column ("start"/"done"/"ok") because four
+                    # parallel downloads interleave and arrows were unreadable.
+                    # Nothing failed loudly -- the bar just sat at its starting
+                    # value for the whole download, which is the single longest
+                    # phase of a prepare run.
+                    #
+                    # Match the verb column instead of a decoration. `done` is
+                    # emitted exactly once per asset (prepare_package.sh:236),
+                    # so with ~9 modules the bar walks 8% at a time up to the
+                    # 90% cap and the remaining 10% covers wrap + verify.
+                    if _PREPARE_ASSET_DONE_RE.match(line) and _pct[0] < 90:
                         _pct[0] = min(90, _pct[0] + 8)
                         update_run_status(run_id, "running", progress=_pct[0])
                 rc = proc.wait()

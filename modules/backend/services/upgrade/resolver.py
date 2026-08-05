@@ -577,11 +577,23 @@ def fetch_release_manifest(ref: str, user_action: str = 'plan') -> Optional[Dict
     rel = resp.json() or {}
     by_name = {(a.get('name') or ''): a.get('browser_download_url')
                for a in (rel.get('assets') or [])}
-    index_name = f'intact-release-{ref}.index.json'
+    # BOTH index spellings, newest first. CI writes `<tag>.index.json`
+    # (build-release-assets.yml), while this only ever looked for the older
+    # doubled-prefix `intact-release-<tag>.index.json`. The failure was silent
+    # and easy to miss: no index found -> fall through to the bundle manifest
+    # (absent on a per-module release) -> fall back to fetch_upstream_config(),
+    # which reads config.yaml from GitHub RAW with no auth. That works on a
+    # public repo and the pins usually agree, so the plan looked right while
+    # being computed from the codebase's declared versions instead of what the
+    # release actually shipped -- exactly the distinction the index exists to
+    # make. download.py:459 already accepted both spellings; this copy did not.
     manifest_name = f'intact-upgrade-{ref}.tar.gz.manifest.json'
 
     kind, asset_url = None, None
-    for _kind, _name in (('index', index_name), ('manifest', manifest_name)):
+    _candidates = [('index', f'{ref}.index.json'),
+                   ('index', f'intact-release-{ref}.index.json'),
+                   ('manifest', manifest_name)]
+    for _kind, _name in _candidates:
         if by_name.get(_name):
             kind, asset_url = _kind, by_name[_name]
             break

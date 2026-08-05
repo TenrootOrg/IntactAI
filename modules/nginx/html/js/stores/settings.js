@@ -1302,10 +1302,24 @@ document.addEventListener('alpine:init', () => {
             const file = selectedFiles[0];
             event.target.value = '';
 
+            // `.tar` BELONGS HERE. prepare_package.sh emits a plain
+            // intact-upgrade-<tag>.tar -- the wrapper holds already-compressed
+            // per-module assets, so the outer gzip bought 0.55% for a full
+            // deflate pass over 5.4 GB and was dropped. Every reader downstream
+            // was widened for it (upload_routes.py's pre-create hook,
+            // peek-manifest's 'r|*' mode, wrapper_package_members, install.sh's
+            // tar -xf), but this one client-side check was missed -- so the
+            // browser refused the file before any of that could run and the
+            // import path was dead for freshly prepared packages. Releases cut
+            // before the change are still .tar.gz sitting on USB sticks, so all
+            // three suffixes stay accepted forever.
             const bad = selectedFiles.filter(
-                f => !f.name.endsWith('.tar.gz') && !f.name.endsWith('.tgz'));
+                f => !f.name.endsWith('.tar.gz')
+                  && !f.name.endsWith('.tgz')
+                  && !f.name.endsWith('.tar'));
             if (bad.length) {
-                this.showMessage('Not a .tar.gz / .tgz file: ' + bad[0].name, 'error');
+                this.showMessage(
+                    'Not a .tar / .tar.gz / .tgz file: ' + bad[0].name, 'error');
                 return;
             }
 
@@ -1705,7 +1719,7 @@ document.addEventListener('alpine:init', () => {
                 '# Needs curl, python3 and tar. No GitHub token required; setting',
                 '# GITHUB_TOKEN only raises the API rate limit from 60/hr to 5000/hr.',
                 '#',
-                '# Produces ONE file: intact-upgrade-' + tag + '.tar.gz',
+                '# Produces ONE file: intact-upgrade-' + tag + '.tar',
                 '',
                 'TAG=' + tag + '        # <-- CHANGE to the release you want',
                 'REPO=TenrootOrg/IntactAI',
