@@ -34,6 +34,17 @@ set -euo pipefail
 log()  { printf '[prepare] %s\n' "$*"; }
 err()  { printf '[prepare][ERROR] %s\n' "$*" >&2; }
 
+# Sizes and durations go through these everywhere, so "1.8G" and "2m14s" mean
+# the same thing on every line of the log rather than varying with whichever
+# tool happened to produce them (du -h, numfmt, raw seconds).
+_h() { numfmt --to=iec "${1:-0}" 2>/dev/null || echo "${1:-0}B"; }
+_elapsed() {
+    s=${1:-0}
+    if [ "$s" -ge 60 ]; then printf '%dm%02ds' $(( s / 60 )) $(( s % 60 ))
+    else printf '%ds' "$s"; fi
+}
+
+RUN_STARTED=$(date +%s)
 TAG="${1:-}"
 OUT_DIR="${2:-.}"
 MODULES_CSV="${3:-}"
@@ -51,20 +62,22 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 cd "$WORK"
 
-log "release: $TAG"
-log "repo: $REPO"
-log "output: $OUT_DIR/intact-upgrade-$TAG.tar.gz"
-[ -n "$MODULES_CSV" ] && log "modules requested: $MODULES_CSV"
+# Settings block: one "key: value" per line, aligned, so the head of every run
+# reads the same way and a wrong tag or output path is obvious at a glance.
+printf '[prepare] %-9s %s\n' "release:" "$TAG"
+printf '[prepare] %-9s %s\n' "repo:"    "$REPO"
+printf '[prepare] %-9s %s\n' "output:"  "$OUT_DIR/intact-upgrade-$TAG.tar.gz"
+printf '[prepare] %-9s %s\n' "modules:" "${MODULES_CSV:-all in this release}"
 
 AUTH=(-H "X-GitHub-Api-Version: 2022-11-28")
 if [ -n "${GITHUB_TOKEN:-}" ]; then
     AUTH+=(-H "Authorization: Bearer $GITHUB_TOKEN")
-    log "GITHUB_TOKEN set -- 5000/hr API rate limit"
+    printf '[prepare] %-9s %s\n' "auth:" "GITHUB_TOKEN set (5000/hr API rate limit)"
 else
-    log "no GITHUB_TOKEN set -- 60/hr anonymous API rate limit"
+    printf '[prepare] %-9s %s\n' "auth:" "none (anonymous, 60/hr API rate limit)"
 fi
 
-log "fetching release metadata..."
+log "fetching release metadata"
 if ! REL="$(curl -fsSL "${AUTH[@]}" "$API/repos/$REPO/releases/tags/$TAG")"; then
     err "cannot read release $TAG"
     err "  404 - no PUBLISHED release for that tag (a git tag alone is not"
@@ -73,7 +86,6 @@ if ! REL="$(curl -fsSL "${AUTH[@]}" "$API/repos/$REPO/releases/tags/$TAG")"; the
     err "  401 - the token you set is wrong or expired"
     exit 1
 fi
-log "release metadata OK"
 
 IDX_URL="$(printf %s "$REL" | TAG="$TAG" python3 -c '
 import json, os, sys
@@ -88,10 +100,9 @@ if [ -z "$IDX_URL" ]; then
     exit 1
 fi
 
-log "downloading index..."
+log "reading the release index"
 curl -fsSL "${AUTH[@]}" -H "Accept: application/octet-stream" \
      -o "$TAG.index.json" "$IDX_URL"
-log "index OK"
 
 # name<TAB>module<TAB>url<TAB>sha256-of-the-whole-asset, one line per FILE to
 # fetch (a split asset contributes one line per .part-NN, all sharing the
@@ -119,45 +130,37 @@ for mod, e in sorted(available.items()):
     if not files:
         sys.exit("index lists %s but the release does not publish it" % whole)
     for f in files:
-        print("%s\t%s\t%s\t%s" % (f, mod, urls[f], sha))
+        print("%s\t%s\t%s\t%s\t%d" % (f, mod, urls[f], sha, e.get("size") or 0))
 ')"
 NFILES="$(printf '%s\n' "$PLAN" | grep -c . || true)"
-log "$NFILES asset file(s) to fetch (up to 4 in parallel)"
+TOTAL_BYTES="$(printf '%s\n' "$PLAN" | awk -F'\t' '{s+=$5} END {print s+0}')"
 
-> .expected_bytes
-while IFS="$(printf '\t')" read -r name mod url sha; do
-    [ -n "$name" ] || continue
-    python3 -c "
-import json,os,sys
-idx=json.load(open(sys.argv[1]))
-for e in (idx.get('assets') or {}).values():
-    if e.get('asset')==sys.argv[2] or sys.argv[2] in (e.get('parts') or []):
-        print(e.get('size') or 0); break
-else:
-    print(0)
-" "$TAG.index.json" "$name" >> .expected_bytes
-done <<< "$PLAN"
-TOTAL_BYTES="$(awk '{s+=$1} END {print s+0}' .expected_bytes)"
-rm -f .expected_bytes
-log "total download: $(numfmt --to=iec "$TOTAL_BYTES" 2>/dev/null || echo "$TOTAL_BYTES bytes")"
+log "downloading $NFILES asset(s), $(_h "$TOTAL_BYTES") total, 4 at a time"
 
-# -sS, NOT curl's progress meter. Four parallel curls each redrawing a meter
-# interleave into unreadable garbage, and this script's stdout is piped
-# straight into the appliance's workflow log -- thousands of meter redraws
-# would bury the lines that matter. Progress comes from the watcher below
-# instead: one line per interval covering the whole download.
+# EVERY line in this phase is "<verb> <module> <size> [detail]", one fixed
+# shape. Four downloads run at once, so start/finish lines interleave by
+# nature -- with `->`/`<-` markers the operator had to decode arrows to work
+# out what was happening. A left-aligned verb column reads down the page
+# regardless of interleaving, and the module name is always in the same place.
+#
+# -sS, NOT curl's progress meter: four parallel meters redrawing interleave
+# into unreadable garbage, and this stdout is piped straight into the
+# appliance's workflow log. Aggregate progress comes from the watcher below.
 _dl_one() {
-    name="$1"; mod="$2"; url="$3"
-    printf '[prepare]   -> [%s] %s\n' "$mod" "$name"
+    name="$1"; mod="$2"; url="$3"; want="$4"
+    started=$(date +%s)
+    printf '[prepare]   %-9s %-14s %8s\n' "start" "$mod" "$(_h "$want")"
     hdrs=(-H "X-GitHub-Api-Version: 2022-11-28" -H "Accept: application/octet-stream")
     [ -n "${GITHUB_TOKEN:-}" ] && hdrs+=(-H "Authorization: Bearer $GITHUB_TOKEN")
     if ! curl -fL -sS --retry 3 --retry-delay 5 "${hdrs[@]}" -o "$name" "$url"; then
-        printf '[prepare][ERROR]   [%s] %s failed to download\n' "$mod" "$name" >&2
+        printf '[prepare][ERROR]   %-9s %-14s %s\n' "failed" "$mod" "$name" >&2
         return 1
     fi
-    printf '[prepare]   <- [%s] %s done (%s)\n' "$mod" "$name" "$(du -h "$name" | cut -f1)"
+    got=$(stat -c%s "$name" 2>/dev/null || echo 0)
+    printf '[prepare]   %-9s %-14s %8s  in %s\n' \
+        "done" "$mod" "$(_h "$got")" "$(_elapsed $(( $(date +%s) - started )))"
 }
-export -f _dl_one
+export -f _dl_one _h _elapsed
 export GITHUB_TOKEN
 
 # One aggregate progress line every 20s, so a multi-GB fetch is never silent
@@ -178,9 +181,8 @@ export GITHUB_TOKEN
                    -printf '%s\n' 2>/dev/null | awk '{s+=$1} END {print s+0}')
         got="${got:-0}"
         if [ "${TOTAL_BYTES:-0}" -gt 0 ] 2>/dev/null; then
-            printf '[prepare]   ... %s / %s (%d%%)\n' \
-                "$(numfmt --to=iec "$got" 2>/dev/null || echo "$got")" \
-                "$(numfmt --to=iec "$TOTAL_BYTES" 2>/dev/null || echo "$TOTAL_BYTES")" \
+            printf '[prepare]   %-9s %-14s %8s  of %s (%d%%)\n' \
+                "progress" "" "$(_h "$got")" "$(_h "$TOTAL_BYTES")" \
                 "$(( got * 100 / TOTAL_BYTES ))"
         fi
     done
@@ -188,49 +190,58 @@ export GITHUB_TOKEN
 WATCHER=$!
 trap 'kill "$WATCHER" 2>/dev/null; rm -rf "$WORK"' EXIT
 
-if ! printf '%s\n' "$PLAN" | cut -f1,2,3 | xargs -P 4 -L 1 bash -c '_dl_one "$1" "$2" "$3"' _; then
+DL_STARTED=$(date +%s)
+if ! printf '%s\n' "$PLAN" | cut -f1,2,3,5 \
+     | xargs -P 4 -L 1 bash -c '_dl_one "$1" "$2" "$3" "$4"' _; then
     kill "$WATCHER" 2>/dev/null || true
     err "one or more downloads failed"
     exit 1
 fi
 kill "$WATCHER" 2>/dev/null || true
 trap 'rm -rf "$WORK"' EXIT
-log "all downloads complete"
+log "downloaded $NFILES asset(s), $(_h "$TOTAL_BYTES") in $(_elapsed $(( $(date +%s) - DL_STARTED )))"
 
-log "joining any split parts..."
-for part0 in *.tar.gz.part-00; do
-    [ -e "$part0" ] || continue
-    whole="${part0%.part-00}"
-    log "  joining $(basename "$whole")"
-    cat "$whole".part-* > "$whole" && rm -f "$whole".part-*
-done
+if ls ./*.tar.gz.part-00 >/dev/null 2>&1; then
+    log "joining split assets"
+    for part0 in *.tar.gz.part-00; do
+        whole="${part0%.part-00}"
+        printf '[prepare]   %-9s %-14s\n' "joining" "$(basename "$whole")"
+        cat "$whole".part-* > "$whole" && rm -f "$whole".part-*
+    done
+fi
 
-log "verifying checksums..."
+log "verifying checksums"
 fail=0
-while IFS="$(printf '\t')" read -r name mod url sha; do
+while IFS="$(printf '\t')" read -r name mod url sha size; do
     [ -n "$name" ] || continue
     whole="${name%.part-*}"
     [ -f "$whole" ] || continue
-    [ -n "$sha" ] || { log "  [$mod] $(basename "$whole") -- no sha256 in index, unverified"; continue; }
+    bytes=$(stat -c%s "$whole" 2>/dev/null || echo 0)
+    if [ -z "$sha" ]; then
+        printf '[prepare]   %-9s %-14s %8s  no sha256 in index\n' \
+            "SKIPPED" "$mod" "$(_h "$bytes")"
+        continue
+    fi
     got="$(sha256sum "$whole" | awk '{print $1}')"
     if [ "$sha" != "$got" ]; then
-        err "  [$mod] $(basename "$whole") CHECKSUM MISMATCH (want ${sha:0:16}..., got ${got:0:16}...)"
+        printf '[prepare][ERROR]   %-9s %-14s want %s... got %s...\n' \
+            "MISMATCH" "$mod" "${sha:0:16}" "${got:0:16}" >&2
         fail=1
     else
-        log "  [$mod] $(basename "$whole") OK"
+        printf '[prepare]   %-9s %-14s %8s\n' "ok" "$mod" "$(_h "$bytes")"
     fi
 done <<< "$PLAN"
 [ "$fail" -eq 0 ] || { err "checksum verification failed -- refusing to package"; exit 1; }
 
 NASSETS="$(ls -1 "$TAG"-*.tar.gz 2>/dev/null | wc -l)"
-log "$NASSETS module asset(s) verified"
+log "verified $NASSETS module asset(s)"
 
 # Trim the index to the modules actually packed. The release's index names
 # every module the RELEASE has; a subset package contains fewer. Shipping the
 # untrimmed index would make the import screen list modules the file does not
 # contain -- promising an upgrade it cannot perform, which is the same
 # silent-staleness failure the whole per-module scheme exists to prevent.
-log "trimming index to the $NASSETS packed module(s)..."
+log "trimming index to the packed module(s)"
 python3 - "$TAG.index.json" <<'PY'
 import json, os, sys
 path = sys.argv[1]
@@ -241,18 +252,21 @@ kept = {m: e for m, e in assets.items() if e.get('asset') in present}
 dropped = sorted(set(assets) - set(kept))
 idx['assets'] = kept
 json.dump(idx, open(path, 'w'), indent=2)
-print("[prepare]   index lists %d module(s): %s" % (len(kept), ", ".join(sorted(kept))))
+print("[prepare]   %-9s %s" % ("included", ", ".join(sorted(kept)) or "(none)"))
 if dropped:
-    print("[prepare]   not in this package: %s" % ", ".join(dropped))
+    print("[prepare]   %-9s %s" % ("excluded", ", ".join(dropped)))
 PY
 
 OUT="$OUT_DIR/intact-upgrade-$TAG.tar.gz"
-log "wrapping into a single file..."
+log "wrapping into a single file"
 # index.json FIRST, deliberately. The Import UI peeks at only the first few MB
 # of the uploaded file to show the operator what they are about to apply; with
 # the index at the end of a multi-GB stream there is nothing to read without
 # downloading all of it. Listing it first puts it in the opening KB.
+WRAP_STARTED=$(date +%s)
 tar -czf "$OUT" "$TAG.index.json" "$TAG"-*.tar.gz
-log "wrote $(basename "$OUT") ($(du -h "$OUT" | cut -f1))"
-log "done"
+printf '[prepare]   %-9s %-14s %8s  in %s\n' "wrote" "$(basename "$OUT")" \
+    "$(_h "$(stat -c%s "$OUT" 2>/dev/null || echo 0)")" \
+    "$(_elapsed $(( $(date +%s) - WRAP_STARTED )))"
+log "done in $(_elapsed $(( $(date +%s) - RUN_STARTED )))"
 echo "$OUT"
