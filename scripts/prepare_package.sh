@@ -162,12 +162,22 @@ export GITHUB_TOKEN
 
 # One aggregate progress line every 20s, so a multi-GB fetch is never silent
 # for minutes at a time (which reads as a hang) without flooding the log.
+#
+# set -e is DISABLED inside this subshell, and the byte count comes from find
+# rather than du, on purpose. With `set -o pipefail` in force, `du ./*.part-*`
+# on a release with no split assets leaves the glob unmatched, du exits 1, the
+# pipeline inherits that, and set -e kills the watcher on its FIRST iteration
+# -- silently, because it is a background subshell. The result was a 5.5 GB
+# download with no progress output at all, which is the exact failure this
+# watcher exists to prevent. find matches nothing without erroring.
 (
+    set +e
     while :; do
         sleep 20
-        got=$(du -cb ./*.tar.gz ./*.part-* 2>/dev/null | tail -1 | cut -f1)
+        got=$(find . -maxdepth 1 \( -name '*.tar.gz' -o -name '*.part-*' \) \
+                   -printf '%s\n' 2>/dev/null | awk '{s+=$1} END {print s+0}')
         got="${got:-0}"
-        if [ "$TOTAL_BYTES" -gt 0 ] 2>/dev/null; then
+        if [ "${TOTAL_BYTES:-0}" -gt 0 ] 2>/dev/null; then
             printf '[prepare]   ... %s / %s (%d%%)\n' \
                 "$(numfmt --to=iec "$got" 2>/dev/null || echo "$got")" \
                 "$(numfmt --to=iec "$TOTAL_BYTES" 2>/dev/null || echo "$TOTAL_BYTES")" \
