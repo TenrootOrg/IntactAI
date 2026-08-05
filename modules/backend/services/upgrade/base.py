@@ -420,7 +420,13 @@ def refresh_module_compose_file(module_name: str, intact_root: str,
 # multi-GB dir is orphaned. This sweep — run at the START of every new upgrade —
 # reclaims those orphans regardless of how the prior run ended. Age-guarded so it
 # can never touch the current run's freshly-created dir.
-_UPGRADE_STAGING_GLOBS = ("/app/data/tmp/intact-upgrade-*", "/tmp/intact-upgrade-*")
+# intact-unwrap-* holds the inner assets of a single-file wrapper package while
+# it is being assembled (verify_upgrade_package). It is removed on both the
+# success and failure paths there, but an upgrade RESTARTS THE BACKEND between
+# phases -- a kill mid-unwrap leaves several GB behind with nothing pointing at
+# it, so it needs the same sweep as every other staging dir.
+_UPGRADE_STAGING_GLOBS = ("/app/data/tmp/intact-upgrade-*", "/tmp/intact-upgrade-*",
+                          "/app/data/tmp/intact-unwrap-*")
 
 
 def sweep_applied_upload_packages(logger: Callable = None,
@@ -1971,6 +1977,31 @@ def verify_upgrade_package(package_path: str, logger: Callable = None,
         log(f"Single-file package containing {len(_inner_names)} module "
             f"asset(s) — unwrapping", "info")
         os.makedirs("/app/data/tmp", exist_ok=True)
+
+        # Disk preflight, BEFORE a byte is written. The non-wrapper path below
+        # has had one of these since a half-extracted carcass filled a disk;
+        # a wrapper needs MORE, not less: the inner assets are written out
+        # (~1x the package) and then extracted (~3x, images are already-
+        # compressed layers). Failing here with a number beats ENOSPC halfway
+        # through a multi-GB extract.
+        try:
+            _wrap_size = os.path.getsize(package_path)
+            _need = int(_wrap_size * 4)
+            _free = shutil.disk_usage("/app/data/tmp").free
+            if _free < _need:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Not enough free space to unwrap this package. It is "
+                        f"{_wrap_size // (1024*1024)} MB and needs about "
+                        f"{_need // (1024*1024)} MB free (unwrap + extract), "
+                        f"but only {_free // (1024*1024)} MB is available. "
+                        f"Free disk and retry — nothing was extracted."
+                    ),
+                }
+        except OSError as _de:
+            log(f"  Disk-space preflight skipped: {_de}", "warning")
+
         unwrap_dir = f"/app/data/tmp/intact-unwrap-{int(time.time())}"
         shutil.rmtree(unwrap_dir, ignore_errors=True)
         os.makedirs(unwrap_dir, exist_ok=True)
