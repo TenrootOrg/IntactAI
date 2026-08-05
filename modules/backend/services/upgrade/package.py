@@ -445,12 +445,12 @@ def _get_dir_size(path: str) -> int:
 def _compress_with_progress(source_dir: str, source_name: str, output_file: str,
                             logger: Callable, progress_interval: int = 10,
                             run_id: Optional[str] = None) -> Dict:
-    """Archive a directory to an uncompressed tar with progress updates.
+    """Compress directory to tar.gz with progress updates.
 
     Args:
         source_dir: Parent directory containing source_name (e.g., /tmp)
         source_name: Name of directory to compress (e.g., intact-upgrade-20260323)
-        output_file: Output .tar path
+        output_file: Output tar.gz path
         logger: Logging function
         progress_interval: Seconds between progress updates
         run_id: When set, the tar subprocess is terminated immediately if
@@ -471,7 +471,7 @@ def _compress_with_progress(source_dir: str, source_name: str, output_file: str,
     log(f"  Source size: {_format_size(source_size)}", "info")
 
     # Build a file list with manifest.json FIRST so it lives in the
-    # first ~10KB of the tar. This lets:
+    # first ~10KB of the gzipped tar. This lets:
     #   * the operator's browser peek the manifest from the first ~5MB
     #     of the local file before any upload (see /api/upgrade/peek-manifest),
     #   * get_package_info()'s slow-path fallback to find the manifest
@@ -500,20 +500,10 @@ def _compress_with_progress(source_dir: str, source_name: str, output_file: str,
         # whatever filesystem-order tar picks.
         use_files_from = False
 
-    # `-cf`, not `-czf`. Everything of size in here is `docker save` output,
-    # whose layers are ALREADY gzip-compressed at rest, so the outer deflate
-    # pass is recompressing compressed bytes. Measured on the 20260726 release:
-    # gzipping the module assets saved 31 MB on 5.44 GB — 0.55% — in exchange
-    # for a full single-threaded deflate over all 5.4 GB, which is minutes of
-    # CPU on every build and every operator prepare. tar itself stays: a module
-    # asset is several files (timesketch 5 images + a manifest, iris and volweb
-    # 4, elk 3) and a release asset has to be one flat file. Readers were made
-    # format-agnostic first (`tar -xf` and `tarfile.open(f, 'r')` both
-    # auto-detect), so every .tar.gz already published keeps opening unchanged.
     if use_files_from:
-        cmd = f"tar -cf {output_file} -C {source_dir} -T {list_file}"
+        cmd = f"tar -czf {output_file} -C {source_dir} -T {list_file}"
     else:
-        cmd = f"tar -cf {output_file} -C {source_dir} {source_name}"
+        cmd = f"tar -czf {output_file} -C {source_dir} {source_name}"
     process = subprocess.Popen(
         cmd,
         shell=True,
@@ -561,12 +551,9 @@ def _compress_with_progress(source_dir: str, source_name: str, output_file: str,
         if now - last_update >= progress_interval:
             if os.path.exists(output_file):
                 current_size = os.path.getsize(output_file)
-                # An uncompressed tar is the source bytes plus 512-byte header
-                # and padding blocks, so final size ≈ source size. This used to
-                # assume 0.4 (the old gzip ratio); left at 0.4 against a plain
-                # tar the bar reaches 99% about 40% of the way in and then sits
-                # there, which reads to the operator as a hung prepare.
-                estimated_final = source_size * 1.02
+                # Estimate progress (compressed is ~30-50% of source for images)
+                # Use a rough estimate: output will be ~40% of source
+                estimated_final = source_size * 0.4
                 if estimated_final > 0:
                     progress = min(99, int((current_size / estimated_final) * 100))
                 else:
@@ -592,58 +579,32 @@ def _compress_with_progress(source_dir: str, source_name: str, output_file: str,
     if returncode != 0:
         return {"success": False, "error": stderr[:200]}
 
-    # Post-write integrity check. `tar -cf` returning 0 is not enough — we've
-    # seen tar produce structurally-corrupt archives under disk pressure /
-    # concurrent writes that pass tar's own exit code but fail the operator's
-    # apply step at extract time. This used to be `gzip -t`, which is not a
-    # check at all once the archive is a plain tar (gzip -t exits non-zero on
-    # ANY uncompressed file, so keeping it would have failed every good build).
-    # `tar -tf` is the equivalent for this format: it walks the archive's
-    # header chain to the end-of-archive marker, so a truncated or garbled tar
-    # fails here instead of on a different machine 5 minutes later.
-    #
-    # Fed through a PIPE rather than named as a file on purpose. Handed a
-    # seekable path, GNU tar lseeks over each member's data and reads only the
-    # headers — measured on a 3 MB test archive that is 15 reads + 3 lseeks
-    # versus 332 reads for the piped form. On a pipe tar cannot seek, so it
-    # reads every byte, which surfaces an I/O error in the middle of a member
-    # that the seeking form would skip straight past. ~10-30 sec on a 4 GB file.
-    # Listing goes to /dev/null; we want the walk, not the names.
-    #
-    # Be clear about what this does NOT do, because the check it replaced was
-    # strictly stronger in one respect: tar checksums HEADERS ONLY, it has no
-    # checksum over member data. Verified both ways on a 3 MB archive — flip a
-    # byte inside a member and `gzip -t` rejects it (CRC32 over the whole
-    # stream) while `tar -tf` accepts it, piped form included. Reading a byte
-    # is not verifying it. So this catches truncation and read errors, not
-    # silent corruption; the guarantee against corrupted CONTENT is the per-
-    # asset sha256 in <tag>.index.json, which the consumer verifies before it
-    # extracts anything (install.sh and verify_upgrade_package both do). That
-    # is the layer to protect if this is ever revisited — gzip's CRC was a
-    # redundant second line, not the primary one.
-    #
-    # This form only works because the archive above is written WITHOUT -z:
-    # GNU tar 1.35 auto-detects compression from a seekable file but refuses a
-    # compressed stream on stdin ("Archive is compressed. Use -z option"). If
-    # anyone puts the -z back, this check starts failing every build, loudly,
-    # which is the right way for that mistake to surface.
-    log("  Verifying archive integrity (tar -tf)...", "info")
+    # Post-write integrity check. `tar -czf` returning 0 is not enough —
+    # we've seen tar produce structurally-corrupt gzip streams under
+    # disk pressure / concurrent writes that pass tar's own exit code
+    # but fail the operator's apply step with a raw zlib error at
+    # extract time. `gzip -t` reads the whole file and validates every
+    # deflate block, so a corrupt archive fails here instead of on a
+    # different machine 5 minutes later. Cost: one full re-read of the
+    # archive (~10-30 sec on a 4 GB file) — small price for the
+    # operator confidence.
+    log("  Verifying archive integrity (gzip -t)...", "info")
     verify = subprocess.run(
-        f"cat {output_file} | tar -tf - > /dev/null",
-        shell=True, capture_output=True, text=True,
+        ["gzip", "-t", output_file],
+        capture_output=True, text=True,
     )
     if verify.returncode != 0:
         try:
             os.remove(output_file)
         except OSError:
             pass
-        err = (verify.stderr or "").strip() or "tar integrity check failed"
+        err = (verify.stderr or "").strip() or "gzip integrity check failed"
         return {
             "success": False,
             "error": (
-                "Output tar failed its integrity check: "
+                "Output tar.gz failed gzip integrity check: "
                 f"{err[:200]}. Likely cause: disk pressure or concurrent "
-                "writes during archiving. Free up /data and re-run prepare."
+                "writes during compression. Free up /data and re-run prepare."
             ),
         }
     log("  Archive integrity OK", "success")
@@ -1074,8 +1035,8 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
         modules: Dict of module versions, e.g. {"elk": "9.3.1", "velociraptor": "0.75.6"}
         run_id: Workflow run ID for tracking
         logger: Logging function
-        compress: When True (default, offline flow), archive the built
-                  directory to a .tar at /data/upgrade_packages/ via
+        compress: When True (default, offline flow), compress the built
+                  directory to a tar.gz at /data/upgrade_packages/ via
                   the atomic-swap pattern, then clean up the work dir.
                   When False (online-upgrade flow), skip compression +
                   cleanup; the caller takes ownership of the
@@ -1094,7 +1055,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
         source_commit: The commit `source_dir` sits at, recorded in the
                   manifest as the source's origin. Only meaningful with
                   source_dir.
-        packages_dir: Where the finished .tar lands. Defaults to
+        packages_dir: Where the finished .tar.gz lands. Defaults to
                   /data/upgrade_packages — the persistent location an operator
                   later downloads it from, which is why the atomic swap keeps
                   the previous archive intact. CI points this straight at its
@@ -1113,24 +1074,17 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
     package_name = f"intact-upgrade-{timestamp}"
     package_dir = work_dir if work_dir else f"/tmp/{package_name}"
 
-    # Archive-only state — skipped when compress=False (online flow
-    # doesn't produce an archive at all).
+    # Compression-only state — skipped when compress=False (online flow
+    # doesn't produce a tar.gz at all).
     _packages_dir_overridden = bool(packages_dir)
     packages_dir = packages_dir or "/data/upgrade_packages"
-    # `.tar`, not `.tar.gz` — _compress_with_progress stopped gzipping (see the
-    # `-cf` note there: 0.55% saved for a full deflate over 5.4 GB of already-
-    # gzipped docker layers), and an extension that lies is how an operator's
-    # habitual `tar -xzf` or a reader still pinned to `r:gz` dies on a file that
-    # is perfectly good. Renaming is safe on the box because the download route
-    # serves the path RECORDED in prepared_package.json, not this constant, and
-    # every in-tree reader was made format-agnostic first.
-    output_file = f"{packages_dir}/intact-upgrade-latest.tar"
+    output_file = f"{packages_dir}/intact-upgrade-latest.tar.gz"
     output_file_tmp = f"{output_file}.new"
     if compress:
         # Store final package in persistent location with an atomic-swap
         # workflow:
         #   1. write the new archive to `<output_file>.new`
-        #   2. validate it (tar -tf inside _compress_with_progress)
+        #   2. validate it (gzip -t inside _compress_with_progress)
         #   3. os.replace() the validated `.new` over `<output_file>`
         # The previous good package stays on disk untouched throughout
         # the whole prepare run — if anything fails, the operator's
@@ -1460,7 +1414,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     )
 
                 # Tear down the temp tarball + extraction so they don't end up
-                # inside the final .tar output. Nothing to tear down when the
+                # inside the final .tar.gz output. Nothing to tear down when the
                 # source came from a checkout we do not own — deleting THAT
                 # would take the caller's working tree with it.
                 if tar_path or extract_dir:
@@ -2545,13 +2499,12 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
         if not has_content:
             raise Exception("No modules were packaged successfully. Check your internet connection and try again.")
 
-        # Per-file sha256 integrity map. The outer-archive check at apply time
-        # only proves the OUTER archive isn't corrupt — a truncated/corrupt
-        # image tar INSIDE a structurally-valid archive used to surface
-        # mid-apply, after the module was already down. verify_upgrade_package
-        # re-hashes each file against this map before any module runs (and
-        # skips the check for older packages whose manifest has no sha256
-        # block — back-compat).
+        # Per-file sha256 integrity map. `gzip -t` at apply time only proves
+        # the OUTER archive isn't corrupt — a truncated/corrupt image tar
+        # INSIDE a gzip-valid archive used to surface mid-apply, after the
+        # module was already down. verify_upgrade_package re-hashes each file
+        # against this map before any module runs (and skips the check for
+        # older packages whose manifest has no sha256 block — back-compat).
         log("", "info")
         log("=== Hashing package contents (sha256) ===", "info")
         import hashlib as _hashlib
@@ -2630,7 +2583,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
             log(f"  Created {manifest_sidecar_name} (per-module asset manifest)",
                 "success")
 
-        # Online-upgrade short-circuit: no archive needed — return the
+        # Online-upgrade short-circuit: no tar.gz needed — return the
         # built package_dir directly. Caller (run_online_upgrade_workflow)
         # owns the dir from here and cleans up after the apply finishes.
         if not compress:
@@ -2646,10 +2599,10 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 "manifest": manifest,
             }
 
-        # Create the tar archive
+        # Create tar.gz archive
         log("", "info")
         log("=== Creating Package Archive ===", "info")
-        log("  Archiving package (this may take a few minutes)...", "info")
+        log("  Compressing package (this may take a few minutes)...", "info")
 
         # Disk-space preflight — refuse to start compression if the
         # output volume doesn't have enough room.
@@ -2687,7 +2640,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
             return {"success": False, "error": "cancelled", "cancelled": True}
         if not result['success']:
             # `_compress_with_progress` already deleted the corrupt
-            # tmp file (on tar-write failure or tar-tf failure). The
+            # tmp file (on tar failure or gzip-t failure). The
             # previous `output_file` — if any — is still in place.
             raise Exception(f"Failed to create archive: {result.get('error', '')[:200]}")
 
@@ -2732,7 +2685,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
         return {
             "success": True,
             "package_path": output_file,
-            "package_name": f"{package_name}.tar",
+            "package_name": f"{package_name}.tar.gz",
             "package_size": package_size,
             "manifest": manifest
         }

@@ -539,11 +539,22 @@ def main() -> int:
     # MOVE, not copy. prepare wrote into args.out (see packages_dir above), so
     # this is a same-filesystem rename: instant, and no second copy of a
     # multi-GB asset. It also has to happen -- prepare names its output
-    # intact-upgrade-latest.tar.gz, and leaving that behind in the output dir
-    # would give CI's `ls *.tar.gz | head -1` two files to choose between.
+    # intact-upgrade-latest.<ext>, and leaving that behind in the output dir
+    # would give CI's asset glob two files to choose between.
+    #
+    # The extension is taken from what prepare ACTUALLY wrote rather than
+    # hardcoded. _compress_with_progress stopped gzipping (the payload is
+    # docker layers, already compressed at rest: measured 0.55% for a full
+    # deflate pass over 5.4 GB), and this line still said ".tar.gz" -- which
+    # would have published plain tars under a .tar.gz name. Green build,
+    # mislabelled release, and every consumer that trusts the extension rather
+    # than sniffing the magic bytes broken by a file that is not what it says.
+    # Deriving it here means this stays correct whichever way that decision
+    # goes, including if the outer gzip is ever restored.
     src = result["package_path"]
-    name = (f"{args.tag}-{args.module}.tar.gz" if args.module
-            else f"intact-upgrade-{args.tag}.tar.gz")
+    _ext = ".tar.gz" if src.endswith(".tar.gz") else ".tar"
+    name = (f"{args.tag}-{args.module}{_ext}" if args.module
+            else f"intact-upgrade-{args.tag}{_ext}")
     dest = os.path.join(args.out, name)
     shutil.move(src, dest)
     man = src + ".manifest.json"
