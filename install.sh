@@ -1321,7 +1321,40 @@ fix_source_permissions() {
     # those same secret files in case any of them predate this run and
     # weren't already at the intended mode (e.g. left over from an older
     # install), or had their ownership reset by the chown -R above.
-    find "${SCRIPT_DIR}/modules" -type f \( -path "*/secrets/*" -o -name ".env" \) -exec chmod 600 {} \; 2>/dev/null || true
+    #
+    # IRIS's own 5 app/postgres secrets are EXCLUDED here on purpose --
+    # see the dedicated 644 pass a few lines down for why. Every other
+    # module's secrets/ and every .env still get the blanket 600.
+    find "${SCRIPT_DIR}/modules" -type f \( -path "*/secrets/*" -o -name ".env" \) \
+        -not -path "*/modules/iris/secrets/IRIS_ADM_PASSWORD" \
+        -not -path "*/modules/iris/secrets/IRIS_SECRET_KEY" \
+        -not -path "*/modules/iris/secrets/IRIS_SECURITY_PASSWORD_SALT" \
+        -not -path "*/modules/iris/secrets/POSTGRES_ADMIN_PASSWORD" \
+        -not -path "*/modules/iris/secrets/POSTGRES_PASSWORD" \
+        -exec chmod 600 {} \; 2>/dev/null || true
+    # These 5 stay 644 (world-readable), matching
+    # services/upgrade/iris.py:399-423's documented policy exactly --
+    # iris_app and iris_worker run their gunicorn/celery processes as
+    # `nobody` (uid 65534), and these secrets are bind-mounted into
+    # /run/secrets/ owned by whatever this chown -R above just set
+    # (this script's own uid, e.g. 1000). A 600 file owned by a UID that
+    # isn't 65534 is unreadable to `nobody`; IRIS then reads an empty
+    # password, connects with "", and its gunicorn workers crash-loop on
+    # "password authentication failed for user postgres" the next time
+    # intact_iris_app is recreated for ANY reason (upgrade, `docker
+    # compose restart`, host reboot) -- NOT at first boot, which is why
+    # this went unnoticed: generate_iris_secrets() (lib/modules.sh)
+    # creates these files at the default umask (644), so the FIRST
+    # deploy_iris works fine, and only breaks on the next recreate after
+    # THIS blanket 600 sweep has already reverted them. Confirmed live on
+    # 2026-08-05: an online upgrade recreated intact_iris_app and it
+    # crash-looped with exactly this error; restoring 644 fixed it
+    # immediately, no data or credentials touched.
+    find "${SCRIPT_DIR}/modules/iris/secrets" -maxdepth 1 -type f \
+        \( -name IRIS_ADM_PASSWORD -o -name IRIS_SECRET_KEY \
+           -o -name IRIS_SECURITY_PASSWORD_SALT \
+           -o -name POSTGRES_ADMIN_PASSWORD -o -name POSTGRES_PASSWORD \) \
+        -exec chmod 644 {} \; 2>/dev/null || true
     # config.yaml is as sensitive as anything under secrets/: it carries
     # options.github_token (a real GitHub PAT), the dashboard login and every
     # module password. It was landing at 664/644 — readable by every local

@@ -31,11 +31,19 @@ MODULES_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__
 # tests/test_secret_files_are_not_world_readable.py asserts the two sets are
 # equal, because the realistic failure is someone adding a secret to one side
 # only and upgraded boxes silently staying at 644.
+# (That test does not exist yet — this comment describes the intended
+# invariant, not a currently-enforced one.)
 #
-# NOTE: IRIS secrets are deliberately absent. install.sh chmods them 600 while
-# this path chmods them 644 (iris.py:399-423) to keep iris_app — which runs as
-# nobody/65534 — able to read them. Reconciling that is a separate ticket;
-# pulling them in here would risk the documented crashloop.
+# NOTE: IRIS secrets are deliberately absent. Both paths now chmod them 644
+# (iris.py:399-423 here; install.sh's fix_source_permissions() carves out the
+# same 5 files from its own 600 sweep) to keep iris_app / iris_worker — which
+# run as nobody/65534 — able to read them. install.sh previously reverted
+# them to 600 at the very end of every run, which didn't break anything
+# immediately (an already-running iris_app keeps its existing connection) but
+# crash-looped the NEXT time intact_iris_app was recreated for any reason —
+# confirmed live 2026-08-05 via an online upgrade. Fixed on the bash side
+# rather than reconciled here, since 644 (not 600, not group-640) is the
+# policy this file's authors already chose and documented.
 _SECRET_PATHS_0600 = (
     "data/velociraptor/server.config.yaml",   # CA private key: signs every endpoint
     "data/velociraptor/api.config.yaml",      # API client private key
