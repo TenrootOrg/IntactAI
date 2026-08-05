@@ -669,15 +669,29 @@ document.addEventListener('alpine:init', () => {
         },
 
         toggleApplyModule(moduleId) {
-            // Guard: only INSTALL rows are togglable. Upgrade /
-            // downgrade are forced (matches the online-upgrade
-            // convention — installed modules upgrade together with
-            // the chosen package); no-change is excluded. The HTML
-            // already disables those checkboxes; this is a
-            // belt-and-braces check.
+            // Togglable: INSTALL (opt in to a module this host does not have)
+            // and NO-CHANGE (opt in to a reinstall at the same version — the
+            // row renders a checkbox titled "Reinstall this module..." and
+            // relabels itself "reinstall" when ticked, so refusing the toggle
+            // here made that control a decoration).
+            //
+            // NOT togglable: upgrade / downgrade / unknown. Those are forced,
+            // matching the online-upgrade convention, and the markup gives
+            // them a spacer instead of a checkbox — so this is belt-and-braces
+            // for them, not the mechanism.
+            //
+            // Why the old `action !== 'install'` guard was worse than a dead
+            // control: a click still flips the native checkbox in the DOM, but
+            // returning early meant applySelectedModules never changed, so
+            // Alpine had no reason to re-render and the tick STAYED on screen
+            // while being absent from the selection. The next real mutation
+            // (ticking an install row) re-evaluated every
+            // :checked="...includes(name)" binding and those phantom ticks
+            // vanished at once — which reads as "picking iris cleared my other
+            // choices", when in truth they were never selected.
             const target = (this.applyManifest?.versions || {})[moduleId];
             const action = this.applyModuleAction(moduleId, target);
-            if (action !== 'install') return;
+            if (action !== 'install' && action !== 'no-change') return;
             const idx = this.applySelectedModules.indexOf(moduleId);
             if (idx >= 0) {
                 this.applySelectedModules.splice(idx, 1);
