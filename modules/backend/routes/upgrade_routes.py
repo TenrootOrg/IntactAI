@@ -1395,13 +1395,33 @@ def prepare_upgrade_package():
                     cmd.append(','.join(sorted(selected_modules)))
                 logger(f"Running {os.path.basename(script)} {target}", "info")
 
+                # Hand the child the SAME credential this backend uses. A
+                # subprocess inherits only the environment, but _github_token()
+                # falls back to reading config.yaml — so the operator's token
+                # can be perfectly well configured and the script still runs
+                # anonymous, producing a log that contradicts itself ("have
+                # 4999/5000 remaining" one line above "no GITHUB_TOKEN set --
+                # 60/hr"). Worse than confusing: a 9-asset fetch on the 60/hr
+                # anonymous cap is one shared-IP neighbour away from a 403
+                # halfway through several GB.
+                _env = dict(os.environ)
+                try:
+                    from services.upgrade.resolver import _github_token
+                    _tok = _github_token()
+                    if _tok:
+                        _env['GITHUB_TOKEN'] = _tok
+                except Exception as _te:
+                    logger(f"  Could not resolve a GitHub token ({_te}); the "
+                           f"download will use the anonymous rate limit",
+                           "warning")
+
                 # Line-buffered so the operator sees progress as it happens
                 # rather than one dump at the end; the script logs every
                 # asset it fetches and verifies. stderr is folded in so its
                 # failures land in the same place.
                 proc = _subprocess.Popen(
                     cmd, stdout=_subprocess.PIPE, stderr=_subprocess.STDOUT,
-                    text=True, bufsize=1, cwd=WORKDIR)
+                    text=True, bufsize=1, cwd=WORKDIR, env=_env)
                 last_line = ''
                 _pct = [5]
                 from services.workflow_service import is_cancelled
