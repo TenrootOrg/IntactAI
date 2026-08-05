@@ -1878,7 +1878,8 @@ def _reject_stale_delta_package(manifest: Dict,
             f"while reporting success. Use this release's assets or its bundle.")
 
 def verify_upgrade_package(package_path: str, logger: Callable = None,
-                           expected_sha256: str = None) -> Dict:
+                           expected_sha256: str = None,
+                           run_id: str = None) -> Dict:
     """Extract and verify an upgrade package.
 
     Two different questions, and it is worth being clear which one this answers.
@@ -2114,6 +2115,13 @@ def verify_upgrade_package(package_path: str, logger: Callable = None,
                 # wall -- a hand-carried wrapper is applied on whatever box the
                 # operator has, and the whole-tree peak is ~3.2x the package.
                 load_images=True,
+                # Threaded through so Stop still works. The per-module load
+                # happens HERE now rather than later in the orchestrator, and
+                # that later call always had a run_id -- without passing it the
+                # Stop button would silently stop interrupting a docker load,
+                # which on a multi-GB module is minutes of an operator pressing
+                # a button that does nothing.
+                run_id=run_id,
                 logger=log)
             # The inner tarballs are consumed; the assembled tree is what the
             # apply loop reads from here on.

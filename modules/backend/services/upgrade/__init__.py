@@ -2805,7 +2805,8 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
 
         # Verify and extract package
         verify_result = verify_upgrade_package(
-            package_path, logger=log, expected_sha256=expected_sha256)
+            package_path, logger=log, expected_sha256=expected_sha256,
+            run_id=run_id)
         if not verify_result['success']:
             # Delete the upload only when the PACKAGE is the problem (corrupt
             # archive, wrong shape). A `retryable` failure is about this BOX,
