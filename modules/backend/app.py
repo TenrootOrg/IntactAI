@@ -464,6 +464,29 @@ def run_startup_initialization():
                     _uid = (_det.get('upload_id') or '').strip() or _run_to_upload.get(_rid)
                     _payload = os.path.join(_uploads_dir, _uid) if _uid else None
 
+                    # Is there ANY tus payload on disk? Sidecars are excluded --
+                    # a lone .info/.run proves a row existed, not that bytes are
+                    # still arriving. Recomputed per row (the loop can delete)
+                    # and cheap: this directory holds a handful of entries.
+                    try:
+                        _any_payload_on_disk = any(
+                            not _n.endswith(('.info', '.run', '.lock'))
+                            for _n in os.listdir(_uploads_dir))
+                    except OSError:
+                        _any_payload_on_disk = True   # can't see it -> assume busy
+
+                    # Seconds since the row was created, for the narrow
+                    # empty-directory case below. Unparseable -> treat as brand
+                    # new, so an unreadable timestamp can never authorise a close.
+                    _age_s = 0
+                    try:
+                        from datetime import datetime as _dt
+                        _c = (_r.get('created_at') or '').strip()
+                        if _c:
+                            _age_s = (_dt.now() - _dt.fromisoformat(_c)).total_seconds()
+                    except (ValueError, TypeError):
+                        _age_s = 0
+
                     if _det.get('applied'):
                         # This row was carrying the APPLY too (it was adopted),
                         # and no Phase-2 resume is pending, so that apply died
@@ -485,6 +508,28 @@ def run_startup_initialization():
                         _why = f"its uploaded file {_payload} no longer exists"
                     elif _uid and _payload in _applied_paths:
                         _why = ("its package was applied by a separate upgrade run")
+                    elif not _uid and not _any_payload_on_disk and _age_s > 600:
+                        # No upload id is recoverable for this row: it predates
+                        # details["upload_id"] being written, and its tus .info
+                        # sidecar is gone (post-finish pops the in-memory map,
+                        # and a successful apply deletes the payload and its
+                        # sidecars). Without an id nothing above can identify
+                        # its file, so the row would sit `running` forever --
+                        # and this is not hypothetical, it is exactly the state
+                        # the 2026-08-05 row was found in, i.e. the sweep would
+                        # have missed the case it was written for.
+                        #
+                        # The evidence here is the uploads directory holding no
+                        # payload AT ALL: there is nothing for an in-flight
+                        # upload to be writing into, so none can be in flight.
+                        # The 10-minute age is not a timeout standing in for
+                        # evidence -- it covers the seconds between
+                        # /api/upgrade/upload-run creating this row and tusd
+                        # creating the file, which is the one window where an
+                        # empty directory is normal.
+                        _why = ("no upload id is recoverable for it and the "
+                                "uploads directory is empty, so nothing it "
+                                "could still be receiving exists")
                     else:
                         # Either the package is still on disk (in flight, or
                         # uploaded and waiting to be applied) or nothing on disk
