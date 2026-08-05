@@ -860,9 +860,6 @@ document.addEventListener('alpine:init', () => {
         upgradePlan: null,          // ONLINE mode: forced/optional table from /api/upgrade/plan
         optedInOptional: [],        // ONLINE mode: module IDs the operator ticked in the optional table
         optedInReinstall: [],       // ONLINE mode: no-change module IDs ticked to FORCE a reinstall (bug recovery)
-        prepareSelectedModules: [], // PREPARE mode: module IDs to bundle
-        prepareFromRef: '',         // PREPARE mode: release the TARGET (air-gap) box is on; '' = unknown
-        prepareDelta: null,         // PREPARE mode: {rows, hops} from /api/upgrade/prepare-delta
         fetchingRefs: false,
         computingPlan: false,
         showingPrepareModules: false,
@@ -983,48 +980,36 @@ document.addEventListener('alpine:init', () => {
             return ref.name === cur ? 'same' : 'older';
         },
 
-        // Dropdown source.
-        //
-        // ONLINE: the current release plus exactly ONE step forward. Online
-        // upgrades run ON this box, and an upgrade is only ever verified a
-        // single hop at a time (N -> N+1); offering N+3 invites a jump nobody
-        // has tested. Keeping the CURRENT release on the list is deliberate and
-        // not a downgrade — re-applying it is how you pick up a fix or add a
-        // module you skipped the first time.
-        //
-        // "Next" means the NEAREST newer release, not the newest one. Sorting
-        // is by the tag's own date (intact-YYYYMMDD), which orders correctly as
-        // plain strings, so it does not depend on the API's ordering or on
-        // releases having been published in date order.
-        //
-        // PREPARE: unfiltered on purpose. That package is built here and
-        // applied on a DIFFERENT machine which may legitimately be on any
-        // release, including an older one.
+        // Dropdown source: filter out 'older' refs so the operator
+        // can't pick a downgrade target. Online mode applies the
+        // filter; prepare mode keeps everything (the operator may
+        // legitimately want to build a package for an older air-gap
+        // host). `development` always survives the filter.
         filteredUpgradeRefs() {
             if (this.prepareModalMode !== 'online') return this.upgradeRefs;
+            // ONE HOP. An upgrade is only ever exercised a single release at a
+            // time (N -> N+1), so offering N+3 invites a jump with no test
+            // coverage behind it. "Next" is the NEAREST newer release, not the
+            // newest -- ordered by the tag's own date (intact-YYYYMMDD sorts
+            // correctly as a plain string), so it does not depend on GitHub's
+            // ordering or on releases being published in date order.
+            //
+            // The CURRENT release stays on the list deliberately: re-applying
+            // it is how an operator picks up a fix or adds a module they
+            // skipped, which is not a downgrade.
             const dateOf = (r) => {
                 const m = (r.name || '').match(/(\d{8})/);
                 return m ? m[1] : null;
             };
-            const same  = this.upgradeRefs.filter(r => this.classifyUpgradeRef(r) === 'same');
+            const same = this.upgradeRefs.filter(r => this.classifyUpgradeRef(r) === 'same');
             const newer = this.upgradeRefs
                 .filter(r => this.classifyUpgradeRef(r) === 'newer' && dateOf(r))
-                .sort((a, b) => dateOf(a).localeCompare(dateOf(b)));   // oldest-first
-            const nextHop = newer.length ? [newer[0]] : [];
-            // Anything undated (e.g. the synthetic `development` entry) is not
-            // part of the hop sequence and is passed through untouched.
+                .sort((a, b) => dateOf(a).localeCompare(dateOf(b)));
+            // Undated entries (e.g. the synthetic `development` ref) are not
+            // part of the hop sequence; pass them through untouched.
             const undated = this.upgradeRefs.filter(
                 r => !dateOf(r) && this.classifyUpgradeRef(r) !== 'older');
-            return [...nextHop, ...same, ...undated];
-        },
-
-        // The one release an online upgrade may move to, or null at the newest.
-        get nextHopRef() {
-            if (this.prepareModalMode !== 'online') return null;
-            const cur = this.currentIntactVersion;
-            const hit = this.filteredUpgradeRefs()
-                .find(r => r.name !== cur && /\d{8}/.test(r.name || ''));
-            return hit ? hit.name : null;
+            return [...(newer.length ? [newer[0]] : []), ...same, ...undated];
         },
 
         async fetchGithubQuota() {
@@ -1105,9 +1090,6 @@ document.addEventListener('alpine:init', () => {
             this.upgradePlan = null;
             this.optedInOptional = [];
             this.optedInReinstall = [];
-            this.prepareSelectedModules = [];
-            this.prepareFromRef = '';
-            this.prepareDelta = null;
             try {
                 const r = await this._fetchWithTimeout('/api/upgrade/plan', {
                     method: 'POST',
@@ -1117,7 +1099,6 @@ document.addEventListener('alpine:init', () => {
                 const d = await r.json();
                 if (d && d.success) {
                     this.upgradePlan = d.plan;
-                    this.seedPrepareSelection();
                 } else {
                     this.showTopToast('Plan failed: ' + (d.error || 'unknown'), 'error');
                 }
@@ -1128,136 +1109,6 @@ document.addEventListener('alpine:init', () => {
                 this.showTopToast(msg, 'error');
             }
             this.computingPlan = false;
-        },
-
-        // PREPARE: which modules go into the package. Seeded to EVERYTHING the
-        // release ships.
-        //
-        // NOT to the delta, and the reason is the whole point of this feature:
-        // Prepare exists to build a package on an internet-connected box and
-        // carry it to a DIFFERENT, air-gapped one. This machine is a
-        // downloader. Its installed versions have nothing to do with the
-        // target's, so "what changed here" is not a smaller answer to the right
-        // question — it is an answer to a question nobody asked.
-        //
-        // Getting it wrong fails silently, which is what makes it dangerous.
-        // Prepare on a box already at the target release and the delta is just
-        // `intact`; the air-gapped machine three releases behind then imports a
-        // package containing only the platform, upgrades that, and leaves every
-        // module where it was. Import lists what the PACKAGE holds, so nothing
-        // on that screen says the rest were left behind: a new platform driving
-        // old modules, reported as success.
-        //
-        // Online is the mirror image and may absolutely use the delta — it runs
-        // ON the target, so local state IS the reference.
-        //
-        // The checkboxes stay: narrowing deliberately (one module for a known
-        // box, or trimming a 5.5 GB transfer) is a real need. It just has to be
-        // a decision, not a default. intact cannot be unticked, and the backend
-        // force-adds it regardless.
-        seedPrepareSelection() {
-            const p = this.upgradePlan;
-            if (!p) { this.prepareSelectedModules = []; return; }
-            const sel = ['intact'];
-            for (const row of (p.forced || [])) {
-                if (row.module !== 'intact') sel.push(row.module);
-            }
-            for (const row of (p.optional || [])) sel.push(row.module);
-            this.prepareSelectedModules = sel;
-        },
-
-        // The operator names the release the AIR-GAPPED box is on, and the
-        // delta is computed between that release and the target. That is the
-        // only correct reference: this machine is a downloader, and the one
-        // party who knows what the remote runs is the person asked.
-        //
-        // '' means "not known" and is a first-class answer -- it keeps every
-        // module ticked. Guessing is what produced the silent failure this
-        // exists to prevent: a package built against the wrong baseline
-        // upgrades the platform, leaves every module behind, and reports
-        // success.
-        async fetchPrepareDelta() {
-            this.prepareDelta = null;
-            if (!this.selectedRef) return;
-            if (!this.prepareFromRef) { this.seedPrepareSelection(); return; }
-            try {
-                const r = await this._fetchWithTimeout('/api/upgrade/prepare-delta', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({target: this.selectedRef,
-                                          from_ref: this.prepareFromRef}),
-                });
-                const d = await r.json();
-                if (d && d.success) {
-                    this.prepareDelta = d;
-                    // changed === null means the backend had no baseline; treat
-                    // it as "keep it" rather than silently dropping the module.
-                    const sel = (d.rows || [])
-                        .filter(row => row.changed === true || row.changed === null)
-                        .map(row => row.module);
-                    if (!sel.includes('intact')) sel.push('intact');
-                    this.prepareSelectedModules = sel;
-                } else {
-                    this.showTopToast('Delta failed: ' + (d.error || 'unknown') +
-                                      ' — keeping every module selected', 'error');
-                    this.seedPrepareSelection();
-                }
-            } catch (e) {
-                this.showTopToast('Delta request failed — keeping every module '
-                                  + 'selected', 'error');
-                this.seedPrepareSelection();
-            }
-        },
-
-        // Per-row note for the bundle table. With a baseline it states the
-        // actual transition; without one it says so rather than implying the
-        // module is unchanged.
-        prepareRowNote(moduleId) {
-            const d = this.prepareDelta;
-            if (!d) return '';
-            const row = (d.rows || []).find(r => r.module === moduleId);
-            if (!row) return '';
-            if (row.changed === null) return 'no baseline';
-            if (!row.present_in_from) return 'new to that release';
-            return row.changed ? `${row.from} → ${row.to}` : 'already current there';
-        },
-
-        togglePrepareModule(moduleId) {
-            if (moduleId === 'intact') return;   // never removable
-            const i = this.prepareSelectedModules.indexOf(moduleId);
-            if (i >= 0) this.prepareSelectedModules.splice(i, 1);
-            else this.prepareSelectedModules.push(moduleId);
-        },
-
-        // Every module the release ships, each tagged with why it is (or is not)
-        // pre-ticked, so the table can explain itself rather than just showing
-        // boxes. `forced` = installed here; `optional` = in the release but not
-        // installed on this box.
-        get prepareModuleRows() {
-            const p = this.upgradePlan;
-            if (!p) return [];
-            const rows = [];
-            for (const r of (p.forced || [])) {
-                rows.push({
-                    module: r.module,
-                    current: r.current,
-                    target: r.target,
-                    // Context only. This box's state does NOT decide the tick --
-                    // see seedPrepareSelection() for why.
-                    reason: r.module === 'intact' ? 'platform (always included)'
-                          : r.action === 'upgrade' ? 'differs here'
-                          : 'same as here',
-                    locked: r.module === 'intact',
-                });
-            }
-            for (const r of (p.optional || [])) {
-                rows.push({
-                    module: r.module, current: 'not installed',
-                    target: r.target, reason: 'not installed here',
-                    locked: false,
-                });
-            }
-            return rows;
         },
 
         toggleOptionalModule(moduleId) {
@@ -1314,8 +1165,7 @@ document.addEventListener('alpine:init', () => {
             const body = isOnline
                 ? {target: this.selectedRef, opted_in_optional: this.optedInOptional,
                    opted_in_reinstall: this.optedInReinstall}
-                : {target: this.selectedRef,
-                   selected_modules: this.prepareSelectedModules};
+                : {target: this.selectedRef};
             this.prepareLoading = true;
             try {
                 const r = await fetch(endpoint, {
@@ -1381,13 +1231,10 @@ document.addEventListener('alpine:init', () => {
         // for prepare). Saves a click; matches the "auto-show" UX.
         async onSelectedRefChange() {
             if (!this.selectedRef) return;
-            // BOTH modes need the plan now. Online has always used it for the
-            // forced/optional tables; prepare used to compute nothing (this
-            // branch was empty), which is why it had no module selection and
-            // simply pulled the entire release. The same plan tells prepare
-            // which modules actually move on this box, i.e. the delta to
-            // pre-tick.
-            await this.computeUpgradePlan();
+            if (this.prepareModalMode === 'online') {
+                await this.computeUpgradePlan();
+            } else {
+            }
         },
 
         closePreparePackageModal() {

@@ -1518,7 +1518,7 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                 <p class="text-gray-500 text-xs mt-2">
                                     Releases auto-loaded when you opened this dialog. Backend caches for 30 minutes; the refresh button only spends a GitHub call if the cache is stale.
                                     <span x-show="$store.settings.prepareModalMode === 'online' && $store.settings.currentIntactVersion">
-                                        Showing <span class="font-mono text-gray-400" x-text="$store.settings.currentIntactVersion"></span> and the next release only. Upgrades are verified one hop at a time, so you step through releases rather than jumping several at once; re-picking the current release is how you apply a fix or add a module you skipped. Older releases and companion variants (e.g. <span class="font-mono">-old-modules</span>) stay hidden to prevent a downgrade.
+                                        Showing <span class="font-mono text-gray-400" x-text="$store.settings.currentIntactVersion"></span> and the next release only — upgrades are applied one release at a time. Re-picking the current release is how you apply a fix or add a module you skipped. Older releases and companion variants (e.g. <span class="font-mono">-old-modules</span>) stay hidden to prevent a downgrade.
                                     </span>
                                 </p>
                             </div>
@@ -1540,86 +1540,26 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                  (you'd have a bunch of module images and no Intact to drive
                                  them). Renders with a locked-checked indicator instead of a
                                  toggleable checkbox. -->
-                        <!-- Module selection. ALL ticked: the package is built here and applied
-                             on a DIFFERENT air-gapped box, so this machine's installed set is
-                             not the reference. The per-row note reports state HERE purely as
-                             context; it deliberately does not drive the tick. -->
-                        <div x-show="$store.settings.prepareModalMode !== 'online'
-                                     && $store.settings.upgradePlan
-                                     && !$store.settings.preparePackageReady"
-                             class="bg-gray-800/40 border border-gray-700 rounded p-3 mt-4">
-                            <div class="flex items-center justify-between mb-2">
-                                <span class="text-xs font-semibold text-gray-300 uppercase tracking-wide">2. Modules to bundle</span>
-                                <span class="text-xs text-gray-500"
-                                      x-text="$store.settings.prepareSelectedModules.length + ' of ' + $store.settings.prepareModuleRows.length + ' selected'"></span>
-                            </div>
-                            <!-- The operator names the AIR-GAPPED box's release. That is the
-                                 only correct baseline: this machine is a downloader, so its own
-                                 versions say nothing about what the target needs. "Don't know"
-                                 is a real answer and keeps everything ticked. -->
-                            <div class="mb-3">
-                                <label class="block text-xs text-gray-400 mb-1">Which release is the target machine on?</label>
-                                <select x-model="$store.settings.prepareFromRef"
-                                        @change="$store.settings.fetchPrepareDelta()"
-                                        class="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-xs text-gray-200">
-                                    <option value="">Don't know / fresh install &mdash; bundle everything</option>
-                                    <template x-for="r in $store.settings.upgradeRefs.filter(x => x.name !== $store.settings.selectedRef)" :key="'from-' + r.name">
-                                        <option :value="r.name" x-text="r.name"></option>
-                                    </template>
-                                </select>
-                            </div>
-                            <!-- Real distance, not a generic caution: upgrades are verified one
-                                 hop at a time and this says exactly how far off the target is. -->
-                            <div x-show="$store.settings.prepareDelta && $store.settings.prepareDelta.hops > 1"
-                                 class="bg-yellow-900/30 border border-yellow-700/50 rounded p-2 mb-2">
-                                <p class="text-yellow-400 text-xs">
-                                    That machine is <span class="font-mono" x-text="$store.settings.prepareDelta?.hops"></span>
-                                    releases behind. Upgrades are verified one hop at a time &mdash; prepare and
-                                    apply each release in turn rather than jumping straight here.
+                            <!-- ONE HOP. Upgrades are exercised a single release at a
+                                 time (N -> N+1); that is the only path with test coverage
+                                 behind it. Red on purpose: skipping releases is the kind of
+                                 shortcut that looks fine until it is not. -->
+                            <div class="bg-red-900/30 border border-red-700/50 rounded p-3">
+                                <p class="text-red-300 text-xs">
+                                    <strong>Upgrade one release at a time.</strong> Each upgrade is
+                                    tested only as a single hop (N&nbsp;&rarr;&nbsp;N+1). If the target
+                                    machine is several releases behind, prepare and apply each release
+                                    in turn &mdash; jumping straight to the newest is untested.
                                 </p>
                             </div>
-                            <div class="text-xs text-gray-500 mb-2">
-                                <template x-if="!$store.settings.prepareFromRef">
-                                    <span>Everything ticked &mdash; without knowing the target's release there is no
-                                    safe way to narrow this. A package missing a module the target needs upgrades
-                                    the platform and silently leaves that module behind.</span>
-                                </template>
-                                <template x-if="$store.settings.prepareFromRef">
-                                    <span>Ticked: what actually changes between
-                                    <span class="font-mono text-gray-400" x-text="$store.settings.prepareFromRef"></span>
-                                    and
-                                    <span class="font-mono text-gray-400" x-text="$store.settings.selectedRef"></span>.
-                                    Sidecars (opensearch, redis, postgres&hellip;) travel inside their parent module,
-                                    so they need no row of their own.</span>
-                                </template>
-                            </div>
-                            <template x-for="row in $store.settings.prepareModuleRows" :key="'prep-' + row.module">
-                                <label class="flex items-center gap-2 py-1 text-xs cursor-pointer"
-                                       :class="row.locked ? 'opacity-70 cursor-not-allowed' : ''">
-                                    <input type="checkbox"
-                                           :checked="$store.settings.prepareSelectedModules.includes(row.module)"
-                                           :disabled="row.locked"
-                                           @change="$store.settings.togglePrepareModule(row.module)"
-                                           class="rounded border-gray-600 bg-gray-900 text-blue-500">
-                                    <span class="flex-1 font-mono text-gray-200" x-text="row.module"></span>
-                                    <span class="font-mono text-gray-500" x-text="row.current"></span>
-                                    <span class="text-gray-600">→</span>
-                                    <span class="font-mono text-gray-300" x-text="row.target"></span>
-                                    <span class="w-48 text-right text-gray-500"
-                                          x-text="$store.settings.prepareFromRef
-                                                  ? $store.settings.prepareRowNote(row.module)
-                                                  : row.reason"></span>
-                                </label>
-                            </template>
-                        </div>
 
                             <!-- Step 3 (PREPARE mode): DOWNLOAD-ONLY. Nothing is built on this
-                                 box — the CI-built assets for the modules picked in step 2 come
-                                 down as-is, and the operator picks what to APPLY on import. -->
+                                 box, so there is no module selection — the whole CI-built package
+                                 comes down and the operator picks what to install on import. -->
                             <div x-show="$store.settings.prepareModalMode === 'prepare' && $store.settings.selectedRef" class="bg-gray-900 rounded border border-blue-700/50 p-3">
                                 <label class="text-gray-300 text-xs uppercase tracking-wide block mb-2">3. Prebuilt package</label>
                                 <div class="text-xs text-gray-300 bg-blue-900/30 border border-blue-700/40 rounded p-2">
-                                    This release ships prebuilt per-module assets, built in CI from the release's own code (<span class="font-mono" x-text="$store.settings.selectedRefPackageMb + ' MB'"></span> for the complete set; you download only what you ticked). The assets you selected above are <span class="text-blue-400">downloaded and verified</span> against the release index — nothing is built on this machine. You still pick which of them to APPLY when you import.
+                                    This release ships a <span class="text-blue-400">prebuilt package</span> (<span class="font-mono" x-text="$store.settings.selectedRefPackageMb + ' MB'"></span>), built in CI from the release's own code. It is <span class="text-blue-400">downloaded and verified</span> as one <span class="font-mono">.tar.gz</span> — nothing is built on this machine. Every module it ships is included; you pick which to install when you import it.
                                 </div>
 
                             </div>
@@ -1637,7 +1577,7 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                 </div>
 
                                 <!-- Forced rows (no checkbox) -->
-                                <template x-if="$store.settings.prepareModalMode === 'online' && $store.settings.upgradePlan && $store.settings.upgradePlan.forced.length">
+                                <template x-if="$store.settings.upgradePlan && $store.settings.upgradePlan.forced.length">
                                     <div class="mb-3">
                                         <div class="text-gray-400 text-xs mb-1">Installed modules (upgrades applied automatically; tick a “no change” one to reinstall):</div>
                                         <template x-for="row in $store.settings.upgradePlan.forced" :key="row.module">
@@ -1665,7 +1605,7 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                 </template>
 
                                 <!-- Optional rows (checkbox to opt-in) -->
-                                <template x-if="$store.settings.prepareModalMode === 'online' && $store.settings.upgradePlan && $store.settings.upgradePlan.optional.length">
+                                <template x-if="$store.settings.upgradePlan && $store.settings.upgradePlan.optional.length">
                                     <div class="mb-3">
                                         <div class="text-gray-400 text-xs mb-1">Optional new modules (tick to install on this host):</div>
                                         <template x-for="row in $store.settings.upgradePlan.optional" :key="row.module">
@@ -1684,7 +1624,7 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                     </div>
                                 </template>
 
-                                <div x-show="$store.settings.prepareModalMode === 'online' && $store.settings.upgradePlan && !$store.settings.upgradePlan.forced.length && !$store.settings.upgradePlan.optional.length"
+                                <div x-show="$store.settings.upgradePlan && !$store.settings.upgradePlan.forced.length && !$store.settings.upgradePlan.optional.length"
                                      class="text-gray-500 text-xs italic">Nothing to do — local config.yaml matches the target's versions.</div>
                             </div>
 
@@ -1758,11 +1698,6 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                         <div x-show="!$store.settings.prepareLoading && !$store.settings.preparePackageReady" class="bg-yellow-900/30 border border-yellow-700/50 rounded p-3 mt-4">
                             <p class="text-yellow-400 text-xs">
                                 <strong>Note:</strong> Downloads the prebuilt package for the selected release and verifies its checksum — nothing is built here. Expect several minutes and a few GB of free space.
-                            </p>
-                            <p class="text-yellow-400 text-xs mt-2">
-                                <strong>One release at a time.</strong> Upgrades are tested a single hop at a
-                                time (N → N+1). Jumping several releases in one go has not been verified —
-                                if you are more than one release behind, step through them.
                             </p>
                         </div>
 
