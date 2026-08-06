@@ -643,21 +643,30 @@ def upgrade_volweb_offline(
     # bumps. load_all_bundled_images is idempotent (docker load on
     # an already-loaded image is a no-op).
     #
-    # Sanity: confirm the primary backend tar is bundled before we
-    # commit to the version bump — without it, compose-up would
-    # silently start the stack at the old pin and the operator
-    # would think the upgrade succeeded.
-    backend_tar = os.path.join(package_dir, "images", f"volweb-backend-{version}.tar")
-    if not os.path.exists(backend_tar):
+    # Sanity: confirm both primary images are available (bundled OR already
+    # loaded on this host) before we commit to the version bump — without
+    # this, compose-up would silently start the stack at the old pin and the
+    # operator would think the upgrade succeeded.
+    #
+    # Was a bare `os.path.exists(backend_tar)` check that only recognized a
+    # *bundled* tar, never an already-loaded image — the same class of bug
+    # ELK/IRIS/Plaso/Portainer's offline upgrades already guard against via
+    # preflight_offline_images(). A resumed/retried upgrade (Phase 1 already
+    # loaded images, its tar reclaimed) or an operator who already had the
+    # target image cached would hit "image bundle missing" here even though
+    # nothing was actually missing. Use the same shared helper instead.
+    images_dir = os.path.join(package_dir, "images")
+    from .base import preflight_offline_images
+    pre = preflight_offline_images('volweb', version, images_dir,
+                                   logger=log, run_id=run_id)
+    if not pre['success']:
         return {
             "success": False,
-            "error": f"image bundle missing: {backend_tar}",
+            "error": (f"VolWeb image(s) neither bundled in the package nor "
+                      f"already loaded on this host: {', '.join(pre['missing'])}"),
         }
     from .base import load_all_bundled_images
     load_all_bundled_images(package_dir, logger=log, run_id=run_id)
-    frontend_tar = os.path.join(package_dir, "images", f"volweb-frontend-{version}.tar")
-    if not os.path.exists(frontend_tar):
-        log(f"frontend image bundle absent ({frontend_tar}) — frontend stays on current pin", "warning")
 
     # 2. Bump both pins + recreate — with a .env backup so a failed recreate
     # rolls back instead of leaving bumped pins over a broken stack (mirrors

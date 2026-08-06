@@ -1979,8 +1979,24 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
                 log(f"  Found binary: {fname}", "info")
                 break
 
+        # A binary is only needed to BUILD velociraptor-server:<version> — if
+        # that image already exists (a resumed/retried upgrade, or an
+        # operator/test tool that already built it directly), staging is
+        # pointless and this used to fail loudly anyway. The later
+        # docker_image_present() check (~40 lines down) already knows how to
+        # skip the load-and-build step correctly; it was just unreachable
+        # because this raise fired first. Same class of gap as
+        # ELK/IRIS/Plaso/Portainer/VolWeb's offline upgrades, adapted here
+        # since Velociraptor's image is locally BUILT rather than pulled, so
+        # PRIMARY_IMAGES / preflight_offline_images() don't apply directly.
         if not source_binary:
-            raise Exception(f"Velociraptor binary not found in package for version {version}")
+            target_image_ref = f"velociraptor-server:{clean_ver}"
+            if docker_image_present(target_image_ref, run_id=run_id):
+                log(f"  No binary in package, but {target_image_ref} is "
+                    f"already loaded — skipping binary staging entirely.",
+                    "info")
+            else:
+                raise Exception(f"Velociraptor binary not found in package for version {version}")
 
         # Update version in .env with actual version from binary
         log(f"Updating version to {actual_version}...", "info")
@@ -1993,26 +2009,32 @@ def upgrade_velociraptor_offline(package_dir: str, version: str, logger: Callabl
         # Stage all four binaries (linux server + mac/win clients) into
         # the build context from the upgrade package. The Dockerfile is
         # pure COPY, so the build step below is fully offline.
-        log("Staging binaries from upgrade package...", "info")
-        stage = _stage_binaries_for_build(
-            module_dir=work_dir,
-            clean_version=actual_version,
-            source="package",
-            package_binaries_dir=binaries_dir,
-            logger=log,
-        )
-        if not stage['success']:
-            raise Exception(
-                f"Required linux binary missing from upgrade package: "
-                f"{stage.get('error','no linux server binary')}. "
-                f"Re-prepare the upgrade package."
+        #
+        # Skipped entirely when no binary was found but the target image is
+        # already loaded — nothing to stage, and the image-present branch
+        # ~30 lines down (docker_image_present) will correctly use it as-is
+        # without a build.
+        if source_binary:
+            log("Staging binaries from upgrade package...", "info")
+            stage = _stage_binaries_for_build(
+                module_dir=work_dir,
+                clean_version=actual_version,
+                source="package",
+                package_binaries_dir=binaries_dir,
+                logger=log,
             )
-        if stage['placeholder']:
-            log(
-                f"  Note: {len(stage['placeholder'])} client binary(ies) absent from package — "
-                f"placeholder(s) inserted: {', '.join(os.path.basename(p) for p in stage['placeholder'])}",
-                "warning",
-            )
+            if not stage['success']:
+                raise Exception(
+                    f"Required linux binary missing from upgrade package: "
+                    f"{stage.get('error','no linux server binary')}. "
+                    f"Re-prepare the upgrade package."
+                )
+            if stage['placeholder']:
+                log(
+                    f"  Note: {len(stage['placeholder'])} client binary(ies) absent from package — "
+                    f"placeholder(s) inserted: {', '.join(os.path.basename(p) for p in stage['placeholder'])}",
+                    "warning",
+                )
 
         # Keep a copy at the legacy velo_data path for backup symmetry
         # with the online flow (same reasoning as upgrade_velociraptor).
