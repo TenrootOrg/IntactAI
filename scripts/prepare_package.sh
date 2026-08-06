@@ -228,7 +228,14 @@ _dl_one() {
     printf '[prepare]   %-9s %-14s %8s\n' "start" "$mod" "$(_h "$want")"
     hdrs=(-H "X-GitHub-Api-Version: 2022-11-28" -H "Accept: application/octet-stream")
     [ -n "${GITHUB_TOKEN:-}" ] && hdrs+=(-H "Authorization: Bearer $GITHUB_TOKEN")
-    if ! curl -fL -sS --retry 3 --retry-delay 5 "${hdrs[@]}" -o "$name" "$url"; then
+    # -C - resumes from whatever "$name" already has on disk instead of
+    # restarting at byte 0. Without it, a drop near the end of a multi-GB
+    # asset (observed: ELK's ~5.5G tar failing at 97% with "curl: (18)
+    # Transferred a partial file") makes every one of the 3 retries below
+    # re-download the whole file from scratch, so a link that reliably
+    # cuts out around the same point/duration fails the same way 4 times
+    # in a row instead of just finishing the remaining 3%.
+    if ! curl -fL -sS -C - --retry 3 --retry-delay 5 "${hdrs[@]}" -o "$name" "$url"; then
         printf '[prepare][ERROR]   %-9s %-14s %s\n' "failed" "$mod" "$name" >&2
         return 1
     fi
