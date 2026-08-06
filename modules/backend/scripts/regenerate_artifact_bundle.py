@@ -202,27 +202,12 @@ def main():
     except Exception as e:
         log(f"WARNING: TenRoot download failed ({e}); importing whatever zip is on disk")
 
-    # 2. Trigger upstream import artifacts (async server flows) — ONE AT A
-    # TIME, waiting for each to settle before triggering the next.
-    #
-    # run_server_artifact() dispatches a collect_client() flow and returns
-    # as soon as the flow STARTS, not when the import work it kicked off
-    # actually finishes (downloading a zip from GitHub, unzipping, and
-    # importing potentially hundreds of definitions takes real time). The
-    # previous version fired all three imports back-to-back with no wait
-    # between them, so Server.Import.DetectRaptor could start running
-    # before Server.Import.ArtifactExchange/Bundle had actually finished
-    # importing the base artifacts DetectRaptor depends on — a single
-    # wait_until_stable() call at the very end hides this: the TOTAL count
-    # across all three eventually stabilizes correctly, but DetectRaptor's
-    # own import may have already run against an incomplete artifact set
-    # and silently produced fewer/partial results.
+    # 2. Trigger upstream import artifacts (async server flows).
     exch = exchange_import_artifact()
     log(f"Exchange import artifact: {exch}")
     for art in (exch, "Server.Import.DetectRaptor", "Server.Import.Extras"):
         log(f"Triggering {art} ...")
         run_server_artifact(art)
-        wait_until_stable()
 
     # 3. Import the TenRoot pack (synchronous, per-YAML).
     log("Importing TenRoot pack ...")
