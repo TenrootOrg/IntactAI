@@ -318,19 +318,24 @@ def _seed_yara_from_bundle(package_dir: str, logger: Callable, run_id: str | Non
     log(f"  YARA seed: importing {len(yara_entries)} bundled ruleset(s) "
         f"into VolWeb...", "info")
 
-    # Wait for the backend's DB migrations to actually be done, not just for
-    # the container to be running. This function has THREE callers —
-    # install_volweb_offline, upgrade_volweb_offline, and bash's
-    # lib/modules.sh:seed_yara_rulesets — and a bare "is the container
-    # running" check (what this used to be) says nothing about whether
-    # Django has finished booting inside it. Any caller that reaches this
-    # point right after its own compose-up can hit the database before it's
-    # ready and fail outright (observed 2026-08-06 via the upgrade path;
-    # install.sh's bash path calls the exact same function with the exact
-    # same shallow "is_module_installed" check, so it was equally exposed).
-    # Checking readiness HERE, once, protects every caller instead of
-    # relying on each one to remember its own wait.
-    _readiness = _wait_for_volweb_backend_ready(logger=log, run_id=run_id)
+    # Wait for the SPECIFIC table this function needs, not just for the
+    # container to be running or for Django's own auth tables to exist.
+    # This function has THREE callers — install_volweb_offline,
+    # upgrade_volweb_offline, and bash's lib/modules.sh:seed_yara_rulesets —
+    # and a bare "is the container running" check (what this used to be)
+    # says nothing about whether Django has finished migrating inside it.
+    # A first attempt at this fix checked auth_user instead of the actual
+    # dependency here and still raced: Django apps migrate independently,
+    # auth_user exists well before yararulesets' own tables do, so that
+    # check returned "ready" while yararulesets_yararuleset still didn't
+    # exist — confirmed live on 2026-08-06 (see _wait_for_volweb_backend_
+    # ready's docstring). Check the actual table this code is about to
+    # query instead.
+    _readiness = _wait_for_volweb_backend_ready(
+        logger=log, run_id=run_id,
+        probe_import="from yararulesets.models import YaraRuleSet",
+        probe_check="YaraRuleSet.objects.exists()",
+    )
     if not _readiness["ready"]:
         log(f"  YARA seed: {_VOLWEB_BACKEND_CONTAINER} did not become ready "
             f"after {_readiness['waited']}s — skipping (operator can run "
@@ -509,31 +514,38 @@ def _seed_yara_from_github(logger: Callable, run_id: str | None = None) -> Dict:
     return {"success": imported > 0, "imported": imported}
 
 
-def _wait_for_volweb_backend_ready(logger: Callable = None, run_id: str | None = None,
-                                    timeout_secs: int = 300) -> Dict:
-    """Poll VolWeb's Django app until its DB migrations have actually finished.
+def _wait_for_volweb_backend_ready(
+    logger: Callable = None, run_id: str | None = None,
+    timeout_secs: int = 300,
+    probe_import: str = "from django.contrib.auth import get_user_model",
+    probe_check: str = "get_user_model().objects.exists()",
+) -> Dict:
+    """Poll VolWeb's Django app until a specific table has actually migrated.
 
     The container can boot and answer `manage.py shell` almost immediately,
     before postgres migrations are done, so a bare readiness probe returns
     success too early — any DB-touching step run right after it (YARA
     re-seed, admin-user seeding) then hits "relation ... does not exist".
-    Check real table existence via `User.objects.exists()`, which throws
-    until migrations have created it; only a clean SCHEMA_OK means it's safe
-    to touch the database.
+
+    `probe_import` / `probe_check` default to Django's built-in auth_user
+    table (what admin-user seeding needs), but callers with a DIFFERENT
+    dependency must override them: Django migrates apps independently, and
+    auth's migrations finishing first says NOTHING about whether a given
+    app's own tables exist yet. Learned the hard way on 2026-08-06 — the
+    very first version of this fix checked auth_user only, which is why the
+    YARA-reseed race survived it completely: auth_user existed well before
+    yararulesets_yararuleset did, so this wait returned "ready" while the
+    table the actual caller needed still didn't exist.
 
     Extracted from install_volweb_offline (which already had this gate) so
-    upgrade_volweb_offline can use the same wait before its own post-compose
-    DB work — see the 2026-08-06 YARA-reseed-race incident this closes.
+    upgrade_volweb_offline and _seed_yara_from_bundle can use the same wait
+    against whatever table THEY actually depend on.
 
     Returns {"ready": bool, "waited": int}.
     """
     log = logger or _log_default
     waited = 0
-    probe_script = (
-        "from django.contrib.auth import get_user_model\n"
-        "get_user_model().objects.exists()\n"
-        "print('SCHEMA_OK')\n"
-    )
+    probe_script = f"{probe_import}\n{probe_check}\nprint('SCHEMA_OK')\n"
     while waited < timeout_secs:
         try:
             probe = _subprocess.run(
