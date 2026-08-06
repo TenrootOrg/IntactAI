@@ -413,8 +413,13 @@ def _seed_yara_from_bundle(package_dir: str, logger: Callable, run_id: str | Non
     )
 
     if not run.get('success'):
-        log(f"  YARA seed: ingest script failed: "
-            f"{(run.get('error') or run.get('stderr') or '')[:200]}", "warning")
+        # Tail, not head: a Python traceback's decisive line — the actual
+        # exception type + message — is the LAST line, not the first. A
+        # [:200] head-slice here kept mostly stack-frame boilerplate and cut
+        # off before ever reaching what actually failed (same class of fix
+        # base.py's run_command() already made for compose errors).
+        _detail = (run.get('error') or run.get('stderr') or '')[-500:]
+        log(f"  YARA seed: ingest script failed: {_detail}", "warning")
         return {"success": False, "error": "ingest script failed"}
 
     stdout = run.get('stdout', '') or ''
@@ -493,6 +498,54 @@ def _seed_yara_from_github(logger: Callable, run_id: str | None = None) -> Dict:
         except Exception as e:
             log(f"YARA seed: {rs['name']} failed: {e}", "warning")
     return {"success": imported > 0, "imported": imported}
+
+
+def _wait_for_volweb_backend_ready(logger: Callable = None, run_id: str | None = None,
+                                    timeout_secs: int = 300) -> Dict:
+    """Poll VolWeb's Django app until its DB migrations have actually finished.
+
+    The container can boot and answer `manage.py shell` almost immediately,
+    before postgres migrations are done, so a bare readiness probe returns
+    success too early — any DB-touching step run right after it (YARA
+    re-seed, admin-user seeding) then hits "relation ... does not exist".
+    Check real table existence via `User.objects.exists()`, which throws
+    until migrations have created it; only a clean SCHEMA_OK means it's safe
+    to touch the database.
+
+    Extracted from install_volweb_offline (which already had this gate) so
+    upgrade_volweb_offline can use the same wait before its own post-compose
+    DB work — see the 2026-08-06 YARA-reseed-race incident this closes.
+
+    Returns {"ready": bool, "waited": int}.
+    """
+    log = logger or _log_default
+    waited = 0
+    probe_script = (
+        "from django.contrib.auth import get_user_model\n"
+        "get_user_model().objects.exists()\n"
+        "print('SCHEMA_OK')\n"
+    )
+    while waited < timeout_secs:
+        try:
+            probe = _subprocess.run(
+                ["docker", "exec", "--user", "app", "-w", "/home/app/web", "-i",
+                 _VOLWEB_BACKEND_CONTAINER, "python3", "manage.py", "shell"],
+                input=probe_script,
+                capture_output=True, text=True, timeout=20,
+            )
+            if probe.returncode == 0 and "SCHEMA_OK" in (probe.stdout or ""):
+                log(f"  VolWeb backend + DB ready ({waited}s)", "success")
+                return {"ready": True, "waited": waited}
+        except _subprocess.TimeoutExpired:
+            pass  # exec itself hung — keep polling
+        except Exception:
+            pass
+        if waited and waited % 30 == 0:
+            log(f"  …still waiting for VolWeb backend ({waited}s elapsed of "
+                f"{timeout_secs}s budget)", "info")
+        time.sleep(5)
+        waited += 5
+    return {"ready": False, "waited": waited}
 
 
 def upgrade_volweb(version: str, logger: Callable = None, run_id: str | None = None) -> Dict:
@@ -694,12 +747,30 @@ def upgrade_volweb_offline(
     # operator was on volweb<3.16 (no yararulesets table) and the
     # upgrade brought them up to a YARA-aware version: the table now
     # exists but is empty, so seeding here populates it.
-    try:
-        _seed_yara_from_bundle(package_dir, logger=log, run_id=run_id)
-    except Exception as _e:
-        log(f"  YARA re-seed raised ({type(_e).__name__}: {_e}); "
-            f"upgrade still succeeded — operator can refresh via "
-            f"Maintenance → Refresh YARA Rulesets if needed.", "warning")
+    #
+    # Wait for the backend to actually be ready first. `_compose_up`
+    # above only confirms the CONTAINER started, not that Django has
+    # finished booting/migrating — a re-seed attempted immediately after
+    # can hit the database before it's ready and fail outright (observed
+    # 2026-08-06: a real online-upgrade run imported 0 rules this way,
+    # while re-running the identical seed moments later against the by
+    # -then-settled container succeeded cleanly). install_volweb_offline
+    # already had this exact gate for its own post-compose DB work;
+    # upgrade never did.
+    _readiness = _wait_for_volweb_backend_ready(logger=log, run_id=run_id,
+                                                 timeout_secs=300)
+    if not _readiness["ready"]:
+        log(f"  VolWeb backend did not become ready after "
+            f"{_readiness['waited']}s — skipping YARA re-seed; operator can "
+            f"run Maintenance → Refresh YARA Rulesets once it settles.",
+            "warning")
+    else:
+        try:
+            _seed_yara_from_bundle(package_dir, logger=log, run_id=run_id)
+        except Exception as _e:
+            log(f"  YARA re-seed raised ({type(_e).__name__}: {_e}); "
+                f"upgrade still succeeded — operator can refresh via "
+                f"Maintenance → Refresh YARA Rulesets if needed.", "warning")
 
     log(f"VolWeb offline upgrade completed: {cur} → {version}", "success")
     remove_old_module_image('volweb', cur, version, logger=log)
@@ -865,55 +936,16 @@ def install_volweb_offline(
     # dispatch jobs. Mirrors lib/modules.sh:deploy_volweb post-compose.
     log("VolWeb containers up. Waiting for backend + seeding admin user...", "info")
 
-    # Stage 1: wait for VolWeb's DB migrations to finish. The Django
-    # shell can boot ~immediately (before postgres migrations are
-    # done), so a `print('READY')` probe alone returns success too
-    # early — we then hit "relation auth_user does not exist" inside
-    # the seed step. Check the actual table existence:
-    # `User.objects.exists()` will throw if the auth_user table isn't
-    # there yet. Catch that and keep polling. When the call returns 0
-    # AND prints SCHEMA_OK, migrations are done and seeding will work.
-    backend_ready = False
-    waited = 0
-    probe_script = (
-        "from django.contrib.auth import get_user_model\n"
-        # `.exists()` runs a SELECT against auth_user; throws
-        # ProgrammingError if migrations haven't created the table yet.
-        "get_user_model().objects.exists()\n"
-        "print('SCHEMA_OK')\n"
-    )
     # 300s budget (was 180; warning text said 120 which was already
     # stale). Bumped on 2026-06-11 to match Timesketch / Velociraptor /
     # ELK so the whole upgrade suite survives slow-disk machines without
     # silently degrading to "completed with warning" state.
-    _BACKEND_READY_WAIT_SECS = 300
-    while waited < _BACKEND_READY_WAIT_SECS:
-        try:
-            probe = _subprocess.run(
-                ["docker", "exec", "--user", "app", "-w", "/home/app/web", "-i",
-                 "intact_volweb_backend", "python3", "manage.py", "shell"],
-                input=probe_script,
-                capture_output=True, text=True, timeout=20,
-            )
-            if probe.returncode == 0 and "SCHEMA_OK" in (probe.stdout or ""):
-                backend_ready = True
-                log(f"  VolWeb backend + DB ready ({waited}s)", "success")
-                break
-        except _subprocess.TimeoutExpired:
-            pass  # exec itself hung — keep polling
-        except Exception:
-            pass
-        # Heartbeat every 30 s so the operator knows we haven't hung.
-        if waited and waited % 30 == 0:
-            log(f"  …still waiting for VolWeb backend ({waited}s elapsed of "
-                f"{_BACKEND_READY_WAIT_SECS}s budget)", "info")
-        time.sleep(5)
-        waited += 5
-
-    if not backend_ready:
+    _readiness = _wait_for_volweb_backend_ready(logger=log, run_id=run_id,
+                                                 timeout_secs=300)
+    if not _readiness["ready"]:
         log(
             f"VolWeb backend did not become ready after "
-            f"{_BACKEND_READY_WAIT_SECS}s. Containers ARE running, but "
+            f"{_readiness['waited']}s. Containers ARE running, but "
             f"admin-user seeding has been SKIPPED — operator must seed "
             f"manually: `docker exec intact_volweb_backend "
             f"python3 manage.py createsuperuser`. Continuing.",
