@@ -318,15 +318,24 @@ def _seed_yara_from_bundle(package_dir: str, logger: Callable, run_id: str | Non
     log(f"  YARA seed: importing {len(yara_entries)} bundled ruleset(s) "
         f"into VolWeb...", "info")
 
-    # Verify volweb backend is up before trying to docker cp / exec.
-    chk = run_command(
-        f"docker inspect -f '{{{{.State.Running}}}}' {_VOLWEB_BACKEND_CONTAINER}",
-        logger=None, timeout=10,
-    )
-    if not (chk.get('success') and 'true' in (chk.get('stdout') or '').lower()):
-        log(f"  YARA seed: {_VOLWEB_BACKEND_CONTAINER} not running — "
-            f"skipping (operator can run Maintenance → Refresh YARA Rulesets later)", "warning")
-        return {"success": False, "error": "volweb backend not running"}
+    # Wait for the backend's DB migrations to actually be done, not just for
+    # the container to be running. This function has THREE callers —
+    # install_volweb_offline, upgrade_volweb_offline, and bash's
+    # lib/modules.sh:seed_yara_rulesets — and a bare "is the container
+    # running" check (what this used to be) says nothing about whether
+    # Django has finished booting inside it. Any caller that reaches this
+    # point right after its own compose-up can hit the database before it's
+    # ready and fail outright (observed 2026-08-06 via the upgrade path;
+    # install.sh's bash path calls the exact same function with the exact
+    # same shallow "is_module_installed" check, so it was equally exposed).
+    # Checking readiness HERE, once, protects every caller instead of
+    # relying on each one to remember its own wait.
+    _readiness = _wait_for_volweb_backend_ready(logger=log, run_id=run_id)
+    if not _readiness["ready"]:
+        log(f"  YARA seed: {_VOLWEB_BACKEND_CONTAINER} did not become ready "
+            f"after {_readiness['waited']}s — skipping (operator can run "
+            f"Maintenance → Refresh YARA Rulesets later)", "warning")
+        return {"success": False, "error": "volweb backend not ready"}
 
     # Copy each zip into the container and build the spec list
     # describing what the in-container script should import.
@@ -748,29 +757,16 @@ def upgrade_volweb_offline(
     # upgrade brought them up to a YARA-aware version: the table now
     # exists but is empty, so seeding here populates it.
     #
-    # Wait for the backend to actually be ready first. `_compose_up`
-    # above only confirms the CONTAINER started, not that Django has
-    # finished booting/migrating — a re-seed attempted immediately after
-    # can hit the database before it's ready and fail outright (observed
-    # 2026-08-06: a real online-upgrade run imported 0 rules this way,
-    # while re-running the identical seed moments later against the by
-    # -then-settled container succeeded cleanly). install_volweb_offline
-    # already had this exact gate for its own post-compose DB work;
-    # upgrade never did.
-    _readiness = _wait_for_volweb_backend_ready(logger=log, run_id=run_id,
-                                                 timeout_secs=300)
-    if not _readiness["ready"]:
-        log(f"  VolWeb backend did not become ready after "
-            f"{_readiness['waited']}s — skipping YARA re-seed; operator can "
-            f"run Maintenance → Refresh YARA Rulesets once it settles.",
-            "warning")
-    else:
-        try:
-            _seed_yara_from_bundle(package_dir, logger=log, run_id=run_id)
-        except Exception as _e:
-            log(f"  YARA re-seed raised ({type(_e).__name__}: {_e}); "
-                f"upgrade still succeeded — operator can refresh via "
-                f"Maintenance → Refresh YARA Rulesets if needed.", "warning")
+    # `_seed_yara_from_bundle` waits for the backend to actually be ready
+    # (not just for `_compose_up` above to confirm the container started)
+    # before touching the database — see its own docstring for why that
+    # check now lives there instead of at each call site.
+    try:
+        _seed_yara_from_bundle(package_dir, logger=log, run_id=run_id)
+    except Exception as _e:
+        log(f"  YARA re-seed raised ({type(_e).__name__}: {_e}); "
+            f"upgrade still succeeded — operator can refresh via "
+            f"Maintenance → Refresh YARA Rulesets if needed.", "warning")
 
     log(f"VolWeb offline upgrade completed: {cur} → {version}", "success")
     remove_old_module_image('volweb', cur, version, logger=log)
