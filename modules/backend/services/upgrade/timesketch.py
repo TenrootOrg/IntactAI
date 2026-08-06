@@ -1422,6 +1422,27 @@ def install_timesketch_offline(package_dir: str, version: str, logger=None, run_
     cfg_dir = os.path.join(work_dir, 'config')
     if os.path.isdir(cfg_dir):
         import secrets as _secrets
+        # The pre-module-loop call to ensure_postgres_password() (see
+        # services/upgrade/__init__.py) already wrote secrets/postgres.env
+        # by this point, but it ran BEFORE these conf files existed, so its
+        # own conf-rewrite step (timesketch.py:908-922) found nothing to
+        # rewrite. Templates ship the literal `timesketch:timesketch`
+        # credential (dropped as a default in the compose file — see the
+        # comment on timesketch-postgres's `environment:` block), so
+        # without this substitution the app can never authenticate to the
+        # database Postgres was actually initdb'd with. Mirrors
+        # lib/modules.sh:deploy_timesketch's `ts_pg_pass` sed, which the
+        # install.sh path already does correctly.
+        ts_pg_pass = None
+        ts_pg_env = os.path.join(work_dir, 'secrets', 'postgres.env')
+        try:
+            with open(ts_pg_env) as f:
+                for line in f:
+                    if line.startswith('POSTGRES_PASSWORD='):
+                        ts_pg_pass = line.strip().split('=', 1)[1]
+                        break
+        except OSError:
+            pass
         for base in ('timesketch.conf', 'timesketch_legacy.conf'):
             template = os.path.join(cfg_dir, f'{base}.template')
             out = os.path.join(cfg_dir, base)
@@ -1447,9 +1468,17 @@ def install_timesketch_offline(package_dir: str, version: str, logger=None, run_
                     count=1,
                     flags=re.MULTILINE,
                 )
+                if ts_pg_pass:
+                    rendered = re.sub(
+                        r"postgresql://timesketch:[^@]*@",
+                        f"postgresql://timesketch:{ts_pg_pass}@",
+                        rendered,
+                    )
                 with open(out, 'w') as f:
                     f.write(rendered)
-                log(f"  {base} created from template (api_key empty — set via Settings → Timesketch; SECRET_KEY randomized)", "success")
+                suffix = "; SECRET_KEY + DB password randomized" if ts_pg_pass else "; SECRET_KEY randomized (DB password NOT set — postgres.env missing)"
+                log(f"  {base} created from template (api_key empty — set via Settings → Timesketch{suffix})",
+                    "success" if ts_pg_pass else "warning")
             except Exception as e:
                 log(f"  {base} bootstrap failed: {e}", "warning")
     else:
