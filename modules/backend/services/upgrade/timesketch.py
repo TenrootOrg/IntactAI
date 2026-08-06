@@ -1552,6 +1552,12 @@ def install_timesketch_offline(package_dir: str, version: str, logger=None, run_
         waited += 2
 
     if not schema_ready:
+        detail = (
+            f"schema did not materialize after {_SCHEMA_WAIT_SECS}s — no "
+            f"admin user was created, operator cannot log in. Fix with "
+            f"`docker exec intact_timesketch_web tsctl create-user <id> "
+            f"--password <pw>` once the schema is ready."
+        )
         log(
             f"Timesketch postgres `user` table did not appear after "
             f"{_SCHEMA_WAIT_SECS}s — the web container may still be "
@@ -1560,10 +1566,12 @@ def install_timesketch_offline(package_dir: str, version: str, logger=None, run_
             f"<id> --password <pw>` manually once the schema is ready.",
             "warning",
         )
-        # Return compose-up success — containers ARE running, just not
-        # fully usable yet. Surfacing as success-with-warning so the
-        # orchestration's cascade resilience continues with other modules.
-        return compose_result
+        # Return compose-up success — containers ARE running, and the
+        # orchestration's cascade resilience should continue with other
+        # modules — but health="degraded" makes the orchestrator surface a
+        # MODULE_DEGRADED line in the run summary instead of folding this
+        # into a plain "[OK] success" that hides the fact nobody can log in.
+        return {**compose_result, "health": "degraded", "health_detail": detail}
 
     # Stage 2 + 3: create + enable admin user from config.yaml.
     # Reuses the existing helper which already handles read-config,
@@ -1582,5 +1590,10 @@ def install_timesketch_offline(package_dir: str, version: str, logger=None, run_
             "create-user <id> --password <pw>` then `tsctl make-admin <id>`.",
             "warning",
         )
+        return {
+            **compose_result, "health": "degraded",
+            "health_detail": "admin user creation failed — backend cannot "
+                              "authenticate to the Timesketch API.",
+        }
 
     return compose_result
