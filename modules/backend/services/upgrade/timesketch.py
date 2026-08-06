@@ -879,9 +879,14 @@ def ensure_postgres_password(work_dir: str, logger: Callable = None) -> Dict:
     # So distinguish "no database to alter" from "alter against a running
     # database failed". The first is the normal fresh-install path and must keep
     # the file; only the second is the dangerous case the rollback exists for.
+    # A nonzero exit here is the NORMAL fresh-install outcome, not a fault —
+    # `logger=None` looks like "silent" but run_command's own fallback logger
+    # still prints "Command failed" as a warning on any nonzero exit. Pass an
+    # actual no-op so this expected-to-fail probe doesn't spam a real warning
+    # line into every fresh Timesketch install's log.
     _pg_exists = run_command(
         "docker inspect intact_timesketch_postgres",
-        logger=None).get('success')
+        logger=lambda *a, **kw: None).get('success')
     if not _pg_exists:
         log("  No existing Timesketch database — the generated credential will "
             "be applied at initdb by the first compose up", "info")
