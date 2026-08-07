@@ -1198,6 +1198,12 @@ def prepare_recreate_handoff(run_id: str, swap_info: Dict, logger: Callable = No
         os.chmod(recover_c, 0o755)
     except Exception as e:
         log(f"  Could not write recovery script ({e})", "warning")
+    log("  Heads up: the backend restart below drops your dashboard session — "
+        "this release added login where none existed before, so there is no "
+        "session to carry across the swap. You'll need to sign in again after "
+        "refreshing. This is tied to the current auth design, not a permanent "
+        "requirement — a future patch to session handling across a backend "
+        "restart may remove the need to sign in again here.", "info")
     log(f"Recreating backend -> intact-backend:{new_tag}. If the box is left "
         f"down, recover with: {recover_host}", "info")
 
