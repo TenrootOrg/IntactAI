@@ -211,25 +211,40 @@ if [ -n "$_AVAIL" ] && [ "$_AVAIL" -lt "$_NEED" ] 2>/dev/null; then
     exit 1
 fi
 
-# aria2c splits a SINGLE file into multiple simultaneous range-request
-# connections (-x/-s), which is the only thing that actually helps the
-# one huge asset (ELK's multi-GB tar) that dominates a package -- plain
-# curl downloads it as one TCP stream no matter how many *other* files
-# run alongside it, so its throughput is capped by that one connection's
-# bandwidth-delay product. Optional: falls straight back to the previous
-# plain-curl behavior when aria2c isn't installed, so nothing regresses
-# for anyone who doesn't have it.
-_HAVE_ARIA2C=0
-command -v aria2c >/dev/null 2>&1 && _HAVE_ARIA2C=1
-export _HAVE_ARIA2C GITHUB_TOKEN
-
-# With aria2c already opening up to 8 connections per file, running 4
-# files at once too would mean up to 32 simultaneous connections -- more
-# likely to contend with itself than help. Halve the outer fan-out in
-# that case; plain curl keeps the original 4.
-_OUTER_P=4
-[ "$_HAVE_ARIA2C" = "1" ] && _OUTER_P=2
-log "downloading $NFILES asset(s), $(_h "$TOTAL_BYTES") total, $_OUTER_P at a time$( [ "$_HAVE_ARIA2C" = "1" ] && echo ' (aria2c, up to 8 connections per file)' || echo ' (install aria2c for faster large-asset downloads)' )"
+# Deliberately NOT using aria2c/multi-connection splitting of a single
+# asset here, after actually shipping and testing it. GitHub's release
+# assets redirect (302) to a time-limited signed storage URL (Azure Blob
+# SAS on this repo -- confirmed live: ~60 minute validity, `se=...Z` in
+# the Location header). A tool that resolves that redirect ONCE and then
+# splits the resulting (already time-boxed) URL into parallel segments --
+# which is exactly what aria2c -x/-s does -- has no way to get a fresh
+# URL if the transfer runs long or a segment stalls: every remaining
+# segment starts failing auth at the same moment, which looks identical
+# to a hang. Reproduced live: a real run against this release's ~1.8G ELK
+# asset went from a fast start to completely frozen partway through.
+# This is a documented, known incompatibility between aria2c and
+# redirect-based signed-URL CDNs generally (aria2/aria2#2197), not
+# something specific to this repo.
+#
+# Plain curl with `-L` does not have this problem: `--retry` re-runs the
+# ENTIRE request on failure, including re-following the redirect from the
+# original (non-expiring) api.github.com URL -- so every retry mints a
+# fresh signed URL -- combined with `-C -` resuming from the correct byte
+# offset already on disk. This is the same refresh-on-retry mechanism
+# `gh release download` is built around; curl already does it natively.
+# Verified live against the real ~1.8G ELK asset end-to-end.
+#
+# The actual bug in the previous plain-curl version wasn't the mechanism,
+# it was too few retries (--retry 3) for a multi-GB transfer on a real
+# link -- each retry is cheap (resumes, doesn't restart), so there's
+# little downside to allowing many more of them.
+#
+# Real parallelism here comes from the OUTER fan-out below (several
+# DIFFERENT files downloading at once, each independently resolving its
+# own redirect/signed URL) -- that's safe because it never shares one
+# resolved URL across connections, unlike per-file segmentation.
+_OUTER_P=6
+log "downloading $NFILES asset(s), $(_h "$TOTAL_BYTES") total, $_OUTER_P at a time"
 
 # EVERY line in this phase is "<verb> <module> <size> [detail]", one fixed
 # shape. Several downloads run at once, so start/finish lines interleave by
@@ -244,40 +259,23 @@ _dl_one() {
     name="$1"; mod="$2"; url="$3"; want="$4"
     started=$(date +%s)
     printf '[prepare]   %-9s %-14s %8s\n' "start" "$mod" "$(_h "$want")"
-    if [ "$_HAVE_ARIA2C" = "1" ]; then
-        hdrs=(--header="X-GitHub-Api-Version: 2022-11-28" --header="Accept: application/octet-stream")
-        [ -n "${GITHUB_TOKEN:-}" ] && hdrs+=(--header="Authorization: Bearer $GITHUB_TOKEN")
-        dir=$(dirname -- "$name"); base=$(basename -- "$name")
-        # -k1M floors the split size so small assets aren't needlessly
-        # fragmented; --continue resumes a partial file the same way
-        # curl's -C - does.
-        if ! aria2c -x8 -s8 -k1M --continue=true --allow-overwrite=true \
-             --auto-file-renaming=false --summary-interval=0 \
-             --console-log-level=warn --retry-wait=5 --max-tries=3 \
-             "${hdrs[@]}" -d "${dir:-.}" -o "$base" "$url" >/dev/null 2>&1; then
-            printf '[prepare][ERROR]   %-9s %-14s %s\n' "failed" "$mod" "$name" >&2
-            return 1
-        fi
-    else
-        hdrs=(-H "X-GitHub-Api-Version: 2022-11-28" -H "Accept: application/octet-stream")
-        [ -n "${GITHUB_TOKEN:-}" ] && hdrs+=(-H "Authorization: Bearer $GITHUB_TOKEN")
-        # -C - resumes from whatever "$name" already has on disk instead of
-        # restarting at byte 0. Without it, a drop near the end of a multi-GB
-        # asset (observed: ELK's ~5.5G tar failing at 97% with "curl: (18)
-        # Transferred a partial file") makes every one of the 3 retries below
-        # re-download the whole file from scratch, so a link that reliably
-        # cuts out around the same point/duration fails the same way 4 times
-        # in a row instead of just finishing the remaining 3%.
-        if ! curl -fL -sS -C - --retry 3 --retry-delay 5 "${hdrs[@]}" -o "$name" "$url"; then
-            printf '[prepare][ERROR]   %-9s %-14s %s\n' "failed" "$mod" "$name" >&2
-            return 1
-        fi
+    hdrs=(-H "X-GitHub-Api-Version: 2022-11-28" -H "Accept: application/octet-stream")
+    [ -n "${GITHUB_TOKEN:-}" ] && hdrs+=(-H "Authorization: Bearer $GITHUB_TOKEN")
+    # -C - resumes from whatever "$name" already has on disk instead of
+    # restarting at byte 0. --retry 20 (was 3): each retry re-follows -L
+    # from the original URL, minting a fresh signed URL and resuming from
+    # disk, so a link that keeps dropping mid-transfer eventually finishes
+    # via a sequence of bounded retries instead of giving up after 3.
+    if ! curl -fL -sS -C - --retry 20 --retry-delay 5 "${hdrs[@]}" -o "$name" "$url"; then
+        printf '[prepare][ERROR]   %-9s %-14s %s\n' "failed" "$mod" "$name" >&2
+        return 1
     fi
     got=$(stat -c%s "$name" 2>/dev/null || echo 0)
     printf '[prepare]   %-9s %-14s %8s  in %s\n' \
         "done" "$mod" "$(_h "$got")" "$(_elapsed $(( $(date +%s) - started )))"
 }
 export -f _dl_one _h _elapsed
+export GITHUB_TOKEN
 
 # One aggregate progress line every 20s, so a multi-GB fetch is never silent
 # for minutes at a time (which reads as a hang) without flooding the log.

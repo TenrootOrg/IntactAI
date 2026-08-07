@@ -517,16 +517,6 @@ document.addEventListener('alpine:init', () => {
         // 'prepare' → POST /api/upgrade/prepare (offline flow, produces tar.gz)
         // 'online'  → POST /api/upgrade/online (combined prepare + apply)
         prepareModalMode: 'prepare',
-        // Which "run it yourself" script variant is shown/copied. false =
-        // plain curl, one connection per file, nothing installed. true =
-        // installs aria2c first so prepare_package.sh's own auto-detect
-        // (scripts/prepare_package.sh) picks it up and multi-connects each
-        // file -- meaningfully faster for the large single-file assets
-        // (e.g. ELK's multi-GB tar) but requires sudo/a package manager.
-        // Defaults to fast: the sudo install step is a one-line no-op on
-        // any machine that already has aria2c, and the speed difference on
-        // a multi-GB package is worth it for the rest.
-        prepareManualFast: true,
 
         // ─── Apply Uploaded Package state ────────────────────────────
         // Lists pending tarballs from /api/upgrade/list-packages.
@@ -1725,26 +1715,24 @@ document.addEventListener('alpine:init', () => {
         prepareManualScript() {
             // Always pulls prepare_package.sh from main (not the tag's own
             // copy) so every packaging run picks up the latest script fixes
-            // (e.g. the download-resume fix) regardless of which release is
-            // being packaged. tag falls back to the last known release when
-            // selectedRef hasn't loaded (e.g. no connection to fetch it).
+            // (e.g. the download-resume/retry tuning) regardless of which
+            // release is being packaged. tag falls back to the last known
+            // release when selectedRef hasn't loaded (e.g. no connection).
+            //
+            // Deliberately a single plain-curl script, not a "simple vs
+            // fast (aria2c)" choice -- that variant was tried and reverted.
+            // GitHub's release assets redirect to a time-limited signed
+            // URL; aria2c resolves it once and splits it into parallel
+            // segments, so a long transfer or a stalled segment has no way
+            // to get a fresh URL and everything hangs at once (reproduced
+            // live against this release's own ELK asset). Plain curl's
+            // --retry re-follows the redirect from the original URL on
+            // every attempt, minting a fresh signed URL each time, which
+            // is the actual correct fix -- see scripts/prepare_package.sh.
             const tag = this.selectedRef || 'intact-20260806';
-            const fetch = 'curl -fsSL -o prepare_package.sh https://raw.githubusercontent.com/TenrootOrg/IntactAI/main/scripts/prepare_package.sh';
-            const run = 'bash prepare_package.sh ' + tag + ' .';
-            if (!this.prepareManualFast) {
-                return [fetch, run].join('\n');
-            }
-            // prepare_package.sh already auto-detects aria2c and uses it for
-            // multi-connection downloads when present -- this variant just
-            // makes sure it's actually there first, since otherwise the
-            // "fast" choice would silently be identical to the simple one
-            // on a machine that doesn't already have it installed.
             return [
-                'command -v aria2c >/dev/null || sudo apt-get install -y aria2 \\',
-                '  || sudo dnf install -y aria2 || sudo yum install -y aria2 \\',
-                '  || brew install aria2 || true   # falls back to plain curl below if none of these apply',
-                fetch,
-                run,
+                'curl -fsSL -o prepare_package.sh https://raw.githubusercontent.com/TenrootOrg/IntactAI/main/scripts/prepare_package.sh',
+                'bash prepare_package.sh ' + tag + ' .',
             ].join('\n');
         },
 
