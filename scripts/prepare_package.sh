@@ -255,20 +255,76 @@ log "downloading $NFILES asset(s), $(_h "$TOTAL_BYTES") total, $_OUTER_P at a ti
 # -sS, NOT curl's progress meter: parallel meters redrawing interleave into
 # unreadable garbage, and this stdout is piped straight into the appliance's
 # workflow log. Aggregate progress comes from the watcher below.
+_CHUNK_MIN=$((64*1024*1024))   # not worth splitting under 64M
+_CHUNKS=4
+
+# Real multi-connection speedup for one large file WITHOUT aria2c's mistake:
+# each chunk below hits the ORIGINAL api.github.com URL with its own Range
+# header and its own -L, so each chunk independently resolves its OWN fresh
+# signed redirect URL, scoped only to that chunk's own transfer time. No
+# chunk shares a pre-resolved, time-boxed URL with another, so one chunk
+# running long (or needing its own retries) can never invalidate the rest --
+# the exact failure mode that made aria2c unusable here. Verified live: the
+# CDN honors Range through the redirect (a 1MB range request returned
+# exactly ~1MB of real content, not the whole file or an error).
+_dl_chunked() {
+    name="$1"; url="$2"; total="$3"; shift 3
+    n="$_CHUNKS"
+    size=$(( (total + n - 1) / n ))
+    parts=(); pids=()
+    start=0
+    while [ "$start" -lt "$total" ]; do
+        end=$(( start + size - 1 ))
+        [ "$end" -ge "$total" ] && end=$((total - 1))
+        part="$name.part-$start"
+        parts+=("$part")
+        curl -fL -sS -C - --retry 20 --retry-delay 5 \
+             -H "Range: bytes=$start-$end" "$@" -o "$part" "$url" &
+        pids+=($!)
+        start=$((end + 1))
+    done
+    ok=1
+    for pid in "${pids[@]}"; do
+        wait "$pid" || ok=0
+    done
+    if [ "$ok" -ne 1 ]; then
+        rm -f "${parts[@]}"
+        return 1
+    fi
+    cat "${parts[@]}" > "$name" 2>/dev/null
+    rm -f "${parts[@]}"
+    # A server that silently ignored Range and returned 200-with-full-body
+    # for every "chunk" would otherwise produce a corrupt, oversized
+    # concatenation that only an exact size check catches.
+    got=$(stat -c%s "$name" 2>/dev/null || echo 0)
+    [ "$got" = "$total" ]
+}
+export -f _dl_chunked
+
 _dl_one() {
     name="$1"; mod="$2"; url="$3"; want="$4"
     started=$(date +%s)
     printf '[prepare]   %-9s %-14s %8s\n' "start" "$mod" "$(_h "$want")"
     hdrs=(-H "X-GitHub-Api-Version: 2022-11-28" -H "Accept: application/octet-stream")
     [ -n "${GITHUB_TOKEN:-}" ] && hdrs+=(-H "Authorization: Bearer $GITHUB_TOKEN")
-    # -C - resumes from whatever "$name" already has on disk instead of
-    # restarting at byte 0. --retry 20 (was 3): each retry re-follows -L
-    # from the original URL, minting a fresh signed URL and resuming from
-    # disk, so a link that keeps dropping mid-transfer eventually finishes
-    # via a sequence of bounded retries instead of giving up after 3.
-    if ! curl -fL -sS -C - --retry 20 --retry-delay 5 "${hdrs[@]}" -o "$name" "$url"; then
-        printf '[prepare][ERROR]   %-9s %-14s %s\n' "failed" "$mod" "$name" >&2
-        return 1
+    ok=1
+    if [ "${want:-0}" -ge "$_CHUNK_MIN" ] 2>/dev/null; then
+        _dl_chunked "$name" "$url" "$want" "${hdrs[@]}" || ok=0
+    else
+        ok=0
+    fi
+    if [ "$ok" -ne 1 ]; then
+        # Small file (not worth splitting), or the chunked path failed --
+        # fall back to a single plain-curl stream. -C - resumes from
+        # whatever "$name" already has on disk; --retry 20 (was 3) means
+        # each retry re-follows -L from the original URL, minting a fresh
+        # signed URL and resuming from disk, so a link that keeps dropping
+        # mid-transfer eventually finishes via bounded retries instead of
+        # giving up after 3.
+        if ! curl -fL -sS -C - --retry 20 --retry-delay 5 "${hdrs[@]}" -o "$name" "$url"; then
+            printf '[prepare][ERROR]   %-9s %-14s %s\n' "failed" "$mod" "$name" >&2
+            return 1
+        fi
     fi
     got=$(stat -c%s "$name" 2>/dev/null || echo 0)
     printf '[prepare]   %-9s %-14s %8s  in %s\n' \
