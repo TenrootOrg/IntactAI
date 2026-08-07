@@ -52,6 +52,99 @@ _elapsed() {
     else printf '%ds' "$s"; fi
 }
 
+# Handles a release published by build-release-package.yml instead of (or in
+# addition to) the per-module scheme -- e.g. cut specifically for a box old
+# enough that its manifest reader has never heard of index.json (see that
+# workflow's own comment). That asset is already ONE file; this just fetches
+# it (joining GitHub's <2GB split parts if present) and verifies it, then
+# writes straight to $OUT_DIR/intact-upgrade-<tag>.tar[.gz] -- there is
+# nothing to wrap, unlike the per-module path this whole script otherwise is.
+#
+# Prints nothing on success except the final path (matching this script's
+# contract of the last stdout line being the result); returns 1 if no such
+# asset exists in $REL at all, which the caller treats as "genuinely not
+# published either way" rather than an error in this function.
+_fetch_legacy_single_file() {
+    local tag="$1" out_dir="$2" rel_json="$3"
+    local plan
+    plan="$(printf %s "$rel_json" | TAG="$tag" python3 -c '
+import json, os, sys
+tag = os.environ["TAG"]
+assets = {a["name"]: a for a in json.load(sys.stdin).get("assets", [])}
+whole = next((n for n in (f"intact-upgrade-{tag}.tar.gz", f"intact-upgrade-{tag}.tar") if n in assets), None)
+if whole:
+    print("WHOLE\t" + whole + "\t" + assets[whole]["url"])
+else:
+    parts = sorted(n for n in assets
+                   if n.startswith(f"intact-upgrade-{tag}.tar.gz.part-")
+                   or n.startswith(f"intact-upgrade-{tag}.tar.part-"))
+    if not parts:
+        sys.exit(1)
+    base = parts[0].rsplit(".part-", 1)[0]
+    print("BASE\t" + base)
+    for p in parts:
+        print("PART\t" + p + "\t" + assets[p]["url"])
+sha_name_gz = f"intact-upgrade-{tag}.tar.gz.sha256"
+sha_name_plain = f"intact-upgrade-{tag}.tar.sha256"
+sha = assets.get(sha_name_gz) or assets.get(sha_name_plain)
+if sha:
+    print("SHA\t" + sha["url"])
+' 2>/dev/null)" || return 1
+    [ -n "$plan" ] || return 1
+
+    local hdrs=(-H "X-GitHub-Api-Version: 2022-11-28" -H "Accept: application/octet-stream")
+    [ -n "${GITHUB_TOKEN:-}" ] && hdrs+=(-H "Authorization: Bearer $GITHUB_TOKEN")
+    local base="" sha_url="" final="" tmp_dir
+    tmp_dir="$(mktemp -d -p "$out_dir" .intact-prepare-legacy-XXXXXX)"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$tmp_dir'" RETURN
+
+    while IFS="$(printf '\t')" read -r kind a b; do
+        case "$kind" in
+            WHOLE)
+                base="$a"
+                log "downloading legacy package: $a"
+                curl -fL -sS -C - --retry 20 --retry-delay 5 "${hdrs[@]}" \
+                     -o "$tmp_dir/$a" "$b"
+                ;;
+            BASE) base="$a" ;;
+            PART)
+                log "downloading part: $a"
+                curl -fL -sS -C - --retry 20 --retry-delay 5 "${hdrs[@]}" \
+                     -o "$tmp_dir/$a" "$b"
+                ;;
+            SHA) sha_url="$a" ;;
+        esac
+    done <<< "$plan"
+    [ -n "$base" ] || return 1
+
+    if [ ! -f "$tmp_dir/$base" ]; then
+        log "joining split parts"
+        cat "$tmp_dir/$base".part-* > "$tmp_dir/$base"
+        rm -f "$tmp_dir/$base".part-*
+    fi
+
+    if [ -n "$sha_url" ]; then
+        log "verifying checksum"
+        curl -fsSL "${hdrs[@]}" -o "$tmp_dir/$base.sha256" "$sha_url"
+        local want got
+        want="$(awk '{print $1}' "$tmp_dir/$base.sha256")"
+        got="$(sha256sum "$tmp_dir/$base" | awk '{print $1}')"
+        if [ "$want" != "$got" ]; then
+            err "MISMATCH on $base: want ${want:0:16}... got ${got:0:16}..."
+            return 1
+        fi
+        log "checksum verified"
+    else
+        log "no .sha256 published alongside it -- skipping verification"
+    fi
+
+    final="$out_dir/$base"
+    mv "$tmp_dir/$base" "$final"
+    log "done: $final ($(_h "$(stat -c%s "$final" 2>/dev/null || echo 0)"))"
+    echo "$final"
+}
+
 RUN_STARTED=$(date +%s)
 TAG="${1:-}"
 OUT_DIR="${2:-.}"
@@ -149,8 +242,20 @@ for a in json.load(sys.stdin).get("assets", []):
         print(a["url"]); break
 ')"
 if [ -z "$IDX_URL" ]; then
-    err "release $TAG has no per-module index ($TAG.index.json)"
-    err "its CI build may still be running, or it predates the per-module scheme"
+    # No per-module index -- this release may have been published with ONLY
+    # the legacy single-file format instead (build-release-package.yml),
+    # which some releases use in place of the per-module scheme specifically
+    # so a box old enough to predate the index (pre-2026-08-05) can still
+    # take it. That release genuinely has no index.json at all -- it is not
+    # an error, just a different (older) shape for this one tag. Fetch it
+    # directly rather than failing outright.
+    log "no per-module index for $TAG -- checking for a legacy single-file package"
+    if _fetch_legacy_single_file "$TAG" "$OUT_DIR" "$REL"; then
+        exit 0
+    fi
+    err "release $TAG has neither a per-module index ($TAG.index.json)"
+    err "nor a legacy single-file package (intact-upgrade-$TAG.tar[.gz])"
+    err "its CI build may still be running, or the release is incomplete"
     exit 1
 fi
 
