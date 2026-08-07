@@ -1690,13 +1690,13 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                             <div class="relative">
                                 <button @click="$store.settings.cliCopy($store.settings.prepareManualScript(), 'Script')"
                                         class="absolute top-2 right-2 bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs px-2 py-1 rounded border border-gray-600">Copy</button>
-                                <textarea readonly rows="14" spellcheck="false"
+                                <textarea readonly rows="3" spellcheck="false"
                                           @focus="$event.target.select()"
                                           class="w-full bg-gray-950 border border-gray-700 rounded p-3 pr-16 text-xs text-gray-300 font-mono resize-y"
                                           x-text="$store.settings.prepareManualScript()"></textarea>
                             </div>
                             <p class="text-gray-500 text-xs mt-2">
-                                Then copy the <span class="font-mono">.tar.gz</span> to this appliance and use
+                                Then copy the <span class="font-mono">.tar</span> to this appliance and use
                                 <span class="text-gray-400">Import Upgrade Package</span>.
                             </p>
                             </div>

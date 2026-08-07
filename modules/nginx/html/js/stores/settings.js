@@ -1713,34 +1713,15 @@ document.addEventListener('alpine:init', () => {
         // assets and wrap them into one file" -- no second copy here to drift
         // out of step with it.
         prepareManualScript() {
-            const tag = this.selectedRef || 'intact-20260805';
+            // Always pulls prepare_package.sh from main (not the tag's own
+            // copy) so every packaging run picks up the latest script fixes
+            // (e.g. the download-resume fix) regardless of which release is
+            // being packaged. tag falls back to the last known release when
+            // selectedRef hasn't loaded (e.g. no connection to fetch it).
+            const tag = this.selectedRef || 'intact-20260806';
             return [
-                '# Build the Intact.AI offline package on any Linux/macOS machine.',
-                '# Needs curl, python3 and tar. No GitHub token required; setting',
-                '# GITHUB_TOKEN only raises the API rate limit from 60/hr to 5000/hr.',
-                '#',
-                '# Produces ONE file: intact-upgrade-' + tag + '.tar',
-                '',
-                'TAG=' + tag + '        # <-- CHANGE to the release you want',
-                'REPO=TenrootOrg/IntactAI',
-                '',
-                '# Fetch the packaging script. Prefer the copy tagged with the release',
-                '# so it matches what that release shipped; fall back to main, which is',
-                '# what releases cut before this script existed need. The script is',
-                '# release-agnostic either way -- it takes the tag as an argument and',
-                '# reads that release\'s index from the API.',
-                'AUTH=()',
-                '[ -n "${GITHUB_TOKEN:-}" ] && AUTH=(-H "Authorization: Bearer $GITHUB_TOKEN")',
-                'RAW=https://raw.githubusercontent.com/$REPO',
-                '# -fsL (no -S) on the first try: a 404 there is the EXPECTED case for',
-                '# older releases, and printing it would look like a failure. The',
-                '# fallback keeps -S so a genuine problem is still reported.',
-                'curl -fsL  "${AUTH[@]}" -o prepare_package.sh "$RAW/$TAG/scripts/prepare_package.sh" \\',
-                '  || curl -fsSL "${AUTH[@]}" -o prepare_package.sh "$RAW/main/scripts/prepare_package.sh"',
-                '',
-                '# Package every module in the release (add a 3rd argument like',
-                '# "elk,iris" to pick a subset -- intact is always included).',
-                'bash prepare_package.sh "$TAG" .',
+                'curl -fsSL -o prepare_package.sh https://raw.githubusercontent.com/TenrootOrg/IntactAI/main/scripts/prepare_package.sh',
+                'bash prepare_package.sh ' + tag + ' .',
             ].join('\n');
         },
 
