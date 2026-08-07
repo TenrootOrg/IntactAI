@@ -523,7 +523,10 @@ document.addEventListener('alpine:init', () => {
         // (scripts/prepare_package.sh) picks it up and multi-connects each
         // file -- meaningfully faster for the large single-file assets
         // (e.g. ELK's multi-GB tar) but requires sudo/a package manager.
-        prepareManualFast: false,
+        // Defaults to fast: the sudo install step is a one-line no-op on
+        // any machine that already has aria2c, and the speed difference on
+        // a multi-GB package is worth it for the rest.
+        prepareManualFast: true,
 
         // ─── Apply Uploaded Package state ────────────────────────────
         // Lists pending tarballs from /api/upgrade/list-packages.
