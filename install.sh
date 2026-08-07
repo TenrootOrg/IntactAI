@@ -410,7 +410,17 @@ for p in paths:
     # rather than guessed.
     declare -A IMG_OWNER=() IMG_SIZE=()
     local _iname _iowner _isize
-    while IFS=$'\t' read -r _iname _iowner _isize; do
+    # Field separator is '|', not a tab: bash's `read` squeezes RUNS of tab
+    # (and space/newline) as a single delimiter no matter what IFS is set to,
+    # so an empty owner field -- "name<TAB><TAB>size", the normal case for a
+    # legacy single-bundle package with no per-module manifest to attribute
+    # images to -- collapses the two tabs into one and shifts size into
+    # _iowner, leaving _isize empty. That mislabels every image with its own
+    # byte count as a bogus "module id", which matches no enabled module and
+    # gets every image skipped -- an install that loads zero images and
+    # aborts. '|' is never whitespace, so consecutive delimiters do NOT
+    # collapse and an empty field reads back empty.
+    while IFS='|' read -r _iname _iowner _isize; do
         [[ -n "$_iname" ]] || continue
         IMG_OWNER["$_iname"]="$_iowner"
         [[ -n "$_isize" ]] && IMG_SIZE["$_iname"]="$_isize"
@@ -434,7 +444,7 @@ for p in sources:
         if img in sizes:
             size[img] = sizes[img]
 for img in sorted(set(owner) | set(size)):
-    print(f'{img}\t{owner.get(img, \"\")}\t{size.get(img, \"\")}')
+    print(f'{img}|{owner.get(img, \"\")}|{size.get(img, \"\")}')
 " "$work" 2>/dev/null)
 
     # Classify every bundled tar up front: a docker-save image, or a plain
@@ -849,6 +859,14 @@ if index:
 # No index: an older release, carrying the single bundle. GitHub publishes a
 # per-asset digest of its own ("sha256:...") -- exact for an unsplit file, and
 # all that shape ever is.
+#
+# TEMPORARY -- this branch exists only to bridge boxes on releases older than
+# intact-20260807 (which predate the per-module index.json wrapper) through
+# that one release. Remove it, and the CI trigger swap that made
+# intact-20260807 publish in this single-bundle shape in the first place,
+# once the fleet is past this transition -- planned for the patch after
+# intact-20260807. See load_images_from_package()'s legacy image-attribution
+# handling below for the other half of this bridge.
 if not want:
     base = f"intact-upgrade-{tag}.tar.gz"
     for a in (rel.get("assets") or []):
