@@ -6,11 +6,21 @@
 # `intact-upgrade-<tag>.tar.gz` and nothing else, and someone hand-carrying one
 # file into an air-gapped site would rather carry one than nine.
 #
-# ON DEMAND ONLY. It used to run on `release: published`, which meant every
-# release quietly started a second, differently-shaped build and attached a
-# whole-stack tarball nobody asked for -- and the two workflows racing to
-# upload assets under one tag is how the last round of confusion started. Run
-# it by hand when a box actually needs the single file.
+# TEMPORARILY back on `release: published` (see build-release-assets.yml,
+# which has that trigger removed for now) -- a box still on a release that
+# predates the per-module wrapper scheme (anything before 2026-08-05) can
+# only read this single-file format; its manifest reader has never heard of
+# an index.json wrapper. This bridges that gap for however many releases it
+# takes for the field to catch up, then the two triggers swap back. Manual
+# dispatch (workflow_dispatch) still works the same as always in the
+# meantime, so nothing about on-demand single-file builds changes.
+#
+# Original reasoning for why this was on-demand-only, preserved because it
+# still applies once the swap-back happens: running on every release
+# publish means every release quietly starts a second, differently-shaped
+# build and attaches a whole-stack tarball nobody asked for, and the two
+# workflows racing to upload assets under one tag is how the last round of
+# confusion started.
 #
 # The build runs the exact same prepare_upgrade_package() the platform uses,
 # headless, inside a container from the release's freshly-built backend image
@@ -21,14 +31,25 @@
 name: Build release upgrade package (single file, on demand)
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to build (e.g. intact-20260722)"
-        required: true
+        description: "Release tag to build (e.g. intact-20260722). Not needed when triggered by publishing a release -- the release's own tag is used automatically."
+        required: false
 
 permissions:
   contents: write            # upload the package as a Release asset
+
+# Same reasoning as build-release-assets.yml's identical guard: two runs for
+# one tag (an auto-trigger plus a manual dispatch, say) would race on
+# `gh release upload --clobber` and interleave assets from two builds under
+# one release. Queue rather than cancel -- a half-uploaded release is worse
+# than a slow one.
+concurrency:
+  group: release-package-${{ github.event.release.tag_name || github.event.inputs.tag }}
+  cancel-in-progress: false
 
 jobs:
   build-package:
@@ -38,7 +59,10 @@ jobs:
       - name: Resolve tag
         id: tag
         env:
-          TAG: ${{ github.event.inputs.tag }}
+          # inputs.tag for a manual dispatch; release.tag_name when the
+          # trigger is an actual release publish (inputs.tag is unset then,
+          # since github.event.inputs only exists on workflow_dispatch).
+          TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
         run: |
           case "$TAG" in
             intact-*) ;;
