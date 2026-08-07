@@ -33,18 +33,13 @@
 name: Build release assets (per module)
 
 on:
-  # TEMPORARILY not auto-triggered on `release: published` -- see
-  # build-release-package.yml, which has that trigger instead for now (a box
-  # still on a pre-wrapper-scheme release can only read the old single-file
-  # format; see its own comment for the full reasoning). Swap the two back
-  # once every box in the field understands the per-module wrapper format.
-  # Manual dispatch still works in the meantime for testing.
-  #
-  # Note for anyone wondering why re-adding `release:` here appears to do
-  # nothing: `release` is a repository-level event, and GitHub only ever
-  # reads its workflow file from the DEFAULT BRANCH. A copy of this file on
-  # any other branch is reachable by workflow_dispatch and by nothing else,
-  # so the automatic trigger lives or dies by what is on main.
+  # Publishing a release builds it. Note for anyone wondering why an edit here
+  # appears to do nothing: `release` is a repository-level event, and GitHub
+  # only ever reads its workflow file from the DEFAULT BRANCH. A copy of this
+  # file on any other branch is reachable by workflow_dispatch and by nothing
+  # else, so the automatic trigger lives or dies by what is on main.
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
