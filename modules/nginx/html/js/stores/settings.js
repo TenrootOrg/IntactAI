@@ -517,6 +517,13 @@ document.addEventListener('alpine:init', () => {
         // 'prepare' → POST /api/upgrade/prepare (offline flow, produces tar.gz)
         // 'online'  → POST /api/upgrade/online (combined prepare + apply)
         prepareModalMode: 'prepare',
+        // Which "run it yourself" script variant is shown/copied. false =
+        // plain curl, one connection per file, nothing installed. true =
+        // installs aria2c first so prepare_package.sh's own auto-detect
+        // (scripts/prepare_package.sh) picks it up and multi-connects each
+        // file -- meaningfully faster for the large single-file assets
+        // (e.g. ELK's multi-GB tar) but requires sudo/a package manager.
+        prepareManualFast: false,
 
         // ─── Apply Uploaded Package state ────────────────────────────
         // Lists pending tarballs from /api/upgrade/list-packages.
@@ -1719,9 +1726,22 @@ document.addEventListener('alpine:init', () => {
             // being packaged. tag falls back to the last known release when
             // selectedRef hasn't loaded (e.g. no connection to fetch it).
             const tag = this.selectedRef || 'intact-20260806';
+            const fetch = 'curl -fsSL -o prepare_package.sh https://raw.githubusercontent.com/TenrootOrg/IntactAI/main/scripts/prepare_package.sh';
+            const run = 'bash prepare_package.sh ' + tag + ' .';
+            if (!this.prepareManualFast) {
+                return [fetch, run].join('\n');
+            }
+            // prepare_package.sh already auto-detects aria2c and uses it for
+            // multi-connection downloads when present -- this variant just
+            // makes sure it's actually there first, since otherwise the
+            // "fast" choice would silently be identical to the simple one
+            // on a machine that doesn't already have it installed.
             return [
-                'curl -fsSL -o prepare_package.sh https://raw.githubusercontent.com/TenrootOrg/IntactAI/main/scripts/prepare_package.sh',
-                'bash prepare_package.sh ' + tag + ' .',
+                'command -v aria2c >/dev/null || sudo apt-get install -y aria2 \\',
+                '  || sudo dnf install -y aria2 || sudo yum install -y aria2 \\',
+                '  || brew install aria2 || true   # falls back to plain curl below if none of these apply',
+                fetch,
+                run,
             ].join('\n');
         },
 

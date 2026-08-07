@@ -1687,10 +1687,20 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                 <span class="font-mono">tar</span> (bash — Linux/macOS, or WSL/Git Bash on Windows).
                                 <span x-show="!$store.settings.selectedRef" class="text-yellow-500">Pick a release above to fill in the tag.</span>
                             </p>
+                            <div class="flex items-center gap-3 mb-2 text-xs">
+                                <label class="flex items-center gap-1.5 cursor-pointer" :class="!$store.settings.prepareManualFast ? 'text-gray-200' : 'text-gray-500'">
+                                    <input type="radio" name="prepare-manual-mode" :checked="!$store.settings.prepareManualFast" @change="$store.settings.prepareManualFast = false">
+                                    Simple — one connection, nothing installed
+                                </label>
+                                <label class="flex items-center gap-1.5 cursor-pointer" :class="$store.settings.prepareManualFast ? 'text-gray-200' : 'text-gray-500'">
+                                    <input type="radio" name="prepare-manual-mode" :checked="$store.settings.prepareManualFast" @change="$store.settings.prepareManualFast = true">
+                                    Fast — parallel, installs <span class="font-mono">aria2c</span> (needs sudo)
+                                </label>
+                            </div>
                             <div class="relative">
                                 <button @click="$store.settings.cliCopy($store.settings.prepareManualScript(), 'Script')"
                                         class="absolute top-2 right-2 bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs px-2 py-1 rounded border border-gray-600">Copy</button>
-                                <textarea readonly rows="3" spellcheck="false"
+                                <textarea readonly :rows="$store.settings.prepareManualFast ? 5 : 2" spellcheck="false"
                                           @focus="$event.target.select()"
                                           class="w-full bg-gray-950 border border-gray-700 rounded p-3 pr-16 text-xs text-gray-300 font-mono resize-y"
                                           x-text="$store.settings.prepareManualScript()"></textarea>

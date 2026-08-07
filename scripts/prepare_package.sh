@@ -211,40 +211,73 @@ if [ -n "$_AVAIL" ] && [ "$_AVAIL" -lt "$_NEED" ] 2>/dev/null; then
     exit 1
 fi
 
-log "downloading $NFILES asset(s), $(_h "$TOTAL_BYTES") total, 4 at a time"
+# aria2c splits a SINGLE file into multiple simultaneous range-request
+# connections (-x/-s), which is the only thing that actually helps the
+# one huge asset (ELK's multi-GB tar) that dominates a package -- plain
+# curl downloads it as one TCP stream no matter how many *other* files
+# run alongside it, so its throughput is capped by that one connection's
+# bandwidth-delay product. Optional: falls straight back to the previous
+# plain-curl behavior when aria2c isn't installed, so nothing regresses
+# for anyone who doesn't have it.
+_HAVE_ARIA2C=0
+command -v aria2c >/dev/null 2>&1 && _HAVE_ARIA2C=1
+export _HAVE_ARIA2C GITHUB_TOKEN
+
+# With aria2c already opening up to 8 connections per file, running 4
+# files at once too would mean up to 32 simultaneous connections -- more
+# likely to contend with itself than help. Halve the outer fan-out in
+# that case; plain curl keeps the original 4.
+_OUTER_P=4
+[ "$_HAVE_ARIA2C" = "1" ] && _OUTER_P=2
+log "downloading $NFILES asset(s), $(_h "$TOTAL_BYTES") total, $_OUTER_P at a time$( [ "$_HAVE_ARIA2C" = "1" ] && echo ' (aria2c, up to 8 connections per file)' || echo ' (install aria2c for faster large-asset downloads)' )"
 
 # EVERY line in this phase is "<verb> <module> <size> [detail]", one fixed
-# shape. Four downloads run at once, so start/finish lines interleave by
+# shape. Several downloads run at once, so start/finish lines interleave by
 # nature -- with `->`/`<-` markers the operator had to decode arrows to work
 # out what was happening. A left-aligned verb column reads down the page
 # regardless of interleaving, and the module name is always in the same place.
 #
-# -sS, NOT curl's progress meter: four parallel meters redrawing interleave
-# into unreadable garbage, and this stdout is piped straight into the
-# appliance's workflow log. Aggregate progress comes from the watcher below.
+# -sS, NOT curl's progress meter: parallel meters redrawing interleave into
+# unreadable garbage, and this stdout is piped straight into the appliance's
+# workflow log. Aggregate progress comes from the watcher below.
 _dl_one() {
     name="$1"; mod="$2"; url="$3"; want="$4"
     started=$(date +%s)
     printf '[prepare]   %-9s %-14s %8s\n' "start" "$mod" "$(_h "$want")"
-    hdrs=(-H "X-GitHub-Api-Version: 2022-11-28" -H "Accept: application/octet-stream")
-    [ -n "${GITHUB_TOKEN:-}" ] && hdrs+=(-H "Authorization: Bearer $GITHUB_TOKEN")
-    # -C - resumes from whatever "$name" already has on disk instead of
-    # restarting at byte 0. Without it, a drop near the end of a multi-GB
-    # asset (observed: ELK's ~5.5G tar failing at 97% with "curl: (18)
-    # Transferred a partial file") makes every one of the 3 retries below
-    # re-download the whole file from scratch, so a link that reliably
-    # cuts out around the same point/duration fails the same way 4 times
-    # in a row instead of just finishing the remaining 3%.
-    if ! curl -fL -sS -C - --retry 3 --retry-delay 5 "${hdrs[@]}" -o "$name" "$url"; then
-        printf '[prepare][ERROR]   %-9s %-14s %s\n' "failed" "$mod" "$name" >&2
-        return 1
+    if [ "$_HAVE_ARIA2C" = "1" ]; then
+        hdrs=(--header="X-GitHub-Api-Version: 2022-11-28" --header="Accept: application/octet-stream")
+        [ -n "${GITHUB_TOKEN:-}" ] && hdrs+=(--header="Authorization: Bearer $GITHUB_TOKEN")
+        dir=$(dirname -- "$name"); base=$(basename -- "$name")
+        # -k1M floors the split size so small assets aren't needlessly
+        # fragmented; --continue resumes a partial file the same way
+        # curl's -C - does.
+        if ! aria2c -x8 -s8 -k1M --continue=true --allow-overwrite=true \
+             --auto-file-renaming=false --summary-interval=0 \
+             --console-log-level=warn --retry-wait=5 --max-tries=3 \
+             "${hdrs[@]}" -d "${dir:-.}" -o "$base" "$url" >/dev/null 2>&1; then
+            printf '[prepare][ERROR]   %-9s %-14s %s\n' "failed" "$mod" "$name" >&2
+            return 1
+        fi
+    else
+        hdrs=(-H "X-GitHub-Api-Version: 2022-11-28" -H "Accept: application/octet-stream")
+        [ -n "${GITHUB_TOKEN:-}" ] && hdrs+=(-H "Authorization: Bearer $GITHUB_TOKEN")
+        # -C - resumes from whatever "$name" already has on disk instead of
+        # restarting at byte 0. Without it, a drop near the end of a multi-GB
+        # asset (observed: ELK's ~5.5G tar failing at 97% with "curl: (18)
+        # Transferred a partial file") makes every one of the 3 retries below
+        # re-download the whole file from scratch, so a link that reliably
+        # cuts out around the same point/duration fails the same way 4 times
+        # in a row instead of just finishing the remaining 3%.
+        if ! curl -fL -sS -C - --retry 3 --retry-delay 5 "${hdrs[@]}" -o "$name" "$url"; then
+            printf '[prepare][ERROR]   %-9s %-14s %s\n' "failed" "$mod" "$name" >&2
+            return 1
+        fi
     fi
     got=$(stat -c%s "$name" 2>/dev/null || echo 0)
     printf '[prepare]   %-9s %-14s %8s  in %s\n' \
         "done" "$mod" "$(_h "$got")" "$(_elapsed $(( $(date +%s) - started )))"
 }
 export -f _dl_one _h _elapsed
-export GITHUB_TOKEN
 
 # One aggregate progress line every 20s, so a multi-GB fetch is never silent
 # for minutes at a time (which reads as a hang) without flooding the log.
@@ -281,7 +314,7 @@ trap 'kill "$WATCHER" 2>/dev/null; _cleanup' EXIT INT TERM HUP
 
 DL_STARTED=$(date +%s)
 if ! printf '%s\n' "$PLAN" | cut -f1,2,3,5 \
-     | xargs -P 4 -L 1 bash -c '_dl_one "$1" "$2" "$3" "$4"' _; then
+     | xargs -P "$_OUTER_P" -L 1 bash -c '_dl_one "$1" "$2" "$3" "$4"' _; then
     kill "$WATCHER" 2>/dev/null || true
     err "one or more downloads failed"
     exit 1
