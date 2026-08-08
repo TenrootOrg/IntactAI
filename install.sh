@@ -865,8 +865,8 @@ if index:
 # that one release. Remove it, and the CI trigger swap that made
 # intact-20260807 publish in this single-bundle shape in the first place,
 # once the fleet is past this transition -- planned for the patch after
-# intact-20260807. See load_images_from_package()'s legacy image-attribution
-# handling below for the other half of this bridge.
+# intact-20260807. See the legacy image-attribution handling in
+# load_images_from_package() below for the other half of this bridge.
 if not want:
     base = f"intact-upgrade-{tag}.tar.gz"
     for a in (rel.get("assets") or []):
