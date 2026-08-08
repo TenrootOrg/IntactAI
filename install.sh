@@ -830,6 +830,17 @@ except Exception:
     sys.exit(0)
 names = [a.get("name", "") for a in (rel.get("assets") or [])]
 
+# GitHub publishes a per-asset digest for every asset it hosts, including
+# each individual split part -- captured here so every part can be verified
+# right after its own download, before reassembly ever touches it. A -C -
+# resumed download that continues past an earlier truncated or corrupted
+# leftover ends up the right SIZE (curl only checks byte count) but the
+# wrong CONTENT, which only a digest catches.
+own_digest = {}
+for a in (rel.get("assets") or []):
+    d = (a.get("digest") or "")
+    own_digest[a.get("name") or ""] = d.split(":", 1)[1] if d.startswith("sha256:") else ""
+
 # Per-module assets, straight from the index: it names the modules a release
 # carries and the sha256 of each WHOLE tarball (taken pre-split, so it is also
 # the only digest that covers a reassembled multi-part asset -- GitHub can only
@@ -876,11 +887,14 @@ if not want:
             want.append((n, n, d.split(":", 1)[1] if d.startswith("sha256:") else ""))
         elif n.startswith(base + ".part-"):
             # A reassembled bundle has no published digest of the whole on a
-            # release this old; the parts are fetched and joined unverified.
+            # release this old; the parts are fetched and joined unverified
+            # at the WHOLE-file level -- but each part is verified on its own
+            # via own_digest above.
             want.append((n, base, ""))
 
 for n, whole, sha in sorted(set(want)):
-    print(f"{n}\t{whole}\t{sha}")
+    own = own_digest.get(n) or ""
+    print(f"{n}|{whole}|{sha}|{own}")
 ' 2>/dev/null)" || true
 
     # An asset the index names but the release does not carry is fatal, not a
@@ -896,15 +910,26 @@ for n, whole, sha in sorted(set(want)):
     fi
 
     mkdir -p "$dest_dir"
-    local n whole sha
-    # sha_of[<whole asset>] = expected sha256, from the index.
+    local n whole sha own
+    # sha_of[<whole asset>] = expected sha256 of the WHOLE reassembled file,
+    # from the index -- verified after reassembly, further below.
+    #
+    # Field separator is "|", not a tab: "sha" is a middle column here and is
+    # routinely empty for a legacy release, so a tab-joined line reads
+    # "name<TAB><TAB>whole..." -- bash's `read` squeezes RUNS of tab into one
+    # delimiter no matter what IFS is set to, which shifts every later column
+    # left by one. "|" is never whitespace, so it does not.
     declare -A sha_of=()
     local _dl_list; _dl_list="$(mktemp -p "${SCRIPT_DIR}/data/tmp" dl-list-XXXXXX)"
     local _count=0
-    while IFS=$'\t' read -r n whole sha; do
+    while IFS='|' read -r n whole sha own; do
         [[ -n "$n" ]] || continue
         sha_of["$whole"]="$sha"
-        printf '%s\n' "$n" >> "$_dl_list"
+        # name|own-digest per line: _intact_fetch_asset runs in its own bash
+        # process via xargs, so an associative array here would not survive
+        # into it -- passing the digest alongside the name in the same line
+        # does.
+        printf '%s|%s\n' "$n" "$own" >> "$_dl_list"
         _count=$((_count + 1))
     done <<< "$names"
 
@@ -919,11 +944,42 @@ for n, whole, sha in sorted(set(want)):
     # more streams mostly steal bandwidth from each other.
     log_info "  Downloading ${_count} asset(s), 4 at a time..."
     _intact_fetch_asset() {
-        local name="$1"
-        if curl -fsSL --retry 3 --retry-delay 5 --max-time 3600 \
-                -o "${_DL_DEST}/${name}" \
+        # $1 is "name|own-digest" (own-digest may be empty) -- see the
+        # _dl_list comment above for why it travels this way rather than
+        # through an associative array.
+        local line="$1" name digest dest got
+        name="${line%%|*}"
+        digest="${line#*|}"
+        dest="${_DL_DEST}/${name}"
+        # --retry-all-errors: plain --retry only retries a curated list of
+        # conditions (timeouts, 5xx, a few others) -- an HTTP/2 stream error
+        # (curl exit 92, "stream N was not closed cleanly: PROTOCOL_ERROR"),
+        # seen for real against GitHub's release CDN under 4-way concurrency,
+        # is NOT on that list, so it failed the whole install on one bad
+        # stream instead of retrying. -C -: resume, so a retry on a
+        # multi-hundred-MB asset continues instead of restarting at byte 0 --
+        # the same fix prepare_package.sh's downloader already carries.
+        #
+        # Resume has its own failure mode though, also seen for real: a run
+        # that dies mid-write (like the HTTP/2 error above) can leave a
+        # partial file that is not cleanly truncated, and a LATER run's -C -
+        # then builds on top of it -- ending up the right SIZE but the wrong
+        # CONTENT, since curl's resume trusts the existing bytes rather than
+        # re-checking them. The digest check right below is what actually
+        # catches that; without it this would silently ship a corrupt
+        # package that only fails much later, at tar extraction.
+        if curl -fsSL -C - --retry 3 --retry-all-errors --retry-delay 5 --max-time 3600 \
+                -o "$dest" \
                 "https://github.com/${_DL_REPO}/releases/download/${_DL_TAG}/${name}" \
                 2>>"${_DL_LOG}"; then
+            if [[ -n "$digest" ]]; then
+                got="$(sha256sum "$dest" 2>/dev/null | awk '{print $1}')"
+                if [[ "$got" != "$digest" ]]; then
+                    rm -f "$dest"
+                    printf '[install]   CORRUPT   %s (checksum mismatch, deleted -- a retry fetches it fresh)\n' "$name" >&2
+                    return 1
+                fi
+            fi
             printf '[install]   done      %s\n' "$name"
         else
             printf '[install]   FAILED    %s\n' "$name" >&2
