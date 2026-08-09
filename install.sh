@@ -836,9 +836,11 @@ names = [a.get("name", "") for a in (rel.get("assets") or [])]
 # leftover ends up the right SIZE (curl only checks byte count) but the
 # wrong CONTENT, which only a digest catches.
 own_digest = {}
+own_size = {}
 for a in (rel.get("assets") or []):
     d = (a.get("digest") or "")
     own_digest[a.get("name") or ""] = d.split(":", 1)[1] if d.startswith("sha256:") else ""
+    own_size[a.get("name") or ""] = a.get("size") or 0
 
 # Per-module assets, straight from the index: it names the modules a release
 # carries and the sha256 of each WHOLE tarball (taken pre-split, so it is also
@@ -893,7 +895,8 @@ if not want:
 
 for n, whole, sha in sorted(set(want)):
     own = own_digest.get(n) or ""
-    print(f"{n}|{whole}|{sha}|{own}")
+    size = own_size.get(n) or 0
+    print(f"{n}|{whole}|{sha}|{own}|{size}")
 ' 2>/dev/null)" || true
 
     # An asset the index names but the release does not carry is fatal, not a
@@ -909,9 +912,15 @@ for n, whole, sha in sorted(set(want)):
     fi
 
     mkdir -p "$dest_dir"
-    local n whole sha own
+    local n whole sha own size
     # sha_of[<whole asset>] = expected sha256 of the WHOLE reassembled file,
     # from the index -- verified after reassembly, further below.
+    #
+    # size_of[<name>] = expected byte size of THIS individual download (a
+    # part, or the whole file if unsplit) -- GitHub publishes this in the
+    # release API response, so no HEAD request is needed. Used only for the
+    # heartbeat's live percentage below; download correctness never depends
+    # on it.
     #
     # Field separator is "|", not a tab: "sha" is a middle column here and is
     # routinely empty for a legacy release, so a tab-joined line reads
@@ -919,11 +928,13 @@ for n, whole, sha in sorted(set(want)):
     # delimiter no matter what IFS is set to, which shifts every later column
     # left by one. "|" is never whitespace, so it does not.
     declare -A sha_of=()
+    declare -A size_of=()
     local _dl_list; _dl_list="$(mktemp -p "${SCRIPT_DIR}/data/tmp" dl-list-XXXXXX)"
     local _count=0
-    while IFS='|' read -r n whole sha own; do
+    while IFS='|' read -r n whole sha own size; do
         [[ -n "$n" ]] || continue
         sha_of["$whole"]="$sha"
+        size_of["$n"]="${size:-0}"
         # name|own-digest per line: _intact_fetch_asset runs in its own bash
         # process via xargs, so an associative array here would not survive
         # into it -- passing the digest alongside the name in the same line
@@ -947,23 +958,55 @@ for n, whole, sha in sorted(set(want)):
     # for 15+ minutes with ZERO output -- curl runs -fsSL (silent) and the only
     # progress signal that existed here was a printf that never reached
     # $LOG_FILE, so a healthy download and a hung one looked identical in the
-    # log. This heartbeat + marker-file mechanism gives a live "N/M done"
-    # count every 30s. Not `run_with_heartbeat` (lib/common.sh): that helper
-    # takes one static description string and wraps a single foreground
-    # command with a hard timeout -- fine for "still extracting X", but it
-    # can't show a live count across N parallel workers, and download time
-    # scales with link speed in a way a single fixed timeout can't bound
-    # sanely. This loop is disposable scaffolding around the same xargs call
-    # below, not a replacement for that helper.
+    # log. A bare "N/M done" count turned out to be the same problem in a
+    # smaller costume: on a real slow link the whole download can sit at
+    # "0/3 done" for its entire multi-minute duration, which reads exactly
+    # like stuck to someone who can't see WHY it's still 0. This heartbeat
+    # reads each destination file's on-disk size every 30s (curl -C -
+    # resumes into that same file, so its current size IS bytes-so-far) and
+    # reports real byte counts and percentages against each asset's
+    # published size from the release API -- no HEAD request needed, GitHub
+    # already gives it to us in the metadata fetched above. Not
+    # `run_with_heartbeat` (lib/common.sh): that helper takes one static
+    # description string and wraps a single foreground command with a hard
+    # timeout -- fine for "still extracting X", but it can't show a live,
+    # per-worker byte count across N parallel downloads. This loop is
+    # disposable scaffolding around the same xargs call below, not a
+    # replacement for that helper.
     local _dl_status_dir
     _dl_status_dir="$(mktemp -d -p "${SCRIPT_DIR}/data/tmp" dl-status-XXXXXX)"
     local _dl_start=$SECONDS
     local _dl_heartbeat_pid=""
+    local _dl_total_bytes=0 _dl_sz_name
+    for _dl_sz_name in "${!size_of[@]}"; do
+        _dl_total_bytes=$(( _dl_total_bytes + ${size_of[$_dl_sz_name]:-0} ))
+    done
     (
         while sleep 30; do
-            local _dl_done_n
-            _dl_done_n=$(find "$_dl_status_dir" -maxdepth 1 -name '*.done' 2>/dev/null | wc -l)
-            log_info "  ... downloading: ${_dl_done_n}/${_count} asset(s) done ($(( SECONDS - _dl_start ))s elapsed)"
+            local _dl_done_n=0 _dl_got_bytes=0 _dl_detail="" \
+                  _sz_name _sz_got _sz_want _sz_pct
+            for _sz_name in $(printf '%s\n' "${!size_of[@]}" | sort); do
+                _sz_want=${size_of[$_sz_name]:-0}
+                if [[ -f "${_dl_status_dir}/${_sz_name//\//_}.done" ]]; then
+                    # Known complete regardless of whether the release's
+                    # metadata even carried a size -- reporting 0% for a
+                    # finished asset (the size-unknown case, guard below)
+                    # would be actively misleading, not just uninformative.
+                    _sz_got=$_sz_want
+                    _sz_pct=100
+                    _dl_done_n=$((_dl_done_n + 1))
+                else
+                    _sz_got=$(stat -c%s "${dest_dir}/${_sz_name}" 2>/dev/null || echo 0)
+                    _sz_pct=0
+                    [[ "$_sz_want" -gt 0 ]] && _sz_pct=$(( _sz_got * 100 / _sz_want ))
+                fi
+                _dl_got_bytes=$((_dl_got_bytes + _sz_got))
+                _dl_detail+="${_sz_name}: ${_sz_pct}%, "
+            done
+            _dl_detail="${_dl_detail%, }"
+            local _dl_pct=0
+            [[ "$_dl_total_bytes" -gt 0 ]] && _dl_pct=$(( _dl_got_bytes * 100 / _dl_total_bytes ))
+            log_info "  ... downloading: $(( _dl_got_bytes / 1048576 ))/$(( _dl_total_bytes / 1048576 )) MB (${_dl_pct}%) — ${_dl_done_n}/${_count} done ($(( SECONDS - _dl_start ))s elapsed) — ${_dl_detail}"
         done
     ) &
     _dl_heartbeat_pid=$!
