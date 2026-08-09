@@ -33,28 +33,20 @@
 name: Build release assets (per module)
 
 on:
-  # Swapped back from build-release-package.yml (2026-08-09): every box in
-  # the field has had several releases (20260807/08/09) to pick up the
-  # per-module wrapper format, so this is the auto-triggered pipeline again
-  # and the legacy single-file build goes back to on-demand-only.
+  # REVERTED BACK to workflow_dispatch-only (2026-08-09, same day as the
+  # attempted swap): the fleet is NOT actually on the per-module wrapper
+  # format yet, despite 20260807/08/09 having shipped -- real boxes still
+  # need the legacy single-file bundle from build-release-package.yml, which
+  # this had briefly displaced as the auto-triggered pipeline. Swap back to
+  # auto-triggering THIS workflow only once the fleet has genuinely moved
+  # on; a release needing the legacy bundle but not getting one is worse
+  # than one this workflow attaches an extra format to that nothing reads
+  # yet, so default to the safer (legacy-auto) side while unsure.
   #
-  # Publishing happens IMMEDIATELY on this repo (no draft-first step), so the
-  # `resolve` job's first action is to re-draft the release the instant this
-  # workflow starts -- hiding it again for the ~90min build+upload instead of
-  # leaving a public, assetless release up the whole time. `publish` only
-  # flips it back once every asset is uploaded and re-hash-verified. A build
-  # that fails anywhere in between leaves the release in draft, not public
-  # with nothing on it -- see intact-20260808, which shipped exactly that
-  # broken state (published, VERSION-stamped, zero assets) and is what this
-  # whole flow exists to make impossible.
-  #
-  # Note for anyone wondering why re-adding `release:` here appears to do
-  # nothing: `release` is a repository-level event, and GitHub only ever
-  # reads its workflow file from the DEFAULT BRANCH. A copy of this file on
-  # any other branch is reachable by workflow_dispatch and by nothing else,
-  # so the automatic trigger lives or dies by what is on main.
-  release:
-    types: [published]
+  # The upload-before-publish reordering and immediate re-draft below are
+  # independent of which trigger fires this workflow -- they stay in effect
+  # for manual dispatches too, since a manually-triggered build can leave a
+  # release just as assetless on failure as an automatic one could.
   workflow_dispatch:
     inputs:
       tag:
