@@ -51,11 +51,19 @@ upgrade_list_releases() {
         return 1
     }
 
-    python3 - "$current" <<'PY' <<<"$json"
+    # The response goes via a temp FILE, not stdin. A heredoc and a herestring
+    # both redirect stdin and the heredoc wins, so `python3 - <<'PY' <<<"$json"`
+    # silently feeds the script an empty stdin and lists nothing. shellcheck
+    # SC2261 catches it; it is invisible at runtime because the failure looks
+    # like "no releases found".
+    local tmp; tmp="$(mktemp)"
+    printf '%s' "$json" > "$tmp"
+
+    python3 - "$current" "$tmp" <<'PY'
 import json, re, sys
-current = sys.argv[1]
+current, path = sys.argv[1], sys.argv[2]
 try:
-    rels = json.loads(sys.stdin.read())
+    rels = json.load(open(path, encoding="utf-8"))
 except Exception:
     print("Could not parse GitHub's response."); raise SystemExit(1)
 if isinstance(rels, dict):
@@ -108,6 +116,7 @@ if skipped:
     print("\n  Not listed (published with no installable assets): %s"
           % ", ".join(skipped))
 PY
+    rm -f "$tmp"
     return 0
 }
 

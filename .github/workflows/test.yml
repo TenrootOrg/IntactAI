@@ -19,7 +19,8 @@ jobs:
         run: |
           set -euo pipefail
           bash -n install.sh
-          for f in lib/*.sh scripts/*.sh; do
+          bash -n upgrade.sh
+          for f in lib/*.sh lib/upgrade/*.sh scripts/*.sh scripts/dev/*.sh; do
             bash -n "$f"
           done
 
@@ -31,11 +32,13 @@ jobs:
         # workflow isn't the place to force; see the next step for what
         # actually blocks the build.
         run: |
-          shellcheck install.sh lib/*.sh scripts/prepare_package.sh scripts/*.sh || true
+          shellcheck install.sh upgrade.sh lib/*.sh lib/upgrade/*.sh \
+                     scripts/prepare_package.sh scripts/*.sh || true
 
       - name: "shellcheck (gate: errors only)"
         run: |
-          shellcheck --severity=error install.sh lib/*.sh scripts/prepare_package.sh scripts/*.sh
+          shellcheck --severity=error install.sh upgrade.sh lib/*.sh lib/upgrade/*.sh \
+                     scripts/prepare_package.sh scripts/*.sh
 
       - name: Run the test suite
         run: bash tests/run_tests.sh
