@@ -101,11 +101,11 @@ modules:
   plaso:
     enabled: true
   elk:
-    enabled: false
+    enabled: true
     id: elastic
     password: '123123'
   iris:
-    enabled: false
+    enabled: true
     id: administrator #Cant be changed
     password: '123123'
   # Portainer — container infrastructure management UI. On by default: it is
