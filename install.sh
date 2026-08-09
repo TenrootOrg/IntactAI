@@ -1201,68 +1201,22 @@ main() {
         fi
     fi
     print_installation_config_summary
+
+    # Network check + Core Dependencies run BEFORE any image loading below.
+    # This used to run AFTER load_images_from_package() -- so on a genuinely
+    # fresh box (docker never installed), the early DOCKER_BIN resolution
+    # above found nothing, "docker load" failed with "docker: command not
+    # found", and the code that would have INSTALLED docker never even ran
+    # yet. Installing/verifying docker first means the loader always has a
+    # real docker to call.
     if [[ "$INTACT_AIRGAP" == "1" ]]; then
         # No connectivity check: there is deliberately no route out. The
         # package replaces every registry fetch, so reachability is irrelevant
         # and the existing gate would abort a perfectly valid install.
         log_info "Air-gapped mode — skipping the internet connectivity check"
-        if ! load_images_from_package "${INTACT_PACKAGES[@]}"; then
-            log_error "Could not load the release assets - aborting installation"
-            exit 1
-        fi
-        # Copies we made while unwrapping a single-file package; the images are
-        # in the docker store now. The operator's own file is left alone.
-        if (( ${#INTACT_UNWRAP_DIRS[@]} > 0 )); then
-            rm -rf "${INTACT_UNWRAP_DIRS[@]}" 2>/dev/null || true
-        fi
     elif ! check_network_connectivity; then
         log_error "Network connectivity check failed - aborting installation"
         exit 1
-    else
-        # ONLINE — and STILL installing from the release package. This is the
-        # only way a box gets its images now; there is deliberately no
-        # per-image registry fallback.
-        #
-        # The point is not the download, it is that install and upgrade run ONE
-        # implementation: the same asset, the same loader, the same compose
-        # files. Two ways to "get this box running" is precisely what let the
-        # installer and the upgrade engine drift -- secrets generated in both
-        # bash and Python, chmod policies that disagree, an ELK script one of
-        # them shipped and the other did not. A fallback would quietly restore
-        # that second path and with it the second test matrix, which is the
-        # entire cost this change exists to remove.
-        #
-        # So a package that cannot be fetched or loaded is a FAILED INSTALL,
-        # stated plainly, rather than a silent downgrade to a different code
-        # path that nobody tested this release.
-        local _rel_tag; _rel_tag="$(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null || true)"
-        if [[ -z "$_rel_tag" ]]; then
-            log_error "=============================================="
-            log_error "No VERSION file in ${SCRIPT_DIR}, so there is no way to tell"
-            log_error "which release package to install."
-            log_error ""
-            log_error "Use a release checkout, or install offline with:"
-            log_error "    sudo bash install.sh --package <release-assets-dir>/"
-            log_error "=============================================="
-            exit 1
-        fi
-        if ! download_release_assets "$_rel_tag" "${SCRIPT_DIR}/data/tmp/install-pkg"; then
-            log_error "=============================================="
-            log_error "Could not obtain the release assets for ${_rel_tag}."
-            log_error ""
-            log_error "Images come only from those assets now, so the install"
-            log_error "cannot continue. Either fix connectivity to GitHub, or"
-            log_error "fetch them on another machine and run:"
-            log_error "    sudo bash install.sh --package <release-assets-dir>/"
-            log_error "=============================================="
-            exit 1
-        fi
-        if ! load_images_from_package "${INTACT_PACKAGES[@]}"; then
-            log_error "The release assets could not be loaded - aborting installation"
-            exit 1
-        fi
-        # Reclaim the downloads; their contents are in the docker store now.
-        rm -f "${INTACT_PACKAGES[@]}" 2>/dev/null || true
     fi
 
     # -------------------------------------------------------------------------
@@ -1324,6 +1278,66 @@ main() {
     check_docker_min_version
     configure_docker_resolver
     create_network
+
+    # -------------------------------------------------------------------------
+    # Release Assets — Docker is guaranteed present and verified above.
+    # -------------------------------------------------------------------------
+    if [[ "$INTACT_AIRGAP" == "1" ]]; then
+        if ! load_images_from_package "${INTACT_PACKAGES[@]}"; then
+            log_error "Could not load the release assets - aborting installation"
+            exit 1
+        fi
+        # Copies we made while unwrapping a single-file package; the images are
+        # in the docker store now. The operator's own file is left alone.
+        if (( ${#INTACT_UNWRAP_DIRS[@]} > 0 )); then
+            rm -rf "${INTACT_UNWRAP_DIRS[@]}" 2>/dev/null || true
+        fi
+    else
+        # ONLINE — and STILL installing from the release package. This is the
+        # only way a box gets its images now; there is deliberately no
+        # per-image registry fallback.
+        #
+        # The point is not the download, it is that install and upgrade run ONE
+        # implementation: the same asset, the same loader, the same compose
+        # files. Two ways to "get this box running" is precisely what let the
+        # installer and the upgrade engine drift -- secrets generated in both
+        # bash and Python, chmod policies that disagree, an ELK script one of
+        # them shipped and the other did not. A fallback would quietly restore
+        # that second path and with it the second test matrix, which is the
+        # entire cost this change exists to remove.
+        #
+        # So a package that cannot be fetched or loaded is a FAILED INSTALL,
+        # stated plainly, rather than a silent downgrade to a different code
+        # path that nobody tested this release.
+        local _rel_tag; _rel_tag="$(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null || true)"
+        if [[ -z "$_rel_tag" ]]; then
+            log_error "=============================================="
+            log_error "No VERSION file in ${SCRIPT_DIR}, so there is no way to tell"
+            log_error "which release package to install."
+            log_error ""
+            log_error "Use a release checkout, or install offline with:"
+            log_error "    sudo bash install.sh --package <release-assets-dir>/"
+            log_error "=============================================="
+            exit 1
+        fi
+        if ! download_release_assets "$_rel_tag" "${SCRIPT_DIR}/data/tmp/install-pkg"; then
+            log_error "=============================================="
+            log_error "Could not obtain the release assets for ${_rel_tag}."
+            log_error ""
+            log_error "Images come only from those assets now, so the install"
+            log_error "cannot continue. Either fix connectivity to GitHub, or"
+            log_error "fetch them on another machine and run:"
+            log_error "    sudo bash install.sh --package <release-assets-dir>/"
+            log_error "=============================================="
+            exit 1
+        fi
+        if ! load_images_from_package "${INTACT_PACKAGES[@]}"; then
+            log_error "The release assets could not be loaded - aborting installation"
+            exit 1
+        fi
+        # Reclaim the downloads; their contents are in the docker store now.
+        rm -f "${INTACT_PACKAGES[@]}" 2>/dev/null || true
+    fi
 
     # -------------------------------------------------------------------------
     # Timeline Processing (Plaso/Timesketch) - Air-gap Support
