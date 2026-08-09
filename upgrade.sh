@@ -47,7 +47,7 @@ for _lib in common config docker modules health package release permissions; do
     # shellcheck source=/dev/null
     source "${SCRIPT_DIR}/lib/${_lib}.sh" || { echo "Cannot source lib/${_lib}.sh" >&2; exit 2; }
 done
-for _lib in core health plan package args refs modules; do
+for _lib in core health plan package args refs modules timesketch; do
     # shellcheck source=/dev/null
     source "${SCRIPT_DIR}/lib/upgrade/${_lib}.sh" || { echo "Cannot source lib/upgrade/${_lib}.sh" >&2; exit 2; }
 done
