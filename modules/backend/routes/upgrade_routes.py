@@ -29,31 +29,26 @@ _UPGRADE_START_MUTEX = threading.Lock()
 # written milliseconds before the backend container actually restarts/gets
 # recreated -- the same event that kills the connection delivering them to
 # the browser. In a real captured run none of those lines reached the
-# operator; the only thing that reliably did was this generic line, added
-# here at the route layer once the workflow call has already returned. So
-# the survival-critical instruction has to live HERE, not just deeper in the
-# log, appended onto whichever message the workflow actually reported.
-_SWAP_SESSION_NOTE = (" This backend is being recreated from a new image — "
-                       "your dashboard session will drop. Refresh the page "
-                       "and sign in again to keep watching; the upgrade "
-                       "keeps running in the background regardless.")
-_RESTART_SESSION_NOTE = (" Your dashboard session will drop when the backend "
-                          "restarts — refresh the page and sign in again to "
-                          "keep watching; the upgrade keeps running in the "
-                          "background regardless.")
+# operator. So this note is logged again HERE, right before the "Phase 1
+# complete" line -- same route-layer spot, same moment, right before the
+# connection drops -- instead of relying on the earlier, deeper log lines.
+_SWAP_SESSION_NOTE = ("This backend is being recreated from a new image — "
+                      "your dashboard session will drop. Refresh the page "
+                      "and sign in again to keep watching; the upgrade "
+                      "keeps running in the background regardless.")
+_RESTART_SESSION_NOTE = ("Your dashboard session will drop when the backend "
+                         "restarts — refresh the page and sign in again to "
+                         "keep watching; the upgrade keeps running in the "
+                         "background regardless.")
 
 
-def _awaiting_restart_message(result: dict, fallback: str) -> str:
-    """Build the operator-facing line for a two-phase upgrade's Phase 1→2 handoff.
-
-    Uses the workflow's own per-branch message when available (falls back to
-    the caller's generic text otherwise) and always appends the refresh/
-    sign-in instruction, picked by `needs_swap` — this is the one line proven
-    to actually reach the browser before the restart drops the connection.
-    """
-    msg = result.get('message') or fallback
-    msg += _SWAP_SESSION_NOTE if result.get('needs_swap') else _RESTART_SESSION_NOTE
-    return msg
+def _log_session_note_before_restart(run_id: str, result: dict) -> None:
+    """Log the refresh/sign-in warning immediately before the Phase 1→2
+    handoff message, picking the wording by whether this is an image swap
+    or a plain restart."""
+    add_log_to_run(run_id,
+                    _SWAP_SESSION_NOTE if result.get('needs_swap') else _RESTART_SESSION_NOTE,
+                    "warning")
 
 
 def _upgrade_gate(force: bool = False):
@@ -1456,9 +1451,10 @@ def start_offline_upgrade():
 
                 # Handle two-phase upgrade (backend restart pending)
                 if result.get('phase') == 'awaiting_restart':
-                    add_log_to_run(run_id, _awaiting_restart_message(
-                        result, "Phase 1 complete. Backend restarting. Phase 2 will resume automatically."
-                    ), "info")
+                    _log_session_note_before_restart(run_id, result)
+                    add_log_to_run(run_id, result.get('message') or
+                                   "Phase 1 complete. Backend restarting. Phase 2 will resume automatically.",
+                                   "info")
                     update_run_status(run_id, "running", progress=50)
                     # Don't mark complete - Phase 2 will continue after restart
                 elif result.get('success'):
@@ -1928,9 +1924,10 @@ def start_online_upgrade():
                 )
 
                 if result.get('phase') == 'awaiting_restart':
-                    add_log_to_run(run_id, _awaiting_restart_message(
-                        result, "Phase 1 complete. Backend restarting to resume Phase 2."
-                    ), "info")
+                    _log_session_note_before_restart(run_id, result)
+                    add_log_to_run(run_id, result.get('message') or
+                                   "Phase 1 complete. Backend restarting to resume Phase 2.",
+                                   "info")
                     return
 
                 if result.get('success'):
