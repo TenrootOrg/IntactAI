@@ -118,12 +118,17 @@ source "${SCRIPT_DIR}/lib/health.sh"
 # meaning here -- that is an upgrade-side idea.
 INTACT_PACKAGES=()
 INTACT_AIRGAP=0
+# Raw --package arguments, kept alongside INTACT_PACKAGES (which the
+# directory-expansion below overwrites with individual asset files) so the
+# system-bundle detection further down can still find a *-system-bundle.tar
+# sitting in a directory the operator pointed --package at.
+INTACT_PACKAGE_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --package)
-            INTACT_PACKAGES+=("${2:-}"); INTACT_AIRGAP=1; shift 2 ;;
+            INTACT_PACKAGES+=("${2:-}"); INTACT_PACKAGE_ARGS+=("${2:-}"); INTACT_AIRGAP=1; shift 2 ;;
         --package=*)
-            INTACT_PACKAGES+=("${1#*=}"); INTACT_AIRGAP=1; shift ;;
+            INTACT_PACKAGES+=("${1#*=}"); INTACT_PACKAGE_ARGS+=("${1#*=}"); INTACT_AIRGAP=1; shift ;;
         --help|-h)
             echo "Usage: sudo bash install.sh [--package <asset|dir> ...]"
             echo ""
@@ -145,13 +150,21 @@ done
 
 # Expand any directory into the assets inside it, so --package can point at a
 # folder someone copied off a USB stick without them having to list each file.
+#
+# EXCLUDES *-system-bundle.tar: that asset carries Docker/apt .deb files, not
+# a module image set, and load_images_from_package() has no idea what to do
+# with one. It's detected and staged separately -- see the Core Dependencies
+# section in main() -- by its own well-known name, the same way this loop
+# already leaves the release index (*.index.json) alone by only matching
+# *.tar[.gz].
 if (( ${#INTACT_PACKAGES[@]} > 0 )); then
     _expanded=()
     for _p in "${INTACT_PACKAGES[@]}"; do
         if [[ -d "$_p" ]]; then
             while IFS= read -r _f; do _expanded+=("$_f"); done \
                 < <(find "$_p" -maxdepth 1 \
-                         \( -name '*.tar.gz' -o -name '*.tar' \) | sort)
+                         \( -name '*.tar.gz' -o -name '*.tar' \) \
+                         ! -name '*-system-bundle.tar' | sort)
         else
             _expanded+=("$_p")
         fi
@@ -1141,6 +1154,77 @@ for n, whole, sha in sorted(set(want)):
     return 0
 }
 
+# Fetches and stages this release's Docker/host-dependency bundle, if it has
+# one, into its OWN destination dir -- deliberately separate from
+# download_release_assets()'s dest_dir, so its *.tar doesn't get swept up by
+# that function's broad *.tar/*.tar.gz module-asset globs.
+#
+# Return codes matter here and are NOT interchangeable:
+#   0 = staged successfully, ready to install from
+#   1 = this release genuinely has no bundle (predates the feature) -- NOT
+#       an error, the caller falls through to the pre-bundle behaviour
+#       exactly as before this feature existed
+#   2 = the release DOES have a bundle but it could not be obtained/verified
+#       -- this IS fatal. Per the "package is the only source" design there
+#       is nowhere to fall through to once a release promises a bundle.
+download_system_bundle() {
+    local tag="$1" dest_dir="$2"
+    local repo="${INTACT_REPO:-TenrootOrg/IntactAI}"
+    local api="https://api.github.com/repos/${repo}/releases/tags/${tag}"
+    local hdr=(-H "Accept: application/vnd.github+json")
+    [[ -n "${GITHUB_TOKEN:-}" ]] && hdr+=(-H "Authorization: token ${GITHUB_TOKEN}")
+
+    local json
+    json="$(curl -sSL --max-time 60 "${hdr[@]}" "$api" 2>/dev/null)" || true
+    [[ -n "$json" ]] || return 1
+
+    local bundle_name="${tag}-system-bundle.tar"
+    printf '%s' "$json" | grep -q "\"${bundle_name}\"" || return 1
+
+    log_info "Looking for the Docker/dependency bundle for ${tag}..."
+    mkdir -p "$dest_dir"
+    local bundle_file="${dest_dir}/${bundle_name}"
+    if ! curl -fsSL -C - --retry 3 --retry-all-errors --retry-delay 5 --max-time 1800 \
+            -o "$bundle_file" \
+            "https://github.com/${repo}/releases/download/${tag}/${bundle_name}" \
+            2>>"$LOG_FILE"; then
+        log_error "  Could not download the dependency bundle (${bundle_name})"
+        rm -f "$bundle_file"
+        return 2
+    fi
+
+    local sha_name="${bundle_name}.sha256"
+    if printf '%s' "$json" | grep -q "\"${sha_name}\""; then
+        local sha_file="${dest_dir}/${sha_name}"
+        if curl -fsSL --max-time 60 -o "$sha_file" \
+                "https://github.com/${repo}/releases/download/${tag}/${sha_name}" 2>>"$LOG_FILE"; then
+            local want got
+            want="$(awk '{print $1}' "$sha_file" 2>/dev/null)"
+            got="$(sha256sum "$bundle_file" | awk '{print $1}')"
+            rm -f "$sha_file"
+            if [[ -z "$want" || "$want" != "$got" ]]; then
+                log_error "  Dependency bundle FAILED its checksum (expected ${want:-?:16}, got ${got:0:16}…)"
+                rm -f "$bundle_file"
+                return 2
+            fi
+        fi
+    fi
+
+    log_info "  Extracting dependency bundle..."
+    local extract_dir="${dest_dir}/system-bundle"
+    rm -rf "$extract_dir"
+    mkdir -p "$extract_dir"
+    if ! tar -xf "$bundle_file" -C "$extract_dir" 2>>"$LOG_FILE"; then
+        log_error "  Could not extract the dependency bundle"
+        rm -f "$bundle_file"
+        rm -rf "$extract_dir"
+        return 2
+    fi
+    rm -f "$bundle_file"
+    log_success "  Dependency bundle staged (${bundle_name})"
+    return 0
+}
+
 main() {
     echo ""
     echo "=============================================="
@@ -1220,6 +1304,52 @@ main() {
     fi
 
     # -------------------------------------------------------------------------
+    # Docker/dependency bundle — staged before Core Dependencies runs, so that
+    # section installs from it instead of ever touching download.docker.com
+    # or a live apt mirror. A release that predates this feature simply has
+    # no bundle to find (download_system_bundle returns 1, or no
+    # *-system-bundle.tar/system-bundle/ exists in a --package dir) — that
+    # falls through to the exact pre-bundle behaviour below, unchanged. A
+    # release that DOES advertise a bundle but can't produce it working is a
+    # hard failure (return 2) — per the "package is the only source" design,
+    # there is nowhere else to fall through to once a release promises one.
+    # -------------------------------------------------------------------------
+    local _bundle_dir=""
+    if [[ "$INTACT_AIRGAP" == "1" ]]; then
+        local _pkg_arg _sb_tar
+        for _pkg_arg in "${INTACT_PACKAGE_ARGS[@]}"; do
+            [[ -d "$_pkg_arg" ]] || continue
+            if [[ -d "${_pkg_arg}/system-bundle" ]]; then
+                _bundle_dir="${_pkg_arg}/system-bundle"
+                break
+            fi
+            _sb_tar="$(find "$_pkg_arg" -maxdepth 1 -name '*-system-bundle.tar' 2>/dev/null | head -1)"
+            if [[ -n "$_sb_tar" ]]; then
+                local _sb_extract="${SCRIPT_DIR}/data/tmp/system-bundle-pkg/system-bundle"
+                rm -rf "$_sb_extract"
+                mkdir -p "$_sb_extract"
+                if ! tar -xf "$_sb_tar" -C "$_sb_extract" 2>>"$LOG_FILE"; then
+                    log_error "  Could not extract the supplied dependency bundle (${_sb_tar})"
+                    exit 1
+                fi
+                _bundle_dir="$_sb_extract"
+                break
+            fi
+        done
+    else
+        local _bundle_tag; _bundle_tag="$(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null || true)"
+        if [[ -n "$_bundle_tag" ]]; then
+            download_system_bundle "$_bundle_tag" "${SCRIPT_DIR}/data/tmp/system-bundle-pkg"
+            case $? in
+                0) _bundle_dir="${SCRIPT_DIR}/data/tmp/system-bundle-pkg/system-bundle" ;;
+                1) _bundle_dir="" ;;
+                2) log_error "The release's dependency bundle could not be obtained — aborting installation"
+                   exit 1 ;;
+            esac
+        fi
+    fi
+
+    # -------------------------------------------------------------------------
     # Core Dependencies
     # -------------------------------------------------------------------------
     # Air-gap: apt and the docker repo are both internet-only, so these have to
@@ -1227,7 +1357,10 @@ main() {
     # update` on a box with no route produces a confusing wall of DNS errors,
     # where "docker is not installed and I cannot install it here" is the
     # actual problem and is worth saying in one line.
-    if [[ "$INTACT_AIRGAP" == "1" ]]; then
+    if [[ -n "$_bundle_dir" ]]; then
+        install_dependencies_from_package "$_bundle_dir" || exit 1
+        prefer_ipv4_dns
+    elif [[ "$INTACT_AIRGAP" == "1" ]]; then
         local _missing=()
         command -v docker >/dev/null 2>&1 || _missing+=("docker")
         docker compose version >/dev/null 2>&1 || _missing+=("docker-compose-plugin")
@@ -1250,7 +1383,14 @@ main() {
         install_dependencies
         prefer_ipv4_dns
     fi
-    if [[ "$INTACT_AIRGAP" != "1" ]] && ! install_docker; then
+    if [[ -n "$_bundle_dir" ]]; then
+        install_docker_from_package "$_bundle_dir" || {
+            log_error "=============================================="
+            log_error "Docker installation from the bundled package failed — aborting install."
+            log_error "=============================================="
+            exit 1
+        }
+    elif [[ "$INTACT_AIRGAP" != "1" ]] && ! install_docker; then
         log_error "=============================================="
         log_error "Docker installation failed — aborting install."
         log_error ""

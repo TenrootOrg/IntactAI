@@ -97,6 +97,69 @@ jobs:
         with:
           ref: ${{ steps.tag.outputs.tag }}
 
+      # Docker + every INTACT_HOST_DEPS package (lib/docker.sh:38-48), bundled
+      # as real .deb files plus a pre-built local apt repo index, so
+      # install.sh never touches download.docker.com or a live apt mirror --
+      # online or air-gapped, the package is the only source. Placed into
+      # ci-output/ so the existing "Attach package to the GitHub Release"
+      # step below (already a wildcard glob over that directory) picks it up
+      # with no changes needed there. Identical recipe to the equivalent step
+      # in build-release-assets.yml -- see that file's system-bundle job for
+      # the full "why" (the naive bare-.deb-glob approach was tried first and
+      # confirmed broken empirically; this is the tested, working version).
+      - name: Build the Docker + host-dependency bundle
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/ci-output" "$GITHUB_WORKSPACE/bundle-out"
+          cat > "$GITHUB_WORKSPACE/build_bundle.sh" << 'BUILDEOF'
+          #!/bin/bash
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y -qq curl gnupg ca-certificates lsb-release
+
+          install -m 0755 -d /etc/apt/keyrings
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+          chmod a+r /etc/apt/keyrings/docker.asc
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
+            | tee /etc/apt/sources.list.d/docker.list > /dev/null
+          apt-get update -qq
+
+          # Critical: purge bootstrap tools (NOT ca-certificates) before the
+          # real capture, or apt treats their transitive deps as already-
+          # satisfied and silently skips capturing them.
+          apt-get purge -y -qq curl gnupg lsb-release
+          apt-get autoremove -y -qq --purge
+
+          mkdir -p /bundle
+          rm -f /var/cache/apt/archives/*.deb
+          apt-get install -y -qq --download-only --reinstall \
+            docker-ce docker-ce-cli containerd.io docker-compose-plugin \
+            curl wget git python3 python3-pip python3-yaml openssl jq dnsutils lsb-release ca-certificates gnupg
+          cp /var/cache/apt/archives/*.deb /bundle/
+
+          apt-get install -y -qq dpkg-dev
+          cd /bundle
+          dpkg-scanpackages . /dev/null > Packages 2>/dev/null
+          gzip -kf Packages
+
+          . /etc/os-release
+          echo "$VERSION_ID" > /bundle/ubuntu-version
+          echo "== bundle built: $(ls /bundle | wc -l) files =="
+          du -sh /bundle
+          BUILDEOF
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/build_bundle.sh:/build_bundle.sh:ro" \
+            -v "$GITHUB_WORKSPACE/bundle-out:/bundle" \
+            ubuntu:24.04 bash /build_bundle.sh
+
+          cd "$GITHUB_WORKSPACE/bundle-out"
+          tar -cf "$GITHUB_WORKSPACE/ci-output/${TAG}-system-bundle.tar" .
+          sha256sum "$GITHUB_WORKSPACE/ci-output/${TAG}-system-bundle.tar" \
+            > "$GITHUB_WORKSPACE/ci-output/${TAG}-system-bundle.tar.sha256"
+          ls -lh "$GITHUB_WORKSPACE/ci-output/${TAG}-system-bundle.tar"
+
       # This builds EVERY module into one file -- no baseline, no diff. That is
       # the point of it: the thing it produces is the whole stack, for a
       # consumer that can only take one file.

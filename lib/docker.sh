@@ -353,6 +353,137 @@ EOF
 }
 
 # ============================================================================
+# Install Docker + host dependencies from a bundled package
+# ============================================================================
+# A staged system-bundle directory (a real local apt repo: .deb files plus a
+# CI-built Packages/Packages.gz -- see build-release-assets.yml's/
+# build-release-package.yml's "system-bundle" step for how it's built) means
+# this release never needs download.docker.com or a live apt mirror, online
+# or air-gapped. THE PACKAGE IS THE ONLY SOURCE for anything in it -- no
+# online fallback if something here fails. A release too old to carry a
+# bundle simply never calls these; main() falls through to the pre-bundle
+# behaviour (install_docker_online() / the air-gap presence-check) unchanged
+# for exactly that case.
+#
+# The naive version of this (bare `apt-get install <bundle>/*.deb`) was
+# tried and confirmed broken -- it does not reliably resolve dependencies
+# even when every needed .deb is present. This is why the bundle ships a
+# real repo index instead: point a `file://` source at it and let apt do
+# its normal dependency resolution.
+
+# Refuses to use a bundle built for a different Ubuntu release. A .deb built
+# against 24.04's libc/systemd is not safely installable on 22.04 or a
+# future 26.04 even though the package *names* match. Hard failure, not a
+# fall-through -- per the "package is the only source" design, there is
+# nowhere else to fall through to.
+_verify_system_bundle_os_match() {
+    local bundle_dir="$1"
+    local bundle_version host_version
+    bundle_version="$(cat "${bundle_dir}/ubuntu-version" 2>/dev/null || true)"
+    if [[ -z "$bundle_version" ]]; then
+        log_error "  System bundle at ${bundle_dir} has no ubuntu-version marker — refusing to use it"
+        return 1
+    fi
+    host_version="$(. /etc/os-release && echo "$VERSION_ID")"
+    if [[ "$bundle_version" != "$host_version" ]]; then
+        log_error "=============================================="
+        log_error "The release's dependency bundle was built for Ubuntu ${bundle_version},"
+        log_error "but this host is running Ubuntu ${host_version}. A .deb set built"
+        log_error "for one Ubuntu release is not safe to install on another."
+        log_error "=============================================="
+        return 1
+    fi
+    return 0
+}
+
+# Points apt at the bundle as a local, unsigned repo and installs the named
+# packages from it. Shared by both install_docker_from_package() and
+# install_dependencies_from_package() since the mechanism is identical --
+# only the package list differs.
+_apt_install_from_bundle() {
+    local bundle_dir="$1"; shift
+    local list_file="/etc/apt/sources.list.d/intact-system-bundle.list"
+    echo "deb [trusted=yes] file:${bundle_dir} ./" > "$list_file"
+    if ! apt-get update -qq -o Dir::Etc::sourcelist="sources.list.d/intact-system-bundle.list" \
+            -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0" 2>> "$LOG_FILE"; then
+        log_error "  Could not read the bundled dependency repo (${bundle_dir})"
+        rm -f "$list_file"
+        return 1
+    fi
+    if ! apt-get install -y -qq "$@" 2>> "$LOG_FILE"; then
+        log_error "  Failed installing from the bundled dependency repo — see $LOG_FILE"
+        rm -f "$list_file"
+        return 1
+    fi
+    rm -f "$list_file"
+    return 0
+}
+
+install_docker_from_package() {
+    local bundle_dir="$1"
+    if command -v docker &> /dev/null; then
+        # Same as install_docker(): an already-installed Docker, by any
+        # method, is left alone -- this only ever fires on an empty box.
+        install_docker
+        return
+    fi
+    _verify_system_bundle_os_match "$bundle_dir" || return 1
+
+    log_info "Installing Docker from the release's bundled dependency repo (no internet)..."
+    if ! _apt_install_from_bundle "$bundle_dir" \
+            docker-ce docker-ce-cli containerd.io docker-compose-plugin; then
+        return 1
+    fi
+
+    mkdir -p /etc/docker
+    cat > /etc/docker/daemon.json << 'EOF'
+{
+  "features": {
+    "containerd-snapshotter": false
+  }
+}
+EOF
+    if ! systemctl start docker 2>> "$LOG_FILE"; then
+        log_error "  Docker installed from the bundle but failed to start"
+        return 1
+    fi
+    systemctl enable docker 2>> "$LOG_FILE" || log_warn "  Failed to enable Docker service on boot"
+    if ! docker info &> /dev/null; then
+        log_error "  Docker service started but not responding"
+        return 1
+    fi
+    if [[ -n "$SUDO_USER" ]]; then
+        usermod -aG docker "$SUDO_USER"
+        log_success "  User $SUDO_USER added to docker group (logout/login required)"
+    fi
+    log_success "Docker installed from the bundled package"
+}
+
+install_dependencies_from_package() {
+    local bundle_dir="$1"
+    log_info "Checking system dependencies..."
+    local missing; missing="$(_missing_host_deps)"
+    if [[ -z "$missing" && "${INTACT_FORCE_APT:-0}" != "1" ]]; then
+        log_success "System dependencies already present — skipping the bundle"
+        return 0
+    fi
+    [[ -n "$missing" ]] || missing="$(printf '%s ' "${INTACT_HOST_DEPS[@]%%|*}")"
+    _verify_system_bundle_os_match "$bundle_dir" || return 1
+
+    log_info "  Installing from the release's bundled dependency repo: ${missing}"
+    # shellcheck disable=SC2086 -- word splitting is the intent
+    if ! _apt_install_from_bundle "$bundle_dir" $missing; then
+        return 1
+    fi
+    local still; still="$(_missing_host_deps)"
+    if [[ -n "$still" ]]; then
+        log_error "  Still missing after installing from the bundle: ${still}"
+        return 1
+    fi
+    log_success "System dependencies installed from the bundled package"
+}
+
+# ============================================================================
 # Main Docker Installation Entry Point
 # ============================================================================
 

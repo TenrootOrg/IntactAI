@@ -357,6 +357,95 @@ jobs:
             out/*.manifest.json
           retention-days: 3
 
+  # ---------------------------------------------------------- system-bundle
+  # Docker + every INTACT_HOST_DEPS package (lib/docker.sh:38-48), bundled as
+  # real .deb files plus a pre-built local apt repo index, so install.sh
+  # never touches download.docker.com or a live apt mirror -- online or
+  # air-gapped, the package is the only source. Independent of the module
+  # matrix (doesn't need `build`), so it runs in parallel with it.
+  #
+  # THE APPROACH BELOW IS TESTED, NOT ASSUMED: the naive version of this
+  # (download .deb files, `apt-get install /bundle/*.deb` on the target) was
+  # tried first and confirmed BROKEN empirically -- bare local .deb file
+  # arguments do not reliably resolve inter-package dependencies at this
+  # scale, even when every needed .deb is present. Two fixes were needed:
+  #   1. Purge the bootstrap tools (curl/gnupg/lsb-release) before the real
+  #      dependency capture -- leaving them installed makes apt treat their
+  #      OWN transitive deps (perl, netbase, libreadline8t64, and more) as
+  #      already-satisfied and silently skip capturing them, even with
+  #      --reinstall named on the top-level packages. ca-certificates is the
+  #      one exception -- kept installed throughout, since the HTTPS docker
+  #      repo needs it for the download-only step that follows.
+  #   2. Build the local apt repo index (dpkg-scanpackages) HERE, at build
+  #      time, and ship it as part of the asset -- the target machine only
+  #      ever needs plain `apt-get` reading a pre-built Packages.gz, never
+  #      dpkg-scanpackages/dpkg-dev itself.
+  # Verified end-to-end: `docker run --network none` installing purely from
+  # this bundle succeeded (docker, compose, python3-yaml, lsb_release, jq
+  # all functional) with confirmed zero outbound connections.
+  system-bundle:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build the Docker + host-dependency bundle
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/bundle-out"
+          cat > "$GITHUB_WORKSPACE/build_bundle.sh" << 'BUILDEOF'
+          #!/bin/bash
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y -qq curl gnupg ca-certificates lsb-release
+
+          install -m 0755 -d /etc/apt/keyrings
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+          chmod a+r /etc/apt/keyrings/docker.asc
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
+            | tee /etc/apt/sources.list.d/docker.list > /dev/null
+          apt-get update -qq
+
+          # Critical: purge bootstrap tools (NOT ca-certificates) before the
+          # real capture -- see the job comment above for why.
+          apt-get purge -y -qq curl gnupg lsb-release
+          apt-get autoremove -y -qq --purge
+
+          mkdir -p /bundle
+          rm -f /var/cache/apt/archives/*.deb
+          apt-get install -y -qq --download-only --reinstall \
+            docker-ce docker-ce-cli containerd.io docker-compose-plugin \
+            curl wget git python3 python3-pip python3-yaml openssl jq dnsutils lsb-release ca-certificates gnupg
+          cp /var/cache/apt/archives/*.deb /bundle/
+
+          apt-get install -y -qq dpkg-dev
+          cd /bundle
+          dpkg-scanpackages . /dev/null > Packages 2>/dev/null
+          gzip -kf Packages
+
+          . /etc/os-release
+          echo "$VERSION_ID" > /bundle/ubuntu-version
+          echo "== bundle built: $(ls /bundle | wc -l) files =="
+          du -sh /bundle
+          BUILDEOF
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/build_bundle.sh:/build_bundle.sh:ro" \
+            -v "$GITHUB_WORKSPACE/bundle-out:/bundle" \
+            ubuntu:24.04 bash /build_bundle.sh
+
+          cd "$GITHUB_WORKSPACE/bundle-out"
+          tar -cf "$GITHUB_WORKSPACE/${TAG}-system-bundle.tar" .
+          sha256sum "$GITHUB_WORKSPACE/${TAG}-system-bundle.tar" > "$GITHUB_WORKSPACE/${TAG}-system-bundle.tar.sha256"
+          ls -lh "$GITHUB_WORKSPACE/${TAG}-system-bundle.tar"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: system-bundle
+          path: |
+            ${{ github.workspace }}/*-system-bundle.tar
+            ${{ github.workspace }}/*-system-bundle.tar.sha256
+          retention-days: 3
+
   # ------------------------------------------------------------------ index
   # The index is the CONTRACT: it is how a box learns which modules a release
   # carries and what each should hash to. It reads only the tiny sidecars.
@@ -441,7 +530,7 @@ jobs:
 
   # ----------------------------------------------------------------- attach
   publish:
-    needs: [resolve, build, index]
+    needs: [resolve, build, index, system-bundle]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -463,6 +552,11 @@ jobs:
         with:
           path: all
           pattern: release-index
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: all
+          pattern: system-bundle
 
       # No toolchain-reclaiming step here, deliberately. This job holds ONE
       # copy of the release (~8 GB) on a runner with ~21 GB free -- it used to
@@ -550,6 +644,8 @@ jobs:
               -o -name "$TAG-*.tar.gz" \
               -o -name "$TAG-*.tar.gz.part-*" \
               -o -name "$TAG.index.json" \
+              -o -name "$TAG-system-bundle.tar" \
+              -o -name "$TAG-system-bundle.tar.sha256" \
             \) -print0 \
             | sort -z \
             | xargs -0 gh release upload "$TAG" --clobber
