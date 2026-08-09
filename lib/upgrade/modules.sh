@@ -274,9 +274,14 @@ upgrade_module_iris() {
     dump="$(_u_backup_dir iris)/iris_${U_FROM// /_}_to_${target}_$(date +%Y%m%d_%H%M%S).sql"
 
     # Not fatal: IRIS's volumes are never touched by this upgrade, so the dump
-    # is insurance against the app's own boot-time migration, not against us.
+    # is insurance against the app's own boot-time Alembic migration, not
+    # against us. Role and database read from .env for the same reason as
+    # VolWeb below, though IRIS does use 'postgres'/'iris_db'.
     if _u_container_state intact_iris_db | grep -q running; then
-        _u_pg_dump intact_iris_db postgres iris_db "$dump" \
+        local ir_user ir_db
+        ir_user="$(read_env_var "$envf" POSTGRES_USER 2>/dev/null || echo postgres)"
+        ir_db="$(read_env_var "$envf" POSTGRES_DB 2>/dev/null || echo iris_db)"
+        _u_pg_dump intact_iris_db "$ir_user" "$ir_db" "$dump" \
             || log_warn "  continuing without a database backup"
     fi
 
@@ -464,7 +469,14 @@ upgrade_module_volweb() {
     u_begin volweb
     dump="$(_u_backup_dir volweb)/volweb_${U_FROM// /_}_to_${target}_$(date +%Y%m%d_%H%M%S).sql"
     if _u_container_state intact_volweb_postgresdb | grep -q running; then
-        _u_pg_dump intact_volweb_postgresdb postgres volweb "$dump" \
+        # Read the role from .env rather than assuming 'postgres': VolWeb's
+        # compose creates the database owned by VOLWEB_POSTGRES_USER (volweb),
+        # and there is no 'postgres' role at all, so a hardcoded -U postgres
+        # fails with "role does not exist" and silently skips the backup.
+        local vw_user vw_db
+        vw_user="$(read_env_var "$envf" VOLWEB_POSTGRES_USER 2>/dev/null || echo volweb)"
+        vw_db="$(read_env_var "$envf" VOLWEB_POSTGRES_DB 2>/dev/null || echo volweb)"
+        _u_pg_dump intact_volweb_postgresdb "$vw_user" "$vw_db" "$dump" \
             || log_warn "  continuing without a database backup"
     fi
 
