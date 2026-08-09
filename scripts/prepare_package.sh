@@ -139,6 +139,47 @@ if sha:
         log "no .sha256 published alongside it -- skipping verification"
     fi
 
+    # The host-level Docker/apt dependency bundle -- a release publishes it
+    # as its own asset (build-release-package.yml's "system-bundle" step),
+    # disjoint from this single-file package. Fetched as a SIBLING of $final
+    # rather than merged into it: this branch's whole contract is "one file,
+    # unwrapped, ready for --package" (see this function's own header), and
+    # install.sh already looks beside a --package file argument for exactly
+    # this name (the same lookup a bundle sitting next to a module asset on
+    # a USB stick relies on) -- no install.sh change needed for this shape.
+    local bundle_name="${tag}-system-bundle.tar"
+    local bundle_info
+    bundle_info="$(printf %s "$rel_json" | BNAME="$bundle_name" python3 -c '
+import json, os, sys
+name = os.environ["BNAME"]
+assets = {a["name"]: a for a in json.load(sys.stdin).get("assets", [])}
+a = assets.get(name)
+if a:
+    print(a["url"])
+    sha = assets.get(name + ".sha256")
+    print(sha["url"] if sha else "")
+' 2>/dev/null)"
+    if [ -n "$bundle_info" ]; then
+        local bundle_url bundle_sha_url
+        bundle_url="$(sed -n '1p' <<< "$bundle_info")"
+        bundle_sha_url="$(sed -n '2p' <<< "$bundle_info")"
+        log "fetching the Docker/dependency bundle"
+        curl -fL -sS -C - --retry 20 --retry-delay 5 "${hdrs[@]}" \
+             -o "$tmp_dir/$bundle_name" "$bundle_url"
+        if [ -n "$bundle_sha_url" ]; then
+            curl -fsSL "${hdrs[@]}" -o "$tmp_dir/$bundle_name.sha256" "$bundle_sha_url"
+            local bwant bgot
+            bwant="$(awk '{print $1}' "$tmp_dir/$bundle_name.sha256")"
+            bgot="$(sha256sum "$tmp_dir/$bundle_name" | awk '{print $1}')"
+            if [ "$bwant" != "$bgot" ]; then
+                err "dependency bundle FAILED its checksum -- refusing to package"
+                return 1
+            fi
+        fi
+        mv "$tmp_dir/$bundle_name" "$out_dir/$bundle_name"
+        log "included Docker/dependency bundle: $out_dir/$bundle_name ($(_h "$(stat -c%s "$out_dir/$bundle_name" 2>/dev/null || echo 0)"))"
+    fi
+
     final="$out_dir/$base"
     mv "$tmp_dir/$base" "$final"
     log "done: $final ($(_h "$(stat -c%s "$final" 2>/dev/null || echo 0)"))"
@@ -293,6 +334,34 @@ for mod, e in sorted(available.items()):
 ')"
 NFILES="$(printf '%s\n' "$PLAN" | grep -c . || true)"
 TOTAL_BYTES="$(printf '%s\n' "$PLAN" | awk -F'\t' '{s+=$5} END {print s+0}')"
+
+# The host-level Docker/apt dependency bundle -- deliberately NOT part of the
+# per-module index above (build-release-assets.yml's "system-bundle" job
+# publishes it as its own release asset, disjoint from any module, since
+# Docker isn't owned by one module). A release built before this feature
+# simply has none -- BUNDLE_PLAN is then empty and everything below is a
+# no-op, same as any other release attribute this script doesn't recognise.
+#
+# Without this, the single file this script exists to produce silently
+# lacks the one thing install.sh's air-gap path needs to install Docker
+# without touching the internet -- the exact defect this fetch closes.
+BUNDLE_NAME="${TAG}-system-bundle.tar"
+BUNDLE_PLAN="$(printf %s "$REL" | TAG="$TAG" python3 -c '
+import json, os, sys
+tag = os.environ["TAG"]
+assets = {a["name"]: a for a in json.load(sys.stdin).get("assets", [])}
+name = f"{tag}-system-bundle.tar"
+a = assets.get(name)
+if a:
+    print("BUNDLE\t" + name + "\t" + a["url"] + "\t" + str(a.get("size") or 0))
+    sha = assets.get(name + ".sha256")
+    if sha:
+        print("SHA\t" + name + ".sha256\t" + sha["url"])
+' 2>/dev/null)"
+if [ -n "$BUNDLE_PLAN" ]; then
+    BUNDLE_BYTES="$(printf '%s\n' "$BUNDLE_PLAN" | awk -F'\t' '$1=="BUNDLE"{print $4+0}')"
+    TOTAL_BYTES=$(( TOTAL_BYTES + BUNDLE_BYTES ))
+fi
 
 # Free-space check BEFORE the first byte. The assets are downloaded into WORK
 # and then wrapped into a tarball beside them, so both copies exist at once:
@@ -484,6 +553,39 @@ kill "$WATCHER" 2>/dev/null || true
 trap _cleanup EXIT INT TERM HUP
 log "downloaded $NFILES asset(s), $(_h "$TOTAL_BYTES") in $(_elapsed $(( $(date +%s) - DL_STARTED )))"
 
+# Fetch the dependency bundle, if this release has one. Its own step, own
+# checksum check -- it isn't part of $PLAN (see where BUNDLE_PLAN is built
+# above) so the module-asset verification loop below never sees it.
+if [ -n "$BUNDLE_PLAN" ]; then
+    log "fetching the Docker/dependency bundle"
+    BUNDLE_SHA_URL=""
+    while IFS="$(printf '\t')" read -r kind bname burl _rest; do
+        case "$kind" in
+            BUNDLE)
+                hdrs=(-H "X-GitHub-Api-Version: 2022-11-28" -H "Accept: application/octet-stream")
+                [ -n "${GITHUB_TOKEN:-}" ] && hdrs+=(-H "Authorization: Bearer $GITHUB_TOKEN")
+                curl -fL -sS -C - --retry 20 --retry-delay 5 "${hdrs[@]}" \
+                     -o "$bname" "$burl"
+                ;;
+            SHA) BUNDLE_SHA_URL="$burl" ;;
+        esac
+    done <<< "$BUNDLE_PLAN"
+    if [ -n "$BUNDLE_SHA_URL" ] && [ -f "$BUNDLE_NAME" ]; then
+        hdrs=(-H "X-GitHub-Api-Version: 2022-11-28")
+        [ -n "${GITHUB_TOKEN:-}" ] && hdrs+=(-H "Authorization: Bearer $GITHUB_TOKEN")
+        curl -fsSL "${hdrs[@]}" -o "$BUNDLE_NAME.sha256" "$BUNDLE_SHA_URL"
+        want="$(awk '{print $1}' "$BUNDLE_NAME.sha256")"
+        got="$(sha256sum "$BUNDLE_NAME" | awk '{print $1}')"
+        rm -f "$BUNDLE_NAME.sha256"
+        if [ "$want" != "$got" ]; then
+            err "dependency bundle FAILED its checksum (want ${want:0:16}..., got ${got:0:16}...) -- refusing to package"
+            exit 1
+        fi
+    fi
+    printf '[prepare]   %-9s %-14s %8s\n' "included" "system-bundle" \
+        "$(_h "$(stat -c%s "$BUNDLE_NAME" 2>/dev/null || echo 0)")"
+fi
+
 # Both suffixes, because CI's split assets follow whatever the whole asset is:
 # a plain-tar release splits into "<asset>.tar.part-NN", a release cut before
 # that change into "<asset>.tar.gz.part-NN". Each glob is tested with -e rather
@@ -545,11 +647,19 @@ done <<< "$PLAN"
 # "./intact-<tag>-elk.tar" -- readers on the far side match member names by
 # suffix and a "./" prefix is a needless difference from what the bare glob
 # produced before.
+# EXCLUDES *-system-bundle.tar even though it matches "$TAG-*.tar": that
+# file is the host-level dependency bundle fetched above, not a module
+# asset, and is added to the wrap explicitly below instead -- keeping it out
+# of ASSETS/NASSETS here means this error check and the "module asset(s)"
+# log line below stay accurate regardless of whether a bundle was fetched.
+# install.sh's own directory-expansion glob excludes it by the same name for
+# the same reason.
 ASSETS=()
 while IFS= read -r -d '' _a; do
     ASSETS+=("$_a")
 done < <(find . -maxdepth 1 \
               \( -name "$TAG-*.tar.gz" -o -name "$TAG-*.tar" \) \
+              ! -name '*-system-bundle.tar' \
               -printf '%P\0' 2>/dev/null | sort -z)
 NASSETS=${#ASSETS[@]}
 if [ "$NASSETS" -eq 0 ]; then
@@ -559,6 +669,12 @@ if [ "$NASSETS" -eq 0 ]; then
     exit 1
 fi
 log "verified $NASSETS module asset(s)"
+
+# Add the bundle as its own wrap member, alongside (not instead of) the
+# module assets found above -- see where BUNDLE_PLAN is built for why it's
+# never part of ASSETS itself.
+WRAP_MEMBERS=("$TAG.index.json" "${ASSETS[@]}")
+[ -n "$BUNDLE_PLAN" ] && [ -f "$BUNDLE_NAME" ] && WRAP_MEMBERS+=("$BUNDLE_NAME")
 
 # Trim the index to the modules actually packed. The release's index names
 # every module the RELEASE has; a subset package contains fewer. Shipping the
@@ -588,7 +704,7 @@ log "wrapping into a single file"
 # the index at the end of a multi-GB stream there is nothing to read without
 # downloading all of it. Listing it first puts it in the opening KB.
 WRAP_STARTED=$(date +%s)
-tar -cf "$OUT" "$TAG.index.json" "${ASSETS[@]}"
+tar -cf "$OUT" "${WRAP_MEMBERS[@]}"
 
 # Prove the archive is readable before calling it a package. tar can exit 0
 # having written something the far end cannot open (a disk that filled at the

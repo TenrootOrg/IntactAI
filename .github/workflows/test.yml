@@ -1,0 +1,41 @@
+name: test
+
+# Zero-dependency test suite for install.sh/lib/*.sh: bash -n, shellcheck,
+# and tests/run_tests.sh (plain bash + stdlib python3, nothing to install).
+# Runs on the same triggers as secret-scan.yml.
+
+on:
+  push:
+    branches: ["main", "development"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax-check every shell script
+        run: |
+          set -euo pipefail
+          bash -n install.sh
+          for f in lib/*.sh scripts/*.sh; do
+            bash -n "$f"
+          done
+
+      - name: shellcheck (informational)
+        # Full-severity output for visibility. NOT the gate -- this codebase
+        # carries ~125 pre-existing warning/info/style findings (104 of them
+        # SC2155, "declare and assign separately", across code that predates
+        # this workflow). Fixing those is a large, unrelated cleanup this
+        # workflow isn't the place to force; see the next step for what
+        # actually blocks the build.
+        run: |
+          shellcheck install.sh lib/*.sh scripts/prepare_package.sh scripts/*.sh || true
+
+      - name: "shellcheck (gate: errors only)"
+        run: |
+          shellcheck --severity=error install.sh lib/*.sh scripts/prepare_package.sh scripts/*.sh
+
+      - name: Run the test suite
+        run: bash tests/run_tests.sh

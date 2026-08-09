@@ -234,6 +234,13 @@ check_root() {
     fi
 }
 
+# Byte count -> human-readable ("5.4G"). Lives here rather than beside its
+# only current caller (lib/package.sh) because it is a generic formatter and
+# every progress line that reports a size should read the same.
+_human_size() {
+    numfmt --to=iec "${1:-0}" 2>/dev/null || echo "${1:-0}B"
+}
+
 # Check if a value is truthy (handles yaml boolean variations)
 # Usage: if is_enabled "$value"; then ...
 is_enabled() {
