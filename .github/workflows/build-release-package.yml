@@ -70,6 +70,28 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Building release package for $TAG"
 
+      # FIRST THING after the tag is known, before the ~90min build even
+      # starts. This repo publishes releases directly (no draft-first step),
+      # so a `release: published` trigger means the release is ALREADY
+      # public with zero assets at this exact moment -- and unlike
+      # build-release-assets.yml, this workflow used to do nothing about
+      # that: it just uploaded at the very end if the release still existed,
+      # with nothing ever hiding it in between. That is the same "public,
+      # zero-asset release" shape as intact-20260808, just produced by this
+      # pipeline instead. Re-drafting immediately closes that window; the
+      # "Attach" step below only flips it back once the upload succeeds.
+      # Skipped on workflow_dispatch (re-running a build against an
+      # already-good release shouldn't yank it offline).
+      - name: Immediately re-draft the release (hide until the package is attached)
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          gh release edit "$TAG" --draft=true --repo "${{ github.repository }}" \
+            && echo "$TAG re-drafted; hidden until the package is attached." \
+            || echo "::warning::could not re-draft $TAG — it stays publicly visible until the package is attached"
+
       - name: Checkout the release tag
         uses: actions/checkout@v4
         with:
@@ -147,9 +169,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
+          set -euo pipefail
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$GITHUB_WORKSPACE"/ci-output/* --clobber
             echo "Attached package parts to release $TAG"
+            # ONLY NOW -- the package is attached -- is it safe to make the
+            # release public again. set -e means a failed upload never
+            # reaches this line, so the release stays in draft with nothing
+            # public instead of going live empty.
+            if gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null | grep -q true; then
+              echo "Publishing $TAG now that the package is attached..."
+              gh release edit "$TAG" --draft=false
+            fi
           else
             echo "No release exists for $TAG — skipping asset attach (artifact upload covers this run)"
           fi
