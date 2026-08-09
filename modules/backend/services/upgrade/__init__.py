@@ -263,7 +263,8 @@ def _version_is_older(target: str, current: str) -> bool:
 
 
 
-def preflight_package(package_path: str, logger: Callable = None) -> Dict:
+def preflight_package(package_path: str, logger: Callable = None,
+                      selected_modules=None) -> Dict:
     """Answer "would this package apply cleanly here?" WITHOUT touching anything.
 
     Every check below is the SAME function the real apply calls, so this cannot
@@ -279,6 +280,12 @@ def preflight_package(package_path: str, logger: Callable = None) -> Dict:
     dir it owns and deletes.
 
     Returns {"ok": bool, "checks": [{name, ok, detail}], "blocking": [str]}.
+
+    `selected_modules` narrows the disk check to what the operator actually
+    plans to apply, same as the real apply's own disk gate does — omitted
+    (the default), it budgets the whole package, which used to be the ONLY
+    behavior: a 2-module upgrade off a 9-module package demanded room for
+    all nine.
     """
     import shutil as _sh
     import tempfile as _tf
@@ -326,7 +333,8 @@ def preflight_package(package_path: str, logger: Callable = None) -> Dict:
 
         from .config_validate import (required_free_gb_for_manifest,
                                       preflight_environment as _pe)
-        need = required_free_gb_for_manifest(manifest, pkg_bytes)
+        need = required_free_gb_for_manifest(manifest, pkg_bytes,
+                                             selected_modules=selected_modules)
         env_ok, env_errs = _pe(logger=None, min_free_gb=need)
         add(f"disk + docker (needs ~{need} GiB)", env_ok,
             "; ".join(env_errs)[:200] if env_errs else "")
@@ -3762,6 +3770,7 @@ def run_online_upgrade_workflow(modules: Dict[str, str], run_id: str = None,
     _intact_ref = modules.get('intact')
     _pkg = None
     _assembled = None
+    _download_error = None
     try:
         from services.upgrade.download import (
             download_release_package, download_release_assets,
@@ -3817,8 +3826,15 @@ def run_online_upgrade_workflow(modules: Dict[str, str], run_id: str = None,
                 "error": "cancelled", "results": {}, "completed": 0,
                 "total": 0, "versions": {}}
     except Exception as _de:
+        # Distinguish this from "the release genuinely has no package" below --
+        # this is a real failure (network exhausted its retries, a checksum
+        # mismatch, disk full mid-download, ...), not an answer. Reported as
+        # such instead of the generic "pick a different release" message,
+        # which used to fire here too and sent operators looking in the wrong
+        # place for what was actually a flaky connection.
+        _download_error = f"{type(_de).__name__}: {_de}"
         log(f"Could not download the pre-built release package "
-            f"({type(_de).__name__}: {_de}).", "error")
+            f"({_download_error}).", "error")
         _pkg = None
 
     if _assembled:
@@ -3841,11 +3857,17 @@ def run_online_upgrade_workflow(modules: Dict[str, str], run_id: str = None,
         )
 
     if not _pkg:
-        _msg = (f"Release '{_intact_ref}' ships no downloadable upgrade "
-                f"package. Upgrades install the CI-built package only — "
-                f"nothing is built on this machine. Pick a release that ships "
-                f"a package, or run the build-release-package workflow for "
-                f"this tag first.")
+        if _download_error:
+            _msg = (f"Could not download the release package for "
+                    f"'{_intact_ref}': {_download_error}. This is a download "
+                    f"failure, not a missing package — check connectivity and "
+                    f"retry.")
+        else:
+            _msg = (f"Release '{_intact_ref}' ships no downloadable upgrade "
+                    f"package. Upgrades install the CI-built package only — "
+                    f"nothing is built on this machine. Pick a release that ships "
+                    f"a package, or run the build-release-package workflow for "
+                    f"this tag first.")
         log(_msg, "error")
         return {"success": False, "status": "failed", "error": _msg,
                 "results": {}, "completed": 0, "total": 0, "versions": {}}

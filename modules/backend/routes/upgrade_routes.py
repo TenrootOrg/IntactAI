@@ -1074,7 +1074,12 @@ def create_upgrade_upload_run():
 def preflight_upgrade_package():
     """Would this package apply cleanly on this box? Changes NOTHING.
 
-    Body: ``{"package_path": "/data/uploads/<id>"}``
+    Body: ``{"package_path": "/data/uploads/<id>", "selected_modules": [...]}``
+    ``selected_modules`` is optional — omitted, the disk check is sized from
+    the whole package, same as before; provided, it is sized from only the
+    modules the operator is actually about to apply (matching what
+    ``/api/upgrade/offline`` itself does), so a partial upgrade off a large
+    package is not held to the whole package's disk requirement.
 
     Runs the same checks the real apply runs — archive integrity, module
     ordering (downgrade refusal), disk sized from the package's own manifest,
@@ -1097,10 +1102,15 @@ def preflight_upgrade_package():
         if err:
             return err
 
+        selected_modules = data.get('selected_modules')
+        if selected_modules is not None and not isinstance(selected_modules, list):
+            return jsonify({"error": "selected_modules must be a list"}), 400
+
         from services.upgrade import preflight_package
         lines = []
         result = preflight_package(
-            package_path, logger=lambda m, l="info": lines.append(f"[{l}] {m}"))
+            package_path, logger=lambda m, l="info": lines.append(f"[{l}] {m}"),
+            selected_modules=selected_modules)
         result["log"] = lines
         return jsonify(result)
     except Exception as e:
