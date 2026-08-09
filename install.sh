@@ -82,7 +82,6 @@ source "${SCRIPT_DIR}/lib/config.sh"
 source "${SCRIPT_DIR}/lib/docker.sh"
 source "${SCRIPT_DIR}/lib/modules.sh"
 source "${SCRIPT_DIR}/lib/health.sh"
-source "${SCRIPT_DIR}/lib/upgrade_check.sh"
 
 # ============================================================================
 # Main Installation Flow
@@ -943,6 +942,34 @@ for n, whole, sha in sorted(set(want)):
     # 4, matching the other two, because release assets come from one host and
     # more streams mostly steal bandwidth from each other.
     log_info "  Downloading ${_count} asset(s), 4 at a time..."
+
+    # Multi-GB assets over a slow/throttled link can sit in this xargs fan-out
+    # for 15+ minutes with ZERO output -- curl runs -fsSL (silent) and the only
+    # progress signal that existed here was a printf that never reached
+    # $LOG_FILE, so a healthy download and a hung one looked identical in the
+    # log. This heartbeat + marker-file mechanism gives a live "N/M done"
+    # count every 30s. Not `run_with_heartbeat` (lib/common.sh): that helper
+    # takes one static description string and wraps a single foreground
+    # command with a hard timeout -- fine for "still extracting X", but it
+    # can't show a live count across N parallel workers, and download time
+    # scales with link speed in a way a single fixed timeout can't bound
+    # sanely. This loop is disposable scaffolding around the same xargs call
+    # below, not a replacement for that helper.
+    local _dl_status_dir
+    _dl_status_dir="$(mktemp -d -p "${SCRIPT_DIR}/data/tmp" dl-status-XXXXXX)"
+    local _dl_start=$SECONDS
+    local _dl_heartbeat_pid=""
+    (
+        while sleep 30; do
+            local _dl_done_n
+            _dl_done_n=$(find "$_dl_status_dir" -maxdepth 1 -name '*.done' 2>/dev/null | wc -l)
+            log_info "  ... downloading: ${_dl_done_n}/${_count} asset(s) done ($(( SECONDS - _dl_start ))s elapsed)"
+        done
+    ) &
+    _dl_heartbeat_pid=$!
+    # shellcheck disable=SC2064
+    trap "kill ${_dl_heartbeat_pid} 2>/dev/null; rm -rf '${_dl_status_dir}'; trap - RETURN INT TERM" RETURN INT TERM
+
     _intact_fetch_asset() {
         # $1 is "name|own-digest" (own-digest may be empty) -- see the
         # _dl_list comment above for why it travels this way rather than
@@ -981,17 +1008,30 @@ for n, whole, sha in sorted(set(want)):
                 fi
             fi
             printf '[install]   done      %s\n' "$name"
+            touch "${_DL_STATUS_DIR}/${name//\//_}.done" 2>/dev/null || true
         else
             printf '[install]   FAILED    %s\n' "$name" >&2
             return 1
         fi
     }
     export -f _intact_fetch_asset
-    export _DL_DEST="$dest_dir" _DL_REPO="$repo" _DL_TAG="$tag" _DL_LOG="$LOG_FILE"
+    export _DL_DEST="$dest_dir" _DL_REPO="$repo" _DL_TAG="$tag" _DL_LOG="$LOG_FILE" \
+           _DL_STATUS_DIR="$_dl_status_dir"
 
     # xargs exits 123 if ANY invocation failed, so one bad asset still fails
     # the install -- "a package that cannot be fetched is a FAILED INSTALL".
-    if ! xargs -P 4 -I{} -a "$_dl_list" bash -c '_intact_fetch_asset "$@"' _ {}; then
+    # Piped through tee (matching every other long-running step in this
+    # codebase, e.g. lib/docker.sh) so the per-asset done/FAILED/CORRUPT
+    # lines land in $LOG_FILE too, not just the terminal; PIPESTATUS[0]
+    # recovers xargs's own exit code since pipefail alone doesn't hand it
+    # back cleanly through a `tee` consumer that always exits 0.
+    xargs -P 4 -I{} -a "$_dl_list" bash -c '_intact_fetch_asset "$@"' _ {} 2>&1 | tee -a "$LOG_FILE"
+    local _dl_rc=${PIPESTATUS[0]}
+    kill "$_dl_heartbeat_pid" 2>/dev/null
+    wait "$_dl_heartbeat_pid" 2>/dev/null
+    rm -rf "$_dl_status_dir"
+    trap - RETURN INT TERM
+    if [[ $_dl_rc -ne 0 ]]; then
         log_error "  One or more asset downloads failed — see $LOG_FILE"
         rm -f "$_dl_list"
         unset -f _intact_fetch_asset
@@ -999,7 +1039,7 @@ for n, whole, sha in sorted(set(want)):
     fi
     rm -f "$_dl_list"
     unset -f _intact_fetch_asset
-    unset _DL_DEST _DL_REPO _DL_TAG _DL_LOG
+    unset _DL_DEST _DL_REPO _DL_TAG _DL_LOG _DL_STATUS_DIR
 
     # Reassemble any split assets. CI splits anything over the 2 GiB asset cap;
     # the index's sha256 is of the WHOLE tarball, taken pre-split, so it is the
@@ -1167,30 +1207,6 @@ main() {
         fi
         # Reclaim the downloads; their contents are in the docker store now.
         rm -f "${INTACT_PACKAGES[@]}" 2>/dev/null || true
-    fi
-
-    # -------------------------------------------------------------------------
-    # Optional: poll upstream for newer module releases and offer to bump
-    # the pinned versions in config.yaml. Controlled by
-    # options.check_module_updates in config.yaml; default false so an
-    # unattended install never blocks on a prompt. Must run AFTER
-    # check_config (config.yaml exists + parses) and AFTER the network
-    # check (we're about to hit api.github.com), but BEFORE any module
-    # is deployed, so the new pins drive the install.
-    # -------------------------------------------------------------------------
-    local check_updates_flag
-    check_updates_flag=$(read_config "['options']['check_module_updates']")
-    if [[ "$check_updates_flag" == "True" ]]; then
-        # Pre-flight: check_module_updates polls api.github.com once
-        # per pinned module (6 calls today). Refuse early if quota is
-        # too low so the operator gets a clear "wait N minutes" message
-        # instead of a confusing 403 mid-poll.
-        if ! check_github_quota 6 "module update check"; then
-            log_warn "  Skipping update check; install will proceed with pinned versions"
-        else
-            check_module_updates
-        fi
-        echo ""
     fi
 
     # -------------------------------------------------------------------------

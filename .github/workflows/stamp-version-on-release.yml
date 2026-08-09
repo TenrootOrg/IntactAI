@@ -30,10 +30,27 @@ name: Stamp VERSION on release
 # VERSION into the package's source tree during prepare, so even
 # packages targeting branches or commit SHAs (where VERSION isn't
 # pre-stamped) carry the correct value.
+#
+# GUARD (added after intact-20260808 shipped with zero installable assets):
+# this fires off the same `release: published` webhook as
+# build-release-assets.yml, with no ordering guarantee between the two --
+# and on this repo a release goes public the instant it's published, before
+# that workflow has uploaded anything. Stamping VERSION here right away would
+# point every future install/upgrade at a tag that, for the next ~90 minutes
+# (or forever, if that build fails), has nothing installable on it. So the
+# first step below waits for at least one asset to actually be attached
+# before touching VERSION at all -- if the wait times out, this job fails
+# without committing anything, and `main`'s VERSION stays on the last tag
+# that's known to actually work.
 
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to stamp VERSION for (e.g. intact-20260809) — use this to retry a stamp that timed out waiting for assets."
+        required: true
 
 permissions:
   contents: write
@@ -42,6 +59,30 @@ jobs:
   stamp:
     runs-on: ubuntu-latest
     steps:
+      - name: Wait for release assets before stamping VERSION
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+        run: |
+          set -uo pipefail
+          # build-release-assets.yml's `build` job alone is allowed up to 90
+          # minutes (a matrix across every module), before resolve/index/
+          # publish even run -- so the wait budget has to clear that, not
+          # just dodge a normal-speed race.
+          DEADLINE=$(( $(date +%s) + 110*60 ))
+          while :; do
+            COUNT="$(gh release view "$TAG" --json assets --jq '.assets | length' 2>/dev/null || echo 0)"
+            if [ "${COUNT:-0}" -gt 0 ]; then
+              echo "$TAG has $COUNT asset(s) attached — proceeding to stamp VERSION."
+              exit 0
+            fi
+            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+              echo "::error::${TAG} still has zero assets after 110 minutes — refusing to stamp VERSION. main stays on the last known-good release. Once build-release-assets.yml finishes for this tag, re-run this workflow manually (workflow_dispatch, tag=${TAG}) to stamp it."
+              exit 1
+            fi
+            sleep 60
+          done
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -51,7 +92,7 @@ jobs:
       - name: Resolve the branch this release was cut from
         id: target
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
           TARGET: ${{ github.event.release.target_commitish }}
         run: |
           set -uo pipefail
@@ -89,7 +130,7 @@ jobs:
       - name: Write VERSION and push
         if: steps.target.outputs.skip == 'false'
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
           BRANCH: ${{ steps.target.outputs.branch }}
         run: |
           set -euo pipefail

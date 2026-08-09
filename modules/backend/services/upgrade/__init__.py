@@ -3378,6 +3378,7 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                             awaiting_restart = True
                             return {
                                 "success": True, "phase": "awaiting_restart", "status": "awaiting_restart",
+                                "needs_swap": True,
                                 "message": "Phase 1 complete. Backend recreating from new image. Phase 2 will resume automatically.",
                                 "results": results, "completed": completed, "total": total, "versions": versions,
                             }
@@ -3444,6 +3445,7 @@ def run_offline_upgrade_workflow(package_path: Optional[str] = None,
                                 "success": True,
                                 "phase": "awaiting_restart",
                                 "status": "awaiting_restart",
+                                "needs_swap": False,
                                 "message": "Phase 1 complete. Backend restarting. Phase 2 will resume automatically.",
                                 "results": results,
                                 "completed": completed,

@@ -33,18 +33,28 @@
 name: Build release assets (per module)
 
 on:
-  # TEMPORARILY not auto-triggered on `release: published` -- see
-  # build-release-package.yml, which has that trigger instead for now (a box
-  # still on a pre-wrapper-scheme release can only read the old single-file
-  # format; see its own comment for the full reasoning). Swap the two back
-  # once every box in the field understands the per-module wrapper format.
-  # Manual dispatch still works in the meantime for testing.
+  # Swapped back from build-release-package.yml (2026-08-09): every box in
+  # the field has had several releases (20260807/08/09) to pick up the
+  # per-module wrapper format, so this is the auto-triggered pipeline again
+  # and the legacy single-file build goes back to on-demand-only.
+  #
+  # Publishing happens IMMEDIATELY on this repo (no draft-first step), so the
+  # `resolve` job's first action is to re-draft the release the instant this
+  # workflow starts -- hiding it again for the ~90min build+upload instead of
+  # leaving a public, assetless release up the whole time. `publish` only
+  # flips it back once every asset is uploaded and re-hash-verified. A build
+  # that fails anywhere in between leaves the release in draft, not public
+  # with nothing on it -- see intact-20260808, which shipped exactly that
+  # broken state (published, VERSION-stamped, zero assets) and is what this
+  # whole flow exists to make impossible.
   #
   # Note for anyone wondering why re-adding `release:` here appears to do
   # nothing: `release` is a repository-level event, and GitHub only ever
   # reads its workflow file from the DEFAULT BRANCH. A copy of this file on
   # any other branch is reachable by workflow_dispatch and by nothing else,
   # so the automatic trigger lives or dies by what is on main.
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -71,6 +81,26 @@ jobs:
       commit: ${{ steps.r.outputs.commit }}
       matrix: ${{ steps.m.outputs.matrix }}
     steps:
+      # FIRST THING, before anything else runs. This repo publishes releases
+      # directly (no draft-first step), so the `release: published` webhook
+      # that starts this workflow means the release is ALREADY public with
+      # zero assets at this exact moment. Re-drafting immediately shrinks
+      # that window from the ~90min the `build` job alone is allowed to take
+      # down to the seconds/couple-minutes it takes this step to run after
+      # the webhook fires. `publish` (below) flips it back only once assets
+      # are uploaded and verified -- only a manual workflow_dispatch (someone
+      # deliberately re-running a build against an already-good release)
+      # skips this, so a routine re-run doesn't yank a fine release offline.
+      - name: Immediately re-draft the release (hide until assets are attached)
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release edit "$TAG" --draft=true --repo "${{ github.repository }}" \
+            && echo "$TAG re-drafted; hidden until assets are attached." \
+            || echo "::warning::could not re-draft $TAG — it stays publicly visible until assets are attached"
+
       - name: Validate the tag
         env:
           TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
@@ -505,11 +535,6 @@ jobs:
           COMMIT: ${{ needs.resolve.outputs.commit }}
         run: |
           set -euo pipefail
-          # If release is a draft, publish it first so upload works
-          if gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null | grep -q true; then
-            echo "Publishing draft release $TAG..."
-            gh release edit "$TAG" --draft=false
-          fi
           # ALLOWLIST, not a denylist. A release page carries exactly two kinds
           # of file: one tarball per module (or its .part-NN pieces), and the
           # index that names them. Everything else -- .meta.json, the
@@ -539,6 +564,16 @@ jobs:
           echo "== attached =="
           gh release view "$TAG" --json assets \
             --jq '.assets[] | "\(.name)  \(.size)"'
+
+          # ONLY NOW -- every indexed asset attached and re-hash-verified by
+          # the step above -- is it safe to make the release public. set -e
+          # means a failure anywhere above this point (an upload, a missing
+          # asset, a hash mismatch) never reaches this line, so the release
+          # stays in draft with nothing public instead of going live empty.
+          if gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null | grep -q true; then
+            echo "Publishing $TAG now that every asset is attached..."
+            gh release edit "$TAG" --draft=false
+          fi
 
       - name: Summary
         env:
