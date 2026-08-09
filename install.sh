@@ -522,7 +522,7 @@ for img in sorted(set(owner) | set(size)):
         # longer echoed into the log because ${ref} below already IS that value
         # parsed out of it. See lib/common.sh:run_with_heartbeat.
         if RUN_HEARTBEAT_QUIET=1 run_with_heartbeat "loading ${display}/${base}" 1800 \
-                bash -c 'docker load -i "$1" >"$2" 2>&1' _ "$tar_file" "$load_log"; then
+                bash -c '"$1" load -i "$2" >"$3" 2>&1' _ "${DOCKER_BIN:-docker}" "$tar_file" "$load_log"; then
             loaded=$((loaded + 1))
             local ref; ref="$(sed -n 's/^Loaded image: //p' "$load_log" | tail -1)"
             log_success "  [${img_i}/${img_total}] ${display} — ${ref:-loaded} ($(_human_size "$pkg_size"), ${RUN_HEARTBEAT_ELAPSED:-?}s)"
@@ -1064,6 +1064,22 @@ main() {
     check_ubuntu
     check_config
 
+    # Resolved as early as possible, before either load_images_from_package()
+    # call site below (both run BEFORE the "Core Dependencies" section further
+    # down installs/verifies docker for a genuinely fresh box) -- covers the
+    # far more common case of docker already being present. That function
+    # invokes docker again inside a nested `bash -c` (via run_with_heartbeat /
+    # `timeout --foreground`); that child normally inherits the same PATH, but
+    # on at least one real box (docker installed via snap, PATH set up only
+    # for interactive shells, sudo's secure_path not including it, ...) the
+    # nested shell's fresh PATH search failed to find it: every image load
+    # exited 127 "docker: command not found" even though `docker` worked fine
+    # everywhere else in this same script run. Passing the resolved absolute
+    # path through removes the dependency on that lookup succeeding a second
+    # time in a different shell. Empty here just means "not installed yet" --
+    # the later re-resolution (after install_docker) covers that box.
+    DOCKER_BIN="$(command -v docker 2>/dev/null || echo docker)"
+
     # Point this clone's git at scripts/git-hooks so the pre-commit secret
     # guard actually runs. core.hooksPath lives in .git/config, which is
     # per-clone and untracked — so the guard shipped in the repo was off by
@@ -1226,6 +1242,10 @@ main() {
         log_error "Docker reports installed but 'docker version' fails — aborting"
         exit 1
     fi
+    # Re-resolve now that install_docker has had a chance to put it there for
+    # a genuinely fresh box (the early resolution above can only have found a
+    # pre-existing install). See that comment for why this exists at all.
+    DOCKER_BIN="$(command -v docker 2>/dev/null || echo docker)"
     # Advisory: warn (never block) if the daemon is below the supported floor.
     # Matters mainly when Docker was pre-installed (a fresh install pulls the
     # current release from download.docker.com, which is always new enough).
