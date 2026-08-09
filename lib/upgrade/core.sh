@@ -105,18 +105,19 @@ u_do() {
     local marker=0
     [[ -n "${LOG_FILE:-}" && -f "${LOG_FILE}" ]] && marker="$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)"
 
-    local rc=0
+    local rc=0 elapsed=""
     if [[ -n "$timeout" ]]; then
-        RUN_HEARTBEAT_QUIET=1 run_with_heartbeat "$label" "$timeout" "$@"
+        _u_run_with_deadline "$timeout" "$label" "$@"
         rc=$?
+        elapsed="${U_LAST_ELAPSED}"
     else
         "$@"
         rc=$?
     fi
 
     if (( rc == 0 )); then
-        if [[ -n "$timeout" && -n "${RUN_HEARTBEAT_ELAPSED:-}" ]]; then
-            log_info "  ok: ${label} (${RUN_HEARTBEAT_ELAPSED}s)"
+        if [[ -n "$elapsed" ]]; then
+            log_info "  ok: ${label} (${elapsed}s)"
         else
             log_info "  ok: ${label}"
         fi
@@ -143,6 +144,55 @@ u_do() {
         done <<< "$U_DETAIL"
     fi
     return 1
+}
+
+# ---------------------------------------------------------------------------
+# _u_run_with_deadline <secs> <label> <cmd...>
+#
+# Run a command with a time limit and a 60s heartbeat. Returns the command's
+# exit code, or 124 if it had to be killed.
+#
+# WHY NOT run_with_heartbeat. That helper (lib/common.sh:377) implements its
+# limit with `timeout --foreground`, which is an external coreutils BINARY and
+# therefore cannot invoke a bash function -- it exits 127, "command not found".
+# Every step in this upgrader is a bash function, so using it turned each one
+# into an instant, silent failure. (Found live: the first real module upgrade
+# rolled itself back with rc=127 on its very first step. install.sh never hit
+# this because it only ever hands run_with_heartbeat a `bash -c` string.)
+#
+# The subshell also means a step cannot leak variable changes into the run --
+# fine here, because every step's effect is on files, .env or docker, never on
+# shell state.
+U_LAST_ELAPSED=""
+_u_run_with_deadline() {
+    local secs="$1" label="$2"; shift 2
+    local start=$SECONDS next_beat=60
+
+    ( "$@" ) &
+    local pid=$!
+
+    while kill -0 "$pid" 2>/dev/null; do
+        local now=$(( SECONDS - start ))
+        if (( now >= secs )); then
+            log_error "  ${label} exceeded ${secs}s — killing it"
+            kill -TERM "$pid" 2>/dev/null
+            sleep 2
+            kill -KILL "$pid" 2>/dev/null
+            wait "$pid" 2>/dev/null
+            U_LAST_ELAPSED="$now"
+            return 124
+        fi
+        if (( now >= next_beat )); then
+            log_info "  ... still ${label} (${now}s elapsed)"
+            next_beat=$(( now + 60 ))
+        fi
+        sleep 1
+    done
+
+    wait "$pid"
+    local rc=$?
+    U_LAST_ELAPSED=$(( SECONDS - start ))
+    return $rc
 }
 
 # ---------------------------------------------------------------------------

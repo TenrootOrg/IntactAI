@@ -95,6 +95,40 @@ test_u_do_returns_nonzero_but_never_exits() {
     u_end demo none
 }
 
+test_a_timed_step_can_be_a_shell_function() {
+    # REGRESSION. The obvious implementation delegates to lib/common.sh's
+    # run_with_heartbeat, which limits its command with `timeout --foreground`
+    # -- an external coreutils binary, which cannot invoke a bash function and
+    # exits 127. Since every step in this upgrader IS a bash function, that
+    # turned each timed step into an instant silent failure. Caught live: the
+    # first real module upgrade rolled itself back with rc=127 on step one.
+    _reset_run_state
+    u_begin demo
+    u_do --timeout 30 "timed function step" -- _ok_step timed
+    u_end demo none
+    assert_contains "$(cat "$ORDER_FILE")" "ran:timed"
+    assert_eq "${#UPGRADE_OK[@]}" "1"
+}
+
+test_a_timed_step_that_fails_reports_its_real_exit_code() {
+    _reset_run_state
+    u_begin demo
+    u_do --timeout 30 "timed failure" -- _bad_step t
+    u_end demo none
+    assert_eq "$U_RC" "7" "the function's own rc must survive the deadline wrapper"
+}
+
+test_a_timed_step_that_overruns_is_killed_and_reported_as_124() {
+    _reset_run_state
+    _slow_step() { sleep 30; }
+    u_begin demo
+    u_do --timeout 2 "slow step" -- _slow_step
+    assert_eq "$U_RC" "124"
+    assert_contains "$(cat "$LOG_FILE")" "TIMED OUT"
+    u_end demo none
+    assert_eq "${#UPGRADE_OK[@]}" "0" "a timed-out step must not commit"
+}
+
 test_failure_detail_is_scoped_to_what_that_step_logged() {
     # Detail comes from a byte offset taken before the step, not a blind tail,
     # so heartbeat lines written by a concurrent step cannot be misattributed.

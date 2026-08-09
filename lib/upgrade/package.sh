@@ -394,5 +394,13 @@ upkg_cleanup() {
         esac
     done
     UPKG_SCRATCH=""
+
+    # Sweep rollback snapshots older than a week. A successful upgrade
+    # discards its own backup immediately; these are the ones left behind by
+    # a rollback, deliberately kept as evidence of what was restored. Without
+    # a sweep they accumulate one per incident, forever, inside tracked
+    # module directories.
+    find "${SCRIPT_DIR}/modules" -maxdepth 2 -name '.env.upgrade-bak-*' \
+         -type f -mtime +7 -delete 2>/dev/null
     return 0
 }

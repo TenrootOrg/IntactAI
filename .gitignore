@@ -241,3 +241,9 @@ modules/backend/data/
 # the run that produced them); this covers anyone who repoints it inward.
 qa/qa-runs/
 qa/**/qa-runs/
+
+# Rollback snapshots taken by upgrade.sh. Kept deliberately after a rollback
+# (they are the evidence of what was restored) and discarded on success, so
+# what survives here is per-box incident state, never something to commit.
+modules/*/.env.upgrade-bak-*
+backups/
