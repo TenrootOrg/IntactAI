@@ -37,7 +37,17 @@ _STREAM_CHUNK = 1024 * 1024          # 1 MiB network/disk streaming chunk
 _HASH_CHUNK = 4 * 1024 * 1024        # 4 MiB sha256 read chunk
 _CONNECT_TIMEOUT = 30
 _READ_TIMEOUT = 300
-_RETRIES = 4
+# 4 sounds generous until the asset is a ~1.9 GB part on a slow link: every
+# retry resumes by on-disk size rather than restarting, so each one is cheap,
+# and a multi-hour transfer will see more than 4 ordinary TCP blips along the
+# way. scripts/prepare_package.sh hit this exact class of bug with the same
+# GitHub-CDN mechanism and widened 3 -> 20 for the same reason; matched here.
+_RETRIES = 20
+# Small, non-resumable calls (release metadata, the tiny .sha256 sidecar) --
+# a short, fixed retry count is enough since there's nothing to resume and
+# the payload is tiny; the risk is a single dropped connection, not a slow
+# transfer.
+_META_RETRIES = 3
 
 # Parts download concurrently. A single connection to GitHub's release CDN is
 # per-connection limited, not link limited: measured off one box, one stream
@@ -108,7 +118,29 @@ def _headers(octet: bool = False) -> dict:
 
 def _get_release(tag: str, log: Callable) -> Optional[dict]:
     url = f'{GITHUB_API}/releases/tags/{tag}'
-    r = requests.get(url, headers=_headers(), timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT))
+    # Every download in this module starts with this one call — unlike the
+    # asset transfers below, it was never retried at all, so a single dropped
+    # connection here aborted the whole online-upgrade attempt before a byte
+    # of the package had been fetched. Same retry shape as resolver.py's
+    # list_github_refs: retry connection errors/5xx, not 403/404 (answers,
+    # not accidents).
+    r = None
+    last_exc = None
+    for attempt in range(_META_RETRIES):
+        try:
+            r = requests.get(url, headers=_headers(),
+                             timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT))
+            if r.status_code < 500:
+                break
+            last_exc = None
+        except requests.RequestException as e:
+            last_exc = e
+            r = None
+        if attempt < _META_RETRIES - 1:
+            log(f"  release lookup hiccup — retry {attempt + 1}/{_META_RETRIES}", "warning")
+            time.sleep(1.5 * (attempt + 1))
+    if r is None:
+        raise last_exc or IOError(f"could not reach GitHub for release '{tag}'")
     if r.status_code == 404:
         log(f"  No GitHub release tagged '{tag}' — nothing to download.", "info")
         return None
@@ -463,13 +495,27 @@ def find_release_index(tag: str, logger: Callable = None) -> Optional[dict]:
         log(f"  Release '{tag}' has no per-module index ({tag}.index.json) — "
             f"using the single-package path.", "info")
         return None
-    try:
-        r = requests.get(assets[name]['url'], headers=_headers(octet=True),
-                         timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT))
-        r.raise_for_status()
-        index = r.json()
-    except Exception as e:
-        log(f"  Could not read the release index ({type(e).__name__}: {e}) — "
+    # A transient blip here used to fall straight through to the legacy
+    # single-package path — misleading on a modern release that has no such
+    # asset, and it throws away the per-module scoping for no real reason.
+    # Retry the small JSON fetch first; only fall back once it has genuinely
+    # failed _META_RETRIES times.
+    index = None
+    last_exc = None
+    for attempt in range(_META_RETRIES):
+        try:
+            r = requests.get(assets[name]['url'], headers=_headers(octet=True),
+                             timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT))
+            r.raise_for_status()
+            index = r.json()
+            break
+        except Exception as e:
+            last_exc = e
+            if attempt < _META_RETRIES - 1:
+                log(f"  release index fetch hiccup — retry {attempt + 1}/{_META_RETRIES}", "warning")
+                time.sleep(1.5 * (attempt + 1))
+    if index is None:
+        log(f"  Could not read the release index ({type(last_exc).__name__}: {last_exc}) — "
             f"falling back to the single package.", "warning")
         return None
 

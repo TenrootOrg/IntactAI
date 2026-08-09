@@ -342,41 +342,111 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
 
         log(f"  Downloading: {filename}")
 
-        # Stream download
-        response = requests.get(url, stream=True, timeout=timeout,
-                                allow_redirects=True,
-                                headers={'User-Agent': 'Intact.AI-Tools-Downloader/1.0'})
-        response.raise_for_status()
-
-        # Get filename from content-disposition if available
-        if 'content-disposition' in response.headers:
-            cd = response.headers['content-disposition']
-            fname_match = re.search(r'filename[^;=\n]*=((["\']).*?\2|[^;\n]*)', cd)
-            if fname_match:
-                filename = fname_match.group(1).strip('"\'')
-                full_path = os.path.join(dest_path, filename)
-
-        # Write file
-        with open(full_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if cancel_event is not None and cancel_event.is_set():
-                    log(f"  ✗ Cancelled mid-download: {filename}")
+        # Retry with resume rather than the previous single-attempt behavior:
+        # one timeout used to permanently fail this tool for the run, AND
+        # left the partial file it had already written on disk. The next
+        # run's "already exists" check above has no size/hash check, so it
+        # would silently treat that truncated file as complete forever.
+        # Resuming by on-disk size (same shape as
+        # services/upgrade/download.py's _download_asset) fixes both: a slow
+        # link just takes more (cheap, resumed) attempts, and a file is only
+        # ever left on disk once it is actually complete.
+        _RETRIES = 6
+        attempt = 0
+        last_exc = None
+        expected_size = None
+        while attempt < _RETRIES:
+            attempt += 1
+            have = os.path.getsize(full_path) if os.path.exists(full_path) else 0
+            if expected_size and have >= expected_size:
+                break  # a prior attempt actually finished; nothing left to do
+            headers = {'User-Agent': 'Intact.AI-Tools-Downloader/1.0'}
+            mode = 'wb'
+            if have:
+                headers['Range'] = f'bytes={have}-'
+                mode = 'ab'
+            try:
+                response = requests.get(url, stream=True, timeout=timeout,
+                                        allow_redirects=True, headers=headers)
+                # Asked to resume but the server ignored Range (200, not
+                # 206): start clean instead of appending onto existing bytes.
+                if have and response.status_code == 200:
+                    response.close()
                     try:
-                        f.close()
                         os.remove(full_path)
                     except OSError:
                         pass
-                    return None
-                if chunk:
-                    f.write(chunk)
+                    have, mode = 0, 'wb'
+                    response = requests.get(
+                        url, stream=True, timeout=timeout, allow_redirects=True,
+                        headers={'User-Agent': 'Intact.AI-Tools-Downloader/1.0'})
+                response.raise_for_status()
 
-        _ensure_executable(full_path)
-        log(f"  ✓ Downloaded: {filename}")
-        return (filename, False)  # Return tuple: (filename, was_cached)
+                # Content-Length, when present, lets a truncated transfer be
+                # told apart from a genuinely complete one below. Only trust
+                # it on a fresh (non-resumed) response; a 206's length is the
+                # remainder, not the whole file.
+                if not have:
+                    try:
+                        expected_size = int(response.headers.get('content-length') or 0) or None
+                    except (TypeError, ValueError):
+                        expected_size = None
 
-    except requests.exceptions.Timeout:
-        log(f"  ✗ Timeout downloading {url[:50]}...")
+                # Filename from content-disposition, if available — only
+                # honored on the first attempt, since a mid-retry rename
+                # would orphan whatever bytes had already been resumed under
+                # the old name.
+                if attempt == 1 and 'content-disposition' in response.headers:
+                    cd = response.headers['content-disposition']
+                    fname_match = re.search(r'filename[^;=\n]*=((["\']).*?\2|[^;\n]*)', cd)
+                    if fname_match:
+                        filename = fname_match.group(1).strip('"\'')
+                        full_path = os.path.join(dest_path, filename)
+                        mode, have = 'wb', 0
+
+                with open(full_path, mode) as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if cancel_event is not None and cancel_event.is_set():
+                            log(f"  ✗ Cancelled mid-download: {filename}")
+                            try:
+                                f.close()
+                                os.remove(full_path)
+                            except OSError:
+                                pass
+                            return None
+                        if chunk:
+                            f.write(chunk)
+
+                got = os.path.getsize(full_path)
+                if expected_size and got != expected_size:
+                    raise IOError(f"length mismatch: got {got}, expected {expected_size}")
+
+                _ensure_executable(full_path)
+                log(f"  ✓ Downloaded: {filename}")
+                return (filename, False)  # Return tuple: (filename, was_cached)
+
+            except Exception as e:
+                last_exc = e
+                if attempt < _RETRIES:
+                    backoff = min(30, 2 ** attempt)
+                    resume_at = os.path.getsize(full_path) if os.path.exists(full_path) else 0
+                    log(f"  download hiccup ({filename}): {type(e).__name__}: {e} — "
+                        f"retry {attempt}/{_RETRIES} in {backoff}s (resume @ {resume_at} bytes)")
+                    time.sleep(backoff)
+
+        # Retries exhausted: never leave a partial file for the next run's
+        # bare "already exists" check to mistake for a complete download.
+        try:
+            if os.path.exists(full_path):
+                os.remove(full_path)
+        except OSError:
+            pass
+        if isinstance(last_exc, requests.exceptions.Timeout):
+            log(f"  ✗ Timeout downloading {url[:50]}... (after {_RETRIES} attempts)")
+        else:
+            log(f"  ✗ Error: {str(last_exc)[:50]} (after {_RETRIES} attempts)")
         return None
+
     except Exception as e:
         log(f"  ✗ Error: {str(e)[:50]}")
         return None
