@@ -19,7 +19,7 @@ import subprocess
 import threading
 from typing import Dict, List, Optional, Callable
 
-from services.upgrade.base import run_command, HOST_PATH
+from services.proc import run_command, HOST_PATH
 
 CERT_PATH = "/app/data/azure_cert.pfx"
 CERT_PUBLIC_PATH = "/app/data/azure_cert_public.pem"
@@ -173,7 +173,7 @@ def collect_unified_audit_log(
     os.makedirs(output_dir, exist_ok=True)
 
     # Translate to host path for docker volume mount
-    from services.upgrade.base import HOST_PATH
+    from services.proc import HOST_PATH
     host_output_dir = f"{HOST_PATH}/data/tmp/dfir-o365rc-{timestamp}"
 
     # Format dates for PowerShell (MM/DD/YYYY HH:mm:ss)

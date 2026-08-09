@@ -247,29 +247,11 @@ def stop_automation(run_id):
     # Stopping in between strands the box on new platform code driving old
     # module versions. Pre-commit cancels (phase1, before any state is
     # written) still work exactly as before.
-    try:
-        from services.storage.base import get_pending_upgrade
-        pending = get_pending_upgrade()
-        if pending and pending.get('run_id') == run_id:
-            return jsonify({
-                "error": (
-                    "This upgrade has passed the point of no return: Phase 1 "
-                    "already swapped the backend image, and Phase 2 is what "
-                    "brings the modules up to match it. Stopping now would "
-                    "leave this host running new platform code against old "
-                    "module versions. Let it finish — if it fails, the run "
-                    "reports the failure and the rollback snapshot is still "
-                    "available."
-                ),
-                "phase": pending.get('phase'),
-                "run_id": run_id,
-            }), 409
-    except Exception as e:
-        # Never let this guard block a legitimate stop of a NON-upgrade
-        # workflow just because the upgrade-state lookup misbehaved.
-        print(f"[STOP-GUARD] upgrade-state check failed for {run_id}: {e}",
-              flush=True)
-
+    # A guard used to live here refusing to stop an upgrade past its
+    # 'point of no return' -- Phase 1 had swapped the backend image and only
+    # Phase 2 could bring the modules up to match it. Upgrades run on the
+    # host now and have no phases, so there is no half-applied state for a
+    # stop to strand.
     request_stop(run_id)
     return jsonify({"status": "cancelled", "run_id": run_id})
 

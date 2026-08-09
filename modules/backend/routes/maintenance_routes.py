@@ -719,7 +719,7 @@ def run_system_purge():
             else:
                 try:
                     from services.velociraptor_service import purge_velociraptor_data
-                    from services.upgrade.base import run_command
+                    from services.proc import run_command
 
                     # Measure before (exclude /var./public/ which holds forensic tools)
                     du_before = run_command("docker exec intact_velociraptor sh -c 'du -sb --exclude=public /var./ 2>/dev/null || echo 0'", logger=None)
@@ -1024,7 +1024,7 @@ def _scan_report_downloads():
 
 
 def _scan_velociraptor():
-    from services.upgrade.base import run_command
+    from services.proc import run_command
     r = run_command(
         "docker exec intact_velociraptor sh -c 'du -sb --exclude=public /var./ 2>/dev/null || echo 0'",
         logger=None,
@@ -1058,7 +1058,7 @@ def _scan_elk_artifacts():
 
 
 def _scan_timesketch():
-    from services.upgrade.base import run_command
+    from services.proc import run_command
     r = run_command(
         "docker exec intact_timesketch_opensearch curl -s 'http://localhost:9200/_cat/indices?h=index,store.size&bytes=b'",
         logger=None,
@@ -1089,7 +1089,7 @@ def _scan_memory_dumps():
     # VolWeb media .raw lives in a docker volume; size via du from the
     # container. Skipped if VolWeb isn't deployed.
     try:
-        from services.upgrade.base import run_command
+        from services.proc import run_command
         r = run_command(
             "docker exec intact_volweb_backend sh -c 'du -sb /home/app/web/media/evidences 2>/dev/null || echo 0'",
             logger=None,
@@ -1151,7 +1151,7 @@ def _docker_system_df():
        'Containers': {...}, 'Local Volumes': {...}, 'Build Cache': {...}}
     """
     import json
-    from services.upgrade.base import run_command
+    from services.proc import run_command
     r = run_command(
         "docker system df --format '{{json .}}'",
         logger=None,
@@ -1240,7 +1240,7 @@ def _scan_system_journal():
     journalctl. Returns 0 (and a benign note) on hosts without
     systemd journal storage.
     """
-    from services.upgrade.base import run_command
+    from services.proc import run_command
     r = run_command(
         "docker run --rm -v /var/log/journal:/var/log/journal:ro "
         "ubuntu:22.04 sh -c 'journalctl --disk-usage 2>/dev/null | "
@@ -1436,7 +1436,7 @@ def _purge_timesketch(_):
     touched — the operator's login + customization survives the
     purge. Only investigation state is dropped.
     """
-    from services.upgrade.base import run_command
+    from services.proc import run_command
     before = _scan_timesketch()[0]
 
     # 1) OpenSearch indices
@@ -1489,7 +1489,7 @@ def _purge_memory_dumps(_):
         detail.append(f"host .raw {_fmt_size(s)}")
     # VolWeb media — best-effort; skipped silently if VolWeb isn't up.
     try:
-        from services.upgrade.base import run_command
+        from services.proc import run_command
         before = 0
         r = run_command(
             "docker exec intact_volweb_backend sh -c 'du -sb /home/app/web/media/evidences 2>/dev/null || echo 0'",
@@ -1519,7 +1519,7 @@ def _purge_docker_images(_):
     depends on. The next `docker compose up` will re-pull anything still
     referenced by a compose file, which is the expected operator path
     after a disk-pressure cleanup."""
-    from services.upgrade.base import run_command
+    from services.proc import run_command
     before, _ = _scan_docker_images()
     run_command("docker image prune -a -f", logger=None)
     after, _ = _scan_docker_images()
@@ -1539,7 +1539,7 @@ def _purge_docker_volumes(_):
          throwaway state (venv / cache / tmp / build). Anything that looks like
          a database / evidence / media / data store is left untouched.
     """
-    from services.upgrade.base import run_command
+    from services.proc import run_command
     import re
     before, _ = _scan_docker_volumes()
 
@@ -1574,7 +1574,7 @@ def _purge_docker_volumes(_):
 
 
 def _purge_docker_build_cache(_):
-    from services.upgrade.base import run_command
+    from services.proc import run_command
     before, _ = _scan_docker_build_cache()
     # `-a` includes inactive cache entries; `-f` skips the prompt.
     run_command("docker builder prune -af", logger=None)
@@ -1595,7 +1595,7 @@ def _purge_docker_deep(_):
     across all types) before and after. That captures the orphan
     overlay layers the per-type API undercounts.
     """
-    from services.upgrade.base import run_command
+    from services.proc import run_command
 
     def _docker_total_bytes():
         rows = _docker_system_df()
@@ -1643,7 +1643,7 @@ def _containerd_image_store_active() -> bool:
     """True when Docker's LIVE image store is containerd (snapshotter enabled) — in
     which case the containerd store is in USE and must NOT be pruned. False when the
     driver is overlay2/etc (containerd store is safe to reclaim)."""
-    from services.upgrade.base import run_command
+    from services.proc import run_command
     drv = (run_command("docker info --format '{{.Driver}}'", logger=None)
            .get("stdout") or "").strip().lower()
     # overlay2/overlay/aufs/btrfs/zfs/devicemapper = classic engine store (safe)
@@ -1653,7 +1653,7 @@ def _containerd_image_store_active() -> bool:
 def _containerd_orphan_refs() -> list:
     """ctr ns=moby images whose normalized ref is in neither `docker images` nor the
     running set — i.e. stranded old versions. Never includes the ubuntu one-shot helper."""
-    from services.upgrade.base import run_command
+    from services.proc import run_command
 
     def sh(c):
         return (run_command(c, logger=None).get("stdout") or "")
@@ -1666,7 +1666,7 @@ def _containerd_orphan_refs() -> list:
 
 
 def _containerd_store_bytes() -> int:
-    from services.upgrade.base import run_command
+    from services.proc import run_command
     out = (run_command(
         "docker run --rm -v /var/lib/containerd:/var/lib/containerd:ro ubuntu:22.04 "
         "du -sb /var/lib/containerd 2>/dev/null", logger=None).get("stdout") or "")
@@ -1687,7 +1687,7 @@ def _scan_containerd_orphans():
         return 0, "no orphaned containerd images"
     # Estimate = compressed content freed (SIZE column, e.g. "667.7 MiB"). Actual is
     # typically higher once the now-unreferenced snapshots are GC'd by `--sync`.
-    from services.upgrade.base import run_command
+    from services.proc import run_command
     _mult = {"B": 1, "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3, "TiB": 1024**4,
              "KB": 1000, "MB": 1000**2, "GB": 1000**3}
     total = 0
@@ -1706,7 +1706,7 @@ def _scan_containerd_orphans():
 def _purge_containerd_orphans(_):
     if _containerd_image_store_active():
         return 0, "skipped — containerd image store is the active driver"
-    from services.upgrade.base import run_command
+    from services.proc import run_command
     refs = _containerd_orphan_refs()
     if not refs:
         return 0, "no orphaned containerd images"
@@ -1723,7 +1723,7 @@ def _purge_system_journal(_):
     """`journalctl --vacuum-size=200M` via a one-shot Ubuntu container
     with /var/log/journal mounted read-write. Trims old archived
     journals; keeps the active journal + the most recent ~200 MB."""
-    from services.upgrade.base import run_command
+    from services.proc import run_command
     before, _ = _scan_system_journal()
     run_command(
         "docker run --rm -v /var/log/journal:/var/log/journal:rw "

@@ -59,7 +59,7 @@ def ensure_collector_tool_ready(logger: Optional[Callable] = None) -> Dict:
     """
     log = logger or (lambda msg, level="info": None)
     try:
-        from services.upgrade.velociraptor import _ensure_velociraptor_collector_tool
+        from services.velociraptor_collector_tool import _ensure_velociraptor_collector_tool
     except Exception as e:
         log(f"  collector self-heal: could not import helper ({e})", "warning")
         return {"staged": False, "registered": False, "error": str(e)}

@@ -12,7 +12,7 @@ from routes.dashboard_routes import dashboard_bp
 from routes.system_routes import system_bp
 from routes.config_routes import config_bp
 from routes.maintenance_routes import maintenance_bp
-from routes.upgrade_routes import upgrade_bp
+from routes.versions_routes import versions_bp
 from routes.blueprint_routes import blueprint_bp
 from routes.agentic_routes import agentic_bp
 from routes.agentic_cli_routes import agentic_cli_bp
@@ -37,7 +37,7 @@ __all__ = [
     'system_bp',
     'config_bp',
     'maintenance_bp',
-    'upgrade_bp',
+    'versions_bp',
     'blueprint_bp',
     'agentic_bp',
     'agentic_cli_bp',

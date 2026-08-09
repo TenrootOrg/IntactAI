@@ -93,23 +93,13 @@ def get_system_actions():
     # Workflows list markup + the shared log modal / per-run download buttons.
     actions = [_transform_run(r) for r in runs
                if r.get("automation_type") not in ("case", "fusion_baseline")]
-    # The server keeps only the LATEST prepared package (fixed filename), so an
-    # older prepare_package run's tarball is gone once a newer prepare ran. Flag the
-    # one run whose package is still on disk so the UI only shows a WORKING
-    # "Package" download button instead of a dead one that 410s.
-    try:
-        import os as _os
-        from routes.upgrade_routes import _get_package_info
-        pkg = _get_package_info() or {}
-        cur = pkg.get("run_id") if _os.path.exists(pkg.get("path", "") or "") else None
-        if cur:
-            for a in actions:
-                if a.get("id") == cur:
-                    if not isinstance(a.get("details"), dict):
-                        a["details"] = {}
-                    a["details"]["package_available"] = True
-    except Exception:
-        pass
+    # There used to be a block here that flagged which prepare_package run's
+    # tarball was still on disk, so the UI could show a working "Package"
+    # download button instead of a dead one. Prepare-package was part of the
+    # dashboard upgrade flow and went with it -- air-gap packages are built
+    # with scripts/prepare_package.sh now, and applied with
+    # `sudo bash upgrade.sh --package`. Historical prepare_package runs stay in
+    # the list as history; they simply have no download button.
     return jsonify({"actions": actions})
 
 @system_bp.route('/api/system/containers', methods=['GET'])

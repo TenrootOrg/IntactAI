@@ -164,18 +164,11 @@ def create_tables():
             updated_at TEXT
         );
 
-        CREATE TABLE IF NOT EXISTS upgrade_state (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_id TEXT UNIQUE,
-            phase TEXT,
-            target_modules TEXT,
-            completed_modules TEXT,
-            mode TEXT,
-            package_dir TEXT,
-            db_overwrite TEXT DEFAULT '{}',
-            created_at TEXT,
-            updated_at TEXT
-        );
+        -- upgrade_state used to live here: the two-phase upgrade wrote its
+        -- progress to a table because the backend was restarting itself
+        -- mid-upgrade and needed something that survived. upgrade.sh runs on
+        -- the host and never restarts under itself, so there is no state to
+        -- carry across. upgrade.sh drops any leftover row on first run.
 
         -- Runtime secrets (api keys, passwords). Deliberately separate from
         -- frontend_config so export_db() never dumps these into a backup
@@ -195,12 +188,6 @@ def create_tables():
     _ensure_column(conn, "workflows", "error_count", "INTEGER DEFAULT 0")
     # Workspace model: every analysis run is tagged to a case (workspace).
     _ensure_column(conn, "workflows", "case_id", "TEXT")
-    # Two-phase upgrade resilience: bounded resume retries + the module that
-    # was mid-dispatch when a crash hit (so its noop shortcut is bypassed on
-    # resume). save_upgrade_state's upsert doesn't SET these, so Phase-1
-    # re-saves never clobber them.
-    _ensure_column(conn, "upgrade_state", "resume_count", "INTEGER DEFAULT 0")
-    _ensure_column(conn, "upgrade_state", "in_flight", "TEXT")
     try:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_workflows_case_id ON workflows(case_id)")
         conn.commit()
@@ -397,20 +384,6 @@ def migrate_agentic_to_velociraptor():
         print(f"[STORAGE] Error merging agentic blueprints: {e}", flush=True)
 
 
-def migrate_add_db_overwrite_column():
-    """Add db_overwrite column to upgrade_state table if it doesn't exist."""
-    conn = get_connection()
-    try:
-        # Check if column exists
-        cursor = conn.execute("PRAGMA table_info(upgrade_state)")
-        columns = [row[1] for row in cursor.fetchall()]
-        if 'db_overwrite' not in columns:
-            conn.execute("ALTER TABLE upgrade_state ADD COLUMN db_overwrite TEXT DEFAULT '{}'")
-            conn.commit()
-            print("[STORAGE] Added db_overwrite column to upgrade_state table", flush=True)
-    except Exception as e:
-        print(f"[STORAGE] Error adding db_overwrite column: {e}", flush=True)
-
 
 def migrate_add_workflow_observability_columns():
     """Add phase_timings/llm_metrics/sigma_rule_tally columns to workflows."""
@@ -437,7 +410,6 @@ def init_storage() -> bool:
         create_tables()
         migrate_from_json()
         migrate_agentic_to_velociraptor()
-        migrate_add_db_overwrite_column()
         migrate_add_workflow_observability_columns()
         return True
     except Exception as e:
@@ -449,170 +421,17 @@ def init_storage() -> bool:
 # Upgrade State Management (Two-Phase Upgrade Support)
 # =============================================================================
 
-def save_upgrade_state(run_id: str, phase: str, target_modules: Dict,
-                       completed_modules: List[str], mode: str,
-                       package_dir: str = None, package_path: str = None,
-                       db_overwrite: Dict = None) -> bool:
-    """Save or update upgrade state for two-phase upgrades.
-
-    Args:
-        run_id: The workflow run ID
-        phase: Current phase (phase1, awaiting_restart, phase2, completed)
-        target_modules: Dict of module -> version to upgrade
-        completed_modules: List of completed module names
-        mode: 'online' or 'offline'
-        package_dir: Path to extracted package directory (for offline mode)
-        package_path: Path to uploaded package file (for cleanup after Phase 2)
-        db_overwrite: Dict of module -> bool for fresh install (e.g., {"timesketch": True, "iris": False})
-    """
-    # Store both paths as JSON in package_dir field for cleanup
-    if package_path:
-        package_dir = json.dumps({'extract_dir': package_dir, 'package_path': package_path})
-    # Default empty dict for db_overwrite
-    db_overwrite = db_overwrite or {}
-    conn = get_connection()
-    now = datetime.now().isoformat()
-    try:
-        conn.execute("""
-            INSERT INTO upgrade_state
-            (run_id, phase, target_modules, completed_modules, mode, package_dir, db_overwrite, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(run_id) DO UPDATE SET
-                phase = excluded.phase,
-                target_modules = excluded.target_modules,
-                completed_modules = excluded.completed_modules,
-                mode = excluded.mode,
-                package_dir = excluded.package_dir,
-                db_overwrite = excluded.db_overwrite,
-                updated_at = excluded.updated_at
-        """, (run_id, phase, json.dumps(target_modules), json.dumps(completed_modules),
-              mode, package_dir, json.dumps(db_overwrite), now, now))
-        conn.commit()
-        return True
-    except Exception as e:
-        print(f"[STORAGE] Error saving upgrade state: {e}", flush=True)
-        return False
 
 
-def get_pending_upgrade() -> Optional[Dict]:
-    """Get pending upgrade that needs to be resumed after restart.
-
-    Matches 'awaiting_restart' (the expected Phase-1 -> Phase-2 handoff) AND
-    'phase2' — a phase2 row at boot means the previous process DIED mid-Phase-2
-    (crash/OOM/manual restart); it used to be stranded forever because only
-    awaiting_restart was matched. The boot resume-guard bounds retries via
-    resume_count so a crash-looping upgrade can't restart-storm.
-    """
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT * FROM upgrade_state WHERE phase IN ('awaiting_restart', 'phase2') "
-            "ORDER BY created_at DESC LIMIT 1"
-        ).fetchone()
-        if row:
-            return row_to_dict(row, ['target_modules', 'completed_modules', 'db_overwrite'])
-        return None
-    except Exception as e:
-        print(f"[STORAGE] Error getting pending upgrade: {e}", flush=True)
-        return None
 
 
-def increment_upgrade_resume_count(run_id: str) -> int:
-    """Atomically bump upgrade_state.resume_count for a boot-time resume
-    attempt; returns the NEW count, or -1 on error."""
-    conn = get_connection()
-    try:
-        conn.execute(
-            "UPDATE upgrade_state SET resume_count = COALESCE(resume_count, 0) + 1 "
-            "WHERE run_id = ?", (run_id,))
-        conn.commit()
-        row = conn.execute(
-            "SELECT resume_count FROM upgrade_state WHERE run_id = ?", (run_id,)
-        ).fetchone()
-        return int(row[0]) if row else -1
-    except Exception as e:
-        print(f"[STORAGE] Error incrementing resume_count: {e}", flush=True)
-        return -1
 
 
-def set_upgrade_in_flight(run_id: str, module: Optional[str]) -> bool:
-    """Record (or clear, with None) the module currently being dispatched in
-    Phase 2. On resume, this module bypasses the already-at-version noop
-    shortcut: a crash AFTER its .env pin bump but BEFORE compose-up otherwise
-    makes it LOOK done while containers still run the old image."""
-    conn = get_connection()
-    try:
-        conn.execute("UPDATE upgrade_state SET in_flight = ? WHERE run_id = ?",
-                     (module, run_id))
-        conn.commit()
-        return True
-    except Exception as e:
-        print(f"[STORAGE] Error setting in_flight: {e}", flush=True)
-        return False
 
 
-def get_active_upgrade_state() -> Optional[Dict]:
-    """Any upgrade_state row, regardless of phase (phase1 | awaiting_restart |
-    phase2). Presence means an upgrade currently OWNS the system — rows are
-    created at workflow start and deleted in its finally/finalizer — so this
-    is the single-writer lock predicate. Newest first."""
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT * FROM upgrade_state ORDER BY created_at DESC LIMIT 1"
-        ).fetchone()
-        if row:
-            return row_to_dict(row, ['target_modules', 'completed_modules', 'db_overwrite'])
-        return None
-    except Exception as e:
-        print(f"[STORAGE] Error getting active upgrade state: {e}", flush=True)
-        return None
 
 
-def get_upgrade_state(run_id: str) -> Optional[Dict]:
-    """Get upgrade state for a specific run_id."""
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT * FROM upgrade_state WHERE run_id = ?", (run_id,)
-        ).fetchone()
-        if row:
-            return row_to_dict(row, ['target_modules', 'completed_modules', 'db_overwrite'])
-        return None
-    except Exception as e:
-        print(f"[STORAGE] Error getting upgrade state: {e}", flush=True)
-        return None
 
 
-def update_upgrade_phase(run_id: str, phase: str, completed_modules: List[str] = None) -> bool:
-    """Update the phase and optionally completed modules for an upgrade."""
-    conn = get_connection()
-    now = datetime.now().isoformat()
-    try:
-        if completed_modules is not None:
-            conn.execute(
-                "UPDATE upgrade_state SET phase = ?, completed_modules = ?, updated_at = ? WHERE run_id = ?",
-                (phase, json.dumps(completed_modules), now, run_id)
-            )
-        else:
-            conn.execute(
-                "UPDATE upgrade_state SET phase = ?, updated_at = ? WHERE run_id = ?",
-                (phase, now, run_id)
-            )
-        conn.commit()
-        return True
-    except Exception as e:
-        print(f"[STORAGE] Error updating upgrade phase: {e}", flush=True)
-        return False
 
 
-def clear_upgrade_state(run_id: str) -> bool:
-    """Remove upgrade state after successful completion."""
-    conn = get_connection()
-    try:
-        conn.execute("DELETE FROM upgrade_state WHERE run_id = ?", (run_id,))
-        conn.commit()
-        return True
-    except Exception as e:
-        print(f"[STORAGE] Error clearing upgrade state: {e}", flush=True)
-        return False
