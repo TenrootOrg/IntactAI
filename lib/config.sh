@@ -40,6 +40,135 @@ read_config() {
     python3 -c "import yaml; print(yaml.safe_load(open('${CONFIG_FILE}'))${key})" 2>/dev/null || echo ""
 }
 
+# Write a single pin into config.yaml's `versions:` block.
+# Usage: _pin_module_version backend intact-20260810
+#
+# Called from update_env_files when the release package disagrees with the pin
+# (see the long comment at the call site). It was referenced there for a long
+# time without ever being defined anywhere in the repo -- and because neither
+# install.sh nor lib/*.sh use `set -e`, the missing function printed
+# "command not found" and the run carried on, so the write-back the call site
+# describes silently never happened.
+#
+# Two properties this MUST have, both learned the hard way:
+#
+#   * Line-scan, never yaml.safe_load + dump. A round-trip through PyYAML
+#     strips every comment and reorders keys, and config.yaml is the operator's
+#     file -- it carries their github_token, module passwords and the
+#     explanatory comments above half the pins.
+#
+#   * INODE-PRESERVING. config.yaml is bind-mounted into the backend BY INODE
+#     (modules/backend/docker-compose.yaml: ../../config.yaml:/app/config.yaml).
+#     Writing a temp file and `mv`-ing it over the original swaps the file out
+#     from under the live mount: the edit lands on disk, the container keeps
+#     reading the old inode, and the change looks applied while having no
+#     effect. So: fsync a temp copy for durability, then truncate the REAL
+#     file in place and write into it.
+_pin_module_version() {
+    local key="$1" value="$2"
+
+    if [[ -z "$key" || -z "$value" ]]; then
+        log_warn "_pin_module_version: refusing empty key/value ('${key}'/'${value}')"
+        return 1
+    fi
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        log_warn "_pin_module_version: ${CONFIG_FILE} not found"
+        return 1
+    fi
+
+    if python3 - "$CONFIG_FILE" "$key" "$value" <<'PYPIN'
+import os, re, sys, tempfile
+
+path, key, value = sys.argv[1], sys.argv[2], sys.argv[3]
+
+with open(path, "r", encoding="utf-8") as fh:
+    lines = fh.readlines()
+
+# Locate the top-level `versions:` block: from its header to the next line that
+# starts in column 0 with something other than a comment.
+start = None
+for i, line in enumerate(lines):
+    if re.match(r"^versions\s*:\s*$", line):
+        start = i
+        break
+if start is None:
+    sys.stderr.write("no top-level 'versions:' block in config.yaml\n")
+    raise SystemExit(1)
+
+end = len(lines)
+for i in range(start + 1, len(lines)):
+    stripped = lines[i].strip()
+    if not stripped or stripped.startswith("#"):
+        continue
+    if not lines[i][:1].isspace():
+        end = i
+        break
+
+# Preserve the operator's quoting style for this key if it already exists.
+pat = re.compile(r"^(\s+)(" + re.escape(key) + r")(\s*:\s*)(.*?)(\s*)$")
+for i in range(start + 1, end):
+    m = pat.match(lines[i])
+    if not m:
+        continue
+    indent, name, sep, old, _tail = m.groups()
+    old = old.strip()
+    if old.startswith("'") and old.endswith("'") and len(old) >= 2:
+        new = "'%s'" % value.replace("'", "''")
+    elif old.startswith('"') and old.endswith('"') and len(old) >= 2:
+        new = '"%s"' % value.replace('"', '\\"')
+    else:
+        # Unquoted in the file. Quote only if the bare value would not survive
+        # a YAML round-trip as a string (e.g. '9.4' would load as a float).
+        new = value if re.match(r"^[A-Za-z][A-Za-z0-9._+-]*$", value) else "'%s'" % value
+    if old == new:
+        raise SystemExit(0)   # already correct; do not touch the file at all
+    lines[i] = "%s%s%s%s\n" % (indent, name, sep, new)
+    break
+else:
+    # Key absent: append at the end of the block, matching sibling indentation.
+    indent = "  "
+    for i in range(start + 1, end):
+        m2 = re.match(r"^(\s+)\S", lines[i])
+        if m2:
+            indent = m2.group(1)
+            break
+    new = value if re.match(r"^[A-Za-z][A-Za-z0-9._+-]*$", value) else "'%s'" % value
+    insert_at = end
+    while insert_at > start + 1 and not lines[insert_at - 1].strip():
+        insert_at -= 1
+    lines.insert(insert_at, "%s%s: %s\n" % (indent, key, new))
+
+payload = "".join(lines)
+
+# Durability first: a complete, fsync'd copy exists on disk before the real
+# file is truncated, so a crash mid-write leaves something to recover from.
+d = os.path.dirname(os.path.abspath(path)) or "."
+fd, tmp = tempfile.mkstemp(dir=d, prefix=".config.yaml.pin-")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(payload)
+        fh.flush()
+        os.fsync(fh.fileno())
+    # Now truncate-in-place. NOT os.replace -- see the comment above.
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(payload)
+        fh.flush()
+        os.fsync(fh.fileno())
+finally:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+PYPIN
+    then
+        log_info "  config.yaml: versions.${key} = ${value}"
+        return 0
+    fi
+
+    log_warn "_pin_module_version: failed to set versions.${key} in ${CONFIG_FILE}"
+    return 1
+}
+
 print_installation_config_summary() {
     log_info "=========================================="
     log_info "Installation configuration summary"

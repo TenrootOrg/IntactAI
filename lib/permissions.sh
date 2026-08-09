@@ -192,6 +192,16 @@ fix_source_permissions() {
     # module-level helpers the sweep also de-executed.
     chmod +x "${SCRIPT_DIR}/scripts/migrate/"*.sh 2>/dev/null || true
     chmod +x "${SCRIPT_DIR}/scripts/migrate/"*.py 2>/dev/null || true
+    # Same omission as scripts/*.py above, one directory over: `scripts/*.sh`
+    # does not reach scripts/dev/, so the 644 sweep de-executed
+    # build_local_release.sh on every install. The symptom is a permanently
+    # dirty `git status` showing a mode-only 100755 -> 100644 change with no
+    # content diff, which reads as leftover work-in-progress and isn't.
+    chmod +x "${SCRIPT_DIR}/scripts/dev/"*.sh 2>/dev/null || true
+    # tests/ is exercised by CI (tests/run_tests.sh invokes each suite as its
+    # own bash subprocess, so this is cosmetic there) but a developer running
+    # ./tests/test_foo.sh directly after an install gets "Permission denied".
+    chmod +x "${SCRIPT_DIR}/tests/"*.sh 2>/dev/null || true
     chmod +x "${SCRIPT_DIR}/modules/elk/config/"*.sh 2>/dev/null || true
     chmod +x "${SCRIPT_DIR}/modules/nginx/build-tailwind.sh" 2>/dev/null || true
 
