@@ -45,6 +45,7 @@ INTACT_HOST_DEPS=(
     "openssl|command -v openssl"
     "jq|command -v jq"
     "dnsutils|command -v dig"
+    "lsb-release|command -v lsb_release"
 )
 
 # Which of INTACT_HOST_DEPS are missing right now. Echoes apt package names,
@@ -557,6 +558,21 @@ pull_plaso_image() {
     # pulls.
     if docker image inspect "$plaso_image" &> /dev/null; then
         log_info "Plaso image already present: $plaso_image"
+        return 0
+    fi
+
+    # Unlike its siblings (pull_python_alpine_image, pull_iris_images, ...)
+    # this had no air-gap check at all. Those siblings skip unconditionally
+    # under INTACT_FROM_PACKAGE because they're pure build-time base images
+    # never needed once a package supplies pre-built images -- but Plaso IS
+    # one of the real, shipped module images, so a from-package install that
+    # legitimately has it just hit the `docker image inspect` check above and
+    # returned already. This only fires for the genuine gap: air-gapped AND
+    # somehow still missing (a version-pin mismatch between config.yaml and
+    # what the package actually shipped) -- fail fast with a clear reason
+    # instead of sitting through a doomed pull attempt and timeout.
+    if [[ "${INTACT_AIRGAP:-0}" == "1" ]]; then
+        log_warn "  Plaso image ($plaso_image) not in the local store and this is an air-gapped install — it cannot be pulled. Timeline processing (Plaso) will not work until this image is supplied."
         return 0
     fi
 

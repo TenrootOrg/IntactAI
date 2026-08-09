@@ -1197,19 +1197,29 @@ deploy_timesketch() {
         # first install or when /modules/timesketch/config/dfiq/ is empty.
         local dfiq_dir="${SCRIPT_DIR}/modules/timesketch/config/dfiq"
         if [[ ! -f "${dfiq_dir}/scenarios/$(ls "${dfiq_dir}/scenarios" 2>/dev/null | head -1)" || -z "$(ls "${dfiq_dir}/scenarios" 2>/dev/null)" ]]; then
-            log_info "  Fetching DFIQ data from google/dfiq..."
-            local _tmp
-            _tmp="$(mktemp -d)"
-            if git clone --depth 1 --quiet https://github.com/google/dfiq.git "${_tmp}/repo" 2>/dev/null; then
-                rm -rf "${dfiq_dir}"
-                mkdir -p "${dfiq_dir}"
-                mv "${_tmp}/repo/dfiq/data"/* "${dfiq_dir}/"
-                rm -rf "${_tmp}"
-                local _yaml_count
-                _yaml_count="$(find "${dfiq_dir}" -name '*.yaml' | wc -l)"
-                log_success "  DFIQ data installed (${_yaml_count} YAML files in ${dfiq_dir})"
-            else
-                log_warn "  Could not clone google/dfiq (network?); DFIQ UI will be empty until you populate ${dfiq_dir} manually."
+            # Unlike Velociraptor binaries / SIGMA rules, this had NO air-gap
+            # gate at all -- an air-gapped install unconditionally tried to
+            # reach GitHub here, wasting a timeout before falling through to
+            # the same "DFIQ UI will be empty" outcome the gate below reaches
+            # immediately. _airgap_asset_check() only ever returns 0 (skip)
+            # when INTACT_AIRGAP=1; online it always returns 1 so the clone
+            # below runs exactly as before.
+            if ! _airgap_asset_check "Timesketch DFIQ data" "${dfiq_dir}/scenarios/*" \
+                    "DFIQ UI will be empty until populated manually"; then
+                log_info "  Fetching DFIQ data from google/dfiq..."
+                local _tmp
+                _tmp="$(mktemp -d)"
+                if git clone --depth 1 --quiet https://github.com/google/dfiq.git "${_tmp}/repo" 2>/dev/null; then
+                    rm -rf "${dfiq_dir}"
+                    mkdir -p "${dfiq_dir}"
+                    mv "${_tmp}/repo/dfiq/data"/* "${dfiq_dir}/"
+                    rm -rf "${_tmp}"
+                    local _yaml_count
+                    _yaml_count="$(find "${dfiq_dir}" -name '*.yaml' | wc -l)"
+                    log_success "  DFIQ data installed (${_yaml_count} YAML files in ${dfiq_dir})"
+                else
+                    log_warn "  Could not clone google/dfiq (network?); DFIQ UI will be empty until you populate ${dfiq_dir} manually."
+                fi
             fi
         else
             local _yaml_count
