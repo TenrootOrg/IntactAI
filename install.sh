@@ -722,7 +722,20 @@ for p in glob.glob(f'{work}/*/manifests/intact.json') + glob.glob(f'{work}/*/man
         fi
     fi
 
-    rm -rf "$work"
+    # This used to run unconditionally, right before the loaded/failed checks
+    # below -- which meant a failed load (docker: command not found, a corrupt
+    # tar, anything) wiped this ENTIRE scratch dir on the way out, discarding
+    # every already-downloaded-and-extracted image tar the per-image failure
+    # branch above deliberately left in place (line ~552-558 never deletes a
+    # failed image's tar for exactly this reason). The 5.5GB download + 13GB
+    # extraction then had to happen all over again just to retry the load
+    # step. Keep $work whenever anything failed, so a fix-and-retry only
+    # re-runs the load, not the fetch.
+    if (( failed == 0 )); then
+        rm -rf "$work"
+    else
+        log_warn "  ${failed} image(s) failed to load — extracted package left in place for retry: $work"
+    fi
     if (( loaded == 0 )); then
         log_error "  No images loaded from the package — wrong or corrupt file."
         return 1
