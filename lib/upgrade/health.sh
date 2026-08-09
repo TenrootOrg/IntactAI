@@ -69,8 +69,19 @@ _u_is_running() { [[ "$(_u_container_state "$1")" == "running" ]]; }
 
 # HTTP status code from the host, or 000 if the connection never completed.
 # -k because every internal listener is self-signed.
+#
+# NOT `curl ... || echo 000`. With -w '%{http_code}' curl PRINTS 000 on a
+# failed connection AND exits non-zero, so the fallback appends a second one
+# and the caller sees "000000" -- which is not equal to "000", so a dead
+# service scores as reachable. Exactly that turned a Velociraptor GUI that was
+# not answering into a green health verdict.
 _u_http_code() {
-    curl -sk -o /dev/null -w '%{http_code}' --max-time "${2:-6}" "$1" 2>/dev/null || echo 000
+    local out
+    out="$(curl -sk -o /dev/null -w '%{http_code}' --max-time "${2:-6}" "$1" 2>/dev/null)"
+    # Take only the first 3 digits, so any residual duplication cannot ever
+    # masquerade as a different code.
+    out="${out:0:3}"
+    [[ "$out" =~ ^[0-9]{3}$ ]] && echo "$out" || echo 000
 }
 
 # Same, but from inside a container, using whichever client that image ships.

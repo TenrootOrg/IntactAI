@@ -241,6 +241,27 @@ test_green_with_kibana_stopped_is_degraded_not_up() {
     unset -f curl _u_is_running read_env_var
 }
 
+test_an_unreachable_url_yields_exactly_000_not_a_doubled_code() {
+    # REGRESSION. `curl -w '%{http_code}' || echo 000` prints 000 AND exits
+    # non-zero on a failed connection, so the fallback appends a second one and
+    # the caller sees "000000" -- which compares unequal to "000" and therefore
+    # reads as reachable. That turned a Velociraptor GUI that was not answering
+    # into a green health verdict on a live run.
+    _reset_run_state
+    local code
+    code="$(_u_http_code 'http://127.0.0.1:1/' 2)"
+    assert_eq "$code" "000"
+    assert_eq "${#code}" "3" "a status code is always exactly three characters"
+}
+
+test_a_reachable_url_yields_a_single_clean_code() {
+    _reset_run_state
+    curl() { printf '404'; return 0; }
+    local code; code="$(_u_http_code 'http://example.invalid/' 2)"
+    assert_eq "$code" "404"
+    unset -f curl
+}
+
 test_unreachable_elasticsearch_is_down() {
     _reset_run_state
     curl() { echo ''; }
