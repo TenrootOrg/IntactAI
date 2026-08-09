@@ -132,19 +132,14 @@ test_airgap_no_bundle_docker_missing_is_fatal() {
     # Un-stubbing the docker FUNCTION is not enough on a dev box that has a
     # real /usr/bin/docker: `command -v docker` finds it right through the
     # unset function, since it still falls back to a normal PATH search.
-    # Strip any PATH entry that actually has a docker binary so `command -v
-    # docker` genuinely fails, simulating the box this whole air-gap branch
-    # exists for.
+    # path_without hides just the docker binary (not its whole directory,
+    # which also holds cat/apt-get/etc. this test still needs) so
+    # `command -v docker` genuinely fails, simulating the box this whole
+    # air-gap branch exists for.
     unset -f docker 2>/dev/null || true
-    local dir clean_path=""
-    IFS=: read -ra _dirs <<< "$PATH"
-    for dir in "${_dirs[@]}"; do
-        [[ -x "${dir}/docker" ]] && continue
-        clean_path="${clean_path:+${clean_path}:}${dir}"
-    done
     (
         set +e
-        PATH="$clean_path"
+        PATH="$(path_without docker)"
         ensure_core_dependencies
         echo "SHOULD_NOT_REACH_HERE"
     ) > /tmp/_ecd_out2.$$ 2>&1
@@ -257,6 +252,38 @@ test_install_docker_from_package_failure_is_fatal() {
     assert_ne "$rc" "0"
     assert_not_contains "$(cat /tmp/_ecd_out5.$$)" "SHOULD_NOT_REACH_HERE"
     rm -f /tmp/_ecd_out5.$$
+}
+
+# ---------------------------------------------------------------------------
+# Regression: download_system_bundle() needs curl, and this whole bundle
+# check runs BEFORE install_dependencies() -- the function that normally
+# installs curl -- gets a chance to. Confirmed live on a genuinely fresh
+# Ubuntu 24.04 box: without a bootstrap, this failed with "curl exit 127"
+# and (correctly, per the "package is the only source" design) was treated
+# as a fatal unobtainable-bundle error, turning a perfectly good online
+# install into a hard failure before it even started.
+# ---------------------------------------------------------------------------
+test_online_bootstraps_curl_before_checking_for_a_bundle() {
+    _reset
+    echo "testtag" > "${SCRIPT_DIR}/VERSION"
+    stub wait_for_dpkg_lock 0
+    stub apt-get 0
+    (
+        PATH="$(path_without curl)"
+        ensure_core_dependencies
+    )
+    assert_true stub_called_with wait_for_dpkg_lock ""
+    local calls; calls="$(grep -- '^apt-get ' "$STUB_LOG")"
+    assert_contains "$calls" "curl" "must bootstrap curl via apt before the GitHub bundle check"
+}
+
+test_online_skips_curl_bootstrap_when_already_present() {
+    _reset
+    echo "testtag" > "${SCRIPT_DIR}/VERSION"
+    stub apt-get 0
+    ensure_core_dependencies
+    assert_eq "$(stub_call_count apt-get)" "0" \
+        "must not run apt-get at all when curl is already on PATH"
 }
 
 run_all_tests

@@ -103,6 +103,30 @@ stub_call_count() {
     grep -c -- "^$name " "$STUB_LOG" 2>/dev/null || true
 }
 
+# Prints a PATH that has every normal system executable EXCEPT the ones
+# named in $@, via a directory of symlinks. Use this, not `for dir in
+# $PATH; do [[ -x "$dir/$bin" ]] && continue; ...`-style directory
+# stripping -- a bare binary like curl or docker normally lives in
+# /usr/bin right alongside cat, grep, apt-get and everything else a test
+# still needs, so removing that whole directory breaks the TEST, not just
+# the thing it's trying to hide (hit this for real: stripping the
+# directory containing curl also removed `cat`, silently turning a
+# "curl is missing" test into a "nothing works" test).
+path_without() {
+    local shim_dir; shim_dir="$(mktemp -d)"
+    local bin base skip hidden
+    for bin in /usr/local/sbin/* /usr/local/bin/* /usr/sbin/* /usr/bin/* /sbin/* /bin/*; do
+        [[ -f "$bin" && -x "$bin" ]] || continue
+        base="$(basename "$bin")"
+        [[ -e "${shim_dir}/${base}" ]] && continue
+        skip=0
+        for hidden in "$@"; do [[ "$base" == "$hidden" ]] && { skip=1; break; }; done
+        (( skip )) && continue
+        ln -sf "$bin" "${shim_dir}/${base}" 2>/dev/null
+    done
+    echo "$shim_dir"
+}
+
 # Run every test_* function defined in this process, in definition order,
 # resetting stubs between each so one test's recorded calls can never leak
 # into the next. Call as the last line of every tests/test_*.sh.

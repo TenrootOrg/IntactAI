@@ -465,21 +465,37 @@ check_docker_min_version() {
     return 0
 }
 
+# bash's own /dev/tcp pseudo-device, not ping/curl. This check runs BEFORE
+# install_dependencies() (see ensure_core_dependencies, lib/deps.sh), so on a
+# genuinely fresh box neither iputils-ping NOR curl is guaranteed installed
+# yet -- confirmed live: a fresh Ubuntu 24.04 box has neither, so the old
+# ping-based checks failed with "No internet connectivity" even though the
+# box had working internet the whole time (curl to a real endpoint succeeded
+# once installed). `timeout` (coreutils) and bash itself are the only two
+# things this needs, and both are always present -- coreutils is
+# priority:required on every Debian/Ubuntu system, bash is what is running
+# this script. A hostname target doubles as the DNS-resolution check: the
+# connect only succeeds if bash's own getaddrinfo() resolved it first.
+_tcp_reachable() {
+    local host="$1" port="$2" timeout_s="${3:-3}"
+    timeout "$timeout_s" bash -c "exec 3<>/dev/tcp/${host}/${port}" 2>/dev/null
+}
+
 check_network_connectivity() {
     log_info "Checking network connectivity..."
     local has_issues=false
 
     # Test 1: Can we reach the internet at all? (IP connectivity)
-    if ! ping -c 1 -W 3 8.8.8.8 &> /dev/null; then
-        log_error "No internet connectivity (cannot ping 8.8.8.8)"
+    if ! _tcp_reachable 8.8.8.8 53; then
+        log_error "No internet connectivity (cannot reach 8.8.8.8:53)"
         log_error "Please check your network configuration"
         return 1
     fi
     log_success "Internet connectivity: OK"
 
     # Test 2: Does DNS resolution work?
-    if ! ping -c 1 -W 3 google.com &> /dev/null; then
-        log_error "DNS resolution not working (cannot resolve google.com)"
+    if ! _tcp_reachable google.com 443; then
+        log_error "DNS resolution not working (cannot resolve/reach google.com)"
         log_error "Please configure DNS in /etc/resolv.conf"
         log_error "Quick fix: echo 'nameserver 8.8.8.8' | sudo tee /etc/resolv.conf"
         has_issues=true
@@ -488,7 +504,7 @@ check_network_connectivity() {
     fi
 
     # Test 3: Can we reach Docker's download server?
-    if ! curl -sf --max-time 5 -o /dev/null https://download.docker.com 2>/dev/null; then
+    if ! _tcp_reachable download.docker.com 443; then
         log_error "Cannot reach download.docker.com"
         if command -v docker &> /dev/null; then
             log_warn "Docker is already installed, continuing..."

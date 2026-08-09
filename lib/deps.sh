@@ -557,6 +557,23 @@ ensure_core_dependencies() {
     else
         local _bundle_tag; _bundle_tag="$(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null || true)"
         if [[ -n "$_bundle_tag" ]]; then
+            # download_system_bundle() needs curl, and this runs before
+            # install_dependencies() -- which is what normally installs
+            # curl (INTACT_HOST_DEPS) -- gets a chance to. Confirmed live on
+            # a genuinely fresh box: without this, the GitHub API check
+            # fails with "curl exit 127" and ensure_core_dependencies
+            # (correctly, per the "package is the only source" design)
+            # treats that as a fatal, unobtainable-bundle error rather than
+            # falling through -- turning a perfectly good online install
+            # into a hard failure before it even starts. Idempotent and
+            # cheap: install_dependencies() below still runs its own full
+            # pass; apt just finds curl already satisfied.
+            if ! command -v curl &>/dev/null; then
+                log_info "Bootstrapping curl (needed to check for a dependency bundle)..."
+                wait_for_dpkg_lock || { log_error "Cannot bootstrap curl -- dpkg lock not available"; exit 1; }
+                apt-get update -qq 2>>"$LOG_FILE" || true
+                apt-get install -y -qq curl ca-certificates 2>>"$LOG_FILE" || true
+            fi
             download_system_bundle "$_bundle_tag" "${SCRIPT_DIR}/data/tmp/system-bundle-pkg"
             case $? in
                 0) INTACT_BUNDLE_DIR="${SCRIPT_DIR}/data/tmp/system-bundle-pkg/system-bundle" ;;
