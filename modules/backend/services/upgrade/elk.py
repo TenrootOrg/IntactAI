@@ -274,6 +274,26 @@ def install_elk_offline(package_dir: str, version: str, logger=None, run_id=None
     if os.path.exists(env_file) and version:
         update_env_file(env_file, 'ELASTIC_VERSION', version, logger=log)
         update_env_file(env_file, 'KIBANA_VERSION', version, logger=log)
+
+    # Deliver and preflight what the compose file bind-mounts, same as
+    # upgrade_elk_offline() above. A box installing ELK for the first time
+    # from an offline package has never had config/setup-kibana-user.sh on
+    # disk either — without this, Docker fabricates an empty DIRECTORY at
+    # the mount path and the `setup` service dies with exit 126.
+    try:
+        from .compose_assets import (deliver_referenced_assets,
+                                     verify_referenced_assets)
+        _src = os.path.join(package_dir, 'source', 'intact')
+        if os.path.isdir(_src):
+            deliver_referenced_assets('elk', _src, logger=log)
+        _fatal = verify_referenced_assets('elk', logger=log)
+    except Exception as _me:
+        log(f"  ELK mount preflight skipped "
+            f"({type(_me).__name__}: {_me})", "warning")
+        _fatal = []
+    if _fatal:
+        return {"success": False, "error": "; ".join(_fatal)}
+
     compose_result = install_module_compose_up(
         'elk', package_dir, version,
         image_tar_prefixes=['elasticsearch', 'kibana'],
