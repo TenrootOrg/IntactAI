@@ -149,11 +149,29 @@ def launch(run_id: str, cli_args: List[str]) -> Optional[str]:
         f"exit $rc"
     )
 
+    # Carry the release-source overrides into the helper.
+    #
+    # The helper is a fresh `docker run`, so it inherits nothing from this
+    # process -- and it is the thing that actually downloads the release. A box
+    # pointed at an internal mirror (an air-gapped site serving releases from
+    # its own host, or a dev box running scripts/dev/serve_local_release.sh)
+    # would have every `--list`/`--plan` call honour the override, because
+    # those run as plain subprocesses here, and then the real upgrade would
+    # silently go to github.com and fail. Only pass what is actually set, so
+    # the common case adds no arguments at all.
+    env_passthrough = []
+    for var in ("INTACT_GH_API_BASE", "INTACT_GH_DL_BASE", "INTACT_REPO",
+                "GITHUB_TOKEN"):
+        val = os.environ.get(var)
+        if val:
+            env_passthrough += ["-e", f"{var}={val}"]
+
     cmd = [
         _DOCKER_BIN, "run", "-d",
         "--name", container_name,
         "-v", "/var/run/docker.sock:/var/run/docker.sock",
         "-v", f"{HOST_PATH}:{HOST_PATH}",
+        *env_passthrough,
         # No compose labels: this must not be swept by any module's
         # `--remove-orphans` teardown, which only ever looks within its own
         # project's labels -- a plain `docker run` carries none, so it is
