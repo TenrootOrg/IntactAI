@@ -50,7 +50,7 @@ if [[ -d "${REPO}/lib" ]]; then
         --exclude='.git' --exclude='data' --exclude='backups' \
         --exclude='*.log' --exclude='config.yaml' --exclude='*/.env' \
         --exclude='__pycache__' --exclude='node_modules' \
-        install.sh upgrade.sh lib scripts modules 2>/dev/null \
+        install.sh lib scripts modules 2>/dev/null \
       | tar -C "${ROOT}/source/intact" -xf - 2>/dev/null || true
     echo "[make-test-package] staged source/intact"
 fi

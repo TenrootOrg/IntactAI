@@ -4,17 +4,47 @@ Upgrades run from the shell on the appliance, as root. There is no upgrade
 button in the dashboard.
 
 ```bash
-sudo bash upgrade.sh --list                    # what can I upgrade to?
-sudo bash upgrade.sh intact-20260810           # online
-sudo bash upgrade.sh --package /media/usb/pkg.tar   # air-gapped
+sudo bash scripts/upgrade.sh --list                    # what can I upgrade to?
+sudo bash scripts/upgrade.sh intact-20260810           # online
+sudo bash scripts/upgrade.sh --package /media/usb/pkg.tar   # air-gapped
 ```
+
+## It does not need the platform to be working
+
+This is the point of running it from the shell. `upgrade.sh` talks to docker
+and to this checkout — never to the backend, the dashboard or any API. So it
+works when the platform is broken, which is when you most need it:
+
+- the backend is stopped, crash-looping, or was never installed
+- nginx is down and the dashboard does not load
+- you are on SSH with no browser
+
+Upgrading the backend while the backend is *down* is a supported path and is
+tested: the run loads the new image, checks it compiles, starts the container
+and brings nginx back with it.
+
+Run it however you like — from any directory, by relative or absolute path,
+with `bash` or `sh`, or through a symlink:
+
+```bash
+sudo ln -s /home/tenroot/intact/scripts/upgrade.sh /usr/local/bin/intact-upgrade
+sudo intact-upgrade --list
+```
+
+`--list` and `--help` do not need root. Everything else does, and says so with
+the exact command to re-run.
+
+The one thing that will not work is copying `upgrade.sh` somewhere on its own
+— it reads `lib/`, `modules/` and `config.yaml` from the checkout. It tells
+you that, and prints the path it looked in, rather than failing on a missing
+library later.
 
 ## Before you start
 
 - Upgrade **one release at a time**. Only N→N+1 is ever QA'd, and the module
   upgraders assume they are moving one release, not four. `--list` tells you
   the next one.
-- Nothing needs stopping first. `upgrade.sh` stops and starts what it needs.
+- Nothing needs stopping first. `scripts/upgrade.sh` stops and starts what it needs.
 - The run takes 5–20 minutes depending on how many modules moved and whether
   images have to be downloaded.
 
@@ -126,7 +156,7 @@ printed at the end of every run.
   for the rest. Database dumps are under `backups/<module>/`.
 - **The Velociraptor refresh failed.** Velociraptor itself is fine; artifacts
   or tools may be stale. Re-run just that step:
-  `sudo bash upgrade.sh --velo-refresh --package <dir>`.
+  `sudo bash scripts/upgrade.sh --velo-refresh --package <dir>`.
 - **Re-running is safe.** Modules already at the target version are skipped.
 
 ## Air-gapped upgrades
@@ -140,7 +170,7 @@ bash scripts/prepare_package.sh intact-20260810 /media/usb
 Carry it across and point `--package` at the file or the directory:
 
 ```bash
-sudo bash upgrade.sh --package /media/usb/intact-upgrade-intact-20260810.tar
+sudo bash scripts/upgrade.sh --package /media/usb/intact-upgrade-intact-20260810.tar
 ```
 
 Everything comes from the package; nothing is fetched. If the package is

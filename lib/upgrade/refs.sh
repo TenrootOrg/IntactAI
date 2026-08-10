@@ -104,7 +104,7 @@ for key, tag, size in rows:
 
 newer = [t for k, t, _ in rows if k > cur]
 if newer:
-    print("\n  Next:  sudo bash upgrade.sh %s" % newer[0])
+    print("\n  Next:  sudo bash scripts/upgrade.sh %s" % newer[0])
     if len(newer) > 1:
         # One hop at a time: only N->N+1 is ever QA'd, and the module
         # upgraders assume they are moving one release, not four.

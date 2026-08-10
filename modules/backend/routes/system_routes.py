@@ -98,7 +98,7 @@ def get_system_actions():
     # download button instead of a dead one. Prepare-package was part of the
     # dashboard upgrade flow and went with it -- air-gap packages are built
     # with scripts/prepare_package.sh now, and applied with
-    # `sudo bash upgrade.sh --package`. Historical prepare_package runs stay in
+    # `sudo bash scripts/upgrade.sh --package`. Historical prepare_package runs stay in
     # the list as history; they simply have no download button.
     return jsonify({"actions": actions})
 

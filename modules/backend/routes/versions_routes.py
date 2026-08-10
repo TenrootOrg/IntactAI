@@ -1,7 +1,7 @@
 """Read-only "what is installed" endpoint.
 
 All that remains of routes/upgrade_routes.py. Upgrading is a host-side
-operation now (`sudo bash upgrade.sh`), so there is nothing here that
+operation now (`sudo bash scripts/upgrade.sh`), so there is nothing here that
 applies, prepares, uploads or plans anything -- the dashboard shows the
 operator what is running and tells them the command to change it.
 
@@ -92,6 +92,6 @@ def get_current_versions_route():
         'success': True,
         'versions': versions,
         # Told to the UI rather than hardcoded there, so the two cannot drift.
-        'upgrade_command': 'sudo bash upgrade.sh <release-tag>',
-        'list_command': 'sudo bash upgrade.sh --list',
+        'upgrade_command': 'sudo bash scripts/upgrade.sh <release-tag>',
+        'list_command': 'sudo bash scripts/upgrade.sh --list',
     })

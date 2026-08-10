@@ -16,9 +16,9 @@
 upgrade_usage() {
     cat <<'USAGE'
 Usage:
-  sudo bash upgrade.sh <tag>                    upgrade from a GitHub release
-  sudo bash upgrade.sh --package <file|dir>...  upgrade from local assets
-  sudo bash upgrade.sh --list                   show available releases
+  sudo bash scripts/upgrade.sh <tag>                    upgrade from a GitHub release
+  sudo bash scripts/upgrade.sh --package <file|dir>...  upgrade from local assets
+  sudo bash scripts/upgrade.sh --list                   show available releases
 
 Options:
   --package <path>      A release asset, a directory of them, or a single-file
@@ -79,7 +79,7 @@ parse_upgrade_args() {
             --help|-h)      upgrade_usage; exit 0 ;;
             -*)
                 echo "Unknown option: $1" >&2
-                echo "Try: sudo bash upgrade.sh --help" >&2
+                echo "Try: sudo bash scripts/upgrade.sh --help" >&2
                 exit 2 ;;
             *)
                 if [[ -n "$UPGRADE_TAG" ]]; then
@@ -107,7 +107,7 @@ parse_upgrade_args() {
     fi
     if [[ -z "$UPGRADE_TAG" && ${#UPGRADE_PACKAGE_ARGS[@]} -eq 0 && -z "$UPGRADE_PACKAGE_DIR" ]]; then
         echo "Nothing to upgrade to: give a release tag or --package." >&2
-        echo "Try: sudo bash upgrade.sh --list" >&2
+        echo "Try: sudo bash scripts/upgrade.sh --list" >&2
         exit 2
     fi
     return 0

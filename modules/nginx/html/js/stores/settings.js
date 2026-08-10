@@ -3,7 +3,7 @@ document.addEventListener('alpine:init', () => {
     // Settings store
     Alpine.store('settings', {
         // Read-only "what is running" panel. All that is left of the upgrade
-        // UI: upgrading is `sudo bash upgrade.sh <tag>` on the appliance, so
+        // UI: upgrading is `sudo bash scripts/upgrade.sh <tag>` on the appliance, so
         // the dashboard reports state and shows the command rather than
         // driving a workflow it can no longer see.
         installedVersions: {},

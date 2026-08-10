@@ -1,9 +1,16 @@
 #!/bin/bash
 # Intact.AI — module upgrade, run on the host.
 #
-#   sudo bash upgrade.sh <tag>
-#   sudo bash upgrade.sh --package <file|dir>...
-#   sudo bash upgrade.sh --list
+#   sudo bash scripts/upgrade.sh <tag>
+#   sudo bash scripts/upgrade.sh --package <file|dir>...
+#   sudo bash scripts/upgrade.sh --list
+#
+# STANDALONE BY DESIGN. Nothing here talks to the backend, the dashboard or
+# any API. It needs a shell, docker, and this checkout -- so it works on a box
+# whose backend is stopped, crash-looping, or not installed at all, which is
+# exactly when an operator most needs to upgrade. The only mention of
+# intact_backend anywhere in lib/upgrade/ is as the health probe for the
+# `intact` module itself.
 #
 # THE POINT OF RUNNING ON THE HOST. The previous upgrade engine lived inside
 # the backend container and spent most of its 23,000 lines coping with the
@@ -19,12 +26,60 @@
 # so one broken module cannot strand the other nine half-upgraded. Failures
 # accumulate and there is exactly one exit decision, at the bottom.
 
+# This file is bash, not POSIX sh: arrays, [[ ]], local, ${BASH_SOURCE[0]}.
+# `sh scripts/upgrade.sh` would otherwise die somewhere in the middle with a
+# baffling syntax error instead of at the top with a reason. Re-exec rather
+# than refuse, because typing `sh` is a habit, not a decision.
+if [ -z "${BASH_VERSION:-}" ]; then
+    exec bash "$0" "$@"
+fi
+
 set -o pipefail
 
 # Before $LOG_FILE is created, so the log is not world-writable.
 umask 022
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# ---------------------------------------------------------------------------
+# Locate the checkout. This has to survive every way an operator can invoke a
+# script: from any directory, by relative or absolute path, and through a
+# symlink (`ln -s .../scripts/upgrade.sh /usr/local/bin/intact-upgrade` is the
+# obvious thing to do once this is the documented entry point).
+#
+# `dirname "$0"` handles none of that on its own, and `readlink -f` is
+# GNU-only, so the symlink chain is walked by hand -- resolving each link
+# relative to the directory it lives in, which is what a relative symlink
+# target means.
+# ---------------------------------------------------------------------------
+_self="${BASH_SOURCE[0]}"
+while [ -L "$_self" ]; do
+    _link_dir="$(cd -P "$(dirname "$_self")" && pwd)"
+    _self="$(readlink "$_self")"
+    case "$_self" in
+        /*) ;;                       # absolute target: use as-is
+        *)  _self="${_link_dir}/${_self}" ;;
+    esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$_self")/.." && pwd)"
+unset _self _link_dir
+
+# Fail here, with the path we resolved, rather than 200 lines later with
+# "cannot source lib/common.sh". Someone who copied one file out of the repo
+# gets told that is what happened.
+for _need in install.sh lib/common.sh lib/upgrade/core.sh config.yaml modules; do
+    if [ ! -e "${SCRIPT_DIR}/${_need}" ]; then
+        echo "This does not look like an Intact.AI checkout:" >&2
+        echo "  resolved root: ${SCRIPT_DIR}" >&2
+        echo "  missing:       ${_need}" >&2
+        echo >&2
+        echo "upgrade.sh runs from inside the appliance's checkout — it reads" >&2
+        echo "lib/, modules/ and config.yaml from there. Copying the single" >&2
+        echo "file somewhere else will not work; run it in place:" >&2
+        echo "  sudo bash /path/to/intact/scripts/upgrade.sh --help" >&2
+        exit 2
+    fi
+done
+unset _need
+
 CONFIG_FILE="${SCRIPT_DIR}/config.yaml"
 LOG_FILE="${SCRIPT_DIR}/upgrade_$(date +%Y%m%d_%H%M%S).log"
 _ORIG_ARGS=("$@")
@@ -60,7 +115,14 @@ unset _lib
 main() {
     parse_upgrade_args "${_ORIG_ARGS[@]}"
 
-    touch "$LOG_FILE" 2>/dev/null
+    # The log lives beside install_*.log in the checkout. A non-root caller
+    # running --list or --help on a root-owned checkout cannot create it, and
+    # without this every single log_* line would emit its own "Permission
+    # denied" to stderr. Fall back rather than fail: the read-only commands
+    # have no reason to need a writable repo.
+    if ! touch "$LOG_FILE" 2>/dev/null; then
+        LOG_FILE="$(mktemp -t intact-upgrade-XXXXXX.log 2>/dev/null)" || LOG_FILE=/dev/null
+    fi
     log_info "Intact.AI upgrade — $(date '+%Y-%m-%d %H:%M:%S')"
     log_info "Log: ${LOG_FILE}"
 
@@ -71,7 +133,14 @@ main() {
     fi
 
     # ------------------------------------------------------------ preflight -
-    check_root
+    # Everything past here mutates the appliance, so root is required. Said
+    # with the actual command to run: `check_root` alone prints "must be run
+    # as root", which is true and unhelpful at 3am.
+    if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+        log_error "This needs root — it stops containers, writes module .env files and loads images."
+        log_error "  sudo bash ${SCRIPT_DIR}/scripts/upgrade.sh ${_ORIG_ARGS[*]}"
+        return 2
+    fi
     check_config
 
     DOCKER_BIN="$(command -v docker 2>/dev/null)"
@@ -129,8 +198,16 @@ main() {
     # runs is then always the one shipped WITH the version being installed --
     # which is the thing the old two-phase restart dance was straining to
     # achieve from inside a container it was replacing, for ~1,300 lines.
-    local target_sh="${UPKG_DIR}/source/intact/upgrade.sh"
-    if [[ -z "${INTACT_UPGRADE_REEXEC:-}" && -f "$target_sh" ]]; then
+    # scripts/ is where this lives now; the repo-root path is what packages
+    # built before the move carry, and a package is exactly the kind of thing
+    # that sits on a USB stick for months. Both are accepted.
+    local target_sh=""
+    local _cand
+    for _cand in "${UPKG_DIR}/source/intact/scripts/upgrade.sh" \
+                 "${UPKG_DIR}/source/intact/upgrade.sh"; do
+        [[ -f "$_cand" ]] && { target_sh="$_cand"; break; }
+    done
+    if [[ -z "${INTACT_UPGRADE_REEXEC:-}" && -n "$target_sh" ]]; then
         if ! cmp -s "$target_sh" "${BASH_SOURCE[0]}"; then
             log_info ""
             log_info "This package ships its own upgrade.sh; handing over to it so the"

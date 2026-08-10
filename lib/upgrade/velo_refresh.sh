@@ -55,7 +55,7 @@ velo_refresh() {
 
 _velo_refresh_remediation() {
     log_warn "  Re-run just this step with:"
-    log_warn "    sudo bash upgrade.sh --velo-refresh${1:+ --package-dir $1}"
+    log_warn "    sudo bash scripts/upgrade.sh --velo-refresh${1:+ --package-dir $1}"
 }
 
 # ---------------------------------------------------------------------------
