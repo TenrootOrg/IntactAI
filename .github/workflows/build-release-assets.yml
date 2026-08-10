@@ -382,9 +382,57 @@ jobs:
   #      time, and ship it as part of the asset -- the target machine only
   #      ever needs plain `apt-get` reading a pre-built Packages.gz, never
   #      dpkg-scanpackages/dpkg-dev itself.
-  # Verified end-to-end: `docker run --network none` installing purely from
-  # this bundle succeeded (docker, compose, python3-yaml, lsb_release, jq
-  # all functional) with confirmed zero outbound connections.
+  # -------------------------------------------------------- bootstrap-asset
+  # A small (well under 1 MB) asset carrying just the CODE an operator needs
+  # to START an upgrade: install.sh, lib/*.sh, lib/upgrade/*.sh,
+  # scripts/upgrade.sh. Exists for a box that predates lib/upgrade/ entirely
+  # (e.g. intact-20260726) and therefore has no upgrade.sh to run at all --
+  # downloading a multi-GB module asset just to get an entry point would be
+  # absurd, and is exactly the kind of thing that makes an operator reach for
+  # the legacy single-bundle path instead.
+  #
+  # The bootstrap carries no modules/, no config.yaml, no source/ -- it is
+  # pure code. Once run (`sudo bash bootstrap/scripts/upgrade.sh --root
+  # /opt/intact <tag>`), its OWN acquire phase (upgrade_fetch_release)
+  # downloads the real per-module assets itself, same as any other
+  # tag-based upgrade; the bootstrap is never the thing being applied, only
+  # what makes the box able to ask for what it needs.
+  bootstrap-asset:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+
+      - name: Build the bootstrap asset
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          STAGE_PARENT="$(mktemp -d)"
+          STAGE="${STAGE_PARENT}/${TAG}"
+          mkdir -p "$STAGE"
+          cp -a install.sh lib scripts "$STAGE/"
+          # Neither belongs on a customer box: scripts/ci is CI-only (needs a
+          # full backend image to import services.image_map) and scripts/dev
+          # fabricates test packages FROM a live tree -- shipping it is how
+          # scripts/dev/make_test_package.sh's own secret-leak class would
+          # travel to a customer instead of just this repo.
+          rm -rf "${STAGE}/scripts/ci" "${STAGE}/scripts/dev"
+          bash -n "${STAGE}/scripts/upgrade.sh"
+          tar -C "$STAGE_PARENT" -cf "out/${TAG}-bootstrap.tar" "$TAG"
+          sha256sum "out/${TAG}-bootstrap.tar" | awk '{print $1}' \
+            > "out/${TAG}-bootstrap.tar.sha256"
+          ls -lh out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap
+          path: out/*
+          retention-days: 3
+
   system-bundle:
     needs: resolve
     runs-on: ubuntu-latest
@@ -597,9 +645,212 @@ jobs:
           path: out/*
           retention-days: 3
 
+  # -------------------------------------------------------------- verify
+  # Two checks against the FILES a customer will actually download, not
+  # against the builder's own claims about them.
+  #
+  # 1. PACKAGE SHAPE. Every asset must extract to the shared
+  #    intact-upgrade-<tag>/ top level, carry its manifests/<module>.json
+  #    sidecar, and -- this is the check that would have caught the exact
+  #    leak scripts/dev/make_test_package.sh demonstrated on a live box --
+  #    contain neither config.yaml, nor a module's live .env, nor a TLS/CA
+  #    private key, nor a secrets/ directory. The intact asset additionally
+  #    must carry a syntactically valid source/intact/scripts/upgrade.sh,
+  #    since that is exactly the file the stage-0 hop execs into on every
+  #    single upgrade.
+  # 2. SECRETS. gitleaks against the extracted tree, same config the repo
+  #    itself is scanned with (secret-scan.yml) -- a DIFFERENT artifact than
+  #    the git history that workflow covers, and the one a customer's
+  #    air-gap USB stick actually carries.
+  verify-assets:
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: all
+          pattern: asset-*
+
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          VERSION="8.21.2"
+          curl -fsSL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Check every asset shape and scan it for secrets
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          fail=0
+          for dir in all/asset-*; do
+            mod="$(basename "$dir" | sed 's/^asset-//')"
+            echo "=== ${mod} ==="
+
+            pkg="$(find "$dir" -maxdepth 1 \( -name "*.tar" -o -name "*.tar.gz" \) | head -1)"
+            if [ -z "$pkg" ]; then
+              part1="$(find "$dir" -maxdepth 1 -name '*.part-00' | head -1)"
+              if [ -z "$part1" ]; then
+                echo "::error::${mod}: no asset tarball in ${dir}"; fail=1; continue
+              fi
+              pkg="${dir}/reassembled-${mod}.tar"
+              cat "${part1%.part-00}".part-* > "$pkg"
+            fi
+
+            ex="$(mktemp -d)"
+            case "$pkg" in
+              *.tar.gz) tar -xzf "$pkg" -C "$ex" ;;
+              *)        tar -xf  "$pkg" -C "$ex" ;;
+            esac
+
+            roots="$(find "$ex" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+            if [ "$roots" != "1" ]; then
+              echo "::error::${mod}: expected one top-level dir in the asset, found ${roots}"
+              fail=1
+            fi
+            root="$(find "$ex" -mindepth 1 -maxdepth 1 -type d | head -1)"
+
+            if [ -n "$root" ] && [ ! -f "${root}/manifests/${mod}.json" ]; then
+              echo "::error::${mod}: missing manifests/${mod}.json sidecar"
+              fail=1
+            fi
+
+            if [ "$mod" = "intact" ] && [ -n "$root" ]; then
+              up="${root}/source/intact/scripts/upgrade.sh"
+              if [ ! -f "$up" ]; then
+                echo "::error::intact: no source/intact/scripts/upgrade.sh -- the stage-0 hop has nothing to exec into"
+                fail=1
+              elif ! bash -n "$up"; then
+                echo "::error::intact: source/intact/scripts/upgrade.sh does not parse"
+                fail=1
+              fi
+            fi
+
+            # The exact leak class scripts/dev/make_test_package.sh
+            # demonstrated: config.yaml, a module live .env, a TLS/CA
+            # private key, a secrets/ directory. None of these belong in a
+            # package a customer downloads.
+            if [ -n "$root" ]; then
+              bad="$(find "$root" \( \
+                    -name 'config.yaml' \
+                 -o -path '*/modules/*/.env' \
+                 -o -name '*.key' -o -name '*.pem' \
+                 -o -type d -name 'secrets' \
+                \) 2>/dev/null)"
+              if [ -n "$bad" ]; then
+                echo "::error::${mod}: package carries file(s) that must never ship:"
+                echo "$bad" | sed 's/^/::error::  /'
+                fail=1
+              fi
+
+              echo "[gitleaks] scanning ${mod} asset..."
+              if ! gitleaks detect --source "$root" --no-git --no-banner --redact \
+                     --config "${GITHUB_WORKSPACE}/.gitleaks.toml"; then
+                echo "::error::${mod}: gitleaks found a secret in the built asset"
+                fail=1
+              fi
+            fi
+
+            rm -rf "$ex"
+          done
+          exit $fail
+
+  # ----------------------------------------------------------- dry-run-apply
+  # The package this job downloads is EXACTLY what a customer would get.
+  # Nothing before this point has ever run upgrade.sh against a real,
+  # CI-built release -- every prior proof used a synthetic package built by
+  # scripts/dev/make_test_package.sh from the live tree, which cannot catch a
+  # defect in the CI packaging path itself (this is how the missing root
+  # manifest.json escaped a full 8-module live run). --dry-run stops before
+  # anything is actually swapped, so this needs no real module containers and
+  # takes seconds, not the ~90 minutes `build` takes.
+  #
+  # The fixture appliance root is this checkout own tracked config.yaml and
+  # modules/*/.env, not a genuinely older release pins -- CI has no cheap way
+  # to know what "the previous release" was. That is a deliberate
+  # simplification: exhaustive downgrade-refusal / plan-diff coverage against
+  # many pin combinations already lives in tests/test_upgrade_plan.sh with
+  # synthetic fixtures. What THIS job proves cannot be proven any other way --
+  # that the real package this run built actually ACQUIRES, VERIFIES and
+  # PLANS against a real appliance root, through the stage-0 hop, with the
+  # code CI just built.
+  dry-run-apply:
+    needs: [resolve, build, index]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: all
+          pattern: asset-*
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: all
+          pattern: release-index
+
+      - name: bash -n and shellcheck the code this run will actually execute
+        run: |
+          set -euo pipefail
+          bash -n scripts/upgrade.sh lib/upgrade/*.sh
+          if command -v shellcheck >/dev/null; then
+            shellcheck --severity=error scripts/upgrade.sh lib/upgrade/*.sh
+          fi
+
+      - name: Build a fixture appliance root
+        run: |
+          set -euo pipefail
+          mkdir -p fixture/modules fixture/lib fixture/data/tmp
+          cp install.sh config.yaml fixture/
+          for d in modules/*/; do
+            m="$(basename "$d")"
+            [ -f "${d}.env" ] || continue
+            mkdir -p "fixture/modules/${m}"
+            cp "${d}.env" "fixture/modules/${m}/.env"
+          done
+          ls fixture/modules
+
+      - name: Collect this release assets into one package dir, reassembling any split parts
+        run: |
+          set -euo pipefail
+          mkdir -p pkgdir
+          shopt -s nullglob
+          for f in all/asset-*/*; do
+            case "$f" in
+              *.meta.json|*.manifest.json|*.part-*) continue ;;
+            esac
+            cp "$f" pkgdir/
+          done
+          for part1 in all/asset-*/*.part-00; do
+            [ -e "$part1" ] || continue
+            whole="pkgdir/$(basename "${part1%.part-00}")"
+            cat "${part1%.part-00}".part-* > "$whole"
+          done
+          for m in all/release-index/*.manifest.json; do
+            [ -e "$m" ] || continue
+            cp "$m" pkgdir/manifest.json
+          done
+          ls -lh pkgdir
+
+      - name: Dry-run apply against the fixture
+        run: |
+          set -euo pipefail
+          sudo bash scripts/upgrade.sh --root "${GITHUB_WORKSPACE}/fixture" \
+            --package pkgdir --dry-run
+
   # ----------------------------------------------------------------- attach
   publish:
-    needs: [resolve, build, index, system-bundle]
+    needs: [resolve, build, index, system-bundle, bootstrap-asset, verify-assets, dry-run-apply]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -626,6 +877,11 @@ jobs:
         with:
           path: all
           pattern: system-bundle
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: all
+          pattern: bootstrap
 
       # No toolchain-reclaiming step here, deliberately. This job holds ONE
       # copy of the release (~8 GB) on a runner with ~21 GB free -- it used to
@@ -719,6 +975,7 @@ jobs:
               -o -name "$TAG.manifest.json" \
               -o -name "$TAG-system-bundle.tar" \
               -o -name "$TAG-system-bundle.tar.sha256" \
+              -o -name "$TAG-bootstrap.tar.sha256" \
             \) -print0 \
             | sort -z \
             | xargs -0 gh release upload "$TAG" --clobber
