@@ -227,6 +227,38 @@ main() {
         return 2
     fi
 
+    # Ctrl-C / SIGTERM from here on unwinds whatever module is in flight and
+    # stops whatever step is running, instead of leaving both exactly where
+    # they were. Registered once we know we are actually going to touch the
+    # appliance -- --list and --help never reach this line.
+    u_install_interrupt_trap
+
+    # ---------------------------------------------------------------- lock -
+    # Two concurrent runs would interleave `compose down`/`up` and .env
+    # stamping against the SAME module directories -- there is no per-module
+    # locking, only this one. `flock` on an fd held for the rest of the
+    # process's life (released automatically at exit, whichever path gets
+    # there) rather than a PID file: a PID file left behind by a killed -9
+    # process is indistinguishable from one still running; an flock cannot be
+    # held by a dead process, by construction.
+    #
+    # The fd survives the stage-0 hop's `exec` unchanged (exec does not close
+    # descriptors that were not opened with the close-on-exec flag), so the
+    # lock stays held continuously from before the hop through to the
+    # process that actually finishes -- there is no gap where a second
+    # invocation could slip in between "handing over" and the target
+    # release's own upgrade.sh resuming.
+    if [[ -z "${INTACT_UPGRADE_REEXEC:-}" ]]; then
+        mkdir -p "${SCRIPT_DIR}/data/tmp" 2>/dev/null || true
+        exec 9>"${SCRIPT_DIR}/data/tmp/upgrade.lock" 2>/dev/null || true
+        if ! flock -n 9; then
+            log_error "Another upgrade is already running against this appliance."
+            log_error "  If you are certain nothing is running, remove:"
+            log_error "  ${SCRIPT_DIR}/data/tmp/upgrade.lock"
+            return 2
+        fi
+    fi
+
     # ------------------------------------------------------- velo-refresh ---
     if (( UPGRADE_VELO_REFRESH_ONLY )); then
         if ! declare -F velo_refresh >/dev/null; then

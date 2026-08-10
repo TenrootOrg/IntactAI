@@ -164,21 +164,41 @@ u_do() {
 # fine here, because every step's effect is on files, .env or docker, never on
 # shell state.
 U_LAST_ELAPSED=""
+# The PID (== process group ID, see below) of whatever step is currently
+# running under a deadline, or "" between steps. INT/TERM's handler
+# (_u_handle_interrupt, below) reads this to know what to kill.
+_U_RUNNING_PID=""
+
 _u_run_with_deadline() {
     local secs="$1" label="$2"; shift 2
     local start=$SECONDS next_beat=60
 
+    # `set -m` for the instant of forking only, so the subshell becomes its
+    # own process-group LEADER (pgid == pid) instead of sharing this script's
+    # group -- the standard bash technique for "kill this whole job tree",
+    # since `setsid` (an external binary) cannot be pointed at "$@" when "$@"
+    # is a bash FUNCTION rather than an executable. Without this, killing
+    # $pid alone on a timeout or an interrupt reaps the subshell but leaves
+    # whatever it started (docker load, tsctl db upgrade, ...) running with
+    # no supervisor -- confirmed live: a plain `kill -TERM "$pid"` here does
+    # not touch that child.
+    local _had_job_control=0
+    case "$-" in *m*) _had_job_control=1 ;; esac
+    set -m
     ( "$@" ) &
     local pid=$!
+    (( _had_job_control )) || set +m
+    _U_RUNNING_PID="$pid"
 
     while kill -0 "$pid" 2>/dev/null; do
         local now=$(( SECONDS - start ))
         if (( now >= secs )); then
             log_error "  ${label} exceeded ${secs}s — killing it"
-            kill -TERM "$pid" 2>/dev/null
+            kill -TERM "-${pid}" 2>/dev/null
             sleep 2
-            kill -KILL "$pid" 2>/dev/null
+            kill -KILL "-${pid}" 2>/dev/null
             wait "$pid" 2>/dev/null
+            _U_RUNNING_PID=""
             U_LAST_ELAPSED="$now"
             return 124
         fi
@@ -191,6 +211,7 @@ _u_run_with_deadline() {
 
     wait "$pid"
     local rc=$?
+    _U_RUNNING_PID=""
     U_LAST_ELAPSED=$(( SECONDS - start ))
     return $rc
 }
@@ -301,6 +322,19 @@ u_end() {
     fi
 
     # ---- unwind -----------------------------------------------------------
+    _u_unwind_current
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# _u_unwind_current — run U_UNDO LIFO for whatever transaction is open.
+#
+# Factored out of u_end so the INT/TERM handler below can call the EXACT
+# same unwind a normal failure gets, instead of a second hand-rolled copy
+# that could drift from it.
+# ---------------------------------------------------------------------------
+_u_unwind_current() {
+    local module="${U_MODULE}"
     log_warn "${module}: rolling back (${U_LABEL}, rc=${U_RC})"
     local i undo_failed=0
     for (( i = ${#U_UNDO[@]} - 1; i >= 0; i-- )); do
@@ -325,7 +359,57 @@ u_end() {
 
     U_UNDO=()
     U_MODULE=""
-    return 1
+    return $(( undo_failed ))
+}
+
+# ---------------------------------------------------------------------------
+# u_install_interrupt_trap — call once, from scripts/upgrade.sh's main(),
+# after the bootstrap and before the module loop.
+#
+# Without this, Ctrl-C (or a systemd stop, or a killed SSH session) mid-run:
+#   1. never unwinds U_UNDO -- whatever the interrupted module had already
+#      done (a `compose down`, a stamped .env, a `docker volume rm`) stays
+#      exactly where it was, since only u_end's normal failure path ever
+#      called the unwind;
+#   2. orphans whatever step was running under a `u_do --timeout` deadline --
+#      that subshell IS the process this script's own trap-free exit leaves
+#      behind, since a plain `exit` does not propagate to background jobs.
+#
+# A second signal while cleanup is already running is let through to the
+# shell default (SIGTERM/SIGINT terminates immediately) rather than trying to
+# be clever about an interrupt during an interrupt.
+# ---------------------------------------------------------------------------
+_U_INTERRUPTED=0
+_u_handle_interrupt() {
+    (( _U_INTERRUPTED )) && return
+    _U_INTERRUPTED=1
+    trap - INT TERM
+
+    log_warn ""
+    log_warn "Interrupted — cleaning up before exiting."
+
+    if [[ -n "$_U_RUNNING_PID" ]]; then
+        log_warn "  stopping the in-flight step (pid ${_U_RUNNING_PID})..."
+        kill -TERM "-${_U_RUNNING_PID}" 2>/dev/null
+        sleep 2
+        kill -KILL "-${_U_RUNNING_PID}" 2>/dev/null
+        wait "$_U_RUNNING_PID" 2>/dev/null
+        _U_RUNNING_PID=""
+    fi
+
+    if [[ -n "$U_MODULE" ]]; then
+        U_FAILED=1
+        [[ -z "$U_LABEL" ]] && { U_LABEL="interrupted"; U_RC=130; }
+        _u_unwind_current
+    fi
+
+    print_upgrade_report
+    log_error "Upgrade interrupted (exit 130)."
+    exit 130
+}
+
+u_install_interrupt_trap() {
+    trap _u_handle_interrupt INT TERM
 }
 
 # ---------------------------------------------------------------------------
