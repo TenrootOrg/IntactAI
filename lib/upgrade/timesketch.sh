@@ -55,7 +55,19 @@ upgrade_module_timesketch() {
         have_dump=1
     fi
 
-    # 3. Would this upgrade change the Postgres MAJOR? If so the data volume
+    # 3. Back up .env BEFORE the first thing that writes to it. The sidecar
+    #    stamp below is a mutation, so taking the backup after it would
+    #    snapshot an already-modified file and a rollback would "restore" the
+    #    new POSTGRES_VERSION -- leaving the pin pointing at a major the
+    #    rolled-back stack was never running.
+    bak="$(backup_file_for_rollback "$envf")" || bak=""
+
+    # 4. Sidecar pins, before the Postgres-major check below reads
+    #    POSTGRES_VERSION out of .env -- stamping after it would compare the
+    #    running major against the OLD pin and miss the migration entirely.
+    u_do "stamp timesketch sidecar pins" -- _u_stamp_transitive timesketch
+
+    # 5. Would this upgrade change the Postgres MAJOR? If so the data volume
     #    has to be wiped and restored, and that is only safe with a dump.
     u_do "check for a Postgres major change" -- _ts_detect_pg_major_change "$envf"
     pg_migrate="${_TS_PG_MIGRATE:-0}"
@@ -69,7 +81,7 @@ upgrade_module_timesketch() {
         U_FAILED=1; U_LABEL="pg_dump failed before a required Postgres major migration"; U_RC=1
     fi
 
-    # 4. Cheap sanity snapshot. Four numbers in two round-trips, not the 18
+    # 6. Cheap sanity snapshot. Four numbers in two round-trips, not the 18
     #    tables the Python counted -- the point is to notice evidence
     #    disappearing, and a sketch or timeline vanishing is what that looks
     #    like.
@@ -79,10 +91,9 @@ upgrade_module_timesketch() {
         log_info "  before: ${before_counts}"
     fi
 
-    # 5. Alembic bootstrap MUST happen against the still-running OLD container.
+    # 7. Alembic bootstrap MUST happen against the still-running OLD container.
     u_do --timeout 600 "bootstrap alembic if untracked" -- _ts_bootstrap_alembic "$U_FROM"
 
-    bak="$(backup_file_for_rollback "$envf")" || bak=""
     u_undo "_ts_bring_back_up"
     [[ -n "$bak" ]] && u_undo "restore_file_from_backup '${envf}' '${bak}'"
     (( have_dump )) && u_undo "_ts_restore_db '${dump}'"
@@ -103,7 +114,20 @@ upgrade_module_timesketch() {
     u_do --timeout 900 "start timesketch" -- _u_compose "$dir" up -d --no-build --pull never
     u_do --timeout 600 "wait for gunicorn" -- _ts_wait_gunicorn
 
-    # 6. Schema migration, on the NEW image, against a database whose alembic
+    # 8. A Postgres-major migration restores the dump taken at step 2 -- which
+    #    was taken BEFORE step 7 stamped alembic_version, so the restored
+    #    database has no alembic table at all and the schema upgrade below
+    #    would (correctly) refuse to run against it. Re-stamp against the OLD
+    #    version, which is what the restored schema actually is.
+    #
+    #    Found by running a real 13 -> 15 migration: the data restored fine and
+    #    then the run rolled itself back on "alembic_version is empty".
+    if (( pg_migrate )); then
+        u_do --timeout 600 "re-stamp alembic after the Postgres migration" -- \
+            _ts_bootstrap_alembic "$U_FROM"
+    fi
+
+    # 9. Schema migration, on the NEW image, against a database whose alembic
     #    state is known.
     u_do --timeout 900 "apply database migrations" -- _ts_db_upgrade "$target"
 

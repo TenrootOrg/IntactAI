@@ -105,6 +105,23 @@ for r, _, files in os.walk(root):
         shas[rel] = sha(full)
 versions = dict(p.split("=", 1) for p in pins)
 versions.setdefault("intact", tag)
+
+# Sidecar pins go in contents.transitive_versions, the shape the real CI
+# packager emits and the shape _u_stamp_transitive reads. Named on the
+# command line as <module>_<dep>=<version>, e.g. timesketch_postgres=15.6-alpine.
+_DEPS = {
+    "timesketch": ("opensearch", "postgres", "redis", "nginx"),
+    "iris": ("rabbitmq",),
+    "volweb": ("postgres", "redis"),
+    "intact": ("tusd",),
+}
+transitive = {}
+for mod, deps in _DEPS.items():
+    for dep in deps:
+        key = ("backend_tusd" if (mod, dep) == ("intact", "tusd")
+               else "%s_%s" % (mod, dep))
+        if key in versions:
+            transitive.setdefault(mod, {})[dep] = versions.pop(key)
 json.dump({
     "package_version": "1.0",
     "created": "1970-01-01T00:00:00Z",
@@ -113,11 +130,12 @@ json.dump({
     "contents": {
         "release_tag": tag,
         "pins_source": "target-release",
+        "transitive_versions": transitive,
         "sha256": shas,
     },
 }, open(os.path.join(root, "manifest.json"), "w"), indent=2)
-print("[make-test-package] manifest: %d pins, %d checksummed files"
-      % (len(versions), len(shas)))
+print("[make-test-package] manifest: %d pins, %d sidecar pin(s), %d checksummed files"
+      % (len(versions), sum(len(v) for v in transitive.values()), len(shas)))
 PY
 
 mkdir -p "$(dirname "$OUT")"

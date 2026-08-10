@@ -85,6 +85,98 @@ _u_load_tars_matching() {
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# _u_stamp_transitive <module>
+#
+# Sidecar pins: OpenSearch, Postgres, Redis, RabbitMQ, nginx, tusd. These are
+# NOT the module's own version -- they are the versions of the containers it
+# runs alongside, and every one of them is interpolated by the module's
+# compose file as ${VAR:?...}.
+#
+# Without this an upgrade moves the application image and leaves its sidecars
+# on the old pins, silently: the compose file still resolves, the stack still
+# comes up, and Timesketch 20261201 ends up talking to the OpenSearch 2.19.5
+# it was never tested against. Nothing errors. That is why the Python did this
+# before every compose-up (base.py:stamp_transitive_env_from_manifest) and why
+# its absence here was a real gap rather than a missing nicety.
+#
+# The MANIFEST wins over config.yaml. config.yaml only carries the new sidecar
+# pins after the `intact` module has merged them in, and intact can be skipped
+# (--only elk) or can fail -- in either case config.yaml still holds the OLD
+# values while the package plainly states the new ones.
+_u_stamp_transitive() {
+    local module="$1"
+    local pairs=() pair env_var cfg_key value src
+    case "$module" in
+        timesketch) pairs=("OPENSEARCH_VERSION:opensearch:timesketch_opensearch"
+                           "POSTGRES_VERSION:postgres:timesketch_postgres"
+                           "REDIS_VERSION:redis:timesketch_redis"
+                           "NGINX_VERSION:nginx:timesketch_nginx") ;;
+        iris)       pairs=("RABBITMQ_VERSION:rabbitmq:iris_rabbitmq") ;;
+        volweb)     pairs=("VOLWEB_POSTGRES_VERSION:postgres:volweb_postgres"
+                           "VOLWEB_REDIS_VERSION:redis:volweb_redis") ;;
+        intact)     pairs=("TUSD_VERSION:tusd:backend_tusd") ;;
+        *)          return 0 ;;
+    esac
+
+    local envf
+    [[ "$module" == "intact" ]] && envf="${SCRIPT_DIR}/modules/backend/.env" \
+                                || envf="$(_u_env_file "$module")"
+    [[ -f "$envf" ]] || { log_warn "  no ${envf} to stamp sidecar pins into"; return 0; }
+
+    local n=0
+    for pair in "${pairs[@]}"; do
+        env_var="${pair%%:*}"
+        local rest="${pair#*:}"
+        local man_key="${rest%%:*}"
+        cfg_key="${rest#*:}"
+
+        value="$(_u_manifest_transitive "$module" "$man_key")"
+        src="package manifest"
+        if [[ -z "$value" ]]; then
+            value="$(read_config "['versions']['${cfg_key}']" 2>/dev/null || echo '')"
+            [[ "$value" == "None" ]] && value=""
+            src="config.yaml"
+        fi
+        if [[ -z "$value" ]]; then
+            # Loud, because the compose file's ${VAR:?...} will fail the very
+            # next step and the reason would otherwise be a bare compose error.
+            log_warn "  no value for ${env_var} (manifest or versions.${cfg_key}); leaving it as-is"
+            continue
+        fi
+        local current; current="$(read_env_var "$envf" "$env_var" 2>/dev/null || echo '')"
+        if [[ "$current" != "$value" ]]; then
+            update_env_var "$envf" "$env_var" "$value" || return 1
+            log_info "  sidecar pin ${env_var}: ${current:-unset} -> ${value} (from ${src})"
+            n=$((n + 1))
+        fi
+    done
+    (( n == 0 )) && log_info "  sidecar pins already current"
+    return 0
+}
+
+# contents.transitive_versions.<module>.<dep> from the package manifest.
+_u_manifest_transitive() {
+    [[ -f "${UPKG_MANIFEST:-}" ]] || return 0
+    python3 - "$UPKG_MANIFEST" "$1" "$2" <<'PY' 2>/dev/null
+import json, sys
+try:
+    m = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+tv = ((m.get("contents") or {}).get("transitive_versions") or {}).get(sys.argv[2]) or {}
+# Accept either the dep name ('postgres') or the env var ('POSTGRES_VERSION')
+# as the key: the CI packager has emitted both shapes over time.
+v = tv.get(sys.argv[3])
+if v is None:
+    for k, val in tv.items():
+        if k.lower().startswith(sys.argv[3].lower()):
+            v = val
+            break
+print(v if v is not None else "")
+PY
+}
+
 # Stamp one or more KEY=value pins, failing if any write fails.
 _u_stamp() {
     local envf="$1"; shift
@@ -299,6 +391,7 @@ upgrade_module_iris() {
 
     u_do --timeout 300 "stop iris" -- _u_compose "$dir" down --remove-orphans
     u_do "stamp iris pin" -- _u_stamp "$envf" "IRIS_VERSION=${target}"
+    u_do "stamp iris sidecar pins" -- _u_stamp_transitive iris
     u_do "iris web certificate" -- ensure_iris_web_cert
     u_do --timeout 900 "start iris" -- _u_compose "$dir" up -d --no-build --pull never
 
@@ -493,6 +586,7 @@ upgrade_module_volweb() {
     # One config.yaml pin drives both images.
     u_do "stamp volweb pins" -- _u_stamp "$envf" \
         "VOLWEB_BACKEND_VERSION=${target}" "VOLWEB_FRONTEND_VERSION=${target}"
+    u_do "stamp volweb sidecar pins" -- _u_stamp_transitive volweb
     u_do --timeout 900 "start volweb" -- _u_volweb_compose_up "$dir"
 
     # Policy 'report', matching the Python: a DOWN VolWeb is named loudly but

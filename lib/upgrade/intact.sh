@@ -77,6 +77,7 @@ upgrade_module_intact() {
 
     # 5. Swap.
     u_do "stamp BACKEND_VERSION and VERSION" -- _intact_stamp "$envf" "$target"
+    u_do "stamp backend sidecar pins" -- _u_stamp_transitive intact
     u_do --timeout 600 "recreate the backend" -- _intact_bring_up
 
     u_end intact rollback 240
