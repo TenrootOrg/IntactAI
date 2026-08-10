@@ -121,6 +121,20 @@ if index:
         print("__MISSING__" + ", ".join(sorted(missing)))
         sys.exit(0)
 
+    # The merged root manifest.json: build-release-assets.yml index job
+    # publishes it as its own release asset, built from every module asset
+    # manifests/<module>.json sidecar -- see that job for why the merge lives
+    # there and not here. The index dict above was built before that asset
+    # existed as a concept and records no whole-file hash for it, so it rides
+    # on GitHub own per-asset digest (own_digest below) instead, same as
+    # every unsplit asset already does. A release cut before this existed
+    # simply has no such name in names, and this is then a no-op --
+    # upkg_read_manifest own message is what tells that operator to use the
+    # upgrade.sh shipped with the release instead.
+    manifest_name = f"{tag}.manifest.json"
+    if manifest_name in names:
+        want.append((manifest_name, manifest_name, ""))
+
 # No index: an older release, carrying the single bundle. GitHub publishes a
 # per-asset digest of its own ("sha256:...") -- exact for an unsplit file, and
 # all that shape ever is.
@@ -377,6 +391,15 @@ for n, whole, sha in sorted(set(want)):
     log_success "  ${#INTACT_PACKAGES[@]} asset(s) ready (${verified} checksum-verified)"
     if (( unverified > 0 )); then
         log_warn "  ${unverified} asset(s) had no checksum in the release index — integrity unverified"
+    fi
+
+    # Renamed to a fixed name so lib/upgrade/package.sh's upkg_expand_args
+    # finds it by a plain `*.manifest.json` glob without needing to know this
+    # release's tag. Not part of INTACT_PACKAGES: install.sh has no use for it
+    # (it verifies per-asset, not per-file), and every glob above already
+    # ignores it since it isn't *.tar/*.tar.gz.
+    if [[ -f "${dest_dir}/${tag}.manifest.json" ]]; then
+        mv "${dest_dir}/${tag}.manifest.json" "${dest_dir}/manifest.json"
     fi
     return 0
 }

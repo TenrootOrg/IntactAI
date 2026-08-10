@@ -29,6 +29,7 @@ SUPPORTED_PACKAGE_FORMAT=1
 
 UPKG_DIR=""          # the extracted, merged package tree
 UPKG_MANIFEST=""     # $UPKG_DIR/manifest.json
+UPKG_LOOSE_MANIFEST="" # a manifest.json found beside the assets, not inside one
 # What to rm -rf at the end. NOT a plain assignment: the stage-0 hop in
 # scripts/upgrade.sh exports this before `exec`-ing into the target release's
 # upgrade.sh so the process that actually reaches upkg_cleanup can still
@@ -49,12 +50,24 @@ UPKG_MANIFEST=""     # $UPKG_DIR/manifest.json
 # ---------------------------------------------------------------------------
 upkg_expand_args() {
     UPKG_ASSETS=()
+    UPKG_LOOSE_MANIFEST=""
     local p f listing unwrap
     for p in "$@"; do
         if [[ -d "$p" ]]; then
             while IFS= read -r f; do UPKG_ASSETS+=("$f"); done \
                 < <(find "$p" -maxdepth 1 \( -name '*.tar.gz' -o -name '*.tar' \) \
                          ! -name '*-system-bundle.tar' | sort)
+            # The merged root manifest.json, if it's sitting beside the module
+            # tarballs -- either download_release_assets already renamed it
+            # (lib/release.sh), or an operator downloaded
+            # <tag>.manifest.json by hand into a --package directory without
+            # renaming it. Neither shape is a tar, so the glob above never
+            # sees it; upkg_extract places it into the merged tree below.
+            if [[ -z "$UPKG_LOOSE_MANIFEST" ]]; then
+                UPKG_LOOSE_MANIFEST="$(find "$p" -maxdepth 1 \
+                    \( -name 'manifest.json' -o -name '*.manifest.json' \) \
+                    2>/dev/null | head -1)"
+            fi
         elif [[ -f "$p" ]]; then
             UPKG_ASSETS+=("$p")
         else
@@ -213,6 +226,18 @@ upkg_extract() {
 
     UPKG_DIR="${work}/${roots}"
     UPKG_MANIFEST="${UPKG_DIR}/manifest.json"
+
+    # Place the loose manifest.json (see upkg_expand_args) into the merged
+    # tree, UNLESS one of the extracted assets already carries its own --
+    # a legacy single-bundle package embeds manifest.json inside its own
+    # shared top-level dir, and that one describes exactly what was
+    # extracted; a loose one sitting beside it would be for a different
+    # release entirely and must never silently win.
+    if [[ -n "$UPKG_LOOSE_MANIFEST" && -f "$UPKG_LOOSE_MANIFEST" && ! -f "$UPKG_MANIFEST" ]]; then
+        cp "$UPKG_LOOSE_MANIFEST" "$UPKG_MANIFEST"
+        log_info "  placed the merged manifest.json alongside the extracted assets"
+    fi
+
     log_success "Package extracted: $(basename "$UPKG_DIR")"
     return 0
 }
