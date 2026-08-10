@@ -58,63 +58,27 @@ import os
 import shutil
 import sys
 
-# The backend package is at /app inside the image.
+# The backend package is at /app inside the image (needed by packager/package.py's
+# `from services.image_map import ...` and its guarded tools_download_service
+# import -- see that file's docstring for why those stay backend imports).
 if "/app" not in sys.path:
     sys.path.insert(0, "/app")
 
+# `packager/` is a sibling of this script (scripts/ci/packager/), which is
+# already on sys.path[0] when this runs as `python3 .../build_release_package.py`
+# -- no extra path manipulation needed for `from packager... import ...` below.
+
 
 def _upgrade_order():
-    """UPGRADE_ORDER, without importing the whole backend service graph.
-
-    `resolve` (see build-release-assets.yml) runs this on a bare runner with
-    only pyyaml + requests installed, deliberately -- spinning up the packager
-    container just to answer "what would this build?" would cost a container
-    build before the matrix it plans even exists. But `services` is a regular
-    Python package, and `import services.upgrade` -- however it's spelled --
-    runs `services/__init__.py` FIRST regardless of which submodule you
-    actually asked for. That file eagerly imports every service the running
-    backend needs, including `services.velociraptor_service`, which needs
-    `grpc` -- a module-specific dependency (requirements-velociraptor.txt),
-    never installed on a bare runner and not something this query has any use
-    for.
-
-    Standing in for that `__init__.py` with an empty stub, keyed into
-    sys.modules before the real import runs, satisfies Python's requirement
-    that the parent package exist without running its body. `services.upgrade`
-    then loads for real off disk under the stub's `__path__`, and its own
-    imports (requests, PyYAML, `services.storage` — sqlite3, stdlib) are light
-    enough for exactly the two packages this job installs.
-
-    Where the real `services/` dir IS depends on the caller: inside the
-    packager container it's baked at `/app/services` (see the sys.path insert
-    above); on the bare `resolve` runner it's wherever PYTHONPATH points,
-    `$GITHUB_WORKSPACE/modules/backend/services`. Rather than assume either,
-    find it the same way `import` itself would — the first sys.path entry that
-    actually has a `services/upgrade/` under it.
+    """UPGRADE_ORDER, read from lib/upgrade/plan.sh -- the definition that
+    actually drives the module loop. See packager/order.py's docstring for why
+    parsing bash beats importing Python here: this used to fake a `services`
+    package in sys.modules to dodge services/__init__.py's eager grpc import,
+    which was fragile (grpc is nowhere near this question) and broke outright
+    once services/upgrade/ -- what that stub was reaching for -- was deleted.
     """
-    import types
-    import io
-    if "services" not in sys.modules:
-        real_dir = next(
-            (os.path.join(p, "services") for p in sys.path
-             if os.path.isfile(os.path.join(p, "services", "upgrade", "__init__.py"))),
-            None,
-        )
-        if not real_dir:
-            raise RuntimeError(
-                "Can't find services/upgrade/__init__.py on any sys.path entry "
-                f"({sys.path}) — is INTACT_PATH/PYTHONPATH set to the checkout?")
-        stub = types.ModuleType("services")
-        stub.__path__ = [real_dir]
-        sys.modules["services"] = stub
-    # Suppress storage initialization logs during import.
-    old_stdout = sys.stdout
-    sys.stdout = io.StringIO()
-    try:
-        from services.upgrade import UPGRADE_ORDER
-    finally:
-        sys.stdout = old_stdout
-    return UPGRADE_ORDER
+    from packager.order import upgrade_order
+    return upgrade_order()
 
 
 # THE release scope. Order is irrelevant (UPGRADE_ORDER drives packaging); this
@@ -358,7 +322,7 @@ def _verify_package_usable(result: dict, tag: str):
     # way prepare decided whether to bake. Reuse that helper rather than
     # re-deriving the rule here.
     try:
-        from services.upgrade.intact import backend_full_mode
+        from packager.backend_mode import backend_full_mode
         src_root = os.path.join(os.environ.get("INTACT_PATH", "/app/workdir"))
         target_compose = os.path.join(src_root, "modules", "backend",
                                       "docker-compose.yaml")
@@ -473,7 +437,7 @@ def main() -> int:
               flush=True)
         return 1
 
-    from services.upgrade.package import prepare_upgrade_package
+    from packager.package import prepare_upgrade_package
     scope = f"module {args.module}" if args.module else "bundle"
     print(f"[ci-package] release {args.tag} ({scope}) @ {commit[:12] or '?'}: "
           f"building {', '.join(modules)}", flush=True)
