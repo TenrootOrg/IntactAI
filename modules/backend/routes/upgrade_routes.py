@@ -159,8 +159,11 @@ def _read_package_manifest(package_path):
 
 @upgrade_bp.route('/api/upgrade/refs', methods=['POST'])
 def list_upgrade_refs():
-    """What could this box upgrade to. `upgrade.sh --list --json`, verbatim
-    -- the same release-listing decision (payload > 0, shape) the CLI uses."""
+    """What could this box upgrade to. `upgrade.sh --list --json` underneath
+    -- the same release-listing decision (payload > 0, shape) the CLI uses --
+    translated to the field names the restored frontend expects (`name` /
+    `package_mb`, not bash's own `tag` / `payload_bytes`; the bash side keeps
+    its own sensible names for any other consumer of --list --json)."""
     result = run_command(f"bash {shlex.quote(UPGRADE_SH)} --list --json",
                          timeout=60)
     if not result.get("success"):
@@ -172,43 +175,95 @@ def list_upgrade_refs():
         return jsonify({"success": False, "error": f"unparseable response: {e}"}), 200
     if "error" in data:
         return jsonify({"success": False, "error": data["error"]}), 200
-    return jsonify({"success": True, **data})
+
+    refs = [
+        {
+            "name": r["tag"],
+            "package_mb": round(r.get("payload_bytes", 0) / (1024 * 1024), 1),
+            "shape": r.get("shape"),
+        }
+        for r in (data.get("releases") or [])
+    ]
+    return jsonify({"success": True, "refs": refs})
 
 
-@upgrade_bp.route('/api/upgrade/plan', methods=['POST'])
-def compute_upgrade_plan():
-    """The module-selection table for a specific tag. `upgrade.sh --plan
-    <tag> --json` -- fetches only the ~0.2 MB merged manifest, then runs the
-    SAME plan_current_versions + plan_build the real run uses. Cheap enough
-    to call on every keystroke of a release picker; --dry-run is not (it
-    takes the upgrade lock and downloads the full payload).
+def _fetch_plan(tag):
+    """Run `upgrade.sh --plan <tag> --json` and translate PLAN_ACTION into
+    the deleted engine's forced/optional shape. Returns (plan_dict, None) or
+    (None, (jsonify_response, status)) on any failure -- shared by
+    compute_upgrade_plan (display) and start_online_upgrade (module
+    selection needs the SAME classification the display showed, not a
+    second guess at it).
 
-    Body: {"tag": "intact-20260812"}
+    A `skip:*` PLAN_ACTION (disabled in config.yaml, excluded by --only/
+    --skip -- neither of which this ever passes) is dropped from both
+    lists, same as the deleted engine's compute_plan did.
     """
-    data = request.json or {}
-    tag = (data.get('tag') or '').strip()
-    if not tag:
-        return jsonify({"success": False, "error": "tag required"}), 400
     result = run_command(
         f"bash {shlex.quote(UPGRADE_SH)} --plan {shlex.quote(tag)} --json",
         timeout=60)
     if not result.get("success"):
-        return jsonify({"success": False, "error": result.get("error_summary")
-                        or result.get("error") or "could not compute a plan"}), 200
+        return None, (jsonify({"success": False, "error": result.get("error_summary")
+                               or result.get("error") or "could not compute a plan"}), 200)
     try:
         parsed = json.loads(result["stdout"].strip().splitlines()[-1])
     except Exception as e:
-        return jsonify({"success": False, "error": f"unparseable response: {e}"}), 200
+        return None, (jsonify({"success": False, "error": f"unparseable response: {e}"}), 200)
     if "error" in parsed:
         if parsed["error"] == "no-manifest-asset":
-            return jsonify({
+            return None, (jsonify({
                 "success": False,
                 "error": f"{tag} is a legacy single-bundle release; there is no "
                          "cheap way to plan one. Prepare/apply will still work.",
                 "legacy": True,
-            }), 200
-        return jsonify({"success": False, "error": parsed["error"]}), 200
-    return jsonify({"success": True, **parsed})
+            }), 200)
+        return None, (jsonify({"success": False, "error": parsed["error"]}), 200)
+
+    forced, optional, current_intact = [], [], "unknown"
+    for m in parsed.get("modules") or []:
+        if m["module"] == "intact":
+            current_intact = m.get("current") or "unknown"
+        action = m.get("action")
+        if action in ("upgrade", "noop"):
+            forced.append({"module": m["module"], "current": m.get("current") or "not installed",
+                           "target": m.get("target"), "action": action})
+        elif action == "install":
+            optional.append({"module": m["module"], "target": m.get("target"), "action": action})
+
+    return {
+        "current_intact_version": current_intact,
+        "target": tag,
+        "chain": [tag],
+        "forced": forced,
+        "optional": optional,
+    }, None
+
+
+@upgrade_bp.route('/api/upgrade/plan', methods=['POST'])
+def compute_upgrade_plan():
+    """The module-selection table for a specific tag. Cheap: fetches only
+    the ~0.2 MB merged manifest via `upgrade.sh --plan <tag> --json`, then
+    runs the SAME plan_current_versions + plan_build the real run uses.
+    --dry-run is not this cheap -- it takes the upgrade lock and downloads
+    the full payload.
+
+    Body: {"target": "intact-20260812"}
+
+    SIMPLIFIED from the deleted engine: it also spliced a `modules.<name>`
+    block into config.yaml from the release's own upstream defaults when the
+    operator opted into a module with no local config block yet, and warned
+    about the resulting default credentials. That side effect depended on
+    fetch_upstream_config/set_module_block_in_config, both deleted with the
+    Python engine; restoring it is follow-up work, not blocking this restore.
+    """
+    data = request.json or {}
+    tag = (data.get('target') or '').strip()
+    if not tag:
+        return jsonify({"success": False, "error": "target required"}), 400
+    plan, err = _fetch_plan(tag)
+    if err:
+        return err
+    return jsonify({"success": True, "plan": plan})
 
 
 @upgrade_bp.route('/api/upgrade/quota', methods=['GET'])
@@ -274,23 +329,44 @@ def _start_launcher_run(automation_type, name, details, cli_args, force=False):
 def start_online_upgrade():
     """Online upgrade: downloads AND applies a release tag in one run.
 
-    Body: {"tag": "intact-20260812", "only": "elk,timesketch", "force": bool}
-    `only` matches the operator's choice from the /plan table -- omit for
-    "everything the release offers".
+    Body: {"target": "intact-20260812", "opted_in_optional": [...],
+           "opted_in_reinstall": [...], "force": bool}
+
+    opted_in_optional/opted_in_reinstall are the operator's ticks from the
+    /plan table the frontend showed -- NOT a raw --only list, because forced
+    rows (already-installed modules) are not optional: every 'upgrade' row
+    applies regardless of what was ticked, matching the deleted engine's own
+    "operator can't opt out" rule for forced modules. So the final module
+    list is recomputed here from a FRESH plan (must match what the operator
+    actually saw, not trust a client-supplied module list that could have
+    gone stale between viewing the plan and clicking Start) rather than
+    trusting the two tick-lists alone.
     """
     data = request.json or {}
-    tag = (data.get('tag') or '').strip()
+    tag = (data.get('target') or '').strip()
     if not tag:
-        return jsonify({"success": False, "error": "tag required"}), 400
-    only = (data.get('only') or '').strip()
+        return jsonify({"success": False, "error": "target required"}), 400
+    opted_optional = set(data.get('opted_in_optional') or [])
+    opted_reinstall = set(data.get('opted_in_reinstall') or [])
 
-    cli_args = [tag]
-    if only:
-        cli_args += ["--only", only]
+    plan, err = _fetch_plan(tag)
+    if err:
+        return err
+    modules = []
+    for row in plan["forced"]:
+        if row["action"] == "upgrade" or row["module"] in opted_reinstall:
+            modules.append(row["module"])
+    for row in plan["optional"]:
+        if row["module"] in opted_optional:
+            modules.append(row["module"])
+    if not modules:
+        return jsonify({"success": False, "error": "Nothing selected to upgrade"}), 400
+
+    cli_args = [tag, "--only", ",".join(modules)]
 
     return _start_launcher_run(
         "upgrade", f"Online upgrade to {tag}",
-        {"kind": "online", "tag": tag, "only": only or None},
+        {"kind": "online", "tag": tag, "modules": modules},
         cli_args, force=bool(data.get('force')),
     )
 
@@ -303,11 +379,19 @@ def start_offline_upgrade():
     Body: {
       "package_path": "/data/uploads/...",       // scalar, or:
       "package_paths": ["/data/uploads/a.tar", ...],  // list form
-      "only": "elk,timesketch",                  // optional module filter
+      "selected_modules": ["elk", "velociraptor"],  // which modules to apply
+      "db_overwrite": {"timesketch": true},      // NOT honored -- see below
       "expected_sha256": "...",                  // optional digest anchor
       "upload_run_id": "<run id>",                // optional: continue this run
       "force": bool
     }
+
+    SIMPLIFIED from the deleted engine: `db_overwrite` (per-module "wipe and
+    fresh-install" flag) is accepted so the restored frontend's request body
+    doesn't need editing, but not acted on -- lib/upgrade/modules/*.sh has no
+    equivalent concept today (grep confirms no "overwrite"/"fresh_install"
+    handling anywhere under lib/upgrade/). Restoring it is follow-up work,
+    not blocking this restore; a truthy value here is currently a no-op.
     """
     data = request.json or {}
     package_paths = data.get('package_paths')
@@ -327,14 +411,16 @@ def start_offline_upgrade():
         if not os.path.exists(p):
             return jsonify({"success": False, "error": f"Package not found: {p}"}), 400
 
-    only = (data.get('only') or '').strip()
+    selected_modules = data.get('selected_modules')
+    if selected_modules is not None and not isinstance(selected_modules, list):
+        return jsonify({"success": False, "error": "selected_modules must be a list"}), 400
     expect = (data.get('expected_sha256') or '').strip()
 
     cli_args = []
     for p in paths:
         cli_args += ["--package", p]
-    if only:
-        cli_args += ["--only", only]
+    if selected_modules:
+        cli_args += ["--only", ",".join(selected_modules)]
     if expect:
         cli_args += ["--expect-sha256", expect]
 
@@ -361,7 +447,7 @@ def start_offline_upgrade():
 
     return _start_launcher_run(
         "upgrade", "Apply uploaded package",
-        {"kind": "offline", "package_paths": paths, "only": only or None},
+        {"kind": "offline", "package_paths": paths, "modules": selected_modules},
         cli_args, force=bool(data.get('force')),
     )
 
@@ -446,12 +532,12 @@ def prepare_upgrade_package():
     serializes on the SAME upgrade gate as online/offline instead of
     inventing a second one.
 
-    Body: {"tag": "intact-20260812"}
+    Body: {"target": "intact-20260812"}
     """
     data = request.json or {}
-    tag = (data.get('tag') or '').strip()
+    tag = (data.get('target') or '').strip()
     if not tag:
-        return jsonify({"success": False, "error": "tag required"}), 400
+        return jsonify({"success": False, "error": "target required"}), 400
 
     with _UPGRADE_START_MUTEX:
         blocked = _upgrade_gate()

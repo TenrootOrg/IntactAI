@@ -14,11 +14,28 @@ document.addEventListener('alpine:init', () => {
         currentRunId: null,
         rerunning: null,        // run_id currently being relaunched
 
-        // A reattachToActiveRun() used to live here. An upgrade signed the
-        // operator out halfway through, so on sign-in the page polled
-        // /api/upgrade/active to find the run it had lost and re-open its log.
-        // Upgrades run on the host now -- they never sign anyone out, there is
-        // no in-flight run for the dashboard to lose, and the endpoint is gone.
+        // An upgrade signs the operator out halfway through: the backend
+        // restarts to load the new code, every session dies with it, and on a
+        // pre-auth box the auth migration lands them on the SETUP page as well.
+        // The run id lived only in this store, so the page that came back after
+        // signing in had nothing to poll and just sat there. Operators read that
+        // as "the upgrade is stuck at some point" -- on runs that were finishing
+        // normally. Ask the SERVER what is in flight instead of trying to
+        // remember across a page we know is about to be destroyed.
+        async reattachToActiveRun() {
+            if (this.modalOpen) return false;
+            try {
+                const r = await fetch('/api/upgrade/active');
+                if (!r.ok) return false;
+                const data = await r.json();
+                const active = data && data.active;
+                if (!active || !active.run_id) return false;
+                await this.viewLogs(active.run_id);
+                return true;
+            } catch (e) {
+                return false;   // never let this break the page it runs on
+            }
+        },
 
         async load() {
             // Only show loading spinner on initial load
@@ -44,6 +61,7 @@ document.addEventListener('alpine:init', () => {
                 // First listing after a (re)load — including the one that
                 // follows the mid-upgrade sign-out. If a run is still in
                 // flight, reopen it instead of leaving a frozen page.
+                if (wasFirst) this.reattachToActiveRun();
             } catch (e) {
                 console.error('Failed to load workflows:', e);
                 // Only blank the list on the very first load. On a transient poll
@@ -351,5 +369,10 @@ document.addEventListener('alpine:init', () => {
             const d = this._asUtc(ts);
             return isNaN(d) ? String(ts || '') : d.toISOString();
         },
+
+        downloadPackage(runId) {
+            // Download immediately - package validity checked server-side
+            window.location.href = `/api/upgrade/prepare/${runId}/download`;
+        }
     });
 });

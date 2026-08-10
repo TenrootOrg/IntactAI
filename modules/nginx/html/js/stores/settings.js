@@ -2,22 +2,6 @@
 document.addEventListener('alpine:init', () => {
     // Settings store
     Alpine.store('settings', {
-        // Read-only "what is running" panel. All that is left of the upgrade
-        // UI: upgrading is `sudo bash scripts/upgrade.sh <tag>` on the appliance, so
-        // the dashboard reports state and shows the command rather than
-        // driving a workflow it can no longer see.
-        installedVersions: {},
-        async loadInstalledVersions() {
-            try {
-                const r = await fetch('/api/upgrade/current-versions');
-                if (!r.ok) return;
-                const d = await r.json();
-                this.installedVersions = (d && d.versions) || {};
-            } catch (e) {
-                // Never let a version panel break the settings page.
-            }
-        },
-
         config: {
             agentic: {
                 // Must match DEFAULT_CONFIG in routes/config_routes.py. These
@@ -510,10 +494,41 @@ document.addEventListener('alpine:init', () => {
         // The button itself now invokes `openPurgeModal`.
         async runPurge() { await this.openPurgeModal(); },
 
+        // Fresh install flags (per module) - removes DB volumes for new schema
+        dbOverwriteTimesketch: false,
+        dbOverwriteIris: false,
+        dbOverwriteElk: false,
 
+        // Helper to get db_overwrite object
+        getDbOverwrite() {
+            return {
+                timesketch: this.dbOverwriteTimesketch,
+                iris: this.dbOverwriteIris,
+                elk: this.dbOverwriteElk
+            };
+        },
 
+        // ===== PREPARE UPGRADE PACKAGE =====
+        showPreparePackageModal: false,
+        prepareLoading: false,
+        prepareRunId: null,
+        preparePackageReady: false,
+        preparePackageSize: '',
+        // 'prepare' → POST /api/upgrade/prepare (offline flow, produces tar.gz)
+        // 'online'  → POST /api/upgrade/online (combined prepare + apply)
+        prepareModalMode: 'prepare',
+
+        // ─── Apply Uploaded Package state ────────────────────────────
+        // Lists pending tarballs from /api/upgrade/list-packages.
+        // Clicking one opens a review modal that lets the operator
+        // pick which modules from the manifest to actually apply.
+        uploadedPackages: [],
+        loadingPackages: false,
+        showApplyPackageModal: false,
         applyPackage: null,         // {path, name, size_bytes, mtime, source}
         applyPackageFiles: [],      // all selected local assets (per-module import)
+        applyManifest: null,        // result of /api/upgrade/package-info
+        applySelectedModules: [],   // ticked module IDs (operator unchecks to skip)
         applyDbOverwrite: {},       // per-module fresh-install flags
         loadingApplyInfo: false,
         applying: false,
@@ -524,29 +539,370 @@ document.addEventListener('alpine:init', () => {
         // see at a glance whether the package would actually change
         // anything before clicking Apply (2026-06-15 incident: operator
         // re-applied an identical-versions package by mistake).
+        applyCurrentVersions: {},
 
+        async loadUploadedPackages() {
+            this.loadingPackages = true;
+            try {
+                const r = await fetch('/api/upgrade/list-packages', {method: 'POST'});
+                const d = await r.json();
+                if (d && d.success) {
+                    this.uploadedPackages = d.packages || [];
+                } else {
+                    this.showMessage('List packages failed: ' + (d.error || 'unknown'), 'error');
+                }
+            } catch (e) {
+                this.showMessage('List packages request failed: ' + e.message, 'error');
+            }
+            this.loadingPackages = false;
+        },
 
+        async openApplyPackageModal(pkg) {
+            this.applyPackage = pkg;
+            this.applyManifest = null;
+            this.applySelectedModules = [];
+            this.applyDbOverwrite = {};
+            this.applyCurrentVersions = {};
+            this.showApplyPackageModal = true;
+            this.loadingApplyInfo = true;
+            try {
+                // Fetch in parallel — manifest (what the package WILL
+                // install) and current-versions (what's installed RIGHT
+                // NOW). Both feed the side-by-side comparison rendered
+                // in the modal. Current-versions is best-effort: on
+                // failure we render rows with "?" as the current,
+                // which is better than blocking the apply for a
+                // cosmetic read.
+                const [manifestRes, currentRes] = await Promise.all([
+                    fetch('/api/upgrade/package-info', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({package_path: pkg.path}),
+                    }),
+                    fetch('/api/upgrade/current-versions', {method: 'GET'}),
+                ]);
+                const d = await manifestRes.json();
+                if (d && (d.success || d.manifest)) {
+                    this.applyManifest = d.manifest || d;
+                } else {
+                    this.showMessage('Manifest read failed: ' + (d.error || 'unknown'), 'error');
+                }
+                try {
+                    const cur = await currentRes.json();
+                    if (cur && cur.success) {
+                        this.applyCurrentVersions = cur.versions || {};
+                    }
+                } catch (_) { /* current-versions is best-effort */ }
+                // Now that BOTH the manifest and current-versions have
+                // landed, seed the selection per the three rules:
+                //   - upgrade / downgrade → forced (in selection, no opt-out)
+                //   - install (module absent locally) → opt-in (NOT seeded)
+                //   - no-change (already at target) → excluded (NOT seeded)
+                // The HTML disables checkboxes for upgrade/no-change so
+                // the operator can only toggle install rows.
+                const versions = (this.applyManifest && this.applyManifest.versions) || {};
+                this.applySelectedModules = [];
+                for (const [name, target] of Object.entries(versions)) {
+                    const action = this.applyModuleAction(name, target);
+                    if (action === 'upgrade' || action === 'downgrade' || action === 'unknown') {
+                        this.applySelectedModules.push(name);
+                    }
+                }
+            } catch (e) {
+                this.showMessage('Manifest request failed: ' + e.message, 'error');
+            }
+            this.loadingApplyInfo = false;
+        },
 
         // Classify a packaged module against what's installed locally.
         // Returns one of: 'no-change' (same version), 'upgrade' (target
         // differs), 'install' (module not currently installed),
         // 'unknown' (current-versions probe failed). Drives both row
         // styling and the apply-button warning.
+        applyModuleAction(module, target) {
+            const cur = this.applyCurrentVersions[module];
+            // A module the backend never reported at all is one it does not
+            // know about — exactly what happens when a NEWER release's package
+            // introduces a module this older backend has never heard of. That
+            // is an INSTALL, not an unknown: it belongs in the opt-in section
+            // (default unticked), not silently in the forced list showing "?".
+            if (cur === undefined || cur === null) return 'install';
+            if (!cur || cur === 'unknown') return 'unknown';
+            if (cur === 'Not installed') return 'install';
+            const curStr = String(cur).trim();
+            const tgtStr = String(target).trim();
+            if (curStr === tgtStr) return 'no-change';
+            // Best-effort semver-ish ordering. Falls back to string
+            // compare for non-numeric tags (timesketch's '20260326' vs
+            // '20260611' compares correctly under both paths). Used
+            // only for the UI chip label — backend doesn't gate.
+            const tryNumeric = (s) => s.replace(/^v/, '').split(/[.\-]/).map(p => parseInt(p, 10));
+            const a = tryNumeric(curStr), b = tryNumeric(tgtStr);
+            if (a.every(n => !isNaN(n)) && b.every(n => !isNaN(n))) {
+                for (let i = 0; i < Math.max(a.length, b.length); i++) {
+                    const x = a[i] || 0, y = b[i] || 0;
+                    if (x < y) return 'upgrade';
+                    if (x > y) return 'downgrade';
+                }
+            }
+            return curStr < tgtStr ? 'upgrade' : 'downgrade';
+        },
 
         // Count of ticked modules that would actually do work. Used to
         // warn the operator when they're about to apply a package that
         // changes nothing (the 2026-06-15 same-version mishap).
+        applyChangingCount() {
+            const versions = (this.applyManifest?.versions) || {};
+            let n = 0;
+            for (const mod of this.applySelectedModules) {
+                const action = this.applyModuleAction(mod, versions[mod]);
+                if (action === 'upgrade' || action === 'install') n++;
+            }
+            return n;
+        },
 
+        closeApplyPackageModal() {
+            this.showApplyPackageModal = false;
+            this.applyPackage = null;
+            this.applyPackageFiles = [];
+            this.applyManifest = null;
+        },
 
+        toggleApplyModule(moduleId) {
+            // Togglable: INSTALL (opt in to a module this host does not have)
+            // and NO-CHANGE (opt in to a reinstall at the same version — the
+            // row renders a checkbox titled "Reinstall this module..." and
+            // relabels itself "reinstall" when ticked, so refusing the toggle
+            // here made that control a decoration).
+            //
+            // NOT togglable: upgrade / downgrade / unknown. Those are forced,
+            // matching the online-upgrade convention, and the markup gives
+            // them a spacer instead of a checkbox — so this is belt-and-braces
+            // for them, not the mechanism.
+            //
+            // Why the old `action !== 'install'` guard was worse than a dead
+            // control: a click still flips the native checkbox in the DOM, but
+            // returning early meant applySelectedModules never changed, so
+            // Alpine had no reason to re-render and the tick STAYED on screen
+            // while being absent from the selection. The next real mutation
+            // (ticking an install row) re-evaluated every
+            // :checked="...includes(name)" binding and those phantom ticks
+            // vanished at once — which reads as "picking iris cleared my other
+            // choices", when in truth they were never selected.
+            const target = (this.applyManifest?.versions || {})[moduleId];
+            const action = this.applyModuleAction(moduleId, target);
+            if (action !== 'install' && action !== 'no-change') return;
+            const idx = this.applySelectedModules.indexOf(moduleId);
+            if (idx >= 0) {
+                this.applySelectedModules.splice(idx, 1);
+            } else {
+                this.applySelectedModules.push(moduleId);
+            }
+        },
 
+        async applyUploadedPackage() {
+            if (!this.applyPackage) return;
+            if (!this.applySelectedModules.length) {
+                this.showMessage('Tick at least one module to apply', 'error');
+                return;
+            }
+            this.applying = true;
 
+            // Two code paths share this function:
+            //  1. peek-flow — applyPackage.path is null because the
+            //     local file hasn't been uploaded yet. Upload now via
+            //     tus, then call /api/upgrade/offline with the
+            //     resulting /data/uploads/<id> path.
+            //  2. legacy-flow — applyPackage.path is already set
+            //     (post-upload review). Skip straight to apply.
+            let packagePath = this.applyPackage.path;
+            if (!packagePath && this.applyPackage._localFile) {
+                // Capture EVERYTHING from the Alpine state BEFORE
+                // closing the modal — close() nulls applyPackage and
+                // applyManifest, so any subsequent read on them throws
+                // and the upload silently never starts. That's why the
+                // operator saw "Apply" close the modal but no workflow
+                // appeared.
+                const file = this.applyPackage._localFile;
+                const selected = this.applySelectedModules.slice();
+                const db_overwrite = Object.assign({}, this.applyDbOverwrite);
+                console.log('[Import] Starting tus upload for', file.name,
+                            '(', file.size, 'bytes), modules:', selected);
+                // Create the workflow row NOW so it's visible the instant we
+                // navigate to Workflows — instead of waiting for tusd's
+                // post-create hook (which is why the operator "saw nothing" for
+                // a while). The hook reuses this run_id (passed in metadata),
+                // and as an upgrade_package_upload it lands in the SAME System
+                // workspace as the apply — one row, one workspace.
+                let uploadRunId = '';
+                try {
+                    const rr = await fetch('/api/upgrade/upload-run', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({filename: file.name, size_bytes: file.size}),
+                    });
+                    const rj = await rr.json();
+                    if (rj && rj.success) uploadRunId = rj.run_id;
+                } catch (_) { /* best-effort — hook still creates the run */ }
+                this.showMessage('Uploading package… (progress shows in Workflows)', 'info');
+                this.closeApplyPackageModal();
+                window.ActiveCase.gotoSystemWorkflows();
+                this.applying = false;
+                // A release publishes one asset per module as well as a single
+                // bundle, and an operator carrying assets into an air-gapped
+                // site should be able to hand over the whole set rather than
+                // reassembling it first. Upload each file under the SAME
+                // upload_run_id so they land in one workflow, then apply them
+                // together — the backend merges them into one package.
+                const files = (this.applyPackageFiles && this.applyPackageFiles.length)
+                    ? Array.from(this.applyPackageFiles) : [file];
+                const uploadedPaths = [];
+                let failed = false;
 
+                const uploadOne = (f) => new Promise((resolve) => {
+                    const up = new tus.Upload(f, {
+                        endpoint: '/api/uploads/',
+                        retryDelays: [0, 1000, 3000, 5000],
+                        chunkSize: 32 * 1024 * 1024,  // see js/upload.js for why 32
+                        // Clear the resume fingerprint once done so re-importing
+                        // the same file later doesn't silently re-open /
+                        // re-upload a stale entry (the "it uploaded again"
+                        // artifact).
+                        removeFingerprintOnSuccess: true,
+                        metadata: {
+                            filename: f.name,
+                            filetype: f.type || 'application/gzip',
+                            purpose: 'upgrade_package',
+                            upload_run_id: uploadRunId,
+                        },
+                        onError: (error) => {
+                            console.error('Upload error:', error);
+                            this.showMessage('Upload failed (' + f.name + '): '
+                                             + error.message, 'error');
+                            failed = true;
+                            resolve();
+                        },
+                        onSuccess: () => {
+                            const parts = (up.url || '').split('/').filter(Boolean);
+                            const id = parts.length ? parts[parts.length - 1] : null;
+                            if (id) uploadedPaths.push('/data/uploads/' + id);
+                            else failed = true;
+                            resolve();
+                        },
+                    });
+                    up.start();
+                });
+
+                (async () => {
+                    // Sequential: N concurrent multi-GB uploads compete for the
+                    // same uplink and make every one slower.
+                    for (const f of files) {
+                        await uploadOne(f);
+                        if (failed) break;
+                    }
+                    if (failed || !uploadedPaths.length) {
+                        if (!failed) this.showMessage('Upload succeeded but no ID returned', 'error');
+                        return;
+                    }
+                    try {
+                        const body = {
+                            selected_modules: selected,
+                            db_overwrite: db_overwrite,
+                        };
+                        // Tell the backend WHICH workflow row this apply
+                        // belongs to. We created it ourselves above, so there
+                        // is nothing to deduce — and deduction is what failed:
+                        // the backend used to recover the row from a sidecar
+                        // the upload hook writes, and this POST fires from the
+                        // tus success path in the same second the hook runs, so
+                        // it lost the race and opened a SECOND run while the
+                        // upload row sat at 10% forever (2026-08-05). Sent only
+                        // when we actually have one; the backend still falls
+                        // back to its old inference for callers that don't.
+                        if (uploadRunId) body.upload_run_id = uploadRunId;
+                        // One file keeps the scalar shape every existing caller
+                        // and every older backend understands.
+                        if (uploadedPaths.length === 1) body.package_path = uploadedPaths[0];
+                        else body.package_paths = uploadedPaths;
+                        const r = await fetch('/api/upgrade/offline', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(body),
+                        });
+                        const d = await r.json();
+                        if (r.ok && d.success) {
+                            this.showMessage('Apply started — see Workflows for progress', 'success');
+                        } else {
+                            this.showMessage('Apply failed: ' + (d.error || 'unknown'), 'error');
+                        }
+                    } catch (e) {
+                        this.showMessage('Apply request failed: ' + e.message, 'error');
+                    }
+                })();
+                return;
+            }
+
+            // Legacy-flow: tarball already on disk, just apply. No
+            // upload_run_id goes with it — this path never uploaded anything,
+            // so there is no upload row to continue. (A tarball uploaded in an
+            // EARLIER session and picked from the list still has its .run
+            // sidecar / details.upload_id, which the backend can find on its
+            // own; sending a made-up id would be worse than sending none.)
+            try {
+                const r = await fetch('/api/upgrade/offline', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        package_path: packagePath,
+                        selected_modules: this.applySelectedModules,
+                        db_overwrite: this.applyDbOverwrite,
+                    }),
+                });
+                const d = await r.json();
+                if (r.ok && d.success) {
+                    this.closeApplyPackageModal();
+                    this.showMessage('Apply started — check Workflows for progress', 'success');
+                    setTimeout(() => { window.ActiveCase.gotoSystemWorkflows(); }, 500);
+                } else {
+                    this.showMessage('Apply failed: ' + (d.error || 'unknown'), 'error');
+                }
+            } catch (e) {
+                this.showMessage('Apply request failed: ' + e.message, 'error');
+            }
+            this.applying = false;
+        },
+
+        async openPreparePackageModal() {
+            this.prepareModalMode = 'prepare';
+            await this._openModuleModal();
+        },
+
+        async openOnlineUpgradeModal() {
+            this.prepareModalMode = 'online';
+            await this._openModuleModal();
+        },
 
         // ─── Track-based upgrade flow state ──────────────────────────
         // The operator picks ONE Intact release, system derives the
         // per-module work list. See services/upgrade/resolver.py.
+        upgradeRefs: [],            // populated by fetchUpgradeRefs()
+        selectedRef: '',            // the ref the operator picked in the dropdown
+        upgradePlan: null,          // ONLINE mode: forced/optional table from /api/upgrade/plan
+        optedInOptional: [],        // ONLINE mode: module IDs the operator ticked in the optional table
         optedInReinstall: [],       // ONLINE mode: no-change module IDs ticked to FORCE a reinstall (bug recovery)
         fetchingRefs: false,
+        computingPlan: false,
+        showingPrepareModules: false,
+        // Current installed Intact tag, fetched on modal open. Used
+        // by the dropdown filter so older releases are NOT selectable
+        // — prevents the operator from accidentally picking a
+        // downgrade target. Unknown → no filter (permissive fallback).
+        currentIntactVersion: '',
+        // GitHub API rate-limit snapshot fetched on modal open. Drives
+        // the in-modal banner — "X calls remaining, resets at HH:MM" —
+        // and the warning when the quota is low enough that the next
+        // workflow might 429.  Shape mirrors /api/upgrade/quota.
+        githubQuota: null,
         // Persistent top-of-screen toast (separate from the bottom
         // ephemeral `message`). Used for errors that the operator MUST
         // see even when the upgrade modal is open and scrolled.
@@ -625,28 +981,519 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
+        // Classify a ref relative to currentIntactVersion. Returns
+        // 'newer' | 'same' | 'older' | 'rolling' | 'unknown'.
+        //
+        // Strategy: extract the YYYYMMDD date portion from
+        // `intact-<date>[-suffix]` tag names and compare dates.
+        // - same date + same name → 'same' (allow refresh)
+        // - same date + different suffix (e.g. -old-modules) → 'older'
+        //   (these are baseline / companion releases, not upgrade
+        //   targets, so we hide them)
+        // - different dates → numeric date compare
+        // - `development` branch → always 'rolling' (allow)
+        // - unparseable → 'unknown' (allow, permissive fallback)
+        classifyUpgradeRef(ref) {
+            if (!ref || !ref.name) return 'unknown';
+            if (ref.kind === 'branch') return 'rolling';
+            const cur = this.currentIntactVersion || '';
+            const dateRx = /^intact-(\d{8})/;
+            const curMatch = cur.match(dateRx);
+            const refMatch = ref.name.match(dateRx);
+            if (!curMatch || !refMatch) return 'unknown';
+            const curDate = curMatch[1];
+            const refDate = refMatch[1];
+            if (refDate > curDate) return 'newer';
+            if (refDate < curDate) return 'older';
+            // Same date — only the EXACT same tag name counts as
+            // "same release", not a companion variant.
+            return ref.name === cur ? 'same' : 'older';
+        },
 
         // Dropdown source: filter out 'older' refs so the operator
         // can't pick a downgrade target. Online mode applies the
         // filter; prepare mode keeps everything (the operator may
         // legitimately want to build a package for an older air-gap
         // host). `development` always survives the filter.
+        filteredUpgradeRefs() {
+            if (this.prepareModalMode !== 'online') return this.upgradeRefs;
+            // ONE HOP. An upgrade is only ever exercised a single release at a
+            // time (N -> N+1), so offering N+3 invites a jump with no test
+            // coverage behind it. "Next" is the NEAREST newer release, not the
+            // newest -- ordered by the tag's own date (intact-YYYYMMDD sorts
+            // correctly as a plain string), so it does not depend on GitHub's
+            // ordering or on releases being published in date order.
+            //
+            // The CURRENT release stays on the list deliberately: re-applying
+            // it is how an operator picks up a fix or adds a module they
+            // skipped, which is not a downgrade.
+            const dateOf = (r) => {
+                const m = (r.name || '').match(/(\d{8})/);
+                return m ? m[1] : null;
+            };
+            const same = this.upgradeRefs.filter(r => this.classifyUpgradeRef(r) === 'same');
+            const newer = this.upgradeRefs
+                .filter(r => this.classifyUpgradeRef(r) === 'newer' && dateOf(r))
+                .sort((a, b) => dateOf(a).localeCompare(dateOf(b)));
+            // Undated entries (e.g. the synthetic `development` ref) are not
+            // part of the hop sequence; pass them through untouched.
+            const undated = this.upgradeRefs.filter(
+                r => !dateOf(r) && this.classifyUpgradeRef(r) !== 'older');
+            return [...(newer.length ? [newer[0]] : []), ...same, ...undated];
+        },
 
+        async fetchGithubQuota() {
+            try {
+                const r = await this._fetchWithTimeout('/api/upgrade/quota', { method: 'GET' }, 10000);
+                const d = await r.json();
+                if (d && d.success) {
+                    this.githubQuota = d;
+                    return d;
+                }
+                this.githubQuota = null;
+                return null;
+            } catch (e) {
+                this.githubQuota = null;
+                return null;
+            }
+        },
 
+        async fetchUpgradeRefs() {
+            // Hits GitHub's releases endpoint (one anonymous call).
+            // Backend caches for 30 min — auto-triggered on modal
+            // open + reusable by the operator clicking the manual
+            // refresh affordance. 60s timeout to ride out slow
+            // GitHub days. selectedRef intentionally left empty —
+            // the operator picks one, and the @change handler fires
+            // the next step. No auto-pick + no auto-plan.
+            this.fetchingRefs = true;
+            this.upgradeRefs = [];
+            this.selectedRef = '';
+            this.upgradePlan = null;
+            try {
+                // force: always ask GitHub. Both callers are explicit operator
+                // actions (opening the modal, pressing refresh), and the 30-min
+                // cache made a release whose CI package had only just finished
+                // invisible — with a refresh button that read the same cache and
+                // so could not break out of it.
+                const r = await this._fetchWithTimeout('/api/upgrade/refs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ force: true }),
+                });
+                const d = await r.json();
+                if (d && d.success) {
+                    this.upgradeRefs = d.refs || [];
+                    // The backend serves the last known list when a live fetch
+                    // fails, rather than emptying the picker. Say so -- a list
+                    // presented as current when it is an hour old is how an
+                    // operator misses a release that exists.
+                    if (d.stale) {
+                        const mins = Math.round((d.stale_age_s || 0) / 60);
+                        this.showTopToast(
+                            'Showing the last known release list'
+                            + (mins ? ` (${mins} min old)` : '')
+                            + '. ' + (d.error || 'Could not refresh from GitHub.'),
+                            'error');
+                    }
+                } else if (d && d.offline) {
+                    this.showTopToast('No internet connection — cannot reach GitHub to list '
+                                    + 'releases. Reconnect and press refresh.', 'error');
+                } else {
+                    this.showTopToast('Could not fetch releases: ' + (d.error || 'unknown'), 'error');
+                }
+            } catch (e) {
+                const msg = e.name === 'AbortError'
+                    ? 'Fetch releases timed out after 60s — GitHub may be slow; try again in a minute.'
+                    : 'Fetch releases failed: ' + e.message;
+                this.showTopToast(msg, 'error');
+            }
+            this.fetchingRefs = false;
+        },
 
+        async computeUpgradePlan() {
+            if (!this.selectedRef) {
+                this.showTopToast('Pick a release first', 'error');
+                return;
+            }
+            this.computingPlan = true;
+            this.upgradePlan = null;
+            this.optedInOptional = [];
+            this.optedInReinstall = [];
+            try {
+                const r = await this._fetchWithTimeout('/api/upgrade/plan', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({target: this.selectedRef}),
+                });
+                const d = await r.json();
+                if (d && d.success) {
+                    this.upgradePlan = d.plan;
+                } else {
+                    this.showTopToast('Plan failed: ' + (d.error || 'unknown'), 'error');
+                }
+            } catch (e) {
+                const msg = e.name === 'AbortError'
+                    ? 'Plan compute timed out after 60s — GitHub may be slow; try again.'
+                    : 'Plan request failed: ' + e.message;
+                this.showTopToast(msg, 'error');
+            }
+            this.computingPlan = false;
+        },
 
+        toggleOptionalModule(moduleId) {
+            const idx = this.optedInOptional.indexOf(moduleId);
+            if (idx >= 0) {
+                this.optedInOptional.splice(idx, 1);
+            } else {
+                this.optedInOptional.push(moduleId);
+            }
+        },
 
+        // Toggle a no-change (noop) module's forced-reinstall opt-in. Unchecked
+        // by default (unchanged modules are skipped); ticking one re-applies it
+        // even though it's already at the target version — the recovery path
+        // for a module that broke at its current version.
+        toggleReinstallModule(moduleId) {
+            const idx = this.optedInReinstall.indexOf(moduleId);
+            if (idx >= 0) {
+                this.optedInReinstall.splice(idx, 1);
+            } else {
+                this.optedInReinstall.push(moduleId);
+            }
+        },
 
+        // DOWNLOAD-ONLY: /api/upgrade/refs lists only releases that ship a
+        // CI-built package and carries its size, so the modal can state exactly
+        // what will be downloaded with no extra round-trip. There is no module
+        // selection any more — the whole package comes down, and the operator
+        // picks what to install when they import it.
+        get selectedRefPackageMb() {
+            const r = this.upgradeRefs.find(x => x.name === this.selectedRef);
+            return r ? (r.package_mb || 0) : 0;
+        },
 
+        async startTrackUpgrade() {
+            const isOnline = this.prepareModalMode === 'online';
+            if (isOnline && !this.upgradePlan) {
+                this.showMessage('Compute a plan first', 'error');
+                return;
+            }
+            if (!isOnline && !this.selectedRef) {
+                this.showMessage('Pick a release first', 'error');
+                return;
+            }
+            // Zero ticks is intentionally allowed: the backend always
+            // adds 'intact' to selected_set in upgrade_routes.py
+            // (_modules_for_prepare), so a no-tick prepare ships an
+            // intact-only package — useful for operators bundling a
+            // platform-code-only refresh for an air-gap target.
+            const endpoint = isOnline ? '/api/upgrade/online' : '/api/upgrade/prepare';
+            const successMsg = isOnline
+                ? 'Online upgrade started — check Workflows for progress'
+                : 'Package preparation started — check Workflows for progress';
+            const body = isOnline
+                ? {target: this.selectedRef, opted_in_optional: this.optedInOptional,
+                   opted_in_reinstall: this.optedInReinstall}
+                : {target: this.selectedRef};
+            this.prepareLoading = true;
+            try {
+                const r = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body),
+                });
+                const d = await r.json();
+                if (r.ok && d.success) {
+                    this.prepareRunId = d.run_id;
+                    this.closePreparePackageModal();
+                    this.showMessage(successMsg, 'success');
+                    setTimeout(() => { window.ActiveCase.gotoSystemWorkflows(); }, 500);
+                } else {
+                    this.showMessage('Upgrade request failed: ' + (d.error || 'unknown'), 'error');
+                }
+            } catch (e) {
+                this.showMessage('Upgrade request error: ' + e.message, 'error');
+            }
+            this.prepareLoading = false;
+        },
 
+        async _openModuleModal() {
+            this.showPreparePackageModal = true;
+            this.prepareLoading = false;
+            this.prepareRunId = null;
+            this.preparePackageReady = false;
+            this.preparePackageSize = '';
+            this.upgradeRefs = [];
+            this.selectedRef = '';
+            this.upgradePlan = null;
+            this.optedInOptional = [];
+            this.optedInReinstall = [];
+            this.githubQuota = null;
+            this.currentIntactVersion = '';
+            // Fire-and-forget — independent of the refs fetch. Used by
+            // the dropdown filter to hide older releases. Slow result
+            // just means the filter falls back to permissive ("show
+            // all") until it lands.
+            this.fetchCurrentIntactVersion();
 
+            // Minimal auto-chain on open: load the quota snapshot (for
+            // the in-modal banner) and the release list (so the
+            // dropdown is populated). The plan/module-list only fires
+            // when the operator actually picks a release in the
+            // dropdown — see onSelectedRefChange. Quota warning is the
+            // only top-toast that fires on open, and only when the
+            // quota is uncomfortably low.
+            const quota = await this.fetchGithubQuota();
+            if (quota && quota.success && quota.remaining <= 10) {
+                this.showTopToast(
+                    `GitHub quota low: ${quota.remaining}/${quota.limit} calls left ` +
+                    `(resets ${quota.reset_hm}). The upgrade flow needs ~2 more.` +
+                    (quota.authed ? '' : ' Set GITHUB_TOKEN in modules/backend/.env to raise the cap.'),
+                    'error'
+                );
+            }
+            await this.fetchUpgradeRefs();
+        },
 
+        // Operator picked a different release in the dropdown — re-run
+        // the matching step automatically (plan for online, modules
+        // for prepare). Saves a click; matches the "auto-show" UX.
+        async onSelectedRefChange() {
+            if (!this.selectedRef) return;
+            if (this.prepareModalMode === 'online') {
+                await this.computeUpgradePlan();
+            } else {
+            }
+        },
 
+        closePreparePackageModal() {
+            this.showPreparePackageModal = false;
+            this.preparePackageReady = false;
+            this.prepareRunId = null;
+        },
 
+        async downloadPreparedPackage() {
+            if (!this.prepareRunId) {
+                this.showMessage('No package ready for download', 'error');
+                return;
+            }
+
+            // Trigger download via new window/tab
+            window.open(`/api/upgrade/prepare/${this.prepareRunId}/download`, '_blank');
+
+            // Close modal after download initiated
+            setTimeout(() => {
+                this.closePreparePackageModal();
+                this.showMessage('Package download started', 'success');
+            }, 1000);
+        },
+
+        // ===== OFFLINE UPGRADE =====
+        async importUpgradePackage(event) {
+            const files = event.target.files;
+            if (!files || files.length === 0) return;
+            // A release ships one asset per module AND a single bundle. Both are
+            // valid to import: the bundle because one file is easier to carry
+            // into an air-gapped site, the module assets because they are what
+            // the release is actually made of. Selecting several uploads them
+            // into one workflow and the backend merges them.
+            const selectedFiles = Array.from(files);
+            const file = selectedFiles[0];
+            event.target.value = '';
+
+            // `.tar` BELONGS HERE. prepare_package.sh emits a plain
+            // intact-upgrade-<tag>.tar -- the wrapper holds already-compressed
+            // per-module assets, so the outer gzip bought 0.55% for a full
+            // deflate pass over 5.4 GB and was dropped. Every reader downstream
+            // was widened for it (upload_routes.py's pre-create hook,
+            // peek-manifest's 'r|*' mode, wrapper_package_members, install.sh's
+            // tar -xf), but this one client-side check was missed -- so the
+            // browser refused the file before any of that could run and the
+            // import path was dead for freshly prepared packages. Releases cut
+            // before the change are still .tar.gz sitting on USB sticks, so all
+            // three suffixes stay accepted forever.
+            const bad = selectedFiles.filter(
+                f => !f.name.endsWith('.tar.gz')
+                  && !f.name.endsWith('.tgz')
+                  && !f.name.endsWith('.tar'));
+            if (bad.length) {
+                this.showMessage(
+                    'Not a .tar / .tar.gz / .tgz file: ' + bad[0].name, 'error');
+                return;
+            }
+
+            // ─── DISK PREFLIGHT ─────────────────────────────────────────
+            // Ask the appliance whether it can take this file BEFORE pushing
+            // several GB at it. The apply refuses on low disk, and finding
+            // that out afterwards means the operator spent the upload (and,
+            // at an air-gapped site, a hand-carried copy) to be told no.
+            // Also surfaces leftovers, so "free 4 GB" comes with "here is
+            // where 6 GB of it already went".
+            const totalBytes = selectedFiles.reduce((n, f) => n + f.size, 0);
+            try {
+                const pf = await (await fetch('/api/upgrade/upload-preflight', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({size_bytes: totalBytes}),
+                })).json();
+                const gb = (n) => (n / 1024 ** 3).toFixed(1) + ' GB';
+                if (pf && pf.success) {
+                    const stale = (pf.leftovers || []);
+                    if (stale.length) {
+                        console.info('[upgrade] package dirs already hold:',
+                                     stale.map(l => `${l.dir}${l.name} (${gb(l.size_bytes)}, ${l.kind})`));
+                    }
+                    if (!pf.ok) {
+                        // reclaimable_ok: clearing the leftovers alone would
+                        // be enough, so name that rather than "free disk".
+                        const advice = pf.reclaimable_ok && stale.length
+                            ? `Removing what is already there would free ${gb(pf.leftover_bytes)} and be enough:\n  `
+                              + stale.map(l => `${l.name} — ${gb(l.size_bytes)} (${l.kind})`).join('\n  ')
+                            : 'Free disk space on the appliance and try again.';
+                        this.showMessage(
+                            `Not enough space: this ${gb(totalBytes)} package needs about `
+                            + `${gb(pf.needed_bytes)} free (the upload plus unpacking it), `
+                            + `but only ${gb(pf.free_bytes)} is available.`, 'error');
+                        alert(
+                            `Not enough disk space on the appliance\n\n`
+                            + `Package        ${gb(totalBytes)}\n`
+                            + `Needs about    ${gb(pf.needed_bytes)}  (upload + unpack)\n`
+                            + `Free now       ${gb(pf.free_bytes)}\n\n`
+                            + advice);
+                        return;
+                    }
+                    if (stale.length) {
+                        this.showMessage(
+                            `Note: ${stale.length} leftover file(s) using ${gb(pf.leftover_bytes)} `
+                            + `in the package folders. ${gb(pf.free_bytes)} free — enough to continue.`,
+                            'info');
+                    }
+                }
+            } catch (e) {
+                // The check is an early warning, not a gate — a broken probe
+                // must not stop an upload that would have worked.
+                console.warn('upload preflight skipped:', e);
+            }
+
+            // ─── PEEK PHASE ─────────────────────────────────────────────
+            // Read just the first 5 MB of the local file, POST it to
+            // /api/upgrade/peek-manifest, get the manifest back, open
+            // the review modal. The full 5 GB upload only happens after
+            // the operator clicks Apply. If the operator cancels, no
+            // upload bytes get sent at all.
+            //
+            // Why 5 MB: manifest.json lives in the first ~10 KB of any
+            // tarball built by the new prepare flow (tar --files-from
+            // ordering). 5 MB is a generous margin that covers
+            // alignment, headers, and any pre-manifest entries. Costs
+            // ~0.5 s on a typical link.
+            this.showMessage('Reading manifest from local file…', 'info');
+            const slice = file.slice(0, 5 * 1024 * 1024);
+            let peek = null;
+            try {
+                const resp = await fetch('/api/upgrade/peek-manifest', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/octet-stream'},
+                    body: slice,
+                });
+                peek = await resp.json();
+            } catch (e) {
+                console.error('peek-manifest request failed:', e);
+                this.showMessage('Manifest peek failed: ' + e.message, 'error');
+                return;
+            }
+            if (!peek || !peek.success) {
+                // Older tarballs (manifest at end) land here. Operator
+                // can still upload + review post-upload, but warn them
+                // the upload will run with no preview.
+                if (!confirm(
+                    'Could not preview the manifest from the first 5 MB of this tarball ' +
+                    '(likely a package built before the new ordering). Upload the FULL file ' +
+                    'now and review afterwards?'
+                )) return;
+                return this._legacyUploadThenReview(file);
+            }
+
+            // Open the review modal with the peeked manifest. The
+            // package_path stays NULL until the actual upload finishes
+            // (Apply button is what triggers the upload).
+            this.applyPackage = {
+                _localFile: file,                          // kept for the upload step
+                name: (selectedFiles.length > 1
+                       ? `${selectedFiles.length} release assets`
+                       : file.name),
+                size_bytes: selectedFiles.reduce((n, f) => n + f.size, 0),
+                source: 'local-pending',
+                path: null,                                // filled in after upload
+            };
+            // The full set, so the apply step uploads every one of them. The
+            // manifest above is peeked from the FIRST asset only -- enough to
+            // show the operator what release this is, while the backend
+            // assembles and re-validates the complete set before applying.
+            this.applyPackageFiles = selectedFiles;
+            this.applyManifest = peek.manifest || peek;
+            this.applyDbOverwrite = {};
+            this.applyCurrentVersions = {};
+            this.showApplyPackageModal = true;
+            // Fetch what's installed NOW so the modal shows current → target
+            // and seeds the selection the SAME way the pending-package path
+            // does: installed-module upgrades are forced, new modules are
+            // opt-in, and no-change modules are skipped (grayed, tick to
+            // reinstall). Without this the peek path showed "?" for every
+            // module and pre-selected all of them.
+            try {
+                const cres = await fetch('/api/upgrade/current-versions', {method: 'GET'});
+                const cur = await cres.json();
+                if (cur && cur.success) this.applyCurrentVersions = cur.versions || {};
+            } catch (_) { /* best-effort — modal still works, shows "?" */ }
+            const versions = (this.applyManifest && this.applyManifest.versions) || {};
+            this.applySelectedModules = [];
+            for (const [name, target] of Object.entries(versions)) {
+                const action = this.applyModuleAction(name, target);
+                if (action === 'upgrade' || action === 'downgrade' || action === 'unknown') {
+                    this.applySelectedModules.push(name);
+                }
+            }
+            this.loadingApplyInfo = false;
+        },
 
         // Legacy fallback for tarballs where the peek can't find
         // manifest.json in the first 5 MB. Uploads first, opens the
         // modal on tus success (matches the previous behavior).
+        _legacyUploadThenReview(file) {
+            this.showMessage(`Uploading ${file.name}...`, 'info');
+            const upload = new tus.Upload(file, {
+                endpoint: '/api/uploads/',
+                retryDelays: [0, 1000, 3000, 5000],
+                chunkSize: 32 * 1024 * 1024,  // see js/upload.js for why 32
+                removeFingerprintOnSuccess: true,
+                metadata: {
+                    filename: file.name,
+                    filetype: file.type || 'application/gzip',
+                    purpose: 'upgrade_package',
+                },
+                onError: (error) => {
+                    console.error('Upload error:', error);
+                    this.showMessage('Upload failed: ' + error.message, 'error');
+                },
+                onSuccess: () => {
+                    const parts = (upload.url || '').split('/').filter(Boolean);
+                    const uploadId = parts.length ? parts[parts.length - 1] : null;
+                    if (!uploadId) {
+                        this.showMessage('Upload succeeded but no ID returned', 'error');
+                        return;
+                    }
+                    this.openApplyPackageModal({
+                        path: '/data/uploads/' + uploadId,
+                        name: file.name,
+                        size_bytes: file.size,
+                        source: 'uploads',
+                    });
+                },
+            });
+            upload.start();
+        },
 
         // ---- Subscription (CLI) providers -------------------------------
         // These spend an existing Codex/ChatGPT subscription through the
@@ -855,6 +1702,39 @@ document.addEventListener('alpine:init', () => {
             this.cliRefresh();
         },
 
+        // Bash equivalent of Prepare Package, for an operator to run on a
+        // machine that is not the appliance -- an air-gapped site's laptop,
+        // or a box whose backend cannot reach GitHub.
+        //
+        // This emits a command that FETCHES AND RUNS scripts/prepare_package.sh
+        // rather than embedding a copy of it. The appliance's own Prepare
+        // Package runs that same script (routes/upgrade_routes.py shells out to
+        // it), so there is exactly one implementation of "download the release
+        // assets and wrap them into one file" -- no second copy here to drift
+        // out of step with it.
+        prepareManualScript() {
+            // Always pulls prepare_package.sh from main (not the tag's own
+            // copy) so every packaging run picks up the latest script fixes
+            // (e.g. the download-resume/retry tuning) regardless of which
+            // release is being packaged. tag falls back to the last known
+            // release when selectedRef hasn't loaded (e.g. no connection).
+            //
+            // Deliberately a single plain-curl script, not a "simple vs
+            // fast (aria2c)" choice -- that variant was tried and reverted.
+            // GitHub's release assets redirect to a time-limited signed
+            // URL; aria2c resolves it once and splits it into parallel
+            // segments, so a long transfer or a stalled segment has no way
+            // to get a fresh URL and everything hangs at once (reproduced
+            // live against this release's own ELK asset). Plain curl's
+            // --retry re-follows the redirect from the original URL on
+            // every attempt, minting a fresh signed URL each time, which
+            // is the actual correct fix -- see scripts/prepare_package.sh.
+            const tag = this.selectedRef || 'intact-20260806';
+            return [
+                'curl -fsSL -o prepare_package.sh https://raw.githubusercontent.com/TenrootOrg/IntactAI/main/scripts/prepare_package.sh',
+                'bash prepare_package.sh ' + tag + ' .',
+            ].join('\n');
+        },
 
         cliCopy(text, what) {
             if (!text) return;

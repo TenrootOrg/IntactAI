@@ -198,10 +198,26 @@ def _start_tailer(run_id: str) -> None:
     t.start()
 
 
+_SESSION_DROP_NOTE = (
+    "This backend is about to be recreated to load the new code — your "
+    "dashboard session will drop. Refresh the page and sign in again to "
+    "keep watching; the upgrade keeps running in the background regardless."
+)
+
+
 def _apply_line(run_id: str, line: str, progress_state: dict) -> None:
     line = line.rstrip("\n")
     if not line:
         return
+    if not progress_state.get("_warned_session_drop") and "INTACT:" in line and _MODULE_BANNER.search(line):
+        # The intact module is ALWAYS first (UPGRADE_ORDER) and is what
+        # recreates intact_backend -- said here, at the top of that module,
+        # not right before the actual `docker compose up -d backend` step:
+        # by the time that step's own "ok: recreate the backend" line would
+        # otherwise trigger this, the process writing it may already be
+        # mid-death. Early and delivered beats precise and missed.
+        progress_state["_warned_session_drop"] = True
+        add_log_to_run(run_id, _SESSION_DROP_NOTE, "warning")
     m = _LOG_LINE.match(line)
     if m:
         level_word, msg = m.group(1), m.group(2)
