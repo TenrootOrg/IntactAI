@@ -345,6 +345,18 @@ def run_startup_initialization():
     except Exception as e:
         print(f"[STARTUP] Orphan-run reaper skipped: {e}", flush=True)
 
+    # Upgrade runs are the exclusion the reaper above calls out: the intact
+    # module's own recreate of THIS container is what just restarted us, so
+    # a run still 'running' here is expected, not orphaned -- it is driven
+    # by a detached sibling container that kept going through the restart.
+    # Reattach the tailer, or finalize immediately if the helper already
+    # finished while nothing was watching.
+    try:
+        from services.upgrade_launcher import reconcile_on_boot
+        reconcile_on_boot()
+    except Exception as e:
+        print(f"[STARTUP] Upgrade-run reconciliation skipped: {e}", flush=True)
+
     # Initialize Elasticsearch — only when the module is actually enabled.
     # Previously this ran unconditionally even on installs with
     # modules.elk.enabled: false (the common case), attempting a network
