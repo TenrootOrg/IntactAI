@@ -147,6 +147,31 @@ log "modules: $MODULES"
 COMMIT="$(git -C "$REPO_DIR" rev-parse HEAD)"
 log "source commit: $COMMIT"
 
+# Resume must not mix trees.
+#
+# Every asset records the commit it was built from, and the index step asserts
+# they all agree -- the same check CI runs, and it exists because a tag re-cut
+# mid-build once produced two sets of assets nothing downstream could tell
+# apart. Locally the equivalent is resuming a build after committing something:
+# the staged tree is re-copied from the CURRENT checkout each run, so the
+# modules rebuilt on the second pass genuinely come from a different tree than
+# the ones kept from the first. Left alone it fails at the very END, after
+# rebuilding everything, with "built from X, expected Y".
+#
+# So notice at the start instead, and rebuild from scratch rather than
+# pretending the halves match.
+STAMP="$WORK/.build-commit"
+if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" != "$COMMIT" ]; then
+    log "the checkout moved since these assets were built"
+    log "  built at:  $(cat "$STAMP")"
+    log "  now at:    $COMMIT"
+    log "discarding them -- assets from two different trees cannot ship as one"
+    log "release (the index step asserts they agree, as CI does)."
+    sudo rm -rf "$WORK"
+    mkdir -p "$WORK"
+fi
+printf '%s' "$COMMIT" > "$STAMP"
+
 # ── build one asset per module ────────────────────────────────────────────
 # --work-dir's BASENAME becomes the tarball's top-level directory, and every
 # asset must use the SAME one (intact-upgrade-<tag>) or the N assets extract as
