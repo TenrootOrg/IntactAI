@@ -948,6 +948,157 @@ ${YELLOW}TimeSketch container modification — expected, by design${NC}
   (scripts/ci/check_timesketch_provider_drift.py). No action is needed now."
 }
 
+# Create (or confirm) the TimeSketch admin user from config.yaml's
+# modules.timesketch.id/password. Idempotent -- tsctl's "already exists" is
+# treated the same as a fresh create, so this is safe to call on every
+# deploy, not only the first.
+#
+# Extracted out of deploy_timesketch so scripts/upgrade.sh's install case (a
+# module enabled but never before deployed) can call the SAME user-creation
+# instead of shipping a running TimeSketch with no way to log into it --
+# nothing in the upgrade path has ever created a user; only this did.
+#
+# Returns 0 once the user row is verified in postgres, 1 if creation never
+# succeeded after retrying -- matching deploy_timesketch's own original
+# behaviour, where a failed user-creation does not fail the deploy, it just
+# skips the DFIQ/timeout niceties that used to be gated on it.
+create_timesketch_admin_user() {
+    local ts_user=$(read_config "['modules']['timesketch']['id']")
+    local ts_pass=$(read_config "['modules']['timesketch']['password']")
+
+    # STEP A — Wait until the postgres "user" table actually exists.
+    # The Timesketch container image doesn't ship Alembic migrations
+    # (no /migrations directory), so `tsctl db upgrade` is a no-op that
+    # prints a misleading ERROR. The schema is auto-created by the web
+    # container's own startup (SQLAlchemy create_all), so we just poll
+    # until the user table is visible before attempting create-user.
+    log_info "  Waiting for TimeSketch postgres 'user' table to materialize..."
+    local table_wait=0
+    local table_ready=false
+    while (( table_wait < 60 )); do
+        local has_table
+        has_table=$(docker exec intact_timesketch_postgres psql -U timesketch -d timesketch -tAc \
+            "SELECT to_regclass('public.\"user\"');" 2>/dev/null | tr -d '[:space:]')
+        # to_regclass returns "user" when the table exists, empty/NULL when it doesn't.
+        if [[ -n "$has_table" && "$has_table" != "NULL" ]]; then
+            table_ready=true
+            log_success "  TimeSketch 'user' table is present (${table_wait}s)"
+            break
+        fi
+        sleep 2
+        ((table_wait+=2))
+    done
+    if [[ "$table_ready" != "true" ]]; then
+        log_error "  TimeSketch postgres 'user' table did not appear after 60s — schema auto-create may have failed"
+        log_error "  Manual diagnosis: docker exec intact_timesketch_postgres psql -U timesketch -d timesketch -c \"SELECT to_regclass('public.\\\"user\\\"');\""
+        capture_diagnostic_logs "TimeSketch schema bring-up" \
+            intact_timesketch_web intact_timesketch_postgres
+    fi
+
+    log_info "  Creating TimeSketch user: ${ts_user}"
+
+    # STEP C — Now create the user. With migrations already applied
+    # this is no longer racing the schema. We still verify the row
+    # actually persisted before trusting tsctl's exit code (belt-and-
+    # suspenders — tsctl has been observed exiting 0 even when the
+    # write was rolled back by a transient).
+    local ts_user_created=false
+    local ts_retry=0
+    local ts_max_retry=5
+    local ts_error=""
+
+    while [[ $ts_retry -lt $ts_max_retry ]]; do
+        ts_error=$(docker exec intact_timesketch_web tsctl create-user "${ts_user}" --password "${ts_pass}" 2>&1)
+        local ts_exit_code=$?
+
+        # tsctl said it worked OR said the user already exists — either
+        # way, only believe it if the DB actually has the row.
+        if [[ $ts_exit_code -eq 0 ]] || echo "$ts_error" | grep -qi "already exists"; then
+            if verify_postgres_row intact_timesketch_postgres timesketch user "username='${ts_user}'"; then
+                ts_user_created=true
+                break
+            fi
+            log_info "  tsctl reported success but '${ts_user}' is not in postgres yet — retrying"
+        fi
+
+        ((ts_retry++))
+        if [[ $ts_retry -lt $ts_max_retry ]]; then
+            log_info "  Retrying user creation... (attempt ${ts_retry}/${ts_max_retry})"
+            sleep 10
+        fi
+    done
+
+    if [[ "$ts_user_created" != "true" ]]; then
+        return 1
+    fi
+
+    # STEP D — Enable + verify enable. enable-user can also silently
+    # no-op when the row was just written and the cache is stale.
+    docker exec intact_timesketch_web tsctl enable-user "${ts_user}" >/dev/null 2>&1 || true
+    if verify_postgres_row intact_timesketch_postgres timesketch user "username='${ts_user}' AND active=true"; then
+        log_success "  TimeSketch user '${ts_user}' ready (verified active in DB)"
+    else
+        log_warn "  TimeSketch user '${ts_user}' exists but is not marked active — sketches/uploads may be denied"
+        log_warn "  Manual fix: docker exec intact_timesketch_web tsctl enable-user ${ts_user}"
+    fi
+    return 0
+}
+
+# Render timesketch.conf / timesketch_legacy.conf from their .template
+# files, if they are not already present. Idempotent: an existing conf is
+# left untouched (post-install edits, manual or via the Settings UI,
+# survive), so this is a no-op on every deploy past the first.
+#
+# Reads the postgres password FROM secrets/postgres.env rather than
+# generating one itself -- that file's generation is the caller's job
+# (deploy_timesketch's own inline block; _ts_ensure_postgres_password in
+# lib/upgrade/timesketch.sh for the upgrade path), and duplicating it here
+# would risk the two falling out of sync.
+#
+# Extracted out of deploy_timesketch for the same reason as
+# create_timesketch_admin_user above: a module enabled but never before
+# deployed has neither conf file (both are gitignored), and compose
+# bind-mounts them -- without this, "start timesketch" would hit the same
+# Docker-fabricates-an-empty-directory failure the intact module's own
+# mount-asset delivery already guards against for OTHER files.
+render_timesketch_conf_templates() {
+    local dir="${SCRIPT_DIR}/modules/timesketch"
+    local pgenv="${dir}/secrets/postgres.env"
+    local ts_pg_pass=""
+    [[ -f "$pgenv" ]] && ts_pg_pass="$(sed -n 's/^POSTGRES_PASSWORD=//p' "$pgenv" | head -1)"
+
+    local base
+    for base in timesketch.conf timesketch_legacy.conf; do
+        local ts_template="${dir}/config/${base}.template"
+        local ts_out="${dir}/config/${base}"
+        if [[ -f "$ts_out" ]]; then
+            log_info "  ${base} already present (skip)"
+            continue
+        fi
+        if [[ ! -f "$ts_template" ]]; then
+            log_warn "  Template missing: $ts_template"
+            continue
+        fi
+        cp "$ts_template" "$ts_out"
+        # SECRET_KEY signs Timesketch's Flask session cookies and CSRF
+        # tokens — anyone with the value can forge any user's session,
+        # so it must be unique per install. Templates ship with a
+        # __SECRET_KEY__ placeholder; we replace it with 32 random
+        # bytes here, mirroring the IRIS_SECRET_KEY pattern.
+        local random_key
+        random_key=$(openssl rand -hex 32)
+        sed -i "s|^SECRET_KEY = '[^']*'|SECRET_KEY = '${random_key}'|" "$ts_out"
+        # The template ships the DB URI with the literal timesketch:timesketch
+        # credential. Point it at the generated password, or the app cannot
+        # authenticate to its own database now that the default is gone.
+        if [[ -n "$ts_pg_pass" ]]; then
+            sed -i "s|postgresql://timesketch:[^@]*@|postgresql://timesketch:${ts_pg_pass}@|" "$ts_out"
+        fi
+        log_success "  ${base} created from template (api_key empty — set via Settings → Timesketch; SECRET_KEY + DB password randomized)"
+    done
+    return 0
+}
+
 deploy_timesketch() {
     local ts_enabled=$(read_config "['modules']['timesketch']['enabled']")
     if ! is_enabled "$ts_enabled"; then
@@ -1021,35 +1172,8 @@ deploy_timesketch() {
         sync
         log_info "  Generated Timesketch Postgres password"
     fi
-    local ts_pg_pass
-    ts_pg_pass=$(sed -n 's/^POSTGRES_PASSWORD=//p' "$ts_pg_env" | head -1)
 
-    for base in timesketch.conf timesketch_legacy.conf; do
-        local ts_template="${SCRIPT_DIR}/modules/timesketch/config/${base}.template"
-        local ts_out="${SCRIPT_DIR}/modules/timesketch/config/${base}"
-        if [[ -f "$ts_out" ]]; then
-            log_info "  ${base} already present (skip)"
-        elif [[ -f "$ts_template" ]]; then
-            cp "$ts_template" "$ts_out"
-            # SECRET_KEY signs Timesketch's Flask session cookies and CSRF
-            # tokens — anyone with the value can forge any user's session,
-            # so it must be unique per install. Templates ship with a
-            # __SECRET_KEY__ placeholder; we replace it with 32 random
-            # bytes here, mirroring the IRIS_SECRET_KEY pattern above.
-            local random_key
-            random_key=$(openssl rand -hex 32)
-            sed -i "s|^SECRET_KEY = '[^']*'|SECRET_KEY = '${random_key}'|" "$ts_out"
-            # The template ships the DB URI with the literal timesketch:timesketch
-            # credential. Point it at the generated password, or the app cannot
-            # authenticate to its own database now that the default is gone.
-            if [[ -n "$ts_pg_pass" ]]; then
-                sed -i "s|postgresql://timesketch:[^@]*@|postgresql://timesketch:${ts_pg_pass}@|" "$ts_out"
-            fi
-            log_success "  ${base} created from template (api_key empty — set via Settings → Timesketch; SECRET_KEY + DB password randomized)"
-        else
-            log_warn "  Template missing: $ts_template"
-        fi
-    done
+    render_timesketch_conf_templates
 
     if ! pull_compose_with_retry "TimeSketch"; then
         track_module_failure "TimeSketch"
@@ -1103,83 +1227,7 @@ deploy_timesketch() {
             intact_timesketch_nginx intact_timesketch_web intact_timesketch_worker
     fi
 
-    # Create user
-    local ts_user=$(read_config "['modules']['timesketch']['id']")
-    local ts_pass=$(read_config "['modules']['timesketch']['password']")
-
-    # STEP A — Wait until the postgres "user" table actually exists.
-    # The Timesketch container image doesn't ship Alembic migrations
-    # (no /migrations directory), so `tsctl db upgrade` is a no-op that
-    # prints a misleading ERROR. The schema is auto-created by the web
-    # container's own startup (SQLAlchemy create_all), so we just poll
-    # until the user table is visible before attempting create-user.
-    log_info "  Waiting for TimeSketch postgres 'user' table to materialize..."
-    local table_wait=0
-    local table_ready=false
-    while (( table_wait < 60 )); do
-        local has_table
-        has_table=$(docker exec intact_timesketch_postgres psql -U timesketch -d timesketch -tAc \
-            "SELECT to_regclass('public.\"user\"');" 2>/dev/null | tr -d '[:space:]')
-        # to_regclass returns "user" when the table exists, empty/NULL when it doesn't.
-        if [[ -n "$has_table" && "$has_table" != "NULL" ]]; then
-            table_ready=true
-            log_success "  TimeSketch 'user' table is present (${table_wait}s)"
-            break
-        fi
-        sleep 2
-        ((table_wait+=2))
-    done
-    if [[ "$table_ready" != "true" ]]; then
-        log_error "  TimeSketch postgres 'user' table did not appear after 60s — schema auto-create may have failed"
-        log_error "  Manual diagnosis: docker exec intact_timesketch_postgres psql -U timesketch -d timesketch -c \"SELECT to_regclass('public.\\\"user\\\"');\""
-        capture_diagnostic_logs "TimeSketch schema bring-up" \
-            intact_timesketch_web intact_timesketch_postgres
-    fi
-
-    log_info "  Creating TimeSketch user: ${ts_user}"
-
-    # STEP C — Now create the user. With migrations already applied
-    # this is no longer racing the schema. We still verify the row
-    # actually persisted before trusting tsctl's exit code (belt-and-
-    # suspenders — tsctl has been observed exiting 0 even when the
-    # write was rolled back by a transient).
-    local ts_user_created=false
-    local ts_retry=0
-    local ts_max_retry=5
-    local ts_error=""
-
-    while [[ $ts_retry -lt $ts_max_retry ]]; do
-        ts_error=$(docker exec intact_timesketch_web tsctl create-user "${ts_user}" --password "${ts_pass}" 2>&1)
-        local ts_exit_code=$?
-
-        # tsctl said it worked OR said the user already exists — either
-        # way, only believe it if the DB actually has the row.
-        if [[ $ts_exit_code -eq 0 ]] || echo "$ts_error" | grep -qi "already exists"; then
-            if verify_postgres_row intact_timesketch_postgres timesketch user "username='${ts_user}'"; then
-                ts_user_created=true
-                break
-            fi
-            log_info "  tsctl reported success but '${ts_user}' is not in postgres yet — retrying"
-        fi
-
-        ((ts_retry++))
-        if [[ $ts_retry -lt $ts_max_retry ]]; then
-            log_info "  Retrying user creation... (attempt ${ts_retry}/${ts_max_retry})"
-            sleep 10
-        fi
-    done
-
-    if [[ "$ts_user_created" == "true" ]]; then
-        # STEP D — Enable + verify enable. enable-user can also silently
-        # no-op when the row was just written and the cache is stale.
-        docker exec intact_timesketch_web tsctl enable-user "${ts_user}" >/dev/null 2>&1 || true
-        if verify_postgres_row intact_timesketch_postgres timesketch user "username='${ts_user}' AND active=true"; then
-            log_success "  TimeSketch user '${ts_user}' ready (verified active in DB)"
-        else
-            log_warn "  TimeSketch user '${ts_user}' exists but is not marked active — sketches/uploads may be denied"
-            log_warn "  Manual fix: docker exec intact_timesketch_web tsctl enable-user ${ts_user}"
-        fi
-
+    if create_timesketch_admin_user; then
         # Enable DFIQ after successful deployment.
         # (Historically also ran `tsctl db upgrade` here; the current
         # Timesketch image doesn't ship Alembic migrations, so the call
@@ -1244,9 +1292,14 @@ deploy_timesketch() {
 
         track_module_success "TimeSketch"
     else
-        log_error "  TimeSketch user '${ts_user}' creation FAILED — DB row absent after ${ts_max_retry} attempts"
-        log_error "  Last tsctl output: ${ts_error}"
-        log_error "  Manual fix: docker exec intact_timesketch_web tsctl create-user ${ts_user} --password '<from config.yaml>'"
+        # create_timesketch_admin_user has already logged the specific
+        # retry/tsctl detail (extracted out of this function -- see its own
+        # definition); ts_user is re-read here rather than carried in a
+        # variable from before the extraction, since that variable no
+        # longer exists in this scope.
+        local ts_user_for_msg; ts_user_for_msg=$(read_config "['modules']['timesketch']['id']")
+        log_error "  TimeSketch user '${ts_user_for_msg}' creation FAILED"
+        log_error "  Manual fix: docker exec intact_timesketch_web tsctl create-user ${ts_user_for_msg} --password '<from config.yaml>'"
         log_error "  Then verify:  docker exec intact_timesketch_postgres psql -U timesketch -d timesketch -c 'SELECT id, username FROM \"user\";'"
         capture_diagnostic_logs "TimeSketch user creation" \
             intact_timesketch_web intact_timesketch_postgres
@@ -1742,6 +1795,69 @@ deploy_portainer() {
 # VolWeb Module (memory-forensics analysis stack)
 # ============================================================================
 
+# Render modules/volweb/.env from the template + config.yaml pins. Idempotent:
+# an existing .env is preserved (its rotated DJANGO_SECRET + postgres password
+# are the actual credentials the running database already has, not just
+# defaults) so this is safe to call on every deploy, not only the first.
+#
+# Extracted out of deploy_volweb so scripts/upgrade.sh's install case (a
+# module enabled but never before deployed, reached by enabling it in
+# config.yaml and then running an upgrade rather than install.sh) can call
+# the SAME rendering instead of failing at the pin-stamping step with no
+# .env to stamp into -- modules/volweb/.env is gitignored (only .env.template
+# is tracked), so a genuinely fresh box has no file here at all until this
+# runs once.
+render_volweb_env_template() {
+    local env_out="${SCRIPT_DIR}/modules/volweb/.env"
+    local env_tmpl="${SCRIPT_DIR}/modules/volweb/.env.template"
+
+    if [[ -f "$env_out" ]]; then
+        log_info "  modules/volweb/.env already present (skip render — secrets preserved)"
+        return 0
+    fi
+    if [[ ! -f "$env_tmpl" ]]; then
+        log_warn "  modules/volweb/.env.template missing — skipping VolWeb"
+        return 1
+    fi
+
+    # Single `versions.volweb` pin drives both backend + frontend
+    # (forensicxlab releases them in lockstep). Postgres + Redis
+    # are transitive deps — pulled from config.yaml's
+    # `versions.volweb_postgres` + `versions.volweb_redis` via
+    # the stamping helper the caller runs AFTER this (which also
+    # covers the upgrade case where .env already exists — operator
+    # pin bumps propagate on the next deploy without touching the
+    # .env by hand).
+    local volweb_ver=$(read_config "['versions']['volweb']")
+    local domain=$(read_config "['domain']")
+    # Per-install random secrets. Mirrors the IRIS_SECRET_KEY +
+    # Timesketch SECRET_KEY pattern shipped earlier this session.
+    local django_secret=$(openssl rand -hex 32)
+    local pg_password=$(openssl rand -hex 24)
+    # CSRF: the IntactAI dashboard hits VolWeb through intact_nginx
+    # AND from the backend container. Cover both shapes.
+    local csrf="https://${domain},http://intact_nginx,http://intact_backend:5001,http://intact_volweb_backend:8000"
+
+    cp "$env_tmpl" "$env_out"
+    sed -i \
+        -e "s|__VOLWEB_BACKEND_VERSION__|${volweb_ver:-latest}|g" \
+        -e "s|__VOLWEB_FRONTEND_VERSION__|${volweb_ver:-latest}|g" \
+        -e "s|__VOLWEB_DJANGO_SECRET__|${django_secret}|g" \
+        -e "s|__VOLWEB_POSTGRES_PASSWORD__|${pg_password}|g" \
+        -e "s|__VOLWEB_CSRF_TRUSTED_ORIGINS__|${csrf}|g" \
+        "$env_out"
+    # Drop the old __VOLWEB_POSTGRES_VERSION__ / __VOLWEB_REDIS_VERSION__
+    # placeholder lines — the stamping helper below writes the
+    # real values from config.yaml. Tolerant if the template
+    # doesn't ship those placeholders any more.
+    sed -i \
+        -e "s|^VOLWEB_POSTGRES_VERSION=__VOLWEB_POSTGRES_VERSION__||g" \
+        -e "s|^VOLWEB_REDIS_VERSION=__VOLWEB_REDIS_VERSION__||g" \
+        "$env_out"
+    log_success "  modules/volweb/.env rendered (per-install secrets generated)"
+    return 0
+}
+
 deploy_volweb() {
     # Gate on the dedicated `modules.volweb.enabled` key (added in
     # commit 96b8a8f). Previously read `modules.memory.enabled`, which
@@ -1771,54 +1887,7 @@ deploy_volweb() {
         return 1
     fi
 
-    # Render modules/volweb/.env from the template + config.yaml pins.
-    # Idempotent: existing .env is preserved across re-installs so the
-    # operator's rotated DJANGO_SECRET + postgres password persist.
-    local env_out="${SCRIPT_DIR}/modules/volweb/.env"
-    local env_tmpl="${SCRIPT_DIR}/modules/volweb/.env.template"
-
-    if [[ -f "$env_out" ]]; then
-        log_info "  modules/volweb/.env already present (skip render — secrets preserved)"
-    elif [[ -f "$env_tmpl" ]]; then
-        # Single `versions.volweb` pin drives both backend + frontend
-        # (forensicxlab releases them in lockstep). Postgres + Redis
-        # are transitive deps — pulled from config.yaml's
-        # `versions.volweb_postgres` + `versions.volweb_redis` via
-        # the stamping helper BELOW (which also covers the upgrade
-        # case where .env already exists — operator pin bumps
-        # propagate on the next deploy without touching the .env by
-        # hand).
-        local volweb_ver=$(read_config "['versions']['volweb']")
-        local domain=$(read_config "['domain']")
-        # Per-install random secrets. Mirrors the IRIS_SECRET_KEY +
-        # Timesketch SECRET_KEY pattern shipped earlier this session.
-        local django_secret=$(openssl rand -hex 32)
-        local pg_password=$(openssl rand -hex 24)
-        # CSRF: the IntactAI dashboard hits VolWeb through intact_nginx
-        # AND from the backend container. Cover both shapes.
-        local csrf="https://${domain},http://intact_nginx,http://intact_backend:5001,http://intact_volweb_backend:8000"
-
-        cp "$env_tmpl" "$env_out"
-        sed -i \
-            -e "s|__VOLWEB_BACKEND_VERSION__|${volweb_ver:-latest}|g" \
-            -e "s|__VOLWEB_FRONTEND_VERSION__|${volweb_ver:-latest}|g" \
-            -e "s|__VOLWEB_DJANGO_SECRET__|${django_secret}|g" \
-            -e "s|__VOLWEB_POSTGRES_PASSWORD__|${pg_password}|g" \
-            -e "s|__VOLWEB_CSRF_TRUSTED_ORIGINS__|${csrf}|g" \
-            "$env_out"
-        # Drop the old __VOLWEB_POSTGRES_VERSION__ / __VOLWEB_REDIS_VERSION__
-        # placeholder lines — the stamping helper below writes the
-        # real values from config.yaml. Tolerant if the template
-        # doesn't ship those placeholders any more.
-        sed -i \
-            -e "s|^VOLWEB_POSTGRES_VERSION=__VOLWEB_POSTGRES_VERSION__||g" \
-            -e "s|^VOLWEB_REDIS_VERSION=__VOLWEB_REDIS_VERSION__||g" \
-            "$env_out"
-        log_success "  modules/volweb/.env rendered (per-install secrets generated)"
-    else
-        log_warn "  modules/volweb/.env.template missing — skipping VolWeb"
-        return 1
-    fi
+    render_volweb_env_template || return 1
 
     # Stamp transitive container pins from config.yaml — always runs,
     # so an operator pin edit in config.yaml propagates on the next

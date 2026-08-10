@@ -125,7 +125,16 @@ _velo_snapshot() {
             found=1
         fi
     done
-    (( found )) || { log_error "  no velociraptor config files to snapshot"; return 1; }
+    if (( ! found )); then
+        # NOT an error: a module enabled but never before deployed (turned
+        # on in config.yaml, then upgraded rather than installed) has an
+        # empty data/velociraptor/ by design -- entrypoint.sh generates
+        # server.config.yaml into it on first start, the same as a fresh
+        # install.sh run. Nothing exists yet to snapshot, so there is
+        # nothing for a rollback to need either.
+        log_info "  no existing velociraptor config -- nothing to snapshot (first deploy)"
+        return 0
+    fi
     [[ -f "${data}/velociraptor" ]] && cp -p "${data}/velociraptor" "${snap}/velociraptor"
     log_info "  snapshotted configs to ${snap}"
     return 0

@@ -49,6 +49,16 @@ upgrade_module_timesketch() {
     #    see the function.
     u_do "postgres credentials" -- _ts_ensure_postgres_password
 
+    # timesketch.conf / timesketch_legacy.conf are gitignored and
+    # bind-mounted into the containers -- a module enabled but never before
+    # deployed (turned on in config.yaml, then upgraded rather than
+    # installed) has neither file, and "start timesketch" would hit the
+    # same Docker-fabricates-an-empty-directory failure the intact module's
+    # own mount-asset delivery guards against for other files. Idempotent
+    # (skips a conf that already exists), so unconditional here costs
+    # nothing on every normal upgrade.
+    u_do "render timesketch conf templates" -- render_timesketch_conf_templates
+
     # 2. The dump, while everything is still up and consistent.
     local have_dump=0
     if _u_pg_dump intact_timesketch_postgres timesketch timesketch "$dump"; then
@@ -145,6 +155,15 @@ upgrade_module_timesketch() {
     u_end timesketch rollback 300
     local rc=$?
     if (( rc == 0 )); then
+        # A module enabled but never before deployed has no admin user --
+        # nothing else in this path ever creates one. Gated on U_FROM
+        # (nothing installed before this run) rather than running
+        # unconditionally: tsctl's own polling (up to 60s for the schema,
+        # 5 retries at 10s for the create) is real latency an ALREADY
+        # -established install has no reason to pay on every upgrade.
+        if [[ "$U_FROM" == "not installed" ]] && declare -F create_timesketch_admin_user >/dev/null; then
+            create_timesketch_admin_user || log_warn "  could not create the TimeSketch admin user"
+        fi
         discard_backup "$bak"
         # The DB dump is deliberately KEPT. It is the only copy of the
         # pre-upgrade schema+data, it is small next to the evidence it

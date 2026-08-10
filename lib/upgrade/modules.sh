@@ -315,6 +315,12 @@ upgrade_module_elk() {
     U_ELK_BASELINE_STATUS="$(_u_elk_status)"
     log_info "  cluster status before the upgrade: ${U_ELK_BASELINE_STATUS:-unknown}"
 
+    # Parity with deploy_elk (lib/modules.sh), which install.sh always runs
+    # first: systemd health, the thing that broke the 2026-06-15 test-1
+    # install by failing cgroup-unit creation mid compose-up. Cheap (a
+    # systemctl call), so unconditional here rather than gated to only the
+    # first-ever deploy of this module.
+    u_do "host preflight" -- preflight_host_check "ELK Stack"
     u_do "elasticsearch credentials" -- ensure_elk_credentials
 
     bak="$(backup_file_for_rollback "$envf")" || bak=""
@@ -471,6 +477,15 @@ upgrade_module_iris() {
     u_do "stamp iris pin" -- _u_stamp "$envf" "IRIS_VERSION=${target}"
     u_do "stamp iris sidecar pins" -- _u_stamp_transitive iris
     u_do "iris web certificate" -- ensure_iris_web_cert
+    # The 5 files under modules/iris/secrets/ are gitignored Docker Compose
+    # file-secrets (docker-compose.yaml's `secrets: … file:` entries) --
+    # compose refuses to start IRIS at all without them. Only ever written by
+    # install.sh's generate_iris_secrets today; a module enabled but never
+    # deployed (turned on in config.yaml, then upgraded rather than
+    # installed) has none of them. Idempotent -- only fills in what is
+    # missing/empty, never rotates an existing secret -- so this is a no-op
+    # on every normal upgrade, where they already exist.
+    u_do "generate IRIS secrets" -- generate_iris_secrets
     u_do --timeout 900 "start iris" -- _u_compose "$dir" up -d --no-build --pull never
 
     u_end iris rollback 240
@@ -650,6 +665,15 @@ upgrade_module_volweb() {
         _u_pg_dump intact_volweb_postgresdb "$vw_user" "$vw_db" "$dump" \
             || log_warn "  continuing without a database backup"
     fi
+
+    # modules/volweb/.env is gitignored -- a module enabled but never
+    # actually deployed before (the operator turns it on in config.yaml
+    # then runs an upgrade rather than install.sh) has NO .env file at all,
+    # and "stamp volweb pins" below would fail immediately with nothing to
+    # stamp into. render_volweb_env_template (lib/modules.sh, shared with
+    # deploy_volweb) is idempotent -- a no-op past this point on every
+    # normal upgrade, where the file already exists.
+    u_do "render volweb .env template" -- render_volweb_env_template
 
     bak="$(backup_file_for_rollback "$envf")" || bak=""
     u_undo "_u_compose_up_old volweb"
