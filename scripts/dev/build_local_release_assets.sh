@@ -105,7 +105,12 @@ fi
 # "Permission denied" -- exit 23, having copied only part of the tree. A
 # partial stage would build a package quietly missing files rather than fail.
 log "staging $REPO_DIR -> $STAGE"
-sudo rm -rf "$STAGE" "$WORK"
+# WORK deliberately survives. Building the full set is ~25 GB of `docker save`
+# and takes the best part of an hour, so a failure in the ninth module must not
+# throw away the eight that already succeeded -- re-running skips whatever is
+# already on disk (below). STAGE is always rebuilt: it is cheap, and it is the
+# thing that must reflect the current checkout.
+sudo rm -rf "$STAGE"
 mkdir -p "$STAGE" "$WORK" "$OUT"
 sudo rsync -a --exclude='.git' --exclude='data/' --exclude='backups/' \
       "$REPO_DIR/" "$STAGE/"
@@ -148,6 +153,16 @@ log "source commit: $COMMIT"
 # siblings instead of merging into one package dir. This is the single most
 # important argument here.
 for m in $MODULES; do
+    # Resume. The .meta.json sidecar, not the tarball, is the completion
+    # marker: the tarball appears before the builder has written the sidecar
+    # the index job needs, so keying off the tar would happily "skip" a module
+    # that never finished and then fail in the index step with a confusing
+    # "no manifest sidecar" instead of just rebuilding it.
+    if find "$WORK" -maxdepth 1 -name "$TAG-$m.tar*.meta.json" \
+            | grep -q .; then
+        log "skipping $m (already built -- delete $WORK to force a rebuild)"
+        continue
+    fi
     log "building module asset: $m"
     run_packager --tag "$TAG" --module "$m" \
         --out "$WORK" \

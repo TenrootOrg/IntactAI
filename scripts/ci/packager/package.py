@@ -823,8 +823,95 @@ def _prepare_backend_images(package_dir: str, target_version: str, manifest: Dic
                     "error": (f"Full-mode release but no backend Dockerfile at {dockerfile} "
                               f"— cannot bake the required backend image. Re-prepare from a "
                               f"complete release tree.")}
-        build = run_command(f"docker build -f {dockerfile} -t {image} {src_root}",
-                            timeout=1800, logger=None, run_id=run_id)
+
+        # The Dockerfile does `COPY config.yaml /app/config.yaml`, twice, and
+        # src_root no longer has one: excluding it from what ships is what
+        # stops a package built on a live box from carrying that box's PAT and
+        # module passwords. So the build context needs a config.yaml that is
+        # NOT the operator's.
+        #
+        # Not source_root's copy: on a live appliance that is exactly the file
+        # full of real secrets, and baking it into an image layer is the leak
+        # the Dockerfile's own comment describes as recoverable with a plain
+        # `docker run --entrypoint sh <image> -c 'cat /app/config.yaml'`.
+        #
+        # So sanitize it with the repo's OWN sanitizer -- the same one the
+        # pre-commit hook runs to decide what "shipping defaults" means -- and
+        # delete it again afterwards so the package still ships no config.yaml.
+        # install_deps.py only reads it to pick module dependencies, and the
+        # sanitized template has every module enabled, so the image gets the
+        # same superset it does in CI.
+        #
+        # CI never hit this because it pre-tags intact-backend:ci-packager and
+        # the `docker image inspect` above skips the build entirely. The bug
+        # was therefore invisible until a build ran where that image was absent.
+        _tmpl = os.path.join(src_root, 'config.yaml')
+        _tmpl_created = False
+        if not os.path.isfile(_tmpl):
+            _live = os.path.join(source_root, 'config.yaml') if source_root else None
+            _san = os.path.join(src_root, 'scripts', 'git-hooks', 'sanitize_config.py')
+            if not (_live and os.path.isfile(_live)):
+                return {"success": False,
+                        "error": ("cannot bake the backend image: the Dockerfile copies "
+                                  "config.yaml and neither the package tree nor source_root "
+                                  "has one to sanitize into a template.")}
+            if not os.path.isfile(_san):
+                return {"success": False,
+                        "error": (f"cannot bake the backend image: no sanitizer at {_san}, "
+                                  f"and the operator's config.yaml must never be baked in "
+                                  f"unsanitized.")}
+            _r = run_command(f"python3 {_san} config.yaml {_live} {_tmpl}",
+                             timeout=60, logger=None, run_id=run_id)
+            if not _r.get("success") or not os.path.isfile(_tmpl):
+                return {"success": False,
+                        "error": (f"could not produce a sanitized config.yaml template for "
+                                  f"the backend image build: {_r.get('error', '')[:200]}")}
+            # The sanitizer only blanks credentials -- it leaves the build
+            # host's own enabled/disabled choices alone. install_deps.py reads
+            # this file to decide which module dependencies to install, so
+            # without this the baked image would carry whatever subset the
+            # build machine happened to have switched on, and the Dockerfile's
+            # promise that "the template ships every module enabled: true, so
+            # this installs a superset -- which also makes the image
+            # reproducible instead of varying by build host" would quietly stop
+            # being true. A release built on a box with elk off would ship a
+            # backend image with no elk dependencies.
+            #
+            # A yaml round-trip loses the file's comments, which is normally
+            # the reason not to do this (see sanitize_config.py's docstring) --
+            # here it does not matter: this copy exists only as a docker build
+            # context and is deleted a few lines below.
+            try:
+                import yaml as _yaml
+                with open(_tmpl) as _fh:
+                    _doc = _yaml.safe_load(_fh) or {}
+                for _mod in (_doc.get('modules') or {}).values():
+                    if isinstance(_mod, dict):
+                        _mod['enabled'] = True
+                with open(_tmpl, 'w') as _fh:
+                    _yaml.safe_dump(_doc, _fh, default_flow_style=False,
+                                    sort_keys=False)
+            except Exception as _e:
+                return {"success": False,
+                        "error": (f"could not normalise the config.yaml template "
+                                  f"for the backend image build: {_e}")}
+
+            _tmpl_created = True
+            log("  Sanitized config.yaml template staged for the image build "
+                "(all modules enabled; removed again before packaging)", "info")
+
+        try:
+            build = run_command(f"docker build -f {dockerfile} -t {image} {src_root}",
+                                timeout=1800, logger=None, run_id=run_id)
+        finally:
+            # Unconditionally, including on a failed build: a template left
+            # behind would ship inside source/intact/ and quietly undo the
+            # exclusion this whole dance exists to preserve.
+            if _tmpl_created:
+                try:
+                    os.remove(_tmpl)
+                except OSError:
+                    pass
         if build.get("cancelled"):
             return {"success": False, "cancelled": True, "error": "cancelled"}
         if not build.get("success"):
