@@ -285,9 +285,17 @@ PY
 # the release deliberately does not publish -- copying them would make the
 # local release a shape no box will ever actually see, and in particular would
 # hand upkg_expand_args a second loose manifest to choose between.
+#
+# Overwrite, never skip. The index is regenerated from WORK on every run, so an
+# asset left behind in OUT from an earlier build would be advertised with the
+# NEW asset's sha256 and fail its digest check on download -- as a corrupt-file
+# error, which is the most misleading way for a stale copy to announce itself.
+# Hard-linked because both trees are on the same filesystem and the set is
+# ~5 GB; `cp` fallback for when they are not.
 find "$WORK" -maxdepth 1 \( -name "$TAG-*.tar" -o -name "$TAG-*.tar.gz" \
      -o -name "intact-upgrade-$TAG.tar" -o -name "intact-upgrade-$TAG.tar.gz" \
-     -o -name "intact-upgrade-$TAG.tar.gz.part-*" \) -exec cp -n {} "$OUT/" \;
+     -o -name "intact-upgrade-$TAG.tar.gz.part-*" \) \
+     -exec sh -c 'ln -f "$1" "$2/$(basename "$1")" 2>/dev/null || cp -f "$1" "$2/"' _ {} "$OUT" \;
 
 log "release built -> $OUT"
 ls -la "$OUT"
