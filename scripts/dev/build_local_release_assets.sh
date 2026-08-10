@@ -161,12 +161,19 @@ log "source commit: $COMMIT"
 # So notice at the start instead, and rebuild from scratch rather than
 # pretending the halves match.
 STAMP="$WORK/.build-commit"
-if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" != "$COMMIT" ]; then
-    log "the checkout moved since these assets were built"
-    log "  built at:  $(cat "$STAMP")"
-    log "  now at:    $COMMIT"
-    log "discarding them -- assets from two different trees cannot ship as one"
-    log "release (the index step asserts they agree, as CI does)."
+_stale=""
+if [ -f "$STAMP" ]; then
+    [ "$(cat "$STAMP")" != "$COMMIT" ] && _stale="built at $(cat "$STAMP")"
+elif find "$WORK" -maxdepth 1 -name '*.meta.json' | grep -q .; then
+    # Assets with no stamp predate this check, so their provenance is simply
+    # unknown -- which for this purpose is the same as wrong. Discard rather
+    # than assume they match and fail in the index step.
+    _stale="built before this check existed, provenance unknown"
+fi
+if [ -n "$_stale" ]; then
+    log "discarding the existing assets: $_stale, now at $COMMIT"
+    log "  assets from two different trees cannot ship as one release -- the"
+    log "  index step asserts they agree, exactly as CI does."
     sudo rm -rf "$WORK"
     mkdir -p "$WORK"
 fi
