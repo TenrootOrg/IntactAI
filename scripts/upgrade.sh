@@ -216,7 +216,17 @@ main() {
     # Everything past here mutates the appliance, so root is required. Said
     # with the actual command to run: `check_root` alone prints "must be run
     # as root", which is true and unhelpful at 3am.
-    if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+    #
+    # --plan is exempt, for the same reason --list above it is: it fetches a
+    # ~0.2 MB manifest, reads .env files and inspects containers, and changes
+    # nothing. Requiring root for it contradicted both its own comment below
+    # ("nothing here changes the appliance") and docs/UPGRADE.md's promise that
+    # the read-only modes do not need root -- and it made the cheap "what would
+    # this upgrade do?" question the one thing an operator could not ask
+    # without sudo. It still runs the docker checks underneath, so a caller
+    # with no docker access gets "Cannot talk to the Docker daemon" rather than
+    # a misleading demand for root.
+    if [[ "${EUID:-$(id -u)}" -ne 0 && -z "${UPGRADE_PLAN_TAG:-}" ]]; then
         log_error "This needs root — it stops containers, writes module .env files and loads images."
         # _CODE_DIR, not SCRIPT_DIR: the operator should re-run THIS script
         # (the one that just ran), and after the hop those differ.
