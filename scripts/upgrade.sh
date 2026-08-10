@@ -222,6 +222,7 @@ main() {
         log_error "Docker Compose v2 is required (docker compose, not docker-compose)."
         return 2
     fi
+    check_docker_min_version   # advisory only (lib/common.sh); never blocks
     if [[ ! -w "$SCRIPT_DIR" ]]; then
         log_error "${SCRIPT_DIR} is not writable."
         return 2
@@ -257,6 +258,11 @@ main() {
             log_error "  ${SCRIPT_DIR}/data/tmp/upgrade.lock"
             return 2
         fi
+        # Reclaim scratch a KILLED earlier run left behind before this run's
+        # own acquire adds more -- upkg_cleanup only ever knows what ITS OWN
+        # process extracted, so a run that never reached it (kill -9, OOM, a
+        # lost SSH session) leaked its extraction forever until now.
+        upkg_sweep_stale_scratch
     fi
 
     # ------------------------------------------------------- velo-refresh ---
@@ -369,6 +375,11 @@ main() {
         return 0
     fi
 
+    # Offline only: catches a missing image before three OTHER modules have
+    # already swapped and the fourth discovers it cannot pull. Online, a
+    # missing image is just a pull -- nothing to preflight.
+    _u_preflight_images || return 2
+
     # ------------------------------------------------------- module loop ----
     log_info ""
     log_info "Upgrading ${work} module(s)…"
@@ -398,6 +409,14 @@ main() {
         U_FROM="${PLAN_CURRENT[$m]:-not installed}"
         U_TO="${PLAN_TARGET[$m]}"
         "$fn" "${PLAN_TARGET[$m]}"
+
+        # Prune the tag this module just swapped AWAY from. Only once it has
+        # genuinely committed (UPGRADE_OK) -- a rolled-back or degraded
+        # module is still using its old image, sometimes literally (the
+        # rollback undo brings it back up on that exact tag).
+        if [[ " ${UPGRADE_OK[*]} " == *" ${m} "* ]]; then
+            _u_prune_old_module_images "$m" "$U_FROM" "$U_TO"
+        fi
     done
 
     # ------------------------------------------------------------ after -----

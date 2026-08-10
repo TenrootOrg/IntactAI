@@ -36,6 +36,84 @@ _u_image_present() {
     "${DOCKER_BIN:-docker}" image inspect "$1" >/dev/null 2>&1
 }
 
+# Emits "<rendered image ref>\t<rendered tar filename>" per line for a
+# module's PRIMARY_IMAGES entries at the given version, or nothing for a
+# module PRIMARY_IMAGES does not cover (intact, velociraptor, aws_sigma --
+# built or ruleset-only, not pulled).
+#
+# Reads modules/backend/services/image_map.py by EXEC, not `import
+# services.image_map`: importing it as a package member runs
+# services/__init__.py first regardless of which submodule was asked for,
+# and that file eagerly imports the whole backend service graph including
+# grpc. exec()ing the source directly never touches the package machinery at
+# all -- same fix scripts/ci/packager/order.py applies to the exact same
+# problem on the CI side. Single source of truth either way: this is the
+# SAME file app.py's boot-time image reclaim and the CI packager both read,
+# so a repo/tar-name change here cannot silently disagree between what
+# prunes an old image and what the box actually shipped it as.
+_u_primary_image_refs() {
+    local module="$1" version="$2"
+    local f="${SCRIPT_DIR}/modules/backend/services/image_map.py"
+    [[ -f "$f" ]] || return 1
+    python3 -c "
+import sys
+ns = {}
+exec(open(sys.argv[1], encoding='utf-8').read(), ns)
+for img, tar in ns.get('PRIMARY_IMAGES', {}).get(sys.argv[2], []):
+    print(img.format(version=sys.argv[3]) + '\t' + tar.format(version=sys.argv[3]))
+" "$f" "$module" "$version" 2>/dev/null
+}
+
+# Remove <repo>:<old> for every primary image a module owns, once the module
+# has genuinely committed to <new>. Never fatal, never even logged as a
+# warning on failure: `docker image rm` refuses on its own when the tag is
+# still in use or was never pulled locally, and that refusal is exactly the
+# safety net that makes calling this unconditionally fine. User-requested
+# 2026-06-09 after several GB of obsolete module images piling up on the
+# host post-upgrade; the Python engine this replaced had it
+# (base.py:remove_old_module_image), the bash rewrite initially did not.
+_u_prune_old_module_images() {
+    local module="$1" old="$2" new="$3"
+    [[ -n "$old" && "$old" != "not installed" && "$old" != "$new" ]] || return 0
+    local ref tar old_ref
+    while IFS=$'\t' read -r ref tar; do
+        [[ -n "$ref" ]] || continue
+        old_ref="${ref%:*}:${old}"
+        [[ "$old_ref" == "$ref" ]] && continue   # same tag rendered differently; nothing to prune
+        if "${DOCKER_BIN:-docker}" image inspect "$old_ref" >/dev/null 2>&1; then
+            "${DOCKER_BIN:-docker}" image rm "$old_ref" >/dev/null 2>&1 \
+                && log_info "  cleaned up old image: ${old_ref}"
+        fi
+    done < <(_u_primary_image_refs "$module" "$new")
+    return 0
+}
+
+# Preflight, called once before the module loop: with no network access, a
+# missing image used to surface only when THAT module's own turn came --
+# after however many earlier modules had already swapped. Checks every
+# module about to upgrade/install against what is already local and what
+# the package bundles; a real gap is refused up front, before anything is
+# touched, rather than three modules in.
+_u_preflight_images() {
+    [[ "${INTACT_UPGRADE_OFFLINE:-0}" == "1" ]] || return 0
+    local missing=() m ref tar
+    for m in "${UPGRADE_ORDER[@]}"; do
+        case "${PLAN_ACTION[$m]:-}" in upgrade|install) ;; *) continue ;; esac
+        while IFS=$'\t' read -r ref tar; do
+            [[ -n "$ref" ]] || continue
+            _u_image_present "$ref" && continue
+            [[ -n "$tar" && -f "${UPKG_DIR}/images/${tar}" ]] && continue
+            missing+=("${m}: ${ref} (not present, and ${tar:-no tar} not in the package)")
+        done < <(_u_primary_image_refs "$m" "${PLAN_TARGET[$m]}")
+    done
+    if (( ${#missing[@]} )); then
+        log_error "Offline, and this package is missing image(s) it needs:"
+        local x; for x in "${missing[@]}"; do log_error "  - ${x}"; done
+        return 1
+    fi
+    return 0
+}
+
 # Make an image available, in this order: already local -> load the tar the
 # package carries -> pull. A MISSING IMAGE IS FATAL, never a warning: stamping
 # a pin for an image that exists nowhere reports "upgraded" and only surfaces

@@ -269,6 +269,33 @@ _intact_snapshot() {
         --exclude='__pycache__' --exclude='*.pyc' backend 2>/dev/null \
       | tar -C "$snap" -xf - 2>/dev/null || return 1
     log_info "  snapshotted modules/backend to ${snap}"
+
+    # data/intact.db: the appliance's own SQLite state (secrets, workflows,
+    # blueprints) -- neither this engine nor the one it replaced protects it
+    # anywhere else. Nothing here mirrors over data/, so it survives a
+    # NORMAL upgrade untouched either way; this exists for the abnormal one
+    # (a bad backend swap that gets rolled back after something already
+    # wrote to the DB mid-run). Best-effort: no sqlite3 CLI on this box, so
+    # this is a plain file copy of the main file plus its WAL/SHM sidecars
+    # (present when the DB is in WAL mode) rather than a
+    # `sqlite3 .backup`-consistent snapshot -- good enough for a pre-upgrade
+    # safety copy, not a substitute for a real backup strategy. A failure
+    # here is logged, never fatal: the module must not fail over a backup of
+    # something it was never going to touch in the first place.
+    local dbf="${SCRIPT_DIR}/data/intact.db" f
+    if [[ -f "$dbf" ]]; then
+        mkdir -p "${snap}/data" 2>/dev/null
+        local copied=1
+        for f in "$dbf" "${dbf}-wal" "${dbf}-shm"; do
+            [[ -f "$f" ]] || continue
+            cp -p "$f" "${snap}/data/" 2>/dev/null || copied=0
+        done
+        if (( copied )); then
+            log_info "  snapshotted data/intact.db"
+        else
+            log_warn "  could not fully snapshot data/intact.db (continuing anyway)"
+        fi
+    fi
     return 0
 }
 
@@ -280,6 +307,14 @@ _intact_restore() {
     # undo a velo refresh that succeeded independently.
     tar -C "$snap" -cf - --exclude='downloads' backend 2>/dev/null \
       | tar -C "${SCRIPT_DIR}/modules" -xf - 2>/dev/null || return 1
+
+    # intact.db is NOT restored here. This engine never writes to data/ on
+    # the forward path, so the live DB is still the correct one after a
+    # rollback -- restoring the snapshot would UNDO any legitimate workflow
+    # activity (a secret rotated, a blueprint saved) that happened to land
+    # during the failed run, which is a worse outcome than leaving it alone.
+    # The snapshot exists purely as a manual-recovery artifact for the case
+    # that genuinely needs it.
     return 0
 }
 
@@ -354,8 +389,18 @@ _intact_deliver_mount_assets() {
     while IFS= read -r rel; do
         [[ -n "$rel" ]] || continue
         local s="${psrc}/${rel}" d="${pdst}/${rel}"
-        [[ -e "$s" ]] || continue
-        [[ -f "$s" ]] || continue
+
+        if [[ ! -e "$s" || ! -f "$s" ]]; then
+            # The package has nothing to deliver here. If the box has
+            # nothing either, `docker compose up` will fabricate an EMPTY
+            # DIRECTORY at this path -- and if the container expects a FILE
+            # there, that is the exact exit-126 crash loop the cleanup
+            # branch below exists to recover FROM on a later run. Naming it
+            # now, before compose ever runs, turns that into a warning
+            # instead of a mystery.
+            [[ -e "$d" ]] || log_warn "    ${rel} is referenced by ${compose} but neither the package nor this box has it -- compose may fabricate an empty directory there"
+            continue
+        fi
         if [[ -d "$d" ]]; then
             if [[ -z "$(ls -A "$d" 2>/dev/null)" ]]; then
                 # Docker's fabricated empty directory. Removing it is what
@@ -377,6 +422,15 @@ _intact_deliver_mount_assets() {
             fi
             cp -p "$s" "$d" || return 1
             log_info "    delivered ${rel}"
+        fi
+        # Verify what was just written is actually there and matches --
+        # `cp`'s own exit code already covers most of this, but a race with
+        # something else touching ${d} between the copy and now (a
+        # concurrent recreate, a symlink resolving unexpectedly) would
+        # otherwise go unnoticed until the container fails to start.
+        if [[ ! -f "$d" ]] || ! cmp -s "$s" "$d"; then
+            log_error "    ${rel} does not match the package after delivery"
+            return 1
         fi
     done < <(grep -oE '^\s*-\s*\./[^:]+:' "$compose" 2>/dev/null | sed 's/^[[:space:]]*-[[:space:]]*\.\///; s/:$//')
     return 0

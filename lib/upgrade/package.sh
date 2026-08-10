@@ -431,6 +431,39 @@ upkg_acquire() {
 # ---------------------------------------------------------------------------
 # upkg_cleanup — remove every scratch dir this file created.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# upkg_sweep_stale_scratch [hours]
+#
+# upkg_cleanup only ever removes what THIS process's own UPKG_SCRATCH
+# remembers extracting -- in-memory state that a killed -9, an OOM, or a
+# lost SSH session discards along with the process. A run that dies that way
+# leaves its multi-GB extraction under data/tmp/ forever; nothing else ever
+# looks at it again. This is the other half: an AGE-based sweep of the same
+# naming conventions, run once at the START of the next invocation rather
+# than relying on the previous one to have exited cleanly.
+#
+# 48h default: long enough that this never touches a scratch dir a slow
+# but still-running upgrade legitimately owns (the flock in scripts/upgrade.sh
+# is what actually prevents two runs colliding; this is just reclaiming
+# space from ones that are definitely over).
+# ---------------------------------------------------------------------------
+upkg_sweep_stale_scratch() {
+    local hours="${1:-48}"
+    local dir="${SCRIPT_DIR}/data/tmp"
+    [[ -d "$dir" ]] || return 0
+    local n=0 d
+    while IFS= read -r d; do
+        [[ -n "$d" ]] || continue
+        rm -rf "$d" 2>/dev/null && n=$((n + 1))
+    done < <(find "$dir" -maxdepth 1 -mmin "+$((hours * 60))" \
+                  \( -name 'upgrade-pkg-*' -o -name 'upgrade-unwrap-*' \
+                     -o -name 'upgrade-dl-*' -o -name 'intact-rollback-*' \
+                     -o -name 'velo-upgrade-*' -o -name 'dl-list-*' \
+                     -o -name 'dl-status-*' \) 2>/dev/null)
+    (( n > 0 )) && log_info "  swept ${n} stale scratch item(s) left from an earlier run (older than ${hours}h)"
+    return 0
+}
+
 upkg_cleanup() {
     local d
     for d in ${UPKG_SCRATCH}; do
