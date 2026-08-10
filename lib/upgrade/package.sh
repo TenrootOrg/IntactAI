@@ -29,7 +29,14 @@ SUPPORTED_PACKAGE_FORMAT=1
 
 UPKG_DIR=""          # the extracted, merged package tree
 UPKG_MANIFEST=""     # $UPKG_DIR/manifest.json
-UPKG_SCRATCH=""      # what to rm -rf at the end
+# What to rm -rf at the end. NOT a plain assignment: the stage-0 hop in
+# scripts/upgrade.sh exports this before `exec`-ing into the target release's
+# upgrade.sh so the process that actually reaches upkg_cleanup can still
+# remove what the ORIGINAL process's upkg_acquire extracted (the re-exec'd
+# process skips extraction entirely -- it is handed --package-dir). A plain
+# `UPKG_SCRATCH=""` here would silently clobber that inherited value the
+# instant this file is sourced in the new process.
+: "${UPKG_SCRATCH:=}"
 
 # ---------------------------------------------------------------------------
 # upkg_expand_args <arg...>

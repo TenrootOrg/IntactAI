@@ -23,6 +23,11 @@ Usage:
 Options:
   --package <path>      A release asset, a directory of them, or a single-file
                         package. Repeatable. Implies no network access.
+  --root <path>         The appliance to operate on. Defaults to wherever this
+                        script itself lives. Only needed if you are running a
+                        copy of upgrade.sh from somewhere other than the
+                        appliance's own checkout -- the stage-0 hand-over uses
+                        this internally; an operator normally never sets it.
   --dry-run             Verify the package and print the plan, change nothing.
   --only  <a,b>         Upgrade only these modules ('intact' is added back if
                         the package carries it).
@@ -66,6 +71,12 @@ parse_upgrade_args() {
             --package-dir=*) UPGRADE_PACKAGE_DIR="${1#*=}"; shift ;;
             --log)       LOG_FILE="${2:-}"; shift 2 ;;
             --log=*)     LOG_FILE="${1#*=}"; shift ;;
+            # Already consumed by the bootstrap's pre-scan (it has to resolve
+            # SCRIPT_DIR before lib/upgrade/args.sh is even sourced). Accepted
+            # here purely so it does not trip the -*) "Unknown option" case
+            # below and does not get swallowed as the release tag.
+            --root)      shift 2 ;;
+            --root=*)    shift ;;
             --only)      UPGRADE_ONLY="${2:-}"; shift 2 ;;
             --only=*)    UPGRADE_ONLY="${1#*=}"; shift ;;
             --skip)      UPGRADE_SKIP="${2:-}"; shift 2 ;;

@@ -40,15 +40,27 @@ set -o pipefail
 umask 022
 
 # ---------------------------------------------------------------------------
-# Locate the checkout. This has to survive every way an operator can invoke a
-# script: from any directory, by relative or absolute path, and through a
-# symlink (`ln -s .../scripts/upgrade.sh /usr/local/bin/intact-upgrade` is the
-# obvious thing to do once this is the documented entry point).
+# Locate the CODE (this checkout, or an extracted release tree the stage-0
+# hop below handed control to) and, separately, the APPLIANCE it will act on.
 #
-# `dirname "$0"` handles none of that on its own, and `readlink -f` is
-# GNU-only, so the symlink chain is walked by hand -- resolving each link
-# relative to the directory it lives in, which is what a relative symlink
-# target means.
+# These are the SAME directory for every operator invocation -- someone runs
+# `sudo bash scripts/upgrade.sh <tag>` sitting inside their own install. They
+# are DIFFERENT exactly once: after the hop, when this process is running the
+# TARGET release's upgrade.sh out of an extracted package under
+# data/tmp/upgrade-pkg-*/source/intact/, but must still read config.yaml,
+# stamp .env files and swap containers on the REAL appliance. Conflating the
+# two there was the bug: the hop used to compute one directory from
+# ${BASH_SOURCE[0]}, which after `exec` pointed at the package scratch tree,
+# and everything downstream -- config.yaml, .env stamping, permission fixes,
+# cleanup -- silently ran against THAT instead of the appliance. The run
+# reported success and touched nothing real.
+#
+# `dirname "$0"` alone handles neither directory nor symlinks, and
+# `readlink -f` is GNU-only, so the symlink chain is walked by hand --
+# resolving each link relative to the directory it lives in, which is what a
+# relative symlink target means. `ln -s .../scripts/upgrade.sh
+# /usr/local/bin/intact-upgrade` is the obvious thing to do once this is the
+# documented entry point.
 # ---------------------------------------------------------------------------
 _self="${BASH_SOURCE[0]}"
 while [ -L "$_self" ]; do
@@ -59,16 +71,43 @@ while [ -L "$_self" ]; do
         *)  _self="${_link_dir}/${_self}" ;;
     esac
 done
-SCRIPT_DIR="$(cd -P "$(dirname "$_self")/.." && pwd)"
+_CODE_DIR="$(cd -P "$(dirname "$_self")/.." && pwd)"
 unset _self _link_dir
+
+_ORIG_ARGS=("$@")
+
+# The APPLIANCE root: --root wins (this is what the stage-0 hop passes),
+# then $INTACT_PATH (install.sh's own convention for "where is the
+# appliance"), then default to the code's own location -- the normal case,
+# where an operator runs this script from inside their install. A lightweight
+# scan rather than the real arg parser: UPGRADE_ORDER and the rest of
+# args.sh's machinery are not sourced yet, and --root has to be known before
+# we can even find lib/upgrade/core.sh to source it FROM the appliance if
+# --root also happens to equal _CODE_DIR (the common case).
+SCRIPT_DIR=""
+_scan=("$@")
+while [ ${#_scan[@]} -gt 0 ]; do
+    case "${_scan[0]}" in
+        --root)   SCRIPT_DIR="${_scan[1]:-}"; break ;;
+        --root=*) SCRIPT_DIR="${_scan[0]#*=}"; break ;;
+        *)        _scan=("${_scan[@]:1}") ;;
+    esac
+done
+unset _scan
+if [ -z "$SCRIPT_DIR" ]; then
+    SCRIPT_DIR="${INTACT_PATH:-$_CODE_DIR}"
+fi
+[ -d "$SCRIPT_DIR" ] && SCRIPT_DIR="$(cd -P "$SCRIPT_DIR" && pwd)"
 
 # Fail here, with the path we resolved, rather than 200 lines later with
 # "cannot source lib/common.sh". Someone who copied one file out of the repo
-# gets told that is what happened.
-for _need in install.sh lib/common.sh lib/upgrade/core.sh config.yaml modules; do
-    if [ ! -e "${SCRIPT_DIR}/${_need}" ]; then
+# gets told that is what happened. Checked BEFORE the appliance-root probe
+# below: without working code there is nothing that could even report the
+# second problem.
+for _need in lib/common.sh lib/upgrade/core.sh; do
+    if [ ! -e "${_CODE_DIR}/${_need}" ]; then
         echo "This does not look like an Intact.AI checkout:" >&2
-        echo "  resolved root: ${SCRIPT_DIR}" >&2
+        echo "  resolved root: ${_CODE_DIR}" >&2
         echo "  missing:       ${_need}" >&2
         echo >&2
         echo "upgrade.sh runs from inside the appliance's checkout — it reads" >&2
@@ -80,17 +119,41 @@ for _need in install.sh lib/common.sh lib/upgrade/core.sh config.yaml modules; d
 done
 unset _need
 
+# The APPLIANCE this run will actually modify -- distinct from the code probe
+# above whenever --root/$INTACT_PATH points somewhere else (the hop).
+for _need in install.sh config.yaml modules; do
+    if [ ! -e "${SCRIPT_DIR}/${_need}" ]; then
+        echo "This does not look like an Intact.AI appliance:" >&2
+        echo "  resolved root: ${SCRIPT_DIR}" >&2
+        echo "  missing:       ${_need}" >&2
+        echo >&2
+        if [ "$SCRIPT_DIR" = "$_CODE_DIR" ]; then
+            echo "upgrade.sh runs from inside the appliance's checkout — it reads" >&2
+            echo "lib/, modules/ and config.yaml from there. Copying the single" >&2
+            echo "file somewhere else will not work; run it in place:" >&2
+            echo "  sudo bash /path/to/intact/scripts/upgrade.sh --help" >&2
+        else
+            echo "Running the code at ${_CODE_DIR} against --root ${SCRIPT_DIR}," >&2
+            echo "and that path is not an Intact.AI appliance -- it needs its own" >&2
+            echo "config.yaml and modules/, not this release's." >&2
+        fi
+        exit 2
+    fi
+done
+unset _need
+
 CONFIG_FILE="${SCRIPT_DIR}/config.yaml"
 LOG_FILE="${SCRIPT_DIR}/upgrade_$(date +%Y%m%d_%H%M%S).log"
-_ORIG_ARGS=("$@")
 
 # Same root-escalation guard install.sh:56-73 uses: this runs as root and
 # sources these files, so a group-writable lib/ is a privilege-escalation
 # path. Fix what we can, warn about what we cannot (vboxsf/9p shares ignore
-# chmod entirely).
+# chmod entirely). Against _CODE_DIR: these are the files about to be
+# sourced, which after the hop live under the extracted package, not
+# necessarily under the appliance root.
 chmod go-w "${BASH_SOURCE[0]}" 2>/dev/null
-chmod go-w "${SCRIPT_DIR}/lib/"*.sh "${SCRIPT_DIR}/lib/upgrade/"*.sh 2>/dev/null
-for _f in "${SCRIPT_DIR}/lib/"*.sh "${SCRIPT_DIR}/lib/upgrade/"*.sh; do
+chmod go-w "${_CODE_DIR}/lib/"*.sh "${_CODE_DIR}/lib/upgrade/"*.sh 2>/dev/null
+for _f in "${_CODE_DIR}/lib/"*.sh "${_CODE_DIR}/lib/upgrade/"*.sh; do
     [[ -f "$_f" ]] || continue
     if [[ -w "$_f" && "$(stat -c '%a' "$_f" 2>/dev/null)" =~ [2367][0-9]$|[0-9][2367]$ ]]; then
         echo "WARNING: $_f is group- or world-writable and is sourced as root." >&2
@@ -100,11 +163,11 @@ unset _f
 
 for _lib in common config docker modules health package release permissions; do
     # shellcheck source=/dev/null
-    source "${SCRIPT_DIR}/lib/${_lib}.sh" || { echo "Cannot source lib/${_lib}.sh" >&2; exit 2; }
+    source "${_CODE_DIR}/lib/${_lib}.sh" || { echo "Cannot source lib/${_lib}.sh" >&2; exit 2; }
 done
 for _lib in core health plan package args refs modules timesketch velociraptor velo_refresh intact; do
     # shellcheck source=/dev/null
-    source "${SCRIPT_DIR}/lib/upgrade/${_lib}.sh" || { echo "Cannot source lib/upgrade/${_lib}.sh" >&2; exit 2; }
+    source "${_CODE_DIR}/lib/upgrade/${_lib}.sh" || { echo "Cannot source lib/upgrade/${_lib}.sh" >&2; exit 2; }
 done
 unset _lib
 
@@ -138,7 +201,9 @@ main() {
     # as root", which is true and unhelpful at 3am.
     if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
         log_error "This needs root — it stops containers, writes module .env files and loads images."
-        log_error "  sudo bash ${SCRIPT_DIR}/scripts/upgrade.sh ${_ORIG_ARGS[*]}"
+        # _CODE_DIR, not SCRIPT_DIR: the operator should re-run THIS script
+        # (the one that just ran), and after the hop those differ.
+        log_error "  sudo bash ${_CODE_DIR}/scripts/upgrade.sh ${_ORIG_ARGS[*]}"
         return 2
     fi
     check_config
@@ -194,10 +259,21 @@ main() {
     fi
 
     # -------------------------------------------------------- stage-0 hop ---
-    # Hand control to the TARGET release's upgrade.sh, once. The logic that
-    # runs is then always the one shipped WITH the version being installed --
-    # which is the thing the old two-phase restart dance was straining to
-    # achieve from inside a container it was replacing, for ~1,300 lines.
+    # Hand control to the TARGET release's upgrade.sh, ALWAYS (not just when
+    # it differs from this file), once per run. That is the thing the old
+    # two-phase restart dance was straining to achieve from inside a
+    # container it was replacing, for ~1,300 lines: whatever runs is the
+    # logic shipped WITH the release being installed, not whatever happened
+    # to already be on the box.
+    #
+    # "Always" used to be "unless byte-identical to this script" (`cmp -s`).
+    # That is not a safety check: this ONE FILE can be identical across a
+    # version bump while lib/upgrade/*.sh underneath it is not, and every
+    # test package built from this repo's own tree (make_test_package.sh) IS
+    # byte-identical by construction -- so the hop had never once fired
+    # outside a fabricated exception, confirmed by zero "handing over" lines
+    # in any run log. Comparing bytes answered the wrong question.
+    #
     # scripts/ is where this lives now; the repo-root path is what packages
     # built before the move carry, and a package is exactly the kind of thing
     # that sits on a USB stick for months. Both are accepted.
@@ -208,14 +284,38 @@ main() {
         [[ -f "$_cand" ]] && { target_sh="$_cand"; break; }
     done
     if [[ -z "${INTACT_UPGRADE_REEXEC:-}" && -n "$target_sh" ]]; then
-        if ! cmp -s "$target_sh" "${BASH_SOURCE[0]}"; then
-            log_info ""
-            log_info "This package ships its own upgrade.sh; handing over to it so the"
-            log_info "upgrade runs the logic that was tested with ${UPKG_VERSIONS[intact]:-this release}."
-            export INTACT_UPGRADE_REEXEC=1
-            exec bash "$target_sh" --package-dir "$UPKG_DIR" --log "$LOG_FILE" \
-                 "${_ORIG_ARGS[@]}"
+        # Syntax-check before handing over control, not after. Nothing has
+        # touched the appliance yet at this point (acquire/verify only), so a
+        # target that fails `bash -n` is refused cleanly here instead of
+        # dying somewhere in the middle of a module with no rollback for
+        # whatever it had already started.
+        if ! bash -n "$target_sh" 2>/dev/null; then
+            log_error "The package's own upgrade.sh (${target_sh}) does not"
+            log_error "  parse as bash. Refusing before touching anything."
+            log_error "  This is a broken or corrupted release package, not"
+            log_error "  a problem with this appliance."
+            return 2
         fi
+        log_info ""
+        log_info "This package ships its own upgrade.sh; handing over to it so the"
+        log_info "upgrade runs the logic that was tested with ${UPKG_VERSIONS[intact]:-this release}."
+        export INTACT_UPGRADE_REEXEC=1
+        # UPKG_SCRATCH so the process that actually reaches upkg_cleanup can
+        # still remove what THIS process's upkg_acquire extracted -- it will
+        # not re-extract (--package-dir skips straight to reading the
+        # manifest), so without this the scratch dir under data/tmp/ would
+        # never be removed by anyone. lib/upgrade/package.sh initialises this
+        # var with `: "${UPKG_SCRATCH:=}"` rather than a plain assignment
+        # specifically so sourcing it in the new process does not clobber
+        # what was just exported.
+        export UPKG_SCRATCH
+        # --root: the new process's own bootstrap resolves _CODE_DIR to
+        # wherever target_sh lives (inside the extracted package) -- SCRIPT_DIR
+        # has to be told explicitly, or it would default to that same
+        # extracted tree and the whole run would silently apply against
+        # scratch instead of the appliance. This is the fix for that.
+        exec bash "$target_sh" --package-dir "$UPKG_DIR" --log "$LOG_FILE" \
+             --root "$SCRIPT_DIR" "${_ORIG_ARGS[@]}"
     fi
 
     # ------------------------------------------------------------- plan -----
