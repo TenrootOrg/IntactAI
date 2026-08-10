@@ -45,6 +45,7 @@ from services.workflow_service import (
     mutate_run_details,
     update_run_status,
     is_cancelled,
+    register_cancel_event,
     register_cleanup,
 )
 
@@ -392,6 +393,23 @@ def reconcile_on_boot() -> None:
                 capture_output=True, text=True, timeout=15,
             ).stdout.strip() == "true"
             if still_running:
+                # RE-ARM STOP BEFORE TAILING. _cancel_events and
+                # _cleanup_callbacks live in this process's memory, so the
+                # restart we just came back from emptied them -- and the
+                # `intact` module recreates this container FIRST, so that
+                # happens on essentially every upgrade, within the first
+                # minutes.
+                #
+                # Without this, request_stop() finds no event and no callback:
+                # it never signals the tailer, never runs _stop_helper, and
+                # still calls update_run_status(run_id, 'cancelled'). The
+                # operator is told the upgrade stopped while the helper
+                # container carries on swapping containers -- and because
+                # add_log_to_run drops every line once a run is cancelled, the
+                # log goes silent at exactly that moment, which reads as
+                # confirmation that it stopped.
+                register_cancel_event(run_id)
+                register_cleanup(run_id, lambda cn=container_name: _stop_helper(cn))
                 _start_tailer(run_id)
             else:
                 # Helper is gone (killed, host reboot, `docker rm` by hand)
