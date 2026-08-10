@@ -152,13 +152,14 @@ LOG_FILE="${SCRIPT_DIR}/upgrade_$(date +%Y%m%d_%H%M%S).log"
 # sourced, which after the hop live under the extracted package, not
 # necessarily under the appliance root.
 chmod go-w "${BASH_SOURCE[0]}" 2>/dev/null
-chmod go-w "${_CODE_DIR}/lib/"*.sh "${_CODE_DIR}/lib/upgrade/"*.sh 2>/dev/null
-for _f in "${_CODE_DIR}/lib/"*.sh "${_CODE_DIR}/lib/upgrade/"*.sh; do
-    [[ -f "$_f" ]] || continue
+while IFS= read -r -d '' _f; do
+    chmod go-w "$_f" 2>/dev/null
+done < <(find "${_CODE_DIR}/lib" -name '*.sh' -print0 2>/dev/null)
+while IFS= read -r -d '' _f; do
     if [[ -w "$_f" && "$(stat -c '%a' "$_f" 2>/dev/null)" =~ [2367][0-9]$|[0-9][2367]$ ]]; then
         echo "WARNING: $_f is group- or world-writable and is sourced as root." >&2
     fi
-done
+done < <(find "${_CODE_DIR}/lib" -name '*.sh' -print0 2>/dev/null)
 unset _f
 
 for _lib in common config docker modules health package release permissions; do

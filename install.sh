@@ -54,7 +54,8 @@ export INTACT_HOST_PATH="$SCRIPT_DIR"
 # go-w only: removes group/other WRITE, preserves read and the execute bit, so
 # sourcing here and the `chmod +x` in fix_source_permissions are unaffected.
 chmod go-w "${SCRIPT_DIR}/install.sh" 2>/dev/null || true
-chmod go-w "${SCRIPT_DIR}"/lib/*.sh 2>/dev/null || true
+while IFS= read -r -d '' _wf; do chmod go-w "$_wf" 2>/dev/null || true; done \
+    < <(find "${SCRIPT_DIR}/lib" -name '*.sh' -print0 2>/dev/null)
 chmod go-w "${SCRIPT_DIR}"/scripts/*.sh 2>/dev/null || true
 
 # Best-effort by design — warn, never abort. On a VirtualBox vboxsf / 9p / NTFS
@@ -62,7 +63,9 @@ chmod go-w "${SCRIPT_DIR}"/scripts/*.sh 2>/dev/null || true
 # would refuse to install on exactly those test VMs. Be honest about the limit:
 # this warning makes the exposure visible, it does not close it. chmod cannot
 # fix a filesystem that ignores chmod.
-_writable_libs="$(find "${SCRIPT_DIR}/lib" -maxdepth 1 -name '*.sh' -perm /022 2>/dev/null)"
+# Not -maxdepth 1: lib/ has per-module subdirectories (lib/modules/*.sh),
+# and a flat glob here would silently stop covering them.
+_writable_libs="$(find "${SCRIPT_DIR}/lib" -name '*.sh' -perm /022 2>/dev/null)"
 if [[ -n "$_writable_libs" ]]; then
     echo "" >&2
     echo "WARNING: these files are group/world-writable and are about to be sourced as root:" >&2
