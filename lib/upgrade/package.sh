@@ -220,7 +220,22 @@ declare -gA UPKG_VERSIONS=()
 
 upkg_read_manifest() {
     [[ -f "$UPKG_MANIFEST" ]] || {
-        log_error "No manifest.json in the package"
+        # Every per-module asset carries manifests/<module>.json, and the
+        # release's CI `index` job merges those into the root manifest.json
+        # this function reads -- that merge is no longer redone here (it used
+        # to be, in the Python engine this replaced; see git history). A
+        # missing root manifest almost always means a partial or pre-index
+        # package, not a corrupt one, so say that rather than "not found".
+        if find "$UPKG_DIR" -mindepth 1 -maxdepth 2 -name '*.json' -path '*/manifests/*' \
+                2>/dev/null | grep -q .; then
+            log_error "This package has per-module manifests but no merged"
+            log_error "  manifest.json -- it predates the per-module release"
+            log_error "  index, or only some of the release's assets were"
+            log_error "  copied here. Use the upgrade.sh shipped with the"
+            log_error "  release, or copy every asset for this release."
+        else
+            log_error "No manifest.json in the package"
+        fi
         return 1
     }
 

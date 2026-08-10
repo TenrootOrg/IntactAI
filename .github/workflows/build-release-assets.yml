@@ -133,12 +133,14 @@ jobs:
           TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
           INTACT_STORAGE_BASE: /tmp
         run: |
-          # Just enough to import services.upgrade WITHOUT importing the rest
-          # of the backend's service graph — see _upgrade_order() in
-          # build_release_package.py for why the parent package is stubbed out
-          # rather than this list growing to match requirements.txt.
-          python3 -m pip install --quiet pyyaml requests
-          MATRIX="$(INTACT_PATH="$GITHUB_WORKSPACE" PYTHONPATH="$GITHUB_WORKSPACE/modules/backend" \
+          # Only pyyaml: release_module_set() reads config.yaml's `versions:`
+          # block. UPGRADE_ORDER comes from scripts/ci/packager/order.py,
+          # which parses lib/upgrade/plan.sh directly rather than importing
+          # any part of the backend, so there is no `services` package to
+          # dodge here anymore -- see order.py's docstring for what this
+          # step used to fake and why.
+          python3 -m pip install --quiet pyyaml
+          MATRIX="$(INTACT_PATH="$GITHUB_WORKSPACE" \
                     python3 scripts/ci/build_release_package.py --tag "$TAG" --emit-matrix)"
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
           echo "Modules: $MATRIX"
@@ -462,16 +464,19 @@ jobs:
         env:
           TAG: ${{ needs.resolve.outputs.tag }}
           COMMIT: ${{ needs.resolve.outputs.commit }}
+          EXPECTED_MODULES: ${{ needs.resolve.outputs.matrix }}
         run: |
           mkdir -p out
           python3 - <<'PY'
-          import glob, json, os, sys
+          import datetime, glob, json, os, sys
           tag, commit = os.environ["TAG"], os.environ["COMMIT"]
+          expected = set(json.loads(os.environ["EXPECTED_MODULES"]))
           metas = sorted(glob.glob("meta/**/*.meta.json", recursive=True))
           if not metas:
               sys.exit("::error::no .meta.json sidecars — nothing was built")
 
-          entries, images, shas, problems = {}, {}, {}, []
+          entries, images, shas, transitive, problems = {}, {}, {}, {}, []
+          pins_source = "target-release"
           for mp in metas:
               m = json.load(open(mp))
               mod = m["module"]
@@ -508,6 +513,39 @@ jobs:
                   if k in shas and shas[k] != v:
                       problems.append(f"file {k} differs between assets — one would overwrite the other")
                   shas[k] = v
+              for tmod, deps in (c.get("transitive_versions") or {}).items():
+                  transitive.setdefault(tmod, {}).update(deps)
+              # A release built from a package whose sidecar pins came from the
+              # BUILD MACHINE's config.yaml rather than the target ref's own
+              # (GitHub fetch failed mid-build) must never leave CI quietly --
+              # bash only warns on this (lib/upgrade/package.sh), because a box
+              # applying a bad package at least gets a visible warning; a
+              # RELEASE built this way ships the same risk to every box that
+              # upgrades from it with no warning at all, since nothing prompts
+              # an operator to read a build log.
+              if c.get("pins_source") == "local-fallback":
+                  pins_source = "local-fallback"
+
+          # COMPLETENESS. fail-fast on the build matrix catches a FAILED build;
+          # it does not catch an OMITTED one -- 8 of 9 expected assets is a
+          # perfectly valid index by every check above. Compare against what
+          # `resolve` computed the release should contain.
+          missing = sorted(expected - set(entries))
+          if missing:
+              problems.append(f"expected asset(s) never appeared in the index: "
+                              f"{', '.join(missing)}")
+          extra = sorted(set(entries) - expected)
+          if extra:
+              problems.append(f"asset(s) built for module(s) outside the release "
+                              f"matrix: {', '.join(extra)}")
+
+          if pins_source == "local-fallback":
+              problems.append(
+                  "at least one module's sidecar pins came from the BUILD "
+                  "MACHINE's config.yaml (pins_source=local-fallback), not the "
+                  f"target release {tag}'s own -- the GitHub fetch failed "
+                  "during the build. A release must not ship with unverified "
+                  "sidecar pins; re-run the build once GitHub is reachable.")
 
           if problems:
               for p in problems:
@@ -519,8 +557,39 @@ jobs:
           out = f"out/{tag}.index.json"
           json.dump(index, open(out, "w"), indent=2)
           print(f"indexed {len(entries)} module(s): {', '.join(sorted(entries))}")
+
+          # THE ROOT MANIFEST. Every asset's sha256 map is already merged above
+          # (that merge already fails the build on a conflicting value); this
+          # just keeps what used to be thrown away. Before this, upgrade.sh had
+          # to redo the merge itself at apply time from the per-module
+          # `manifests/<module>.json` sidecars this asset also still carries --
+          # this is the same computation, done once here instead of on every
+          # box that ever applies the release. package_version/created/
+          # created_by/contents shape matches exactly what
+          # lib/upgrade/package.sh's upkg_read_manifest expects from a legacy
+          # single-bundle manifest.json, because that is the reader this feeds.
+          manifest = {
+              "package_version": "1.0",
+              "created": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              "created_by": "build-release-assets.yml/index",
+              "versions": {mod: e["version"] for mod, e in entries.items()
+                          if e.get("version")},
+              "contents": {
+                  "release_tag": tag,
+                  "pins_source": pins_source,
+                  "transitive_versions": transitive,
+                  "sha256": shas,
+              },
+          }
+          man_out = f"out/{tag}.manifest.json"
+          json.dump(manifest, open(man_out, "w"), indent=2)
+          print(f"manifest: {len(manifest['versions'])} pin(s), "
+                f"{sum(len(v) for v in transitive.values())} sidecar pin(s), "
+                f"{len(shas)} checksummed file(s)")
           PY
           cat "out/$TAG.index.json"
+          echo "---"
+          cat "out/$TAG.manifest.json"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -623,11 +692,14 @@ jobs:
           set -euo pipefail
           # ALLOWLIST, not a denylist. A release page carries exactly two kinds
           # of file: one tarball per module (or its .part-NN pieces), and the
-          # index that names them. Everything else -- .meta.json, the
-          # per-asset .manifest.json, a stray CI image -- is build scaffolding.
-          # The previous `! -name '*.meta.json'` denylist let each of those
-          # through the moment it appeared, which is how one aws_sigma module
-          # turned into six assets.
+          # index that names them, plus the merged manifest.json the index job
+          # assembled from every asset's per-module sidecar. Everything else --
+          # .meta.json, the PER-ASSET `<module>.tar.manifest.json` sidecars
+          # (note: NOT `$TAG.manifest.json`, which is the merged one and is
+          # deliberately allowed below), a stray CI image -- is build
+          # scaffolding. The previous `! -name '*.meta.json'` denylist let each
+          # of those through the moment it appeared, which is how one
+          # aws_sigma module turned into six assets.
           #
           # BOTH extensions are allowed even though a build emits only one of
           # them. Module assets are plain .tar now (their payload is already-
@@ -644,6 +716,7 @@ jobs:
               -o -name "$TAG-*.tar.gz" \
               -o -name "$TAG-*.tar.gz.part-*" \
               -o -name "$TAG.index.json" \
+              -o -name "$TAG.manifest.json" \
               -o -name "$TAG-system-bundle.tar" \
               -o -name "$TAG-system-bundle.tar.sha256" \
             \) -print0 \
@@ -686,7 +759,9 @@ jobs:
             sha256sum "$IDX" | cut -d' ' -f1
             echo '```'
             echo ""
-            echo "No single-file bundle is published. Build one with"
-            echo "\`build_release_package.py --tag $TAG --out <dir>\` if a box"
-            echo "predating the index needs it."
+            echo "No single-file bundle is published. \`$TAG.manifest.json\`"
+            echo "is the merged root manifest upgrade.sh reads when it applies"
+            echo "the per-module assets -- not a bundle, just the sha256 map"
+            echo "and version pins every asset's sidecar already carried,"
+            echo "merged once here instead of by every box that upgrades."
           } >> "$GITHUB_STEP_SUMMARY"

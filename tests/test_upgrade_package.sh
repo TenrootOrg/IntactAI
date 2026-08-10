@@ -205,6 +205,23 @@ test_a_missing_manifest_is_fatal() {
     _teardown
 }
 
+test_a_missing_root_manifest_with_sidecars_present_names_the_cause() {
+    # A package assembled from per-module assets but missing the CI `index`
+    # job's merged manifest.json (predates the index, or the operator only
+    # copied some of the release's assets) must not read as a generic
+    # "No manifest.json" -- that message sends an operator hunting for a
+    # corrupt download when the real fix is "get every asset" or "use an
+    # older upgrade.sh".
+    _setup
+    mkdir -p "${WORK}/b/intact-upgrade-test/manifests"
+    echo x > "${WORK}/b/intact-upgrade-test/f"
+    echo '{}' > "${WORK}/b/intact-upgrade-test/manifests/elk.json"
+    ( cd "${WORK}/b" && tar -cf "${WORK}/nom2.tar" intact-upgrade-test )
+    assert_false upkg_acquire "${WORK}/nom2.tar"
+    assert_contains "$(cat "$LOG_FILE")" "predates the per-module release"
+    _teardown
+}
+
 test_unparseable_json_is_fatal() {
     _setup; _make_pkg bad.tar
     rm -rf "${WORK}/x"; mkdir "${WORK}/x"; tar -xf "${WORK}/bad.tar" -C "${WORK}/x"
