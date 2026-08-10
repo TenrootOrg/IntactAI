@@ -248,6 +248,20 @@ jobs:
             echo "No release exists for $TAG — skipping asset attach (artifact upload covers this run)"
           fi
 
+      # LAST, and only for a real `release: published` run -- a manual
+      # workflow_dispatch is normally someone rebuilding an EXISTING release
+      # on demand (a lost asset, a one-off), and moving VERSION for that
+      # would walk it backward the moment the tag being rebuilt is not the
+      # newest one. See .github/actions/stamp-version for why this can run
+      # right here with no wait/poll: the Attach step above already proved
+      # the package is on the release before this runs.
+      - name: Stamp VERSION on the source branch
+        if: github.event_name == 'release'
+        uses: ./.github/actions/stamp-version
+        with:
+          tag: ${{ steps.tag.outputs.tag }}
+          target-commitish: ${{ github.event.release.target_commitish }}
+
       - name: Upload package as a workflow artifact
         uses: actions/upload-artifact@v4
         with:

@@ -993,6 +993,20 @@ jobs:
             gh release edit "$TAG" --draft=false
           fi
 
+      # Inert today: this workflow is workflow_dispatch-only (see the header
+      # comment), so github.event_name is never 'release' and this step never
+      # runs. Wired now so the moment this workflow becomes the auto-
+      # triggered one (the planned swap-back, once the fleet is off the
+      # single-bundle format), stamping works with no further change here.
+      # See .github/actions/stamp-version for why this can run right here
+      # with no wait/poll.
+      - name: Stamp VERSION on the source branch
+        if: github.event_name == 'release'
+        uses: ./.github/actions/stamp-version
+        with:
+          tag: ${{ needs.resolve.outputs.tag }}
+          target-commitish: ${{ github.event.release.target_commitish }}
+
       - name: Summary
         env:
           TAG: ${{ needs.resolve.outputs.tag }}

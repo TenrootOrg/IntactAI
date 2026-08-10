@@ -1,0 +1,154 @@
+name: Stamp VERSION + config.yaml versions.backend
+description: >
+  Resolves the branch a release tag was cut from, writes VERSION and
+  config.yaml's versions.backend to that tag, and pushes the commit back to
+  the branch. Formerly its own workflow (stamp-version-on-release.yml)
+  reacting to `release: published` and polling up to 110 minutes for at
+  least one asset to appear before stamping -- because that workflow had no
+  way to know whether the OTHER workflow building this release had actually
+  finished. Called as the LAST step of a build workflow's own publish/attach
+  job instead, there is nothing to poll: the caller's own job graph (assets
+  attached, hash-verified, release un-drafted) is already the proof that
+  stamping is safe. Call this ONLY after that has happened.
+
+inputs:
+  tag:
+    description: "Release tag being stamped, e.g. intact-20260812"
+    required: true
+  target-commitish:
+    description: >
+      github.event.release.target_commitish, when the caller was itself
+      triggered by `release: published`. Empty on workflow_dispatch, where
+      there is no release object to read it from -- the branch is then
+      resolved by which of main/development actually contains the tag.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # The caller's own checkout may be shallow, or pinned to a single
+    # detached tag ref (build-release-package.yml's "Checkout the release
+    # tag" step does exactly that, deliberately, to build from precisely
+    # that tree). Neither leaves the local branch refs this action needs to
+    # resolve "which branch was this tag cut from" or to `git checkout` that
+    # branch afterward. Backfill unconditionally rather than assume -- an
+    # already-full checkout makes this a fast no-op.
+    - name: Ensure full history and branch refs are available
+      shell: bash
+      run: |
+        set -uo pipefail
+        git fetch --unshallow origin 2>/dev/null || git fetch origin
+        git fetch origin --tags --force
+        git fetch origin '+refs/heads/*:refs/remotes/origin/*'
+
+    - name: Resolve the branch this release was cut from
+      id: target
+      shell: bash
+      env:
+        TAG: ${{ inputs.tag }}
+        TARGET: ${{ inputs.target-commitish }}
+      run: |
+        set -uo pipefail
+        # 1) target_commitish is the branch when the release was created
+        #    against one. It can also be a raw SHA (release cut from a
+        #    detached commit), so it is verified rather than trusted.
+        if [ -n "${TARGET}" ] && git show-ref --verify --quiet "refs/remotes/origin/${TARGET}"; then
+          BRANCH="${TARGET}"
+          HOW="release target_commitish"
+        else
+          # 2) Otherwise use whichever long-lived branch actually contains
+          #    the tag. main wins when both do: a tag reachable from main is
+          #    a stable release, and development having it too only means it
+          #    was merged forward.
+          BRANCH=""
+          HOW=""
+          for candidate in main development; do
+            if git branch -r --contains "refs/tags/${TAG}" 2>/dev/null \
+                 | tr -d ' ' | grep -qx "origin/${candidate}"; then
+              BRANCH="${candidate}"
+              HOW="tag reachable from ${candidate}"
+              break
+            fi
+          done
+        fi
+        if [ -z "${BRANCH}" ]; then
+          echo "::warning::${TAG} is not on main or development — skipping the VERSION stamp."
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "Stamping ${BRANCH} (resolved via ${HOW})"
+        echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
+        echo "skip=false" >> "$GITHUB_OUTPUT"
+
+    - name: Write VERSION and push
+      if: steps.target.outputs.skip == 'false'
+      shell: bash
+      env:
+        TAG: ${{ inputs.tag }}
+        BRANCH: ${{ steps.target.outputs.branch }}
+      run: |
+        set -euo pipefail
+        git checkout "${BRANCH}"
+        git pull --ff-only origin "${BRANCH}"
+        echo "Stamping VERSION as: ${TAG} on ${BRANCH}"
+        echo "${TAG}" > VERSION
+
+        # config.yaml versions.backend MUST move with VERSION.
+        #
+        # It is the tag compose resolves ${BACKEND_VERSION} to, so when the
+        # two disagree the box looks for an image the package never shipped
+        # and `up -d` rebuilds the backend from source -- observed on
+        # intact-20260804, where VERSION said 20260804 and this key still
+        # said 20260803, costing ~380 lines of live PyPI and replacing the
+        # tested image with an untested local build.
+        #
+        # Stamping only VERSION here is what caused that drift: prepare
+        # writes the right value INTO the package, so the artifact is always
+        # correct and only the repo -- and therefore every fresh checkout and
+        # every tagged tree -- carries the stale one. Nothing surfaced it
+        # because the failure is a silent rebuild, not an error.
+        #
+        # Same single-quoted form _pin_module_version uses, so a date-like
+        # tag is never YAML-cast to an int.
+        python3 - "${TAG}" <<'PY' || echo "::warning::could not stamp config.yaml versions.backend"
+        import re, sys
+        tag = sys.argv[1]
+        path = 'config.yaml'
+        try:
+            lines = open(path).readlines()
+        except FileNotFoundError:
+            sys.exit(0)
+        out, in_versions, stamped = [], False, False
+        for line in lines:
+            indent = re.match(r'^(\s*)', line).group(1)
+            if line.startswith('versions:'):
+                in_versions = True
+                out.append(line)
+                continue
+            if in_versions:
+                stripped = line.strip()
+                # a new top-level key ends the versions: block
+                if not indent and stripped and not stripped.startswith('#'):
+                    in_versions = False
+                elif re.match(r'^\s+backend\s*:', line):
+                    out.append(f"{indent}backend: '{tag}'\n")
+                    stamped = True
+                    continue
+            out.append(line)
+        if stamped:
+            open(path, 'w').writelines(out)
+            print(f"Stamped config.yaml versions.backend as {tag}")
+        else:
+            print("::warning::no versions.backend key in config.yaml — not stamped")
+        PY
+
+        git config user.name  "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        if [[ -z "$(git status --porcelain VERSION config.yaml)" ]]; then
+          echo "VERSION and config.yaml already up to date — nothing to commit."
+          exit 0
+        fi
+        git add VERSION config.yaml
+        git commit -m "chore: stamp VERSION + versions.backend as ${TAG} [skip ci]"
+        git push origin "${BRANCH}"
