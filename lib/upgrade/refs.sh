@@ -16,6 +16,22 @@
 
 INTACT_REPO="${INTACT_REPO:-TenrootOrg/IntactAI}"
 
+# WHERE GITHUB IS. Both default to the real thing, so production behaviour is
+# exactly what it was; these exist so a release can be served from somewhere
+# else without editing code. That is not a hypothetical convenience -- the repo
+# is private, so every path in this file is unreachable to anyone without a
+# token, which makes the online upgrade untestable on a box that has none. A
+# static server speaking the handful of endpoints below (see
+# scripts/dev/serve_local_release.sh) stands in for GitHub and exercises the
+# real code path rather than a mock of it.
+#
+# Keep these two separate: the API and the asset downloads are genuinely
+# different hosts on real GitHub (api.github.com vs github.com, which then
+# redirects to objects.githubusercontent.com), and collapsing them into one
+# variable would make a local stand-in unable to model that.
+INTACT_GH_API_BASE="${INTACT_GH_API_BASE:-https://api.github.com}"
+INTACT_GH_DL_BASE="${INTACT_GH_DL_BASE:-https://github.com}"
+
 # The operator's token, only when one is configured. Anonymous GitHub is
 # 60 requests/hour per IP, which a couple of runs can exhaust. Shared by
 # _gh_curl (JSON API calls) and upgrade_fetch_manifest_only (asset download),
@@ -56,7 +72,7 @@ upgrade_list_releases() {
     fi
 
     local json
-    json="$(_gh_curl "https://api.github.com/repos/${INTACT_REPO}/releases?per_page=40")" || {
+    json="$(_gh_curl "${INTACT_GH_API_BASE}/repos/${INTACT_REPO}/releases?per_page=40")" || {
         if (( json_mode )); then
             printf '{"error":"github-unreachable"}\n'
         else
@@ -189,7 +205,7 @@ upgrade_fetch_manifest_only() {
     local tag="$1" dest="$2"
 
     local rel
-    rel="$(_gh_curl "https://api.github.com/repos/${INTACT_REPO}/releases/tags/${tag}")" || {
+    rel="$(_gh_curl "${INTACT_GH_API_BASE}/repos/${INTACT_REPO}/releases/tags/${tag}")" || {
         log_error "No release '${tag}' (or GitHub is rate-limiting this IP)"
         return 1
     }
@@ -237,7 +253,7 @@ upgrade_fetch_release() {
     mkdir -p "$dest" || return 1
 
     local json
-    json="$(_gh_curl "https://api.github.com/repos/${INTACT_REPO}/releases/tags/${tag}")" || {
+    json="$(_gh_curl "${INTACT_GH_API_BASE}/repos/${INTACT_REPO}/releases/tags/${tag}")" || {
         log_error "No release '${tag}' (or GitHub is rate-limiting this IP)"
         return 1
     }
@@ -274,7 +290,7 @@ for a in d.get("assets",[]):
     # intact-20260807 bridge in lib/release.sh, because this fetch has to
     # work for whatever release tag an operator on an old box actually types.
     log_info "Release ${tag} is a single-bundle release; fetching its parts"
-    local base="https://github.com/${INTACT_REPO}/releases/download/${tag}"
+    local base="${INTACT_GH_DL_BASE}/${INTACT_REPO}/releases/download/${tag}"
     local n
     while IFS= read -r n; do
         case "$n" in

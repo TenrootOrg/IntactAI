@@ -34,7 +34,7 @@ download_release_assets() {
     #                    air-gap path)
     local tag="$1" dest_dir="$2"
     local repo="${INTACT_REPO:-TenrootOrg/IntactAI}"
-    local api="https://api.github.com/repos/${repo}/releases/tags/${tag}"
+    local api="${INTACT_GH_API_BASE:-https://api.github.com}/repos/${repo}/releases/tags/${tag}"
     local hdr=(-H "Accept: application/vnd.github+json")
     [[ -n "${GITHUB_TOKEN:-}" ]] && hdr+=(-H "Authorization: token ${GITHUB_TOKEN}")
 
@@ -63,7 +63,7 @@ download_release_assets() {
     if [[ -n "$index_name" ]]; then
         log_info "  Reading the release index (${index_name})..."
         index_json="$(curl -fsSL --max-time 120 \
-            "https://github.com/${repo}/releases/download/${tag}/${index_name}" \
+            "${INTACT_GH_DL_BASE:-https://github.com}/${repo}/releases/download/${tag}/${index_name}" \
             2>/dev/null)" || index_json=""
         [[ -n "$index_json" ]] || log_warn "  Could not read the release index — falling back to name matching"
     fi
@@ -307,7 +307,7 @@ for n, whole, sha in sorted(set(want)):
         # package that only fails much later, at tar extraction.
         if curl -fsSL -C - --retry 3 --retry-all-errors --retry-delay 5 --max-time 3600 \
                 -o "$dest" \
-                "https://github.com/${_DL_REPO}/releases/download/${_DL_TAG}/${name}" \
+                "${INTACT_GH_DL_BASE:-https://github.com}/${_DL_REPO}/releases/download/${_DL_TAG}/${name}" \
                 2>>"${_DL_LOG}"; then
             if [[ -n "$digest" ]]; then
                 got="$(sha256sum "$dest" 2>/dev/null | awk '{print $1}')"
@@ -420,7 +420,7 @@ for n, whole, sha in sorted(set(want)):
 download_system_bundle() {
     local tag="$1" dest_dir="$2"
     local repo="${INTACT_REPO:-TenrootOrg/IntactAI}"
-    local api="https://api.github.com/repos/${repo}/releases/tags/${tag}"
+    local api="${INTACT_GH_API_BASE:-https://api.github.com}/repos/${repo}/releases/tags/${tag}"
     local hdr=(-H "Accept: application/vnd.github+json")
     [[ -n "${GITHUB_TOKEN:-}" ]] && hdr+=(-H "Authorization: token ${GITHUB_TOKEN}")
 
@@ -465,7 +465,7 @@ sys.exit(0 if isinstance(d.get("assets"), list) else 1)
     local bundle_file="${dest_dir}/${bundle_name}"
     if ! curl -fsSL -C - --retry 3 --retry-all-errors --retry-delay 5 --max-time 1800 \
             -o "$bundle_file" \
-            "https://github.com/${repo}/releases/download/${tag}/${bundle_name}" \
+            "${INTACT_GH_DL_BASE:-https://github.com}/${repo}/releases/download/${tag}/${bundle_name}" \
             2>>"$LOG_FILE"; then
         log_error "  Could not download the dependency bundle (${bundle_name})"
         rm -f "$bundle_file"
@@ -476,7 +476,7 @@ sys.exit(0 if isinstance(d.get("assets"), list) else 1)
     if printf '%s' "$json" | grep -q "\"${sha_name}\""; then
         local sha_file="${dest_dir}/${sha_name}"
         if curl -fsSL --max-time 60 -o "$sha_file" \
-                "https://github.com/${repo}/releases/download/${tag}/${sha_name}" 2>>"$LOG_FILE"; then
+                "${INTACT_GH_DL_BASE:-https://github.com}/${repo}/releases/download/${tag}/${sha_name}" 2>>"$LOG_FILE"; then
             local want got
             want="$(awk '{print $1}' "$sha_file" 2>/dev/null)"
             got="$(sha256sum "$bundle_file" | awk '{print $1}')"

@@ -195,8 +195,11 @@ RUN_STARTED=$(date +%s)
 TAG="${1:-}"
 OUT_DIR="${2:-.}"
 MODULES_CSV="${3:-}"
-REPO="TenrootOrg/IntactAI"
-API="https://api.github.com"
+REPO="${INTACT_REPO:-TenrootOrg/IntactAI}"
+# Overridable for the same reason as lib/upgrade/refs.sh's pair: the repo is
+# private, so with no token there is no way to exercise this script at all.
+# Defaults to real GitHub, so nothing changes for an operator.
+API="${INTACT_GH_API_BASE:-https://api.github.com}"
 
 if [ -z "$TAG" ]; then
     err "usage: prepare_package.sh <tag> [output_dir] [modules_csv]"
