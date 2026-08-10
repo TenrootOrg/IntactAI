@@ -37,6 +37,12 @@ _setup() {
     # Everything enabled and installed unless a test says otherwise.
     read_config() { echo "True"; }
     _plan_module_enabled() { return 0; }
+    # "Cannot tell" by default -- a pin-vs-container drift is real production
+    # behavior (plan_build), but exercising it here would mean these tests'
+    # PLAN_CURRENT[elk]=9.4.4-style synthetic setups start depending on
+    # whatever container actually happens to be running on the machine the
+    # suite executes on. A dedicated test overrides this stub explicitly.
+    _plan_running_image_tag() { return 1; }
 }
 
 # ---------------------------------------------------------------------------

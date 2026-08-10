@@ -43,6 +43,7 @@ upgrade_module_intact() {
     #    Both edit in place; see _intact_merge_versions for why that matters.
     u_do "merge version pins into config.yaml" -- _intact_merge_versions "$src"
     u_do "apply config.yaml schema migrations" -- _intact_config_migrations
+    u_do "validate config.yaml pins" -- _intact_validate_config_pins
 
     # 2. Snapshot before touching anything, and register the undos coarsest
     #    first so the tree is back before the container that runs it restarts.
@@ -196,6 +197,65 @@ PY
         return 1
     fi
     log_success "  config.yaml migrated to schema v${CURRENT_SCHEMA_VERSION}"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# _intact_validate_config_pins — after the merge and the schema migration,
+# before anything downstream reads config.yaml expecting it complete.
+#
+# Every ENABLED module needs its primary pin AND every sidecar pin
+# _u_stamp_transitive (lib/upgrade/modules.sh) will go looking for. Kept as
+# its OWN small table rather than sharing modules.sh's -- a change to one is
+# then a visible diff against the other, not an invisible dependency two
+# functions quietly relied on staying in sync.
+#
+# Without this, a missing pin surfaces as compose's `${VAR:?...}` dying
+# mid-`up`, which reads as a compose bug. It is not one: it is an
+# operator-editable config.yaml missing a value this release needs, and that
+# deserves a message that says so before anything tries to start a
+# container over it.
+# ---------------------------------------------------------------------------
+_intact_validate_config_pins() {
+    local errors=() m primary sidecars sk pin
+
+    declare -A _primary_key=(
+        [elk]=elk [iris]=iris [timesketch]=timesketch
+        [velociraptor]=velociraptor [volweb]=volweb [portainer]=portainer
+        [plaso]=plaso [aws_sigma]=cloudtrail [o365rc]=dfir_o365rc [intact]=backend
+    )
+    declare -A _sidecar_keys=(
+        [timesketch]="timesketch_opensearch timesketch_postgres timesketch_redis timesketch_nginx"
+        [iris]="iris_rabbitmq"
+        [volweb]="volweb_postgres volweb_redis"
+        [intact]="backend_tusd"
+    )
+
+    for m in "${UPGRADE_ORDER[@]}"; do
+        _plan_module_enabled "$m" || continue
+
+        primary="${_primary_key[$m]:-}"
+        if [[ -n "$primary" ]]; then
+            pin="$(read_config "['versions']['${primary}']" 2>/dev/null || echo '')"
+            [[ "$pin" == "None" ]] && pin=""
+            [[ -z "$pin" ]] && errors+=("${m}: no versions.${primary} in config.yaml")
+        fi
+
+        sidecars="${_sidecar_keys[$m]:-}"
+        for sk in $sidecars; do
+            pin="$(read_config "['versions']['${sk}']" 2>/dev/null || echo '')"
+            [[ "$pin" == "None" ]] && pin=""
+            [[ -z "$pin" ]] && errors+=("${m}: no versions.${sk} in config.yaml (sidecar pin)")
+        done
+    done
+
+    if (( ${#errors[@]} )); then
+        log_error "  config.yaml is missing pin(s) this release needs:"
+        local e
+        for e in "${errors[@]}"; do log_error "    - ${e}"; done
+        return 1
+    fi
+    log_info "  config.yaml pins verified for every enabled module"
     return 0
 }
 

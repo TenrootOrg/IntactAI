@@ -130,6 +130,18 @@ plan_build() {
             continue
         fi
         if [[ "$current" == "$target" ]]; then
+            # A pin match is not the same claim as a running-container match.
+            # .env can say 9.4.4 while the container is still actually
+            # running 9.4.2 -- a previous upgrade that stamped the pin but
+            # then failed before the swap, or a manual `docker run` outside
+            # this engine entirely. Planning that as a noop leaves the box
+            # silently wrong while every later check believes the pin.
+            local running_tag; running_tag="$(_plan_running_image_tag "$m" 2>/dev/null || echo '')"
+            if [[ -n "$running_tag" && "$running_tag" != "$target" ]]; then
+                log_warn "  ${m}: versions pin says ${target} but the running container is tagged ${running_tag} — upgrading instead of skipping"
+                PLAN_ACTION[$m]="upgrade"
+                continue
+            fi
             PLAN_ACTION[$m]="noop:already at ${target}"
             continue
         fi
@@ -146,6 +158,20 @@ plan_build() {
         fi
     fi
     return 0
+}
+
+# The image TAG the module's primary container is actually running, or ""
+# when there is no primary container / no way to tell. Comparing only the
+# tag (not the full repo:tag) works across every module without a second
+# module->repo table: what plan_build cares about is whether the box is
+# running the VERSION the pin claims, not which registry it came from.
+_plan_running_image_tag() {
+    local primary; primary="$(u_primary_container_of "$1")"
+    [[ -n "$primary" ]] || return 1
+    local img
+    img="$("${DOCKER_BIN:-docker}" inspect -f '{{.Config.Image}}' "$primary" 2>/dev/null)" || return 1
+    [[ -n "$img" ]] || return 1
+    echo "${img##*:}"
 }
 
 # A module counts as enabled unless config.yaml explicitly says otherwise.

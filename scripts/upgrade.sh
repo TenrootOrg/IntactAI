@@ -407,6 +407,7 @@ main() {
 
     refresh_nginx_upstreams
     fix_source_permissions
+    u_post_upgrade_gate
 
     print_upgrade_report
     print_final_issues_report
