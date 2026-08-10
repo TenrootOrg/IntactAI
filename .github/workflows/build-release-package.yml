@@ -30,13 +30,18 @@
 name: Build release upgrade package (single file, on demand)
 
 on:
-  release:
-    types: [published]
+  # SUPERSEDED by build-release-assets.yml as the auto-triggered release
+  # workflow (2026-08-10). This remains for the single case that one cannot
+  # serve: a box old enough to predate the release index looks for exactly
+  # `intact-upgrade-<tag>.tar.gz` and nothing else, and someone hand-carrying
+  # one file into an air-gapped site would rather carry one than nine.
+  #
+  # Use workflow_dispatch to build a legacy single-file bundle on demand.
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to build (e.g. intact-20260722). Not needed when triggered by publishing a release -- the release's own tag is used automatically."
-        required: false
+        description: "Release tag to build (e.g. intact-20260722)"
+        required: true
 
 permissions:
   contents: write            # upload the package as a Release asset

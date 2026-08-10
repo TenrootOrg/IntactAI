@@ -33,20 +33,8 @@
 name: Build release assets (per module)
 
 on:
-  # REVERTED BACK to workflow_dispatch-only (2026-08-09, same day as the
-  # attempted swap): the fleet is NOT actually on the per-module wrapper
-  # format yet, despite 20260807/08/09 having shipped -- real boxes still
-  # need the legacy single-file bundle from build-release-package.yml, which
-  # this had briefly displaced as the auto-triggered pipeline. Swap back to
-  # auto-triggering THIS workflow only once the fleet has genuinely moved
-  # on; a release needing the legacy bundle but not getting one is worse
-  # than one this workflow attaches an extra format to that nothing reads
-  # yet, so default to the safer (legacy-auto) side while unsure.
-  #
-  # The upload-before-publish reordering and immediate re-draft below are
-  # independent of which trigger fires this workflow -- they stay in effect
-  # for manual dispatches too, since a manually-triggered build can leave a
-  # release just as assetless on failure as an automatic one could.
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
