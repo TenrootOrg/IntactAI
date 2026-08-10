@@ -250,6 +250,13 @@ upkg_extract() {
     # shared top-level dir, and that one describes exactly what was
     # extracted; a loose one sitting beside it would be for a different
     # release entirely and must never silently win.
+    #
+    # LEGACY branch, kept for the same reason as upgrade_fetch_release's
+    # single-bundle fallback in refs.sh: every release published before
+    # intact-20260811 is this shape, and build-release-package.yml stays
+    # dispatchable on demand for a box old enough to still need it. Remove
+    # once no box in the fleet can be old enough to hand this function a
+    # bundle-shaped manifest.json.
     if [[ -n "$UPKG_LOOSE_MANIFEST" && -f "$UPKG_LOOSE_MANIFEST" && ! -f "$UPKG_MANIFEST" ]]; then
         cp "$UPKG_LOOSE_MANIFEST" "$UPKG_MANIFEST"
         log_info "  placed the merged manifest.json alongside the extracted assets"

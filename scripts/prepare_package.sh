@@ -60,6 +60,11 @@ _elapsed() {
 # writes straight to $OUT_DIR/intact-upgrade-<tag>.tar[.gz] -- there is
 # nothing to wrap, unlike the per-module path this whole script otherwise is.
 #
+# LEGACY, same bridge as refs.sh's upgrade_fetch_release and package.sh's
+# manifest-precedence handling: every release before intact-20260811 is this
+# shape, and build-release-package.yml stays dispatchable on demand for a box
+# that still needs one. Remove once no box in the fleet is old enough to.
+#
 # Prints nothing on success except the final path (matching this script's
 # contract of the last stdout line being the result); returns 1 if no such
 # asset exists in $REL at all, which the caller treats as "genuinely not

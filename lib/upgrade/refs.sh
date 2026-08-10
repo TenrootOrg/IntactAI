@@ -160,6 +160,14 @@ for a in d.get("assets",[]):
         return $?
     fi
 
+    # LEGACY -- every release published before per-module assets existed
+    # (intact-20260615 through intact-20260810) is this shape, and
+    # build-release-package.yml can still be dispatched on demand to produce
+    # one for a box old enough to need it (see that workflow's header). Keep
+    # this branch until no box in the fleet is old enough to lack the
+    # per-module index -- there is no fixed date for that, unlike the
+    # intact-20260807 bridge in lib/release.sh, because this fetch has to
+    # work for whatever release tag an operator on an old box actually types.
     log_info "Release ${tag} is a single-bundle release; fetching its parts"
     local base="https://github.com/${INTACT_REPO}/releases/download/${tag}"
     local n
