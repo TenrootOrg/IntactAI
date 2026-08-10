@@ -20,7 +20,7 @@ upgrade_module_elk() {
     U_ELK_BASELINE_STATUS="$(_u_elk_status)"
     log_info "  cluster status before the upgrade: ${U_ELK_BASELINE_STATUS:-unknown}"
 
-    # Parity with deploy_elk (lib/modules.sh), which install.sh always runs
+    # Parity with deploy_elk (lib/modules/elk.sh), which install.sh always runs
     # first: systemd health, the thing that broke the 2026-06-15 test-1
     # install by failing cgroup-unit creation mid compose-up. Cheap (a
     # systemctl call), so unconditional here rather than gated to only the

@@ -30,7 +30,7 @@ upgrade_module_volweb() {
     # actually deployed before (the operator turns it on in config.yaml
     # then runs an upgrade rather than install.sh) has NO .env file at all,
     # and "stamp volweb pins" below would fail immediately with nothing to
-    # stamp into. render_volweb_env_template (lib/modules.sh, shared with
+    # stamp into. render_volweb_env_template (lib/modules/volweb.sh, shared with
     # deploy_volweb) is idempotent -- a no-op past this point on every
     # normal upgrade, where the file already exists.
     u_do "render volweb .env template" -- render_volweb_env_template

@@ -70,7 +70,7 @@ upgrade_module_iris() {
 }
 
 # Missing-only, never clobbering. modules/iris/config/certificates/... is
-# gitignored and only ever created by lib/modules.sh:generate_certificates,
+# gitignored and only ever created by lib/modules/shared.sh:generate_certificates,
 # which is gated on iris.enabled -- so enabling IRIS later leaves nginx
 # crash-looping on "cannot load certificate". Ported from iris.py:17-84.
 ensure_iris_web_cert() {

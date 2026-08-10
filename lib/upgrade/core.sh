@@ -104,7 +104,7 @@ u_do() {
     # Byte offset into the log BEFORE the step runs, so failure detail is
     # exactly what this step emitted rather than a blind `tail`. Same trick
     # run_compose_up_with_retry uses to classify compose failures
-    # (lib/modules.sh:699) -- with concurrent heartbeat writes to the same
+    # (lib/modules/shared.sh) -- with concurrent heartbeat writes to the same
     # file, an offset is the only way to attribute output to a step.
     local marker=0
     [[ -n "${LOG_FILE:-}" && -f "${LOG_FILE}" ]] && marker="$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)"
@@ -256,10 +256,10 @@ u_undo() {
 #
 # That is a deliberate break from the install path, where the pattern is
 # `wait_for_condition` returns 1, the caller log_warns, and then calls
-# track_module_success anyway (lib/modules.sh:1318-1322, lib/health.sh:161-175)
-# -- so a module that never came up is reported as installed. The upgrade path
-# never calls track_module_success at all, which makes that outcome structurally
-# unreachable rather than merely discouraged.
+# track_module_success anyway (e.g. deploy_iris in lib/modules/iris.sh,
+# lib/health.sh:161-175) -- so a module that never came up is reported as
+# installed. The upgrade path never calls track_module_success at all, which
+# makes that outcome structurally unreachable rather than merely discouraged.
 # ---------------------------------------------------------------------------
 u_end() {
     local module="$1"

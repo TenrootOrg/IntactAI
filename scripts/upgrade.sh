@@ -162,9 +162,19 @@ while IFS= read -r -d '' _f; do
 done < <(find "${_CODE_DIR}/lib" -name '*.sh' -print0 2>/dev/null)
 unset _f
 
-for _lib in common config docker modules health package release permissions; do
+for _lib in common config docker health package release permissions; do
     # shellcheck source=/dev/null
     source "${_CODE_DIR}/lib/${_lib}.sh" || { echo "Cannot source lib/${_lib}.sh" >&2; exit 2; }
+done
+# install.sh's per-module deploy_* functions: the upgrade path's "install"
+# case (a module enabled but never before deployed) calls straight into
+# these -- generate_iris_secrets, render_volweb_env_template,
+# render_timesketch_conf_templates, create_timesketch_admin_user,
+# enforce_iris_admin_password, preflight_host_check -- so every module file
+# is sourced here too, not just the ones known to be needed today.
+for _lib in shared elk timesketch velociraptor iris portainer volweb backend nginx orchestrator; do
+    # shellcheck source=/dev/null
+    source "${_CODE_DIR}/lib/modules/${_lib}.sh" || { echo "Cannot source lib/modules/${_lib}.sh" >&2; exit 2; }
 done
 for _lib in core interrupt helpers report health/core health/probes health/gate \
             plan package args refs \

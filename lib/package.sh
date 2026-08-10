@@ -75,7 +75,7 @@ _tar_is_docker_image() {
 # Sets INTACT_PKG_BACKEND_TAG (best-effort) to the backend image tag this
 # package actually shipped, so the caller can correct a stale
 # config.yaml versions.backend rather than trust it -- see lib/config.sh and
-# lib/modules.sh:deploy_backend.
+# lib/modules/backend.sh:deploy_backend.
 load_images_from_package() {
     # Takes ONE OR MORE assets. Per-module assets share a top-level directory
     # name, so extracting them all into one place merges them into the single
@@ -308,7 +308,7 @@ for img in sorted(set(owner) | set(size)):
             log_success "  [${img_i}/${img_total}] ${display} — ${ref:-loaded} ($(_human_size "$pkg_size"), ${RUN_HEARTBEAT_ELAPSED:-?}s)"
             # Capture what the package actually shipped as the backend image,
             # so the caller can correct a stale config.yaml versions.backend
-            # instead of trusting it (see lib/config.sh + lib/modules.sh).
+            # instead of trusting it (see lib/config.sh + lib/modules/backend.sh).
             if [[ -z "$INTACT_PKG_BACKEND_TAG" && "$base" == intact-backend-*.tar ]]; then
                 if [[ -n "$ref" && "$ref" == intact-backend:* ]]; then
                     INTACT_PKG_BACKEND_TAG="${ref#intact-backend:}"
@@ -444,7 +444,7 @@ for p in glob.glob(f'{work}/*/manifests/intact.json') + glob.glob(f'{work}/*/man
     # Each destination is where the ALREADY-EXISTING consumer looks, so no
     # consumer changes: tools_download_service skips files already in
     # data/tools, velociraptor_init_service reads the artifacts zip from the
-    # same place, and seed_yara_rulesets (lib/modules.sh) prefers
+    # same place, and seed_yara_rulesets (lib/modules/volweb.sh) prefers
     # data/yara_rulesets over a GitHub clone.
     #
     # cp -n throughout: a package must never clobber something a previous run

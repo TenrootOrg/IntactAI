@@ -88,7 +88,11 @@ source "${SCRIPT_DIR}/lib/common.sh"
 source "${SCRIPT_DIR}/lib/config.sh"
 source "${SCRIPT_DIR}/lib/deps.sh"
 source "${SCRIPT_DIR}/lib/docker.sh"
-source "${SCRIPT_DIR}/lib/modules.sh"
+for _lib in shared elk timesketch velociraptor iris portainer volweb backend nginx orchestrator; do
+    # shellcheck source=/dev/null
+    source "${SCRIPT_DIR}/lib/modules/${_lib}.sh" || { echo "Cannot source lib/modules/${_lib}.sh" >&2; exit 2; }
+done
+unset _lib
 source "${SCRIPT_DIR}/lib/health.sh"
 source "${SCRIPT_DIR}/lib/args.sh"
 source "${SCRIPT_DIR}/lib/package.sh"

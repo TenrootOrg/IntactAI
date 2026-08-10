@@ -28,7 +28,10 @@ export INTACT_HOST_PATH="$SCRIPT_DIR"
 source "${SCRIPT_DIR}/lib/common.sh"
 source "${SCRIPT_DIR}/lib/config.sh"
 source "${SCRIPT_DIR}/lib/docker.sh"
-source "${SCRIPT_DIR}/lib/modules.sh"
+# Only generate_certificates is used here, from the shared module-plumbing
+# file (lib/modules/*.sh is split one-file-per-module; this script needs
+# none of the per-module deploy_* logic).
+source "${SCRIPT_DIR}/lib/modules/shared.sh"
 source "${SCRIPT_DIR}/lib/health.sh"
 
 ASSUME_YES=false

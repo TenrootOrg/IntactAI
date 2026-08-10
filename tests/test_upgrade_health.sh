@@ -4,7 +4,7 @@
 #
 # THE REGRESSION. Across the install path the pattern is: poll for readiness,
 # time out, log a warning, and then call track_module_success anyway
-# (lib/modules.sh:1318-1322, lib/health.sh:161-175). The result is a module
+# (e.g. deploy_iris in lib/modules/iris.sh, lib/health.sh:161-175). The result is a module
 # reported as installed that never came up. The upgrade path must make that
 # outcome structurally impossible, not merely discouraged -- so the assertion
 # below is that a timeout lands the module in UPGRADE_ROLLED_BACK, and that

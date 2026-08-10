@@ -78,7 +78,7 @@ fix_source_permissions() {
     # "password authentication failed for user postgres" the next time
     # intact_iris_app is recreated for ANY reason (upgrade, `docker
     # compose restart`, host reboot) -- NOT at first boot, which is why
-    # this went unnoticed: generate_iris_secrets() (lib/modules.sh)
+    # this went unnoticed: generate_iris_secrets() (lib/modules/iris.sh)
     # creates these files at the default umask (644), so the FIRST
     # deploy_iris works fine, and only breaks on the next recreate after
     # THIS blanket 600 sweep has already reverted them. Confirmed live on
