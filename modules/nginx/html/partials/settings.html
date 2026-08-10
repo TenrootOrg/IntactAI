@@ -168,19 +168,13 @@
                                         Refresh
                                     </button>
                                 </div>
-                                <div class="grid grid-cols-2 gap-x-6 gap-y-1 text-xs font-mono">
+                                <div class="max-w-xs gap-y-1 text-xs font-mono">
                                     <template x-for="(v, name) in ($store.settings.installedVersions || {})" :key="'iv-' + name">
-                                        <div class="flex justify-between border-b border-gray-800 py-1">
+                                        <div class="flex justify-between gap-6 border-b border-gray-800 py-1">
                                             <span class="text-gray-400" x-text="name"></span>
                                             <span :class="v === 'Not installed' ? 'text-gray-600' : 'text-gray-200'" x-text="v"></span>
                                         </div>
                                     </template>
-                                </div>
-                                <div class="mt-4 pt-3 border-t border-gray-700 text-xs text-gray-400">
-                                    <div class="mb-1">See what is available:</div>
-                                    <code class="block bg-gray-950 text-gray-300 rounded px-2 py-1 mb-2">sudo bash scripts/upgrade.sh --list</code>
-                                    <div class="mb-1">Then upgrade to a release:</div>
-                                    <code class="block bg-gray-950 text-gray-300 rounded px-2 py-1">sudo bash scripts/upgrade.sh &lt;release-tag&gt;</code>
                                 </div>
                             </div>
 

@@ -45,11 +45,24 @@ cat > "${FIX}/index.json" <<JSON
 }
 JSON
 
+# The MERGED root manifest, published by CI's `index` job. prepare_package.sh
+# must wrap it: without it the apply side refuses the package outright
+# ("per-module manifests but no merged manifest.json"), which is what made
+# every hand-carried air-gap package fail on arrival at the offline site.
+cat > "${FIX}/merged-manifest.json" <<JSON
+{
+  "package_version": "1.0",
+  "versions": {"velociraptor": "0.77.1"},
+  "contents": {"release_tag": "${TAG}", "sha256": {}}
+}
+JSON
+
 cat > "${FIX}/release.json" <<JSON
 {
   "tag_name": "${TAG}",
   "assets": [
     {"name": "${TAG}.index.json", "url": "https://api.github.com/fake/asset/index"},
+    {"name": "${TAG}.manifest.json", "url": "https://api.github.com/fake/asset/manifest"},
     {"name": "${TAG}-velociraptor.tar", "url": "https://api.github.com/fake/asset/velociraptor", "size": $(stat -c%s "${FIX}/${TAG}-velociraptor.tar")},
     {"name": "${TAG}-system-bundle.tar", "url": "https://api.github.com/fake/asset/bundle", "size": $(stat -c%s "${FIX}/${TAG}-system-bundle.tar")},
     {"name": "${TAG}-system-bundle.tar.sha256", "url": "https://api.github.com/fake/asset/bundle-sha"}
@@ -73,6 +86,7 @@ done
 case "\$url" in
     */releases/tags/*) cat "${FIX}/release.json" ;;
     */fake/asset/index) cp "${FIX}/index.json" "\$out" ;;
+    */fake/asset/manifest) cp "${FIX}/merged-manifest.json" "\$out" ;;
     */fake/asset/velociraptor) cp "${FIX}/${TAG}-velociraptor.tar" "\$out" ;;
     */fake/asset/bundle-sha) cp "${FIX}/${TAG}-system-bundle.tar.sha256" "\$out" ;;
     */fake/asset/bundle) cp "${FIX}/${TAG}-system-bundle.tar" "\$out" ;;
@@ -104,6 +118,12 @@ test_wrapper_includes_the_system_bundle() {
     assert_contains "$listing" "${TAG}.index.json" "index must be in the wrapper"
     assert_contains "$listing" "${TAG}-system-bundle.tar" \
         "defect (1): the wrapper must carry the system bundle, not just module assets"
+    # The merged manifest. Without it upkg_read_manifest refuses the package on
+    # the target with "per-module manifests but no merged manifest.json" -- the
+    # wrapper looks fine locally and only fails once it has been carried to the
+    # air-gapped site, which is the worst place to find out.
+    assert_contains "$listing" "${TAG}.manifest.json" \
+        "the wrapper must carry the merged manifest, or the target refuses the package"
 
     # Extract and confirm the bundled bundle really is the one served, not a
     # placeholder / zero-byte member.
@@ -132,6 +152,32 @@ test_bad_bundle_checksum_aborts_the_run() {
     # restore the good checksum for any test that runs after this one
     sha256sum "${FIX}/${TAG}-system-bundle.tar" | awk '{print $1}' \
         > "${FIX}/${TAG}-system-bundle.tar.sha256"
+}
+
+test_a_release_without_the_merged_manifest_is_refused() {
+    # A per-module release that publishes no <tag>.manifest.json cannot produce
+    # a usable package: the apply side needs that file and every per-module
+    # asset carries only its own manifests/<module>.json. Fail HERE, on the
+    # connected machine where it costs nothing, rather than shipping a wrapper
+    # that is refused after it has been carried to the offline site.
+    local saved="${WORK}/release-with-manifest.json"
+    cp "${FIX}/release.json" "$saved"
+    grep -v "${TAG}.manifest.json" "$saved" \
+        | sed 's/{"name": "'"${TAG}"'.index.json", "url": "https:\/\/api.github.com\/fake\/asset\/index"},/{"name": "'"${TAG}"'.index.json", "url": "https:\/\/api.github.com\/fake\/asset\/index"},/' \
+        > "${FIX}/release.json"
+
+    local out_dir="${WORK}/out3"
+    mkdir -p "$out_dir"
+    PATH="${BIN}:${PATH}" GITHUB_TOKEN="" bash ../scripts/prepare_package.sh "$TAG" "$out_dir" \
+        > "${WORK}/stdout3.log" 2>"${WORK}/stderr3.log"
+    local rc=$?
+
+    cp "$saved" "${FIX}/release.json"   # restore for any later test
+
+    assert_ne "$rc" "0" "a release with no merged manifest must be refused, not packaged"
+    assert_contains "$(cat "${WORK}/stderr3.log")" "manifest.json" \
+        "the failure must name the missing manifest"
+    assert_true test ! -f "${out_dir}/intact-upgrade-${TAG}.tar"
 }
 
 run_all_tests

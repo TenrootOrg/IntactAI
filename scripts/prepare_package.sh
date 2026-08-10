@@ -304,6 +304,49 @@ log "reading the release index"
 curl -fsSL "${AUTH[@]}" -H "Accept: application/octet-stream" \
      -o "$TAG.index.json" "$IDX_URL"
 
+# The MERGED root manifest, published by CI's `index` job alongside the
+# per-module assets. Without it the wrapped package is unusable: every asset
+# carries only its own manifests/<module>.json sidecar, and the apply side
+# (lib/upgrade/package.sh:upkg_read_manifest) refuses a package that has those
+# but no merged manifest.json -- "it predates the per-module release index, or
+# only some of the release's assets were copied here". That is exactly the
+# shape this script used to produce, so the flagship air-gap path (prepare
+# here, hand-carry, `upgrade.sh --package` there) failed on arrival at the
+# offline site, which is the worst possible place to discover it.
+#
+# Named "<tag>.manifest.json", NOT "manifest.json": the wrapper detector in
+# upkg_expand_args refuses a tar whose top level contains a member named
+# exactly `manifest.json` (that shape means "this IS a package", not "this
+# wraps packages"), so the bare name would silently disable unwrapping.
+MANIFEST_URL="$(printf %s "$REL" | TAG="$TAG" python3 -c '
+import json, os, sys
+want = os.environ["TAG"] + ".manifest.json"
+for a in json.load(sys.stdin).get("assets", []):
+    if a["name"] == want:
+        print(a["url"]); break
+')"
+MANIFEST_NAME=""
+if [ -n "$MANIFEST_URL" ]; then
+    log "fetching the merged manifest"
+    if curl -fsSL "${AUTH[@]}" -H "Accept: application/octet-stream" \
+            -o "$TAG.manifest.json" "$MANIFEST_URL"; then
+        MANIFEST_NAME="$TAG.manifest.json"
+    else
+        err "could not download $TAG.manifest.json"
+        exit 1
+    fi
+else
+    # A release cut before CI began publishing the merged manifest. Say so
+    # loudly HERE, on the connected machine where it is cheap to react, rather
+    # than letting the operator carry a package that cannot be applied.
+    err "release $TAG publishes no $TAG.manifest.json"
+    err "  The wrapped package will be REFUSED by 'upgrade.sh --package' on the"
+    err "  target ('per-module manifests but no merged manifest.json')."
+    err "  Use a release built by current CI, or apply the per-module assets"
+    err "  directly on a machine that can reach GitHub."
+    exit 1
+fi
+
 # name<TAB>module<TAB>url<TAB>sha256-of-the-whole-asset, one line per FILE to
 # fetch (a split asset contributes one line per .part-NN, all sharing the
 # same whole-asset sha256 -- that hash covers the reassembled file, since a
@@ -673,7 +716,11 @@ log "verified $NASSETS module asset(s)"
 # Add the bundle as its own wrap member, alongside (not instead of) the
 # module assets found above -- see where BUNDLE_PLAN is built for why it's
 # never part of ASSETS itself.
-WRAP_MEMBERS=("$TAG.index.json" "${ASSETS[@]}")
+WRAP_MEMBERS=("$TAG.index.json")
+# The merged manifest rides second, right behind the index -- both are tiny and
+# both are read from the head of the stream (see the index-first note below).
+[ -n "$MANIFEST_NAME" ] && [ -f "$MANIFEST_NAME" ] && WRAP_MEMBERS+=("$MANIFEST_NAME")
+WRAP_MEMBERS+=("${ASSETS[@]}")
 [ -n "$BUNDLE_PLAN" ] && [ -f "$BUNDLE_NAME" ] && WRAP_MEMBERS+=("$BUNDLE_NAME")
 
 # Trim the index to the modules actually packed. The release's index names

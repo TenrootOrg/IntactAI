@@ -94,12 +94,29 @@ upkg_expand_args() {
                 || unwrap="$(mktemp -d)"
             UPKG_SCRATCH="${UPKG_SCRATCH} ${unwrap}"
             log_info "$(basename "$p") is a single-file package — unwrapping"
-            grep '\.tar\(\.gz\)\?$' <<< "$listing" | tar -xf "$p" -C "$unwrap" -T - || {
+            # Extract the module tarballs AND the merged <tag>.manifest.json
+            # that prepare_package.sh wraps beside them. Extracting only
+            # '*.tar[.gz]' -- which is what this did until the manifest was
+            # added to the wrapper -- silently dropped the one file
+            # upkg_read_manifest needs, so every hand-carried air-gap package
+            # died at "per-module manifests but no merged manifest.json" on
+            # the target. The index.json is deliberately NOT extracted: it
+            # describes the release, and nothing on the apply side reads it.
+            grep -E '\.tar(\.gz)?$|\.manifest\.json$' <<< "$listing" \
+                | tar -xf "$p" -C "$unwrap" -T - || {
                 log_error "Could not unwrap $(basename "$p")"; return 1; }
             while IFS= read -r f; do
                 [[ "$(basename "$f")" == *-system-bundle.tar ]] && continue
                 expanded+=("$f")
             done < <(find "$unwrap" -maxdepth 1 \( -name '*.tar.gz' -o -name '*.tar' \) | sort)
+            # Same role as the directory branch above: a manifest sitting
+            # beside the assets rather than inside one. upkg_extract copies it
+            # into the merged tree as manifest.json.
+            if [[ -z "$UPKG_LOOSE_MANIFEST" ]]; then
+                UPKG_LOOSE_MANIFEST="$(find "$unwrap" -maxdepth 1 \
+                    \( -name 'manifest.json' -o -name '*.manifest.json' \) \
+                    2>/dev/null | head -1)"
+            fi
         else
             expanded+=("$p")
         fi

@@ -94,29 +94,39 @@ _intact_recreate_sidecars() {
 # upgrade_state table only ever existed so a half-finished upgrade could resume
 # across the backend restarting itself; nothing resumes anything now, and a
 # stale row would make the old engine (if it is still present) believe an
-# upgrade is in flight. Historical automation_runs rows are KEPT -- they are
-# the audit trail of past upgrades and the Workflows view still reads them.
+# upgrade is in flight. Historical run rows are KEPT -- they are the audit
+# trail of past upgrades and the Workflows view still reads them.
+#
+# THE ROW-CANCELLING SWEEP IS GONE, DELIBERATELY. It used to
+# `UPDATE automation_runs SET status='cancelled'` for every running
+# upgrade/online_upgrade/prepare_package/upgrade_package_upload row, to clear
+# runs the old engine had abandoned when it restarted itself. Two reasons it
+# must not come back:
+#
+#   1. It never worked. The table is `workflows`, not `automation_runs` (see
+#      services/storage/base.py) -- so the UPDATE has always raised "no such
+#      table" and been swallowed by the except below. Nothing has ever been
+#      cancelled by it on any box.
+#   2. Now that an upgrade can be STARTED FROM THE UI, the run it would cancel
+#      is the run driving this very upgrade. `add_log_to_run` silently drops
+#      every log line once a run is `cancelled`
+#      (services/workflow_service.py), so "fixing" the table name would make a
+#      UI-driven upgrade go dark mid-run and finish as cancelled while the
+#      upgrade itself carried on -- the log simply stops, with no error.
+#
+# A run genuinely orphaned by a crash is reconciled at backend startup from the
+# .done.json marker the launcher writes, which knows which run is live. This
+# function has no way to tell the two apart and must not guess.
 _intact_clear_legacy_upgrade_state() {
     local db="${SCRIPT_DIR}/data/intact.db"
     [[ -f "$db" ]] || return 0
     python3 - "$db" <<'PY' >>"${LOG_FILE:-/dev/null}" 2>&1 || true
 import sqlite3, sys
 c = sqlite3.connect(sys.argv[1])
-# Each statement committed independently. automation_runs does not exist on
-# every box, and sharing one transaction meant its "no such table" rolled the
-# upgrade_state DROP back with it -- the cleanup would silently do nothing on
-# exactly the boxes that have the simpler schema.
-for sql in (
-    "DROP TABLE IF EXISTS upgrade_state",
-    """UPDATE automation_runs SET status='cancelled'
-         WHERE automation_type IN ('upgrade','online_upgrade','prepare_package',
-                                   'upgrade_package_upload')
-           AND status IN ('running','pending')""",
-):
-    try:
-        c.execute(sql); c.commit()
-    except sqlite3.Error as e:
-        print("  (skipped: %s)" % e)
+try:
+    c.execute("DROP TABLE IF EXISTS upgrade_state"); c.commit()
+except sqlite3.Error as e:
+    print("  (skipped: %s)" % e)
 c.close()
 PY
     rm -f "${SCRIPT_DIR}/data/backend-source.applied.sha256" \
