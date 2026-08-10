@@ -124,15 +124,19 @@ EXCLUDED_FROM_RELEASE = {
 def platform_config_path(must_exist: bool = True):
     """The platform config this release ships, for reading AND stamping.
 
-    config.yaml is the OPERATOR's file and is not tracked in git — it holds
+    config.yaml is TRACKED, but it is also the OPERATOR's live file: it holds
     options.github_token (a real GitHub PAT), the dashboard login and every
-    module password, so the pre-commit hook resets the staged copy to defaults.
-    This builder runs in CI from a plain checkout, where only the template
-    exists; it is also run locally, where a real config.yaml does and better
-    reflects that box's pins. Prefer the real file, fall back to the template.
-
-    Everything this script needs from it — the `versions:` block and the
-    `versions.backend` pin it stamps — lives in both.
+    module password, so the pre-commit hook (scripts/git-hooks/sanitize-config-
+    yaml.sh) resets the STAGED copy back to shipping defaults on every commit —
+    the working file on disk is never touched. That means what this resolves to
+    depends entirely on where INTACT_PATH points: a fresh CI checkout always has
+    the sanitized, tracked content; a live box's checkout has whatever secrets
+    that box has accumulated at runtime. Both carry a valid `versions:` block,
+    which is all this function's callers read or stamp — but NEVER let whatever
+    this resolves to be copied verbatim into a package. package.py's full-repo
+    copy into source/intact/ excludes config.yaml explicitly for exactly this
+    reason; do not remove that exclusion because this function looks like it
+    only ever sees a harmless template — on a live box it does not.
     """
     root = os.environ.get("INTACT_PATH", "/app/workdir")
     for name in ("config.yaml",):
@@ -168,12 +172,10 @@ def release_module_set(tag: str, only: str = None) -> dict:
     """
     import yaml
     UPGRADE_ORDER = _upgrade_order()
-    # config.yaml is the OPERATOR's file and is not tracked in git (it holds the
-    # GitHub PAT, the dashboard login and every module password), so it does not
-    # exist in a CI checkout — which is exactly where this builder runs. The
-    # tracked template carries the same `versions:` pins, which is all we read.
-    # Prefer a real config.yaml when present so a local package build reflects
-    # that box's own pins.
+    # config.yaml is tracked (sanitized on commit) and always present under
+    # INTACT_PATH — see platform_config_path()'s docstring for why its content
+    # depends on whether that path is a fresh CI checkout or a live box, and
+    # why only the `versions:` block read here is safe to rely on.
     cfg_path = platform_config_path()
     with open(cfg_path) as handle:
         cfg = yaml.safe_load(handle) or {}

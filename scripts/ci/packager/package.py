@@ -1221,6 +1221,20 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                         # one alone", which is exactly right.
                         'ssl', 'certificates', 'secrets',
                         '*.key', '*.pem', '*.crt', '*.pfx', '*.p12',
+                        # config.yaml is TRACKED (the pre-commit hook sanitizes
+                        # the STAGED copy back to shipping defaults, but never
+                        # touches the working file) and qa-config.yaml the same
+                        # way -- so whatever machine runs this packager may have
+                        # either one sitting on disk holding real operator
+                        # credentials (GitHub PAT, module passwords) or QA
+                        # target creds. `platform_config_path()` in
+                        # build_release_package.py deliberately prefers that
+                        # live file over the tracked one for reading version
+                        # pins; that preference must never extend to what gets
+                        # SHIPPED. A release does not need a pre-filled
+                        # config.yaml at all -- a fresh install seeds its own
+                        # via lib/config.sh:check_config().
+                        'config.yaml', 'qa-config.yaml',
                     ),
                 )
                 log("  Full repo copied", "success")
