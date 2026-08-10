@@ -290,6 +290,13 @@ main() {
             upgrade_fetch_release "$UPGRADE_TAG" "$dl" || return 2
             upkg_expand_args "$dl" || return 2
         else
+            # --package is documented (args.sh) as "implies no network
+            # access" but never actually set the flag every air-gap guard in
+            # timesketch.sh/velociraptor.sh/modules.sh reads -- they have
+            # never fired. Exported so it survives the stage-0 hop's `exec`
+            # the same way UPKG_SCRATCH does.
+            INTACT_UPGRADE_OFFLINE=1
+            export INTACT_UPGRADE_OFFLINE
             upkg_expand_args "${UPGRADE_PACKAGE_ARGS[@]}" || return 2
         fi
         assets=("${UPKG_ASSETS[@]}")

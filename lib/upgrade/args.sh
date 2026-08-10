@@ -8,7 +8,6 @@
 #   UPGRADE_SKIP             comma list, or ""
 #   UPGRADE_DRY_RUN          1 to verify and plan, then stop
 #   UPGRADE_LIST             1 to list available releases and stop
-#   UPGRADE_YES              1 for non-interactive
 #   UPGRADE_EXPECT_SHA256    operator-supplied digest anchor, or ""
 #   UPGRADE_VELO_REFRESH_ONLY 1 to run only the Velociraptor refresh step
 #   UPGRADE_PACKAGE_DIR      pre-extracted package (set by the stage-0 re-exec)
@@ -34,7 +33,6 @@ Options:
   --skip  <a,b>         Upgrade everything except these.
   --expect-sha256 <hex> Refuse the package unless the archive matches.
   --velo-refresh        Run only the Velociraptor artifact/tool refresh step.
-  --yes                 Never prompt.
   --help                This text.
 
 Modules: intact elk timesketch plaso iris velociraptor aws_sigma o365rc
@@ -55,7 +53,6 @@ parse_upgrade_args() {
     UPGRADE_SKIP=""
     UPGRADE_DRY_RUN=0
     UPGRADE_LIST=0
-    UPGRADE_YES=0
     UPGRADE_EXPECT_SHA256=""
     UPGRADE_VELO_REFRESH_ONLY=0
     UPGRADE_PACKAGE_DIR=""
@@ -86,7 +83,12 @@ parse_upgrade_args() {
             --dry-run)      UPGRADE_DRY_RUN=1; shift ;;
             --list)         UPGRADE_LIST=1; shift ;;
             --velo-refresh) UPGRADE_VELO_REFRESH_ONLY=1; shift ;;
-            --yes|-y)       UPGRADE_YES=1; shift ;;
+            # Recognized and ignored, not an error: this engine never
+            # prompts (unlike install.sh, where --yes/-y suppresses a real
+            # confirmation), so there is nothing for it to do -- but an
+            # operator scripting `upgrade.sh --yes ...` out of install.sh
+            # habit should not hit "Unknown option" for it.
+            --yes|-y)       shift ;;
             --help|-h)      upgrade_usage; exit 0 ;;
             -*)
                 echo "Unknown option: $1" >&2

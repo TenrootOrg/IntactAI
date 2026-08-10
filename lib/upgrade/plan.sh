@@ -239,12 +239,32 @@ plan_check_disk() {
     [[ -n "$free_gb" ]] || { log_warn "could not determine free disk space"; return 0; }
 
     if (( free_gb < need_gb )); then
-        log_error "Not enough disk: ${free_gb}G free, this package needs about ${need_gb}G"
+        log_error "Not enough disk: ${free_gb}G free on ${SCRIPT_DIR}, this package needs about ${need_gb}G"
         log_error "  Free space and re-run. 'docker image prune -a' on images no module"
         log_error "  pins is usually the biggest win."
         return 1
     fi
-    log_info "Disk: ${free_gb}G free, ~${need_gb}G needed"
+    log_info "Disk: ${free_gb}G free on ${SCRIPT_DIR}, ~${need_gb}G needed"
+
+    # The tars extract under $SCRIPT_DIR, but the LAYERS they unpack into
+    # live wherever Docker's own data root is -- a separate mount on many
+    # production hosts, precisely to keep image growth off the app
+    # filesystem. Checking only $SCRIPT_DIR above would report "plenty of
+    # room" while THAT filesystem fills mid-load.
+    local docker_root
+    docker_root="$("${DOCKER_BIN:-docker}" info --format '{{.DockerRootDir}}' 2>/dev/null)"
+    if [[ -n "$docker_root" && -d "$docker_root" ]]; then
+        local docker_free_gb
+        docker_free_gb="$(df -B1G --output=avail "$docker_root" 2>/dev/null | tail -1 | tr -d ' ')"
+        if [[ -n "$docker_free_gb" ]] && (( docker_free_gb < need_gb )); then
+            log_error "Not enough disk: ${docker_free_gb}G free on ${docker_root} (Docker's data root)"
+            log_error "  for images this package needs to load (~${need_gb}G)."
+            log_error "  Free space and re-run. 'docker image prune -a' on images no module"
+            log_error "  pins is usually the biggest win."
+            return 1
+        fi
+        log_info "Disk: ${docker_free_gb:-?}G free on ${docker_root} (Docker's data root)"
+    fi
     return 0
 }
 

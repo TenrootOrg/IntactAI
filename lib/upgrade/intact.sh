@@ -36,6 +36,14 @@ upgrade_module_intact() {
     else
         log_error "  package carries no source tree; cannot upgrade the platform"
         UPGRADE_FAILED+=("intact — no source tree in the package")
+        # Not u_end: nothing was ever u_do'd, so there is no undo stack to
+        # unwind and no container state worth health-probing. But U_MODULE
+        # must not stay "intact" past this return -- every OTHER exit from a
+        # module function goes through u_end, which is what clears it, and
+        # skipping that here left it dangling for whatever ran next to
+        # potentially see.
+        U_MODULE=""
+        U_UNDO=()
         return 1
     fi
 
