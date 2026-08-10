@@ -282,8 +282,12 @@ plan_print_table() {
         action="${PLAN_ACTION[$m]:-skip:unknown}"
         note="${action#*:}"
         [[ "$note" == "$action" ]] && note=""
-        cur="${PLAN_CURRENT[$m]:-—}"; [[ -z "${PLAN_CURRENT[$m]:-}" ]] && cur="not installed"
-        tgt="${PLAN_TARGET[$m]:-—}"
+        cur="${PLAN_CURRENT[$m]:-}"; [[ -z "$cur" ]] && cur="not installed"
+        # ASCII '-', not an em-dash: printf's %-20s pads to twenty BYTES, and
+        # U+2014 is three of them, so every row using it lost two columns and
+        # the ACTION column stepped left -- visible on any plan where a module
+        # is absent from the package, which is most of them.
+        tgt="${PLAN_TARGET[$m]:--}"
         case "${action%%:*}" in
             upgrade) printf '  %-16s %-20s %-20s UPGRADE\n' "$m" "$cur" "$tgt" ;;
             install) printf '  %-16s %-20s %-20s INSTALL\n' "$m" "$cur" "$tgt" ;;

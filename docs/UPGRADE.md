@@ -1,13 +1,22 @@
 # Upgrading Intact.AI
 
-Upgrades run from the shell on the appliance, as root. There is no upgrade
-button in the dashboard.
+Upgrades run from the shell on the appliance, as root:
 
 ```bash
 sudo bash scripts/upgrade.sh --list                    # what can I upgrade to?
+bash scripts/upgrade.sh --plan intact-20260810         # what would that change?
 sudo bash scripts/upgrade.sh intact-20260810           # online
 sudo bash scripts/upgrade.sh --package /media/usb/pkg.tar   # air-gapped
 ```
+
+`--list` and `--plan` are read-only and do not need root.
+
+The dashboard can also drive all three of these, from **Settings → Actions**
+(Online Upgrade, Prepare Upgrade Package, Import Upgrade Package). It does not
+reimplement any of the above: the backend runs *this* script and streams its
+log into the run history, so there is one engine and one set of decisions no
+matter which way an upgrade is started. The shell remains the path that works
+when the platform does not — see the next section.
 
 ## It does not need the platform to be working
 
