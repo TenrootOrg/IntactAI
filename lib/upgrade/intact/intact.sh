@@ -18,7 +18,8 @@
 # pins from.
 #
 # Sibling files: config.sh (the version-pin merge, schema migration, and
-# post-merge validation), tree.sh (snapshot/restore/mirror of modules/backend),
+# post-merge validation), tree.sh (snapshot/restore/mirror of the backend,
+# frontend, and the upgrade engine itself -- lib/, scripts/, install.sh),
 # assets.sh (sidecar compose files and their bind-mount assets), image.sh (the
 # backend image, the compile gate, and the actual swap).
 
@@ -79,8 +80,34 @@ upgrade_module_intact() {
     [[ -n "$bak" ]] && u_undo "restore_file_from_backup '${envf}' '${bak}'"
     u_undo "_intact_restore '${snap}'"
 
-    # 3. Mirror the new code in.
+    # 3. Mirror the new code in. Backend is mandatory -- every package
+    #    layout carries it. The frontend and the upgrade engine itself
+    #    (lib/, scripts/, install.sh) are best-effort: a package built
+    #    before the full-repo source/intact/ layout existed (legacy
+    #    source/{backend,frontend} shape) genuinely does not carry them, and
+    #    a missing frontend/engine mirror must not brick an otherwise-good
+    #    backend upgrade. Skipping them silently was the actual bug: without
+    #    this, an upgraded box never gets a UI update (the restored Actions
+    #    UI cards would only ever appear after a fresh install.sh) and never
+    #    regains scripts/upgrade.sh + lib/upgrade/ -- so it could not
+    #    self-upgrade again even though the box it upgraded FROM could.
     u_do --timeout 600 "mirror the backend tree" -- _intact_mirror "${src}/modules/backend" "${SCRIPT_DIR}/modules/backend"
+    if [[ -d "${src}/modules/nginx/html" ]]; then
+        u_do --timeout 300 "mirror the frontend" -- _intact_mirror "${src}/modules/nginx/html" "${SCRIPT_DIR}/modules/nginx/html" "index.html"
+    else
+        log_warn "  package has no modules/nginx/html — the dashboard UI will not be updated"
+    fi
+    if [[ -d "${src}/lib" ]]; then
+        u_do --timeout 120 "mirror lib/" -- _intact_mirror "${src}/lib" "${SCRIPT_DIR}/lib" "common.sh"
+    else
+        log_warn "  package has no lib/ — this box's upgrade engine will not be updated"
+    fi
+    if [[ -d "${src}/scripts" ]]; then
+        u_do --timeout 120 "mirror scripts/" -- _intact_mirror "${src}/scripts" "${SCRIPT_DIR}/scripts" "upgrade.sh"
+    else
+        log_warn "  package has no scripts/ — this box's upgrade engine will not be updated"
+    fi
+    u_do "mirror install.sh" -- _intact_mirror_install_sh "$src"
     u_do --timeout 600 "refresh sidecar compose files and assets" -- _intact_refresh_sidecars "$src"
 
     # 4. The image, then the compile gate BEFORE anything restarts. A backend
