@@ -43,14 +43,24 @@ mkdir -p "${ROOT}/images" "${ROOT}/source/intact"
 echo "[make-test-package] tag=${TAG}"
 
 # The source tree the intact module mirrors in, and that the stage-0 re-exec
-# hands over to. Excludes the things that must never travel in a package:
-# the operator's config.yaml and .env files, live data, git history, logs.
+# hands over to.
+#
+# NOT a tar with a hand-maintained --exclude list. That list once missed
+# modules/nginx/ssl/nginx-cert.key, modules/iris/config/certificates/rootCA/
+# irisRootCAKey.pem and modules/timesketch/secrets/postgres.env -- three real
+# secrets that rode straight into a package under /tmp on a live box, because
+# nobody updates an exclude list when a new secret-bearing path is added
+# somewhere else in the tree. `git ls-files` cannot have that failure mode: it
+# enumerates exactly what git considers TRACKED, which .gitignore already
+# keeps every one of those paths out of (confirmed: all three are gitignored,
+# .env is not -- the tracked .env files are safe defaults/templates, not live
+# secrets). Reading the LISTED paths from the working tree rather than
+# `git archive`-ing a commit is deliberate too: a commit would freeze this at
+# whatever was last committed and silently drop whatever local change is
+# actually being tested.
 if [[ -d "${REPO}/lib" ]]; then
-    tar -C "$REPO" -cf - \
-        --exclude='.git' --exclude='data' --exclude='backups' \
-        --exclude='*.log' --exclude='config.yaml' --exclude='*/.env' \
-        --exclude='__pycache__' --exclude='node_modules' \
-        install.sh lib scripts modules 2>/dev/null \
+    ( cd "$REPO" && git ls-files -z -- install.sh lib scripts modules \
+        | tar -cf - --null -T - 2>/dev/null ) \
       | tar -C "${ROOT}/source/intact" -xf - 2>/dev/null || true
     echo "[make-test-package] staged source/intact"
 fi
