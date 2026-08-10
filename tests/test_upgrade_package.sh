@@ -285,5 +285,140 @@ test_a_nonexistent_package_path_is_reported() {
     _teardown
 }
 
+# ---------------------------------------------------------------------------
+# Which manifest.json wins (upkg_extract).
+#
+# One test per row of the precedence table. The shapes here are not invented:
+# they were read off a real asset built by scripts/ci/build_release_package.py
+# via scripts/dev/build_local_release_assets.sh -- a per-module asset's root
+# manifest really does carry contents.package_kind == "module" and exactly one
+# entry in `versions`, and the CI index job's merged manifest really does carry
+# no package_kind at all.
+# ---------------------------------------------------------------------------
+
+# Build a per-module-shaped asset: one module in `versions`, package_kind
+# "module", sharing the top-level dir every asset of a release shares.
+_make_module_asset() {
+    local name="$1" module="$2" version="$3"
+    local root="${WORK}/mbuild/intact-upgrade-test"
+    rm -rf "${WORK}/mbuild"; mkdir -p "${root}/images" "${root}/manifests"
+    printf 'not a real image\n' > "${root}/images/${module}-${version}.tar"
+    ( cd "$root" && MOD="$module" VER="$version" python3 -c "
+import json, hashlib, os
+def sha(p):
+    h = hashlib.sha256()
+    with open(p, 'rb') as f:
+        for c in iter(lambda: f.read(1 << 20), b''): h.update(c)
+    return h.hexdigest()
+mod, ver = os.environ['MOD'], os.environ['VER']
+shas = {}
+for r, _, fs in os.walk('.'):
+    for f in fs:
+        rel = os.path.relpath(os.path.join(r, f), '.')
+        if rel != 'manifest.json': shas[rel] = sha(os.path.join(r, f))
+json.dump({'module': mod}, open('manifests/%s.json' % mod, 'w'))
+json.dump({'package_version': '1.0',
+           'versions': {mod: ver},
+           'contents': {'package_kind': 'module', 'sha256': shas}},
+          open('manifest.json', 'w'))
+" )
+    ( cd "${WORK}/mbuild" && tar -cf "${WORK}/${name}" intact-upgrade-test )
+}
+
+# The CI index job's output: every module's pin, and no package_kind.
+_write_merged_manifest() {
+    local path="$1"
+    python3 -c "
+import json, sys
+json.dump({'package_version': '1.0',
+           'created_by': 'build-release-assets.yml/index',
+           'versions': {'elk': '9.9.9', 'iris': 'v2.4.27', 'portainer': '2.39.5'},
+           'contents': {'release_tag': 'intact-test', 'sha256': {}}},
+          open(sys.argv[1], 'w'))
+" "$path"
+}
+
+test_the_merged_manifest_beats_a_per_module_leftover() {
+    # THE per-module regression. N assets share one top-level dir, so their
+    # root manifest.json files overwrite each other and one survives at
+    # random, describing a single module. Before the fix the merged manifest
+    # was never placed over it, so plan_build saw one pin and marked every
+    # other module `skip:not in this package` -- a full-release upgrade that
+    # silently upgraded one module and reported success.
+    _setup
+    _make_module_asset a1.tar elk 9.9.9
+    mkdir -p "${WORK}/loose"
+    cp "${WORK}/a1.tar" "${WORK}/loose/"
+    _write_merged_manifest "${WORK}/loose/intact-test.manifest.json"
+
+    assert_true upkg_expand_args "${WORK}/loose"
+    assert_true upkg_extract "${UPKG_ASSETS[@]}"
+    assert_true upkg_read_manifest
+
+    # All three pins, not just elk's.
+    assert_eq "${UPKG_VERSIONS[elk]:-}"       "9.9.9"
+    assert_eq "${UPKG_VERSIONS[iris]:-}"      "v2.4.27"
+    assert_eq "${UPKG_VERSIONS[portainer]:-}" "2.39.5"
+    assert_contains "$(cat "$LOG_FILE")" "replaced a per-module manifest leftover"
+    _teardown
+}
+
+test_a_legacy_bundles_own_manifest_is_not_overwritten() {
+    # The guard the fix must not break. A legacy single bundle's manifest.json
+    # is authoritative for the tree it ships in; a loose manifest beside it is
+    # for some other release and must never win.
+    _setup
+    _make_pkg leg.tar "{'contents': {'package_kind': 'bundle'}}"
+    mkdir -p "${WORK}/loose"
+    cp "${WORK}/leg.tar" "${WORK}/loose/"
+    _write_merged_manifest "${WORK}/loose/intact-test.manifest.json"
+
+    assert_true upkg_expand_args "${WORK}/loose"
+    assert_true upkg_extract "${UPKG_ASSETS[@]}"
+    assert_true upkg_read_manifest
+
+    # _make_pkg's own pins, NOT the loose manifest's portainer entry.
+    assert_eq "${UPKG_VERSIONS[elk]:-}" "9.9.9"
+    assert_eq "${UPKG_VERSIONS[portainer]:-}" ""
+    _teardown
+}
+
+test_an_already_merged_manifest_is_not_overwritten() {
+    # No package_kind means the extracted manifest is already the merged one
+    # (that is what the index job writes). Leave it alone.
+    _setup
+    _make_pkg mrg.tar
+    mkdir -p "${WORK}/loose"
+    cp "${WORK}/mrg.tar" "${WORK}/loose/"
+    _write_merged_manifest "${WORK}/loose/intact-test.manifest.json"
+
+    assert_true upkg_expand_args "${WORK}/loose"
+    assert_true upkg_extract "${UPKG_ASSETS[@]}"
+    assert_true upkg_read_manifest
+    assert_eq "${UPKG_VERSIONS[portainer]:-}" ""
+    _teardown
+}
+
+test_an_unreadable_extracted_manifest_does_not_hand_over_precedence() {
+    # A corrupt manifest could be a corrupt BUNDLE manifest. Silently replacing
+    # it with a loose one would turn a loud failure into a quiet wrong answer,
+    # so only an explicit package_kind == "module" concedes precedence.
+    _setup
+    _make_pkg cor.tar
+    rm -rf "${WORK}/x"; mkdir "${WORK}/x"
+    tar -xf "${WORK}/cor.tar" -C "${WORK}/x"
+    echo 'not json{' > "${WORK}/x/intact-upgrade-test/manifest.json"
+    ( cd "${WORK}/x" && tar -cf "${WORK}/cor2.tar" intact-upgrade-test )
+    mkdir -p "${WORK}/loose"
+    cp "${WORK}/cor2.tar" "${WORK}/loose/"
+    _write_merged_manifest "${WORK}/loose/intact-test.manifest.json"
+
+    assert_true upkg_expand_args "${WORK}/loose"
+    assert_true upkg_extract "${UPKG_ASSETS[@]}"
+    # Still fatal, rather than papered over by the loose manifest.
+    assert_false upkg_read_manifest
+    _teardown
+}
+
 run_all_tests
 rm -f "$LOG_FILE"; rm -rf "$SCRIPT_DIR"

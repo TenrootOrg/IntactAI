@@ -158,9 +158,20 @@ while IFS= read -r -d '' _a; do
     ASSETS+=("$_a")
 done < <(find "$WORK" -maxdepth 1 \( -name "$TAG-*.tar.gz" -o -name "$TAG-*.tar" \) -printf '%P\0' | sort -z)
 
+# The merged root manifest, when the cached bundle carried one. Without it the
+# target dies in upkg_read_manifest with "per-module manifests but no merged
+# manifest.json" -- prepare_package.sh started wrapping it, and this tool
+# unpacks a prepare_package.sh bundle, so dropping it here would silently
+# reintroduce the very failure that fix removed. Kept as `<tag>.manifest.json`,
+# NOT `manifest.json`: upkg_expand_args's wrapper detector refuses a tar with a
+# top-level member named exactly manifest.json, so renaming it would turn off
+# unwrapping altogether.
+WRAP_EXTRA=()
+[ -f "$WORK/$TAG.manifest.json" ] && WRAP_EXTRA+=("$TAG.manifest.json")
+
 FINAL="$OUT_DIR/intact-upgrade-$TAG-local.tar"
 log "wrapping final package -> $FINAL"
-tar -cf "$FINAL" -C "$WORK" "$TAG.index.json" "${ASSETS[@]}"
+tar -cf "$FINAL" -C "$WORK" "$TAG.index.json" "${WRAP_EXTRA[@]}" "${ASSETS[@]}"
 
 log "verifying the wrapped package"
 if ! tar -tf "$FINAL" >/dev/null 2>&1; then

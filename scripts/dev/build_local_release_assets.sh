@@ -81,11 +81,18 @@ log "toolchain image: $BUILD_IMAGE"
 # tag being built. On this box config.yaml is the operator's live file holding
 # real secrets and the running pins, and it is untracked-by-policy -- letting a
 # build edit it is how a dev tool silently changes what the appliance runs.
+#
+# sudo, and then chown back: containers on this box write into the checkout as
+# root (modules/iris/config/certificates/*.pem, modules/velociraptor/
+# bundled_artifacts/*), and a plain rsync stops dead on the first one with
+# "Permission denied" -- exit 23, having copied only part of the tree. A
+# partial stage would build a package quietly missing files rather than fail.
 log "staging $REPO_DIR -> $STAGE"
-rm -rf "$STAGE" "$WORK"
+sudo rm -rf "$STAGE" "$WORK"
 mkdir -p "$STAGE" "$WORK" "$OUT"
-rsync -a --exclude='.git' --exclude='data/' --exclude='backups/' \
+sudo rsync -a --exclude='.git' --exclude='data/' --exclude='backups/' \
       "$REPO_DIR/" "$STAGE/"
+sudo chown -R "$(id -u):$(id -g)" "$STAGE"
 
 # The staged tree is mounted into the container AT THE SAME PATH it has on the
 # host. packager/proc.py takes HOST_PATH from INTACT_HOST_PATH (defaulting to

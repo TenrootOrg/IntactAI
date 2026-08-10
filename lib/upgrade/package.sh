@@ -244,22 +244,60 @@ upkg_extract() {
     UPKG_DIR="${work}/${roots}"
     UPKG_MANIFEST="${UPKG_DIR}/manifest.json"
 
-    # Place the loose manifest.json (see upkg_expand_args) into the merged
-    # tree, UNLESS one of the extracted assets already carries its own --
-    # a legacy single-bundle package embeds manifest.json inside its own
-    # shared top-level dir, and that one describes exactly what was
-    # extracted; a loose one sitting beside it would be for a different
-    # release entirely and must never silently win.
+    # WHICH manifest.json describes what was just extracted.
     #
-    # LEGACY branch, kept for the same reason as upgrade_fetch_release's
-    # single-bundle fallback in refs.sh: every release published before
-    # intact-20260811 is this shape, and build-release-package.yml stays
-    # dispatchable on demand for a box old enough to still need it. Remove
-    # once no box in the fleet can be old enough to hand this function a
-    # bundle-shaped manifest.json.
-    if [[ -n "$UPKG_LOOSE_MANIFEST" && -f "$UPKG_LOOSE_MANIFEST" && ! -f "$UPKG_MANIFEST" ]]; then
-        cp "$UPKG_LOOSE_MANIFEST" "$UPKG_MANIFEST"
-        log_info "  placed the merged manifest.json alongside the extracted assets"
+    # "Whatever is already there wins" was wrong, and it broke the per-module
+    # path completely. scripts/ci/build_release_package.py writes a root
+    # manifest.json into EVERY asset, per-module builds included, and N assets
+    # share one top-level dir -- so they overwrite each other and exactly one
+    # survives, at random. That survivor describes ONE module: its `versions`
+    # holds a single pin and its `contents.sha256` covers only its own files.
+    # A guard of `! -f "$UPKG_MANIFEST"` is therefore never true for shapes 2
+    # and 3, the merged manifest was never placed, and the result was a
+    # full-release upgrade that silently upgraded one module (plan_build marks
+    # every other one `skip:not in this package`) while verifying only that
+    # module's checksums.
+    #
+    # The manifests say which they are, so ask instead of guessing:
+    #
+    #   package_kind == "module"  a per-module leftover -> the merged one wins
+    #   package_kind == "bundle"  a legacy single bundle's own -> it wins
+    #   absent                    already merged -> it wins
+    #
+    # The middle row is the LEGACY case, kept for the same reason as
+    # upgrade_fetch_release's single-bundle fallback in refs.sh: every release
+    # published before intact-20260811 is that shape, its manifest.json is
+    # authoritative for its own tree, and a loose manifest sitting beside it
+    # would be for a different release entirely. Remove once no box in the
+    # fleet can be old enough to hand this function a bundle-shaped manifest.
+    if [[ -n "$UPKG_LOOSE_MANIFEST" && -f "$UPKG_LOOSE_MANIFEST" ]]; then
+        local _place=0 _kind=""
+        if [[ ! -f "$UPKG_MANIFEST" ]]; then
+            _place=1
+        else
+            # An unreadable/!json extracted manifest is NOT treated as a
+            # per-module leftover: it might be a corrupt bundle manifest, and
+            # overwriting it would swap a loud failure for a quiet wrong
+            # answer. Only an explicit "module" hands precedence over.
+            _kind="$(python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+print(((d.get("contents") or {}).get("package_kind")) or "")
+' "$UPKG_MANIFEST" 2>/dev/null)"
+            [[ "$_kind" == "module" ]] && _place=1
+        fi
+
+        if (( _place )); then
+            cp "$UPKG_LOOSE_MANIFEST" "$UPKG_MANIFEST"
+            if [[ "$_kind" == "module" ]]; then
+                log_info "  replaced a per-module manifest leftover with the merged manifest.json"
+            else
+                log_info "  placed the merged manifest.json alongside the extracted assets"
+            fi
+        fi
     fi
 
     log_success "Package extracted: $(basename "$UPKG_DIR")"
