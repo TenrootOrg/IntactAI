@@ -16,6 +16,7 @@ mkdir -p "${SCRIPT_DIR}/data/tmp"
 DOCKER_BIN=docker
 source ../lib/common.sh
 source ../lib/upgrade/core.sh
+source ../lib/upgrade/helpers.sh
 source ../lib/upgrade/package.sh
 
 log_info()    { echo "[INFO] $*" >> "$LOG_FILE"; }

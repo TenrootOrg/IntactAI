@@ -18,7 +18,7 @@ SCRIPT_DIR="$(mktemp -d)"
 DOCKER_BIN=docker
 source ../lib/common.sh
 source ../lib/upgrade/core.sh
-source ../lib/upgrade/health.sh
+source ../lib/upgrade/health/core.sh
 source ../lib/upgrade/plan.sh
 
 log_info()    { echo "[INFO] $*" >> "$LOG_FILE"; }

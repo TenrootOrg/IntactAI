@@ -1,8 +1,8 @@
 #!/bin/bash
 # Intact.AI upgrade — the four primitives.
 #
-# Every module upgrade in lib/upgrade/*.sh is written as a flat list of
-# u_do calls bracketed by u_begin/u_end. Nothing else in the upgrade path
+# Every module upgrade in lib/upgrade/modules/*.sh is written as a flat list
+# of u_do calls bracketed by u_begin/u_end. Nothing else in the upgrade path
 # implements retry, rollback, health-checking or failure accounting; if you
 # find yourself writing an `if ! ...; then rollback; fi` inside a module,
 # that is the signal something belongs here instead.
@@ -26,6 +26,10 @@
 # there is exactly ONE exit decision, at the very end of upgrade.sh. A step
 # failing never aborts the run; it aborts its own module and the loop moves
 # on, so one broken module cannot strand the other nine half-upgraded.
+#
+# Sibling files: interrupt.sh (Ctrl-C/SIGTERM handling, built on
+# _u_unwind_current below), helpers.sh (backup/restore/read_env_var), report.sh
+# (the final summary + exit code).
 
 # ---------------------------------------------------------------------------
 # Per-transaction state. Reset by u_begin, consumed by u_end.
@@ -166,7 +170,7 @@ u_do() {
 U_LAST_ELAPSED=""
 # The PID (== process group ID, see below) of whatever step is currently
 # running under a deadline, or "" between steps. INT/TERM's handler
-# (_u_handle_interrupt, below) reads this to know what to kill.
+# (_u_handle_interrupt, interrupt.sh) reads this to know what to kill.
 _U_RUNNING_PID=""
 
 _u_run_with_deadline() {
@@ -329,9 +333,9 @@ u_end() {
 # ---------------------------------------------------------------------------
 # _u_unwind_current — run U_UNDO LIFO for whatever transaction is open.
 #
-# Factored out of u_end so the INT/TERM handler below can call the EXACT
-# same unwind a normal failure gets, instead of a second hand-rolled copy
-# that could drift from it.
+# Factored out of u_end so interrupt.sh's INT/TERM handler can call the
+# EXACT same unwind a normal failure gets, instead of a second hand-rolled
+# copy that could drift from it.
 # ---------------------------------------------------------------------------
 _u_unwind_current() {
     local module="${U_MODULE}"
@@ -363,173 +367,10 @@ _u_unwind_current() {
 }
 
 # ---------------------------------------------------------------------------
-# u_install_interrupt_trap — call once, from scripts/upgrade.sh's main(),
-# after the bootstrap and before the module loop.
-#
-# Without this, Ctrl-C (or a systemd stop, or a killed SSH session) mid-run:
-#   1. never unwinds U_UNDO -- whatever the interrupted module had already
-#      done (a `compose down`, a stamped .env, a `docker volume rm`) stays
-#      exactly where it was, since only u_end's normal failure path ever
-#      called the unwind;
-#   2. orphans whatever step was running under a `u_do --timeout` deadline --
-#      that subshell IS the process this script's own trap-free exit leaves
-#      behind, since a plain `exit` does not propagate to background jobs.
-#
-# A second signal while cleanup is already running is let through to the
-# shell default (SIGTERM/SIGINT terminates immediately) rather than trying to
-# be clever about an interrupt during an interrupt.
-# ---------------------------------------------------------------------------
-_U_INTERRUPTED=0
-_u_handle_interrupt() {
-    (( _U_INTERRUPTED )) && return
-    _U_INTERRUPTED=1
-    trap - INT TERM
-
-    log_warn ""
-    log_warn "Interrupted — cleaning up before exiting."
-
-    if [[ -n "$_U_RUNNING_PID" ]]; then
-        log_warn "  stopping the in-flight step (pid ${_U_RUNNING_PID})..."
-        kill -TERM "-${_U_RUNNING_PID}" 2>/dev/null
-        sleep 2
-        kill -KILL "-${_U_RUNNING_PID}" 2>/dev/null
-        wait "$_U_RUNNING_PID" 2>/dev/null
-        _U_RUNNING_PID=""
-    fi
-
-    if [[ -n "$U_MODULE" ]]; then
-        U_FAILED=1
-        [[ -z "$U_LABEL" ]] && { U_LABEL="interrupted"; U_RC=130; }
-        _u_unwind_current
-    fi
-
-    print_upgrade_report
-    log_error "Upgrade interrupted (exit 130)."
-    exit 130
-}
-
-u_install_interrupt_trap() {
-    trap _u_handle_interrupt INT TERM
-}
-
-# ---------------------------------------------------------------------------
 # u_skip <module> <reason>
 # ---------------------------------------------------------------------------
 u_skip() {
     UPGRADE_SKIPPED+=("$1 — $2")
     log_info "$1: SKIPPED ($2)"
     return 0
-}
-
-# ---------------------------------------------------------------------------
-# Small shared helpers the module files lean on.
-# ---------------------------------------------------------------------------
-
-# Snapshot a file so an undo can put it back. Echoes the backup path; echoes
-# nothing and returns 1 if the source does not exist, so a caller can tell
-# "backed up" from "there was nothing to back up" without a stat of its own.
-backup_file_for_rollback() {
-    local src="$1"
-    [[ -f "$src" ]] || return 1
-    local bak="${src}.upgrade-bak-$(date +%Y%m%d_%H%M%S)"
-    if cp -p "$src" "$bak" 2>/dev/null; then
-        echo "$bak"
-        return 0
-    fi
-    log_warn "could not back up ${src}"
-    return 1
-}
-
-# Restore, preserving the destination inode. `cp` onto the existing path
-# rather than `mv` for the same reason _pin_module_version truncates in
-# place: .env files are bind-mount and env_file sources, and swapping the
-# inode under a running container is a change that appears to work.
-restore_file_from_backup() {
-    local dst="$1" bak="$2"
-    [[ -f "$bak" ]] || { log_warn "no backup at ${bak} to restore"; return 1; }
-    cp -p --no-preserve=mode "$bak" "$dst" 2>/dev/null || cp "$bak" "$dst" || return 1
-    return 0
-}
-
-# Drop a backup once the transaction has committed. Best-effort by design:
-# a leftover .upgrade-bak-* is harmless clutter, and failing an otherwise
-# successful upgrade over an unlink error would be absurd.
-discard_backup() {
-    [[ -n "${1:-}" && -f "$1" ]] && rm -f "$1"
-    return 0
-}
-
-sha256_of() {
-    [[ -f "${1:-}" ]] || return 1
-    sha256sum "$1" 2>/dev/null | awk '{print $1}'
-}
-
-# Read one KEY from a .env-style file. Returns 1 (and echoes nothing) when the
-# key is absent, so callers can distinguish "unset" from "set to empty".
-read_env_var() {
-    local file="$1" key="$2" line
-    [[ -f "$file" ]] || return 1
-    line="$(grep -m1 -E "^[[:space:]]*${key}[[:space:]]*=" "$file" 2>/dev/null)" || return 1
-    [[ -n "$line" ]] || return 1
-    line="${line#*=}"
-    # strip one layer of surrounding quotes, if present
-    line="${line%\"}"; line="${line#\"}"
-    line="${line%\'}"; line="${line#\'}"
-    echo "$line"
-    return 0
-}
-
-# ---------------------------------------------------------------------------
-# The final report + the single exit decision.
-#
-# Exit codes:
-#   0  everything committed, every gate 'up'
-#   1  at least one module rolled back or failed
-#   2  refused before touching anything (set by the caller, not here)
-#   3  everything committed but at least one module degraded
-# ---------------------------------------------------------------------------
-print_upgrade_report() {
-    local item
-    log_info ""
-    log_info "=================================================================="
-    log_info "Upgrade report"
-    log_info "=================================================================="
-
-    if (( ${#UPGRADE_OK[@]} )); then
-        log_success "Upgraded (${#UPGRADE_OK[@]}):"
-        for item in "${UPGRADE_OK[@]}"; do log_success "  ✔ ${item}"; done
-    fi
-    if (( ${#UPGRADE_SKIPPED[@]} )); then
-        log_info "Skipped (${#UPGRADE_SKIPPED[@]}):"
-        for item in "${UPGRADE_SKIPPED[@]}"; do log_info "  · ${item}"; done
-    fi
-    if (( ${#UPGRADE_DEGRADED[@]} )); then
-        log_warn "Applied but degraded (${#UPGRADE_DEGRADED[@]}):"
-        for item in "${UPGRADE_DEGRADED[@]}"; do log_warn "  ! ${item}"; done
-    fi
-    if (( ${#UPGRADE_ROLLED_BACK[@]} )); then
-        log_warn "Rolled back (${#UPGRADE_ROLLED_BACK[@]}) — these are back on their previous version:"
-        for item in "${UPGRADE_ROLLED_BACK[@]}"; do log_warn "  ↩ ${item}"; done
-    fi
-    if (( ${#UPGRADE_FAILED[@]} )); then
-        log_error "NEEDS MANUAL REPAIR (${#UPGRADE_FAILED[@]}):"
-        for item in "${UPGRADE_FAILED[@]}"; do log_error "  ✘ ${item}"; done
-    fi
-
-    if (( ${#UPGRADE_OK[@]} == 0 && ${#UPGRADE_DEGRADED[@]} == 0 \
-          && ${#UPGRADE_ROLLED_BACK[@]} == 0 && ${#UPGRADE_FAILED[@]} == 0 )); then
-        log_info "Nothing to do — every module was already at its target version."
-    fi
-    [[ -n "${LOG_FILE:-}" ]] && log_info "Full log: ${LOG_FILE}"
-    return 0
-}
-
-upgrade_exit_code() {
-    if (( ${#UPGRADE_FAILED[@]} || ${#UPGRADE_ROLLED_BACK[@]} )); then
-        echo 1
-    elif (( ${#UPGRADE_DEGRADED[@]} )); then
-        echo 3
-    else
-        echo 0
-    fi
 }

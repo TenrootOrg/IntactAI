@@ -165,7 +165,13 @@ for _lib in common config docker modules health package release permissions; do
     # shellcheck source=/dev/null
     source "${_CODE_DIR}/lib/${_lib}.sh" || { echo "Cannot source lib/${_lib}.sh" >&2; exit 2; }
 done
-for _lib in core health plan package args refs modules timesketch velociraptor velo_refresh intact; do
+for _lib in core interrupt helpers report health/core health/probes health/gate \
+            plan package args refs \
+            modules/shared modules/elk modules/iris modules/portainer modules/volweb \
+            modules/plaso modules/aws_sigma modules/o365rc \
+            timesketch/postgres timesketch/schema timesketch/health timesketch/timesketch \
+            velociraptor/snapshot velociraptor/image velociraptor/velociraptor velo_refresh \
+            intact/config intact/tree intact/assets intact/image intact/intact; do
     # shellcheck source=/dev/null
     source "${_CODE_DIR}/lib/upgrade/${_lib}.sh" || { echo "Cannot source lib/upgrade/${_lib}.sh" >&2; exit 2; }
 done

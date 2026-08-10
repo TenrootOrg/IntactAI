@@ -20,7 +20,9 @@ DOCKER_BIN=docker
 U_PROBE_INTERVAL=0          # do not pay real seconds for the timeout paths
 source ../lib/common.sh
 source ../lib/upgrade/core.sh
-source ../lib/upgrade/health.sh
+source ../lib/upgrade/health/core.sh
+source ../lib/upgrade/health/probes.sh
+source ../lib/upgrade/health/gate.sh
 
 log_info()    { echo "[INFO] $*" >> "$LOG_FILE"; }
 log_success() { echo "[SUCCESS] $*" >> "$LOG_FILE"; }
@@ -38,8 +40,9 @@ _reset_run_state() {
     # _u_probe_<module> to drive a verdict, and run_all_tests dispatches in
     # alphabetical order (declare -F sorts), so without this an override from
     # test_down_* leaks forward into test_green_* and the later test silently
-    # asserts against the earlier one's stub.
-    source ../lib/upgrade/health.sh
+    # asserts against the earlier one's stub. Only probes.sh needs it --
+    # _u_probe_<module> is all that ever gets overridden.
+    source ../lib/upgrade/health/probes.sh
     # Then re-apply the shared default: the container exists and is running,
     # so the fast-fail does not fire and each test controls the verdict
     # through its _u_probe_<module> override alone.

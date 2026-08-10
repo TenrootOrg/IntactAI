@@ -1,0 +1,54 @@
+#!/bin/bash
+# Intact.AI upgrade — the final report + the single exit decision.
+#
+# Exit codes:
+#   0  everything committed, every gate 'up'
+#   1  at least one module rolled back or failed
+#   2  refused before touching anything (set by the caller, not here)
+#   3  everything committed but at least one module degraded
+
+print_upgrade_report() {
+    local item
+    log_info ""
+    log_info "=================================================================="
+    log_info "Upgrade report"
+    log_info "=================================================================="
+
+    if (( ${#UPGRADE_OK[@]} )); then
+        log_success "Upgraded (${#UPGRADE_OK[@]}):"
+        for item in "${UPGRADE_OK[@]}"; do log_success "  ✔ ${item}"; done
+    fi
+    if (( ${#UPGRADE_SKIPPED[@]} )); then
+        log_info "Skipped (${#UPGRADE_SKIPPED[@]}):"
+        for item in "${UPGRADE_SKIPPED[@]}"; do log_info "  · ${item}"; done
+    fi
+    if (( ${#UPGRADE_DEGRADED[@]} )); then
+        log_warn "Applied but degraded (${#UPGRADE_DEGRADED[@]}):"
+        for item in "${UPGRADE_DEGRADED[@]}"; do log_warn "  ! ${item}"; done
+    fi
+    if (( ${#UPGRADE_ROLLED_BACK[@]} )); then
+        log_warn "Rolled back (${#UPGRADE_ROLLED_BACK[@]}) — these are back on their previous version:"
+        for item in "${UPGRADE_ROLLED_BACK[@]}"; do log_warn "  ↩ ${item}"; done
+    fi
+    if (( ${#UPGRADE_FAILED[@]} )); then
+        log_error "NEEDS MANUAL REPAIR (${#UPGRADE_FAILED[@]}):"
+        for item in "${UPGRADE_FAILED[@]}"; do log_error "  ✘ ${item}"; done
+    fi
+
+    if (( ${#UPGRADE_OK[@]} == 0 && ${#UPGRADE_DEGRADED[@]} == 0 \
+          && ${#UPGRADE_ROLLED_BACK[@]} == 0 && ${#UPGRADE_FAILED[@]} == 0 )); then
+        log_info "Nothing to do — every module was already at its target version."
+    fi
+    [[ -n "${LOG_FILE:-}" ]] && log_info "Full log: ${LOG_FILE}"
+    return 0
+}
+
+upgrade_exit_code() {
+    if (( ${#UPGRADE_FAILED[@]} || ${#UPGRADE_ROLLED_BACK[@]} )); then
+        echo 1
+    elif (( ${#UPGRADE_DEGRADED[@]} )); then
+        echo 3
+    else
+        echo 0
+    fi
+}

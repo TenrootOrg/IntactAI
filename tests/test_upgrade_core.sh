@@ -16,6 +16,9 @@ SCRIPT_DIR="$(cd .. && pwd)"
 DOCKER_BIN=docker
 source ../lib/common.sh
 source ../lib/upgrade/core.sh
+source ../lib/upgrade/interrupt.sh
+source ../lib/upgrade/helpers.sh
+source ../lib/upgrade/report.sh
 
 # Quiet the primitives: they log through lib/common.sh, which writes to stdout
 # as well as $LOG_FILE, and 60 lines of banner per test buries the failures.
