@@ -8,6 +8,10 @@
 #   UPGRADE_SKIP             comma list, or ""
 #   UPGRADE_DRY_RUN          1 to verify and plan, then stop
 #   UPGRADE_LIST             1 to list available releases and stop
+#   UPGRADE_PLAN_TAG         release tag to plan against (cheap: manifest
+#                            only), then stop -- "" for a real run
+#   UPGRADE_JSON             1 to emit --list / --plan as JSON instead of
+#                            the human table
 #   UPGRADE_EXPECT_SHA256    operator-supplied digest anchor, or ""
 #   UPGRADE_VELO_REFRESH_ONLY 1 to run only the Velociraptor refresh step
 #   UPGRADE_PACKAGE_DIR      pre-extracted package (set by the stage-0 re-exec)
@@ -18,6 +22,7 @@ Usage:
   sudo bash scripts/upgrade.sh <tag>                    upgrade from a GitHub release
   sudo bash scripts/upgrade.sh --package <file|dir>...  upgrade from local assets
   sudo bash scripts/upgrade.sh --list                   show available releases
+  sudo bash scripts/upgrade.sh --plan <tag>             show the plan for a release, cheaply
 
 Options:
   --package <path>      A release asset, a directory of them, or a single-file
@@ -28,6 +33,14 @@ Options:
                         appliance's own checkout -- the stage-0 hand-over uses
                         this internally; an operator normally never sets it.
   --dry-run             Verify the package and print the plan, change nothing.
+  --plan <tag>          Fetch just the release's manifest (~0.2 MB, not the
+                        payload) and print what --only/--skip would do to
+                        each module without taking the upgrade lock. Only
+                        works for a per-module release -- a legacy single-
+                        bundle release embeds its manifest inside the
+                        payload, so there is no cheap way to plan one.
+  --json                With --list or --plan, print machine-readable JSON
+                        instead of the human table.
   --only  <a,b>         Upgrade only these modules ('intact' is added back if
                         the package carries it).
   --skip  <a,b>         Upgrade everything except these.
@@ -53,6 +66,8 @@ parse_upgrade_args() {
     UPGRADE_SKIP=""
     UPGRADE_DRY_RUN=0
     UPGRADE_LIST=0
+    UPGRADE_PLAN_TAG=""
+    UPGRADE_JSON=0
     UPGRADE_EXPECT_SHA256=""
     UPGRADE_VELO_REFRESH_ONLY=0
     UPGRADE_PACKAGE_DIR=""
@@ -82,6 +97,9 @@ parse_upgrade_args() {
             --expect-sha256=*) UPGRADE_EXPECT_SHA256="${1#*=}"; shift ;;
             --dry-run)      UPGRADE_DRY_RUN=1; shift ;;
             --list)         UPGRADE_LIST=1; shift ;;
+            --plan)         UPGRADE_PLAN_TAG="${2:-}"; shift 2 ;;
+            --plan=*)       UPGRADE_PLAN_TAG="${1#*=}"; shift ;;
+            --json)         UPGRADE_JSON=1; shift ;;
             --velo-refresh) UPGRADE_VELO_REFRESH_ONLY=1; shift ;;
             # Recognized and ignored, not an error: this engine never
             # prompts (unlike install.sh, where --yes/-y suppresses a real
@@ -113,6 +131,17 @@ parse_upgrade_args() {
 
     if (( UPGRADE_LIST )); then
         return 0
+    fi
+    if [[ -n "$UPGRADE_PLAN_TAG" ]]; then
+        if [[ -n "$UPGRADE_TAG" || ${#UPGRADE_PACKAGE_ARGS[@]} -gt 0 ]]; then
+            echo "--plan is its own read-only mode -- give it a tag, not a release tag or --package too." >&2
+            exit 2
+        fi
+        return 0
+    fi
+    if (( UPGRADE_JSON )); then
+        echo "--json only means something with --list or --plan." >&2
+        exit 2
     fi
     if [[ -n "$UPGRADE_TAG" && ${#UPGRADE_PACKAGE_ARGS[@]} -gt 0 ]]; then
         echo "Give a release tag OR --package, not both." >&2

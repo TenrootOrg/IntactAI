@@ -303,3 +303,42 @@ plan_work_count() {
     done
     echo "$n"
 }
+
+# ---------------------------------------------------------------------------
+# plan_print_json — same data as plan_print_table, machine-readable.
+#
+# For `scripts/upgrade.sh --plan <tag> --json`, which is what the restored
+# UI's module-selection table reads. Deliberately the SAME PLAN_* state
+# plan_print_table renders and the real run's module loop drives -- the
+# operator sees, and chooses from, the actual decision the run would make,
+# not a second implementation of it in Python that could drift from this one.
+# ---------------------------------------------------------------------------
+plan_print_json() {
+    local m action note cur tgt
+    {
+        for m in "${UPGRADE_ORDER[@]}"; do
+            action="${PLAN_ACTION[$m]:-skip:unknown}"
+            note="${action#*:}"; [[ "$note" == "$action" ]] && note=""
+            cur="${PLAN_CURRENT[$m]:-}"
+            tgt="${PLAN_TARGET[$m]:-}"
+            printf '%s\t%s\t%s\t%s\t%s\n' "$m" "$cur" "$tgt" "${action%%:*}" "$note"
+        done
+    } | python3 -c '
+import json, sys
+modules = []
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if not line:
+        continue
+    m, cur, tgt, act, note = line.split("\t")
+    modules.append({
+        "module": m,
+        "current": cur or None,
+        "target": tgt or None,
+        "action": act,
+        "note": note or None,
+    })
+print(json.dumps({"modules": modules}))
+'
+    return 0
+}

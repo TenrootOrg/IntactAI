@@ -16,15 +16,22 @@
 
 INTACT_REPO="${INTACT_REPO:-TenrootOrg/IntactAI}"
 
-# Authorization header, only when a token is configured. Anonymous GitHub is
-# 60 requests/hour per IP, which a couple of runs can exhaust.
-_gh_curl() {
-    local url="$1"
+# The operator's token, only when one is configured. Anonymous GitHub is
+# 60 requests/hour per IP, which a couple of runs can exhaust. Shared by
+# _gh_curl (JSON API calls) and upgrade_fetch_manifest_only (asset download),
+# so both authenticate the same way rather than one of them silently not.
+_gh_token() {
     local token="${GITHUB_TOKEN:-}"
     if [[ -z "$token" ]]; then
         token="$(read_config "['options']['github_token']" 2>/dev/null || echo "")"
         [[ "$token" == "None" ]] && token=""
     fi
+    printf '%s' "$token"
+}
+
+_gh_curl() {
+    local url="$1"
+    local token; token="$(_gh_token)"
     if [[ -n "$token" ]]; then
         curl -sfL --max-time 30 -H "Authorization: token ${token}" \
              -H "Accept: application/vnd.github+json" "$url"
@@ -40,14 +47,23 @@ upgrade_list_releases() {
     local current
     current="$(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null || echo "unknown")"
 
-    log_info "Installed: ${current}"
-    log_info "Querying ${INTACT_REPO} …"
+    local json_mode=0
+    (( ${UPGRADE_JSON:-0} )) && json_mode=1
+
+    if (( ! json_mode )); then
+        log_info "Installed: ${current}"
+        log_info "Querying ${INTACT_REPO} …"
+    fi
 
     local json
     json="$(_gh_curl "https://api.github.com/repos/${INTACT_REPO}/releases?per_page=40")" || {
-        log_error "Could not reach the GitHub releases API."
-        log_error "  Without a token you get 60 requests/hour per IP. Set"
-        log_error "  options.github_token in config.yaml, or export GITHUB_TOKEN."
+        if (( json_mode )); then
+            printf '{"error":"github-unreachable"}\n'
+        else
+            log_error "Could not reach the GitHub releases API."
+            log_error "  Without a token you get 60 requests/hour per IP. Set"
+            log_error "  options.github_token in config.yaml, or export GITHUB_TOKEN."
+        fi
         return 1
     }
 
@@ -59,15 +75,30 @@ upgrade_list_releases() {
     local tmp; tmp="$(mktemp)"
     printf '%s' "$json" > "$tmp"
 
-    python3 - "$current" "$tmp" <<'PY'
+    # ONE parse of the release list, feeding either the human table below or
+    # --json's structured output -- both shapes are listed as installable
+    # (build-release-package.yml stays dispatchable, so a legacy release is
+    # exactly as installable today as a per-module one), and "shape" tells the
+    # caller which: an asset ending in index.json is the per-module marker,
+    # same test upgrade_fetch_release already makes for real.
+    python3 - "$current" "$tmp" "$json_mode" <<'PY'
 import json, re, sys
-current, path = sys.argv[1], sys.argv[2]
+current, path, json_mode = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
 try:
     rels = json.load(open(path, encoding="utf-8"))
 except Exception:
-    print("Could not parse GitHub's response."); raise SystemExit(1)
+    if json_mode:
+        print('{"error":"unparsable-response"}')
+    else:
+        print("Could not parse GitHub's response.")
+    raise SystemExit(1)
 if isinstance(rels, dict):
-    print("GitHub says: %s" % rels.get("message", "?")); raise SystemExit(1)
+    msg = rels.get("message", "?")
+    if json_mode:
+        print(json.dumps({"error": "github-error", "message": msg}))
+    else:
+        print("GitHub says: %s" % msg)
+    raise SystemExit(1)
 
 def datekey(tag):
     m = re.match(r"^intact-(\d{8})$", tag or "")
@@ -85,15 +116,33 @@ for r in rels:
     if payload <= 0:
         skipped.append(tag)
         continue
-    rows.append((datekey(tag), tag, payload))
+    shape = "per-module" if any(a["name"].endswith("index.json") for a in assets) else "legacy"
+    rows.append((datekey(tag), tag, payload, shape))
 
 rows.sort()
+
+if json_mode:
+    print(json.dumps({
+        "installed": current,
+        "releases": [
+            {
+                "tag": tag,
+                "payload_bytes": size,
+                "shape": shape,
+                "note": ("installed" if key == cur else "older" if key < cur else "newer"),
+            }
+            for key, tag, size, shape in rows
+        ],
+        "skipped": skipped,
+    }))
+    raise SystemExit(0)
+
 if not rows:
     print("\nNo release carries an installable payload.")
     raise SystemExit(0)
 
 print("\n  %-24s %10s   %s" % ("RELEASE", "PAYLOAD", ""))
-for key, tag, size in rows:
+for key, tag, size, shape in rows:
     if key == cur:
         note = "<- installed"
     elif key < cur:
@@ -102,7 +151,7 @@ for key, tag, size in rows:
         note = "newer"
     print("  %-24s %9.2fG   %s" % (tag, size / 1e9, note))
 
-newer = [t for k, t, _ in rows if k > cur]
+newer = [t for k, t, _, _ in rows if k > cur]
 if newer:
     print("\n  Next:  sudo bash scripts/upgrade.sh %s" % newer[0])
     if len(newer) > 1:
@@ -117,6 +166,62 @@ if skipped:
           % ", ".join(skipped))
 PY
     rm -f "$tmp"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# upgrade_fetch_manifest_only <tag> <dest_file>
+#
+# For `--plan <tag>`: the release's own decision of what to upgrade needs
+# only the ~0.2 MB merged manifest, not the multi-GB payload -- fetching that
+# is exactly what --dry-run does, and --dry-run takes the upgrade lock and
+# blocks a real run for as long as it takes, which is why --plan exists as
+# its own cheap path instead of reusing it.
+#
+# Only works for a per-module (shape 2) release, which is the only shape that
+# publishes <tag>.manifest.json as a standalone asset -- a legacy single-
+# bundle release embeds its manifest INSIDE the multi-GB tarball, so there is
+# no cheap way to plan one. Returns 1 for that case; the caller decides how
+# to degrade (scripts/upgrade.sh's --plan handling reports it rather than
+# falling back to a full download nobody asked for yet).
+# ---------------------------------------------------------------------------
+upgrade_fetch_manifest_only() {
+    local tag="$1" dest="$2"
+
+    local rel
+    rel="$(_gh_curl "https://api.github.com/repos/${INTACT_REPO}/releases/tags/${tag}")" || {
+        log_error "No release '${tag}' (or GitHub is rate-limiting this IP)"
+        return 1
+    }
+
+    local url
+    url="$(printf %s "$rel" | TAG="$tag" python3 -c '
+import json, os, sys
+want = os.environ["TAG"] + ".manifest.json"
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+for a in (d.get("assets") or []):
+    if a.get("name") == want:
+        print(a["url"]); break
+')"
+    if [[ -z "$url" ]]; then
+        log_error "Release ${tag} publishes no ${tag}.manifest.json -- it is a"
+        log_error "  legacy single-bundle release, which has no cheap plan path."
+        return 1
+    fi
+
+    local token; token="$(_gh_token)"
+    if [[ -n "$token" ]]; then
+        curl -fsSL --max-time 30 -H "Authorization: token ${token}" \
+             -H "Accept: application/octet-stream" -o "$dest" "$url"
+    else
+        curl -fsSL --max-time 30 -H "Accept: application/octet-stream" -o "$dest" "$url"
+    fi || {
+        log_error "Could not download ${tag}.manifest.json"
+        return 1
+    }
     return 0
 }
 

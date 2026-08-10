@@ -240,6 +240,38 @@ main() {
         return 2
     fi
     check_docker_min_version   # advisory only (lib/common.sh); never blocks
+
+    # ---------------------------------------------------------------- plan --
+    # Read-only: no lock, no interrupt trap, no writability check below --
+    # nothing here changes the appliance, so none of that machinery applies.
+    # Needs docker (plan_current_versions inspects running containers to
+    # confirm a pin actually matches what is up, not just what .env claims),
+    # which is why this sits after the docker checks above rather than beside
+    # --list, which needs neither docker nor GitHub beyond the release list.
+    if [[ -n "${UPGRADE_PLAN_TAG:-}" ]]; then
+        local plan_mf="${SCRIPT_DIR}/data/tmp/upgrade-plan-${UPGRADE_PLAN_TAG}.manifest.json"
+        mkdir -p "$(dirname "$plan_mf")" 2>/dev/null
+        if ! upgrade_fetch_manifest_only "$UPGRADE_PLAN_TAG" "$plan_mf"; then
+            if (( UPGRADE_JSON )); then
+                printf '{"error":"no-manifest-asset","tag":"%s"}\n' "$UPGRADE_PLAN_TAG"
+            fi
+            rm -f "$plan_mf"
+            return 2
+        fi
+        UPKG_MANIFEST="$plan_mf"
+        UPKG_DIR="$(dirname "$plan_mf")"
+        upkg_read_manifest || { rm -f "$plan_mf"; return 2; }
+        plan_current_versions
+        plan_build
+        if (( UPGRADE_JSON )); then
+            plan_print_json
+        else
+            plan_print_table
+        fi
+        rm -f "$plan_mf"
+        return 0
+    fi
+
     if [[ ! -w "$SCRIPT_DIR" ]]; then
         log_error "${SCRIPT_DIR} is not writable."
         return 2
