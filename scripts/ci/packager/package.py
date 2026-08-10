@@ -668,12 +668,23 @@ def _intact_first(modules: Dict):
 
 
 def _prepare_backend_images(package_dir: str, target_version: str, manifest: Dict,
+                            source_root: str = None,
                             logger: Callable = None, run_id: str = None) -> Dict:
     """Wave F: bake + bundle the backend runtime image + tusd sidecar.
 
-    Reads the TARGET release tree at ``package_dir/source/intact``. The docker
-    build context is packed CLI-side (verified on the live box), so the
-    container-local package path works — no host-path mapping needed.
+    Reads the `nginx` / `backend_tusd` pins from ``config.yaml`` at
+    ``source_root`` — the ORIGINAL checkout the release was built from, e.g.
+    the caller's ``extracted_root``/``source_dir`` — not from
+    ``package_dir/source/intact/config.yaml``. That path never has a
+    config.yaml to read any more: it is excluded from what ships (see the
+    full-repo copytree's ignore_patterns) because it may hold whatever
+    machine built the package's live operator secrets. Neither pin comes
+    from the manifest either — `nginx` and `backend_tusd` are not
+    RELEASE_MODULES entries, so `manifest["versions"]` never carries them;
+    config.yaml is the only place they exist.
+
+    The docker build context is packed CLI-side (verified on the live box),
+    so the container-local package path works — no host-path mapping needed.
 
     * tusd image: best-effort (closes the Wave B offline gap — a bundled
       backend_tusd bump then loads without a pull). A miss is a warning, not fatal.
@@ -689,12 +700,13 @@ def _prepare_backend_images(package_dir: str, target_version: str, manifest: Dic
         return {"success": True}                 # narrow-layout / pre-Wave-F package
     os.makedirs(os.path.join(package_dir, 'images'), exist_ok=True)
 
+    _cfg_root = source_root or src_root
     try:
         import yaml as _yaml
-        with open(os.path.join(src_root, 'config.yaml')) as _cf:
+        with open(os.path.join(_cfg_root, 'config.yaml')) as _cf:
             _versions = (_yaml.safe_load(_cf) or {}).get('versions') or {}
     except Exception as _e:
-        log(f"  (backend-image prep: could not read target config.yaml: {_e})", "warning")
+        log(f"  (backend-image prep: could not read config.yaml at {_cfg_root}: {_e})", "warning")
         _versions = {}
     tusd_tag = _versions.get('backend_tusd')
     # The baked image MUST carry the identity the TARGET will look for at
@@ -1264,17 +1276,6 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                         dirs_exist_ok=True,
                     )
 
-                # Tear down the temp tarball + extraction so they don't end up
-                # inside the final .tar.gz output. Nothing to tear down when the
-                # source came from a checkout we do not own — deleting THAT
-                # would take the caller's working tree with it.
-                if tar_path or extract_dir:
-                    try:
-                        os.remove(tar_path)
-                        shutil.rmtree(extract_dir)
-                    except Exception:
-                        pass
-
                 # Record the operator's input verbatim in the manifest.
                 # `resolved_ref` (the SHA we actually downloaded) is
                 # captured separately in source_origin so the package
@@ -1299,6 +1300,17 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 # get_current_versions reads it — operators see
                 # "development" or "intact-20260604" in the Settings
                 # page, matching what they typed in the modal.
+                # There used to be a second stamp here, into
+                # source/intact/config.yaml's versions.backend — removed along
+                # with config.yaml from what ships (see the full-repo
+                # copytree's ignore_patterns). backend_target_tag() on the
+                # target reads config.yaml versions.backend before VERSION,
+                # but that is the TARGET BOX's OWN config.yaml, stamped live
+                # by _intact_stamp() during apply — not a value carried inside
+                # the package. A shipped config.yaml would only ever have been
+                # read by nothing (grep confirms no apply-side code path reads
+                # source/intact/config.yaml), so this was already a no-op by
+                # the time it started silently no-op'ing on a missing file.
                 try:
                     intact_source_root = f"{package_dir}/source/intact"
                     if os.path.isdir(intact_source_root):
@@ -1306,50 +1318,35 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                         with open(version_file, "w") as vf:
                             vf.write(version.strip() + "\n")
                         log(f"  Stamped source/intact/VERSION -> {version}", "info")
-                        # Stamp the backend image pin the same way, and for the
-                        # same reason. backend_target_tag() reads config.yaml
-                        # versions.backend BEFORE VERSION, so that key — not the
-                        # VERSION file — is what the target resolves its backend
-                        # image from at convergence. A release whose pin lags its
-                        # own tag sends every box hunting for an image the package
-                        # never shipped, and it silently rebuilds the backend from
-                        # source (intact-20260721 shipped pinned to 'development'
-                        # for exactly this reason). Stamping it here makes the pin
-                        # a property of the BUILD rather than a manual edit someone
-                        # has to remember before tagging.
-                        # SURGICAL single-key edit on purpose: _rewrite_versions_block
-                        # rewrites the WHOLE versions: block from the dict it is
-                        # given, which would drop every pin not passed in (and all
-                        # the comments). Only the one `backend:` line is touched.
-                        _cfg = os.path.join(intact_source_root, 'config.yaml')
-                        if os.path.isfile(_cfg):
-                            import re as _re
-                            with open(_cfg) as _cf:
-                                _txt = _cf.read()
-                            _pat = _re.compile(r'^([ \t]+backend:[ \t]*).*$', _re.M)
-                            _new, _n = _pat.subn(
-                                lambda m: f"{m.group(1)}{version.strip()}", _txt, count=1)
-                            if _n and _new != _txt:
-                                with open(_cfg, 'w') as _cf:
-                                    _cf.write(_new)
-                                log(f"  Stamped source/intact/config.yaml "
-                                    f"versions.backend -> {version}", "info")
-                            elif not _n:
-                                log("  config.yaml has no versions.backend key to "
-                                    "stamp — the target will fall back to VERSION",
-                                    "warning")
                 except Exception as e:
                     log(f"  Could not stamp VERSION file: {e}", "warning")
 
                 # Wave F: bake + bundle the backend runtime image (Full-mode
                 # releases only) + the tusd sidecar image. A Full-mode package
                 # without its image is a brick-kit — a build failure FAILS prepare.
+                # MUST run before the teardown below: it reads config.yaml from
+                # extracted_root, which the teardown deletes in the
+                # download-from-GitHub branch (source_dir is None then).
                 _bimg = _prepare_backend_images(package_dir, version, manifest,
+                                                source_root=extracted_root,
                                                 logger=log, run_id=run_id)
                 if not _bimg.get("success"):
                     if _bimg.get("cancelled"):
                         return {"success": False, "error": "cancelled", "cancelled": True}
                     return {"success": False, "error": _bimg["error"]}
+
+                # Tear down the temp tarball + extraction so they don't end up
+                # inside the final .tar.gz output. Nothing to tear down when the
+                # source came from a checkout we do not own — deleting THAT
+                # would take the caller's working tree with it. Deliberately
+                # AFTER _prepare_backend_images above, which still needs
+                # extracted_root to read config.yaml's nginx/backend_tusd pins.
+                if tar_path or extract_dir:
+                    try:
+                        os.remove(tar_path)
+                        shutil.rmtree(extract_dir)
+                    except Exception:
+                        pass
 
             elif module == 'velociraptor':
                 # Velociraptor packaging — internet REQUIRED here on the
