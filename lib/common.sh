@@ -156,6 +156,49 @@ log_error() {
     record_install_issue "error" "${FUNCNAME[1]:-?}" "$1"
 }
 
+# Stream filter: masks credential-looking values before they reach the log.
+# Use where a subprocess's OWN stdout/stderr gets appended to $LOG_FILE --
+# `cmd 2>&1 | redact_secrets >>"$LOG_FILE"` -- not on the labels log_info/etc.
+# print, which are already curated strings a module author wrote and never
+# contain the secret itself.
+#
+# The concrete case this exists for: lib/upgrade/timesketch.sh rotates the
+# Postgres password via `psql -c "ALTER USER timesketch WITH PASSWORD
+# '<newpw>'"`, and on a syntax/permission error Postgres commonly echoes the
+# offending line back (`LINE 1: ALTER USER timesketch WITH PASSWORD '***'`) --
+# so a FAILED rotation would have put the new password in $LOG_FILE, which is
+# exactly the artifact operators download and paste into support tickets.
+# Same failure shape as the one that shipped for real in the Python engine
+# this replaced (services/upgrade/base.py:redact_command's own history).
+redact_secrets() {
+    python3 -c '
+import re, sys
+
+# Each entry: (pattern, replacement-template). Plain prefix-only patterns
+# consume through the secret and put REDACTED in its place; the quoted-
+# literal pattern keeps the closing quote so the line still looks like SQL.
+_env_assign = re.compile(
+    r"((?:-e\s+)?[A-Za-z_][A-Za-z0-9_]*"
+    r"(?:PASSWORD|PASSWD|_PW|TOKEN|SECRET|APIKEY|API_KEY|KEY|CREDENTIAL)"
+    r"\s*=\s*)(\S+)", re.IGNORECASE)
+_flag = re.compile(
+    r"(--(?:password|passwd|token|secret|api-key|apikey)[=\s]+)(\S+)",
+    re.IGNORECASE)
+_userpass = re.compile(r"((?:-u|--user)\s+[^\s:]+:)(\S+)")
+# The concrete case this exists for: Postgres echoes the failed statement
+# back in a syntax-error message, e.g.
+#   LINE 1: ALTER USER timesketch WITH PASSWORD '"'"'<the new password>'"'"'
+_sql_password = re.compile(r"(PASSWORD\s+'"'"')[^'"'"']*('"'"')", re.IGNORECASE)
+
+for line in sys.stdin:
+    out = _env_assign.sub(lambda m: m.group(1) + "[REDACTED]", line)
+    out = _flag.sub(lambda m: m.group(1) + "[REDACTED]", out)
+    out = _userpass.sub(lambda m: m.group(1) + "[REDACTED]", out)
+    out = _sql_password.sub(lambda m: m.group(1) + "[REDACTED]" + m.group(2), out)
+    sys.stdout.write(out)
+' 2>/dev/null
+}
+
 # Append a tail of each named container's logs to INSTALL_ERRORS so the
 # end-of-install ATTENTION report points the operator at the actual
 # failure symptom — not just "X timed out". Skips silently for any

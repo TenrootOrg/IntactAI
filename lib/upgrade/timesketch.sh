@@ -187,9 +187,16 @@ _ts_ensure_postgres_password() {
     sync
 
     if (( ! fresh )); then
+        # NOT a plain >> redirect: on a syntax/permission error postgres
+        # commonly echoes the failed statement back (`LINE 1: ALTER USER
+        # timesketch WITH PASSWORD '<newpw>'`), and $LOG_FILE is exactly the
+        # artifact operators download and paste into support tickets.
+        # redact_secrets (lib/common.sh) masks the quoted literal before it
+        # ever reaches disk.
         if ! "${DOCKER_BIN:-docker}" exec -e PGPASSWORD=timesketch intact_timesketch_postgres \
                 psql -U timesketch -d timesketch \
-                -c "ALTER USER timesketch WITH PASSWORD '${newpw}'" >>"${LOG_FILE:-/dev/null}" 2>&1; then
+                -c "ALTER USER timesketch WITH PASSWORD '${newpw}'" 2>&1 \
+                | redact_secrets >>"${LOG_FILE:-/dev/null}"; then
             log_error "  could not rotate the Timesketch postgres password"
             rm -f "$pgenv"
             return 1
