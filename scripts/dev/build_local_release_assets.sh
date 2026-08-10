@@ -75,6 +75,23 @@ if [ -z "$BUILD_IMAGE" ]; then
 fi
 log "toolchain image: $BUILD_IMAGE"
 
+# ── the SIGMA rule pack aws_sigma bundles ─────────────────────────────────
+# CI clones SigmaHQ/sigma to /opt/sigma-rules and mounts it read-only into the
+# builder (build-release-assets.yml, the `sigma` step). Without it the
+# aws_sigma build warns, packages nothing, and package.py reports "No modules
+# were packaged successfully. Check your internet connection and try again." --
+# a message that sends you looking at the network when the real cause is a
+# missing rule pack. Check for it up front and say the actual thing.
+if ! find /opt/sigma-rules/rules/cloud/aws -name '*.yml' >/dev/null 2>&1 \
+   || [ -z "$(find /opt/sigma-rules/rules/cloud/aws -name '*.yml' 2>/dev/null | head -1)" ]; then
+    err "no SIGMA AWS rules under /opt/sigma-rules/rules/cloud/aws"
+    err "the aws_sigma asset cannot be built without them. Clone them as CI does:"
+    err "  sudo mkdir -p /opt/sigma-rules && sudo chown \"\$(id -un)\" /opt/sigma-rules"
+    err "  git clone --depth 1 https://github.com/SigmaHQ/sigma /opt/sigma-rules"
+    err "or pass a module list that excludes aws_sigma."
+    exit 1
+fi
+
 # ── stage the source ──────────────────────────────────────────────────────
 # NEVER build from the live checkout: build_release_package.py's
 # _stamp_backend_pin() REWRITES config.yaml to pin the backend image to the
@@ -104,6 +121,7 @@ run_packager() {
         -v /var/run/docker.sock:/var/run/docker.sock \
         -v "$STAGE:$STAGE" \
         -v "$WORK:$WORK" \
+        -v /opt/sigma-rules:/opt/sigma-rules:ro \
         -e INTACT_PATH="$STAGE" \
         -e INTACT_HOST_PATH="$STAGE" \
         -e PYTHONPATH=/app \
