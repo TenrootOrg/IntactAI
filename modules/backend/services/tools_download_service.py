@@ -297,6 +297,18 @@ def _ensure_executable(path: str) -> None:
         pass
 
 
+# Every tool download must refuse Content-Encoding. requests defaults to
+# `Accept-Encoding: gzip, deflate` and transparently decodes gzip while
+# streaming to disk -- so for any text asset GitHub happens to gzip in
+# transit, the decoded byte count on disk can never equal the (compressed)
+# Content-Length header, and HTTP Range resume offsets (computed from
+# decoded bytes already on disk) are meaningless against a server that
+# evaluates Range against the encoded representation. Forcing identity
+# makes Content-Length and Range both apply to the same bytes we actually
+# write. See download_file()'s length-mismatch handling below.
+_DL_HEADERS = {'User-Agent': 'Intact.AI-Tools-Downloader/1.0', 'Accept-Encoding': 'identity'}
+
+
 def download_file(url: str, dest_path: str, filename: Optional[str] = None,
                   logger: Callable = None, timeout: int = 300,
                   run_id: Optional[str] = None) -> Optional[str]:
@@ -358,9 +370,26 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
         while attempt < _RETRIES:
             attempt += 1
             have = os.path.getsize(full_path) if os.path.exists(full_path) else 0
-            if expected_size and have >= expected_size:
-                break  # a prior attempt actually finished; nothing left to do
-            headers = {'User-Agent': 'Intact.AI-Tools-Downloader/1.0'}
+            if expected_size is not None:
+                if have > expected_size:
+                    # On-disk bytes exceed what the server currently reports.
+                    # A Range resume can only ever fail against a file this
+                    # shape -- discard and let the fresh GET below re-read
+                    # Content-Length from scratch.
+                    try:
+                        os.remove(full_path)
+                    except OSError:
+                        pass
+                    have, expected_size = 0, None
+                elif have == expected_size:
+                    # A prior attempt actually finished; nothing left to do.
+                    # Must return success directly -- falling through to the
+                    # retries-exhausted path below would delete this
+                    # complete file and report it as failed.
+                    _ensure_executable(full_path)
+                    log(f"  ✓ Downloaded: {filename}")
+                    return (filename, False)
+            headers = dict(_DL_HEADERS)
             mode = 'wb'
             if have:
                 headers['Range'] = f'bytes={have}-'
@@ -379,7 +408,7 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
                     have, mode = 0, 'wb'
                     response = requests.get(
                         url, stream=True, timeout=timeout, allow_redirects=True,
-                        headers={'User-Agent': 'Intact.AI-Tools-Downloader/1.0'})
+                        headers=dict(_DL_HEADERS))
                 response.raise_for_status()
 
                 # Content-Length, when present, lets a truncated transfer be
@@ -387,10 +416,18 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
                 # it on a fresh (non-resumed) response; a 206's length is the
                 # remainder, not the whole file.
                 if not have:
-                    try:
-                        expected_size = int(response.headers.get('content-length') or 0) or None
-                    except (TypeError, ValueError):
+                    if response.headers.get('content-encoding'):
+                        # Content-Length here describes the encoded transfer,
+                        # not the decoded bytes iter_content() will hand us --
+                        # _DL_HEADERS should make this unreachable, but a
+                        # proxy that ignores Accept-Encoding shouldn't be
+                        # able to reintroduce the length-mismatch bug.
                         expected_size = None
+                    else:
+                        try:
+                            expected_size = int(response.headers.get('content-length') or 0) or None
+                        except (TypeError, ValueError):
+                            expected_size = None
 
                 # Filename from content-disposition, if available — only
                 # honored on the first attempt, since a mid-retry rename
@@ -442,9 +479,9 @@ def download_file(url: str, dest_path: str, filename: Optional[str] = None,
         except OSError:
             pass
         if isinstance(last_exc, requests.exceptions.Timeout):
-            log(f"  ✗ Timeout downloading {url[:50]}... (after {_RETRIES} attempts)")
+            log(f"  ✗ Timeout downloading {url[:50]}... (after {attempt} attempt{'s' if attempt != 1 else ''})")
         else:
-            log(f"  ✗ Error: {str(last_exc)[:50]} (after {_RETRIES} attempts)")
+            log(f"  ✗ Error: {str(last_exc)[:50]} (after {attempt} attempt{'s' if attempt != 1 else ''})")
         return None
 
     except Exception as e:

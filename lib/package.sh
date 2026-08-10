@@ -64,6 +64,38 @@ _tar_is_docker_image() {
     return 1
 }
 
+# Stage DFIQ data (dfiq/dfiq-data.tar, bundled inside the timesketch asset --
+# see scripts/ci/packager/package.py's DFIQ block) into
+# modules/timesketch/config/dfiq. Shared between install.sh's
+# load_images_from_package (called with $work, the extracted temp dir) and
+# the upgrade path's upgrade_module_timesketch (called with $UPKG_DIR, the
+# already-resolved package root) -- these differ in exactly how deep the
+# asset's own top-level directory sits, so `find -path` at any depth handles
+# both without the caller needing to know which shape it has.
+#
+# Only stages into an EMPTY destination -- an operator's own populated
+# modules/timesketch/config/dfiq/ (a prior live clone, or hand-curated
+# content) must never be overwritten by a package's bundled copy. The
+# scenarios/ check mirrors deploy_timesketch's own presence check
+# (lib/modules/timesketch.sh) exactly, so staging here reliably makes that
+# check pass and the live git-clone fallback is never attempted when a
+# bundled copy was already applied.
+stage_dfiq_from_package() {
+    local root="$1"
+    local dest="${SCRIPT_DIR}/modules/timesketch/config/dfiq"
+    local pack
+    pack="$(find "$root" -type f -path '*/dfiq/dfiq-data.tar' 2>/dev/null | head -1)"
+    [[ -n "$pack" ]] || return 0
+    [[ -z "$(ls "${dest}/scenarios" 2>/dev/null)" ]] || return 0
+    mkdir -p "$dest"
+    if tar -xf "$pack" -C "$dest" 2>>"${LOG_FILE:-/dev/null}"; then
+        log_success "  Staged DFIQ data ($(find "$dest" -name '*.yaml' 2>/dev/null | wc -l) YAML files) into modules/timesketch/config/dfiq"
+        return 0
+    fi
+    log_warn "  Bundled DFIQ tar found but extraction failed — deploy_timesketch will fall back to its own clone"
+    return 1
+}
+
 # Load every image out of the package into the local docker store.
 #
 # Idempotent and non-fatal per image: `docker load` on an image that is already
@@ -186,7 +218,7 @@ for p in paths:
     # per-module asset carries manifests/<module>.json (a full copy of that
     # module's manifest, contents.images + contents.image_sizes included); a
     # legacy single-bundle asset has only the root manifest.json and no
-    # per-module attribution, so its images are labelled "(unattributed)"
+    # per-module attribution, so its images are labelled "(legacy bundle)"
     # rather than guessed.
     declare -A IMG_OWNER=() IMG_SIZE=()
     local _iname _iowner _isize
@@ -286,7 +318,13 @@ for img in sorted(set(owner) | set(size)):
         img_i=$((img_i + 1))
         base="$(basename "$tar_file")"
         mod_id="${IMG_OWNER[$base]:-}"
-        display="$(_module_display "$mod_id" "(unattributed)")"
+        # "(unattributed)" used to be the fallback here, which reads as an
+        # anomaly to an operator watching the install scroll by. It isn't one
+        # -- a legacy single-bundle release (see the comment above IMG_OWNER)
+        # has no per-module manifest to attribute images from, by design, and
+        # every image is loaded regardless. "(legacy bundle)" says why instead
+        # of sounding like something is missing or broken.
+        display="$(_module_display "$mod_id" "(legacy bundle)")"
         if [[ -n "$mod_id" && -z "${_MOD_WANTED[$mod_id]:-}" ]]; then
             pkg_size="${IMG_SIZE[$base]:-$(stat -c%s "$tar_file" 2>/dev/null || echo 0)}"
             skipped=$((skipped + 1)); skipped_bytes=$((skipped_bytes + pkg_size))
@@ -481,6 +519,8 @@ for p in glob.glob(f'{work}/*/manifests/intact.json') + glob.glob(f'{work}/*/man
             log_success "  Staged ${_n} ${_label}(s) into ${_destdir#"${SCRIPT_DIR}/"}"
         fi
     done
+
+    stage_dfiq_from_package "$work"
 
     # Pair the staged zips with the manifest that describes them (name,
     # description, source_url per ruleset). Prefer the per-module

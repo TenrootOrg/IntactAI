@@ -63,6 +63,14 @@ upgrade_module_timesketch() {
     # nothing on every normal upgrade.
     u_do "render timesketch conf templates" -- render_timesketch_conf_templates
 
+    # Same idempotent-so-unconditional reasoning as the conf-template render
+    # above: modules/timesketch/config/dfiq/ is gitignored, and a module
+    # enabled but never before deployed has none of it. Staging from the
+    # package here means deploy_timesketch's own presence check short-
+    # circuits and the live google/dfiq clone is never attempted on an
+    # air-gapped upgrade target.
+    stage_dfiq_from_package "$UPKG_DIR"
+
     # 2. The dump, while everything is still up and consistent.
     local have_dump=0
     if _u_pg_dump intact_timesketch_postgres timesketch timesketch "$dump"; then

@@ -154,6 +154,14 @@ versions:
   # (rYYYY-MM-01); pin to one so detection content is reproducible + updatable.
   # Bump this to refresh the rules (aws_sigma above is the AWS-pack bundle label).
   sigma_rules: 'r2026-07-01'
+  # Commit SHA for the google/dfiq clone bundled into the timesketch release
+  # asset (dfiq/dfiq-data.tar) and moved into modules/timesketch/config/dfiq
+  # at deploy time. Pinned to a commit, not "main", for the same reason
+  # sigma_rules is pinned to a tag: an unpinned floating ref would let
+  # bundled content silently drift between CI builds with no visible
+  # version change. Bump by resolving a new commit from
+  # https://github.com/google/dfiq/commits/main.
+  dfiq: 'f07e5f2a5255afda7be9d9de13300d3df12d15f8'
   # Azure Unified Audit Log collection runs the DFIR-O365RC image
   # (anssi/dfir-o365rc). Upstream only publishes ':latest' (no version tags),
   # so we track latest — "upgrade" re-pulls the newest latest.

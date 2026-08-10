@@ -2181,6 +2181,94 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                         else:
                             log(f"  Failed to extract migrations from source tarball", "warning")
 
+                    # Timesketch-specific: bundle DFIQ data (scenarios/facets/
+                    # questions YAMLs) so an air-gapped install/upgrade doesn't
+                    # need to `git clone google/dfiq` at apply time -- mirrors
+                    # the migrations bundling immediately above. Pinned via
+                    # versions.dfiq (a commit SHA, not a branch) for the same
+                    # reproducibility reason every other versions.* entry is
+                    # pinned: an unpinned "main" would let bundled content
+                    # silently drift between CI builds under an unchanged tag.
+                    # Consumer: lib/modules/timesketch.sh's deploy_timesketch
+                    # (moves the equivalent live-clone data into
+                    # modules/timesketch/config/dfiq/); staged from the
+                    # package by lib/package.sh before deploy_timesketch runs,
+                    # so its own `[[ -f ... ]]` presence check short-circuits
+                    # and the clone is never attempted.
+                    log("Bundling Timesketch DFIQ data...", "info")
+                    dfiq_versions = target_versions if target_versions is not None else _read_config_yaml_versions()
+                    dfiq_ref = dfiq_versions.get('dfiq') or 'main'
+                    dfiq_url = f"https://github.com/google/dfiq/archive/{dfiq_ref}.tar.gz"
+                    dfiq_src_tarball = f"{package_dir}/_dfiq_src_{dfiq_ref}.tar.gz"
+                    dfiq_dl = run_command(f"curl -fLsS -o {dfiq_src_tarball} {dfiq_url}", timeout=180, logger=None, run_id=run_id)
+                    if dfiq_dl.get("cancelled"):
+                        return {"success": False, "error": "cancelled", "cancelled": True}
+                    if not dfiq_dl['success'] or not os.path.exists(dfiq_src_tarball) or os.path.getsize(dfiq_src_tarball) < 1024:
+                        # Same mode-aware messaging as the migrations block:
+                        # online apply can still fetch DFIQ live, only an
+                        # offline/air-gapped apply actually needs the bundle.
+                        if compress:
+                            log(
+                                "  DFIQ data not bundled; the apply on the "
+                                "air-gap target will need GitHub access for "
+                                "DFIQ. Re-run prepare if the target has no "
+                                "internet.",
+                                "warning",
+                            )
+                        else:
+                            log(
+                                "  DFIQ data not bundled "
+                                "(online mode — apply will fetch from GitHub "
+                                "directly).",
+                                "info",
+                            )
+                    else:
+                        dfiq_dir = f"{package_dir}/dfiq"
+                        os.makedirs(dfiq_dir, exist_ok=True)
+                        # --strip-components=3 drops `dfiq-<ref>/dfiq/data/` so
+                        # extracted contents land as `scenarios/`, `facets/`,
+                        # `questions/` directly under dfiq_dir -- the layout
+                        # deploy_timesketch's own clone-handling already
+                        # produces (mv "${_tmp}/repo/dfiq/data"/* ...).
+                        dfiq_extract = run_command(
+                            f"tar -xzf {dfiq_src_tarball} -C {dfiq_dir} --wildcards "
+                            f"--strip-components=3 '*/dfiq/data/*'",
+                            timeout=60, logger=None
+                        )
+                        try:
+                            os.remove(dfiq_src_tarball)
+                        except Exception:
+                            pass
+                        dfiq_yaml_count = sum(
+                            1 for _r, _d, fs in os.walk(dfiq_dir) for f in fs if f.endswith('.yaml')
+                        ) if os.path.isdir(dfiq_dir) else 0
+                        if dfiq_extract['success'] and dfiq_yaml_count > 0:
+                            dfiq_tar_path = f"{dfiq_dir}/dfiq-data.tar"
+                            import tarfile as _dfiqtf
+                            with _dfiqtf.open(dfiq_tar_path, 'w') as tar:
+                                for entry in os.listdir(dfiq_dir):
+                                    if entry == 'dfiq-data.tar':
+                                        continue
+                                    tar.add(os.path.join(dfiq_dir, entry), arcname=entry)
+                            # Remove the loose extracted tree now that it's
+                            # tarred -- only dfiq-data.tar should ship.
+                            for entry in os.listdir(dfiq_dir):
+                                if entry == 'dfiq-data.tar':
+                                    continue
+                                entry_path = os.path.join(dfiq_dir, entry)
+                                if os.path.isdir(entry_path):
+                                    shutil.rmtree(entry_path)
+                                else:
+                                    os.remove(entry_path)
+                            log(f"  DFIQ data bundled ({dfiq_yaml_count} YAML files, ref {dfiq_ref})", "success")
+                            manifest["contents"]["dfiq"] = {
+                                "ref": dfiq_ref,
+                                "yaml_files": dfiq_yaml_count,
+                                "file": "dfiq/dfiq-data.tar",
+                            }
+                        else:
+                            log(f"  Failed to extract DFIQ data from source tarball", "warning")
+
                 # VolWeb-specific: bundle the three curated YARA rule
                 # repos so apply (install or upgrade) can seed VolWeb's
                 # yararulesets table without needing internet at apply
