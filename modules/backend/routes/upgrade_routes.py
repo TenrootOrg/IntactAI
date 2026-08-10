@@ -304,6 +304,101 @@ def get_upgrade_quota():
 # online / offline — helper container
 # ---------------------------------------------------------------------------
 
+# Where a package has to be for the HELPER to see it.
+#
+# /data/uploads and /data/upgrade_packages are docker VOLUMES mounted into
+# intact_backend. The helper container mounts only docker.sock and the identity
+# bind at HOST_PATH -- so a path under either of those directories exists for
+# this process and does not exist for the process that actually runs
+# `upgrade.sh --package`. Handing the CLI args straight through meant every
+# Import and every apply-a-prepared-package died with "Package not found" the
+# first time anyone used it.
+#
+# So relocate onto the shared bind before launching. Hard-link when the source
+# and destination are on one filesystem (they are: the volume lives under
+# /var/lib/docker and the bind under the appliance root, both on /) -- these
+# are multi-GB files and copying them would double the disk cost of every
+# import for no reason. Fall back to a copy across devices.
+#
+# `import-pkg-<run_id>` deliberately matches none of upkg_sweep_stale_scratch's
+# patterns (upgrade-pkg-*, upgrade-unwrap-*, upgrade-dl-*, ...): the sweep runs
+# at the START of the next upgrade, and a name it recognised could see a staged
+# package deleted out from under a run that had not begun extracting yet. It is
+# cleaned up here instead, when the run reaches a terminal state.
+_HELPER_STAGE_PREFIX = "import-pkg-"
+
+
+def _stage_for_helper(paths, run_id):
+    """Return (host_paths, error). Places each package under
+    HOST_PATH/data/tmp/import-pkg-<run_id>/ so the helper container can read
+    it, and returns the paths as the HELPER will see them."""
+    stage_container = os.path.join(WORKDIR, "data", "tmp",
+                                   f"{_HELPER_STAGE_PREFIX}{run_id}")
+    stage_host = os.path.join(HOST_PATH, "data", "tmp",
+                              f"{_HELPER_STAGE_PREFIX}{run_id}")
+    try:
+        os.makedirs(stage_container, exist_ok=True)
+    except OSError as e:
+        return None, f"could not create the staging directory: {e}"
+
+    out = []
+    for p in paths:
+        name = os.path.basename(p)
+        dest = os.path.join(stage_container, name)
+        try:
+            if os.path.isdir(p):
+                # A directory of per-module assets: link each file inside it.
+                os.makedirs(dest, exist_ok=True)
+                for f in sorted(os.listdir(p)):
+                    s, d = os.path.join(p, f), os.path.join(dest, f)
+                    if not os.path.isfile(s) or os.path.exists(d):
+                        continue
+                    try:
+                        os.link(s, d)
+                    except OSError:
+                        shutil.copy2(s, d)
+            elif not os.path.exists(dest):
+                try:
+                    os.link(p, dest)
+                except OSError:
+                    shutil.copy2(p, dest)
+        except OSError as e:
+            return None, f"could not stage {name} for the upgrade helper: {e}"
+        out.append(os.path.join(stage_host, name))
+    return out, None
+
+
+def _sweep_stale_stages(hours=48):
+    """Age-based cleanup of previous staging dirs, run when a new offline
+    upgrade starts.
+
+    Deliberately age-based and done HERE rather than deleting a run's stage
+    when it finishes: the routes layer does not own the run's terminal state
+    (upgrade_launcher's tailer does, and it may be a different process
+    entirely after the backend restart every upgrade causes). Copying
+    upkg_sweep_stale_scratch's approach -- reclaim on the way IN, from runs
+    that are definitely over -- avoids inventing a second lifecycle.
+
+    Mostly frees nothing when the source is still on disk, since these are
+    hard links; that is correct, the upload belongs to the operator and Import
+    owns only its own reference to it.
+    """
+    base = os.path.join(WORKDIR, "data", "tmp")
+    cutoff = time.time() - hours * 3600
+    try:
+        for name in os.listdir(base):
+            if not name.startswith(_HELPER_STAGE_PREFIX):
+                continue
+            p = os.path.join(base, name)
+            try:
+                if os.path.getmtime(p) < cutoff:
+                    shutil.rmtree(p, ignore_errors=True)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def _start_launcher_run(automation_type, name, details, cli_args, force=False):
     """Shared by online + offline: gate, create the run, launch the helper.
     Returns a Flask response tuple."""
@@ -416,15 +511,24 @@ def start_offline_upgrade():
         return jsonify({"success": False, "error": "selected_modules must be a list"}), 400
     expect = (data.get('expected_sha256') or '').strip()
 
+    upload_run_id = (data.get('upload_run_id') or '').strip() or None
+
+    # Onto the shared bind first -- see _stage_for_helper. The run id is only
+    # known after create_automation_run for the ordinary path, so stage under
+    # whichever id this run will actually use.
+    _sweep_stale_stages()
+    stage_id = upload_run_id or f"{os.getpid()}-{int(time.time())}"
+    host_paths, stage_err = _stage_for_helper(paths, stage_id)
+    if stage_err:
+        return jsonify({"success": False, "error": stage_err}), 500
+
     cli_args = []
-    for p in paths:
+    for p in host_paths:
         cli_args += ["--package", p]
     if selected_modules:
         cli_args += ["--only", ",".join(selected_modules)]
     if expect:
         cli_args += ["--expect-sha256", expect]
-
-    upload_run_id = (data.get('upload_run_id') or '').strip() or None
     if upload_run_id:
         # Continue the upload's own row rather than opening a second one --
         # same "one row for the whole import" shape the deleted engine used,
