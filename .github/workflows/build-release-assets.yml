@@ -33,16 +33,23 @@
 name: Build release assets (per module)
 
 on:
-  # REVERTED BACK to workflow_dispatch-only (2026-08-09, same day as the
-  # attempted swap): the fleet is NOT actually on the per-module wrapper
-  # format yet, despite 20260807/08/09 having shipped -- real boxes still
-  # need the legacy single-file bundle from build-release-package.yml, which
-  # this had briefly displaced as the auto-triggered pipeline. Swap back to
-  # auto-triggering THIS workflow only once the fleet has genuinely moved
-  # on; a release needing the legacy bundle but not getting one is worse
-  # than one this workflow attaches an extra format to that nothing reads
-  # yet, so default to the safer (legacy-auto) side while unsure.
+  # THIS is the auto-triggered pipeline again as of 2026-08-10, and per-module
+  # is the shape every new release ships in. The trigger swapped back and forth
+  # twice (off 2026-08-09, on now) for one reason: whether real boxes could
+  # actually consume per-module assets. They can now -- the apply side reads
+  # both shapes, so a per-module release is applicable everywhere while the
+  # legacy single bundle is still produced on demand for a pre-index box.
   #
+  # The two triggers MUST move together and in the same commit as
+  # build-release-package.yml's: two workflows racing to upload under one tag
+  # interleave assets from two different builds, and that ambiguity is exactly
+  # what the resolve-then-matrix design above exists to prevent.
+  #
+  # Releases already published in the legacy shape (20260615 / 20260726 /
+  # 20260810) are NOT retroactively rebuilt -- boxes upgrading FROM them still
+  # rely on the apply side's legacy support.
+  release:
+    types: [published]
   # The upload-before-publish reordering and immediate re-draft below are
   # independent of which trigger fires this workflow -- they stay in effect
   # for manual dispatches too, since a manually-triggered build can leave a
@@ -50,8 +57,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to build (e.g. intact-20260804)"
-        required: true
+        description: "Release tag to build (e.g. intact-20260804). Not needed when triggered by publishing a release."
+        required: false
 
 permissions:
   contents: write

@@ -6,20 +6,25 @@
 # `intact-upgrade-<tag>.tar.gz` and nothing else, and someone hand-carrying one
 # file into an air-gapped site would rather carry one than nine.
 #
-# RESTORED to `release: published` auto-trigger (2026-08-09, same day it was
-# briefly swapped off): the fleet is NOT actually on the per-module wrapper
-# format yet, despite 20260807/08/09 having shipped -- real boxes still need
-# this single-file bundle on every release, not just on demand. Swap this
-# back off (and build-release-assets.yml's auto-trigger back on) once the
-# fleet has genuinely moved past pre-index releases. workflow_dispatch still
-# works the same as always for a one-off manual build.
+# BACK TO on-demand-only (2026-08-10). The auto-trigger added on 2026-08-09
+# has been handed back to build-release-assets.yml, which is now the pipeline
+# every published release uses. The two triggers MUST move together and in the
+# same commit: two workflows racing to upload assets under one tag interleave
+# artifacts from two different builds, which is how the previous round of
+# confusion started.
 #
-# Original reasoning for why this was ever on-demand-only, preserved because
-# it still applies whenever the swap-back eventually happens: running on
-# every release publish means every release quietly starts a second,
-# differently-shaped build and attaches a whole-stack tarball nobody asked
-# for, and two workflows racing to upload assets under one tag is how the
-# last round of confusion started.
+# This file is NOT deleted. It is the only way to produce the single-file
+# `intact-upgrade-<tag>.tar.gz` that a box older than the release index looks
+# for by name, so it stays available via workflow_dispatch for exactly that:
+# cutting a package aimed at a pre-index box. Releases 20260615 / 20260726 /
+# 20260810 were all published in that shape and are what boxes in the field
+# are running today, so the apply side keeps reading it for now -- see the
+# TEMPORARY note in lib/release.sh.
+#
+# Original reasoning for why this was on-demand-only, still the reason it is
+# again: running on every release publish means every release quietly starts a
+# second, differently-shaped build and attaches a whole-stack tarball nobody
+# asked for.
 #
 # The build runs the exact same prepare_upgrade_package() the platform uses,
 # headless, inside a container from the release's freshly-built backend image
@@ -30,13 +35,11 @@
 name: Build release upgrade package (single file, on demand)
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to build (e.g. intact-20260722). Not needed when triggered by publishing a release -- the release's own tag is used automatically."
-        required: false
+        description: "Release tag to build (e.g. intact-20260722). Required: this workflow no longer runs automatically on publish."
+        required: true
 
 permissions:
   contents: write            # upload the package as a Release asset
@@ -47,7 +50,7 @@ permissions:
 # one release. Queue rather than cancel -- a half-uploaded release is worse
 # than a slow one.
 concurrency:
-  group: release-package-${{ github.event.release.tag_name || github.event.inputs.tag }}
+  group: release-package-${{ github.event.inputs.tag }}
   cancel-in-progress: false
 
 jobs:
@@ -58,10 +61,11 @@ jobs:
       - name: Resolve tag
         id: tag
         env:
-          # inputs.tag for a manual dispatch; release.tag_name when the
-          # trigger is an actual release publish (inputs.tag is unset then,
-          # since github.event.inputs only exists on workflow_dispatch).
-          TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+          # workflow_dispatch is the only trigger now, so inputs.tag is the
+          # only source (and it is `required: true`). It used to fall back to
+          # release.tag_name for the auto-trigger; that trigger moved to
+          # build-release-assets.yml on 2026-08-10.
+          TAG: ${{ github.event.inputs.tag }}
         run: |
           case "$TAG" in
             intact-*) ;;
