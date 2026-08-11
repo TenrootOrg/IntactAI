@@ -466,6 +466,28 @@ def _sweep_stale_stages(hours=48):
         pass
 
 
+def _with_intact(modules):
+    """The dashboard never sends a module list without intact.
+
+    An --only that omits intact upgrades modules against the CURRENT backend
+    code, sidecar compose files and config.yaml merge -- the things every later
+    module reads its pins from (lib/upgrade/plan.sh, UPGRADE_ORDER). From a
+    shell that is a legitimate, deliberate act: repairing or installing one
+    module without moving the platform. The engine therefore takes --only
+    literally and only warns.
+
+    The UI has no way to express that intent, so a list arriving from it that
+    lacks intact is a stray untick or a seeding bug, never a decision -- and
+    the result would be a silently half-upgraded box. Added here rather than in
+    the engine so the CLI keeps its escape hatch.
+
+    Harmless when the package has no intact to give: plan.sh checks "is this
+    module in the package" before it checks --only, so the name lands on
+    skip:not in this package.
+    """
+    return modules if 'intact' in modules else ['intact'] + list(modules)
+
+
 def _start_launcher_run(automation_type, name, details, cli_args, force=False):
     """Shared by online + offline: gate, create the run, launch the helper.
     Returns a Flask response tuple."""
@@ -523,6 +545,7 @@ def start_online_upgrade():
             modules.append(row["module"])
     if not modules:
         return jsonify({"success": False, "error": "Nothing selected to upgrade"}), 400
+    modules = _with_intact(modules)
 
     cli_args = [tag, "--only", ",".join(modules)]
     # --only alone is not enough to express "re-apply this one". It selects
@@ -622,6 +645,7 @@ def start_offline_upgrade():
     for p in host_paths:
         cli_args += ["--package", p]
     if selected_modules:
+        selected_modules = _with_intact(selected_modules)
         cli_args += ["--only", ",".join(selected_modules)]
         # The two lists are DISJOINT, and deliberately so.
         #

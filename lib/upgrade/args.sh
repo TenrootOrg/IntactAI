@@ -43,8 +43,12 @@ Options:
                         payload, so there is no cheap way to plan one.
   --json                With --list or --plan, print machine-readable JSON
                         instead of the human table.
-  --only  <a,b>         Upgrade only these modules ('intact' is added back if
-                        the package carries it).
+  --only  <a,b>         Upgrade only these modules. Taken literally, including
+                        when it omits 'intact' -- repairing or installing a
+                        single module without touching the platform is a
+                        legitimate thing to want from a shell. You are warned,
+                        not overridden. The dashboard does NOT offer that
+                        choice: it always includes intact.
   --skip  <a,b>         Upgrade everything except these.
   --reinstall <a,b>     Re-apply these modules even though they are already at
                         the target version. For repairing a module whose

@@ -104,6 +104,27 @@ plan_build() {
     local only="${UPGRADE_ONLY:-}" skip="${UPGRADE_SKIP:-}"
     local m target current
 
+    # WARN, do not override. A --only that leaves intact out upgrades modules
+    # against the old backend code, the old sidecar compose files and the old
+    # config.yaml merge -- the things UPGRADE_ORDER's comment says every later
+    # module reads its pins from. That is usually a mistake, and until
+    # 2026-08-11 nothing said so (the --only help even claimed intact was added
+    # back, which no code did).
+    #
+    # But it is not always a mistake: repairing or installing one module from a
+    # shell, deliberately, without moving the platform is a real thing to want,
+    # and the CLI is where an operator gets to mean exactly what they typed. So
+    # this is a warning here and a guarantee in the dashboard -- upgrade_routes
+    # always sends intact, because the UI offers no way to express the
+    # deliberate version and a stray untick should not silently half-upgrade a
+    # box.
+    if [[ -n "$only" && ",${only}," != *",intact,"* && -n "${UPKG_VERSIONS[intact]:-}" ]]; then
+        log_warn "  --only does not include intact, but this package carries it."
+        log_warn "  The modules below will be upgraded against the CURRENT backend"
+        log_warn "  code and pins. That is supported, but it is rarely what you want"
+        log_warn "  outside a deliberate single-module repair."
+    fi
+
     for m in "${UPGRADE_ORDER[@]}"; do
         target="${UPKG_VERSIONS[$m]:-}"
         current="${PLAN_CURRENT[$m]:-}"
