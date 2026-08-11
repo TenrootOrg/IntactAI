@@ -145,12 +145,30 @@ restore)
     log "restoring the checkout"
     # The tree is REPLACED, not merged: a half-upgraded tree with new files the
     # snapshot never had would otherwise survive and quietly change the test.
+    #
+    # .git is CARRIED ACROSS, not restored from the tar -- save deliberately
+    # excludes it (large, and an upgrade never touches it). Replacing the
+    # directory wholesale therefore used to DELETE the repository: the checkout
+    # came back correct and `git` in it said "not a git repository", taking
+    # every worktree pointing at it down too. Nothing was lost because the work
+    # was pushed, but recovering meant re-cloning. Excluding something from a
+    # backup only works if the restore leaves it alone.
+    _keep_git=""
+    if [ -d "$ROOT/.git" ]; then
+        _keep_git="$(mktemp -d -p "$(dirname "$ROOT")" .git-carry-XXXXXX)"
+        sudo mv "$ROOT/.git" "$_keep_git/.git"
+    fi
     sudo rm -rf "$ROOT.restoring"
     sudo mkdir -p "$ROOT.restoring"
     sudo tar -C "$ROOT.restoring" -xf "$SRC/tree.tar" 2>/dev/null
     sudo rm -rf "$ROOT.old" && sudo mv "$ROOT" "$ROOT.old" \
         && sudo mv "$ROOT.restoring/$(basename "$ROOT")" "$ROOT" \
         && sudo rm -rf "$ROOT.restoring" "$ROOT.old"
+
+    if [ -n "$_keep_git" ]; then
+        sudo mv "$_keep_git/.git" "$ROOT/.git" && sudo rmdir "$_keep_git" \
+            && log "carried .git across (the snapshot does not contain one)"
+    fi
 
     log "restoring volumes"
     for t in "$SRC"/volumes/*.tar; do
