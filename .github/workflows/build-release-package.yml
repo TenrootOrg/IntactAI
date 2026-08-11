@@ -38,8 +38,21 @@
 name: OLD (pre-20260811) — single-asset release package
 
 on:
-  release:
-    types: [published]
+  # Auto-trigger disabled 2026-08-11. Every release from intact-20260812 on is
+  # per-module (build-release-assets.yml), which is the shape every box that
+  # can reach a modern release actually prefers -- so building a second ~5.5 GB
+  # copy of the same release on every publish buys nothing and roughly doubles
+  # the time to cut one.
+  #
+  # The single bundle is still the ONLY shape a stuck intact-20260726 box can
+  # take: those appliances predate the per-module index entirely and
+  # upgrade_fetch_release has no index.json to find. That path is not removed,
+  # only taken off the automatic trigger -- if such a box turns up, dispatch
+  # this workflow by hand against the tag and it produces exactly the bundle it
+  # used to. The code that builds and applies it stays.
+  #
+  # release:
+  #   types: [published]
   workflow_dispatch:
     inputs:
       tag:
