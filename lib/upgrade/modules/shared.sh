@@ -20,8 +20,27 @@ _u_compose() {
 # The coarse "put it back the way it was" undo. Registered FIRST by every
 # module so it unwinds LAST -- after the .env and any other files are already
 # restored, because it is what reads them.
+#
+# "The way it was" is NOTHING when the module was not installed before this
+# run. Bringing up the old stack then means starting containers from a .env
+# that was just deleted and images that were never pulled, so the undo fails,
+# and a failed undo is reported as "ROLLBACK FAILED -- this module needs manual
+# repair". Observed 2026-08-11: a fresh iris install failed on a missing
+# rabbitmq image and told the operator to hand-repair a box on which iris had
+# never existed and nothing was broken.
+#
+# So for an install the undo is the opposite operation: remove what the failed
+# attempt created. `down` WITHOUT -v -- named volumes stay. They are empty on a
+# failed first install, but "empty" is this function's guess, not its
+# knowledge, and no undo path should be the thing that deletes a volume.
 _u_compose_up_old() {
-    local dir; dir="$(_u_module_dir "$1")"
+    local m="$1"
+    local dir; dir="$(_u_module_dir "$m")"
+    if [[ "${PLAN_ACTION[$m]:-}" == install ]]; then
+        log_info "  ${m} was not installed before this run — removing what the failed install created"
+        _u_compose "$dir" down --remove-orphans
+        return 0
+    fi
     _u_compose "$dir" up -d --no-build --pull never
 }
 

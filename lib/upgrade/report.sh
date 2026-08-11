@@ -27,7 +27,11 @@ print_upgrade_report() {
         for item in "${UPGRADE_DEGRADED[@]}"; do log_warn "  ! ${item}"; done
     fi
     if (( ${#UPGRADE_ROLLED_BACK[@]} )); then
-        log_warn "Rolled back (${#UPGRADE_ROLLED_BACK[@]}) — these are back on their previous version:"
+        # "back on their previous version" is only true for an upgrade. A
+        # failed INSTALL has no previous version and is undone, not restored --
+        # each entry says which, so the heading stays neutral rather than
+        # contradicting the line beneath it.
+        log_warn "Rolled back (${#UPGRADE_ROLLED_BACK[@]}) — undone, the box is as it was:"
         for item in "${UPGRADE_ROLLED_BACK[@]}"; do log_warn "  ↩ ${item}"; done
     fi
     if (( ${#UPGRADE_FAILED[@]} )); then

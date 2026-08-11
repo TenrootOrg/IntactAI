@@ -356,6 +356,13 @@ _u_unwind_current() {
         # into one FAILED list is how a half-rolled-back module gets missed.
         UPGRADE_FAILED+=("${module} — ${U_LABEL} (rc=${U_RC}) AND ROLLBACK FAILED; needs manual repair")
         log_error "${module}: ROLLBACK FAILED — this module needs manual repair"
+    elif [[ "${PLAN_ACTION[$module]:-}" == install ]]; then
+        # A failed INSTALL has no previous version to be "restored to", and
+        # saying so invents one. What happened is that the module is still not
+        # installed -- the box is exactly as it was, which is the reassuring
+        # half of the message and was missing entirely.
+        UPGRADE_ROLLED_BACK+=("${module} — ${U_LABEL} (rc=${U_RC}); install undone, ${module} is still not installed")
+        log_warn "${module}: install failed and was undone — the box is unchanged"
     else
         UPGRADE_ROLLED_BACK+=("${module} — ${U_LABEL} (rc=${U_RC}); restored to ${U_FROM:-previous version}")
         log_warn "${module}: rolled back to ${U_FROM:-the previous version}"
