@@ -114,6 +114,16 @@ sudo rm -rf "$STAGE"
 mkdir -p "$STAGE" "$WORK" "$OUT"
 sudo rsync -a --exclude='.git' --exclude='data/' --exclude='backups/' \
       "$REPO_DIR/" "$STAGE/"
+# ...except data/yara-seed, which is a BUILD INPUT rather than runtime state:
+# the packager bundles it so an air-gapped install can seed VolWeb's rule
+# corpus. Excluding all of data/ meant locally built packages shipped without
+# it, and install.sh reported "No bundled YARA rule sets in this package —
+# VolWeb starts with an empty rule corpus", which is a real difference from
+# what CI produces rather than a quirk of the dev tool.
+if [ -d "$REPO_DIR/data/yara-seed" ]; then
+    sudo mkdir -p "$STAGE/data"
+    sudo rsync -a "$REPO_DIR/data/yara-seed" "$STAGE/data/"
+fi
 sudo chown -R "$(id -u):$(id -g)" "$STAGE"
 
 # The staged tree is mounted into the container AT THE SAME PATH it has on the
