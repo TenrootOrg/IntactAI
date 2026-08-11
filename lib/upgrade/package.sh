@@ -53,10 +53,26 @@ upkg_expand_args() {
     UPKG_LOOSE_MANIFEST=""
     local p f listing unwrap
     for p in "$@"; do
+        # Two release assets are NOT module assets and must never be collected
+        # as one:
+        #   *-system-bundle.tar  Docker/apt .deb files for install.sh's air-gap
+        #                        path. Nothing here knows what to do with it.
+        #   *-bootstrap.tar      install.sh + lib/ + scripts/ for bootstrapping
+        #                        a box that has no checkout yet.
+        #
+        # Both sit on the release page beside the module assets, so an operator
+        # who downloads a whole release into one folder and points --package at
+        # it hands them to this loop. bootstrap was not excluded until
+        # 2026-08-11: its tarball has its own top-level directory (the bare tag,
+        # not intact-upgrade-<tag>), so extracting it into the merged tree gives
+        # that tree a SECOND root and the manifest describes neither of them
+        # properly. CI never caught it because dry-run-apply collects only from
+        # the per-module build artifacts, and these two upload separately.
         if [[ -d "$p" ]]; then
             while IFS= read -r f; do UPKG_ASSETS+=("$f"); done \
                 < <(find "$p" -maxdepth 1 \( -name '*.tar.gz' -o -name '*.tar' \) \
-                         ! -name '*-system-bundle.tar' | sort)
+                         ! -name '*-system-bundle.tar' \
+                         ! -name '*-bootstrap.tar' | sort)
             # The merged root manifest.json, if it's sitting beside the module
             # tarballs -- either download_release_assets already renamed it
             # (lib/release.sh), or an operator downloaded
@@ -106,7 +122,9 @@ upkg_expand_args() {
                 | tar -xf "$p" -C "$unwrap" -T - || {
                 log_error "Could not unwrap $(basename "$p")"; return 1; }
             while IFS= read -r f; do
-                [[ "$(basename "$f")" == *-system-bundle.tar ]] && continue
+                case "$(basename "$f")" in
+                    *-system-bundle.tar|*-bootstrap.tar) continue ;;
+                esac
                 expanded+=("$f")
             done < <(find "$unwrap" -maxdepth 1 \( -name '*.tar.gz' -o -name '*.tar' \) | sort)
             # Same role as the directory branch above: a manifest sitting

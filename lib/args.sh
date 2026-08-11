@@ -153,7 +153,8 @@ parse_install_args() {
                 while IFS= read -r _f; do _expanded+=("$_f"); done \
                     < <(find "$_p" -maxdepth 1 \
                              \( -name '*.tar.gz' -o -name '*.tar' \) \
-                             ! -name '*-system-bundle.tar' | sort)
+                             ! -name '*-system-bundle.tar' \
+                             ! -name '*-bootstrap.tar' | sort)
             else
                 _expanded+=("$_p")
             fi

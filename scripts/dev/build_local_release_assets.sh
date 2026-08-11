@@ -35,6 +35,8 @@ set -euo pipefail
 
 BUNDLE=0
 BUNDLE_ONLY=0
+BOOTSTRAP=0
+SYSBUNDLE=0
 ARGS=()
 for a in "$@"; do
     case "$a" in
@@ -45,12 +47,20 @@ for a in "$@"; do
         # per-module index entirely. There is no point spending an hour on nine
         # module assets to get it.
         --bundle-only) BUNDLE=1; BUNDLE_ONLY=1 ;;
+        # The two NEW-shape assets that are not module assets. Off by default:
+        # neither is read by an upgrade (the engine skips both), so the common
+        # case -- building a package to test an upgrade -- should not pay for
+        # them. --system-bundle in particular runs a ubuntu:24.04 container and
+        # downloads ~1 GB of .deb files.
+        --bootstrap)      BOOTSTRAP=1 ;;
+        --system-bundle)  SYSBUNDLE=1 ;;
+        --all-assets)     BOOTSTRAP=1; SYSBUNDLE=1 ;;
         *) ARGS+=("$a") ;;
     esac
 done
 set -- "${ARGS[@]:-}"
 
-TAG="${1:?usage: build_local_release_assets.sh [--bundle|--bundle-only] <tag> [out_dir] [modules_csv]}"
+TAG="${1:?usage: build_local_release_assets.sh [--bundle|--bundle-only] [--bootstrap] [--system-bundle|--all-assets] <tag> [out_dir] [modules_csv]}"
 OUT_ROOT="${2:-$HOME/intact-local-releases}"
 MODULES_CSV="${3:-}"
 
@@ -372,6 +382,106 @@ print("manifest: %d pin(s), %d sidecar pin(s), %d checksummed file(s)"
          sum(len(v) for v in transitive.values()), len(shas)))
 PY
 
+# ── bootstrap asset (--bootstrap) ─────────────────────────────────────────
+# Mirrors the `bootstrap-asset` job. install.sh + lib/ + scripts/ in one plain
+# tar, for bringing up a box that has no checkout yet.
+#
+# Built from the STAGED copy, not the live checkout, for the same reason
+# everything else here is: the live tree carries the operator's secrets and
+# root-owned container droppings.
+#
+# PLAIN tar, and the sha256 sidecar is the bare hash with no filename -- both
+# match the job exactly (`tar -cf`, `sha256sum | awk '{print $1}'`). The
+# system-bundle sidecar below is deliberately the FULL sha256sum line instead;
+# they disagree in CI and copying that disagreement is the point of this
+# script.
+if (( BOOTSTRAP )); then
+    log "building the bootstrap asset"
+    _bs_parent="$WORK/bootstrap-stage"
+    rm -rf "$_bs_parent"
+    mkdir -p "$_bs_parent/$TAG"
+    cp -a "$STAGE/install.sh" "$STAGE/lib" "$STAGE/scripts" "$_bs_parent/$TAG/"
+    # Neither belongs on a customer box: scripts/ci needs a full backend image
+    # to import services.image_map, and scripts/dev fabricates packages FROM a
+    # live tree -- shipping it is how make_test_package.sh's own secret-leak
+    # class would travel to a customer instead of just this repo.
+    rm -rf "$_bs_parent/$TAG/scripts/ci" "$_bs_parent/$TAG/scripts/dev"
+    if ! bash -n "$_bs_parent/$TAG/scripts/upgrade.sh"; then
+        err "the staged scripts/upgrade.sh does not parse -- refusing to ship it"
+        exit 1
+    fi
+    tar -C "$_bs_parent" -cf "$WORK/${TAG}-bootstrap.tar" "$TAG"
+    sha256sum "$WORK/${TAG}-bootstrap.tar" | awk '{print $1}' \
+        > "$WORK/${TAG}-bootstrap.tar.sha256"
+    rm -rf "$_bs_parent"
+    log "  $(du -h "$WORK/${TAG}-bootstrap.tar" | cut -f1) -> ${TAG}-bootstrap.tar"
+fi
+
+# ── system bundle (--system-bundle) ───────────────────────────────────────
+# Mirrors the `system-bundle` job: Docker + host dependencies as .deb files
+# with an apt Packages index, so install.sh can satisfy host deps on a machine
+# with no internet.
+#
+# SLOW AND NETWORKED: pulls ubuntu:24.04 and downloads ~1 GB of packages. It is
+# also the one asset no upgrade ever reads -- lib/upgrade/package.sh skips it
+# by name -- so it is off unless asked for.
+#
+# The build script is the job's, verbatim in shape, including the purge of the
+# bootstrap tools before the real capture: curl/gnupg/lsb-release are installed
+# only to ADD Docker's apt repo, and leaving them installed makes apt consider
+# them already satisfied, so they never get downloaded and the bundle silently
+# lacks them on a target that has none.
+if (( SYSBUNDLE )); then
+    log "building the system bundle (ubuntu:24.04, ~1 GB of .deb downloads)"
+    _sb_out="$WORK/system-bundle-out"
+    rm -rf "$_sb_out"; mkdir -p "$_sb_out"
+    cat > "$WORK/build_bundle.sh" <<'BUILDEOF'
+#!/bin/bash
+set -euo pipefail
+apt-get update -qq
+apt-get install -y -qq curl gnupg ca-certificates lsb-release
+
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
+  | tee /etc/apt/sources.list.d/docker.list > /dev/null
+apt-get update -qq
+
+apt-get purge -y -qq curl gnupg lsb-release
+apt-get autoremove -y -qq --purge
+
+mkdir -p /bundle
+rm -f /var/cache/apt/archives/*.deb
+apt-get install -y -qq --download-only --reinstall \
+  docker-ce docker-ce-cli containerd.io docker-compose-plugin \
+  curl wget git python3 python3-pip python3-yaml openssl jq dnsutils lsb-release ca-certificates gnupg
+cp /var/cache/apt/archives/*.deb /bundle/
+
+apt-get install -y -qq dpkg-dev
+cd /bundle
+dpkg-scanpackages . /dev/null > Packages 2>/dev/null
+gzip -kf Packages
+
+. /etc/os-release
+echo "$VERSION_ID" > /bundle/ubuntu-version
+echo "== bundle built: $(ls /bundle | wc -l) files =="
+du -sh /bundle
+BUILDEOF
+    docker run --rm \
+        -v "$WORK/build_bundle.sh:/build_bundle.sh:ro" \
+        -v "${_sb_out}:/bundle" \
+        ubuntu:24.04 bash /build_bundle.sh
+    # Root-owned inside the container; the tar and everything after runs as us.
+    sudo chown -R "$(id -u):$(id -g)" "$_sb_out"
+    tar -C "$_sb_out" -cf "$WORK/${TAG}-system-bundle.tar" .
+    # FULL sha256sum line here, unlike bootstrap above -- that is what the job
+    # writes, and lib/release.sh reads it back expecting that shape.
+    ( cd "$WORK" && sha256sum "${TAG}-system-bundle.tar" > "${TAG}-system-bundle.tar.sha256" )
+    rm -rf "$_sb_out" "$WORK/build_bundle.sh"
+    log "  $(du -h "$WORK/${TAG}-system-bundle.tar" | cut -f1) -> ${TAG}-system-bundle.tar"
+fi
+
 # ── publish the assets next to the index ──────────────────────────────────
 # Only what a real release page carries. The .meta.json and per-asset
 # <asset>.manifest.json sidecars are BUILD artifacts the index job consumes and
@@ -385,7 +495,11 @@ PY
 # error, which is the most misleading way for a stale copy to announce itself.
 # Hard-linked because both trees are on the same filesystem and the set is
 # ~5 GB; `cp` fallback for when they are not.
+# The two .sha256 sidecars ARE published (the release page carries them, and
+# lib/release.sh reads the system-bundle one back), unlike the .meta.json and
+# per-asset manifests above which are build-only.
 find "$WORK" -maxdepth 1 \( -name "$TAG-*.tar" -o -name "$TAG-*.tar.gz" \
+     -o -name "$TAG-bootstrap.tar.sha256" -o -name "$TAG-system-bundle.tar.sha256" \
      -o -name "intact-upgrade-$TAG.tar" -o -name "intact-upgrade-$TAG.tar.gz" \
      -o -name "intact-upgrade-$TAG.tar.gz.part-*" \) \
      -exec sh -c 'ln -f "$1" "$2/$(basename "$1")" 2>/dev/null || cp -f "$1" "$2/"' _ {} "$OUT" \;
