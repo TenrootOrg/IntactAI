@@ -221,13 +221,26 @@ def _fetch_plan(tag):
     result = run_command(
         f"bash {shlex.quote(UPGRADE_SH)} --plan {shlex.quote(tag)} --json",
         timeout=60)
-    if not result.get("success"):
-        return None, (jsonify({"success": False, "error": result.get("error_summary")
-                               or result.get("error") or "could not compute a plan"}), 200)
+
+    # Parse BEFORE deciding the command failed. --plan reports a refusal by
+    # printing its JSON reason and exiting non-zero, which is right for a CLI
+    # -- but checking `success` first meant every one of those refusals came
+    # back as the generic "could not compute a plan", and the specific handling
+    # below (the legacy-release message) was unreachable code. Found 2026-08-11
+    # pointing the online upgrade at a legacy single-bundle release: the engine
+    # said exactly what was wrong, and the operator was shown a shrug.
+    parsed = None
     try:
-        parsed = json.loads(result["stdout"].strip().splitlines()[-1])
-    except Exception as e:
-        return None, (jsonify({"success": False, "error": f"unparseable response: {e}"}), 200)
+        parsed = json.loads((result.get("stdout") or "").strip().splitlines()[-1])
+    except Exception:
+        parsed = None
+
+    if parsed is None:
+        if not result.get("success"):
+            return None, (jsonify({"success": False, "error": result.get("error_summary")
+                                   or result.get("error") or "could not compute a plan"}), 200)
+        return None, (jsonify({"success": False,
+                               "error": "unparseable response from the upgrade engine"}), 200)
     if "error" in parsed:
         if parsed["error"] == "no-manifest-asset":
             return None, (jsonify({
