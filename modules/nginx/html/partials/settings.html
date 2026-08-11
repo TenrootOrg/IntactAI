@@ -43,56 +43,6 @@
                             </div>
                             <button @click="$store.settings.loadActions()" class="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-gray-200 rounded">↻ Refresh</button>
                         </div>
-
-                        <!-- Online Upgrade (combined prepare + apply, no tar.gz round-trip) -->
-                        <div class="flex items-center justify-between p-4 mb-3 bg-gray-900 rounded-lg border border-gray-700">
-                            <div>
-                                <h4 class="text-white font-medium">Online Upgrade</h4>
-                                <p class="text-gray-400 text-sm">Internet-connected: download modules &amp; apply in one workflow. Skips the intermediate package file.</p>
-                            </div>
-                            <button @click="$store.settings.openOnlineUpgradeModal()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
-                                </svg>
-                                <span>Online Upgrade</span>
-                            </button>
-                        </div>
-
-                        <!-- Prepare Upgrade Package -->
-                        <div class="flex items-center justify-between p-4 mb-3 bg-gray-900 rounded-lg border border-gray-700">
-                            <div>
-                                <h4 class="text-white font-medium">Prepare Upgrade Package</h4>
-                                <p class="text-gray-400 text-sm">Download and package modules for air-gapped transfer</p>
-                            </div>
-                            <button @click="$store.settings.openPreparePackageModal()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"></path>
-                                </svg>
-                                <span>Prepare Package</span>
-                            </button>
-                        </div>
-
-                        <!-- Import Upgrade Package — single-click flow.
-                             Tus upload runs silently in the background;
-                             when it finishes the review modal pops up
-                             so the operator picks which modules from the
-                             manifest to actually apply. No auto-apply. -->
-                        <div class="p-4 mb-4 bg-gray-900 rounded-lg border border-gray-700">
-                            <div class="flex items-center justify-between mb-3">
-                                <div>
-                                    <h4 class="text-white font-medium">Import Upgrade Package</h4>
-                                    <p class="text-gray-400 text-sm">Upload the release bundle, or select all of its per-module assets at once; then pick which modules to apply.</p>
-                                </div>
-                                <input type="file" id="upgrade-package-input" accept=".tar,.tar.gz,.tgz" multiple class="hidden" @change="$store.settings.importUpgradePackage($event)">
-                                <button @click="document.getElementById('upgrade-package-input').click()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
-                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
-                                    </svg>
-                                    <span>Import Package</span>
-                                </button>
-                            </div>
-                        </div>
-
                         <template x-if="$store.settings.actionsLoading">
                             <p class="text-sm text-gray-400">Loading…</p>
                         </template>
@@ -201,6 +151,55 @@
                                     </svg>
                                     <span x-text="$store.settings.saving ? 'Starting...' : 'Generate Bundle'"></span>
                                 </button>
+                            </div>
+
+                            <!-- Online Upgrade (combined prepare + apply, no tar.gz round-trip) -->
+                            <div class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
+                                <div>
+                                    <h4 class="text-white font-medium">Online Upgrade</h4>
+                                    <p class="text-gray-400 text-sm">Internet-connected: download modules &amp; apply in one workflow. Skips the intermediate package file.</p>
+                                </div>
+                                <button @click="$store.settings.openOnlineUpgradeModal()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                                    </svg>
+                                    <span>Online Upgrade</span>
+                                </button>
+                            </div>
+
+                            <!-- Prepare Upgrade Package -->
+                            <div class="flex items-center justify-between p-4 bg-gray-900 rounded-lg border border-gray-700">
+                                <div>
+                                    <h4 class="text-white font-medium">Prepare Upgrade Package</h4>
+                                    <p class="text-gray-400 text-sm">Download and package modules for air-gapped transfer</p>
+                                </div>
+                                <button @click="$store.settings.openPreparePackageModal()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"></path>
+                                    </svg>
+                                    <span>Prepare Package</span>
+                                </button>
+                            </div>
+
+                            <!-- Import Upgrade Package — single-click flow.
+                                 Tus upload runs silently in the background;
+                                 when it finishes the review modal pops up
+                                 so the operator picks which modules from the
+                                 manifest to actually apply. No auto-apply. -->
+                            <div class="p-4 bg-gray-900 rounded-lg border border-gray-700">
+                                <div class="flex items-center justify-between mb-3">
+                                    <div>
+                                        <h4 class="text-white font-medium">Import Upgrade Package</h4>
+                                        <p class="text-gray-400 text-sm">Upload the release bundle, or select all of its per-module assets at once; then pick which modules to apply.</p>
+                                    </div>
+                                    <input type="file" id="upgrade-package-input" accept=".tar,.tar.gz,.tgz" multiple class="hidden" @change="$store.settings.importUpgradePackage($event)">
+                                    <button @click="document.getElementById('upgrade-package-input').click()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm flex items-center justify-center gap-2 w-44">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                                        </svg>
+                                        <span>Import Package</span>
+                                    </button>
+                                </div>
                             </div>
 
                             <!-- Apply Uploaded Package modal -->
