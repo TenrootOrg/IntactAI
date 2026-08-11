@@ -102,42 +102,30 @@ else
 fi
 
 echo
-echo "== --only: the CLI obeys it literally, the UI never omits intact =="
-# Split on purpose. An --only without intact upgrades modules against the
-# current backend code and pins, which is usually a mistake -- but from a shell
-# it is a legitimate deliberate act (repair one module, leave the platform
-# alone). So the engine warns and obeys; the dashboard, which offers no way to
-# express that intent, always sends intact. Before 2026-08-11 the --only help
-# claimed the engine added intact back and no code did, so BOTH halves were
-# wrong at once.
+echo "== --only is taken literally, and says so when it omits intact =="
+# An --only without intact upgrades modules against the current backend code
+# and pins. Usually a mistake, but sometimes exactly the point: repairing or
+# installing one module without moving the platform. So the engine warns and
+# obeys, and intact is not special-cased anywhere -- if it is already at the
+# target it is a no-op like any other module, and the reinstall tick is how you
+# re-apply it. (The --only help used to claim the engine added intact back; no
+# code ever did.)
 if grep -q 'does not include intact, but this package carries it' "${ROOT}/lib/upgrade/plan.sh"; then
     ok "the engine warns when --only omits intact"
 else
     fail "the engine warns when --only omits intact" "silent half-upgrade against old backend code"
 fi
 if grep -q 'PLAN_ACTION\[\$m\]="skip:excluded by --only"' "${ROOT}/lib/upgrade/plan.sh"; then
-    ok "the engine still OBEYS --only (does not force intact in)"
+    ok "the engine OBEYS --only rather than forcing intact in"
 else
-    fail "the engine still obeys --only" "the CLI escape hatch for a single-module repair is gone"
+    fail "the engine obeys --only" "single-module repair from a shell is gone"
 fi
-if grep -q 'def _with_intact' "$R"; then
-    ok "the routes carry _with_intact"
+if grep -q '_with_intact' "$R"; then
+    fail "the routes do NOT special-case intact" "intact should behave like every other module"
 else
-    fail "the routes carry _with_intact"
+    ok "the routes do not special-case intact"
 fi
-for site in 'modules = _with_intact(modules)' 'selected_modules = _with_intact(selected_modules)'; do
-    if grep -qF "$site" "$R"; then
-        ok "UI path applies it: ${site%% =*}"
-    else
-        fail "UI path applies it: ${site%% =*}" "a stray untick would half-upgrade the box"
-    fi
-done
-# The helper itself, in the same shape python uses.
-_wi() { case ",$1," in *,intact,*) echo "$1" ;; *) echo "intact,$1" ;; esac; }
-check "portainer alone gains intact"        "$(_wi portainer)"        "intact,portainer"
-check "a list already holding intact is unchanged" "$(_wi intact,portainer)" "intact,portainer"
 
-echo
 echo "== stage-0 hop: an older packaged engine must not choke on it =="
 
 # The filter from scripts/upgrade.sh, against fabricated target trees: one
