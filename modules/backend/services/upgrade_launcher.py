@@ -147,6 +147,52 @@ def _upgrade_in_flight() -> bool:
         os.close(fd)
 
 
+def _add_missing_env_keys() -> None:
+    """Top up modules/*/.env with keys this release expects.
+
+    The bash engine does this during its own intact module
+    (_intact_add_missing_env_keys), which covers every upgrade IT drives. It
+    does not cover the one that matters most here: a 0726 box is rescued by
+    0726's OWN Python engine, which never runs a line of the new code, so a
+    freshly rescued appliance still had no ELASTICSEARCH_USER /
+    ELASTICSEARCH_PASSWORD -- observed on a real run, 0 of 2 present after an
+    otherwise clean rescue. Harmless with elk disabled; on a box with elk
+    enabled the backend authenticates to Elasticsearch with a blank username
+    and nothing explains why.
+
+    So it also runs here, at the first startup we control on such a box --
+    the same reasoning that puts the engine install here. Shelling out to the
+    engine's own lib/config.sh keeps ONE definition of what the keys are: this
+    process must not grow a second, drifting copy of that list.
+
+    Add-only (UPDATE_ENV_ADD_ONLY=1): existing values -- pins, operator-edited
+    credentials -- are never rewritten.
+    """
+    engine_lib = os.path.join(WORKDIR, "lib", "config.sh")
+    if not os.path.isfile(engine_lib):
+        return
+    script = (
+        f'set -e; cd {shlex.quote(WORKDIR)}; '
+        f'SCRIPT_DIR={shlex.quote(WORKDIR)}; '
+        f'CONFIG_FILE={shlex.quote(os.path.join(WORKDIR, "config.yaml"))}; '
+        'LOG_FILE=/dev/null; '
+        'source lib/common.sh >/dev/null 2>&1 || true; '
+        'source lib/config.sh; '
+        'UPDATE_ENV_ADD_ONLY=1 update_env_files'
+    )
+    try:
+        r = subprocess.run(["bash", "-c", script], capture_output=True,
+                           text=True, timeout=120)
+        if r.returncode == 0:
+            print("[UPGRADE-LAUNCHER] checked modules/*/.env for keys this "
+                  "release expects", flush=True)
+        else:
+            print(f"[UPGRADE-LAUNCHER] .env key check failed "
+                  f"({r.stderr.strip()[:160]})", flush=True)
+    except Exception as e:
+        print(f"[UPGRADE-LAUNCHER] .env key check skipped: {e}", flush=True)
+
+
 def ensure_host_engine() -> bool:
     """Make the appliance's upgrade engine match the one in this image.
 

@@ -368,8 +368,12 @@ def run_startup_initialization():
     # control on such a box, so it is where the engine gets installed. No-op
     # on every normal appliance, which already has its own.
     try:
-        from services.upgrade_launcher import ensure_host_engine
+        from services.upgrade_launcher import ensure_host_engine, _add_missing_env_keys
         ensure_host_engine()
+        # Independently of whether the engine needed installing: a box rescued
+        # by a pre-bash release also misses any .env key a newer release added,
+        # and that engine never runs the new code that would add them.
+        _add_missing_env_keys()
     except Exception as e:
         print(f"[STARTUP] Upgrade-engine check skipped: {e}", flush=True)
 
