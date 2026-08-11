@@ -133,6 +133,32 @@ if [ -d "$REPO_DIR/data/yara-seed" ]; then
 fi
 sudo chown -R "$(id -u):$(id -g)" "$STAGE"
 
+# A THIN BUNDLE: --bundle-only with a module list.
+#
+# The legacy bundle's contents come from RELEASE_MODULES, not from --module, so
+# the only way to build a smaller one is to narrow that set. Doing it in the
+# STAGED copy keeps the committed file at the full nine, which is what a real
+# release must ship -- trimming the tracked file and forgetting to restore it
+# is precisely how a backend-only package gets published by accident.
+#
+# ~1 GB and a few minutes instead of ~6.4 GB and most of an hour, which is what
+# makes "build it, scp it, import it" a usable loop.
+if (( BUNDLE_ONLY )) && [ -n "$MODULES_CSV" ]; then
+    log "thin bundle: narrowing RELEASE_MODULES to '$MODULES_CSV' in the staged copy"
+    MODULES_CSV="$MODULES_CSV" python3 - "$STAGE/scripts/ci/build_release_package.py" <<'PY'
+import os, re, sys
+path = sys.argv[1]
+keep = {m.strip() for m in os.environ["MODULES_CSV"].split(",") if m.strip()}
+src = open(path).read()
+block = re.search(r"RELEASE_MODULES = \{.*?\n\}", src, re.S)
+if not block:
+    sys.exit("could not find RELEASE_MODULES in the staged packager")
+new = "RELEASE_MODULES = {\n" + "".join(f'    "{m}",\n' for m in sorted(keep)) + "}"
+open(path, "w").write(src[:block.start()] + new + src[block.end():])
+print(f"[local-build] staged RELEASE_MODULES = {sorted(keep)}")
+PY
+fi
+
 # The staged tree is mounted into the container AT THE SAME PATH it has on the
 # host. packager/proc.py takes HOST_PATH from INTACT_HOST_PATH (defaulting to
 # INTACT_PATH), and any `-v` it builds is interpreted by the host daemon -- so

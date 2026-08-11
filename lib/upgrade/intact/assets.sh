@@ -18,8 +18,65 @@ _intact_refresh_sidecars() {
             log_info "    refreshed modules/${m}/docker-compose.yaml"
         fi
         _intact_deliver_mount_assets "${src}/modules/${m}" "${SCRIPT_DIR}/modules/${m}" "$d" || return 1
+        _intact_refresh_module_code "${src}/modules/${m}" "${SCRIPT_DIR}/modules/${m}" "$m" || return 1
     done
     log_info "  refreshed ${n} sidecar compose file(s)"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# _intact_refresh_module_code <package module dir> <box module dir> <name>
+#
+# The module's BUILD INPUTS -- Dockerfile, entrypoint.sh and the helper scripts
+# beside them. An upgrade replaces the platform's own code (modules/backend,
+# nginx/html, lib/, scripts/, install.sh) but used to leave these untouched,
+# and lib/upgrade/velociraptor/image.sh runs `docker compose build` in this
+# very directory. So a release that fixed modules/velociraptor/Dockerfile or
+# entrypoint.sh rebuilt the image on the box FROM THE OLD ONES, and the fix
+# never arrived -- the same silent staleness as the logstash pipeline, one
+# level up.
+#
+# DEPTH 1 ONLY, and that is the safety property, not a shortcut. Everything
+# that carries per-box state lives in a SUBdirectory:
+#
+#   config/             velociraptor's server config and its CA, timesketch's
+#                       runtime LLM settings   (the mount-asset path above
+#                       handles what the package legitimately ships there,
+#                       with backups)
+#   secrets/            generated passwords
+#   clients/            the MSI/deb installers generated for this box
+#   bundled_artifacts/  written by the backend at runtime
+#
+# Staying at depth 1 means none of those can be touched here. No deletion
+# either: only files the package actually ships are considered, so anything
+# local simply stays.
+# ---------------------------------------------------------------------------
+_intact_refresh_module_code() {
+    local psrc="$1" pdst="$2" name="$3" f base d n=0
+    [[ -d "$psrc" ]] || return 0
+
+    while IFS= read -r f; do
+        base="$(basename "$f")"
+        # docker-compose.yaml is refreshed by the caller; .env is the
+        # operator's and is never shipped over.
+        case "$base" in
+            docker-compose.yaml|.env|.env.*) continue ;;
+        esac
+        d="${pdst}/${base}"
+        if [[ ! -f "$d" ]] || ! cmp -s "$f" "$d"; then
+            mkdir -p "$pdst" 2>/dev/null
+            if [[ -f "$d" ]]; then
+                local keep="${SCRIPT_DIR}/data/upgrade-backups/${name}/${base}"
+                mkdir -p "$(dirname "$keep")" 2>/dev/null
+                cp -p "$d" "$keep" 2>/dev/null
+            fi
+            cp -p "$f" "$d" || return 1
+            n=$((n + 1))
+            log_info "    refreshed modules/${name}/${base}"
+        fi
+    done < <(find "$psrc" -maxdepth 1 -type f 2>/dev/null | sort)
+
+    (( n )) && log_info "    modules/${name}: ${n} code file(s) refreshed"
     return 0
 }
 

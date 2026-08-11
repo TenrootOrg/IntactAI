@@ -161,5 +161,76 @@ test_dockers_fabricated_empty_directory_is_replaced_by_the_file() {
     assert_eq "$(cat "${PDST}/nginx.conf" 2>/dev/null)" "real"
 }
 
+# ---------------------------------------------------------------------------
+# module build inputs (_intact_refresh_module_code)
+#
+# An upgrade replaces the platform's own code but used to leave each module's
+# Dockerfile and entrypoint alone -- while lib/upgrade/velociraptor/image.sh
+# runs `docker compose build` in that same directory. So a release that fixed
+# a module's Dockerfile rebuilt the image on the box from the OLD one.
+#
+# The safety property is depth 1: everything carrying per-box state lives in a
+# subdirectory (config/ has velociraptor's CA, secrets/, clients/,
+# bundled_artifacts/), so it cannot be reached from here.
+# ---------------------------------------------------------------------------
+
+test_a_changed_module_dockerfile_is_refreshed() {
+    _fresh
+    printf 'FROM alpine\nRUN echo new\n' > "${PSRC}/Dockerfile"
+    printf 'FROM alpine\nRUN echo old\n' > "${PDST}/Dockerfile"
+    assert_true _intact_refresh_module_code "$PSRC" "$PDST" velociraptor
+    assert_contains "$(cat "${PDST}/Dockerfile")" "echo new"
+}
+
+test_a_changed_module_entrypoint_is_refreshed() {
+    _fresh
+    echo new > "${PSRC}/entrypoint.sh"
+    echo old > "${PDST}/entrypoint.sh"
+    assert_true _intact_refresh_module_code "$PSRC" "$PDST" velociraptor
+    assert_eq "$(cat "${PDST}/entrypoint.sh")" "new"
+}
+
+test_per_box_state_in_subdirectories_is_never_touched() {
+    # The one that matters: regenerating Velociraptor's config silently orphans
+    # every enrolled endpoint, and the generated client installers cannot be
+    # recovered from the package.
+    _fresh
+    mkdir -p "${PSRC}/config" "${PDST}/config" "${PDST}/clients" "${PDST}/secrets"
+    echo shipped-default > "${PSRC}/config/server.config.yaml"
+    echo THE-REAL-CA     > "${PDST}/config/server.config.yaml"
+    echo generated       > "${PDST}/clients/installer.msi"
+    echo hunter2         > "${PDST}/secrets/password"
+
+    assert_true _intact_refresh_module_code "$PSRC" "$PDST" velociraptor
+    assert_eq "$(cat "${PDST}/config/server.config.yaml")" "THE-REAL-CA"
+    assert_eq "$(cat "${PDST}/clients/installer.msi")" "generated"
+    assert_eq "$(cat "${PDST}/secrets/password")" "hunter2"
+}
+
+test_the_module_env_file_is_never_shipped_over() {
+    # .env holds the module's live pin and its credentials.
+    _fresh
+    echo "VELOCIRAPTOR_VERSION=9.9.9" > "${PSRC}/.env"
+    echo "VELOCIRAPTOR_VERSION=0.77.1" > "${PDST}/.env"
+    assert_true _intact_refresh_module_code "$PSRC" "$PDST" velociraptor
+    assert_contains "$(cat "${PDST}/.env")" "0.77.1"
+}
+
+test_a_replaced_module_code_file_is_backed_up() {
+    _fresh
+    echo new > "${PSRC}/entrypoint.sh"
+    echo old > "${PDST}/entrypoint.sh"
+    assert_true _intact_refresh_module_code "$PSRC" "$PDST" velociraptor
+    assert_eq "$(cat "${SCRIPT_DIR}/data/upgrade-backups/velociraptor/entrypoint.sh" 2>/dev/null)" "old"
+}
+
+test_an_unchanged_module_code_file_is_left_alone() {
+    _fresh
+    echo same > "${PSRC}/entrypoint.sh"
+    echo same > "${PDST}/entrypoint.sh"
+    assert_true _intact_refresh_module_code "$PSRC" "$PDST" velociraptor
+    assert_not_contains "$(cat "$LOG_FILE")" "refreshed modules/velociraptor/entrypoint.sh"
+}
+
 run_all_tests
 rm -f "$LOG_FILE"
