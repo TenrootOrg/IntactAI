@@ -182,7 +182,8 @@ for _lib in core interrupt helpers report health/core health/probes health/gate 
             modules/plaso modules/aws_sigma modules/o365rc \
             timesketch/postgres timesketch/schema timesketch/health timesketch/timesketch \
             velociraptor/snapshot velociraptor/image velociraptor/velociraptor velo_refresh \
-            intact/config intact/tree intact/assets intact/image intact/intact; do
+            intact/config intact/tree intact/assets intact/image intact/intact \
+            hostdeps; do
     # shellcheck source=/dev/null
     source "${_CODE_DIR}/lib/upgrade/${_lib}.sh" || { echo "Cannot source lib/upgrade/${_lib}.sh" >&2; exit 2; }
 done
@@ -473,6 +474,7 @@ main() {
     plan_current_versions
     plan_build
     plan_print_table
+    hostdeps_report
     plan_reject_downgrades || return 2
     plan_check_disk || return 2
 

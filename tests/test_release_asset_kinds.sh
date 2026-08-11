@@ -121,5 +121,75 @@ else
 fi
 
 echo
+echo "== host-dependency drift is reported, never applied =="
+# scripts/upgrade.sh sources common/config/docker/health/package/release/
+# permissions -- NOT deps -- so an upgrade has never touched Docker or the
+# host's apt packages. A box installed with Docker 24 stayed on Docker 24
+# through any number of upgrades. It now says so; applying is a separate,
+# operator-run script, because installing docker-ce restarts the daemon and
+# would kill the helper container the engine runs inside.
+_up() { local v="${1#*:}"; printf '%s' "${v%%-*}"; }
+check "epoch and revision are stripped" \
+      "$(_up '5:29.7.2-1~ubuntu.24.04~noble')" "29.7.2"
+check "a version with no epoch still parses" \
+      "$(_up '2.3.3-1~ubuntu.24.04~noble')" "2.3.3"
+
+# The behind/ahead/equal decision, in the same shape hostdeps.sh uses.
+_cmp() {
+    local have="$1" want="$2"
+    [[ "$have" == "$want" ]] && { echo same; return; }
+    [[ "$(printf '%s\n%s\n' "$have" "$want" | sort -V | head -1)" == "$have" ]] \
+        && echo behind || echo ahead
+}
+check "older host is BEHIND"        "$(_cmp 24.0.7 29.7.2)" "behind"
+check "matching host is same"       "$(_cmp 29.7.2 29.7.2)" "same"
+check "newer host is ahead"         "$(_cmp 30.1.0 29.7.2)" "ahead"
+# sort -V, not string compare: 29.7.2 vs 29.10.0 is the case a lexical
+# comparison gets backwards.
+check "double-digit minors compare numerically" "$(_cmp 29.7.2 29.10.0)" "behind"
+
+U="${ROOT}/scripts/upgrade.sh"
+if grep -q 'hostdeps_report' "$U"; then
+    ok "the upgrade runs the report"
+else
+    fail "the upgrade runs the report"
+fi
+# The load-bearing negative: sourcing deps.sh is what would make an upgrade
+# able to apply host packages, and it must not.
+if grep -qE '^for _lib in common config docker health package release permissions; do' "$U"; then
+    ok "the upgrade still does NOT source lib/deps.sh"
+else
+    fail "the upgrade still does not source lib/deps.sh" \
+         "an upgrade must never be able to apt-get the host"
+fi
+
+H="${ROOT}/scripts/update_host_deps.sh"
+if [[ -f "$H" ]]; then
+    ok "scripts/update_host_deps.sh exists"
+else
+    fail "scripts/update_host_deps.sh exists"
+fi
+if grep -q 'EUID != 0' "$H"; then
+    ok "it refuses to run without root"
+else
+    fail "it refuses to run without root"
+fi
+# Named packages, not _missing_host_deps(): that helper fills gaps on a fresh
+# box and skips anything already installed -- and an out-of-date Docker IS
+# installed, so deriving the list would silently do nothing.
+if grep -q '_apt_install_from_bundle "$BUNDLE_DIR" \\' "$H" \
+   && grep -q 'docker-ce docker-ce-cli containerd.io docker-compose-plugin' "$H"; then
+    ok "it names the packages so apt upgrades them"
+else
+    fail "it names the packages so apt upgrades them" \
+         "deriving from _missing_host_deps would skip an already-installed old Docker"
+fi
+if grep -q "daemon will restart" "$H"; then
+    ok "it warns that Docker restarts"
+else
+    fail "it warns that Docker restarts"
+fi
+
+echo
 echo "${PASS}/${TOTAL} passed"
 [[ "$PASS" == "$TOTAL" ]] || exit 1

@@ -51,6 +51,9 @@ UPKG_LOOSE_MANIFEST="" # a manifest.json found beside the assets, not inside one
 upkg_expand_args() {
     UPKG_ASSETS=()
     UPKG_LOOSE_MANIFEST=""
+    # Not a module asset, but not nothing either: lib/upgrade/hostdeps.sh reads
+    # its apt index to report whether the host's Docker matches this release.
+    UPKG_SYSTEM_BUNDLE=""
     local p f listing unwrap
     for p in "$@"; do
         # Two release assets are NOT module assets and must never be collected
@@ -73,6 +76,10 @@ upkg_expand_args() {
                 < <(find "$p" -maxdepth 1 \( -name '*.tar.gz' -o -name '*.tar' \) \
                          ! -name '*-system-bundle.tar' \
                          ! -name '*-bootstrap.tar' | sort)
+            if [[ -z "$UPKG_SYSTEM_BUNDLE" ]]; then
+                UPKG_SYSTEM_BUNDLE="$(find "$p" -maxdepth 1 -name '*-system-bundle.tar' \
+                                      2>/dev/null | head -1)"
+            fi
             # The merged root manifest.json, if it's sitting beside the module
             # tarballs -- either download_release_assets already renamed it
             # (lib/release.sh), or an operator downloaded
