@@ -90,14 +90,40 @@ RELEASE_MODULES = {
                       # tusd -- both `intact-backend-` and `tusd-` are attributed
                       # to `intact` by image_owner_prefixes, so this one entry
                       # carries the platform and its upload sidecar.
-    "elk",
-    "iris",
-    "timesketch",
-    "plaso",
-    "velociraptor",   # both kinds -- 0.77.1 and the legacy 0.7.1 client
-    "volweb",
-    "aws_sigma",
-    "portainer",
+    # ---------------------------------------------------------------------
+    # TEMPORARY (2026-08-11) — everything except `intact` is commented out
+    # while the intact-20260726 upgrade path is being worked on.
+    #
+    # WHY: that work only exercises the backend swap, and a full set is ~6.4 GB
+    # and the better part of an hour per build. Backend-only is ~1 GB and a few
+    # minutes, which is the difference between iterating and waiting.
+    #
+    # A PACKAGE BUILT LIKE THIS IS NOT SHIPPABLE. It carries one module, so
+    # applying it upgrades `intact` and marks the other nine
+    # "skip: not in this package" -- which reads exactly like a successful
+    # upgrade. Nothing downstream can tell this apart from a real release:
+    # --emit-matrix's completeness check compares against THIS set, so it
+    # agrees with whatever is left uncommented.
+    #
+    # UNCOMMENT ALL OF THESE before building anything anyone installs.
+    # ---------------------------------------------------------------------
+    # "elk",
+    # "iris",
+    # "timesketch",
+    # "plaso",
+    # "velociraptor",   # both kinds -- 0.77.1 and the legacy 0.7.1 client
+    # "volweb",
+    # "aws_sigma",
+    # "portainer",
+}
+
+# What a COMPLETE release ships, independent of what RELEASE_MODULES currently
+# has uncommented. Only used to notice, and say, that the set above has been
+# trimmed -- see the banner in main(). Keep both lists in step when a module is
+# genuinely added to or removed from the product.
+_FULL_RELEASE_MODULES = {
+    "intact", "elk", "iris", "timesketch", "plaso",
+    "velociraptor", "volweb", "aws_sigma", "portainer",
 }
 
 # Deliberately NOT shipped.
@@ -393,6 +419,29 @@ def main() -> int:
         return 0
 
     modules = release_module_set(args.tag, only=args.module)
+
+    # Say it loudly when RELEASE_MODULES has been trimmed.
+    #
+    # Nothing else can. --emit-matrix's completeness check compares against
+    # RELEASE_MODULES itself, so a trimmed set agrees with itself and every
+    # downstream check passes. On the box, the missing modules come out as
+    # "skip: not in this package", which is indistinguishable from a genuine
+    # release that simply did not move them. A package built from a trimmed set
+    # is therefore a perfectly convincing forgery of a complete one, and the
+    # only moment anyone can notice is right here.
+    _pinned = set(release_module_set(args.tag))
+    _trimmed = sorted(_FULL_RELEASE_MODULES - _pinned)
+    if _trimmed and not args.module:
+        print("[ci-package] " + "!" * 62, flush=True)
+        print(f"[ci-package] !! PARTIAL RELEASE — {len(_pinned)} of "
+              f"{len(_FULL_RELEASE_MODULES)} modules", flush=True)
+        print(f"[ci-package] !! omitted: {', '.join(_trimmed)}", flush=True)
+        print("[ci-package] !! RELEASE_MODULES is trimmed (see its comment). This "
+              "package is", flush=True)
+        print("[ci-package] !! for testing only -- applying it upgrades what is "
+              "here and", flush=True)
+        print("[ci-package] !! reports the rest as 'not in this package'.", flush=True)
+        print("[ci-package] " + "!" * 62, flush=True)
 
     # Query modes answer and exit. They must not touch the checkout: CI calls
     # --emit-matrix and --print-modules to plan the build, and a query that

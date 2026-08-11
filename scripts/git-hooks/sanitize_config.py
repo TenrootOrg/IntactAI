@@ -44,9 +44,17 @@ def _pat(prefix):
     The trailing group is `[ \\t]*` and not `\\s*` for an equally load-bearing
     reason: `\\s` matches a newline, so it ate the line ending and every edit
     added a blank line to the file.
+
+    The unquoted alternative stops at WHITESPACE, not at '#'. In YAML a '#'
+    only opens a comment when something blank precedes it, so `p@ss#word` is
+    one value -- but `[^\\s#]*` cut it at the hash, treated `#word` as a
+    comment, and wrote back `123123#word`. Same mangling as the quoted case
+    above, reached by a different route: `1234qwer!@#$` written WITHOUT quotes
+    came out as `123123#$`. The tracked config.yaml happens to quote it, which
+    is why this survived unnoticed until tests/test_config_sanitizer.py.
     """
     return (r"^(" + prefix + r":[ \t]*)"
-            r"('[^']*'|\"[^\"]*\"|[^\s#]*)"
+            r"('[^']*'|\"[^\"]*\"|[^\s]*)"
             r"([ \t]*(?:#.*)?)$")
 
 

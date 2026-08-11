@@ -91,6 +91,34 @@ _MODULE_BANNER = re.compile(
 _EXIT_STATUS = {0: "completed", 3: "completed", 130: "cancelled", 143: "cancelled"}
 
 
+# The engine copy baked into this image (modules/backend/Dockerfile), used only
+# when the appliance has none of its own.
+_BUNDLED_ENGINE = "/app/host-engine/scripts/upgrade.sh"
+
+
+def _engine_for_helper():
+    """(path the helper should run, whether it is the bundled fallback).
+
+    Normally the appliance's own scripts/upgrade.sh, which is the file every
+    upgrade mirrors into place and the one an operator would run by hand.
+
+    The fallback exists for a box that has never had it: an intact-20260726
+    appliance reaches this code by way of its OWN Import UI, whose Phase 1
+    swaps in this image and then hands to a Phase 2 that was deleted with the
+    Python engine. It comes back showing the upgrade UI with nothing on disk
+    for that UI to call. Running the bundled copy against --root <appliance>
+    is the same _CODE_DIR / SCRIPT_DIR split the in-package stage-0 hop uses,
+    and the intact module then mirrors lib/ and scripts/ onto the box -- so
+    this path is taken at most once per appliance, ever.
+
+    WORKDIR is this container's view of the appliance; HOST_PATH is the same
+    tree as the DAEMON sees it, which is what the helper must be given.
+    """
+    if os.path.isfile(os.path.join(WORKDIR, "scripts", "upgrade.sh")):
+        return f"{HOST_PATH}/scripts/upgrade.sh", False
+    return _BUNDLED_ENGINE, True
+
+
 def _run_paths(run_id: str):
     log_path = f"{WORKDIR}/data/tmp/upgrade-{run_id}.log"
     done_path = f"{WORKDIR}/data/tmp/upgrade-{run_id}.done.json"
@@ -167,6 +195,16 @@ def launch(run_id: str, cli_args: List[str]) -> Optional[str]:
     # rather than after the foreground command returns. The second `wait`
     # collects the child's REAL status: the first returns 128+signal the moment
     # the trap fires, while upgrade.sh is still unwinding.
+    engine, bundled = _engine_for_helper()
+    if bundled:
+        add_log_to_run(
+            run_id,
+            "This appliance has no scripts/upgrade.sh yet, so the upgrade is "
+            "running the engine bundled in the backend image. It will install "
+            "the engine onto the box as its first step; later upgrades will "
+            "use the appliance's own copy.",
+            "warning")
+
     launch_script = f"{WORKDIR}/data/tmp/upgrade-launch-{run_id}.sh"
     host_launch_script = f"{HOST_PATH}/data/tmp/upgrade-launch-{run_id}.sh"
     with open(launch_script, "w") as fh:
@@ -180,7 +218,7 @@ def launch(run_id: str, cli_args: List[str]) -> Optional[str]:
             "# writing it.\n"
             "sleep 3\n"
             "\n"
-            f"bash {shlex.quote(HOST_PATH)}/scripts/upgrade.sh "
+            f"bash {shlex.quote(engine)} "
             f"{' '.join(shlex.quote(a) for a in cli_args)} "
             f"--root {shlex.quote(HOST_PATH)} "
             f"--log {shlex.quote(host_log_path)} &\n"

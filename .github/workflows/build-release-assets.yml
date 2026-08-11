@@ -33,8 +33,19 @@
 name: Build release assets (per module)
 
 on:
-  release:
-    types: [published]
+  # TEMPORARY — auto-trigger disabled while the 0726 upgrade path is being
+  # worked on (2026-08-11). Those boxes can only take the single-file bundle
+  # from build-release-package.yml, so every test release only needs that one;
+  # building ~6 GB of per-module assets alongside it just makes each iteration
+  # slower for no benefit.
+  #
+  # RESTORE THIS before cutting anything customers take. Without it a release
+  # ships ONLY the legacy bundle, and every box past the pre-index era loses
+  # the per-module path it now prefers -- silently, because upgrade_fetch_release
+  # just falls back to the single file.
+  #
+  # release:
+  #   types: [published]
   workflow_dispatch:
     inputs:
       tag:

@@ -78,6 +78,31 @@ COPY modules/backend/scripts/ /app/scripts/
 # These are NOT volume-mounted, so they persist in the container image
 COPY modules/backend/config/ /app/config/
 
+# THE HOST-SIDE UPGRADE ENGINE, carried as a bootstrap copy.
+#
+# Not for this container to run against itself -- upgrades normally execute
+# the appliance's own /scripts/upgrade.sh, mounted into the helper container.
+# This copy exists for the one box that has not got that file yet.
+#
+# An intact-20260726 appliance has no scripts/upgrade.sh and no lib/upgrade/ at
+# all. Its only way to take a new release is its own Import Package UI, whose
+# Phase 1 swaps in THIS image and then hands over to a Phase 2 that no longer
+# exists. The box comes back running new backend code, showing the upgrade UI,
+# with nothing on disk for that UI to call -- so it would sit there
+# half-upgraded and unable to finish itself.
+#
+# scripts/upgrade.sh already separates _CODE_DIR (where the engine lives) from
+# --root (the appliance it acts on); that is the same split the in-package
+# stage-0 hop uses. So the helper can run THIS copy against the host and the
+# first thing it does is mirror lib/ and scripts/ onto the appliance, after
+# which the box is self-sufficient and this copy is never used again.
+#
+# Deliberately at /app/host-engine, not /app/lib + /app/scripts:
+# /app/scripts is already the backend's own, and shadowing it would be a
+# genuinely confusing way to break the backend.
+COPY lib/ /app/host-engine/lib/
+COPY scripts/upgrade.sh /app/host-engine/scripts/upgrade.sh
+
 # Re-copy the template after the source layers (see the note above — the
 # operator's real config.yaml is bind-mounted over this at runtime).
 COPY config.yaml /app/config.yaml
