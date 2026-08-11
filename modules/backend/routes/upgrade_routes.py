@@ -176,14 +176,33 @@ def list_upgrade_refs():
     if "error" in data:
         return jsonify({"success": False, "error": data["error"]}), 200
 
-    refs = [
-        {
-            "name": r["tag"],
+    releases = data.get("releases") or []
+
+    # `label` is what the dropdown actually displays (settings.html renders
+    # x-text="ref.label"), so omitting it produced a list of selectable BLANK
+    # options -- the release list looked empty while being perfectly populated.
+    # `kind` and `latest` are read by the same markup. The deleted resolver
+    # built exactly these three; keep the wording it used.
+    newest = ""
+    for r in releases:
+        if r.get("tag", "") > newest:
+            newest = r.get("tag", "")
+
+    refs = []
+    for r in releases:
+        tag = r["tag"]
+        label = f"release {tag}"
+        if tag == newest:
+            label += " (latest)"
+        refs.append({
+            "kind": "tag",
+            "name": tag,
+            "label": label,
+            "latest": tag == newest,
+            "prerelease": False,
             "package_mb": round(r.get("payload_bytes", 0) / (1024 * 1024), 1),
             "shape": r.get("shape"),
-        }
-        for r in (data.get("releases") or [])
-    ]
+        })
     return jsonify({"success": True, "refs": refs})
 
 
