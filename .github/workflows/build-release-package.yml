@@ -1,25 +1,39 @@
 # Build the ONE-FILE upgrade package for a release, IN CI.
 #
-# SUPERSEDED by build-release-assets.yml, which builds an asset per module and
-# is what releases use now. This is kept for the single case that one cannot
-# serve: a box old enough to predate the release index looks for exactly
-# `intact-upgrade-<tag>.tar.gz` and nothing else, and someone hand-carrying one
-# file into an air-gapped site would rather carry one than nine.
+# BOTH SHAPES NOW BUILD ON PUBLISH (2026-08-11), deliberately, and this is the
+# first time that has been the arrangement -- it has otherwise flip-flopped
+# between "only this one" and "only per-module", and each swap broke the half
+# of the fleet the other shape served.
 #
-# RESTORED to `release: published` auto-trigger (2026-08-09, same day it was
-# briefly swapped off): the fleet is NOT actually on the per-module wrapper
-# format yet, despite 20260807/08/09 having shipped -- real boxes still need
-# this single-file bundle on every release, not just on demand. Swap this
-# back off (and build-release-assets.yml's auto-trigger back on) once the
-# fleet has genuinely moved past pre-index releases. workflow_dispatch still
-# works the same as always for a one-off manual build.
+#   this workflow            intact-upgrade-<tag>.tar.gz[.part-NN]
+#   build-release-assets.yml <tag>-<module>.tar + <tag>.index.json + <tag>.manifest.json
 #
-# Original reasoning for why this was ever on-demand-only, preserved because
-# it still applies whenever the swap-back eventually happens: running on
-# every release publish means every release quietly starts a second,
-# differently-shaped build and attaches a whole-stack tarball nobody asked
-# for, and two workflows racing to upload assets under one tag is how the
-# last round of confusion started.
+# A box old enough to predate the release index looks for exactly
+# `intact-upgrade-<tag>.tar.gz` and nothing else. intact-20260726 is the live
+# example, and it needs more than the filename: it has no scripts/upgrade.sh
+# and no lib/upgrade/ of its own, so the engine can only reach it INSIDE the
+# package, via the stage-0 hop. Verified end to end on 2026-08-11 against a
+# real 0726 install. Modern boxes take the index branch instead
+# (upgrade_fetch_release prefers index.json whenever the release has one), so
+# per-module has to keep building too.
+#
+# THE TWO DO NOT COLLIDE. Different filenames -- `$TAG-*` and `$TAG.index.json`
+# versus `intact-upgrade-$TAG.tar.gz*` -- so neither `gh release upload` can
+# clobber the other's assets, and each workflow verifies its own build
+# artifacts rather than reading what is attached to the release. The earlier
+# warning about "two workflows racing to upload assets under one tag" was
+# about two dispatches of the SAME workflow, which is still true and still
+# guarded by that workflow's own concurrency group.
+#
+# One cosmetic consequence, so it does not read as a bug: `upgrade.sh --list`
+# and the dashboard's release picker sum every .tar/.tar.gz/.part asset on a
+# release to show its payload size, so a release carrying both shapes reports
+# roughly double what an upgrade actually downloads. The upgrade itself fetches
+# one shape, not both.
+#
+# The cost is real and accepted: every publish now runs a second, slower,
+# whole-stack build. Drop this trigger back to workflow_dispatch once no box in
+# the fleet predates the index.
 #
 # The build runs the exact same prepare_upgrade_package() the platform uses,
 # headless, inside a container from the release's freshly-built backend image
@@ -27,16 +41,17 @@
 # /opt/sigma-rules (for the aws_sigma rule pack), and an output dir mounted.
 # See scripts/ci/build_release_package.py.
 
-name: Build release upgrade package (single file, on demand)
+name: Build release upgrade package (single file)
 
 on:
-  # SUPERSEDED by build-release-assets.yml as the auto-triggered release
-  # workflow (2026-08-10). This remains for the single case that one cannot
-  # serve: a box old enough to predate the release index looks for exactly
-  # `intact-upgrade-<tag>.tar.gz` and nothing else, and someone hand-carrying
-  # one file into an air-gapped site would rather carry one than nine.
-  #
-  # Use workflow_dispatch to build a legacy single-file bundle on demand.
+  # Auto-triggered ALONGSIDE build-release-assets.yml, not instead of it -- see
+  # the header. Pre-index boxes (intact-20260726) can only take this shape;
+  # everything newer takes the per-module index. Both have to exist on a
+  # release for both halves of the fleet to be upgradable from it.
+  release:
+    types: [published]
+  # Still available for building this shape against a tag whose release was
+  # published before both-shapes was turned on.
   workflow_dispatch:
     inputs:
       tag:
