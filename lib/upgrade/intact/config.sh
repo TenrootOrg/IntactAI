@@ -160,3 +160,47 @@ _intact_validate_config_pins() {
     log_info "  config.yaml pins verified for every enabled module"
     return 0
 }
+
+# ---------------------------------------------------------------------------
+# _intact_add_missing_env_keys
+#
+# Add .env keys a newer release expects and this box has never had.
+#
+# update_env_files() derives every module's .env from config.yaml, and it is
+# called from install.sh ONLY -- never from an upgrade. So a key introduced in
+# a later release reaches a fresh install and never reaches an upgraded box.
+#
+# Seen for real: a 0726 appliance upgraded to current had no
+# ELASTICSEARCH_USER / ELASTICSEARCH_PASSWORD in modules/backend/.env, because
+# 0726's config.sh never wrote them. The backend's own docker-compose.yaml
+# interpolates ${ELASTICSEARCH_USER}, so every recreate logged
+#
+#   The "ELASTICSEARCH_USER" variable is not set. Defaulting to a blank string.
+#
+# and the container came up with blank credentials. Harmless while elk is
+# disabled; on a box with elk enabled the backend cannot authenticate to
+# Elasticsearch, and nothing says why. The elk module upgrader writes those two
+# keys, but only when elk itself is being upgraded -- which is exactly the run
+# where nobody is looking for this.
+#
+# ADD-ONLY, deliberately. This runs mid-upgrade, and update_env_files also
+# writes VERSION pins; rewriting those from config.yaml while the engine is
+# stamping them module by module would make plan_current_versions believe a
+# module is already at its target before it has been touched. Existing values
+# -- pins, operator-edited credentials -- are left exactly as they are.
+# ---------------------------------------------------------------------------
+_intact_add_missing_env_keys() {
+    if ! declare -F update_env_files >/dev/null 2>&1; then
+        log_warn "  update_env_files is unavailable; skipping the .env key check"
+        return 0
+    fi
+    local before after
+    before="$(cat "${SCRIPT_DIR}"/modules/*/.env 2>/dev/null | wc -l)"
+    UPDATE_ENV_ADD_ONLY=1 update_env_files >/dev/null 2>&1
+    unset UPDATE_ENV_ADD_ONLY
+    after="$(cat "${SCRIPT_DIR}"/modules/*/.env 2>/dev/null | wc -l)"
+    if (( after > before )); then
+        log_info "  added $(( after - before )) .env key(s) this release expects that this box did not have"
+    fi
+    return 0
+}

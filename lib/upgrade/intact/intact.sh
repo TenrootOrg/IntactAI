@@ -109,6 +109,10 @@ upgrade_module_intact() {
     fi
     u_do "mirror install.sh" -- _intact_mirror_install_sh "$src"
     u_do --timeout 600 "refresh sidecar compose files and assets" -- _intact_refresh_sidecars "$src"
+    # Keys a newer release expects that this box has never had. update_env_files
+    # runs from install.sh only, so without this an upgraded box never gains
+    # them -- see _intact_add_missing_env_keys.
+    u_do "add .env keys this release expects" -- _intact_add_missing_env_keys
 
     # 4. The image, then the compile gate BEFORE anything restarts. A backend
     #    that cannot import is a bricked appliance, and the gate is what turns

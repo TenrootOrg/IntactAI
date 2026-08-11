@@ -272,6 +272,16 @@ update_env_var() {
     fi
 
     if grep -q "^${var_name}=" "$env_file"; then
+        # ADD-ONLY MODE: leave an existing value exactly as it is.
+        #
+        # Set by the upgrade path (see _intact_add_missing_env_keys). An
+        # upgrade must not rewrite .env values from config.yaml -- the pins in
+        # there are what the engine itself is stamping module by module, and
+        # overwriting them mid-run would tell plan_current_versions a module is
+        # already at its target when it has not been touched yet. What an
+        # upgrade DOES need is the keys a newer release added, which no box
+        # gets today because update_env_files only ever runs from install.sh.
+        [[ "${UPDATE_ENV_ADD_ONLY:-0}" == "1" ]] && return 0
         sed -i "s|^${var_name}=.*|${var_name}=${var_value}|" "$env_file"
     else
         # Variable doesn't exist, add it

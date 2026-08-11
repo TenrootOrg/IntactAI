@@ -5,6 +5,16 @@
 # file that is not on disk, Docker fabricates an empty DIRECTORY at the mount
 # path and the container dies with exit 126. So the compose file and its
 # assets have to land together.
+# Whether config.yaml has this module switched on. `backend` and `nginx` are
+# the platform itself and have no entry, so they always count as enabled.
+_intact_module_is_enabled() {
+    local m="$1"
+    case "$m" in backend|nginx) return 0 ;; esac
+    local v
+    v="$(read_config "['modules']['${m}']['enabled']" 2>/dev/null || echo "")"
+    case "$v" in True|true|1|yes) return 0 ;; *) return 1 ;; esac
+}
+
 _intact_refresh_sidecars() {
     local src="$1" m n=0
     for m in elk iris timesketch velociraptor volweb portainer nginx backend; do
@@ -138,7 +148,17 @@ _intact_deliver_mount_assets() {
             # branch below exists to recover FROM on a later run. Naming it
             # now, before compose ever runs, turns that into a warning
             # instead of a mystery.
-            [[ -e "$d" ]] || log_warn "    ${rel} is referenced by ${compose} but neither the package nor this box has it -- compose may fabricate an empty directory there"
+            # Only worth saying for a module that actually runs here. The
+            # refresh walks every module's compose so a later-enabled one is
+            # current, which means on a box with (say) only portainer up it was
+            # warning about timesketch's llm_providers mount -- a module with
+            # no containers, no data and nothing to break. Noise in an upgrade
+            # log is not free: it trains people to skim past the line that
+            # matters.
+            if [[ -e "$d" ]] || ! _intact_module_is_enabled "$(basename "$pdst")"; then
+                continue
+            fi
+            log_warn "    ${rel} is referenced by ${compose} but neither the package nor this box has it -- compose may fabricate an empty directory there"
             continue
         fi
         if [[ -d "$d" ]]; then
