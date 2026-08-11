@@ -359,6 +359,20 @@ def run_startup_initialization():
     except Exception as e:
         print(f"[STARTUP] Upgrade-run reconciliation skipped: {e}", flush=True)
 
+    # Heal a box that arrived here without an upgrade engine.
+    #
+    # A pre-bash release (intact-20260726) upgrades via its own Python engine,
+    # which mirrors modules/backend and nginx/html and nothing else -- so the
+    # appliance ends up running THIS code with no scripts/upgrade.sh and no
+    # lib/upgrade/ on disk. This process starting is the first moment we
+    # control on such a box, so it is where the engine gets installed. No-op
+    # on every normal appliance, which already has its own.
+    try:
+        from services.upgrade_launcher import ensure_host_engine
+        ensure_host_engine()
+    except Exception as e:
+        print(f"[STARTUP] Upgrade-engine check skipped: {e}", flush=True)
+
     # Initialize Elasticsearch — only when the module is actually enabled.
     # Previously this ran unconditionally even on installs with
     # modules.elk.enabled: false (the common case), attempting a network

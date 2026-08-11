@@ -44,13 +44,43 @@ _down() {
     done
 }
 
+# Only what config.yaml says is enabled.
+#
+# `docker compose up` in a module directory does not care whether the operator
+# enabled that module -- the compose file is on disk either way, because it
+# ships with the checkout. Bringing every directory up therefore started elk,
+# timesketch, iris, volweb, velociraptor and portainer on a box deliberately
+# installed with all of them DISABLED, complete with fresh volumes that were
+# never in the snapshot. Restoring a baseline has to reproduce the baseline,
+# not the maximal set the tree happens to describe.
+#
+# backend and nginx are always brought up: they are the platform itself, not a
+# module, and config.yaml has no entry for them.
+_enabled_modules() {
+    python3 - "$ROOT/config.yaml" <<'PY' 2>/dev/null || true
+import sys, yaml
+try:
+    doc = yaml.safe_load(open(sys.argv[1])) or {}
+except Exception:
+    raise SystemExit(0)
+for name, mod in (doc.get("modules") or {}).items():
+    if isinstance(mod, dict) and mod.get("enabled"):
+        print(name)
+PY
+}
+
 _up() {
-    local m
+    local m enabled
+    enabled=" $(_enabled_modules | tr '\n' ' ') "
     # Reverse order: backend and nginx last, so the dashboard only comes back
     # once what it talks to is already up.
     for (( i=${#MODULES[@]}-1 ; i>=0 ; i-- )); do
         m="${MODULES[$i]}"
         [ -f "$ROOT/modules/$m/docker-compose.yaml" ] || continue
+        case "$m" in
+            backend|nginx) ;;                      # the platform, always
+            *) [[ "$enabled" == *" $m "* ]] || continue ;;
+        esac
         ( cd "$ROOT/modules/$m" && sudo docker compose up -d ) >/dev/null 2>&1
     done
 }

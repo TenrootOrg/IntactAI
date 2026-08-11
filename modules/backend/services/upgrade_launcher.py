@@ -119,6 +119,158 @@ def _engine_for_helper():
     return _BUNDLED_ENGINE, True
 
 
+_BUNDLED_ENGINE_ROOT = "/app/host-engine"
+
+
+def _upgrade_in_flight() -> bool:
+    """True when an upgrade currently holds the lock.
+
+    Non-blocking probe of the same flock scripts/upgrade.sh takes, so this
+    agrees with the engine rather than guessing. Used to keep the refresh below
+    from rewriting files a running upgrade might still be reading.
+    """
+    lock = os.path.join(WORKDIR, "data", "tmp", "upgrade.lock")
+    if not os.path.exists(lock):
+        return False
+    try:
+        import fcntl
+        fd = os.open(lock, os.O_RDWR)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    except OSError:
+        return True
+    finally:
+        os.close(fd)
+
+
+def ensure_host_engine() -> bool:
+    """Make the appliance's upgrade engine match the one in this image.
+
+    Called once at startup. Returns True when it wrote anything.
+
+    THE RULE: the running backend image is the authority. Whatever the previous
+    version left on disk, the new code repairs it -- so a box can always be
+    fixed forward by shipping a newer release, which is the only lever that
+    reliably reaches an appliance in the field.
+
+    This is the same idea phase 1 of an upgrade is built on: replace the code,
+    keep only what carries state (config.yaml, the module .env files, data/),
+    and let the NEW code perform the actual upgrade. upgrade_module_intact does
+    exactly that for modules/backend, nginx/html, lib/, scripts/ and
+    install.sh. This function is the stand-in for the one case where phase 1
+    cannot: a pre-bash release doing the replacing, whose own engine only knows
+    about modules/backend and nginx/html.
+
+    And the engine is worth restoring even when nobody opens the dashboard.
+    scripts/upgrade.sh is STANDALONE BY DESIGN -- it talks to docker and the
+    checkout, never to this backend -- so putting it back on disk restores the
+    box's ability to be upgraded from a shell while the backend is stopped,
+    crash-looping, or gone. That is exactly when an operator needs it most, and
+    a box that only has an engine inside a container image does not have one.
+
+    WHY THIS EXISTS. An intact-20260726 box is upgraded through its OWN Import
+    UI, and that engine only ever mirrors `modules/backend` and
+    `modules/nginx/html` -- it has never heard of `lib/upgrade/` or
+    `scripts/upgrade.sh`, because neither existed when it was written, and it
+    is already deployed so it cannot be changed. Verified on a real 0726 box:
+    the upgrade completed, VERSION and the backend image moved to the new
+    release, the old Python engine was gone -- and the appliance had no
+    `scripts/upgrade.sh` at all. The new UI was showing buttons with nothing on
+    disk to run.
+
+    The first moment we control on that box is this process starting. So heal
+    it here: the image carries the matching engine (see the Dockerfile), the
+    appliance root is bind-mounted rw, and this runs as root.
+
+    `lib/` is refreshed too, not just `scripts/upgrade.sh`. A box arriving from
+    0726 has year-old `lib/common.sh` and `lib/config.sh` next to no
+    `lib/upgrade/` at all, and the engine sources those shared files -- leaving
+    them stale means the new engine running against old libraries. They are
+    shipped code with no operator state in them, so replacing them is safe and
+    is what the box would have had anyway.
+
+    Two things keep this from being reckless:
+
+    * NOT WHILE AN UPGRADE IS RUNNING. The helper executes the appliance's own
+      scripts/upgrade.sh, and bash reads a script as it goes -- rewriting it
+      underneath a live run is a way to corrupt one. The intact module recreates
+      this container mid-upgrade, so that restart lands squarely inside the
+      danger window. In practice the stage-0 hop means the executing copy is the
+      package's, not the box's, but the lock is cheap and the failure would be
+      baffling.
+    * ONLY FILES THAT DIFFER. On a healthy box every file already matches, so a
+      restart writes nothing and mtimes stay put.
+    """
+    try:
+        dst_engine = os.path.join(WORKDIR, "scripts", "upgrade.sh")
+        src_lib = os.path.join(_BUNDLED_ENGINE_ROOT, "lib")
+        src_engine = os.path.join(_BUNDLED_ENGINE_ROOT, "scripts", "upgrade.sh")
+        if not (os.path.isdir(src_lib) and os.path.isfile(src_engine)):
+            if not os.path.isfile(dst_engine):
+                print("[UPGRADE-LAUNCHER] this appliance has no scripts/upgrade.sh "
+                      "and this image carries no bundled copy — upgrades from the "
+                      "UI will not work until one is installed", flush=True)
+            return False
+
+        if _upgrade_in_flight():
+            print("[UPGRADE-LAUNCHER] an upgrade holds the lock — leaving the "
+                  "appliance's engine alone until it finishes", flush=True)
+            return False
+
+        import filecmp
+        import shutil
+
+        written = []
+
+        def _sync(src, dst):
+            if os.path.isfile(dst) and filecmp.cmp(src, dst, shallow=False):
+                return
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(src, dst)
+            written.append(os.path.relpath(dst, WORKDIR))
+
+        for root, _dirs, files in os.walk(src_lib):
+            for name in files:
+                s = os.path.join(root, name)
+                _sync(s, os.path.join(WORKDIR, "lib",
+                                      os.path.relpath(s, src_lib)))
+        _sync(src_engine, dst_engine)
+
+        if not written:
+            return False
+
+        first_install = len(written) > 5
+        print(f"[UPGRADE-LAUNCHER] refreshed the appliance's upgrade engine from "
+              f"this image: {len(written)} file(s)"
+              + (" — this box had none (an upgrade from a pre-bash release does "
+                 "not deliver one)" if first_install else ""), flush=True)
+        os.chmod(dst_engine, 0o755)
+
+        # Match the tree's owner rather than leaving root-owned files behind:
+        # the checkout belongs to the operator, and install.sh fixes these up
+        # for the same reason at the end of every run.
+        try:
+            st = os.stat(WORKDIR)
+            for root, dirs, files in os.walk(os.path.join(WORKDIR, "lib")):
+                for name in dirs + files:
+                    os.chown(os.path.join(root, name), st.st_uid, st.st_gid)
+            os.chown(os.path.join(WORKDIR, "lib"), st.st_uid, st.st_gid)
+            os.chown(dst_engine, st.st_uid, st.st_gid)
+        except OSError:
+            pass
+
+        return True
+    except Exception as e:
+        # Never block startup over this. The launcher's bundled-engine fallback
+        # still makes the UI work; the box just stays dependent on it.
+        print(f"[UPGRADE-LAUNCHER] could not install the upgrade engine: {e}", flush=True)
+        return False
+
+
 def _run_paths(run_id: str):
     log_path = f"{WORKDIR}/data/tmp/upgrade-{run_id}.log"
     done_path = f"{WORKDIR}/data/tmp/upgrade-{run_id}.done.json"
