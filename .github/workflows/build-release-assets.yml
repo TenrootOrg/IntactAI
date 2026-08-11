@@ -50,19 +50,19 @@
 name: NEW (20260811+) — per-module release assets
 
 on:
-  # TEMPORARY — auto-trigger disabled while the 0726 upgrade path is being
-  # worked on (2026-08-11). Those boxes can only take the single-file bundle
-  # from build-release-package.yml, so every test release only needs that one;
-  # building ~6 GB of per-module assets alongside it just makes each iteration
-  # slower for no benefit.
+  # Re-enabled 2026-08-11, after the 0726 rescue path was proven end to end.
   #
-  # RESTORE THIS before cutting anything customers take. Without it a release
-  # ships ONLY the legacy bundle, and every box past the pre-index era loses
-  # the per-module path it now prefers -- silently, because upgrade_fetch_release
-  # just falls back to the single file.
+  # Both release workflows now fire on a publish, on purpose: this one for the
+  # per-module assets every current box prefers, and build-release-package.yml
+  # for the single bundle, which is the ONLY shape a stuck intact-20260726 box
+  # can take. Dropping the second one is what strands that fleet, so it stays
+  # until those machines are known to be rescued.
   #
-  # release:
-  #   types: [published]
+  # While this was disabled, a published release carried ONLY the legacy bundle
+  # -- and silently, because upgrade_fetch_release just falls back to the single
+  # file when no index.json is attached. intact-20260811 was cut that way.
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
