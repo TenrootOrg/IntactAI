@@ -725,6 +725,12 @@ document.addEventListener('alpine:init', () => {
                 // appeared.
                 const file = this.applyPackage._localFile;
                 const selected = this.applySelectedModules.slice();
+                // Split the ticks the backend cannot re-derive: which of these
+                // are already at the target version and are being re-applied
+                // on purpose. Only this modal knows -- it is the same call
+                // that renders the row as 'reinstall' rather than 'upgrade'.
+                const reinstall = selected.filter(
+                    (n) => this.applyModuleAction(n, (this.applyManifest?.versions || {})[n]) === 'no-change');
                 const db_overwrite = Object.assign({}, this.applyDbOverwrite);
                 console.log('[Import] Starting tus upload for', file.name,
                             '(', file.size, 'bytes), modules:', selected);
@@ -807,6 +813,7 @@ document.addEventListener('alpine:init', () => {
                     try {
                         const body = {
                             selected_modules: selected,
+                            reinstall_modules: reinstall,
                             db_overwrite: db_overwrite,
                         };
                         // Tell the backend WHICH workflow row this apply
@@ -855,6 +862,8 @@ document.addEventListener('alpine:init', () => {
                     body: JSON.stringify({
                         package_path: packagePath,
                         selected_modules: this.applySelectedModules,
+                        reinstall_modules: this.applySelectedModules.filter(
+                            (n) => this.applyModuleAction(n, (this.applyManifest?.versions || {})[n]) === 'no-change'),
                         db_overwrite: this.applyDbOverwrite,
                     }),
                 });

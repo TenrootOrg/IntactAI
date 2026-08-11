@@ -192,6 +192,51 @@ unset _lib
 # install-side verify_installation. Both are wanted, and the upgrade one is
 # sourced second so its definitions win where the names collide.
 
+# Options THIS engine accepts that an OLDER packaged engine may not, and
+# which are safe to drop rather than fail on.
+#
+# The stage-0 hop forwards the operator's arguments verbatim to the target
+# release's own upgrade.sh, and that engine's arg parser rejects anything it
+# does not know with "Unknown option" and exit 2. So the moment a flag is
+# added here, every import of an EARLIER package made with it dies before
+# touching anything -- a new backend plus a package from a month ago is an
+# entirely ordinary combination, and this is exactly the air-gapped site that
+# cannot just fetch a newer one. Found 2026-08-11 by --reinstall doing this
+# against an intact-20260817 package.
+#
+# An allowlist, deliberately not "drop anything the target does not know":
+# silently dropping --expect-sha256 would turn a refused package into an
+# applied one. Only flags whose absence merely means "the run does less"
+# belong here.
+_U_DROPPABLE_OPTS=" --reinstall "
+
+# Fills the named array with _ORIG_ARGS minus any droppable option the target
+# engine has no parser for. Detected by reading the target's own args.sh
+# rather than running it: this happens before the hop, and the hop is the
+# point of no return for a run that has already extracted a package.
+_u_forwardable_args() {
+    local target_sh="$1"; local -n _out="$2"
+    local target_args="${target_sh%/scripts/upgrade.sh}"
+    [[ "$target_args" == "$target_sh" ]] && target_args="${target_sh%/upgrade.sh}"
+    target_args="${target_args}/lib/upgrade/args.sh"
+
+    _out=()
+    local i=0 a
+    while (( i < ${#_ORIG_ARGS[@]} )); do
+        a="${_ORIG_ARGS[$i]}"
+        local bare="${a%%=*}"
+        if [[ "$_U_DROPPABLE_OPTS" == *" ${bare} "* ]] \
+           && ! grep -q -- "${bare})" "$target_args" 2>/dev/null; then
+            log_warn "The package's own upgrade engine predates ${bare}; dropping it."
+            [[ "$a" == *=* ]] || i=$((i + 1))   # also skip its separate value
+            i=$((i + 1))
+            continue
+        fi
+        _out+=("$a")
+        i=$((i + 1))
+    done
+}
+
 main() {
     parse_upgrade_args "${_ORIG_ARGS[@]}"
 
@@ -418,8 +463,10 @@ main() {
         # has to be told explicitly, or it would default to that same
         # extracted tree and the whole run would silently apply against
         # scratch instead of the appliance. This is the fix for that.
+        local _fwd=()
+        _u_forwardable_args "$target_sh" _fwd
         exec bash "$target_sh" --package-dir "$UPKG_DIR" --log "$LOG_FILE" \
-             --root "$SCRIPT_DIR" "${_ORIG_ARGS[@]}"
+             --root "$SCRIPT_DIR" "${_fwd[@]}"
     fi
 
     # ------------------------------------------------------------- plan -----

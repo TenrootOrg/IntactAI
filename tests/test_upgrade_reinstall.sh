@@ -81,10 +81,24 @@ if grep -q '"--reinstall", ",".join(reinstall)' "$R"; then
 else
     fail "online route forwards the reinstall opt-ins"
 fi
-if grep -q '"--reinstall", ",".join(selected_modules)' "$R"; then
+if grep -q '"--reinstall", ",".join(reinstall_modules)' "$R"; then
     ok "import route forwards the reinstall opt-ins"
 else
     fail "import route forwards the reinstall opt-ins"
+fi
+# The lists must be DISJOINT. Import briefly sent its whole selected list as
+# --reinstall, which the engine tolerated (plan.sh only reads it on the noop
+# branch) but which rendered as "reinstall everything" in the log and the
+# launch script -- not what was asked for, and not what happened.
+if grep -q 'reinstall_modules if m not in selected_modules' "$R"; then
+    ok "a reinstall for a module outside the run is rejected"
+else
+    fail "a reinstall for a module outside the run is rejected"
+fi
+if grep -q 'reinstall_modules:' "${ROOT}/modules/nginx/html/js/stores/settings.js"; then
+    ok "the Import modal sends reinstall_modules"
+else
+    fail "the Import modal sends reinstall_modules" "backend cannot re-derive which ticks were no-change"
 fi
 
 echo

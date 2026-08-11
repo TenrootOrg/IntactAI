@@ -6,6 +6,8 @@
 #   UPGRADE_PACKAGE_ARGS     raw --package arguments
 #   UPGRADE_ONLY             comma list, or ""
 #   UPGRADE_SKIP             comma list, or ""
+#   UPGRADE_REINSTALL        comma list of modules to re-apply even when they
+#                            are already at the target version, or ""
 #   UPGRADE_DRY_RUN          1 to verify and plan, then stop
 #   UPGRADE_LIST             1 to list available releases and stop
 #   UPGRADE_PLAN_TAG         release tag to plan against (cheap: manifest
@@ -44,6 +46,11 @@ Options:
   --only  <a,b>         Upgrade only these modules ('intact' is added back if
                         the package carries it).
   --skip  <a,b>         Upgrade everything except these.
+  --reinstall <a,b>     Re-apply these modules even though they are already at
+                        the target version. For repairing a module whose
+                        upgrade half-landed, without moving any version.
+                        Disjoint from the modules that are actually moving:
+                        those need no flag, they are already in the plan.
   --expect-sha256 <hex> Refuse the package unless the archive matches.
   --velo-refresh        Run only the Velociraptor artifact/tool refresh step.
   --help                This text.
@@ -64,6 +71,7 @@ parse_upgrade_args() {
     UPGRADE_PACKAGE_ARGS=()
     UPGRADE_ONLY=""
     UPGRADE_SKIP=""
+    UPGRADE_REINSTALL=""
     UPGRADE_DRY_RUN=0
     UPGRADE_LIST=0
     UPGRADE_PLAN_TAG=""
@@ -93,6 +101,8 @@ parse_upgrade_args() {
             --only=*)    UPGRADE_ONLY="${1#*=}"; shift ;;
             --skip)      UPGRADE_SKIP="${2:-}"; shift 2 ;;
             --skip=*)    UPGRADE_SKIP="${1#*=}"; shift ;;
+            --reinstall)   UPGRADE_REINSTALL="${2:-}"; shift 2 ;;
+            --reinstall=*) UPGRADE_REINSTALL="${1#*=}"; shift ;;
             --expect-sha256)   UPGRADE_EXPECT_SHA256="${2:-}"; shift 2 ;;
             --expect-sha256=*) UPGRADE_EXPECT_SHA256="${1#*=}"; shift ;;
             --dry-run)      UPGRADE_DRY_RUN=1; shift ;;
@@ -125,9 +135,11 @@ parse_upgrade_args() {
     # not have to cope with spaces after commas.
     UPGRADE_ONLY="$(tr -d '[:space:]' <<< "$UPGRADE_ONLY")"
     UPGRADE_SKIP="$(tr -d '[:space:]' <<< "$UPGRADE_SKIP")"
+    UPGRADE_REINSTALL="$(tr -d '[:space:]' <<< "$UPGRADE_REINSTALL")"
 
     _validate_module_list "$UPGRADE_ONLY" --only || exit 2
     _validate_module_list "$UPGRADE_SKIP" --skip || exit 2
+    _validate_module_list "$UPGRADE_REINSTALL" --reinstall || exit 2
 
     if (( UPGRADE_LIST )); then
         return 0

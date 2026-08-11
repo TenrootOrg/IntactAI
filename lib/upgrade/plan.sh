@@ -142,6 +142,21 @@ plan_build() {
                 PLAN_ACTION[$m]="upgrade"
                 continue
             fi
+            # The operator explicitly asked for this one to be re-applied.
+            #
+            # --only is NOT that request: it is checked further up, and a
+            # module is in it simply because it is part of this run. Until
+            # 2026-08-11 the GUI's "reinstall" tick was translated into --only
+            # and nothing else, so a same-version module was ticked,
+            # submitted, classified noop here and silently skipped -- the
+            # checkbox did nothing at all, on both the online and the Import
+            # path. Hence a separate list, disjoint from the modules that are
+            # actually moving (those are already in the plan and need no flag).
+            if [[ -n "${UPGRADE_REINSTALL:-}" && ",${UPGRADE_REINSTALL}," == *",${m},"* ]]; then
+                log_info "  ${m}: already at ${target}, re-applying as requested"
+                PLAN_ACTION[$m]="upgrade"
+                continue
+            fi
             PLAN_ACTION[$m]="noop:already at ${target}"
             continue
         fi

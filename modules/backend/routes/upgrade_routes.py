@@ -586,6 +586,24 @@ def start_offline_upgrade():
     selected_modules = data.get('selected_modules')
     if selected_modules is not None and not isinstance(selected_modules, list):
         return jsonify({"success": False, "error": "selected_modules must be a list"}), 400
+
+    # Which of the selected modules are "reinstall" ticks -- already at the
+    # target version, re-applied on purpose. The frontend knows this (it
+    # renders the row as 'reinstall' vs 'upgrade' from applyModuleAction), the
+    # backend does not: working it out here would mean re-reading the package
+    # manifest and comparing against installed versions, duplicating a
+    # judgement the modal has already made and displayed.
+    reinstall_modules = data.get('reinstall_modules') or []
+    if not isinstance(reinstall_modules, list):
+        return jsonify({"success": False, "error": "reinstall_modules must be a list"}), 400
+    # A reinstall for a module that is not part of the run is incoherent, and
+    # would reach the engine as an --only/--reinstall pair that disagree.
+    if selected_modules:
+        stray = [m for m in reinstall_modules if m not in selected_modules]
+        if stray:
+            return jsonify({"success": False,
+                            "error": "reinstall_modules not in selected_modules: "
+                                     + ", ".join(stray)}), 400
     expect = (data.get('expected_sha256') or '').strip()
 
     upload_run_id = (data.get('upload_run_id') or '').strip() or None
@@ -605,15 +623,22 @@ def start_offline_upgrade():
         cli_args += ["--package", p]
     if selected_modules:
         cli_args += ["--only", ",".join(selected_modules)]
-        # Same reinstall fix as the online route, but Import has no separate
-        # opt-in list to forward: its modal folds the reinstall ticks into
-        # selected_modules. That is unambiguous anyway -- the frontend seeds
-        # this list with upgrade/downgrade/unknown rows ONLY (settings.js:605),
-        # never with no-change ones, so an already-at-target module can only be
-        # here because the operator ticked it. Passing the whole list is safe:
-        # plan.sh only consults --reinstall on the noop branch, so naming a
-        # module that is genuinely upgrading changes nothing.
-        cli_args += ["--reinstall", ",".join(selected_modules)]
+        # The two lists are DISJOINT, and deliberately so.
+        #
+        # --only is the run's module set; --reinstall names the ones inside it
+        # that are already at the target version and should be re-applied
+        # anyway. A module that is genuinely upgrading or installing needs no
+        # flag -- it is in the plan by virtue of its version differing.
+        #
+        # This briefly sent the whole selected list as --reinstall, reasoning
+        # that plan.sh only consults it on the noop branch so the extra names
+        # were harmless. They were harmless to the engine and wrong for the
+        # operator: "--only intact,iris,portainer --reinstall
+        # intact,iris,portainer" reads as "reinstall everything" in the log and
+        # in the launch script, which is not what was asked for and not what
+        # happens.
+        if reinstall_modules:
+            cli_args += ["--reinstall", ",".join(reinstall_modules)]
     if expect:
         cli_args += ["--expect-sha256", expect]
     if upload_run_id:
