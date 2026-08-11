@@ -90,32 +90,33 @@ RELEASE_MODULES = {
                       # tusd -- both `intact-backend-` and `tusd-` are attributed
                       # to `intact` by image_owner_prefixes, so this one entry
                       # carries the platform and its upload sidecar.
-    # ---------------------------------------------------------------------
-    # TEMPORARY (2026-08-11) — everything except `intact` is commented out
-    # while the intact-20260726 upgrade path is being worked on.
-    #
-    # WHY: that work only exercises the backend swap, and a full set is ~6.4 GB
-    # and the better part of an hour per build. Backend-only is ~1 GB and a few
-    # minutes, which is the difference between iterating and waiting.
-    #
-    # A PACKAGE BUILT LIKE THIS IS NOT SHIPPABLE. It carries one module, so
-    # applying it upgrades `intact` and marks the other nine
-    # "skip: not in this package" -- which reads exactly like a successful
-    # upgrade. Nothing downstream can tell this apart from a real release:
-    # --emit-matrix's completeness check compares against THIS set, so it
-    # agrees with whatever is left uncommented.
-    #
-    # UNCOMMENT ALL OF THESE before building anything anyone installs.
-    # ---------------------------------------------------------------------
-    # "elk",
-    # "iris",
-    # "timesketch",
-    # "plaso",
-    # "velociraptor",   # both kinds -- 0.77.1 and the legacy 0.7.1 client
-    # "volweb",
-    # "aws_sigma",
-    # "portainer",
+    "elk",
+    "iris",
+    "timesketch",
+    "plaso",
+    "velociraptor",   # both kinds -- 0.77.1 and the legacy 0.7.1 client
+    "volweb",
+    "aws_sigma",
+    "portainer",
 }
+
+# TRIMMING THIS SET IS A TESTING SHORTCUT, AND IT DOES NOT LOOK LIKE ONE.
+#
+# Commenting modules out here builds in ~1 GB and minutes instead of ~6.4 GB
+# and most of an hour, which is genuinely useful while iterating on the backend
+# swap. But the result is a convincing forgery of a complete release:
+#
+#   * on an UPGRADE the missing modules report "skip: not in this package",
+#     exactly like a real release that did not move them;
+#   * on an INSTALL there is nothing to fall back to -- install.sh takes images
+#     only from the package, with no registry fallback (lib/args.sh), so a
+#     clean install comes up with the backend and nothing else;
+#   * --emit-matrix's completeness check compares against THIS set, so it
+#     agrees with whatever is left uncommented and every CI job stays green.
+#
+# main() prints a PARTIAL RELEASE banner when the set is short, which is the
+# only signal anyone gets. Restore every entry before building something a
+# person will install.
 
 # What a COMPLETE release ships, independent of what RELEASE_MODULES currently
 # has uncommented. Only used to notice, and say, that the set above has been
