@@ -387,6 +387,54 @@ def _stage_for_helper(paths, run_id):
     return out, None
 
 
+def _sweep_stale_uploads(days=7):
+    """Age-based cleanup of imported packages, run when a new offline upgrade
+    starts.
+
+    Nothing removed these until 2026-08-11 -- not the engine, not tusd, not
+    this file. Every package an operator ever imported stayed in the volume
+    forever, and these are release packages: 1.1 GB observed on this appliance
+    from a single two-module test, and a full nine-module package is ~6.4 GB.
+    An appliance that takes four upgrades has silently spent 25 GB on packages
+    it already applied, and then the disk preflight refuses the fifth.
+
+    Why 7 days and not on-success: an upload is the OPERATOR'S file, not this
+    run's scratch (see _sweep_stale_stages -- Import owns only its own hard
+    link to it). Someone who hand-carried 6 GB into an air-gapped site may
+    reasonably re-apply it to a second box, or retry after a failure, so
+    deleting it the moment one upgrade succeeds would be taking away something
+    they still need. A week is long past either.
+
+    Recursive because Import writes per-module assets into an 'permodule/'
+    subdirectory, which is where the bulk actually sits; a top-level-only
+    sweep would have reported success and freed 180 KB of manifest.
+    """
+    cutoff = time.time() - days * 86400
+    for base in ALLOWED_PACKAGE_DIRS:
+        if not os.path.isdir(base):
+            continue
+        for root, dirs, files in os.walk(base, topdown=False):
+            for name in files:
+                p = os.path.join(root, name)
+                try:
+                    if os.path.getmtime(p) >= cutoff:
+                        continue
+                    freed = os.path.getsize(p)
+                    os.unlink(p)
+                    print(f"[upgrade] swept imported package {p} "
+                          f"({freed // (1024*1024)} MB, older than {days}d)",
+                          flush=True)
+                except OSError:
+                    pass
+            # Only ever removes a directory once its own contents are gone
+            # (topdown=False), and rmdir refuses a non-empty one anyway.
+            if root != base.rstrip('/'):
+                try:
+                    os.rmdir(root)
+                except OSError:
+                    pass
+
+
 def _sweep_stale_stages(hours=48):
     """Age-based cleanup of previous staging dirs, run when a new offline
     upgrade starts.
@@ -477,6 +525,16 @@ def start_online_upgrade():
         return jsonify({"success": False, "error": "Nothing selected to upgrade"}), 400
 
     cli_args = [tag, "--only", ",".join(modules)]
+    # --only alone is not enough to express "re-apply this one". It selects
+    # which modules the run considers; plan.sh then still classifies an
+    # already-at-target module as noop and skips it. So a reinstall tick used
+    # to submit cleanly and do nothing (fixed 2026-08-11). Only the ticks that
+    # are genuinely no-change rows go here -- a module being upgraded needs no
+    # override, and naming it would be a confusing no-op in the log.
+    reinstall = [row["module"] for row in plan["forced"]
+                 if row["action"] != "upgrade" and row["module"] in opted_reinstall]
+    if reinstall:
+        cli_args += ["--reinstall", ",".join(reinstall)]
 
     return _start_launcher_run(
         "upgrade", f"Online upgrade to {tag}",
@@ -536,6 +594,7 @@ def start_offline_upgrade():
     # known after create_automation_run for the ordinary path, so stage under
     # whichever id this run will actually use.
     _sweep_stale_stages()
+    _sweep_stale_uploads()
     stage_id = upload_run_id or f"{os.getpid()}-{int(time.time())}"
     host_paths, stage_err = _stage_for_helper(paths, stage_id)
     if stage_err:
@@ -546,6 +605,15 @@ def start_offline_upgrade():
         cli_args += ["--package", p]
     if selected_modules:
         cli_args += ["--only", ",".join(selected_modules)]
+        # Same reinstall fix as the online route, but Import has no separate
+        # opt-in list to forward: its modal folds the reinstall ticks into
+        # selected_modules. That is unambiguous anyway -- the frontend seeds
+        # this list with upgrade/downgrade/unknown rows ONLY (settings.js:605),
+        # never with no-change ones, so an already-at-target module can only be
+        # here because the operator ticked it. Passing the whole list is safe:
+        # plan.sh only consults --reinstall on the noop branch, so naming a
+        # module that is genuinely upgrading changes nothing.
+        cli_args += ["--reinstall", ",".join(selected_modules)]
     if expect:
         cli_args += ["--expect-sha256", expect]
     if upload_run_id:

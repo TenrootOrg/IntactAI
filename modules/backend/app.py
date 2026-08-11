@@ -272,6 +272,55 @@ def run_startup_initialization():
     except Exception as _de:
         print(f"[STARTUP] disabled-module image prune skipped: {_de}", flush=True)
 
+    # Superseded intact-backend release tags, 1.26 GB each.
+    #
+    # Every other module's old image is pruned by the upgrade engine itself
+    # (_u_prune_old_module_images), but that walks PRIMARY_IMAGES, which
+    # deliberately does not cover 'intact' -- intact-backend is BUILT by CI and
+    # loaded from the package, never pulled, so it has no entry there. Nothing
+    # else caught it either: the dangling sweep below skips it (it is tagged)
+    # and the disabled-module sweep skips it (intact is never disabled). So it
+    # accumulated one image per upgrade, forever. Observed 2026-08-11: a box on
+    # intact-20260817 still holding intact-20260816, with 59% of the image
+    # store reclaimable. That fills an appliance disk, and the upgrade
+    # preflight then refuses the NEXT upgrade for lack of space.
+    #
+    # Here, at boot, rather than in the engine: the old image is the intact
+    # module's rollback target for the whole run (intact/intact.sh brings the
+    # backend back up on it), so it must survive until the new backend is
+    # genuinely serving. This code running IS that proof.
+    #
+    # Keeps the newest two, so there is still one image to hand-roll back to.
+    # Only ever considers 'intact-<digits>' release tags: anything else on the
+    # repo is hand-built (:development, :latest) and does not accumulate, so
+    # sweeping it would just delete a dev box's working image. Anything a
+    # container references is excluded regardless of age.
+    try:
+        import re as _re
+        import subprocess as _sp
+        _out = _sp.run(["docker", "images", "intact-backend",
+                        "--format", "{{.Tag}}"],
+                       capture_output=True, text=True, timeout=15).stdout or ''
+        _rel = sorted((t.strip() for t in _out.splitlines()
+                       if _re.fullmatch(r'intact-\d{8}[\w.-]*', t.strip())),
+                      reverse=True)
+        _stale = _rel[2:]
+        if _stale:
+            _inuse = set(
+                (_sp.run(["docker", "ps", "-a", "--format", "{{.Image}}"],
+                         capture_output=True, text=True, timeout=15).stdout or ''
+                 ).split())
+            for _tag in _stale:
+                _ref = f"intact-backend:{_tag}"
+                if _ref in _inuse:
+                    continue
+                if _sp.run(["docker", "rmi", _ref],
+                           capture_output=True, timeout=60).returncode == 0:
+                    print(f"[STARTUP] Pruned superseded backend image {_ref} "
+                          f"(keeping the newest two)", flush=True)
+    except Exception as _bpe:
+        print(f"[STARTUP] backend image prune skipped: {_bpe}", flush=True)
+
     # Dangling images: untagged, unreferenced layers left by builds and
     # image swaps. Ten of them (1.26 GB each) accumulated on this
     # appliance from repeated backend rebuilds. `prune` only removes
