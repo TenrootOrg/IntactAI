@@ -536,10 +536,16 @@ def _start_tailer(run_id: str) -> None:
     t.start()
 
 
+# INFO, not a warning: nothing is wrong here, and nothing needs doing beyond
+# a refresh. It said "sign in again" until 2026-08-11, which was simply untrue
+# -- auth_service.session_secret_key() persists the Flask signing key in the
+# secrets table, and data/ is a host bind, so the cookie outlives the
+# container. Telling an operator mid-upgrade that they have been logged out
+# invites them to go looking at auth while an upgrade is running.
 _SESSION_DROP_NOTE = (
-    "This backend is about to be recreated to load the new code — your "
-    "dashboard session will drop. Refresh the page and sign in again to "
-    "keep watching; the upgrade keeps running in the background regardless."
+    "This backend is about to be recreated to load the new code, so the page "
+    "will lose contact with it for a few seconds. Refresh to reconnect — you "
+    "stay signed in, and the upgrade keeps running regardless."
 )
 
 
@@ -555,7 +561,7 @@ def _apply_line(run_id: str, line: str, progress_state: dict) -> None:
         # otherwise trigger this, the process writing it may already be
         # mid-death. Early and delivered beats precise and missed.
         progress_state["_warned_session_drop"] = True
-        add_log_to_run(run_id, _SESSION_DROP_NOTE, "warning")
+        add_log_to_run(run_id, _SESSION_DROP_NOTE, "info")
     m = _LOG_LINE.match(line)
     if m:
         level_word, msg = m.group(1), m.group(2)
