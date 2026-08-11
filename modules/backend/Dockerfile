@@ -100,8 +100,12 @@ COPY modules/backend/config/ /app/config/
 # Deliberately at /app/host-engine, not /app/lib + /app/scripts:
 # /app/scripts is already the backend's own, and shadowing it would be a
 # genuinely confusing way to break the backend.
+# The WHOLE of scripts/, not just upgrade.sh. A rescued 0726 box keeps its
+# year-old scripts/ -- and prepare_package.sh, which the Prepare Package button
+# shells out to, did not exist at 0726 at all, so that feature 500s on a box
+# that otherwise looks fully upgraded. Same for the rest of the tree.
 COPY lib/ /app/host-engine/lib/
-COPY scripts/upgrade.sh /app/host-engine/scripts/upgrade.sh
+COPY scripts/ /app/host-engine/scripts/
 
 # Re-copy the template after the source layers (see the note above — the
 # operator's real config.yaml is bind-mounted over this at runtime).

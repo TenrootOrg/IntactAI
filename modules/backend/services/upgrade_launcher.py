@@ -253,6 +253,7 @@ def ensure_host_engine() -> bool:
     """
     try:
         dst_engine = os.path.join(WORKDIR, "scripts", "upgrade.sh")
+        had_engine = os.path.isfile(dst_engine)
         src_lib = os.path.join(_BUNDLED_ENGINE_ROOT, "lib")
         src_engine = os.path.join(_BUNDLED_ENGINE_ROOT, "scripts", "upgrade.sh")
         if not (os.path.isdir(src_lib) and os.path.isfile(src_engine)):
@@ -279,17 +280,26 @@ def ensure_host_engine() -> bool:
             shutil.copy2(src, dst)
             written.append(os.path.relpath(dst, WORKDIR))
 
-        for root, _dirs, files in os.walk(src_lib):
-            for name in files:
-                s = os.path.join(root, name)
-                _sync(s, os.path.join(WORKDIR, "lib",
-                                      os.path.relpath(s, src_lib)))
-        _sync(src_engine, dst_engine)
+        # Both trees, file by file. scripts/ is not just upgrade.sh: a rescued
+        # 0726 box keeps its year-old scripts/, and prepare_package.sh -- which
+        # the Prepare Package button shells out to -- did not exist at 0726, so
+        # that feature fails on a box that otherwise looks fully upgraded.
+        for src_root, dst_root in ((src_lib, os.path.join(WORKDIR, "lib")),
+                                   (os.path.join(_BUNDLED_ENGINE_ROOT, "scripts"),
+                                    os.path.join(WORKDIR, "scripts"))):
+            if not os.path.isdir(src_root):
+                continue
+            for root, _dirs, files in os.walk(src_root):
+                for name in files:
+                    s = os.path.join(root, name)
+                    _sync(s, os.path.join(dst_root, os.path.relpath(s, src_root)))
 
         if not written:
             return False
 
-        first_install = len(written) > 5
+        # Whether the box had no engine at all, not a guess from how many
+        # files moved: refreshing seven stale ones is not a first install.
+        first_install = not had_engine
         print(f"[UPGRADE-LAUNCHER] refreshed the appliance's upgrade engine from "
               f"this image: {len(written)} file(s)"
               + (" — this box had none (an upgrade from a pre-bash release does "
