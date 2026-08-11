@@ -47,6 +47,23 @@ _u_handle_interrupt() {
     fi
 
     print_upgrade_report
+
+    # Reclaim the extraction scratch. Every other exit path in
+    # scripts/upgrade.sh calls upkg_cleanup; this one did not, so an
+    # interrupted run left its extracted package behind until
+    # upkg_sweep_stale_scratch's 48-hour pass -- and a full release extracts to
+    # about 15 GB. Two cancelled upgrades were enough to take a 148 GB
+    # appliance from 68 GB free to 4 GB and make the NEXT upgrade fail its own
+    # disk precheck with "Not enough disk", which is a confusing way to
+    # discover that Stop leaks. Observed exactly that way.
+    #
+    # After the unwind, deliberately: the rollback steps above may still need
+    # what was extracted. Guarded because this file is sourced on its own in
+    # tests, where package.sh's functions are not present.
+    if declare -F upkg_cleanup >/dev/null 2>&1; then
+        upkg_cleanup
+    fi
+
     log_error "Upgrade interrupted (exit 130)."
     exit 130
 }
