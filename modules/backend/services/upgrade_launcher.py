@@ -170,6 +170,28 @@ def launch(run_id: str, cli_args: List[str]) -> Optional[str]:
     cmd = [
         _DOCKER_BIN, "run", "-d",
         "--name", container_name,
+        # THE HELPER MUST SEE THE HOST'S LOOPBACK.
+        #
+        # lib/upgrade/health/probes.sh checks the modules it just upgraded on
+        # 127.0.0.1 at their PUBLISHED ports -- 5001 for the backend, 9443 for
+        # portainer, and 9200/8889/8443 for the rest. That is right for the
+        # shell on the box this engine was written for, and meaningless inside
+        # a container, where 127.0.0.1 is the container's own namespace with
+        # nothing listening on it.
+        #
+        # Observed on the first real UI-driven upgrade: both modules applied
+        # cleanly, both were verifiably answering 200 from the host, and both
+        # health gates reported "degraded ... returned 000", so the run exited
+        # 3 instead of 0. That is worse than cosmetic -- EVERY dashboard-driven
+        # upgrade would report degraded, which teaches an operator the health
+        # gate means nothing, and then a genuinely degraded upgrade looks
+        # exactly like all the others.
+        #
+        # Host networking gives the helper the same view of the network the
+        # shell has, which is the entire premise of running one script both
+        # ways. It grants nothing new: this container already mounts
+        # docker.sock, which is root on the host.
+        "--network", "host",
         "-v", "/var/run/docker.sock:/var/run/docker.sock",
         "-v", f"{HOST_PATH}:{HOST_PATH}",
         *env_passthrough,
@@ -335,7 +357,12 @@ def _finalize(run_id: str, done_path: str) -> None:
 
     status = _EXIT_STATUS.get(rc, "failed")
     force = status == "completed"  # see _EXIT_STATUS's comment
-    update_run_status(run_id, status, details={"exit_code": rc}, force=force)
+    # progress=100 explicitly on success. The only other writer is the module
+    # banner in _apply_line, which computes (n-1)/total -- so a finished
+    # two-module run stops at the 50% it was showing when the LAST module
+    # started, and the UI leaves a completed upgrade sitting at half a bar.
+    kwargs = {"progress": 100} if status == "completed" else {}
+    update_run_status(run_id, status, details={"exit_code": rc}, force=force, **kwargs)
 
     run = get_automation_run(run_id) or {}
     container_name = (run.get("details") or {}).get("helper_container")
