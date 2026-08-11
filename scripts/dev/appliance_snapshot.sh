@@ -174,7 +174,19 @@ restore)
     for t in "$SRC"/volumes/*.tar; do
         [ -f "$t" ] || continue
         v="$(basename "$t" .tar)"
-        docker volume create "$v" >/dev/null 2>&1
+        # Labelled the way compose labels its own, otherwise every later
+        # `compose up` says
+        #   volume "backend_upload_data" already exists but was not created by
+        #   Docker Compose. Use `external: true` to use an existing volume
+        # for each one, on every module, forever. Harmless -- compose uses the
+        # volume regardless -- but it is noise this tool injects into the logs
+        # of the very upgrades it exists to help test. The project name is the
+        # volume's own prefix, which is how compose derives it.
+        docker volume create \
+            --label com.docker.compose.project="${v%%_*}" \
+            --label com.docker.compose.volume="${v#*_}" \
+            --label com.docker.compose.version=0 \
+            "$v" >/dev/null 2>&1
         mp="$(docker volume inspect -f '{{.Mountpoint}}' "$v" 2>/dev/null)" || continue
         sudo tar -C "$mp" -xf "$t" 2>/dev/null && printf '  %s\n' "$v"
     done
