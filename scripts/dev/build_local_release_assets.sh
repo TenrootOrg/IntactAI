@@ -109,6 +109,38 @@ if ! find /opt/sigma-rules/rules/cloud/aws -name '*.yml' >/dev/null 2>&1 \
     exit 1
 fi
 
+# ── refuse to package a working tree that has drifted from HEAD ───────────
+# This stages from the WORKING TREE, not from a commit -- unlike CI, which
+# checks out the ref `resolve` pinned. That is deliberate (the whole point is
+# to package what you are editing) and it has one sharp edge: an `intact`
+# upgrade MIRRORS the release's source over the checkout, so applying an older
+# package silently rolls tracked files back, and the next local build packages
+# whatever it rolled them back to.
+#
+# Found 2026-08-11: install.sh on this box had been reverted to a 298-line
+# pre-air-gap copy with no --package support at all, and two packages built
+# that day carried it. Nothing announced it -- the build was green, the package
+# verified, and only `git status` knew.
+#
+# A warning rather than a hard stop: deliberately building a package from
+# uncommitted work is a legitimate thing to do here, and is how most of these
+# fixes were tested. It just must not happen by accident.
+if command -v git >/dev/null && git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+    # VERSION is stamped by the upgrade itself and config/.env hold live
+    # secrets -- all three differ on any running appliance and mean nothing
+    # here.
+    _drift="$(git -C "$REPO_DIR" status --porcelain -- \
+                  ':!VERSION' ':!config.yaml' ':!modules/*/.env' 2>/dev/null \
+              | grep -E '^ ?M' || true)"
+    if [ -n "$_drift" ]; then
+        log "WARNING: the working tree differs from HEAD; the package will carry"
+        log "         these versions, not the committed ones:"
+        printf '%s\n' "$_drift" | sed 's/^/[local-build]           /'
+        log "         (an intact upgrade mirrors a release's source over the"
+        log "          checkout, so this is how a stale file gets re-packaged)"
+    fi
+fi
+
 # ── stage the source ──────────────────────────────────────────────────────
 # NEVER build from the live checkout: build_release_package.py's
 # _stamp_backend_pin() REWRITES config.yaml to pin the backend image to the
