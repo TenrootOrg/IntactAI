@@ -20,7 +20,7 @@ upgrade_module_portainer() {
     u_undo "_u_compose_up_old portainer"
     [[ -n "$bak" ]] && u_undo "restore_file_from_backup '${envf}' '${bak}'"
 
-    u_do --timeout 600 "load portainer images" -- _u_load_tars_matching "portainer-"
+    u_do --timeout 600 "load portainer images" -- _u_load_module_images portainer "portainer-"
     u_do "ensure portainer-ce:${target}" -- \
         _u_ensure_image "portainer/portainer-ce:${target}" "portainer-ce-${target}.tar"
     u_do "ensure portainer agent:${target}" -- \

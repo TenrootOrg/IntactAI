@@ -1,3 +1,20 @@
+# ============================================================================
+# NEW  --  the per-module release shape.
+#
+# Shared vocabulary, so "old" and "new" mean one thing in code, in the Actions
+# list and in conversation:
+#
+#   OLD  single-asset   one intact-upgrade-<tag>.tar[.gz] carrying every
+#                       module.  build-release-package.yml.  Every release
+#                       published BEFORE intact-20260811 is this shape.
+#   NEW  per-module     one asset per module + <tag>.index.json.
+#                       THIS WORKFLOW.  intact-20260811 onward.
+#
+# The boundary is 20260811, NOT 20260726. 0726 is the oldest box in the field
+# that cannot upgrade itself -- a fleet problem, not a format one. Releases
+# between 0726 and 0811 are OLD-shape too, and calling them "post-0726" is how
+# that gets mixed up.
+# ============================================================================
 # Build one release asset PER MODULE, plus the index that describes them.
 #
 # WHY PER MODULE. The scheme this replaces shipped a DELTA -- "the modules whose
@@ -30,7 +47,7 @@
 # each release needs at most once, if ever. `build_release_package.py` still
 # builds a bundle when run without --module, so one can be made by hand the day
 # a box actually needs it. It is not worth a job on every release.
-name: Build release assets (per module)
+name: NEW (20260811+) — per-module release assets
 
 on:
   # TEMPORARY — auto-trigger disabled while the 0726 upgrade path is being

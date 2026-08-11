@@ -39,7 +39,7 @@ upgrade_module_volweb() {
     u_undo "_u_compose_up_old volweb"
     [[ -n "$bak" ]] && u_undo "restore_file_from_backup '${envf}' '${bak}'"
 
-    u_do --timeout 900 "load volweb images" -- _u_load_tars_matching "volweb-"
+    u_do --timeout 900 "load volweb images" -- _u_load_module_images volweb "volweb-"
     u_do "ensure volweb-backend:${target}" -- \
         _u_ensure_image "forensicxlab/volweb-backend:${target}" "volweb-backend-${target}.tar"
     u_do "ensure volweb-frontend:${target}" -- \

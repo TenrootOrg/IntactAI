@@ -141,6 +141,70 @@ _u_ensure_image() {
 
 # Load every image tar in the package whose filename starts with one of the
 # given prefixes. Used by modules with several images behind one pin.
+# The image-tar filename prefixes a module owns: its PRIMARY_IMAGES *and* its
+# TRANSITIVE_IMAGES, read from image_map.py -- the same file the pruner, the
+# CI packager and app.py's boot reclaim all read.
+#
+# WHY THIS EXISTS. Each module used to name its own prefixes by hand, and they
+# only covered the module's own images. Every transitive dependency was
+# packaged and then never loaded: `iris` loaded "iris-" and left
+# rabbitmq-3-management-alpine.tar sitting in the package, `timesketch` loaded
+# "timesketch-" and left postgres, opensearch, redis and nginx. Offline, that
+# is fatal and it is fatal LATE -- the images load, the pins stamp, the
+# certificates generate, and then compose up dies with "No such image:
+# rabbitmq:3-management-alpine" (observed 2026-08-11 installing iris from a
+# per-module package). It hid for so long because it only bites when the image
+# is not already in the local store: any box that had ever run the module
+# online had it cached, and CI's dry-run stops before compose up.
+#
+# volweb was never affected, purely because its deps were renamed
+# volweb-postgres-*.tar to avoid colliding with timesketch's postgres-*.tar --
+# so the one module whose transitive tars happened to share its own prefix is
+# the one that worked. That is luck, not design, and it is why this reads the
+# table instead of trusting names.
+#
+# Prefix, not exact filename: a transitive tar is named for its own version
+# ("rabbitmq-3-management-alpine.tar"), which lives in the sidecar pins rather
+# than anywhere this function can cheaply resolve. The literal text before the
+# first {placeholder} is unambiguous enough -- "nginx-" for timesketch does not
+# match "iris-nginx-v2.4.27.tar", because that one starts with "iris-".
+_u_module_tar_prefixes() {
+    local module="$1"
+    local f="${SCRIPT_DIR}/modules/backend/services/image_map.py"
+    [[ -f "$f" ]] || return 1
+    python3 -c "
+import sys
+ns = {}
+exec(open(sys.argv[1], encoding='utf-8').read(), ns)
+mod = sys.argv[2]
+tars = [t for _img, t in (ns.get('PRIMARY_IMAGES', {}).get(mod) or [])]
+tars += [t for _dep, _pat, t in (ns.get('TRANSITIVE_IMAGES', {}).get(mod) or [])]
+seen = []
+for t in tars:
+    p = t.split('{')[0]
+    if p and p not in seen:
+        seen.append(p)
+print('\n'.join(seen))
+" "$f" "$module" 2>/dev/null
+}
+
+# Load every image tar the package carries for <module>, primary and
+# transitive. Falls back to the caller's literal prefixes when image_map.py
+# cannot be read, so a module with no table entry still behaves as before.
+_u_load_module_images() {
+    local module="$1"; shift
+    local prefixes=()
+    local p
+    while IFS= read -r p; do
+        [[ -n "$p" ]] && prefixes+=("$p")
+    done < <(_u_module_tar_prefixes "$module")
+    if (( ${#prefixes[@]} == 0 )); then
+        log_warn "  no image map entry for ${module}; falling back to built-in prefixes"
+        prefixes=("$@")
+    fi
+    _u_load_tars_matching "${prefixes[@]}"
+}
+
 _u_load_tars_matching() {
     local prefix f n=0
     for prefix in "$@"; do

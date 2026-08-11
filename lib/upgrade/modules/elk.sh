@@ -33,7 +33,7 @@ upgrade_module_elk() {
     [[ -n "$bak" ]] && u_undo "restore_file_from_backup '${envf}' '${bak}'"
 
     u_do --timeout 900 "load elk images" -- \
-        _u_load_tars_matching "elasticsearch-" "kibana-" "logstash-"
+        _u_load_module_images elk "elasticsearch-" "kibana-" "logstash-"
     u_do "ensure elasticsearch:${target}" -- \
         _u_ensure_image "docker.elastic.co/elasticsearch/elasticsearch:${target}" "elasticsearch-${target}.tar"
     u_do "ensure kibana:${target}" -- \

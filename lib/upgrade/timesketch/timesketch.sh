@@ -120,7 +120,7 @@ upgrade_module_timesketch() {
     [[ -n "$bak" ]] && u_undo "restore_file_from_backup '${envf}' '${bak}'"
     (( have_dump )) && u_undo "_ts_restore_db '${dump}'"
 
-    u_do --timeout 900 "load timesketch images" -- _u_load_tars_matching "timesketch-"
+    u_do --timeout 900 "load timesketch images" -- _u_load_module_images timesketch "timesketch-"
     u_do --timeout 1800 "ensure timesketch:${target}" -- \
         _u_ensure_image "us-docker.pkg.dev/osdfir-registry/timesketch/timesketch:${target}" \
         "timesketch-${target}.tar"

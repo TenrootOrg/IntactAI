@@ -32,7 +32,7 @@ upgrade_module_iris() {
     u_undo "_u_compose_up_old iris"
     [[ -n "$bak" ]] && u_undo "restore_file_from_backup '${envf}' '${bak}'"
 
-    u_do --timeout 900 "load iris images" -- _u_load_tars_matching "iris-"
+    u_do --timeout 900 "load iris images" -- _u_load_module_images iris "iris-"
     u_do "ensure iriswebapp_app:${target}" -- \
         _u_ensure_image "ghcr.io/dfir-iris/iriswebapp_app:${target}" "iris-app-${target}.tar"
     u_do "ensure iriswebapp_db:${target}" -- \
