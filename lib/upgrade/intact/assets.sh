@@ -33,6 +33,46 @@ _intact_deliver_mount_assets() {
         [[ -n "$rel" ]] || continue
         local s="${psrc}/${rel}" d="${pdst}/${rel}"
 
+        # A bind-mounted DIRECTORY of config, e.g. elk's ./config/pipeline.
+        #
+        # This used to fall straight into the "nothing to deliver" branch
+        # below, which only ever accepted a regular file -- so the contents of
+        # any mounted directory were frozen at whatever the box first
+        # installed, and a config fix shipped in a later release never
+        # arrived. Found on a real 0726 -> current upgrade: `main` had added
+        # `user`/`password` to logstash's elasticsearch output, the box kept
+        # 0726's credential-less main.conf, and logstash crash-looped on 401
+        # "missing authentication credentials for REST request" after an
+        # upgrade that otherwise reported success.
+        #
+        # Same policy as a single file, applied per file inside: keep a copy
+        # under data/upgrade-backups, then overwrite. That is a real judgement
+        # call, because some of these directories also hold state written at
+        # runtime (modules/timesketch/config is mounted rw for LLM settings),
+        # so this can overwrite an operator's edit to a file the package also
+        # ships. Leaving them stale is the worse failure: it silently withholds
+        # every config fix a release makes, and it surfaces later as an
+        # unrelated container crash-looping. The backup is what makes it
+        # recoverable.
+        if [[ -d "$s" ]]; then
+            local sub
+            while IFS= read -r sub; do
+                [[ -n "$sub" ]] || continue
+                local ss="${s}/${sub}" dd="${d}/${sub}"
+                if [[ ! -f "$dd" ]] || ! cmp -s "$ss" "$dd"; then
+                    mkdir -p "$(dirname "$dd")" 2>/dev/null
+                    if [[ -f "$dd" ]]; then
+                        local dkeep="${SCRIPT_DIR}/data/upgrade-backups/$(basename "$pdst")/${rel}/${sub}"
+                        mkdir -p "$(dirname "$dkeep")" 2>/dev/null
+                        cp -p "$dd" "$dkeep" 2>/dev/null
+                    fi
+                    cp -p "$ss" "$dd" || return 1
+                    log_info "    delivered ${rel}/${sub}"
+                fi
+            done < <(cd "$s" && find . -type f -printf '%P\n' 2>/dev/null)
+            continue
+        fi
+
         if [[ ! -e "$s" || ! -f "$s" ]]; then
             # The package has nothing to deliver here. If the box has
             # nothing either, `docker compose up` will fabricate an EMPTY
