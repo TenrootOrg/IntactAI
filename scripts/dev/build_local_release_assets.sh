@@ -34,16 +34,23 @@
 set -euo pipefail
 
 BUNDLE=0
+BUNDLE_ONLY=0
 ARGS=()
 for a in "$@"; do
     case "$a" in
         --bundle) BUNDLE=1 ;;
+        # Shape 1 alone. What a 0726-era box needs: those appliances have no
+        # scripts/upgrade.sh and no lib/upgrade/, so the engine has to arrive
+        # inside the package for the stage-0 hop to fire, and they predate the
+        # per-module index entirely. There is no point spending an hour on nine
+        # module assets to get it.
+        --bundle-only) BUNDLE=1; BUNDLE_ONLY=1 ;;
         *) ARGS+=("$a") ;;
     esac
 done
 set -- "${ARGS[@]:-}"
 
-TAG="${1:?usage: build_local_release_assets.sh [--bundle] <tag> [out_dir] [modules_csv]}"
+TAG="${1:?usage: build_local_release_assets.sh [--bundle|--bundle-only] <tag> [out_dir] [modules_csv]}"
 OUT_ROOT="${2:-$HOME/intact-local-releases}"
 MODULES_CSV="${3:-}"
 
@@ -194,6 +201,11 @@ printf '%s' "$COMMIT" > "$STAMP"
 # asset must use the SAME one (intact-upgrade-<tag>) or the N assets extract as
 # siblings instead of merging into one package dir. This is the single most
 # important argument here.
+if (( BUNDLE_ONLY )); then
+    log "--bundle-only: skipping the per-module assets"
+    MODULES=""
+fi
+
 for m in $MODULES; do
     # Resume. The .meta.json sidecar, not the tarball, is the completion
     # marker: the tarball appears before the builder has written the sidecar
@@ -218,6 +230,19 @@ if (( BUNDLE )); then
         --out "$WORK" \
         --work-dir "$WORK/intact-upgrade-$TAG-bundle" \
         --commit "$COMMIT"
+fi
+
+if (( BUNDLE_ONLY )); then
+    # No index and no merged manifest: shape 1 carries its manifest.json INSIDE
+    # the tarball, and publishing an index beside it would make upgrade.sh take
+    # the per-module branch for a release that has no per-module assets.
+    find "$WORK" -maxdepth 1 \( -name "intact-upgrade-$TAG.tar" \
+         -o -name "intact-upgrade-$TAG.tar.gz" \
+         -o -name "intact-upgrade-$TAG.tar.gz.part-*" \) \
+         -exec sh -c 'ln -f "$1" "$2/$(basename "$1")" 2>/dev/null || cp -f "$1" "$2/"' _ {} "$OUT" \;
+    log "legacy bundle built -> $OUT"
+    ls -la "$OUT"
+    exit 0
 fi
 
 # ── reproduce the CI `index` job ──────────────────────────────────────────
