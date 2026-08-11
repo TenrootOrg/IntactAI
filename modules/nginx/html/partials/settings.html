@@ -1502,6 +1502,21 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                             :disabled="$store.settings.fetchingRefs || !$store.settings.upgradeRefs.length"
                                             class="flex-1 bg-gray-700 text-white text-sm px-2 py-1.5 rounded border border-gray-600 focus:border-blue-500 disabled:opacity-50">
                                         <option value="" disabled x-text="$store.settings.fetchingRefs ? 'Loading releases…' : 'Pick release version'"></option>
+                                        <!-- Where the box actually is, always visible and never
+                                             selectable. The current release is normally IN the list
+                                             below (re-picking it is how you apply a fix), but it is
+                                             absent whenever the installed version was never
+                                             published -- a locally built tag, or a box ahead of
+                                             every release. That is exactly when an operator most
+                                             needs to see it, and it was the one case where the
+                                             dropdown rendered completely blank. -->
+                                        <template x-if="$store.settings.prepareModalMode === 'online'
+                                                        && $store.settings.currentIntactVersion
+                                                        && !$store.settings.filteredUpgradeRefs()
+                                                                .some(r => r.name === $store.settings.currentIntactVersion)">
+                                            <option value="" disabled
+                                                    x-text="'installed: ' + $store.settings.currentIntactVersion + ' (not a published release)'"></option>
+                                        </template>
                                         <template x-for="ref in $store.settings.filteredUpgradeRefs()" :key="ref.name">
                                             <option :value="ref.name" x-text="ref.label"></option>
                                         </template>
@@ -1515,16 +1530,30 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                         </svg>
                                     </button>
                                 </div>
-                                <!-- Say WHY the list is empty. Online mode offers only the current
-                                     release and the next one (the one-hop rule), so a box already on
-                                     the newest release legitimately has nothing to show -- and an
-                                     empty dropdown with no explanation reads as a failure to load. -->
+                                <!-- Say WHY the list is empty, and say the RIGHT why. Online mode
+                                     offers only the current release and the next one (the one-hop
+                                     rule), so an empty list is legitimate — but it has two quite
+                                     different causes and this used to assert the wrong one. It read
+                                     "already on the newest published release", which is false on a
+                                     box running a locally built or unreleased tag: that box is
+                                     ahead of every published release, not level with the newest. -->
                                 <template x-if="!$store.settings.fetchingRefs
                                                 && $store.settings.upgradeRefs.length
                                                 && !$store.settings.filteredUpgradeRefs().length">
                                     <p class="text-amber-400/90 text-xs mt-2">
-                                        Nothing to upgrade to: this appliance is already on the newest
-                                        published release. Newer releases appear here once published.
+                                        <span x-show="$store.settings.installedIsPublished()">
+                                            Nothing to upgrade to: this appliance is already on the newest
+                                            published release. Newer releases appear here once published.
+                                        </span>
+                                        <span x-show="!$store.settings.installedIsPublished()">
+                                            Nothing to upgrade to.
+                                            <span class="font-mono" x-text="$store.settings.currentIntactVersion"></span>
+                                            is not a published release and is newer than everything on GitHub
+                                            (newest published:
+                                            <span class="font-mono" x-text="$store.settings.newestPublishedRef() || 'none'"></span>).
+                                            Online upgrade only moves forward, so there is nothing to offer —
+                                            use Import Package to apply a package built elsewhere.
+                                        </span>
                                     </p>
                                 </template>
                                 <p class="text-gray-500 text-xs mt-2">

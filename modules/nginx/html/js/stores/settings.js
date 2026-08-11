@@ -1024,6 +1024,33 @@ document.addEventListener('alpine:init', () => {
         // filter; prepare mode keeps everything (the operator may
         // legitimately want to build a package for an older air-gap
         // host). `development` always survives the filter.
+        // Is the installed version actually one of the published releases?
+        //
+        // Distinguishes the two reasons the online list can come back empty,
+        // which the modal used to conflate into one (wrong) sentence:
+        //   true  — level with the newest release, nothing published beyond it
+        //   false — running something never published (a locally built tag, or
+        //           a box ahead of GitHub), so there is nothing to move TO
+        // Only the second case needs Import Package suggested instead.
+        installedIsPublished() {
+            const cur = this.currentIntactVersion || '';
+            if (!cur) return true;   // unknown: keep the milder wording
+            return this.upgradeRefs.some(r => r.name === cur);
+        },
+
+        // Newest published release by tag date, for context when the installed
+        // version is not among them. Same date-from-the-tag rule the one-hop
+        // filter uses, so the two can never disagree about ordering.
+        newestPublishedRef() {
+            const dateOf = (r) => {
+                const m = (r.name || '').match(/(\d{8})/);
+                return m ? m[1] : null;
+            };
+            const dated = this.upgradeRefs.filter(dateOf);
+            if (!dated.length) return '';
+            return dated.reduce((a, b) => (dateOf(a) >= dateOf(b) ? a : b)).name;
+        },
+
         filteredUpgradeRefs() {
             if (this.prepareModalMode !== 'online') return this.upgradeRefs;
             // ONE HOP. An upgrade is only ever exercised a single release at a
