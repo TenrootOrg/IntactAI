@@ -38,240 +38,23 @@ def container_running(name):
     return name in {line.strip() for line in result.stdout.splitlines()}
 
 
-@maintenance_bp.route('/api/maintenance/run', methods=['POST'])
-def run_system_maintenance():
-    """Run system maintenance tasks (artifact import, config refresh, etc.)"""
-    try:
-        # Create workflow run
-        run_id = create_automation_run(
-            automation_type="maintenance",
-            name="System Maintenance",
-            details={"trigger": "manual", "tasks": ["artifact_import", "tool_download", "health_check"]}
-        )
-        add_log_to_run(run_id, "Starting system maintenance", "info")
-        add_log_to_run(run_id, "Tasks: Tool Download → Model Catalogs → CVE Databases → Health Check", "info")
-        update_run_status(run_id, "running", progress=5)
-
-        from services.workflow_service import register_cancel_event, unregister_cancel
-        cancel_event = register_cancel_event(run_id)
-
-        # Run maintenance in background
-        def run_maintenance():
-            try:
-                # =========================================================
-                # Velociraptor artifacts: NO import step in maintenance.
-                # The curated artifact bundle (ArtifactExchange / DetectRaptor
-                # / Sigma / Rapid7 / TenRoot, ~400 definitions) is baked into
-                # the velociraptor image and loaded on boot via --definitions
-                # (see modules/velociraptor/{Dockerfile,entrypoint.sh,
-                # bundled_artifacts/}). Event monitoring + operator custom
-                # artifacts are (re)ensured on backend startup. So there is
-                # nothing to import here — this used to be the slow step.
-                # =========================================================
-                add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
-                add_log_to_run(run_id, "Velociraptor artifacts: loaded from the image on boot "
-                                       "(--definitions) — no maintenance import needed.", "info")
-                add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
-                update_run_status(run_id, "running", progress=25)
-
-                # =========================================================
-                # Task 1: Download tools and configure inventory (60%)
-                # =========================================================
-                add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
-                add_log_to_run(run_id, "TASK 1/3: Download & Configure Tools", "info")
-                add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
-                update_run_status(run_id, "running", progress=30)
-
-                if not container_running('intact_velociraptor'):
-                    add_log_to_run(run_id, "Tool download skipped: intact_velociraptor is not running", "info")
-                else:
-                    try:
-                        from services.tools_download_service import download_and_configure_tools
-
-                        tool_results = download_and_configure_tools(
-                            logger=lambda msg, level="info": add_log_to_run(run_id, msg, level),
-                            run_id=run_id,
-                        )
-
-                        if tool_results.get('success'):
-                            # Download results
-                            dl_results = tool_results.get('download_results', {})
-                            downloaded = len(dl_results.get('downloaded', []))
-                            existed = len(dl_results.get('already_exists', []))
-                            dl_failed = len(dl_results.get('failed', []))
-
-                            # Inventory results
-                            inv_results = tool_results.get('inventory_results', {})
-                            configured = len(inv_results.get('configured', []))
-                            already_served = len(inv_results.get('already_served', []))
-                            not_found = len(inv_results.get('file_not_found', []))
-
-                            add_log_to_run(run_id, f"Tool download: {downloaded} new, {existed} existed, {dl_failed} failed", "success" if downloaded > 0 or existed > 0 else "info")
-                            add_log_to_run(run_id, f"Inventory config: {configured} configured, {already_served} already served, {not_found} not found", "success" if configured > 0 else "info")
-                        else:
-                            add_log_to_run(run_id, f"Tool download had issues: {tool_results.get('error', 'unknown')}", "warning")
-
-                    except Exception as e:
-                        add_log_to_run(run_id, f"Tool download error: {str(e)}", "warning")
-                        import traceback
-                        traceback.print_exc()
-
-                # =========================================================
-                # Task 2: Refresh LLM model catalogs (5%)
-                # =========================================================
-                # Persisted catalogs at /app/data/{openrouter,anthropic,
-                # openai,gemini}_models.json drive the dashboard's model
-                # selector. OpenRouter goes first because the three
-                # direct-provider refreshes enrich their entries against
-                # it. Each is best-effort — if a provider is unreachable
-                # or its API key isn't configured, the existing on-disk
-                # file keeps serving the UI and the others still run.
-                add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
-                add_log_to_run(run_id, "TASK 2/3: Refresh LLM Model Catalogs", "info")
-                add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
-
-                from services.llm_catalogs import openrouter as _or_cat
-                from services.llm_catalogs import anthropic as _ant_cat
-                from services.llm_catalogs import openai as _oai_cat
-                from services.llm_catalogs import gemini as _gem_cat
-
-                # OpenRouter first — it's the enrichment source for the
-                # other three. Enrichment failures degrade gracefully but
-                # quality is much better when this finishes first.
-                _CATALOG_TASKS = [
-                    ("OpenRouter", _or_cat),
-                    ("Anthropic", _ant_cat),
-                    ("OpenAI", _oai_cat),
-                    ("Gemini", _gem_cat),
-                ]
-                for label, mod in _CATALOG_TASKS:
-                    try:
-                        cat_result = mod.refresh_catalog(
-                            logger=lambda msg, level="info": add_log_to_run(run_id, f"  [{label}] {msg}", level)
-                        )
-                        if cat_result.get('success'):
-                            unenriched = cat_result.get('unenriched_count', 0)
-                            extra = f" ({unenriched} un-enriched)" if unenriched else ""
-                            add_log_to_run(
-                                run_id,
-                                f"{label} catalog: {cat_result['model_count']} models cached{extra}",
-                                "success",
-                            )
-                        else:
-                            add_log_to_run(
-                                run_id,
-                                f"{label} catalog skipped: {cat_result.get('error', 'unknown')} "
-                                "(existing on-disk catalog still serves the UI)",
-                                "warning",
-                            )
-                    except Exception as e:
-                        add_log_to_run(run_id, f"{label} catalog error: {e}", "warning")
-
-                update_run_status(run_id, "running", progress=60)
-
-                # NOTE: DFIR/agentic skills are NOT refreshed here. The
-                # fusion analyst's macro skills ship as STATIC files baked
-                # into the backend image (services/agentic/skills/macros/) —
-                # there is no runtime download. (The old per-artifact skill
-                # corpus + its GitHub downloader were removed.)
-
-                # =========================================================
-                # Task 3: Refresh CVE Scan databases (CPE dict + local
-                # CVE mirror) (~3%)
-                # =========================================================
-                # Two refreshes back-to-back, both best-effort:
-                #   a) CPE dictionary CSV from tiiuae/cpedict — drives
-                #      the product → CPE resolver.
-                #   b) Local CVE mirror from fkie-cad/nvd-json-data-feeds
-                #      — eliminates per-product NVD REST calls at scan
-                #      time. Initial run takes ~10-30 min; subsequent
-                #      runs are incremental (skip unchanged year-files).
-                update_run_status(run_id, "running", progress=70)
-
-                # =========================================================
-                # Task 3: System health check (20%)
-                # =========================================================
-                add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
-                add_log_to_run(run_id, "TASK 3/3: System Health Check", "info")
-                add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
-                update_run_status(run_id, "running", progress=75)
-
-                health_issues = []
-
-                # Check Velociraptor connection
-                if not container_running('intact_velociraptor'):
-                    add_log_to_run(run_id, "  Velociraptor: skipped (container not running)", "info")
-                else:
-                    try:
-                        from services.velociraptor_service import setup_velociraptor_connection
-                        channel = setup_velociraptor_connection()
-                        if channel:
-                            add_log_to_run(run_id, "  ✓ Velociraptor: Connected", "success")
-                            channel.close()
-                        else:
-                            add_log_to_run(run_id, "  ✗ Velociraptor: Connection failed", "error")
-                            health_issues.append("Velociraptor")
-                    except Exception as e:
-                        add_log_to_run(run_id, f"  ✗ Velociraptor: {str(e)[:50]}", "error")
-                        health_issues.append("Velociraptor")
-
-                update_run_status(run_id, "running", progress=85)
-
-                # Check Elasticsearch
-                if not container_running('intact_elasticsearch'):
-                    add_log_to_run(run_id, "  Elasticsearch: skipped (container not running)", "info")
-                else:
-                    try:
-                        import requests
-                        es_response = requests.get("http://intact_elasticsearch:9200/_cluster/health", timeout=5)
-                        if es_response.status_code == 200:
-                            es_health = es_response.json()
-                            status = es_health.get('status', 'unknown')
-                            add_log_to_run(run_id, f"  ✓ Elasticsearch: {status}", "success" if status in ['green', 'yellow'] else "warning")
-                        else:
-                            add_log_to_run(run_id, "  ✗ Elasticsearch: Unhealthy", "warning")
-                            health_issues.append("Elasticsearch")
-                    except Exception as e:
-                        add_log_to_run(run_id, f"  ⚠ Elasticsearch: Not reachable", "warning")
-
-                update_run_status(run_id, "running", progress=95)
-
-                # Check database
-                try:
-                    from services.file_storage_service import load_workflows
-                    workflows = load_workflows()
-                    add_log_to_run(run_id, f"  ✓ Database: OK ({len(workflows)} workflows stored)", "success")
-                except Exception as e:
-                    add_log_to_run(run_id, f"  ⚠ Database: {str(e)[:30]}", "warning")
-
-                # Final summary
-                add_log_to_run(run_id, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "info")
-                if health_issues:
-                    add_log_to_run(run_id, f"Maintenance completed with issues: {', '.join(health_issues)}", "warning")
-                else:
-                    add_log_to_run(run_id, "System maintenance completed successfully", "success")
-
-                update_run_status(run_id, "completed", progress=100)
-
-            except Exception as e:
-                add_log_to_run(run_id, f"✗ Maintenance failed: {str(e)}", "error")
-                update_run_status(run_id, "failed", progress=0, error=str(e))
-            finally:
-                unregister_cancel(run_id)
-
-        # Start background thread
-        thread = threading.Thread(target=run_maintenance, daemon=True)
-        thread.start()
-
-        return jsonify({
-            "success": True,
-            "run_id": run_id,
-            "message": "System maintenance started"
-        })
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
+# System Maintenance (/api/maintenance/run) was removed on 2026-08-11.
+#
+# Its four tasks had all been overtaken:
+#   Velociraptor artifacts  loaded from the image on boot via --definitions;
+#                           the endpoint's own comment already said there was
+#                           nothing left to import here.
+#   tools / binaries        refreshed by the upgrade engine now
+#                           (lib/upgrade/velo_refresh.sh), so they arrive with
+#                           the release instead of being fetched at runtime.
+#   LLM model catalogs      have their own per-provider refresh endpoints
+#                           below, which the settings UI calls directly.
+#   CVE databases           the CVE module is gone -- no modules/cve*, and
+#                           this file was the last thing referencing it.
+#
+# The per-provider catalog endpoints, the Velociraptor tool download endpoint
+# and container_running() all remain: they are used by other routes and by the
+# settings UI.
 
 @maintenance_bp.route('/api/maintenance/openrouter-catalog', methods=['GET'])
 def openrouter_catalog_status():
@@ -297,8 +80,9 @@ def _refresh_one_catalog(catalog_module):
 @maintenance_bp.route('/api/maintenance/refresh-openrouter-models', methods=['POST'])
 def refresh_openrouter_models():
     """Refresh `data/openrouter_models.json` from
-    https://openrouter.ai/api/v1/models. Standalone counterpart to the
-    catalog refresh that runs as Task 2.5 of `/api/maintenance/run`.
+    https://openrouter.ai/api/v1/models. Since /api/maintenance/run was
+    removed this is the only path that refreshes the catalog, and the settings
+    UI calls it directly when the operator picks or saves a provider.
 
     Synchronous — the fetch is small (~few hundred KB) and finishes in
     a second or two. No workflow row needed for that timescale.

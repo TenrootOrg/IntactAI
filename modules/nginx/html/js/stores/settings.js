@@ -341,25 +341,6 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
-        async runMaintenance() {
-            this.showMessage('Maintenance workflow started...', 'info');
-            try {
-                const response = await fetch('/api/maintenance/run', { method: 'POST' });
-                const result = await response.json();
-                if (response.ok && result.success) {
-                    this.showMessage('Maintenance started - redirecting to Workflows', 'success');
-                    // Switch to workflows view after a short delay
-                    setTimeout(() => {
-                        window.ActiveCase.gotoSystemWorkflows();
-                    }, 500);
-                } else {
-                    this.showMessage('Maintenance workflow failed: ' + (result.error || 'Unknown error'), 'error');
-                }
-            } catch (e) {
-                this.showMessage('Maintenance workflow error: ' + e.message, 'error');
-            }
-        },
-
         async generateSupportBundle() {
             this.saving = true;
             this.showMessage('Support bundle workflow starting...', 'info');
