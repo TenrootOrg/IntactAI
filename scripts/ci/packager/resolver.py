@@ -18,7 +18,16 @@ import requests
 import yaml
 
 GITHUB_REPO = 'TenrootOrg/IntactAI'
-GITHUB_RAW = f'https://github.com/{GITHUB_REPO}/raw'
+# The Contents API, not github.com/{repo}/raw/{ref}/{path} (the website's
+# raw-file route). The web route only reliably authenticates a browser
+# session; a Bearer/token header on it intermittently 404s for a private repo
+# from a non-browser client (exactly the failure this was rewritten to fix --
+# see pins_source=local-fallback in build-release-assets.yml). The Contents
+# API is GitHub's documented way to fetch a file's content with a token, and
+# is what lib/upgrade/refs.sh already uses (api.github.com, `Authorization:
+# token`, `Accept: application/vnd.github...`) for every other authenticated
+# call this codebase makes to GitHub.
+GITHUB_API = f'https://api.github.com/repos/{GITHUB_REPO}/contents'
 GH_TIMEOUT = 30
 
 
@@ -32,19 +41,19 @@ def _github_token():
 
 
 def fetch_upstream_config(ref: str) -> dict:
-    """Pull `<ref>/config.yaml` from GitHub raw and return the parsed dict."""
-    url = f'{GITHUB_RAW}/{ref}/config.yaml'
-    headers = {}
+    """Pull `<ref>/config.yaml` from GitHub and return the parsed dict."""
+    url = f'{GITHUB_API}/config.yaml'
+    headers = {'Accept': 'application/vnd.github.raw+json'}
     token = _github_token()
     if token:
         headers['Authorization'] = f'Bearer {token}'
     try:
-        resp = requests.get(url, timeout=GH_TIMEOUT, headers=headers)
+        resp = requests.get(url, params={'ref': ref}, timeout=GH_TIMEOUT, headers=headers)
     except requests.RequestException as e:
-        raise ResolverError(f'GitHub raw fetch failed for {ref}: {e}') from e
+        raise ResolverError(f'GitHub Contents API fetch failed for {ref}: {e}') from e
     if resp.status_code != 200:
         raise ResolverError(
-            f'GitHub raw returned {resp.status_code} for {ref}: {resp.text[:200]}')
+            f'GitHub Contents API returned {resp.status_code} for {ref}: {resp.text[:200]}')
     try:
         cfg = yaml.safe_load(resp.text) or {}
     except yaml.YAMLError as e:
