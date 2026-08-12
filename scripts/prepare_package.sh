@@ -69,6 +69,60 @@ _elapsed() {
 # contract of the last stdout line being the result); returns 1 if no such
 # asset exists in $REL at all, which the caller treats as "genuinely not
 # published either way" rather than an error in this function.
+# Progress for one long download, polled off the output file's size.
+#
+# The legacy path used a bare `curl -sS` per part, so a 1.9 GB part produced
+# ONE line and then nothing: an operator watching a real run saw 4m37s of
+# silence between "downloading part-00" and "downloading part-01", with the
+# workflow still reporting 0%. The per-module path has reported size, rate and
+# elapsed per asset for a while; this brings the legacy path to the same
+# standard rather than inventing a second vocabulary for it.
+#
+# Polled rather than parsing curl's own meter: curl writes that to the tty as
+# carriage-return updates, which become one enormous line in a captured log.
+# Watching the file size costs a stat every few seconds and prints whole lines.
+_dl_watch() {
+    local f="$1" total="$2" label="$3" pid="$4"
+    local started prev=0 now delta rate pct
+    started=$(date +%s)
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep "${_DL_TICK:-15}"
+        kill -0 "$pid" 2>/dev/null || break
+        now=$(stat -c%s "$f" 2>/dev/null || echo 0)
+        delta=$(( (now - prev) / ${_DL_TICK:-15} ))
+        prev="$now"
+        if [ "${total:-0}" -gt 0 ] 2>/dev/null; then
+            pct=$(( now * 100 / total ))
+            printf '[prepare]   %-9s %-30s %8s / %-8s %3s%%  %s/s\n' \
+                "..." "$label" "$(_h "$now")" "$(_h "$total")" "$pct" "$(_h "$delta")"
+        else
+            printf '[prepare]   %-9s %-30s %8s  %s/s\n' \
+                "..." "$label" "$(_h "$now")" "$(_h "$delta")"
+        fi
+    done
+}
+
+# One asset, with a start line, periodic progress and a done line carrying its
+# size and elapsed -- the shape _dl_one already uses for per-module assets.
+_dl_reported() {
+    local dest="$1" url="$2" total="$3" label="$4"; shift 4
+    local started rc
+    started=$(date +%s)
+    printf '[prepare]   %-9s %-30s %8s\n' "start" "$label" "$(_h "$total")"
+    curl -fL -sS -C - --retry 20 --retry-delay 5 "$@" -o "$dest" "$url" &
+    local cpid=$!
+    _dl_watch "$dest" "$total" "$label" "$cpid"
+    wait "$cpid"; rc=$?
+    if [ "$rc" -ne 0 ]; then
+        printf '[prepare]   %-9s %-30s rc=%s\n' "FAILED" "$label" "$rc"
+        return "$rc"
+    fi
+    printf '[prepare]   %-9s %-30s %8s  %s\n' \
+        "done" "$label" "$(_h "$(stat -c%s "$dest" 2>/dev/null || echo 0)")" \
+        "$(_elapsed $(( $(date +%s) - started )))"
+    return 0
+}
+
 _fetch_legacy_single_file() {
     local tag="$1" out_dir="$2" rel_json="$3"
     local plan
@@ -78,7 +132,7 @@ tag = os.environ["TAG"]
 assets = {a["name"]: a for a in json.load(sys.stdin).get("assets", [])}
 whole = next((n for n in (f"intact-upgrade-{tag}.tar.gz", f"intact-upgrade-{tag}.tar") if n in assets), None)
 if whole:
-    print("WHOLE\t" + whole + "\t" + assets[whole]["url"])
+    print("WHOLE\t" + whole + "\t" + assets[whole]["url"] + "\t" + str(assets[whole].get("size") or 0))
 else:
     parts = sorted(n for n in assets
                    if n.startswith(f"intact-upgrade-{tag}.tar.gz.part-")
@@ -87,8 +141,9 @@ else:
         sys.exit(1)
     base = parts[0].rsplit(".part-", 1)[0]
     print("BASE\t" + base)
+    print("TOTAL\t" + str(sum(assets[p].get("size") or 0 for p in parts)) + "\t" + str(len(parts)))
     for p in parts:
-        print("PART\t" + p + "\t" + assets[p]["url"])
+        print("PART\t" + p + "\t" + assets[p]["url"] + "\t" + str(assets[p].get("size") or 0))
 sha_name_gz = f"intact-upgrade-{tag}.tar.gz.sha256"
 sha_name_plain = f"intact-upgrade-{tag}.tar.sha256"
 sha = assets.get(sha_name_gz) or assets.get(sha_name_plain)
@@ -104,19 +159,23 @@ if sha:
     # shellcheck disable=SC2064
     trap "rm -rf '$tmp_dir'" RETURN
 
-    while IFS="$(printf '\t')" read -r kind a b; do
+    local _legacy_started _nparts=0 _total=0 _idx=0
+    _legacy_started=$(date +%s)
+    while IFS="$(printf '\t')" read -r kind a b c; do
         case "$kind" in
+            TOTAL) _total="$a"; _nparts="$b"
+                   log "legacy single-file package: ${_nparts} part(s), $(_h "$_total") total"
+                   ;;
             WHOLE)
                 base="$a"
-                log "downloading legacy package: $a"
-                curl -fL -sS -C - --retry 20 --retry-delay 5 "${hdrs[@]}" \
-                     -o "$tmp_dir/$a" "$b"
+                log "legacy single-file package: 1 file, $(_h "${c:-0}")"
+                _dl_reported "$tmp_dir/$a" "$b" "${c:-0}" "$a" "${hdrs[@]}" || return 1
                 ;;
             BASE) base="$a" ;;
             PART)
-                log "downloading part: $a"
-                curl -fL -sS -C - --retry 20 --retry-delay 5 "${hdrs[@]}" \
-                     -o "$tmp_dir/$a" "$b"
+                _idx=$(( _idx + 1 ))
+                _dl_reported "$tmp_dir/$a" "$b" "${c:-0}" \
+                             "part ${_idx}/${_nparts:-?} $(basename "$a")" "${hdrs[@]}" || return 1
                 ;;
             SHA) sha_url="$a" ;;
         esac
@@ -124,13 +183,22 @@ if sha:
     [ -n "$base" ] || return 1
 
     if [ ! -f "$tmp_dir/$base" ]; then
-        log "joining split parts"
+        # Both of these are minutes of silence on a 5.5 GB package -- the join
+        # is a full read+write of it, and sha256sum another full read. Saying
+        # what is happening and what it produced is the difference between a
+        # run that looks stuck and one that looks slow.
+        local _join_started
+        _join_started=$(date +%s)
+        log "joining ${_nparts:-$(ls -1 "$tmp_dir/$base".part-* 2>/dev/null | wc -l)} part(s) into $(basename "$base")"
         cat "$tmp_dir/$base".part-* > "$tmp_dir/$base"
         rm -f "$tmp_dir/$base".part-*
+        printf '[prepare]   %-9s %-30s %8s  %s\n' "joined" "$(basename "$base")" \
+            "$(_h "$(stat -c%s "$tmp_dir/$base" 2>/dev/null || echo 0)")" \
+            "$(_elapsed $(( $(date +%s) - _join_started )))"
     fi
 
     if [ -n "$sha_url" ]; then
-        log "verifying checksum"
+        log "verifying checksum of $(_h "$(stat -c%s "$tmp_dir/$base" 2>/dev/null || echo 0)") (a full read; takes a moment)"
         curl -fsSL "${hdrs[@]}" -o "$tmp_dir/$base.sha256" "$sha_url"
         local want got
         want="$(awk '{print $1}' "$tmp_dir/$base.sha256")"
@@ -187,7 +255,7 @@ if a:
 
     final="$out_dir/$base"
     mv "$tmp_dir/$base" "$final"
-    log "done: $final ($(_h "$(stat -c%s "$final" 2>/dev/null || echo 0)"))"
+    log "done: $final ($(_h "$(stat -c%s "$final" 2>/dev/null || echo 0)")) in $(_elapsed $(( $(date +%s) - _legacy_started )))"
     echo "$final"
 }
 
