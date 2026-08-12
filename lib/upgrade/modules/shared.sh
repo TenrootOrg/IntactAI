@@ -118,6 +118,50 @@ _u_ensure_nginx_cert() {
     log_success "  generated shared Nginx TLS cert"
 }
 
+# Move per-box state into data/state and leave symlinks behind.
+#
+# Runs as the FIRST step of the intact module, which is first in UPGRADE_ORDER,
+# so every later module -- and every compose up in this run -- already sees the
+# migrated layout. See lib/state_registry.sh for why symlinks rather than
+# repointed compose files: a 20260726 box is already shipped and its composes
+# cannot be changed, so the historical paths have to keep working.
+#
+# Idempotent. Safe to run on a box that has already migrated, on one that never
+# generated a given secret, and on one where only some paths exist.
+_u_state_migrate() {
+    local n=0 rel
+    for rel in "${STATE_PATHS[@]}"; do
+        if state_is_migrated "$SCRIPT_DIR" "$rel"; then
+            continue
+        fi
+        if [[ -e "${SCRIPT_DIR}/${rel}" ]]; then
+            if state_migrate_one "$SCRIPT_DIR" "$rel"; then
+                log_info "  moved ${rel} -> $(state_canonical_path "$rel")"
+                n=$((n + 1))
+            else
+                log_error "  could not move ${rel} into data/state"
+                return 1
+            fi
+        fi
+    done
+    if (( n )); then
+        log_success "  ${n} state file(s) now persist in data/state/"
+    else
+        log_info "  per-box state already persists in data/state/"
+    fi
+    return 0
+}
+
+# Undo: put every migrated path back where it was.
+_u_state_unmigrate() {
+    local rel
+    for rel in "${STATE_PATHS[@]}"; do
+        state_unmigrate_one "$SCRIPT_DIR" "$rel" \
+            || log_warn "  could not restore ${rel} from data/state"
+    done
+    return 0
+}
+
 # Copy a missing bind-mount source out of the package.
 #
 # _intact_refresh_sidecars already delivers every module's mount assets -- but

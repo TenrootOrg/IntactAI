@@ -32,6 +32,14 @@ upgrade_module_intact() {
 
     u_begin intact
 
+    # Before anything else touches the tree: per-box state moves into
+    # data/state/ with symlinks left behind, so the files an upgrade must never
+    # lose stop living among the files an upgrade replaces. Registered in
+    # lib/state_registry.sh. First step of the first module, so every later
+    # compose up in this run sees the migrated layout.
+    u_do "persist per-box state" -- _u_state_migrate
+    u_undo "_u_state_unmigrate"
+
     # New layout first, legacy second. Packages cut before the tarball change
     # carry source/backend + source/frontend instead of source/intact.
     if [[ -d "${UPKG_DIR}/source/intact" ]]; then

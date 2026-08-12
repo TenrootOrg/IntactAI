@@ -162,7 +162,7 @@ while IFS= read -r -d '' _f; do
 done < <(find "${_CODE_DIR}/lib" -name '*.sh' -print0 2>/dev/null)
 unset _f
 
-for _lib in common config docker health package release permissions; do
+for _lib in common config docker health package release permissions state_registry; do
     # shellcheck source=/dev/null
     source "${_CODE_DIR}/lib/${_lib}.sh" || { echo "Cannot source lib/${_lib}.sh" >&2; exit 2; }
 done

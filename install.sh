@@ -98,6 +98,7 @@ source "${SCRIPT_DIR}/lib/args.sh"
 source "${SCRIPT_DIR}/lib/package.sh"
 source "${SCRIPT_DIR}/lib/release.sh"
 source "${SCRIPT_DIR}/lib/permissions.sh"
+source "${SCRIPT_DIR}/lib/state_registry.sh"
 
 # ============================================================================
 # Command Line
