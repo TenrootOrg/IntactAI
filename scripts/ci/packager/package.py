@@ -931,6 +931,63 @@ def _prepare_backend_images(package_dir: str, target_version: str, manifest: Dic
     return {"success": True}
 
 
+def _config_at_ref_from_checkout(source_dir, ref, log):
+    """`config.yaml` as of <ref>, read out of a local git checkout. None when
+    that is not possible, so the caller falls through to the network.
+
+    WHY THIS COMES FIRST. In CI the network fetch is not just redundant, it is
+    strictly worse. The build job checks out the target commit
+    (`ref: needs.resolve.outputs.commit`, fetch-depth 0) and mounts that
+    workspace into this container -- so the release's own config.yaml is
+    already on disk, and asking GitHub for it again re-derives a file we have
+    while adding a way to fail. It failed exactly that way on
+    intact-20260812: a 404 for a tag GitHub could not resolve at that moment,
+    45 minutes into the run, which stamped pins_source=local-fallback and made
+    the index job refuse a release whose pins were, in fact, correct.
+
+    `git show <ref>:config.yaml` rather than reading the working tree, because
+    those are different claims. The worktree can have been edited since
+    checkout; `git show` is the file AS OF that commit, which is precisely what
+    "the target release's own config.yaml" means. That distinction is not
+    theoretical here -- scripts/dev/build_local_release_assets.sh stages a copy
+    of a possibly-dirty working tree and passes --commit for it.
+
+    Not a "fallback": when this succeeds the pins are target-release by
+    definition, and the caller labels them so. pins_source=local-fallback stays
+    reserved for the case it was written for -- an appliance packaging a
+    release it is not itself running, where the local file really is a
+    different release's.
+    """
+    # Imported here, not at module scope: this file already defers heavier
+    # imports to their use sites (see _compress_with_progress), and this path
+    # is skipped entirely outside a git checkout.
+    import subprocess
+    import yaml
+
+    if not source_dir or not ref:
+        return None
+    git_dir = os.path.join(source_dir, '.git')
+    if not os.path.exists(git_dir):
+        return None
+    try:
+        out = subprocess.run(
+            ['git', '-C', source_dir, 'show', f'{ref}:config.yaml'],
+            capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0 or not (out.stdout or '').strip():
+        return None
+    try:
+        cfg = yaml.safe_load(out.stdout)
+    except yaml.YAMLError:
+        return None
+    if not isinstance(cfg, dict) or not cfg.get('versions'):
+        return None
+    log(f"Read the target release's config.yaml from the checkout at "
+        f"{ref[:12]} (no network needed).", "info")
+    return cfg
+
+
 def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                             compress: bool = True,
                             work_dir: Optional[str] = None,
@@ -1031,8 +1088,10 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
     target_ref = modules.get('intact')
     if target_ref:
         try:
-            from .resolver import fetch_upstream_config
-            cfg = fetch_upstream_config(target_ref)
+            cfg = _config_at_ref_from_checkout(source_dir, source_commit or target_ref, log)
+            if cfg is None:
+                from .resolver import fetch_upstream_config
+                cfg = fetch_upstream_config(target_ref)
             v = (cfg.get('versions') or {})
             target_versions = {str(k): str(val).strip() for k, val in v.items()
                                if val is not None}
