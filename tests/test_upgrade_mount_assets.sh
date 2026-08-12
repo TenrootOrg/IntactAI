@@ -204,6 +204,50 @@ for pair in "portainer:agent.env" "portainer:admin_password" "timesketch:postgre
     fi
 done
 
+echo "== the packager refuses to SHIP a fabricated directory =="
+# The engine can recover one on the target, but only if the package carries the
+# real file. intact-20260811 did not: something on the build box had an empty
+# directory where modules/elk/config/setup-kibana-user.sh belongs, copytree
+# packaged the directory, and every install of that asset produced exit 126.
+# Refusing at build time is the only place this is cheap to fix.
+K="${ROOT}/scripts/ci/packager/package.py"
+if grep -q "_reject_fabricated_mount_dirs" "$K"; then
+    ok "the packager runs the fabricated-directory check"
+else
+    fail "the packager runs the fabricated-directory check" \
+         "a build box that ever ran the stack can ship a directory where a file belongs"
+fi
+if grep -q "REFUSING TO BUILD" "$K"; then
+    ok "it refuses the build rather than warning"
+else
+    fail "it refuses the build rather than warning" "a warning in a CI log is a warning nobody reads"
+fi
+# Only EMPTY directories: elk's config/pipeline is a legitimate directory mount
+# and rejecting it would make every build fail.
+if grep -q "os.path.isdir(src) and not os.listdir(src)" "$K"; then
+    ok "only EMPTY directories are rejected"
+else
+    fail "only EMPTY directories are rejected" "config/pipeline is a real directory mount"
+fi
+# env_file counts too — that is the half that was missed for portainer.
+if grep -q "envfile_hdr" "$K"; then
+    ok "env_file entries are checked as well as ./ mounts"
+else
+    fail "env_file entries are checked as well as ./ mounts"
+fi
+
+# The decision itself, on real paths.
+_verdict() {  # <path> -> ship | refuse
+    if [[ -d "$1" && -z "$(ls -A "$1" 2>/dev/null)" ]]; then echo refuse; else echo ship; fi
+}
+GT="$(mktemp -d)"; trap 'rm -rf "$GT"' EXIT
+mkdir -p "$GT/pipeline" && touch "$GT/pipeline/main.conf"
+printf '#!/bin/bash\n' > "$GT/setup.sh"
+mkdir -p "$GT/fabricated"
+check "a real file ships"                    "$(_verdict "$GT/setup.sh")"    "ship"
+check "a non-empty directory mount ships"    "$(_verdict "$GT/pipeline")"    "ship"
+check "a fabricated empty directory refuses" "$(_verdict "$GT/fabricated")"  "refuse"
+
 echo
 echo "${PASS}/${TOTAL} passed"
 [[ "$PASS" == "$TOTAL" ]] || exit 1

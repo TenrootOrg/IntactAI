@@ -100,6 +100,70 @@ TRANSITIVE_ENV_KEYS = {
 }
 
 
+def _reject_fabricated_mount_dirs(source_root):
+    """Refuse to package a directory sitting where a bind-mounted FILE belongs.
+
+    Docker's rule for a bind-mount source that does not exist is to fabricate
+    an empty DIRECTORY at that path. A build box that has ever run the stack
+    can therefore have one where a script belongs, and copytree packages the
+    directory quite happily. The asset verifies, installs, and then the target
+    container execs a directory and dies with exit 126 -- an error that names a
+    path and not a cause.
+
+    intact-20260811 shipped without modules/elk/config/setup-kibana-user.sh for
+    exactly this reason. It cost a customer upgrade, a support bundle and three
+    retries to diagnose.
+
+    Only EMPTY directories are rejected: plenty of mounts are legitimately
+    directories (elk's config/pipeline), and a non-empty one is real content.
+    """
+    import re as _re
+    mount_re = _re.compile(r'^\s*-\s*(\./[^:]+):')
+    envfile_hdr = _re.compile(r'^\s*env_file:')
+    listitem = _re.compile(r'^\s*-\s*(\S+)')
+
+    modules_dir = os.path.join(source_root, 'modules')
+    if not os.path.isdir(modules_dir):
+        return
+
+    offenders = []
+    for mod in sorted(os.listdir(modules_dir)):
+        compose = os.path.join(modules_dir, mod, 'docker-compose.yaml')
+        if not os.path.isfile(compose):
+            continue
+        rels, in_env = [], False
+        with open(compose, encoding='utf-8', errors='replace') as fh:
+            for raw in fh:
+                m = mount_re.match(raw)
+                if m:
+                    rels.append(m.group(1)[2:])
+                if envfile_hdr.match(raw):
+                    in_env = True
+                    continue
+                if in_env:
+                    li = listitem.match(raw)
+                    if li:
+                        rels.append(li.group(1).lstrip('./'))
+                    elif raw.strip():
+                        in_env = False
+        for rel in rels:
+            src = os.path.join(modules_dir, mod, rel)
+            if os.path.isdir(src) and not os.listdir(src):
+                offenders.append(f"modules/{mod}/{rel}")
+
+    if offenders:
+        log("", "error")
+        log("REFUSING TO BUILD: a bind-mount source is an empty DIRECTORY where a", "error")
+        log("file belongs. Docker fabricates these when the source is missing, and", "error")
+        log("packaging one ships an asset that dies with exit 126 on the target:", "error")
+        for o in sorted(set(offenders)):
+            log(f"    {o}", "error")
+        log("", "error")
+        log("Restore the file(s) on this build box (git checkout -- <path>, after", "error")
+        log("rmdir'ing the fabricated directory) and build again.", "error")
+        raise SystemExit(1)
+
+
 def _read_config_yaml_versions() -> Dict[str, str]:
     """Return the `versions:` block from config.yaml as a flat dict.
     Fail-soft (empty dict) on any read/parse error so a malformed
@@ -1392,6 +1456,20 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 # (backend code, frontend HTML); the rest of the tree is
                 # included so operators can inspect / port the release
                 # without re-cloning from GitHub. ~30 MB of repo content.
+                # A compose file mounts files that must BE files. Docker fabricates an
+                # empty directory for a bind-mount source that does not exist, so a build
+                # box that has ever run the stack can have one sitting where a script
+                # belongs -- and copytree will faithfully package the directory. The
+                # result installs cleanly, then dies at exit 126 on the target with an
+                # error naming a path and not a cause.
+                #
+                # That is not hypothetical: intact-20260811 shipped without
+                # modules/elk/config/setup-kibana-user.sh for exactly this reason, and it
+                # cost a customer upgrade, a support bundle and three retries to find.
+                # Refuse to build rather than ship it -- an empty directory here is never
+                # legitimate, and the fix is one rmdir on the build box.
+                _reject_fabricated_mount_dirs(extracted_root)
+                
                 log("  Copying full repo into package source/intact/ ...", "info")
                 shutil.copytree(
                     extracted_root,
