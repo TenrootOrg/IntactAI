@@ -668,7 +668,7 @@ def _intact_first(modules: Dict):
 
 
 def _prepare_backend_images(package_dir: str, target_version: str, manifest: Dict,
-                            source_root: str = None,
+                            source_root: str = None, source_commit: str = None,
                             logger: Callable = None, run_id: str = None) -> Dict:
     """Wave F: bake + bundle the backend runtime image + tusd sidecar.
 
@@ -819,7 +819,12 @@ def _prepare_backend_images(package_dir: str, target_version: str, manifest: Dic
     # which ensure_host_engine() writes over lib/ and scripts/ at every backend
     # start -- so a stale bake does not merely ship old code, it silently REVERTS
     # the engine fixes on the box hours after the upgrade reported success.
-    _commit = (manifest or {}).get("source_commit") or ""
+    # Taken as an ARGUMENT, not from the manifest: manifest_extra -- which is
+    # where source_commit ends up -- is merged into the manifest at the very
+    # end of prepare_upgrade_package, long after this runs. Reading it here got
+    # an empty string and silently stamped no label at all, which is the one
+    # outcome that looks exactly like success.
+    _commit = source_commit or ""
     inspect = run_command(f"docker image inspect {image}",
                           timeout=30, logger=None, run_id=run_id)
     _stale = False
@@ -1529,6 +1534,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 # download-from-GitHub branch (source_dir is None then).
                 _bimg = _prepare_backend_images(package_dir, version, manifest,
                                                 source_root=extracted_root,
+                                                source_commit=source_commit,
                                                 logger=log, run_id=run_id)
                 if not _bimg.get("success"):
                     if _bimg.get("cancelled"):
