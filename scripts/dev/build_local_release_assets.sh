@@ -102,6 +102,22 @@ if [ -z "$BUILD_IMAGE" ]; then
     err "(services.image_map, grpc), which the host does not have."
     exit 1
 fi
+# Present LOCALLY, not just named. intact-backend is built here and exists in
+# no registry, so a name that is not on this machine sends `docker run` to
+# Docker Hub, which answers "pull access denied ... may require docker login" --
+# and the packager's output, which the next step parses as JSON, is that error
+# text. The build then dies in json.decoder with "Expecting value: line 1
+# column 1", ~40 lines from the actual cause. Seen after `docker image prune -a`
+# removed the toolchain image while freeing space for an upgrade test.
+if ! docker image inspect "$BUILD_IMAGE" >/dev/null 2>&1; then
+    err "toolchain image '$BUILD_IMAGE' is not present on this machine."
+    err "It is built here and published to no registry, so it cannot be pulled."
+    err "'docker image prune -a' removes it whenever no container is using it."
+    err "Rebuild it, or tag one you still have:"
+    err "  docker images | grep intact-backend"
+    err "  docker tag <id> $BUILD_IMAGE"
+    exit 1
+fi
 log "toolchain image: $BUILD_IMAGE"
 
 # ── the SIGMA rule pack aws_sigma bundles ─────────────────────────────────
