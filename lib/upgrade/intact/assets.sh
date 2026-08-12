@@ -17,7 +17,14 @@ _intact_module_is_enabled() {
 
 _intact_refresh_sidecars() {
     local src="$1" m n=0
-    for m in elk iris timesketch velociraptor volweb portainer nginx backend; do
+    # Derived from the package, not a hand-kept list. The eight names that used
+    # to be spelled out here happened to equal the set of modules with a
+    # compose file, so it was correct and silently fragile: a module added in a
+    # later release would ship its compose and none of the files that compose
+    # bind-mounts, which is the exact shape of the elk failure this function
+    # exists to prevent. Sorted so the log reads the same way twice.
+    for m in $(cd "${src}/modules" 2>/dev/null && \
+               find . -maxdepth 1 -mindepth 1 -type d -printf '%P\n' 2>/dev/null | sort); do
         local s="${src}/modules/${m}/docker-compose.yaml"
         local d="${SCRIPT_DIR}/modules/${m}/docker-compose.yaml"
         [[ -f "$s" ]] || continue
