@@ -32,7 +32,15 @@ _fresh() {
     : > "$LOG_FILE"
     SCRIPT_DIR="$(mktemp -d)"
     PSRC="$(mktemp -d)"     # the module dir as the PACKAGE ships it
-    PDST="$(mktemp -d)"     # the module dir as it is on the BOX
+    # The module dir as it is on the BOX. Named for a real module, not left as
+    # a mktemp name: _intact_deliver_mount_assets only warns about a missing
+    # mount asset for a module that is actually ENABLED -- a disabled one has no
+    # containers and nothing to break, and warning about it trains people to
+    # skim the log. It takes that name from this directory's basename, so a
+    # `tmp.XXXX` fixture is no module at all and the warning path was
+    # unreachable. `nginx` is enabled unconditionally, so no config fixture.
+    PDST="$(mktemp -d)/nginx"
+    mkdir -p "$PDST"
     COMPOSE="${PDST}/docker-compose.yaml"
 }
 
