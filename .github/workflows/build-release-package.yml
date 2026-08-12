@@ -51,8 +51,13 @@ on:
   # this workflow by hand against the tag and it produces exactly the bundle it
   # used to. The code that builds and applies it stays.
   #
-  # release:
-  #   types: [published]
+  # TEMPORARY (2026-08-12) — re-enabled to test the intact-20260726 ->
+  # intact-20260811 upgrade path end to end via a real release publish.
+  # RE-DISABLE (comment this back out) once that test is done: leaving it on
+  # doubles build time/resources for every future release, which is exactly
+  # why it was turned off in the first place.
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
