@@ -10,9 +10,100 @@
 _u_module_dir() { echo "${SCRIPT_DIR}/modules/$1"; }
 _u_env_file()   { echo "${SCRIPT_DIR}/modules/$1/.env"; }
 
+# Everything a module's compose file expects to find on disk before it can
+# start: `./x:` bind mounts AND `env_file:` entries. Prints one relative path
+# per line, tagged `mount` or `envfile` -- they fail differently and are worth
+# telling apart.
+#
+# env_file was the omission that mattered. The mount-asset delivery in
+# lib/upgrade/intact/assets.sh has always parsed `./x:` volumes, and env_file
+# is a separate compose directive it never looked at -- which is exactly how
+# portainer's secrets/agent.env went missing on a customer upgrade while elk's
+# bind-mounted script was being handled two functions away.
+_u_compose_sources() {
+    local compose="$1"
+    [[ -f "$compose" ]] || return 0
+    grep -oE '^[[:space:]]*-[[:space:]]*\./[^:]+:' "$compose" 2>/dev/null \
+        | sed 's/^[[:space:]]*-[[:space:]]*\.\///; s/:$//' \
+        | sed 's/^/mount /'
+    awk '
+        /^[[:space:]]*env_file:/ { inblock = 1; next }
+        # Every entry inside an env_file: block is a path, so match the list
+        # item rather than a path shape -- the bare `- .env` form (backend,
+        # iris, velociraptor) has no leading ./ and was being skipped.
+        inblock && /^[[:space:]]*-[[:space:]]*[^[:space:]]/ {
+            sub(/^[[:space:]]*-[[:space:]]*/, ""); sub(/^\.\//, "")
+            if ($0 !~ /^\$/) print "envfile " $0
+            next
+        }
+        inblock && !/^[[:space:]]*-/ { inblock = 0 }
+    ' "$compose" 2>/dev/null
+}
+
+# Refuse to run `compose up` into the exit-126 trap.
+#
+# Docker fabricates an empty DIRECTORY for a bind-mount source that does not
+# exist, so a container that execs it dies with `exit 126` and an error naming
+# a path rather than a cause -- and a missing env_file makes compose refuse
+# outright with "env file ... not found". Both happened on one customer
+# upgrade (2026-08-12: elk's config/setup-kibana-user.sh and portainer's
+# secrets/agent.env), and in both cases the run had already stopped the module
+# before anything noticed.
+#
+# Checked HERE, in the one function every module starts through, rather than in
+# each module: this class has now appeared in three modules and the next one
+# should not depend on someone remembering.
+#
+# A fabricated empty directory is REMOVED when the repo tracks a regular file
+# at that path -- that is what turns the crash loop back into a working
+# container, and it is safe because a non-empty directory (elk's config/pipeline
+# is a legitimate directory mount) is never touched.
+_u_precheck_compose_sources() {
+    local dir="$1"
+    local compose="${dir}/docker-compose.yaml"
+    [[ -f "$compose" ]] || return 0
+    local kind rel src missing=0
+
+    while read -r kind rel; do
+        [[ -n "${rel:-}" ]] || continue
+        src="${dir}/${rel}"
+
+        # Docker's leftover: an empty directory where a file belongs.
+        if [[ -d "$src" && -z "$(ls -A "$src" 2>/dev/null)" ]]; then
+            if rmdir "$src" 2>/dev/null; then
+                log_warn "  removed the empty directory Docker left at ${rel}"
+            fi
+        fi
+
+        [[ -e "$src" ]] && continue
+
+        if [[ "$kind" == "envfile" ]]; then
+            log_error "  ${rel} is named by env_file in $(basename "$dir")/docker-compose.yaml but does not exist."
+            log_error "    compose refuses to start at all without it. It is generated per box"
+            log_error "    (never shipped in a package -- CI's secret scan rejects secrets/)."
+            missing=1
+        else
+            log_warn "  ${rel} is bind-mounted by $(basename "$dir")/docker-compose.yaml but does not exist."
+            log_warn "    Docker will fabricate an empty DIRECTORY there, and a container that"
+            log_warn "    execs it exits 126."
+        fi
+        # sort -u: a file named by several services (portainer's agent.env is
+        # in both) is one fact, not three lines of the same warning.
+    done < <(_u_compose_sources "$compose" | sort -u)
+
+    (( missing == 0 ))
+}
+
 # docker compose in a module directory, output tee'd into the run log.
 _u_compose() {
-    local dir="$1"; shift
+    local dir="$1"
+    # Only on the way UP. `down`, `ps` and `stop` neither need these files nor
+    # should be blocked by them -- refusing to stop a module because a secret
+    # is missing is how a half-upgraded box becomes unrecoverable.
+    case " $* " in
+        *" up "*) _u_precheck_compose_sources "$dir" || return 1 ;;
+    esac
+    shift
     ( cd "$dir" || exit 2
       "${DOCKER_BIN:-docker}" compose "$@" >>"${LOG_FILE:-/dev/null}" 2>&1 )
 }

@@ -141,5 +141,69 @@ else
 fi
 
 echo
+echo "== the pre-flight refuses to walk into the trap, for EVERY module =="
+# The two failures above were found one module at a time. This class has now
+# appeared in three (elk's mount, portainer's env_file, timesketch's
+# postgres.env), so the check lives in _u_compose -- the single function every
+# module starts through -- rather than in each module's own file.
+S="${ROOT}/lib/upgrade/modules/shared.sh"
+if grep -q '_u_precheck_compose_sources "$dir"' "$S"; then
+    ok "_u_compose pre-checks before starting a module"
+else
+    fail "_u_compose pre-checks before starting a module"
+fi
+# Only on the way up: refusing to STOP a module because a secret is missing is
+# how a half-upgraded box becomes unrecoverable.
+if grep -q '\*" up "\*)' "$S"; then
+    ok "the pre-check gates 'up' only, never 'down'"
+else
+    fail "the pre-check gates 'up' only" "blocking 'down' would strand a half-upgraded box"
+fi
+if grep -q 'env_file' "$S"; then
+    ok "env_file entries are parsed, not just ./ mounts"
+else
+    fail "env_file entries are parsed" "this is exactly what was missed for portainer"
+fi
+
+# Functional: the three shapes, against real compose files.
+_load() {
+    log_warn(){ :; }; log_error(){ :; }
+    . /dev/stdin <<< "$(sed -n '/^_u_compose_sources()/,/^}/p' "$S")"
+    . /dev/stdin <<< "$(sed -n '/^_u_precheck_compose_sources()/,/^}/p' "$S")"
+}
+TD="$(mktemp -d)"; trap 'rm -rf "$TD"' EXIT
+
+# (a) a missing env_file must REFUSE
+mkdir -p "$TD/a/secrets"; cp "${ROOT}/modules/portainer/docker-compose.yaml" "$TD/a/" 2>/dev/null
+( _load; _u_precheck_compose_sources "$TD/a" ) >/dev/null 2>&1     && fail "a missing env_file refuses the start" "compose would fail obscurely instead"     || ok "a missing env_file refuses the start"
+
+# (b) once generated, it proceeds
+printf 'AGENT_SECRET=x\n' > "$TD/a/secrets/agent.env"
+printf 'pw\n' > "$TD/a/secrets/admin_password"
+( _load; _u_precheck_compose_sources "$TD/a" ) >/dev/null 2>&1     && ok "once the secret exists, the start proceeds"     || fail "once the secret exists, the start proceeds"
+
+# (c) Docker's fabricated empty directory is removed; a real directory mount
+#     (elk's config/pipeline) is not.
+mkdir -p "$TD/b/config"; cp "${ROOT}/modules/elk/docker-compose.yaml" "$TD/b/" 2>/dev/null
+cp -r "${ROOT}/modules/elk/config/pipeline" "$TD/b/config/" 2>/dev/null
+mkdir -p "$TD/b/config/setup-kibana-user.sh"
+( _load; _u_precheck_compose_sources "$TD/b" ) >/dev/null 2>&1
+[[ -e "$TD/b/config/setup-kibana-user.sh" ]]     && fail "the fabricated empty directory is removed"     || ok "the fabricated empty directory is removed"
+[[ -d "$TD/b/config/pipeline" ]]     && ok "a legitimate directory mount is left alone"     || fail "a legitimate directory mount is left alone" "this would delete real config"
+
+echo
+echo "== every module's per-box files have an upgrade-time generator =="
+# The portainer failure was an install-time generator with no upgrade-time
+# equivalent. Assert the equivalents exist for every untracked source.
+for pair in "portainer:agent.env" "portainer:admin_password" "timesketch:postgres.env"; do
+    mod="${pair%%:*}"; f="${pair#*:}"
+    if grep -rqs "$f" "${ROOT}/lib/upgrade/"; then
+        ok "${mod}: ${f} is ensured during an upgrade"
+    else
+        fail "${mod}: ${f} is ensured during an upgrade"              "no package can ship it — CI's secret scan rejects secrets/"
+    fi
+done
+
+echo
 echo "${PASS}/${TOTAL} passed"
 [[ "$PASS" == "$TOTAL" ]] || exit 1
