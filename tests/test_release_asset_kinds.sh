@@ -156,11 +156,14 @@ else
 fi
 # The load-bearing negative: sourcing deps.sh is what would make an upgrade
 # able to apply host packages, and it must not.
-if grep -qE '^for _lib in common config docker health package release permissions; do' "$U"; then
-    ok "the upgrade still does NOT source lib/deps.sh"
-else
+# Assert the PROPERTY, not the exact list. This matched the source line
+# verbatim and broke the moment 526c1d8 legitimately added state_registry to
+# it -- a test that fails on a correct change teaches people to ignore it.
+if grep -qE '^for _lib in .*\bdeps\b' "$U"; then
     fail "the upgrade still does not source lib/deps.sh" \
          "an upgrade must never be able to apt-get the host"
+else
+    ok "the upgrade still does NOT source lib/deps.sh"
 fi
 
 H="${ROOT}/scripts/update_host_deps.sh"

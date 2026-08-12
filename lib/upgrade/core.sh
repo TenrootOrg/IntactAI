@@ -164,7 +164,62 @@ u_do() {
             [[ -n "$line" ]] && log_error "    | ${line}"
         done <<< "$U_DETAIL"
     fi
+    _u_log_container_failures "$U_DETAIL"
     return 1
+}
+
+# ---------------------------------------------------------------------------
+# _u_log_container_failures <detail text>
+#
+# When a step failed because a CONTAINER failed, put that container's own last
+# words in the upgrade log.
+#
+# WHY. `docker compose up` reports the fact and withholds the reason: its final
+# line is `service "setup" didn't complete successfully: exit 126`, which names
+# the container and the exit code and stops there. The reason lives in the
+# container's log, and until 2026-08-12 nothing fetched it -- so a real
+# customer upgrade reported exit 126 for elk, and the actual cause,
+#
+#   setup-kibana-user.sh: setup-kibana-user.sh: Is a directory
+#
+# (Docker had fabricated an empty directory for a bind-mount whose source was
+# missing) was only ever visible to someone who thought to run `docker logs`
+# on a container that no longer existed by the time they read the report. It
+# cost a support bundle and a round trip to find one line.
+#
+# Names are taken from compose's own output rather than by listing the
+# project's containers: compose has already told us which ones it touched, and
+# a `docker ps` here would also sweep in unrelated containers that happen to be
+# unhealthy for their own reasons.
+#
+# Never fatal and never noisy on success -- only containers that actually
+# exited non-zero are reported, so a step that failed for some other reason
+# (a disk check, a pin mismatch) adds nothing here.
+# ---------------------------------------------------------------------------
+_u_log_container_failures() {
+    local detail="$1"
+    [[ -n "$detail" ]] || return 0
+    local names name state rc_c
+    names="$(grep -oE '\b(intact|iris|timesketch|volweb)_[a-z0-9_-]+' <<< "$detail" \
+             | sort -u | head -5)"
+    [[ -n "$names" ]] || return 0
+
+    while IFS= read -r name; do
+        [[ -n "$name" ]] || continue
+        state="$("${DOCKER_BIN:-docker}" inspect -f '{{.State.Status}}' "$name" 2>/dev/null)" || continue
+        rc_c="$("${DOCKER_BIN:-docker}" inspect -f '{{.State.ExitCode}}' "$name" 2>/dev/null || echo 0)"
+        [[ "$state" == "exited" || "$state" == "dead" ]] || continue
+        [[ "${rc_c:-0}" != "0" ]] || continue
+
+        log_error "    ${name} exited ${rc_c} — its own log says:"
+        # Last lines only: a container that dies on startup says everything
+        # useful at the end, and a long tail here would bury the module report.
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && log_error "      > ${line}"
+        done < <("${DOCKER_BIN:-docker}" logs --tail 15 "$name" 2>&1 \
+                 | grep -v '^[[:space:]]*$' | tail -8)
+    done <<< "$names"
+    return 0
 }
 
 # ---------------------------------------------------------------------------
