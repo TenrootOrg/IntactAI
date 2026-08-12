@@ -90,20 +90,30 @@ RELEASE_MODULES = {
                       # tusd -- both `intact-backend-` and `tusd-` are attributed
                       # to `intact` by image_owner_prefixes, so this one entry
                       # carries the platform and its upload sidecar.
-    # ---------------------------------------------------------------------
-    # TEMPORARY (2026-08-12) — trimmed to the modules needed to test the
-    # intact-20260726 -> intact-20260811 upgrade path (elk, iris, portainer,
-    # plus intact/tusd above). RESTORE THE REST before building anything
-    # anyone installs -- see the warning below.
-    # ---------------------------------------------------------------------
     "elk",
     "iris",
+    "portainer",
+    # ---------------------------------------------------------------------
+    # TEMPORARY (2026-08-12) — trimmed to the modules the 0726 -> 0811 retry
+    # actually exercises: intact (above), plus elk, iris and portainer. elk
+    # and portainer are the two that failed on the customer box; iris is the
+    # one with data worth proving survives.
+    #
+    # RESTORE THE REST before building anything anyone installs. A trimmed
+    # bundle is a convincing forgery of a complete release -- it builds green,
+    # verifies against its own manifest, and the PARTIAL RELEASE banner in
+    # main() is the only thing that says otherwise.
+    #
+    # This narrows the per-module matrix too (--emit-matrix reads this same
+    # set), which is harmless only because that workflow's release trigger is
+    # currently off. Turn it back on and this trim starts shipping short
+    # per-module releases as well.
+    # ---------------------------------------------------------------------
     # "timesketch",
     # "plaso",
     # "velociraptor",   # both kinds -- 0.77.1 and the legacy 0.7.1 client
     # "volweb",
     # "aws_sigma",
-    "portainer",
 }
 
 # TRIMMING THIS SET IS A TESTING SHORTCUT, AND IT DOES NOT LOOK LIKE ONE.
