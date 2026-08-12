@@ -811,9 +811,31 @@ def _prepare_backend_images(package_dir: str, target_version: str, manifest: Dic
     # packaging process is invoked FROM inside that image. Rebuilding it here
     # would be an identical build of the identical inputs; `docker image
     # inspect` catches that and skips straight to save.
+    # Provenance, so "already present" can be more than a hope. CI's pre-tagged
+    # image predates this label and has none -- absent stays "reuse", exactly as
+    # before. A label that DISAGREES is the local case: a dev box accumulates
+    # intact-backend:<tag> images across builds, and the reuse below happily
+    # shipped one baked from an older commit. That image carries /app/host-engine,
+    # which ensure_host_engine() writes over lib/ and scripts/ at every backend
+    # start -- so a stale bake does not merely ship old code, it silently REVERTS
+    # the engine fixes on the box hours after the upgrade reported success.
+    _commit = (manifest or {}).get("source_commit") or ""
     inspect = run_command(f"docker image inspect {image}",
                           timeout=30, logger=None, run_id=run_id)
-    if inspect.get("success"):
+    _stale = False
+    if inspect.get("success") and _commit:
+        _lbl = run_command(
+            f"docker image inspect -f "
+            f"'{{{{index .Config.Labels \"org.intact.commit\"}}}}' {image}",
+            timeout=30, logger=None, run_id=run_id)
+        _was = (_lbl.get("output") or "").strip()
+        if _was and _was not in ("<no value>", "null") and _was != _commit:
+            log(f"  Backend image {image} was baked from {_was[:12]}, this "
+                f"release is {_commit[:12]} — rebaking", "warning")
+            run_command(f"docker rmi -f {image}", timeout=120,
+                        logger=None, run_id=run_id)
+            _stale = True
+    if inspect.get("success") and not _stale:
         log(f"  Backend image {image} already present — reusing (built earlier "
             f"in this run from the same commit)", "info")
     else:
@@ -901,8 +923,10 @@ def _prepare_backend_images(package_dir: str, target_version: str, manifest: Dic
                 "(all modules enabled; removed again before packaging)", "info")
 
         try:
-            build = run_command(f"docker build -f {dockerfile} -t {image} {src_root}",
-                                timeout=1800, logger=None, run_id=run_id)
+            _lblarg = f" --label org.intact.commit={_commit}" if _commit else ""
+            build = run_command(
+                f"docker build -f {dockerfile} -t {image}{_lblarg} {src_root}",
+                timeout=1800, logger=None, run_id=run_id)
         finally:
             # Unconditionally, including on a failed build: a template left
             # behind would ship inside source/intact/ and quietly undo the

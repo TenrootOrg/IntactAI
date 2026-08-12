@@ -276,6 +276,36 @@ if [ -n "$_stale" ]; then
 fi
 printf '%s' "$COMMIT" > "$STAMP"
 
+# ── the same question, asked of the backend IMAGE ──────────────────────────
+# package.py reuses an existing intact-backend:<tag> rather than rebaking it,
+# on the reasoning that CI pre-tags that image from the very commit it is
+# packaging. True there, false here: a dev box builds the same tag over and
+# over, and the image left behind by the last attempt is baked from whatever
+# the tree said an hour ago. The package then ships it, the box installs it,
+# and ensure_host_engine() writes ITS lib/ and scripts/ over the ones the
+# upgrade just delivered -- at the next backend start, long after the run
+# reported success. Two hours were spent chasing that once.
+#
+# package.py now labels what it bakes and refuses a label that disagrees;
+# this handles the images baked before the label existed, which it cannot
+# tell apart from CI's legitimately unlabelled pre-tag.
+_beimg="intact-backend:${TAG}"
+if docker image inspect "$_beimg" >/dev/null 2>&1; then
+    _was="$(docker image inspect -f '{{index .Config.Labels "org.intact.commit"}}' \
+            "$_beimg" 2>/dev/null || true)"
+    case "$_was" in
+        "$COMMIT") log "backend image $_beimg is from this commit — reusing" ;;
+        ""|"<no value>")
+            log "removing $_beimg: baked before builds were labelled, so it"
+            log "  cannot be shown to match $COMMIT. Rebaking is cheap (docker"
+            log "  caches every layer the tree did not touch)."
+            docker rmi -f "$_beimg" >/dev/null 2>&1 || true ;;
+        *)
+            log "removing $_beimg: baked from ${_was:0:12}, building ${COMMIT:0:12}"
+            docker rmi -f "$_beimg" >/dev/null 2>&1 || true ;;
+    esac
+fi
+
 # ── build one asset per module ────────────────────────────────────────────
 # --work-dir's BASENAME becomes the tarball's top-level directory, and every
 # asset must use the SAME one (intact-upgrade-<tag>) or the N assets extract as
