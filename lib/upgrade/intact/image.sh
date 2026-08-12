@@ -75,9 +75,49 @@ _intact_stamp() {
 }
 
 _intact_bring_up() {
-    ( cd "${SCRIPT_DIR}/modules/backend" \
-      && "${DOCKER_BIN:-docker}" compose up -d --no-build --pull never backend \
-         >>"${LOG_FILE:-/dev/null}" 2>&1 )
+    local dir="${SCRIPT_DIR}/modules/backend" out rc
+    out="$( cd "$dir" \
+            && "${DOCKER_BIN:-docker}" compose up -d --no-build --pull never backend 2>&1 )"
+    rc=$?
+    printf '%s\n' "$out" >>"${LOG_FILE:-/dev/null}"
+    (( rc == 0 )) && return 0
+
+    # A backend container owned by a DIFFERENT compose project.
+    #
+    # compose derives its project from the working directory, and every
+    # module here is brought up with `cd <module dir>`, so the project is
+    # "backend". But 0726's Python engine recreated the backend from a helper
+    # whose working directory was the appliance ROOT, so on any box that has
+    # been through that engine the container carries the root-derived name
+    # instead -- intact0726, intact, whatever the install directory is called.
+    # Its sibling intact_tusd, from the very same compose file, still says
+    # "backend", which is how you can spot it.
+    #
+    # docker-compose.yaml pins container_name: intact_backend, so compose
+    # cannot sidestep the collision by naming its own container differently.
+    # It fails, the upgrade rolls back, and -- because the rollback's own
+    # bring-up hits the identical conflict -- the rollback fails too. That is
+    # the "ROLLBACK FAILED - needs manual repair" seen on a real
+    # 20260726 -> 20260811 -> 20260813 chain, 2026-08-12.
+    #
+    # Removing the container is safe: it is being replaced in the next breath,
+    # and all backend state lives in bind mounts and volumes, not the
+    # container's writable layer.
+    if [[ "$out" == *"is already in use by container"* ]]; then
+        local owner
+        owner="$("${DOCKER_BIN:-docker}" inspect intact_backend \
+            --format '{{index .Config.Labels "com.docker.compose.project"}}' 2>/dev/null)"
+        log_warn "  intact_backend is owned by compose project '${owner:-unknown}', not this one"
+        log_warn "  removing the stale container so it can be recreated (state is in volumes/bind mounts)"
+        "${DOCKER_BIN:-docker}" rm -f intact_backend >>"${LOG_FILE:-/dev/null}" 2>&1 || true
+        out="$( cd "$dir" \
+                && "${DOCKER_BIN:-docker}" compose up -d --no-build --pull never backend 2>&1 )"
+        rc=$?
+        printf '%s\n' "$out" >>"${LOG_FILE:-/dev/null}"
+        (( rc == 0 )) && log_success "  recreated intact_backend under this project"
+        return $rc
+    fi
+    return $rc
 }
 
 _intact_recreate_sidecars() {

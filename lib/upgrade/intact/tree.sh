@@ -38,6 +38,17 @@ _intact_snapshot() {
           || log_warn "  could not snapshot install.sh"
     fi
 
+    # VERSION. _intact_stamp writes it BEFORE the backend is recreated, so a
+    # recreate failure used to leave the file claiming the new tag while the
+    # running image and BACKEND_VERSION were both rolled back to the old one
+    # -- the pin-disagrees-with-reality state that is the hardest to diagnose
+    # on a customer box. Observed after a failed 20260811 -> 20260813 recreate
+    # on 2026-08-12. Restored in _intact_restore below.
+    if [[ -f "${SCRIPT_DIR}/VERSION" ]]; then
+        cp -p "${SCRIPT_DIR}/VERSION" "${snap}/VERSION" 2>/dev/null \
+          || log_warn "  could not snapshot VERSION"
+    fi
+
     # data/intact.db: the appliance's own SQLite state (secrets, workflows,
     # blueprints) -- neither this engine nor the one it replaced protects it
     # anywhere else. Nothing here mirrors over data/, so it survives a
@@ -95,6 +106,11 @@ _intact_restore() {
     if [[ -f "${snap}/install.sh" ]]; then
         cp -p "${snap}/install.sh" "${SCRIPT_DIR}/install.sh" 2>/dev/null \
           || log_warn "  could not restore install.sh"
+    fi
+    if [[ -f "${snap}/VERSION" ]]; then
+        cp -p "${snap}/VERSION" "${SCRIPT_DIR}/VERSION" 2>/dev/null \
+          && log_info "  restored VERSION to $(cat "${snap}/VERSION" 2>/dev/null)" \
+          || log_warn "  could not restore VERSION"
     fi
 
     # intact.db is NOT restored here. This engine never writes to data/ on
