@@ -14,17 +14,50 @@
 _intact_merge_versions() {
     local src="$1"
     local new="${src}/config.yaml"
-    [[ -f "$new" ]] || { log_info "  package carries no config.yaml; keeping local pins"; return 0; }
+
+    # The MANIFEST is the pin source, not the package's config.yaml.
+    #
+    # config.yaml is deliberately excluded from what ships -- it is the
+    # operator's live file and carries secrets (see the packager's copytree
+    # ignore_patterns). So this function's original source never exists in a
+    # real package and the merge was a permanent no-op: it logged "package
+    # carries no config.yaml; keeping local pins" and returned, leaving every
+    # module pin at its pre-upgrade value. Observed on a real 20260726 ->
+    # 20260811 run, 2026-08-12: elk upgraded to 9.4.4 and reported healthy while
+    # config.yaml still said 9.4.2, so the box disagreed with itself and the
+    # NEXT upgrade would re-plan elk from a version it is no longer on.
+    #
+    # manifest.json carries the same versions block, is already authoritative
+    # for the plan and for the backend image tag, and ships in every package.
+    # Prefer it; fall back to a packaged config.yaml for the older shape.
+    if [[ -f "${UPKG_MANIFEST:-}" ]]; then
+        new="$UPKG_MANIFEST"
+    elif [[ ! -f "$new" ]]; then
+        log_info "  package carries no manifest or config.yaml; keeping local pins"
+        return 0
+    fi
 
     cp -p "$CONFIG_FILE" "${CONFIG_FILE}.pre-upgrade-backup" 2>/dev/null
 
     local pairs
     pairs="$(python3 - "$new" <<'PY'
-import sys
+import sys, json
+# manifest.json or a legacy packaged config.yaml -- both keep the pins under
+# a top-level "versions" mapping, so only the parser differs.
 try:
-    import yaml
-    d = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
+    raw = open(sys.argv[1], encoding="utf-8").read()
 except Exception:
+    raise SystemExit(0)
+d = None
+try:
+    d = json.loads(raw)
+except Exception:
+    try:
+        import yaml
+        d = yaml.safe_load(raw)
+    except Exception:
+        raise SystemExit(0)
+if not isinstance(d, dict):
     raise SystemExit(0)
 for k, v in (d.get("versions") or {}).items():
     if v is None or str(v).strip() == "":
@@ -34,9 +67,17 @@ PY
 )"
     [[ -n "$pairs" ]] || { log_info "  package config.yaml has no versions block"; return 0; }
 
+    # The manifest names the platform "intact"; config.yaml pins it as
+    # "backend". Writing the manifest key verbatim would invent a bogus
+    # versions.intact and leave versions.backend stale -- the same key-mismatch
+    # class that _intact_validate_config_pins already maps for aws_sigma and
+    # o365rc.
+    declare -A _pin_key=( [intact]=backend )
+
     local n=0 key val cur
     while IFS=$'\t' read -r key val; do
         [[ -n "$key" ]] || continue
+        key="${_pin_key[$key]:-$key}"
         cur="$(read_config "['versions']['${key}']" 2>/dev/null || echo '')"
         [[ "$cur" == "$val" ]] && continue
         _pin_module_version "$key" "$val" && n=$((n + 1))
