@@ -284,6 +284,14 @@ jobs:
           TAG: ${{ needs.resolve.outputs.tag }}
           COMMIT: ${{ needs.resolve.outputs.commit }}
           MODULE: ${{ matrix.module }}
+          # The packager fetches the TARGET release's config.yaml to pin every
+          # transitive sidecar version (packager/resolver.py:fetch_upstream_config).
+          # This repo is private, so an anonymous raw fetch 404s -- and the
+          # packager treats that as "GitHub unreachable" and silently falls back
+          # to the BUILD MACHINE's config.yaml, stamping pins_source=local-fallback.
+          # The index job then refuses the whole release, correctly, but three
+          # quarters of an hour after the mistake was made.
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           mkdir -p "$GITHUB_WORKSPACE/out"
           docker run --rm \
@@ -291,6 +299,7 @@ jobs:
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
             -e INTACT_PATH="$GITHUB_WORKSPACE" \
             -e INTACT_HOST_PATH="$GITHUB_WORKSPACE" \
+            -e GITHUB_TOKEN="$GITHUB_TOKEN" \
             -e TAG="$TAG" -e MODULE="$MODULE" -e COMMIT="$COMMIT" \
             -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
             -v /opt/sigma-rules:/opt/sigma-rules:ro \
@@ -767,7 +776,14 @@ jobs:
               fi
 
               echo "[gitleaks] scanning ${mod} asset..."
-              if ! gitleaks detect --source "$root" --no-git --no-banner --redact \
+              # -v so a failure NAMES the findings. Without it gitleaks logs
+              # "leaks found: 70" and stops, which is not something anyone can
+              # act on -- the run that hit this had to be reproduced locally to
+              # learn which files were involved. --redact is already on, so the
+              # values themselves never reach the log.
+              if ! gitleaks detect --source "$root" --no-git --no-banner --redact -v \
+                     --report-path "${GITHUB_WORKSPACE}/gitleaks-${mod}.json" \
+                     --report-format json \
                      --config "${GITHUB_WORKSPACE}/.gitleaks.toml"; then
                 echo "::error::${mod}: gitleaks found a secret in the built asset"
                 fail=1
@@ -777,6 +793,19 @@ jobs:
             rm -rf "$ex"
           done
           exit $fail
+
+      # The JSON reports outlive the runner only if they are uploaded. -v
+      # already names the findings in the log; this is for the case where the
+      # log is long and someone wants to diff two runs or feed the findings to
+      # a tool. `if: always()` because the interesting run is the failing one.
+      - name: Upload gitleaks reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-reports
+          path: ${{ github.workspace }}/gitleaks-*.json
+          if-no-files-found: ignore
+          retention-days: 7
 
   # ----------------------------------------------------------- dry-run-apply
   # The package this job downloads is EXACTLY what a customer would get.

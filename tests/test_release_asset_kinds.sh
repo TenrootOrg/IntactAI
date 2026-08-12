@@ -190,6 +190,75 @@ else
     fail "it warns that Docker restarts"
 fi
 
+echo "== the secret scan works on an ASSET, not just the repo =="
+# verify-assets extracts each asset and scans it, so every path is
+# <tag>/source/intact/... -- a repo-root-anchored allowlist can never match
+# there. The whole carefully-built allowlist was silently inert for asset
+# scans until 2026-08-12, which is why a release failed on three findings the
+# repo had already decided were noise.
+G="${ROOT}/.gitleaks.toml"
+if grep -qF "'''^modules/" "$G"; then
+    fail "allowlist paths match inside an extracted asset" \
+         "^modules/... never matches <tag>/source/intact/modules/..."
+else
+    ok "allowlist paths match inside an extracted asset"
+fi
+if grep -qF "(^|/)modules/timesketch/config/timesketch_legacy" "$G"; then
+    ok "the un-anchored form is used"
+else
+    fail "the un-anchored form is used"
+fi
+# The generated manifest pairs filenames containing security words
+# (auth_service.py, secret_store.py, WinSCP__Passwords.yaml) with a 64-char
+# sha256 -- precisely what generic-api-key looks for. 74 of 77 findings.
+if grep -qF "manifests/" "$G"; then
+    ok "the generated release manifest is allowlisted"
+else
+    fail "the generated release manifest is allowlisted" \
+         "its sha256 map reads as 37 leaked API keys per copy"
+fi
+
+echo
+echo "== a package never carries per-box key material =="
+# The packager's comment promised this list defended against a source_dir
+# wired to a live install. It named none of it, and the dev builder stages
+# exactly that -- so a locally built package shipped the build box's rendered
+# timesketch_legacy.conf, with a real SECRET_KEY and postgres password.
+K="${ROOT}/scripts/ci/packager/package.py"
+for pat in "'secrets'" "'certificates'" "'ssl'" "'*.pem'" "'*.key'" "'timesketch_legacy.conf'"; do
+    if grep -qF -- "$pat" "$K"; then
+        ok "packager excludes ${pat}"
+    else
+        fail "packager excludes ${pat}" "per-box key material would ship in source/intact/"
+    fi
+done
+if grep -qF -- "'timesketch.conf.template'" "$K"; then
+    fail "the tracked .template is kept" "excluding it leaves the box nothing to render from"
+else
+    ok "the tracked .template is kept"
+fi
+
+echo
+echo "== CI can act on its own failures =="
+W="${ROOT}/.github/workflows/build-release-assets.yml"
+# The packager fetches the target release's config.yaml to pin sidecar
+# versions; this repo is private, so without a token that 404s and the build
+# silently falls back to the build machine's pins. The index job then refuses
+# the release, ~45 minutes after the mistake.
+if grep -qF 'GITHUB_TOKEN="$GITHUB_TOKEN"' "$W"; then
+    ok "the packager container receives GITHUB_TOKEN"
+else
+    fail "the packager container receives GITHUB_TOKEN" \
+         "anonymous raw fetch 404s on a private repo -> pins_source=local-fallback"
+fi
+# gitleaks without -v logs a COUNT and no findings.
+if grep -qF -- '--redact -v' "$W"; then
+    ok "a gitleaks failure names its findings"
+else
+    fail "a gitleaks failure names its findings" \
+         "'leaks found: 70' with no file list is not actionable"
+fi
+
 echo
 echo "${PASS}/${TOTAL} passed"
 [[ "$PASS" == "$TOTAL" ]] || exit 1

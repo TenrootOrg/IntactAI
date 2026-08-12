@@ -1299,6 +1299,20 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     ignore=shutil.ignore_patterns(
                         '__pycache__', '*.pyc', '.env*', '*.db*',
                         '.git', 'data', 'backups',
+                        # Per-box state and key material. The note below has always
+                        # claimed this list defends against a source_dir wired to a
+                        # live install; until 2026-08-12 it did not actually name any
+                        # of it, and scripts/dev/build_local_release_assets.sh stages
+                        # exactly that (an rsync of the working tree). A locally built
+                        # package therefore carried the build box's rendered
+                        # timesketch_legacy.conf -- a real SECRET_KEY and a real
+                        # postgres password -- inside source/intact/. Only .gitkeep is
+                        # tracked under any of these, so nothing real is lost.
+                        'secrets', 'certificates', 'ssl', 'client_installers',
+                        '*.pem', '*.key', '*.crt', '*.p12', '*.pfx',
+                        # Rendered from the tracked .template at install time, unique
+                        # per box. The templates stay.
+                        'timesketch.conf', 'timesketch_legacy.conf',
                         # Key material and per-box secrets. Today `source_dir`
                         # is only ever a pristine CI checkout or a codeload
                         # tarball, so none of this exists to copy -- see the

@@ -97,27 +97,27 @@ paths = [
   # generic-api-key hits against tenant data, certs, YARA rules, etc.
   # gitignore already prevents these from being committed; allowlisting
   # them only suppresses the noise during scans.
-  '''^data/azure_runs/''',
-  '''^data/tmp/''',
-  '''^data/tools/''',
+  '''(^|/)data/azure_runs/''',
+  '''(^|/)data/tmp/''',
+  '''(^|/)data/tools/''',
   # Velociraptor configs (server/client/api .config.yaml) host-mounted here so
   # they survive container deletion + are editable. server.config.yaml holds
   # the CA private key — gitignored; allowlisted so scans don't drown in it.
-  '''^data/velociraptor/''',
-  '''^data/intact\.db''',
-  '''^data/frontend_data\.db''',
-  '''^client_installers/''',
-  '''^modules/iris/secrets/''',
-  '''^modules/iris/config/certificates/''',
-  '''^modules/portainer/secrets/''',
-  '''^modules/nginx/ssl/''',
-  '''^modules/nginx/html/downloads/''',
+  '''(^|/)data/velociraptor/''',
+  '''(^|/)data/intact\.db''',
+  '''(^|/)data/frontend_data\.db''',
+  '''(^|/)client_installers/''',
+  '''(^|/)modules/iris/secrets/''',
+  '''(^|/)modules/iris/config/certificates/''',
+  '''(^|/)modules/portainer/secrets/''',
+  '''(^|/)modules/nginx/ssl/''',
+  '''(^|/)modules/nginx/html/downloads/''',
   # Velociraptor's vendor artifact bundle ships with placeholder webhook
   # URLs and YARA keys (e.g. key1/key2 in YaraProcessWin) that match the
   # generic rules. The upstream files are ours-by-import, not secrets.
   # The whole `velociraptor/velociraptor/` dir is gitignored now but
   # exists in older history commits.
-  '''^modules/velociraptor/velociraptor/''',
+  '''(^|/)modules/velociraptor/velociraptor/''',
   # The baked artifact bundle is the SAME vendor-by-import content (third-
   # party YARA rules whose `$keyN = "..."` strings trip generic-api-key, e.g.
   # YaraProcessWin). It's committed + baked into the velociraptor image. Real
@@ -125,7 +125,7 @@ paths = [
   # Custom.Server.Slack.Clients.Online) are scrubbed on export by
   # scripts/regenerate_artifact_bundle.py, so what remains is detection
   # signatures, not credentials.
-  '''^modules/velociraptor/bundled_artifacts/''',
+  '''(^|/)modules/velociraptor/bundled_artifacts/''',
 
   # ── In-tree files that legitimately contain secret-shaped strings ──
   # Sigma rules ship with their own UUID identifiers; not secrets.
@@ -147,10 +147,23 @@ paths = [
   # time). The .template files are NOT allowlisted — those are tracked
   # and a leak there is exactly what we want to catch. Anchored with
   # `$` so this regex doesn't substring-match `.conf.template`.
-  '''^modules/timesketch/config/timesketch\.conf$''',
-  '''^modules/timesketch/config/timesketch_legacy\.conf$''',
+  '''(^|/)modules/timesketch/config/timesketch\.conf$''',
+  '''(^|/)modules/timesketch/config/timesketch_legacy\.conf$''',
   # The runbook references the very GUID it's helping retire.
   '''docs/SECRETS\.md''',
+  # THE RELEASE MANIFEST. A generated map of "<path>": "<sha256>", and the
+  # generic-api-key rule needs only a keyword near a random-looking value to
+  # fire -- so every source file whose NAME contains one (auth_service.py,
+  # secret_store.py, keys.py, WinSCP__Passwords.yaml, GPGKeys.yaml) pairs a
+  # keyword with a 64-char hex hash and reads exactly like a leaked key. That
+  # was 74 of the 77 findings that failed the 2026-08-12 release build, in the
+  # two copies of one generated file.
+  #
+  # Allowlisted by path rather than by suppressing 64-hex everywhere: plenty of
+  # real credentials are 64 hex characters, and this file is machine-generated
+  # from checksums with no field that could hold one.
+  '''(^|/)manifest\.json$''',
+  '''(^|/)manifests/[^/]+\.json$''',
 ]
 
 stopwords = [
