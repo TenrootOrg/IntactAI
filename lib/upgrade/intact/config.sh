@@ -124,8 +124,20 @@ _intact_validate_config_pins() {
     declare -A _primary_key=(
         [elk]=elk [iris]=iris [timesketch]=timesketch
         [velociraptor]=velociraptor [volweb]=volweb [portainer]=portainer
-        [plaso]=plaso [aws_sigma]=cloudtrail [o365rc]=dfir_o365rc [intact]=backend
+        [plaso]=plaso [aws_sigma]=aws_sigma [o365rc]=o365rc [intact]=backend
     )
+    # Pre-rename spellings, accepted only as a fallback. _intact_config_migrations
+    # (line 59 of intact.sh, one step BEFORE this validation) renames
+    # versions.cloudtrail -> versions.aws_sigma, so a migrated box has the new
+    # name and an un-migrated one may still have the old.
+    #
+    # This map said `cloudtrail` and `dfir_o365rc` outright until 2026-08-12 --
+    # the pre-rename names, demanded by a check that runs immediately AFTER the
+    # rename that removes them. Any box with aws_sigma or o365rc enabled could
+    # not upgrade at all: "config.yaml is missing pin(s) this release needs:
+    # aws_sigma: no versions.cloudtrail". It bit a customer on 0811 -> 0813, and
+    # it took intact's rollback down with it.
+    declare -A _legacy_key=( [aws_sigma]=cloudtrail [o365rc]=dfir_o365rc )
     declare -A _sidecar_keys=(
         [timesketch]="timesketch_opensearch timesketch_postgres timesketch_redis timesketch_nginx"
         [iris]="iris_rabbitmq"
@@ -140,6 +152,11 @@ _intact_validate_config_pins() {
         if [[ -n "$primary" ]]; then
             pin="$(read_config "['versions']['${primary}']" 2>/dev/null || echo '')"
             [[ "$pin" == "None" ]] && pin=""
+            if [[ -z "$pin" && -n "${_legacy_key[$m]:-}" ]]; then
+                pin="$(read_config "['versions']['${_legacy_key[$m]}']" 2>/dev/null || echo '')"
+                [[ "$pin" == "None" ]] && pin=""
+                [[ -n "$pin" ]] && log_info "  ${m}: using the pre-rename pin versions.${_legacy_key[$m]}"
+            fi
             [[ -z "$pin" ]] && errors+=("${m}: no versions.${primary} in config.yaml")
         fi
 
