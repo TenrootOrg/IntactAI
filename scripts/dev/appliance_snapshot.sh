@@ -29,7 +29,24 @@ set -uo pipefail
 
 ACTION="${1:-}"
 NAME="${2:-}"
-ROOT="${INTACT_PATH:-/home/tenroot/intact-dev}"
+# The appliance to act on. $INTACT_PATH, else the directory this script was
+# invoked from if that looks like an appliance, else the dev checkout.
+#
+# It used to default straight to the dev checkout, which is a trap when more
+# than one appliance exists on the box: running it from a 20260726 test
+# appliance without exporting INTACT_PATH stopped THAT box's containers (docker
+# is global), then read the DEV box's .env for the backend image tag and
+# restarted the DEV box's compose files. The result was two appliances' worth of
+# containers sharing one set of volumes, a snapshot carrying the wrong backend
+# image, and a canary row written into the wrong appliance's intact.db.
+# Observed 2026-08-12.
+if [ -n "${INTACT_PATH:-}" ]; then
+    ROOT="$INTACT_PATH"
+elif [ -f "$PWD/VERSION" ] && [ -d "$PWD/modules/backend" ]; then
+    ROOT="$PWD"
+else
+    ROOT="/home/tenroot/intact-dev"
+fi
 STORE="${APPLIANCE_SNAPSHOT_DIR:-$HOME/appliance-snapshots}"
 MODULES=(portainer volweb velociraptor iris timesketch elk nginx backend)
 
