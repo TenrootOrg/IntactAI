@@ -50,23 +50,13 @@
 name: NEW (20260811+) — per-module release assets
 
 on:
-  # TEMPORARY — auto-trigger off again 2026-08-12, while the 0726 -> 0811
-  # upgrade failure is being worked. A stuck 0726 box can only take the single
-  # bundle from build-release-package.yml, so every cut during this work needs
-  # that one and nothing else; building ~6 GB of per-module assets beside it
-  # roughly doubles the time to get a retry in front of the customer.
-  #
-  # RESTORE THIS once that box is fixed. Without it a release ships ONLY the
-  # legacy bundle, and silently -- upgrade_fetch_release just falls back to the
-  # single file when no index.json is attached, so nothing on the release page
-  # or in the run log says the per-module assets are missing. intact-20260811
-  # was cut that way.
-  #
-  # Also note VERSION is stamped by THIS workflow (gated on a real release
-  # event), so while this is off the branch's VERSION stops advancing.
-  #
-  # release:
-  #   types: [published]
+  # Re-enabled 2026-08-12 to test the per-module path end to end, after the
+  # bug that made it fail every time was found: target_ref read
+  # modules.get('intact'), which is None on a per-module build, so every asset
+  # except intact stamped pins_source=local-fallback and the index job refused
+  # the release (31ea682).
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
