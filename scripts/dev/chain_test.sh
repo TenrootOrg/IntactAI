@@ -156,6 +156,7 @@ print((c.get('versions') or {}).get('backend',''))" 2>/dev/null)"
 }
 
 # ── run ───────────────────────────────────────────────────────────────────
+cd "$ROOT" 2>/dev/null || cd / || true
 say "chain_test: root=${ROOT}"
 if [[ -n "$SNAP" ]]; then
     say ""
@@ -164,6 +165,16 @@ if [[ -n "$SNAP" ]]; then
         say "restore FAILED — a baseline that is not fully up is not a baseline."
         exit 1
     fi
+    # The restore REPLACES the tree by moving it aside (mv $ROOT $ROOT.old),
+    # so $ROOT is a new inode and this process's working directory is now a
+    # deleted one. Every child inherits it, and the first thing that calls
+    # getcwd() dies:
+    #
+    #   rsync: [Receiver] getcwd(): No such file or directory (2)
+    #
+    # which surfaced as "intact: step 'mirror the backend tree' failed" and
+    # looked exactly like an upgrade bug. Re-enter the new tree.
+    cd "$ROOT" || { say "cannot enter $ROOT after the restore"; exit 1; }
 fi
 
 _canary_write || warn "could not write the IRIS canary (is iris running?)"
