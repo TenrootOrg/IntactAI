@@ -55,8 +55,14 @@ on:
   # modules.get('intact'), which is None on a per-module build, so every asset
   # except intact stamped pins_source=local-fallback and the index job refused
   # the release (31ea682).
-  release:
-    types: [published]
+  # TEMPORARY — off while the legacy bundle is being cut for a 0726 box.
+  # Restore before any release customers take, or it ships single-asset only
+  # and silently: upgrade_fetch_release just falls back to the single file when
+  # no index.json is attached. VERSION is also stamped by THIS workflow, so the
+  # branch stops advancing while it is off.
+  #
+  # release:
+  #   types: [published]
   workflow_dispatch:
     inputs:
       tag:

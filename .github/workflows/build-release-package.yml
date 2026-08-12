@@ -56,14 +56,10 @@ on:
   # RE-DISABLE (comment this back out) once that test is done: leaving it on
   # doubles build time/resources for every future release, which is exactly
   # why it was turned off in the first place.
-  # Off again 2026-08-12: the per-module workflow is the one being exercised
-  # now, and building a second ~5.5 GB copy of the same release beside it
-  # roughly doubles the time to cut one. Still the ONLY shape a stuck
-  # intact-20260726 box can take, so it is left dispatchable by hand rather
-  # than removed.
-  #
-  # release:
-  #   types: [published]
+  # Back on 2026-08-12: this is the shape being cut right now, for a stuck
+  # intact-20260726 box -- the only shape such a box can take.
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
