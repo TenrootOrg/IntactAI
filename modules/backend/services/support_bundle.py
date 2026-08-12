@@ -9,6 +9,7 @@ the path on the workflow run for the route to serve via send_file.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -257,6 +258,170 @@ def _copy_compose_configs(workdir: str, dest_dir: str, logger: Callable) -> int:
                 shutil.copy2(src, os.path.join(dest_dir, f"{entry}-{cf}"))
                 n += 1
     return n
+
+
+def _copy_upgrade_engine_logs(workdir: str, dest_dir: str, logger: Callable) -> int:
+    """The upgrade engine's OWN log files.
+
+    The bundle collected container logs, workflow rows and compose files, but
+    nothing the upgrade itself wrote -- and the rewrite moved that record onto
+    the host. `scripts/upgrade.sh` writes the authoritative narrative to
+    data/tmp/upgrade-<run>.log; the workflow row holds only the lines the
+    launcher managed to parse and forward, so a run that dies between writes
+    leaves the DB copy short. The exit code lives in a .done.json beside it,
+    and the exact command in upgrade-launch-<run>.sh.
+
+    On 2026-08-12 a customer upgrade failed on two modules and none of these
+    three files were in the bundle, so the round trip to diagnose it needed
+    the operator to go and find them by hand.
+
+    Newest first, capped: these are the only files here whose size is
+    unbounded (a nine-module run logs tens of MB), and older runs are rarely
+    what the ticket is about.
+    """
+    n = 0
+    keep = 3
+    tmp = os.path.join(workdir, 'data', 'tmp')
+    if os.path.isdir(tmp):
+        runs = sorted(
+            (f for f in os.listdir(tmp)
+             if f.startswith('upgrade-') and f.endswith('.log')),
+            key=lambda f: os.path.getmtime(os.path.join(tmp, f)),
+            reverse=True)[:keep]
+        for log_name in runs:
+            rid = log_name[len('upgrade-'):-len('.log')]
+            for fn in (log_name, f"upgrade-{rid}.done.json",
+                       f"upgrade-launch-{rid}.sh"):
+                src = os.path.join(tmp, fn)
+                if os.path.isfile(src):
+                    try:
+                        shutil.copy2(src, os.path.join(dest_dir, fn))
+                        n += 1
+                    except OSError as e:
+                        logger(f"  could not copy {fn}: {e}", 'warning')
+
+    # install.sh / upgrade.sh also drop a timestamped log at the checkout root
+    # when run from a shell rather than through the dashboard.
+    try:
+        roots = sorted(
+            (f for f in os.listdir(workdir)
+             if (f.startswith('upgrade_') or f.startswith('install_'))
+             and f.endswith('.log')),
+            key=lambda f: os.path.getmtime(os.path.join(workdir, f)),
+            reverse=True)[:keep]
+        for fn in roots:
+            shutil.copy2(os.path.join(workdir, fn), os.path.join(dest_dir, fn))
+            n += 1
+    except OSError:
+        pass
+    return n
+
+
+# Only version pins are extracted from the .env files, never whole files.
+# _copy_compose_configs above refuses to ship .env at all because a redaction
+# regex that misses one key naming convention leaks a credential; an allowlist
+# of KEY NAMES inverts that risk -- a key this does not name cannot appear in
+# the bundle however it is spelled.
+_VERSION_KEY = re.compile(r'^[A-Z0-9_]*VERSION$')
+
+
+def _version_manifest(workdir: str, dest_path: str, logger: Callable) -> int:
+    """What the box THINKS it is running, as opposed to what is running.
+
+    system_info.txt shows the images docker has; it does not show the pins the
+    upgrade engine plans against. When the two disagree -- a stamped .env with
+    a container that never restarted, or a rolled-back module -- that gap IS
+    the bug, and the bundle had no way to show it.
+    """
+    lines = []
+    v = os.path.join(workdir, 'VERSION')
+    if os.path.isfile(v):
+        try:
+            lines.append(f"VERSION = {open(v).read().strip()}")
+        except OSError:
+            pass
+    modules_dir = os.path.join(workdir, 'modules')
+    if os.path.isdir(modules_dir):
+        for mod in sorted(os.listdir(modules_dir)):
+            envf = os.path.join(modules_dir, mod, '.env')
+            if not os.path.isfile(envf):
+                continue
+            try:
+                with open(envf, encoding='utf-8', errors='replace') as fh:
+                    for raw in fh:
+                        if '=' not in raw or raw.lstrip().startswith('#'):
+                            continue
+                        key, _, val = raw.partition('=')
+                        key = key.strip()
+                        if _VERSION_KEY.match(key):
+                            lines.append(f"modules/{mod}/.env  {key} = {val.strip()}")
+            except OSError:
+                continue
+    with open(dest_path, 'w', encoding='utf-8') as out:
+        out.write("# Version pins as recorded on disk (only *VERSION keys are\n"
+                  "# read; no other .env value is collected).\n\n")
+        out.write("\n".join(lines) + "\n")
+    return len(lines)
+
+
+def _bind_mount_audit(workdir: str, dest_path: str, logger: Callable) -> Dict:
+    """For every `./x:` bind mount a module compose declares, does the source
+    exist on disk -- and is it the right KIND of thing?
+
+    This names one specific, repeated failure outright. Docker fabricates an
+    empty DIRECTORY for a bind-mount source that does not exist, so a compose
+    file that arrives ahead of the file it mounts produces a container that
+    dies with exit 126 and an error naming a path, not a cause. It cost a
+    customer upgrade and a support bundle on 2026-08-12
+    (modules/elk/config/setup-kibana-user.sh), and lib/upgrade/intact/assets.sh
+    opens by naming the same rule.
+
+    A directory here is only suspicious, not wrong -- plenty of mounts are
+    legitimately directories -- so the audit reports the shape and flags the
+    case that is nearly always a fault: an EMPTY directory, which is what
+    Docker leaves behind.
+    """
+    mount_re = re.compile(r'^\s*-\s*(\./[^:]+):')
+    findings = {'checked': 0, 'missing': 0, 'fabricated': 0}
+    rows = []
+    modules_dir = os.path.join(workdir, 'modules')
+    if not os.path.isdir(modules_dir):
+        return findings
+    for mod in sorted(os.listdir(modules_dir)):
+        mod_path = os.path.join(modules_dir, mod)
+        compose = os.path.join(mod_path, 'docker-compose.yaml')
+        if not os.path.isfile(compose):
+            continue
+        try:
+            with open(compose, encoding='utf-8', errors='replace') as fh:
+                seen = []
+                for raw in fh:
+                    m = mount_re.match(raw)
+                    if m and m.group(1) not in seen:
+                        seen.append(m.group(1))
+        except OSError:
+            continue
+        for rel in seen:
+            src = os.path.join(mod_path, rel[2:])
+            findings['checked'] += 1
+            if not os.path.exists(src):
+                findings['missing'] += 1
+                rows.append(f"MISSING     {mod}: {rel}")
+            elif os.path.isdir(src) and not os.listdir(src):
+                findings['fabricated'] += 1
+                rows.append(f"EMPTY DIR   {mod}: {rel}   <-- Docker fabricates "
+                            f"this when the source is absent; a container that "
+                            f"execs it dies with exit 126")
+            elif os.path.isdir(src):
+                rows.append(f"dir         {mod}: {rel}")
+            else:
+                rows.append(f"ok          {mod}: {rel}")
+    with open(dest_path, 'w', encoding='utf-8') as out:
+        out.write("# Bind-mount sources declared by each module's compose file.\n"
+                  "# MISSING or EMPTY DIR is very likely the cause of an\n"
+                  "# exit-126 container.\n\n")
+        out.write("\n".join(rows) + "\n")
+    return findings
 
 
 def _copy_auth_audit_log(bundle_root: str, logger: Callable) -> int:
@@ -530,6 +695,31 @@ def prepare_support_bundle(run_id: str, logger: Callable) -> Dict:
         # No docker exec needed — we ARE the backend.
         auth_lines = _copy_auth_audit_log(bundle_root, logger)
         manifest['auth_audit_lines'] = auth_lines
+
+        # The upgrade's own record, the pins it plans against, and whether
+        # every bind mount a compose declares actually exists. All three were
+        # absent on 2026-08-12 when a customer upgrade failed on two modules,
+        # and all three would have named the cause without a round trip.
+        upgrade_dir = os.path.join(bundle_root, 'upgrade')
+        os.makedirs(upgrade_dir, exist_ok=True)
+        eng = _copy_upgrade_engine_logs(workdir, upgrade_dir, logger)
+        manifest['upgrade_engine_files'] = eng
+        logger(f"  ✓ {eng} upgrade engine log file(s)", 'info')
+
+        pins = _version_manifest(workdir,
+                                 os.path.join(bundle_root, 'versions.txt'), logger)
+        manifest['version_pins'] = pins
+        logger(f"  ✓ {pins} version pin(s) recorded", 'info')
+
+        mounts = _bind_mount_audit(workdir,
+                                   os.path.join(bundle_root, 'bind_mounts.txt'), logger)
+        manifest['bind_mounts'] = mounts
+        if mounts.get('missing') or mounts.get('fabricated'):
+            logger(f"  ! bind mounts: {mounts['missing']} missing, "
+                   f"{mounts['fabricated']} fabricated empty director(ies) — "
+                   f"see bind_mounts.txt", 'warning')
+        else:
+            logger(f"  ✓ {mounts.get('checked', 0)} bind mount(s) all present", 'info')
 
         # Phase 7 — per-section size breakdown, manifest, zip.
         update_run_status(run_id, 'running', progress=94)
