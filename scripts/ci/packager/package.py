@@ -1085,7 +1085,23 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
     # to the operator's local config.yaml on any fetch failure so a
     # transient GitHub blip doesn't break the prepare flow.
     target_versions: Optional[Dict[str, str]] = None
-    target_ref = modules.get('intact')
+    # The release tag, however this build was invoked.
+    #
+    # This read `modules.get('intact')` alone, which is the tag ONLY on a build
+    # that carries the intact module. A per-module build narrows the set to one
+    # entry (release_module_set: `selected = {only}`), so on `--module elk` the
+    # dict is {'elk': '9.4.4'} and this was None -- the whole resolve below was
+    # skipped by `if target_ref`, target_versions stayed None, and the manifest
+    # was stamped pins_source=local-fallback. Every per-module asset except
+    # intact, every run, deterministically; the index job then refused the
+    # release.
+    #
+    # It was invisible from the logs. Nothing was fetched, so no fetch error was
+    # printed, and the only surviving signal was the index job quoting a message
+    # about GitHub being unreachable -- for a network call that never happened.
+    # That is also why the legacy workflow was unaffected: it builds every module
+    # in one pass (only=None), so `intact` is present and this resolved.
+    target_ref = modules.get('intact') or (manifest_extra or {}).get('release_tag')
     if target_ref:
         try:
             cfg = _config_at_ref_from_checkout(source_dir, source_commit or target_ref, log)
