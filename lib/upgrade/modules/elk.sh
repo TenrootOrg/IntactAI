@@ -31,7 +31,7 @@ upgrade_module_elk() {
 
     bak="$(backup_file_for_rollback "$envf")" || bak=""
     u_undo "_u_compose_up_old elk"
-    [[ -n "$bak" ]] && u_undo "restore_file_from_backup '${envf}' '${bak}'"
+    [[ -n "$bak" ]] && u_undo "_u_elk_restore_env '${envf}' '${bak}' '${target}'"
 
     u_do --timeout 900 "load elk images" -- \
         _u_load_module_images elk "elasticsearch-" "kibana-" "logstash-"
@@ -60,6 +60,42 @@ upgrade_module_elk() {
         discard_backup "$bak"
     fi
     return $rc
+}
+
+# Restore elk's .env on a rollback WITHOUT downgrading Elasticsearch.
+#
+# Elasticsearch migrates its data directory the first time it starts on a new
+# version and then refuses to open it on an older one:
+#
+#   cannot downgrade a node from version [9.4.4] to version [9.4.2]
+#
+# So a plain restore of the .env is destructive exactly when the upgrade got
+# far enough to start ES. Observed 2026-08-12 on a real 0726 -> 0811 upgrade:
+# ES came up healthy at 9.4.4, the elk_setup container then failed for an
+# unrelated reason (a bind-mounted script that never arrived), the module
+# rolled the pins back to 9.4.2, and Elasticsearch could not start at all
+# afterwards. The rollback left the box in a worse state than the failure --
+# the one thing a rollback must never do.
+#
+# Everything else in the .env is still restored; only the two version pins are
+# held forward, because they are the only ones ES's own on-disk state has an
+# opinion about. Detected from the container's image rather than by parsing
+# ES's node metadata: if the ES container was created from the target image, it
+# started, and if it started the data directory is already migrated.
+_u_elk_restore_env() {
+    local envf="$1" bak="$2" target="$3"
+    restore_file_from_backup "$envf" "$bak" || return 1
+
+    local img
+    img="$("${DOCKER_BIN:-docker}" inspect intact_elasticsearch \
+           --format '{{.Config.Image}}' 2>/dev/null)" || return 0
+    [[ "$img" == *":${target}" ]] || return 0
+
+    log_warn "  Elasticsearch already started at ${target}, so its data directory is"
+    log_warn "  migrated and it will refuse to open at an older version. Holding the elk"
+    log_warn "  pins at ${target} — restoring them would leave Elasticsearch unable to"
+    log_warn "  start at all, which is worse than the failure being rolled back."
+    _u_stamp "$envf" "ELASTIC_VERSION=${target}" "KIBANA_VERSION=${target}"
 }
 
 _u_elk_status() {

@@ -92,6 +92,42 @@ else
          "the real needs-repair case must not have been softened away"
 fi
 
+echo "== a rollback must never leave Elasticsearch unable to start =="
+# ES migrates its data directory on first start at a new version and then
+# refuses to open it on an older one. So restoring elk's .env is destructive
+# exactly when the upgrade got far enough to start ES. Observed 2026-08-12 on a
+# real 0726 -> 0811 upgrade: ES came up healthy at 9.4.4, the elk_setup
+# container failed for an unrelated reason, the pins rolled back to 9.4.2, and
+# Elasticsearch could not start at all afterwards -- the rollback left the box
+# worse than the failure.
+E="${ROOT}/lib/upgrade/modules/elk.sh"
+if grep -q '_u_elk_restore_env' "$E"; then
+    ok "elk's undo goes through the downgrade guard"
+else
+    fail "elk's undo goes through the downgrade guard" \
+         "a plain restore_file_from_backup bricks Elasticsearch"
+fi
+if grep -q 'cannot downgrade a node from version' "$E"; then
+    ok "the guard records ES's own error text"
+else
+    fail "the guard records ES's own error text"
+fi
+# Only the version pins are held forward; every other key still reverts.
+if grep -q 'restore_file_from_backup "\$envf" "\$bak"' "$E"; then
+    ok "the rest of the .env is still restored"
+else
+    fail "the rest of the .env is still restored" "holding the whole file would strand other edits"
+fi
+
+# Functional: the decision, both ways.
+_decide() {
+    local img_tag="$1" target="$2"
+    [[ "docker.elastic.co/elasticsearch/elasticsearch:${img_tag}" == *":${target}" ]] \
+        && echo hold || echo rollback
+}
+check "ES already at the target -> hold the pins forward" "$(_decide 9.4.4 9.4.4)" "hold"
+check "ES never reached the target -> normal rollback"    "$(_decide 9.4.2 9.4.4)" "rollback"
+
 echo
 echo "${PASS}/${TOTAL} passed"
 [[ "$PASS" == "$TOTAL" ]] || exit 1
