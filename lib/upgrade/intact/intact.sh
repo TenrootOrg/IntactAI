@@ -117,6 +117,15 @@ upgrade_module_intact() {
     fi
     u_do "mirror install.sh" -- _intact_mirror_install_sh "$src"
     u_do --timeout 600 "refresh sidecar compose files and assets" -- _intact_refresh_sidecars "$src"
+    # The shared Nginx TLS pair is PLATFORM state, not any one module's: three
+    # modules bind-mount it as ../nginx/ssl/nginx-cert.{crt,key} and none of
+    # them owns it. Leaving it to whichever of those happened to be upgrading
+    # meant a run where all three were noops left the pair missing, and the
+    # next `compose up` -- a reboot, not an upgrade -- hit Docker's fabricated
+    # empty directory. Generated here, right after the composes that mount it
+    # land, so it exists before any module is looked at. Idempotent: an
+    # existing pair is never replaced.
+    u_do "shared TLS cert" -- _u_ensure_nginx_cert
     # Keys a newer release expects that this box has never had. update_env_files
     # runs from install.sh only, so without this an upgraded box never gains
     # them -- see _intact_add_missing_env_keys.

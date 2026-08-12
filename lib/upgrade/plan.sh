@@ -163,6 +163,23 @@ plan_build() {
                 PLAN_ACTION[$m]="upgrade"
                 continue
             fi
+            # A version match is not a health claim either. The intact module
+            # refreshes every module's compose file, so a same-version module
+            # can end the run mounting a file it has never owned: portainer's
+            # secrets/agent.env is named by `env_file:` in the new compose and
+            # by nothing in a 20260726 one. Planned noop, the module never
+            # runs, the secret is never generated -- and the box only finds out
+            # on the next `compose up`, which is a reboot, not an upgrade.
+            # Observed on a real 0726 -> 0811 run (2026-08-12).
+            #
+            # Only per-box generated files reach here: anything the package
+            # carries is delivered by the intact module before this matters.
+            local absent; absent="$(_plan_missing_generated_assets "$m")"
+            if [[ -n "$absent" ]]; then
+                log_warn "  ${m}: already at ${target}, but ${absent} is missing — re-applying instead of skipping"
+                PLAN_ACTION[$m]="upgrade"
+                continue
+            fi
             # The operator explicitly asked for this one to be re-applied.
             #
             # --only is NOT that request: it is checked further up, and a
@@ -194,6 +211,48 @@ plan_build() {
         fi
     fi
     return 0
+}
+
+# ---------------------------------------------------------------------------
+# _plan_missing_generated_assets <module>
+#
+# The bind-mount / env_file sources the module will need AFTER this run that
+# do not exist and cannot be delivered from the package -- i.e. the per-box
+# generated ones (portainer's agent.env and admin_password, the shared TLS
+# pair). Prints them comma-separated, or nothing.
+#
+# Read from the PACKAGE's compose, not the box's: the box's is still the old
+# one when the plan is built, and the whole point is to see what the module
+# will be mounting once intact has refreshed it. Falls back to the box's
+# compose when the package has none for this module.
+# ---------------------------------------------------------------------------
+_plan_missing_generated_assets() {
+    local m="$1"
+    local box="${SCRIPT_DIR}/modules/${m}"
+    local pkg="${UPKG_DIR:-}/source/intact/modules/${m}"
+    local compose="${pkg}/docker-compose.yaml"
+    [[ -n "${UPKG_DIR:-}" && -f "$compose" ]] || compose="${box}/docker-compose.yaml"
+    [[ -f "$compose" ]] || return 0
+    declare -F _u_compose_sources >/dev/null || return 0
+
+    local kind rel src; local -a absent=()
+    while read -r kind rel; do
+        [[ -n "${rel:-}" ]] || continue
+        src="${box}/${rel}"
+        # An EMPTY directory is Docker's fabrication where a file belongs, so
+        # it counts as absent -- same convention as _u_precheck_compose_sources.
+        # A non-empty one is a real directory mount and is fine.
+        if [[ -e "$src" ]] && ! { [[ -d "$src" ]] && [[ -z "$(ls -A "$src" 2>/dev/null)" ]]; }; then
+            continue
+        fi
+        # The package can supply it -> _intact_refresh_sidecars will, for every
+        # module, before any module is upgraded. Not a reason to re-run one.
+        [[ "$rel" != ../* && -n "${UPKG_DIR:-}" && -e "${pkg}/${rel}" ]] && continue
+        absent+=("$rel")
+    done < <(_u_compose_sources "$compose" | sort -u)
+
+    (( ${#absent[@]} )) || return 0
+    local IFS=','; echo "${absent[*]}"
 }
 
 # The image TAG the module's primary container is actually running, or ""
