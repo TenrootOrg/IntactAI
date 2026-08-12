@@ -86,8 +86,10 @@ for name, mod in (doc.get("modules") or {}).items():
 PY
 }
 
+_UP_FAILED=()
 _up() {
     local m enabled
+    _UP_FAILED=()
     enabled=" $(_enabled_modules | tr '\n' ' ') "
     # Reverse order: backend and nginx last, so the dashboard only comes back
     # once what it talks to is already up.
@@ -98,8 +100,30 @@ _up() {
             backend|nginx) ;;                      # the platform, always
             *) [[ "$enabled" == *" $m "* ]] || continue ;;
         esac
-        ( cd "$ROOT/modules/$m" && sudo docker compose up -d ) >/dev/null 2>&1
+        if ! ( cd "$ROOT/modules/$m" && sudo docker compose up -d ) >/dev/null 2>&1; then
+            _UP_FAILED+=("$m")
+        fi
     done
+
+    # Say so. This discarded the exit status as well as the output, so a module
+    # that could not start was completely silent -- and the very next line said
+    # "saved", which reads as success. Found 2026-08-12: timesketch and
+    # portainer both failed on a missing secrets/*.env (the files had been gone
+    # since an earlier rolled-back upgrade; their containers were still running
+    # from before, so stopping them for the snapshot is what exposed it), and
+    # the tool reported a clean save over a half-dead appliance.
+    #
+    # Reported, not fatal: the snapshot on disk is still valid and the other
+    # modules did come up. What must not happen is silence.
+    if (( ${#_UP_FAILED[@]} )); then
+        err "these module(s) did NOT come back up: ${_UP_FAILED[*]}"
+        err "  the appliance is only partly running. To see why, run:"
+        for m in "${_UP_FAILED[@]}"; do
+            err "    ( cd $ROOT/modules/$m && sudo docker compose up -d )"
+        done
+        return 1
+    fi
+    return 0
 }
 
 case "$ACTION" in
@@ -172,7 +196,7 @@ save)
     sudo chown -R "$(id -u):$(id -g)" "$DEST"
 
     log "bringing the appliance back up"
-    _up
+    _up || true      # reported inside _up; the snapshot itself is still valid
     log "saved -> $DEST  ($(du -sh "$DEST" | cut -f1))"
     ;;
 
@@ -246,8 +270,15 @@ restore)
     sudo rm -f /etc/intact-initialized
 
     log "bringing the appliance back up"
-    _up
+    _up || RESTORE_INCOMPLETE=1
     log "restored '$NAME'. VERSION now: $(cat "$ROOT/VERSION" 2>/dev/null)"
+    # A restore that did not fully come up is NOT a usable baseline -- a chain
+    # test starting from it would attribute the missing stack to whatever it
+    # ran next.
+    if [ "${RESTORE_INCOMPLETE:-0}" = "1" ]; then
+        err "restore incomplete: the appliance is not fully up (see above)"
+        exit 1
+    fi
     ;;
 
 list)
