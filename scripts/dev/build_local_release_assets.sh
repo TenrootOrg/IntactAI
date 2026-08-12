@@ -81,8 +81,20 @@ err() { printf '[local-build][ERROR] %s\n' "$1" >&2; }
 # host run dies on `import services`.
 BUILD_IMAGE="${INTACT_BUILD_IMAGE:-}"
 if [ -z "$BUILD_IMAGE" ]; then
+    # Highest VERSION, not most-recently-built. `head -1` on `docker image ls`
+    # takes whatever was built last, which is routinely an OLD tag -- building
+    # an intact-20260726 image to test that upgrade picked 0726 as the
+    # toolchain, and the packager died with
+    #   ModuleNotFoundError: No module named 'services.image_map'
+    # because 0726 predates that module. Dated tags sort lexicographically, so
+    # a reverse sort on the tag is the newest release; fall back to any
+    # intact-backend image if none are dated.
     BUILD_IMAGE="$(docker image ls --format '{{.Repository}}:{{.Tag}}' \
-        | grep '^intact-backend:' | head -1 || true)"
+        | grep -E '^intact-backend:intact-[0-9]{8}$' | sort -t: -k2 -r | head -1 || true)"
+    if [ -z "$BUILD_IMAGE" ]; then
+        BUILD_IMAGE="$(docker image ls --format '{{.Repository}}:{{.Tag}}' \
+            | grep '^intact-backend:' | head -1 || true)"
+    fi
 fi
 if [ -z "$BUILD_IMAGE" ]; then
     err "no intact-backend image found locally, and none given via"

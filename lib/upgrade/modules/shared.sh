@@ -118,6 +118,36 @@ _u_ensure_nginx_cert() {
     log_success "  generated shared Nginx TLS cert"
 }
 
+# Copy a missing bind-mount source out of the package.
+#
+# _intact_refresh_sidecars already delivers every module's mount assets -- but
+# it runs inside the INTACT module, and on a 0726 box intact is upgraded by the
+# OLD Python engine in phase 1, which has no such step. Phase 2 then starts elk
+# against a freshly delivered compose file whose companion config files were
+# never delivered, Docker fabricates a directory at
+# ./config/setup-kibana-user.sh, and the setup container execs a directory:
+# exit 126. That is one of the two failures on real customer 0726 -> 0811
+# imports (the other was portainer's agent.env).
+#
+# Delivering here makes each module self-sufficient: it stops mattering which
+# engine handled intact, or whether intact ran in this invocation at all
+# (--only elk, a single-module repair).
+#
+# Only paths inside the module's own directory. A `../` source belongs to some
+# other module and is delivered when that module is iterated -- or, like the
+# shared TLS pair, is generated per box and is not in the package at all.
+_u_deliver_from_package() {
+    local dir="$1" rel="$2"
+    [[ -n "${UPKG_DIR:-}" ]] || return 1
+    [[ "$rel" == ../* ]] && return 1
+    local module from
+    module="$(basename "$dir")"
+    from="${UPKG_DIR}/source/intact/modules/${module}/${rel}"
+    [[ -e "$from" ]] || return 1
+    mkdir -p "$(dirname "${dir}/${rel}")" 2>/dev/null || return 1
+    cp -a "$from" "${dir}/${rel}" 2>/dev/null || return 1
+}
+
 _u_precheck_compose_sources() {
     local dir="$1"
     local compose="${dir}/docker-compose.yaml"
@@ -136,6 +166,13 @@ _u_precheck_compose_sources() {
         fi
 
         [[ -e "$src" ]] && continue
+
+        # Repair before reporting: a mount the package can supply is not a
+        # problem, it is a file that has not been copied yet.
+        if [[ "$kind" == "mount" ]] && _u_deliver_from_package "$dir" "$rel"; then
+            log_info "  delivered ${rel} from the package"
+            continue
+        fi
 
         if [[ "$kind" == "envfile" ]]; then
             log_error "  ${rel} is named by env_file in $(basename "$dir")/docker-compose.yaml but does not exist."
