@@ -90,13 +90,19 @@ RELEASE_MODULES = {
                       # tusd -- both `intact-backend-` and `tusd-` are attributed
                       # to `intact` by image_owner_prefixes, so this one entry
                       # carries the platform and its upload sidecar.
+    # ---------------------------------------------------------------------
+    # TEMPORARY (2026-08-12) — trimmed to the modules needed to test the
+    # intact-20260726 -> intact-20260811 upgrade path (elk, iris, portainer,
+    # plus intact/tusd above). RESTORE THE REST before building anything
+    # anyone installs -- see the warning below.
+    # ---------------------------------------------------------------------
     "elk",
     "iris",
-    "timesketch",
-    "plaso",
-    "velociraptor",   # both kinds -- 0.77.1 and the legacy 0.7.1 client
-    "volweb",
-    "aws_sigma",
+    # "timesketch",
+    # "plaso",
+    # "velociraptor",   # both kinds -- 0.77.1 and the legacy 0.7.1 client
+    # "volweb",
+    # "aws_sigma",
     "portainer",
 }
 
