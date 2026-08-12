@@ -426,6 +426,25 @@ def run_startup_initialization():
     except Exception as e:
         print(f"[STARTUP] Upgrade-engine check skipped: {e}", flush=True)
 
+    # Finish an upgrade a pre-bash release abandoned at its Phase-1 restart.
+    #
+    # intact-20260726's Phase 1 swaps the platform, records what is still
+    # outstanding, and recreates this container expecting a Phase 2 to resume
+    # inside whatever comes up. That Phase 2 was Python and went with the rest
+    # of the in-container engine, so the remaining modules were never applied
+    # and the run sat at "running" for ever -- three customer imports in a row,
+    # each ending with elk and portainer failed.
+    #
+    # AFTER the engine heal above, deliberately: this hands the leftovers to
+    # scripts/upgrade.sh, so the engine has to be on disk before it runs. On a
+    # box that has never seen the old engine there is no such table and this is
+    # a single failed SQLite query.
+    try:
+        from services.upgrade_launcher import resume_legacy_two_phase
+        resume_legacy_two_phase()
+    except Exception as e:
+        print(f"[STARTUP] Legacy upgrade resume skipped: {e}", flush=True)
+
     # Initialize Elasticsearch — only when the module is actually enabled.
     # Previously this ran unconditionally even on installs with
     # modules.elk.enabled: false (the common case), attempting a network

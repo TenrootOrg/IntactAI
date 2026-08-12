@@ -193,6 +193,119 @@ def _add_missing_env_keys() -> None:
         print(f"[UPGRADE-LAUNCHER] .env key check skipped: {e}", flush=True)
 
 
+def resume_legacy_two_phase() -> bool:
+    """Finish an upgrade a pre-bash release abandoned at its Phase-1 restart.
+
+    Returns True when a resume was launched.
+
+    THE HAND-OVER THIS CLOSES. intact-20260726 upgrades in two phases: Phase 1
+    swaps the platform, writes `upgrade_state(phase='awaiting_restart', ...)`
+    and recreates this container, expecting a Phase 2 to resume inside whatever
+    comes up. That Phase 2 was Python, and it was deleted with the rest of the
+    in-container engine -- so on a rescued box the remaining modules were simply
+    never applied, and the run sat at "running" for ever.
+
+    We do not need to reimplement it. Phase 1 already persisted everything the
+    bash engine needs -- which modules, which are done, and where the package
+    is -- so resuming is a translation, not a re-execution: read the row, hand
+    the leftovers to scripts/upgrade.sh, done. The modules it then applies get
+    the bash engine's mount-asset delivery and per-box secret generation, which
+    is exactly what the Python Phase 2 lacked (elk's setup-kibana-user.sh
+    exit 126, portainer's missing secrets/agent.env -- both observed on a
+    customer box, three imports running).
+
+    Read straight out of SQLite because our own storage layer dropped this
+    table when the engine went (storage/base.py:167 says so). It only exists on
+    a box that came from a pre-bash release, which is precisely the box this is
+    for.
+
+    Self-cleaning: the intact module runs _intact_clear_legacy_upgrade_state
+    (lib/upgrade/intact/image.sh), which drops the table -- so a completed
+    resume cannot re-fire on the next boot. The in-flight guard below covers the
+    window before that runs.
+    """
+    import sqlite3
+
+    db = os.path.join(WORKDIR, "data", "intact.db")
+    if not os.path.isfile(db):
+        return False
+    try:
+        conn = sqlite3.connect(db, timeout=5)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT run_id, phase, target_modules, completed_modules, package_dir "
+            "FROM upgrade_state WHERE phase = 'awaiting_restart' "
+            "ORDER BY updated_at DESC LIMIT 1").fetchone()
+        conn.close()
+    except sqlite3.Error:
+        # No such table on any box that never ran the old engine. Not an error.
+        return False
+    if not row:
+        return False
+
+    # Never start a second engine over a live one. _upgrade_in_flight() is the
+    # same flock scripts/upgrade.sh itself takes, so this also covers the case
+    # where a helper from the interrupted run is somehow still going.
+    if _upgrade_in_flight():
+        print("[STARTUP] legacy resume: an upgrade already holds the lock — leaving it alone",
+              flush=True)
+        return False
+
+    def _list(v):
+        try:
+            out = json.loads(v or "[]")
+            return [str(x) for x in out] if isinstance(out, list) else []
+        except (ValueError, TypeError):
+            return [x.strip() for x in (v or "").split(",") if x.strip()]
+
+    todo = [m for m in _list(row["target_modules"])
+            if m not in _list(row["completed_modules"])]
+    if not todo:
+        print("[STARTUP] legacy resume: Phase 1 left nothing to finish", flush=True)
+        return False
+
+    # package_dir is EITHER a JSON blob {extract_dir, package_path} OR a bare
+    # path -- the old engine wrote both shapes across its life and read both
+    # back (upgrade/__init__.py:1590-1610). The extracted tree is preferred:
+    # it needs no re-extraction, and the engine takes a directory happily.
+    raw = row["package_dir"] or ""
+    pkg = ""
+    try:
+        paths = json.loads(raw)
+        extract_dir = paths.get("extract_dir") or ""
+        if extract_dir and os.path.isdir(extract_dir):
+            subs = [d for d in os.listdir(extract_dir)
+                    if os.path.isdir(os.path.join(extract_dir, d))]
+            pkg = os.path.join(extract_dir, subs[0]) if subs else extract_dir
+        elif paths.get("package_path") and os.path.exists(paths["package_path"]):
+            pkg = paths["package_path"]
+    except (ValueError, TypeError):
+        pkg = raw if raw and os.path.exists(raw) else ""
+
+    if not pkg:
+        print(f"[STARTUP] legacy resume: the package Phase 1 used is gone "
+              f"({raw or 'no path recorded'}); import it again to finish "
+              f"{', '.join(todo)}", flush=True)
+        return False
+
+    run_id = row["run_id"]
+    print(f"[STARTUP] legacy resume: Phase 1 stopped here; finishing "
+          f"{', '.join(todo)} with the bash engine", flush=True)
+    try:
+        add_log_to_run(run_id,
+                       "Phase 1 of a pre-bash upgrade stopped at its restart. "
+                       "Finishing the remaining module(s) with the current "
+                       f"engine: {', '.join(todo)}.", "info")
+    except Exception:
+        pass   # a missing run row must not stop the resume
+
+    err = launch(run_id, ["--package", pkg, "--only", ",".join(todo)])
+    if err:
+        print(f"[STARTUP] legacy resume failed to start: {err}", flush=True)
+        return False
+    return True
+
+
 def ensure_host_engine() -> bool:
     """Make the appliance's upgrade engine match the one in this image.
 
