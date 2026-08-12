@@ -124,11 +124,38 @@ save)
         "$(basename "$ROOT")" 2>/dev/null
 
     log "docker volumes"
+    _nvol=0
     for v in $(docker volume ls -q 2>/dev/null); do
         mp="$(docker volume inspect -f '{{.Mountpoint}}' "$v" 2>/dev/null)" || continue
-        [ -d "$mp" ] || continue
-        sudo tar -C "$mp" -cf "$DEST/volumes/$v.tar" . 2>/dev/null && printf '  %s\n' "$v"
+        # `sudo test`, not `[ -d ]`. The mountpoint is under /var/lib/docker,
+        # which is drwx--x--- root:root, so an unprivileged caller cannot even
+        # traverse it and the plain test is FALSE for every volume -- while the
+        # `sudo tar` on the next line would have worked fine. Running this
+        # script without sudo therefore skipped all 29 volumes, silently, and
+        # still wrote a snapshot: right tree, right backend image, 3.0 GB on
+        # disk, and not one byte of Elasticsearch, Postgres, OpenSearch or the
+        # Velociraptor datastore. Restoring it would have looked like a working
+        # appliance that had lost every case. Found 2026-08-12.
+        sudo test -d "$mp" || continue
+        if sudo tar -C "$mp" -cf "$DEST/volumes/$v.tar" . 2>/dev/null; then
+            printf '  %s\n' "$v"
+            _nvol=$((_nvol + 1))
+        else
+            err "  FAILED to archive volume $v"
+        fi
     done
+
+    # A snapshot with no volumes is not a snapshot, and the whole danger of the
+    # bug above was that it announced success. Refuse to leave one on disk.
+    if [ "$_nvol" -eq 0 ]; then
+        err "captured 0 volumes -- this snapshot would restore an appliance with"
+        err "no data at all. Removing it rather than leaving a convincing decoy."
+        err "Run this script with sudo if the volume mountpoints are unreadable."
+        rm -rf "$DEST"
+        _up
+        exit 1
+    fi
+    log "  $_nvol volume(s) archived"
 
     log "backend image"
     img="$(grep -E '^BACKEND_VERSION=' "$ROOT/modules/backend/.env" 2>/dev/null | cut -d= -f2-)"
