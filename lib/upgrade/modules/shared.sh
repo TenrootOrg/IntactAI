@@ -23,8 +23,18 @@ _u_env_file()   { echo "${SCRIPT_DIR}/modules/$1/.env"; }
 _u_compose_sources() {
     local compose="$1"
     [[ -f "$compose" ]] || return 0
-    grep -oE '^[[:space:]]*-[[:space:]]*\./[^:]+:' "$compose" 2>/dev/null \
-        | sed 's/^[[:space:]]*-[[:space:]]*\.\///; s/:$//' \
+    # `./x` AND `../x`. Parent-relative is not exotic: portainer mounts the
+    # shared TLS pair as ../nginx/ssl/nginx-cert.crt, and matching only `./`
+    # made those two invisible here -- so Docker fabricated directories at
+    # /certs/cert.pem and portainer died with "failed copying supplied certs:
+    # read /certs/cert.pem: is a directory". Same fabricated-directory class as
+    # elk's exit 126, found on a real 0726 -> 0811 run (2026-08-12) precisely
+    # because this function could not see the mount.
+    #
+    # `./` is stripped, `../` is kept: the caller resolves ${dir}/${rel}, and
+    # modules/portainer/../nginx/ssl/x is the correct path.
+    grep -oE '^[[:space:]]*-[[:space:]]*\.\.?/[^:]+:' "$compose" 2>/dev/null \
+        | sed -E 's/^[[:space:]]*-[[:space:]]*//; s/:$//; s#^\./##' \
         | sed 's/^/mount /'
     awk '
         /^[[:space:]]*env_file:/ { inblock = 1; next }
@@ -58,6 +68,56 @@ _u_compose_sources() {
 # at that path -- that is what turns the crash loop back into a working
 # container, and it is safe because a non-empty directory (elk's config/pipeline
 # is a legitimate directory mount) is never touched.
+# The shared Nginx TLS pair, mounted by portainer, elk and timesketch as
+# ../nginx/ssl/nginx-cert.{crt,key}. install.sh generates it in
+# generate_certificates() (lib/modules/shared.sh) -- the upgrade engine never
+# did, so on a box where the pair was missing Docker fabricated two empty
+# DIRECTORIES at those paths and portainer died with
+#   failed copying supplied certs: read /certs/cert.pem: is a directory
+# Observed on a real 0726 -> 0811 run, 2026-08-12. Same class as portainer's
+# agent.env: generated per box, never shipped in a package, so an upgrade that
+# only delivers files can never supply it.
+#
+# Idempotent, so every module that mounts the pair can call it. Only generates
+# when the cert is genuinely absent -- an existing cert is left alone, because
+# replacing it would break every already-trusted client.
+_u_ensure_nginx_cert() {
+    local ssl="${SCRIPT_DIR}/modules/nginx/ssl"
+    local crt="${ssl}/nginx-cert.crt" key="${ssl}/nginx-cert.key"
+    mkdir -p "$ssl"
+
+    # Clear Docker's fabricated empty directories first: openssl cannot write
+    # a file over a directory, so without this the generation below fails.
+    local p
+    for p in "$crt" "$key"; do
+        if [[ -d "$p" && -z "$(ls -A "$p" 2>/dev/null)" ]]; then
+            rmdir "$p" 2>/dev/null && log_warn "  removed the empty directory Docker left at ${p#${SCRIPT_DIR}/}"
+        fi
+    done
+
+    if [[ -f "$crt" && -f "$key" ]]; then
+        log_info "  shared Nginx TLS cert present"
+        return 0
+    fi
+
+    # Match install.sh's subject so a regenerated cert is indistinguishable
+    # from the one the installer would have written.
+    local domain
+    domain="$(awk -F': *' '/^domain:/ {print $2; exit}' "${SCRIPT_DIR}/config.yaml" 2>/dev/null | tr -d '"\r')"
+    [[ -n "$domain" ]] || domain=localhost
+
+    log_info "  generating shared Nginx TLS cert for domain: ${domain}"
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout "$key" -out "$crt" \
+        -subj "/CN=${domain}/O=Intact.AI/C=US" 2>/dev/null || {
+        log_error "  openssl failed to generate ${crt#${SCRIPT_DIR}/}"
+        return 1
+    }
+    # 640 not 600: Kibana runs as uid 1000 in gid 0 and reads this same key.
+    chmod 640 "$key" 2>/dev/null || true
+    log_success "  generated shared Nginx TLS cert"
+}
+
 _u_precheck_compose_sources() {
     local dir="$1"
     local compose="${dir}/docker-compose.yaml"

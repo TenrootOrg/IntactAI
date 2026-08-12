@@ -13,6 +13,7 @@ upgrade_module_portainer() {
 
     u_begin portainer
 
+    u_do "shared TLS cert" -- _u_ensure_nginx_cert
     u_do "portainer admin secret" -- _u_ensure_portainer_admin_secret
     u_do "portainer agent secret" -- _u_ensure_agent_secret
 

@@ -26,6 +26,7 @@ upgrade_module_elk() {
     # systemctl call), so unconditional here rather than gated to only the
     # first-ever deploy of this module.
     u_do "host preflight" -- preflight_host_check "ELK Stack"
+    u_do "shared TLS cert" -- _u_ensure_nginx_cert
     u_do "elasticsearch credentials" -- ensure_elk_credentials
 
     bak="$(backup_file_for_rollback "$envf")" || bak=""
