@@ -73,7 +73,32 @@ permissions:
   contents: write            # upload the package as a Release asset
 
 jobs:
+  # Reads .github/release-ci.conf so the choice is one line in one file
+  # rather than a YAML edit in two. See that file for the rule.
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.c.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: c
+        run: |
+          set -euo pipefail
+          # Default TRUE when the file or the key is missing: per-module is the
+          # shape releases are moving to, and forgetting to add the key must not
+          # keep the legacy build alive forever.
+          NEW=true
+          if [ -f .github/release-ci.conf ] \
+             && grep -qiE '^[[:space:]]*is_new_CI[[:space:]]*=[[:space:]]*(false|no|0)[[:space:]]*$' \
+                  .github/release-ci.conf; then
+            NEW=false
+          fi
+          echo "is_new_CI = ${NEW}"
+          [ "$NEW" = "false" ] && echo "run=yes" >> "$GITHUB_OUTPUT" || echo "run=no" >> "$GITHUB_OUTPUT"
+
   build-package:
+    needs: gate
+    if: github.event_name == 'workflow_dispatch' || needs.gate.outputs.run == 'yes'
     runs-on: ubuntu-latest
     timeout-minutes: 90       # full package = backend build + all sidecar image saves
     steps:
