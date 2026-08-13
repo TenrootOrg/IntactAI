@@ -63,45 +63,28 @@ sudo bash install.sh
 
 ## Services
 
-All services terminate TLS through the main nginx. Detailed port allocations (internal docker-network ports, agent comms, install/runtime egress) are in the [Network / Firewall Ports](#network--firewall-ports) section below.
+Everything terminates TLS through the main nginx. Access is `https://YOUR_IP`
+unless a port is listed. `install.sh` starts containers only for enabled
+modules.
 
-| Service | Description | Access |
-|---------|-------------|--------|
-| **Dashboard** | Web UI — workflows, blueprints, reports, settings | `https://YOUR_IP` |
-| **Velociraptor** | Endpoint forensics + remote collection (reverse-proxied — use `/velociraptor/`, not the upstream port directly) | `https://YOUR_IP/velociraptor/` |
-| **TimeSketch** | Timeline analysis — ingest Plaso super-timelines and pivot across multi-host investigations from a single view | `https://YOUR_IP:5000` |
-| **ELK Stack** | Searchable log store + visualization. Indexes Velociraptor artifact hunts and Sigma rule matches; Kibana is the analyst-facing dashboard. | `https://YOUR_IP:5601` (Kibana) |
-| **IRIS** | Case management — track open incidents, assignees, evidence chains, and IR runbook progress across the engagement | `https://YOUR_IP:8443` |
-| **VolWeb** | Memory forensics (Volatility 3 + YARA) | `https://YOUR_IP:8002` |
-| **Portainer** | Container management — inspect, restart, and tail logs of the IntactAI service containers from a web UI | `https://YOUR_IP:9443` |
+| Module | What it does | Access | Containers |
+|---|---|---|---|
+| **Dashboard** | Web UI — workflows, blueprints, reports, settings | `/` | `intact_backend`, `intact_tusd`, `intact_nginx` |
+| **Velociraptor** | Endpoint forensics + remote collection | `/velociraptor/` (proxied — not the upstream port) | `intact_velociraptor` |
+| **TimeSketch** | Timeline analysis — ingests Plaso super-timelines, pivots across hosts from one view | `:5000` | `intact_timesketch_web`, `_web_v3`, `_web_legacy`, `_worker`, `_nginx`, `_postgres`, `_redis`, `_opensearch` |
+| **ELK** | Searchable log store + Kibana. Indexes Velociraptor hunts and Sigma matches | `:5601` | `intact_elasticsearch`, `intact_logstash`, `intact_kibana` |
+| **IRIS** | Case management — incidents, assignees, evidence chains, runbook progress | `:8443` | `intact_iris_app`, `_db`, `_worker`, `_rabbitmq`, `_nginx` |
+| **VolWeb** | Memory forensics (Volatility 3 + YARA) | `:8002` | `intact_volweb_frontend`, `_backend`, `_workers`, `_workers_yarascan`, `_postgresdb`, `_redis` |
+| **Portainer** | Container management — inspect, restart, tail logs | `:9443` | `intact_portainer`, `intact_portainer_agent` |
+| **Case Analysis (Fusion)** | Correlates every host + module into one incident graph → fused report, advisory, timeline, Identities, and grounded chat | in Dashboard | — |
+| **Memory** | Remote acquisition (AVML / WinPmem), analysed in the VolWeb stack | in Dashboard | — |
+| **Cloud DFIR** | AWS **CloudTrail** and Microsoft 365 / Azure AD **(DFIR-O365RC)** collection + SIGMA detections | in Dashboard | in `intact_backend` |
+| **Plaso** | Super-timeline generation | via TimeSketch | image pulled per job |
+| **Scheduler / Blueprints / Agentic** | Scheduled collections, reusable blueprints, agentic quick-wins | in Dashboard | — |
 
-### Dashboard modules
-
-These run inside the Dashboard (no separate URL — all under `https://YOUR_IP`) and have **no dedicated container** unless noted:
-
-| Module | What it does |
-|--------|--------------|
-| **Case Analysis (Fusion)** | Correlates every host + module into one incident graph → fused **report**, advisory, **timeline**, **Identities**, and grounded **chat** over the whole investigation. |
-| **Memory** | Remote memory acquisition (AVML / WinPmem) → analysis in the **VolWeb** stack (Volatility 3 + YARA). |
-| **Cloud DFIR** | AWS **CloudTrail** and Microsoft 365 / Azure AD **(DFIR-O365RC)** log collection + SIGMA detections, feeding the fusion engine. Runs in the backend. |
-| **Scheduler / Blueprints / Agentic** | Scheduled collections, reusable collection blueprints, and the agentic quick-wins pipeline. |
-
-### Containers
-
-`install.sh` brings up the following containers (only for enabled modules):
-
-| Group | Containers |
-|-------|-----------|
-| **Core** | `intact_backend` (API + orchestrator), `intact_tusd` (resumable uploads), `intact_nginx` (TLS reverse proxy) |
-| **Velociraptor** | `intact_velociraptor` |
-| **TimeSketch** | `intact_timesketch_web`, `_web_v3`, `_web_legacy`, `_worker`, `_nginx`, `_postgres`, `_redis`, `_opensearch` |
-| **ELK** | `intact_elasticsearch`, `intact_logstash`, `intact_kibana` |
-| **IRIS** | `intact_iris_app`, `_db`, `_worker`, `_rabbitmq`, `_nginx` |
-| **VolWeb (Memory)** | `intact_volweb_frontend`, `_backend`, `_workers`, `_workers_yarascan`, `_postgresdb`, `_redis` |
-| **Portainer** | `intact_portainer`, `intact_portainer_agent` |
-| **On-demand (no long-running container)** | **Plaso** (image pulled per timeline job) and **CloudTrail / O365RC DFIR** (run in-process in the backend) |
-
-> The heavy search engines — TimeSketch's OpenSearch, ELK's Elasticsearch/Kibana — are the biggest RAM/CPU consumers. On a small host you can `docker stop` the stacks you're not using to free resources.
+> The search engines — TimeSketch's OpenSearch and ELK's Elasticsearch/Kibana —
+> are the biggest RAM/CPU consumers. On a small host, `docker stop` the stacks
+> you are not using.
 
 ## Configuration
 
@@ -158,18 +141,15 @@ versions:               # main module pins (sub-component pins also live here)
 
 ## Network / Firewall Ports
 
-Open these on the IntactAI server:
+| Port | Direction | What it carries |
+|---|---|---|
+| **443** | in + out | **In:** Dashboard, `/velociraptor/`, `/api/` — the main one. **Out:** install (Docker Hub, GitHub, Ubuntu apt, PyPI) and, per enabled module, LLM providers / `*.microsoftonline.com` + `graph.microsoft.com` / `*.amazonaws.com` / GitHub for YARA. Outbound is skippable if you install and upgrade from packages. |
+| **8000** | in | **Required.** Velociraptor agents phone home here. Blocked, and agents silently never appear in the Clients list. |
+| **80** | in | HTTP → HTTPS redirect |
+| **5000 · 5601 · 8002 · 8443 · 9443** | in | TimeSketch · Kibana · VolWeb · IRIS · Portainer. Lock these to the analyst subnet. |
 
-| Direction | Port | Purpose |
-|-----------|------|---------|
-| **Inbound — analyst access** | TCP 443 | Dashboard + `/velociraptor/` + `/api/` proxy. **The main one.** |
-| | TCP 80 | HTTP → HTTPS redirect |
-| | TCP 5000, 5601, 8002, 8443, 9443 | TimeSketch, Kibana, VolWeb, IRIS, Portainer (lock to analyst subnet) |
-| **Inbound — Velociraptor agents** | TCP 8000 (TLS) | **Required.** Every endpoint phones home here. If blocked, agents silently never appear in the Clients list. |
-| **Outbound — install** | TCP 443 | Docker Hub, GitHub, Ubuntu apt, PyPI (for image pulls + Velociraptor binaries + SIGMA / YARA rules). Skip if using the offline upgrade package. |
-| **Outbound — runtime, per module** | TCP 443 | OpenRouter / Anthropic / Google (online LLM); `*.microsoftonline.com` + `graph.microsoft.com` (Azure scans); `*.amazonaws.com` (AWS scans); GitHub (YARA refresh). Only required if you enable that module. |
-
-**Minimum-viable deployment:** open 443 inbound from analysts, 8000 inbound from endpoint subnets, 443 outbound during install. Everything else is opt-in per module.
+**Minimum viable:** 443 in from analysts, 8000 in from endpoint subnets, 443 out
+during install. Everything else is opt-in per module.
 
 ## Upgrades
 
