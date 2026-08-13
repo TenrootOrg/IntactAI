@@ -33,6 +33,36 @@
 # headless, inside a container from the release's freshly-built backend image
 # (which has the code + deps), with the docker socket, a freshly-cloned
 # /opt/sigma-rules (for the aws_sigma rule pack), and an output dir mounted.
+# THIS SHAPE SHIPS `intact` AND NOTHING ELSE (--only-modules intact).
+#
+# The legacy single bundle exists for one job: hop a pre-bash box
+# (intact-20260726) onto the new engine. Such a box cannot read per-module
+# assets at all -- find_release_package hardcodes intact-upgrade-<tag>.tar.gz --
+# so this is the only shape it can consume.
+#
+# It carries only the platform because their engine is the broken part. A 0726
+# box runs Phase 2 IN-PROCESS with its own code, which has no mount-asset
+# delivery: given a full bundle it fabricates an empty directory where
+# modules/elk/config/setup-kibana-user.sh belongs, intact_elk_setup execs a
+# directory and dies with exit 126, and the run reports "completed" over
+# [FAILED] elk and [FAILED] portainer. Reproduced on a rebuilt 0726 appliance
+# 2026-08-13; three customer imports had already failed exactly that way.
+#
+# With only `intact` in the manifest there is nothing for that Phase 2 to
+# apply, so it cannot fail. The box lands on the new platform, ensure_host_engine
+# puts scripts/upgrade.sh and lib/upgrade/ on disk, and the NEXT release upgrades
+# the modules with the engine that delivers mounts properly. Verified end to end:
+# 0726 -> 0811 (zero failed modules) -> 0814 (elk 9.4.2 -> 9.4.4, elk_setup
+# Exited (0)).
+#
+# Also 433 MB instead of 4.1 GB, and it clears 0726's disk preflight, which
+# demanded 17.4 GiB for the full bundle and refused the upgrade outright.
+#
+# NOT INSTALLABLE. install.sh takes images only from the package with no
+# registry fallback, so a clean install from this asset comes up with the backend
+# and nothing else. The packager prints "!! PARTIAL RELEASE -- 1 of 9 modules"
+# for exactly this reason: expected here, not a warning to silence.
+#
 # See scripts/ci/build_release_package.py.
 
 name: OLD (pre-20260811) — single-asset release package
@@ -201,6 +231,7 @@ jobs:
             intact-backend:ci-packager \
             python3 "$GITHUB_WORKSPACE/scripts/ci/build_release_package.py" \
               --tag "${{ steps.tag.outputs.tag }}" --out /output \
+              --only-modules intact \
               ${{ steps.since.outputs.since && format('--since {0}', steps.since.outputs.since) || '' }}
           echo "== built =="; ls -lh "$GITHUB_WORKSPACE/ci-output"
 

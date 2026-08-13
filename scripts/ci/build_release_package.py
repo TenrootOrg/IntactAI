@@ -177,7 +177,7 @@ def platform_config_path(must_exist: bool = True):
     return None
 
 
-def release_module_set(tag: str, only: str = None) -> dict:
+def release_module_set(tag: str, only: str = None, subset: str = None) -> dict:
     """{module: version} this release ships.
 
     `only` narrows it to a single module for a per-module asset build. The
@@ -208,6 +208,20 @@ def release_module_set(tag: str, only: str = None) -> dict:
         cfg = yaml.safe_load(handle) or {}
     versions = cfg.get("versions") or {}
     selected = set(RELEASE_MODULES)
+    if subset:
+        # Scope this ONE build. Deliberately intersects rather than replaces:
+        # a name that is not in RELEASE_MODULES is a typo or a module that was
+        # never releasable, and silently honouring it would ship a package
+        # missing something the caller believed was in it.
+        wanted = {m.strip() for m in subset.split(",") if m.strip()}
+        unknown = wanted - selected
+        if unknown:
+            raise SystemExit(
+                f"[ci-package] --only-modules names {sorted(unknown)}, which "
+                f"are not in RELEASE_MODULES")
+        selected &= wanted
+        if not selected:
+            raise SystemExit("[ci-package] --only-modules selected nothing")
     if only:
         if only in EXCLUDED_FROM_RELEASE:
             raise SystemExit(
@@ -390,6 +404,12 @@ def main() -> int:
                                      "ONCE by CI. Asserted rather than "
                                      "re-resolved, so a tag re-cut mid-matrix "
                                      "cannot produce divergent assets.")
+    ap.add_argument("--only-modules",
+                    help="comma-separated subset of RELEASE_MODULES to put in "
+                         "this build. Scopes ONE invocation; RELEASE_MODULES "
+                         "itself is untouched, so the per-module matrix still "
+                         "sees the full set. Exists for the legacy single-bundle "
+                         "shape -- see the legacy workflow for why.")
     ap.add_argument("--print-modules", action="store_true",
                     help="print the resolved module set and exit (no build)")
     ap.add_argument("--emit-matrix", action="store_true",
@@ -419,7 +439,8 @@ def main() -> int:
         print(_json.dumps(sorted(resolved)))
         return 0
 
-    modules = release_module_set(args.tag, only=args.module)
+    modules = release_module_set(args.tag, only=args.module,
+                                 subset=args.only_modules)
 
     # Say it loudly when RELEASE_MODULES has been trimmed.
     #
