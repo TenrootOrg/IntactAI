@@ -201,6 +201,12 @@ when missing. Downgrades are refused outright, with no `--force`.
 
 ## Scripts
 
+### Velociraptor client installers
+
+`scripts/generate_clients.sh` builds the Velociraptor client installers.
+`install.sh` and `change_ip.sh` both call it; run it directly only to
+regenerate them by hand.
+
 ### Change Platform IP
 
 Repoint an already-installed platform to a new IP (e.g. after moving the
@@ -244,32 +250,3 @@ sudo bash scripts/clean.sh --all --force   # full uninstall, no prompts
 ```
 
 Scopes: `--all`, `--containers`, `--volumes`, `--images`, `--data`, `--logs`.
-
----
-
-### Updating the Velociraptor artifact bundle
-
-~400 curated artifacts (Artifact Exchange / DetectRaptor / Sigma / Rapid7 /
-Triage / TenRoot) are committed in `modules/velociraptor/bundled_artifacts/`,
-baked into the velociraptor image and loaded on boot via `--definitions`, so
-they are present the instant Velociraptor starts — install, upgrade or
-air-gapped apply alike. Refresh the snapshot when you want upstream changes,
-typically once per release:
-
-```bash
-# On a box with a RUNNING Velociraptor + internet (the dev/build host):
-docker exec intact_backend python \
-    /app/workdir/modules/backend/scripts/regenerate_artifact_bundle.py
-
-# Review the diff, then commit the refreshed bundle:
-git add modules/velociraptor/bundled_artifacts
-git commit -m "Refresh Velociraptor artifact bundle"
-```
-
-It runs the upstream import artifacts (plus DetectRaptor and Extras) and
-re-exports every non-built-in artifact. The new bundle takes effect the next
-time the velociraptor image is rebuilt.
-
-> Forensic **tools** (Hayabusa, KAPE/EZ tools, YARA, etc.) are delivered
-> separately via the tool-inventory download path — see the `download_tools`
-> option in `config.yaml`. This bundle ships artifact *definitions* only.

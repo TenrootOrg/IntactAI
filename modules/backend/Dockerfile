@@ -40,7 +40,10 @@ RUN apt-get -o Acquire::Retries=5 update && \
     rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip and wheel first to fix security vulnerabilities (CVE-2025-8869, CVE-2026-1703, CVE-2026-24049)
-RUN pip install --no-cache-dir --upgrade pip>=26.0 wheel>=0.46.2
+# Quoted, because the shell reads `pip>=26.0` as a REDIRECT: it installed an
+# unpinned pip and wheel and left two files named `=26.0` and `=0.46.2` in
+# /app. The version floors were never actually enforced.
+RUN pip install --no-cache-dir --upgrade "pip>=26.0" "wheel>=0.46.2"
 
 # Copy the TEMPLATE, never the operator's live config.yaml.
 #
