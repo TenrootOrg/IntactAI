@@ -288,35 +288,3 @@ time the velociraptor image is rebuilt.
 > Forensic **tools** (Hayabusa, KAPE/EZ tools, YARA, etc.) are delivered
 > separately via the tool-inventory download path — see the `download_tools`
 > option in `config.yaml`. This bundle ships artifact *definitions* only.
-
----
-
-## VM Image Distribution
-
-For distributing Intact.AI as a pre-configured VM image (OVA) to clients, including air-gapped environments.
-
-### Client First Boot
-
-After client imports the VM and edits `config.yaml`:
-
-```bash
-# Initialize all services
-sudo bash install.sh
-```
-
-**What it does:**
-1. Syncs domain from `config.yaml` to all services
-2. Generates SSL certificates (Nginx, IRIS)
-3. Creates IRIS secrets from `config.yaml` passwords
-4. Starts all Docker services in order
-5. Generates Velociraptor client installers (air-gap safe)
-
-### Distribution Workflow
-
-1. **Export:** Create OVA/snapshot in your hypervisor
-2. **Deliver:** Transfer OVA to client (network or USB)
-3. **Client Setup:**
-   - Import OVA
-   - Edit `config.yaml` (set IP/domain and passwords)
-   - Run `sudo bash install.sh`
-   - Access dashboard at `http://CLIENT_IP`
