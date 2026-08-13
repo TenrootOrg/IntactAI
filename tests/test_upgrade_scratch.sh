@@ -28,6 +28,11 @@ log_error()   { _LOG+="$*"$'\n'; }
 log_success() { _LOG+="$*"$'\n'; }
 
 _human_size() { numfmt --to=iec "${1:-0}" 2>/dev/null || echo "${1:-0}B"; }
+# upkg_extract wraps tar in run_with_heartbeat. The real one forks a heartbeat
+# and uses `timeout --foreground`, whose signalling takes the test shell down
+# with it -- and none of that is what these tests are about. Run the command.
+run_with_heartbeat() { local d="$1" t="$2"; shift 2; "$@"; }
+RUN_HEARTBEAT_ELAPSED=0
 
 # Source only what we are testing. package.sh is self-contained for these two
 # functions; sourcing the whole engine would drag in docker.
@@ -40,6 +45,8 @@ _setup() {
     U_KEEP_SCRATCH=0
     unset _U_TAR_FREED; declare -gA _U_TAR_FREED
     INTACT_UPGRADE_KEEP_TARS=0
+    INTACT_UPGRADE_LAZY_EXTRACT=0
+    UPKG_DEFERRED=""; UPKG_DIR=""; UPKG_MANIFEST=""
     # shellcheck disable=SC1090
     source "${ROOT}/lib/upgrade/package.sh"
 }
@@ -236,6 +243,185 @@ test_the_download_dir_is_registered_for_cleanup() {
     local n
     n="$(grep -c 'UPKG_SCRATCH.*dl' "${ROOT}/scripts/upgrade.sh")"
     assert_ne "$n" "0" "the download dir must be registered in UPKG_SCRATCH"
+}
+
+# --- the EXIT trap --------------------------------------------------------
+
+test_a_refused_precheck_leaves_no_scratch_behind() {
+    _setup
+    # The incident in lib/upgrade/interrupt.sh: a refusal for want of disk left
+    # ~15 GB of extraction on the filesystem it had just measured, so the next
+    # attempt was refused harder. Two cancelled runs took a 148 GB box from
+    # 68 GB free to 4 GB.
+    source "${ROOT}/lib/upgrade/interrupt.sh"
+    local work="${SCRIPT_DIR}/data/tmp/upgrade-pkg-fff"
+    mkdir -p "${work}/images"
+    UPKG_SCRATCH="$work"
+    U_KEEP_SCRATCH=0
+    _u_exit_cleanup
+    assert_false test -d "$work"
+    _teardown
+}
+
+test_a_failed_load_keeps_the_extraction_and_prints_the_retry() {
+    _setup
+    source "${ROOT}/lib/upgrade/interrupt.sh"
+    local work="${SCRIPT_DIR}/data/tmp/upgrade-pkg-ggg"
+    mkdir -p "${work}/images"
+    UPKG_SCRATCH="$work"; UPKG_DIR="$work"
+    U_KEEP_SCRATCH=1
+    _u_exit_cleanup
+    assert_true test -d "$work"
+    assert_contains "$_LOG" "--package-dir" "must print a runnable retry command"
+    _teardown
+}
+
+test_the_exit_trap_preserves_the_exit_code() {
+    _setup
+    source "${ROOT}/lib/upgrade/interrupt.sh"
+    UPKG_SCRATCH=""; U_KEEP_SCRATCH=0
+    ( exit 7 ); _u_exit_cleanup
+    assert_eq "$?" "7" "the trap must not swallow the run's exit status"
+    _teardown
+}
+
+test_the_exit_trap_is_registered_after_the_stage0_hop() {
+    # `exec` does not run EXIT traps, but registering BEFORE the hop would
+    # still be wrong the day that changes -- the handing-over process must not
+    # reclaim scratch the new one is about to read. Assert the ordering.
+    local hop trap_line
+    hop="$(grep -n 'exec bash "$target_sh"' "${ROOT}/scripts/upgrade.sh" | cut -d: -f1 | head -1)"
+    trap_line="$(grep -n 'u_install_exit_cleanup_trap' "${ROOT}/scripts/upgrade.sh" | grep -v '^.*()' | cut -d: -f1 | tail -1)"
+    assert_ne "$hop" "" "should find the stage-0 hop"
+    assert_ne "$trap_line" "" "should find the trap registration"
+    assert_true test "$trap_line" -gt "$hop"
+}
+
+# --- lazy (per-module) extraction ------------------------------------------
+# Off by default. It moves WHEN verification happens, so it gets a real
+# end-to-end exercise here rather than a grep.
+
+_mkasset() {   # <dir> <tag> <module> <file>...  -> builds <tag>-<module>.tar
+    local d="$1" tag="$2" mod="$3"; shift 3
+    local stage; stage="$(mktemp -d)"
+    mkdir -p "${stage}/intact-upgrade-${tag}/images"
+    local f
+    for f in "$@"; do printf '%s-payload' "$f" > "${stage}/intact-upgrade-${tag}/images/${f}"; done
+    tar -cf "${d}/${tag}-${mod}.tar" -C "$stage" "intact-upgrade-${tag}"
+    rm -rf "$stage"
+}
+
+test_asset_module_is_read_from_the_filename() {
+    _setup
+    UPGRADE_ORDER=(intact elk timesketch aws_sigma portainer)
+    assert_eq "$(_upkg_asset_module /x/intact-20260813-elk.tar.gz)" "elk"
+    assert_eq "$(_upkg_asset_module /x/intact-20260813-aws_sigma.tar)" "aws_sigma"
+    assert_eq "$(_upkg_asset_module /x/intact-20260813-intact.tar)" "intact"
+    # The legacy bundle ends in the tag, not a module, and must match nothing.
+    assert_false _upkg_asset_module /x/intact-upgrade-intact-20260813.tar.gz
+    _teardown
+}
+
+test_lazy_extraction_defers_everything_but_intact() {
+    _setup
+    UPGRADE_ORDER=(intact elk portainer)
+    local d="${SCRIPT_DIR}/assets"; mkdir -p "$d"
+    _mkasset "$d" t intact    backend.tar
+    _mkasset "$d" t elk       elasticsearch.tar
+    _mkasset "$d" t portainer portainer.tar
+    INTACT_UPGRADE_LAZY_EXTRACT=1
+    UPKG_DEFERRED=""
+    upkg_extract "${d}/t-intact.tar" "${d}/t-elk.tar" "${d}/t-portainer.tar" >/dev/null 2>&1
+    # intact is on disk; the other two are not.
+    assert_true  test -f "${UPKG_DIR}/images/backend.tar"
+    assert_false test -f "${UPKG_DIR}/images/elasticsearch.tar"
+    assert_contains "${UPKG_DEFERRED}" "elk=" "elk must be deferred"
+    assert_contains "${UPKG_DEFERRED}" "portainer=" "portainer must be deferred"
+    assert_not_contains "${UPKG_DEFERRED}" "intact=" \
+        "intact carries the engine the stage-0 hop execs into -- never deferred"
+    _teardown
+}
+
+test_lazy_extraction_is_off_by_default() {
+    _setup
+    UPGRADE_ORDER=(intact elk)
+    local d="${SCRIPT_DIR}/assets"; mkdir -p "$d"
+    _mkasset "$d" t intact backend.tar
+    _mkasset "$d" t elk    elasticsearch.tar
+    UPKG_DEFERRED=""
+    upkg_extract "${d}/t-intact.tar" "${d}/t-elk.tar" >/dev/null 2>&1
+    assert_true test -f "${UPKG_DIR}/images/elasticsearch.tar"
+    assert_eq "${UPKG_DEFERRED}" "" "nothing is deferred unless asked"
+    _teardown
+}
+
+test_a_deferred_module_is_extracted_and_verified_at_its_turn() {
+    _setup
+    UPGRADE_ORDER=(intact elk)
+    local d="${SCRIPT_DIR}/assets"; mkdir -p "$d"
+    _mkasset "$d" t intact backend.tar
+    _mkasset "$d" t elk    elasticsearch.tar
+    INTACT_UPGRADE_LAZY_EXTRACT=1; UPKG_DEFERRED=""
+    upkg_extract "${d}/t-intact.tar" "${d}/t-elk.tar" >/dev/null 2>&1
+    # A manifest whose map covers the file elk will write.
+    local sha; sha="$(sha256sum "${SCRIPT_DIR}/assets/../assets/t-elk.tar" >/dev/null 2>&1; printf '')"
+    sha="$(printf 'elasticsearch.tar-payload' | sha256sum | cut -d' ' -f1)"
+    printf '{"contents":{"sha256":{"images/elasticsearch.tar":"%s"}}}\n' "$sha" \
+        > "${UPKG_DIR}/manifest.json"
+    UPKG_MANIFEST="${UPKG_DIR}/manifest.json"
+    assert_true upkg_extract_deferred elk
+    assert_true test -f "${UPKG_DIR}/images/elasticsearch.tar"
+    assert_not_contains "${UPKG_DEFERRED}" "elk=" "must drop off the deferred list once done"
+    _teardown
+}
+
+test_a_deferred_module_whose_files_fail_the_manifest_is_refused() {
+    _setup
+    UPGRADE_ORDER=(intact elk)
+    local d="${SCRIPT_DIR}/assets"; mkdir -p "$d"
+    _mkasset "$d" t intact backend.tar
+    _mkasset "$d" t elk    elasticsearch.tar
+    INTACT_UPGRADE_LAZY_EXTRACT=1; UPKG_DEFERRED=""
+    upkg_extract "${d}/t-intact.tar" "${d}/t-elk.tar" >/dev/null 2>&1
+    # Map says a different hash: a swapped file inside an otherwise good asset.
+    printf '{"contents":{"sha256":{"images/elasticsearch.tar":"%s"}}}\n' \
+        "0000000000000000000000000000000000000000000000000000000000000000" \
+        > "${UPKG_DIR}/manifest.json"
+    UPKG_MANIFEST="${UPKG_DIR}/manifest.json"
+    assert_false upkg_extract_deferred elk
+    _teardown
+}
+
+test_a_file_absent_from_the_manifest_is_refused() {
+    _setup
+    UPGRADE_ORDER=(intact elk)
+    local d="${SCRIPT_DIR}/assets"; mkdir -p "$d"
+    _mkasset "$d" t intact backend.tar
+    _mkasset "$d" t elk    elasticsearch.tar
+    INTACT_UPGRADE_LAZY_EXTRACT=1; UPKG_DEFERRED=""
+    upkg_extract "${d}/t-intact.tar" "${d}/t-elk.tar" >/dev/null 2>&1
+    # An empty map: the scoped verifier's "unknown path" arm. A file the
+    # release does not describe must never be silently accepted.
+    printf '{"contents":{"sha256":{"images/something-else.tar":"aa"}}}\n' \
+        > "${UPKG_DIR}/manifest.json"
+    UPKG_MANIFEST="${UPKG_DIR}/manifest.json"
+    assert_false upkg_extract_deferred elk
+    _teardown
+}
+
+test_extract_deferred_is_a_noop_for_a_module_already_on_disk() {
+    _setup
+    UPKG_DEFERRED=""
+    assert_true upkg_extract_deferred elk
+    _teardown
+}
+
+test_the_deferred_map_crosses_the_stage0_hop() {
+    # Without the export the re-exec'd process -- which skips acquire entirely
+    # -- reaches each module's turn with nothing to extract, and would upgrade
+    # nothing while reporting success.
+    local n; n="$(grep -c 'export UPKG_DEFERRED' "${ROOT}/scripts/upgrade.sh")"
+    assert_ne "$n" "0" "UPKG_DEFERRED must be exported across the hop"
 }
 
 run_all_tests

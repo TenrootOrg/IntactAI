@@ -30,6 +30,10 @@ SUPPORTED_PACKAGE_FORMAT=1
 UPKG_DIR=""          # the extracted, merged package tree
 UPKG_MANIFEST=""     # $UPKG_DIR/manifest.json
 UPKG_LOOSE_MANIFEST="" # a manifest.json found beside the assets, not inside one
+# "<module>=<asset path>" entries whose extraction is deferred to that module's
+# turn. Exported across the stage-0 hop for the same reason UPKG_SCRATCH is --
+# the process that runs the module loop is not the one that acquired.
+: "${UPKG_DEFERRED:=}"
 # What to rm -rf at the end. NOT a plain assignment: the stage-0 hop in
 # scripts/upgrade.sh exports this before `exec`-ing into the target release's
 # upgrade.sh so the process that actually reaches upkg_cleanup can still
@@ -240,6 +244,143 @@ upkg_check_tar_slip() {
 # Extracts every asset into ONE directory so per-module assets merge by their
 # shared top-level name, then asserts exactly one root came out. Sets UPKG_DIR.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# _upkg_asset_module <path> — the module a per-module asset belongs to.
+#
+# CI names them "<tag>-<module>.tar[.gz]" (build_release_package.py) and the
+# legacy bundle "intact-upgrade-<tag>.tar[.gz]", which ends in the tag and so
+# matches nothing here. Matched against UPGRADE_ORDER rather than parsed, so a
+# tag that happens to contain a dash cannot be mistaken for a module name.
+# Longest first: today no module name is a suffix of another, and this keeps it
+# true if one ever is.
+# ---------------------------------------------------------------------------
+_upkg_asset_module() {
+    local b; b="$(basename "${1:-}")"
+    b="${b%.gz}"; b="${b%.tar}"
+    local m
+    for m in $(printf '%s\n' "${UPGRADE_ORDER[@]}" | awk '{print length"\t"$0}' | sort -rn | cut -f2); do
+        [[ "$b" == *"-${m}" ]] && { printf '%s' "$m"; return 0; }
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# upkg_extract_deferred <module> — extract one module's asset, at its turn.
+#
+# The lazy half of upkg_extract. Extracting all nine assets up front means the
+# whole release (~15 GB) is resident before the first module is touched, even
+# though each module needs only its own slice and the tars are freed as they
+# load anyway. This brings the peak down to roughly one module.
+#
+# VERIFICATION. upkg_verify_file_checksums treats a manifest path missing from
+# the tree as fatal -- "the map is the statement of what the package IS" -- so
+# it cannot run against a tree that is deliberately incomplete. The per-asset
+# manifests are CI artifacts and are NOT published as release assets (the index
+# records only asset/version/size/sha256), so there is no per-module map on the
+# box either. What there IS:
+#
+#   * the whole asset's sha256, checked by upkg_verify_archive BEFORE any of
+#     this, which already covers every byte inside it;
+#   * the merged <tag>.manifest.json, whose contents.sha256 covers every file
+#     in the release.
+#
+# So each asset is verified whole on the way in, and the files it wrote are
+# re-checked against the merged map on the way out. Every hash still comes from
+# the release's own metadata; only the SCOPE narrows, from "every path in the
+# map" to "every path this asset just created". Nothing is recomputed, which is
+# the rule at the top of this file.
+# ---------------------------------------------------------------------------
+upkg_extract_deferred() {
+    local m="${1:-}" entry path=""
+    [[ -n "$m" ]] || return 0
+    for entry in ${UPKG_DEFERRED:-}; do
+        [[ "${entry%%=*}" == "$m" ]] && { path="${entry#*=}"; break; }
+    done
+    [[ -n "$path" ]] || return 0            # not deferred: already on disk
+    if [[ ! -f "$path" ]]; then
+        log_error "  ${m}: its asset is gone from ${path}"
+        return 1
+    fi
+
+    local work; work="$(dirname "$UPKG_DIR")"
+    log_info "  extracting ${m} from $(basename "$path")"
+    local before; before="$(mktemp)"
+    find "$UPKG_DIR" -type f -newermt '1970-01-01' -printf '%P\n' 2>/dev/null | sort > "$before"
+    if ! RUN_HEARTBEAT_QUIET=1 run_with_heartbeat "extracting $(basename "$path")" 1800 \
+            bash -c 'tar -xf "$1" -C "$2" 2>>"$3"' _ "$path" "$work" "${LOG_FILE:-/dev/null}"; then
+        log_error "  could not extract $(basename "$path")"
+        rm -f "$before"; return 1
+    fi
+    local after; after="$(mktemp)"
+    find "$UPKG_DIR" -type f -printf '%P\n' 2>/dev/null | sort > "$after"
+    local added; added="$(mktemp)"
+    comm -13 "$before" "$after" > "$added"
+    rm -f "$before" "$after"
+
+    if ! upkg_verify_paths_against_manifest "$added"; then
+        rm -f "$added"; return 1
+    fi
+    log_info "  ${m}: $(wc -l < "$added" | tr -d ' ') file(s) verified against the release manifest"
+    rm -f "$added"
+
+    # Drop it from the deferred list, and free the compressed asset now that
+    # its contents are on disk and checked -- but only if we downloaded it.
+    local rest="" e
+    for e in ${UPKG_DEFERRED:-}; do
+        [[ "${e%%=*}" == "$m" ]] || rest+="${e} "
+    done
+    UPKG_DEFERRED="$rest"
+    upkg_release_loaded_tar "$path"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# upkg_verify_paths_against_manifest <file-of-relative-paths>
+#
+# The scoped counterpart to upkg_verify_file_checksums. Same map, same hashes,
+# but it asserts only over the listed paths -- a path with no entry in the map
+# is the fatal case here, exactly as a map entry with no file is there.
+# ---------------------------------------------------------------------------
+upkg_verify_paths_against_manifest() {
+    local list="${1:-}"
+    [[ -s "$list" ]] || return 0
+    python3 - "$UPKG_MANIFEST" "$UPKG_DIR" "$list" <<'PY'
+import hashlib, json, os, sys
+manifest, root, listfile = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    m = json.load(open(manifest))
+except Exception as e:
+    print(f"  cannot read the package manifest: {e}"); sys.exit(1)
+smap = ((m.get("contents") or {}).get("sha256")) or {}
+if not smap:
+    print("  the package manifest records no per-file checksums"); sys.exit(1)
+bad, unknown = [], []
+for rel in (l.rstrip("\n") for l in open(listfile)):
+    if not rel or rel in ("manifest.json",):
+        continue
+    want = smap.get(rel)
+    if want is None:
+        unknown.append(rel); continue
+    h = hashlib.sha256()
+    try:
+        with open(os.path.join(root, rel), "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError as e:
+        bad.append(f"{rel} ({e})"); continue
+    if h.hexdigest() != want:
+        bad.append(rel)
+for r in unknown[:5]:
+    print(f"  not described by the release manifest: {r}")
+for r in bad[:5]:
+    print(f"  checksum mismatch: {r}")
+sys.exit(1 if (bad or unknown) else 0)
+PY
+    local rc=$?
+    (( rc == 0 )) || log_error "  the extracted files do not match the release manifest"
+    return $rc
+}
+
 upkg_extract() {
     local assets=("$@")
     mkdir -p "${SCRIPT_DIR}/data/tmp" 2>/dev/null || true
@@ -255,16 +396,46 @@ upkg_extract() {
     for a in "${assets[@]}"; do
         sz=$(stat -c%s "$a" 2>/dev/null || echo 0); total=$((total + sz))
     done
-    log_info "Extracting ${#assets[@]} asset(s), $(_human_size "$total")"
+    # Lazy extraction: unpack only what is needed to plan, and leave each
+    # module's asset compressed until its own turn (upkg_extract_deferred).
+    # Off by default -- it changes when verification happens, so it wants a
+    # release cycle of field evidence before it becomes the default.
+    #
+    # `intact` is NEVER deferred, for two reasons that are both fatal: it
+    # carries source/intact/scripts/upgrade.sh, without which the stage-0 hop
+    # has nothing to exec into and the box silently runs its own older engine;
+    # and it establishes the single top-level directory every other asset
+    # merges into.
+    local -a now=() later=()
+    if [[ "${INTACT_UPGRADE_LAZY_EXTRACT:-0}" == "1" ]]; then
+        local mod
+        for a in "${assets[@]}"; do
+            if mod="$(_upkg_asset_module "$a")" && [[ "$mod" != "intact" ]]; then
+                later+=("${mod}=${a}")
+            else
+                now+=("$a")
+            fi
+        done
+        if (( ${#later[@]} )); then
+            UPKG_DEFERRED="${later[*]}"
+            log_info "Extracting ${#now[@]} of ${#assets[@]} asset(s) now; ${#later[@]} deferred to their module's turn"
+        else
+            now=("${assets[@]}")
+        fi
+    else
+        now=("${assets[@]}")
+    fi
 
-    for a in "${assets[@]}"; do
+    (( ${#later[@]} )) || log_info "Extracting ${#assets[@]} asset(s), $(_human_size "$total")"
+
+    for a in "${now[@]}"; do
         i=$((i + 1))
         if ! RUN_HEARTBEAT_QUIET=1 run_with_heartbeat "extracting $(basename "$a")" 1800 \
                 bash -c 'tar -xf "$1" -C "$2" 2>>"$3"' _ "$a" "$work" "${LOG_FILE:-/dev/null}"; then
             log_error "Could not extract $(basename "$a")"
             return 1
         fi
-        log_info "  [${i}/${#assets[@]}] $(basename "$a") extracted in ${RUN_HEARTBEAT_ELAPSED:-?}s"
+        log_info "  [${i}/${#now[@]}] $(basename "$a") extracted in ${RUN_HEARTBEAT_ELAPSED:-?}s"
     done
 
     local roots root_count

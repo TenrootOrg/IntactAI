@@ -467,6 +467,10 @@ main() {
         # specifically so sourcing it in the new process does not clobber
         # what was just exported.
         export UPKG_SCRATCH
+        # The deferred-asset map: without it the re-exec'd process, which skips
+        # acquire entirely, would reach each module's turn with nothing to
+        # extract and silently upgrade nothing.
+        export UPKG_DEFERRED
         # --root: the new process's own bootstrap resolves _CODE_DIR to
         # wherever target_sh lives (inside the extracted package) -- SCRIPT_DIR
         # has to be told explicitly, or it would default to that same
@@ -477,6 +481,12 @@ main() {
         exec bash "$target_sh" --package-dir "$UPKG_DIR" --log "$LOG_FILE" \
              --root "$SCRIPT_DIR" "${_fwd[@]}"
     fi
+
+    # Past the hop, so `exec` cannot have skipped it and the scratch this
+    # process is about to read belongs to this process. Before the plan, so
+    # every refusal below reclaims its extraction instead of leaving it on a
+    # disk it may just have called too small.
+    u_install_exit_cleanup_trap
 
     # ------------------------------------------------------------- plan -----
     plan_current_versions
@@ -528,6 +538,17 @@ main() {
             # operator who is not told will believe it upgraded.
             log_error "${m}: no upgrade implementation (${fn}); leaving it at ${PLAN_CURRENT[$m]:-its current version}"
             UPGRADE_FAILED+=("${m} — not implemented in this upgrader")
+            continue
+        fi
+
+        # Lazy extraction: this module's asset is still compressed. Unpack and
+        # verify it now, immediately before it is needed, so the peak on disk
+        # is one module rather than the whole release. A no-op unless
+        # INTACT_UPGRADE_LAZY_EXTRACT=1 put it on the deferred list.
+        if ! upkg_extract_deferred "$m"; then
+            log_error "${m}: could not unpack its asset; leaving it at ${PLAN_CURRENT[$m]:-its current version}"
+            UPGRADE_FAILED+=("${m} — its asset could not be unpacked or verified")
+            U_KEEP_SCRATCH=1
             continue
         fi
 

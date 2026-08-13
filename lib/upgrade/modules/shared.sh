@@ -343,6 +343,11 @@ _u_preflight_images() {
     local missing=() m ref tar
     for m in "${UPGRADE_ORDER[@]}"; do
         case "${PLAN_ACTION[$m]:-}" in upgrade|install) ;; *) continue ;; esac
+        # Still compressed (INTACT_UPGRADE_LAZY_EXTRACT): its images cannot be
+        # on disk yet by definition. The whole asset's sha256 was checked before
+        # anything was extracted, so its contents are already accounted for --
+        # asserting they are unpacked would just defeat the deferral.
+        case " ${UPKG_DEFERRED:-} " in *" ${m}="*) continue ;; esac
         while IFS=$'\t' read -r ref tar; do
             [[ -n "$ref" ]] || continue
             _u_image_present "$ref" && continue

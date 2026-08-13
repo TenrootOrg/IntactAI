@@ -373,6 +373,19 @@ for img in sorted(owner):
 " "$UPKG_DIR" 2>/dev/null)
     fi
 
+    # Assets still compressed contribute their own size: their tars are not on
+    # disk to stat, but the space they will need is real. Compressed is an
+    # under-estimate of what they expand to, which the caller's +2G floor and
+    # the halving both absorb -- and in lazy mode the true peak is one module
+    # anyway, so this errs in the direction of asking for more than needed.
+    local e p
+    for e in ${UPKG_DEFERRED:-}; do
+        p="${e#*=}"
+        [[ -f "$p" ]] || continue
+        printf '%s\t%s\n' "$p" "$(stat -c%s "$p" 2>/dev/null || echo 0)"
+        emitted=1
+    done
+
     (( emitted )) && return 0
 
     # Legacy bundle, or sidecars that named nothing we recognise. Count

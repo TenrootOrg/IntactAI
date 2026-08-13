@@ -71,3 +71,41 @@ _u_handle_interrupt() {
 u_install_interrupt_trap() {
     trap _u_handle_interrupt INT TERM
 }
+
+# ---------------------------------------------------------------------------
+# _u_exit_cleanup — the other half of the leak the comment above describes.
+#
+# INT and TERM were covered; a plain `return 2` was not. Three refusals sit
+# between extraction and the module loop -- plan_reject_downgrades,
+# plan_check_disk and _u_preflight_images -- and each returned straight out
+# without calling upkg_cleanup. The disk one is the perverse case: it refuses
+# for want of space and then leaves ~15 GB of extraction on the very
+# filesystem it just measured, so the next attempt is refused harder.
+#
+# Registered as an EXIT trap rather than fixing three call sites, so a fourth
+# refusal added later cannot reintroduce the leak. Safe to register after the
+# stage-0 hop because `exec` does not run EXIT traps -- the handing-over
+# process must not clean up scratch the new one is about to read.
+#
+# U_KEEP_SCRATCH is set by any failed image load. Then the extraction is
+# EVIDENCE and a retry input, not garbage: the images already loaded are in
+# the docker store, their tars are gone, and re-running against the surviving
+# tree skips both the download and the checksum pass.
+# ---------------------------------------------------------------------------
+_u_exit_cleanup() {
+    local rc=$?
+    trap - EXIT
+    if [[ "${U_KEEP_SCRATCH:-0}" == "1" ]]; then
+        log_warn "  an image failed to load — keeping the extracted package for a retry:"
+        log_warn "    ${UPKG_DIR:-?}"
+        log_warn "    sudo bash ${SCRIPT_DIR}/scripts/upgrade.sh --package-dir ${UPKG_DIR:-?} --root ${SCRIPT_DIR}"
+        log_warn "    (swept automatically after 48h)"
+    elif declare -F upkg_cleanup >/dev/null 2>&1; then
+        upkg_cleanup
+    fi
+    return $rc
+}
+
+u_install_exit_cleanup_trap() {
+    trap _u_exit_cleanup EXIT
+}
