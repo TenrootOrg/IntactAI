@@ -5,24 +5,6 @@
 ### generate_clients.sh
 Generates Velociraptor client installers. Called automatically by `install.sh`.
 
-### repair_modules.sh
-Checks and repairs failed Intact.AI modules.
-
-```bash
-# Check status of all modules
-sudo bash scripts/repair_modules.sh
-
-# Repair all failed modules automatically
-sudo bash scripts/repair_modules.sh --repair-failed
-
-# Repair a specific module
-sudo bash scripts/repair_modules.sh <module_name>
-```
-
-Available modules: `elk`, `timesketch`, `velociraptor`, `iris`, `portainer`, `backend`, `nginx`
-
-Generates log file: `repair_YYYYMMDD_HHMMSS.log`
-
 ### clean.sh
 Removes Intact.AI components (containers, volumes, data). Use with caution!
 

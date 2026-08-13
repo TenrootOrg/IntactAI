@@ -297,8 +297,10 @@ print_installation_report() {
             echo "  - $mod"
         done
         echo ""
-        echo -e "${YELLOW}To repair failed modules, run:${NC}"
-        echo "  sudo bash scripts/repair_modules.sh"
+        echo -e "${YELLOW}To repair failed modules, re-run the installer (idempotent),${NC}"
+        echo -e "${YELLOW}or re-apply the full config + cert + container pipeline:${NC}"
+        echo "  sudo bash install.sh"
+        echo "  sudo bash scripts/change_ip.sh \"$(read_config \"['domain']\")\""
         echo ""
         echo -e "${YELLOW}Check log file for details: $LOG_FILE${NC}"
         echo ""

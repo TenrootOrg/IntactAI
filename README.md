@@ -201,21 +201,6 @@ when missing. Downgrades are refused outright, with no `--force`.
 
 ## Scripts
 
-### Module Repair
-
-```bash
-# Check status of all modules
-sudo bash scripts/repair_modules.sh
-
-# Repair all failed modules
-sudo bash scripts/repair_modules.sh --repair-failed
-
-# Repair a specific module
-sudo bash scripts/repair_modules.sh elk
-```
-
-Available modules: `elk`, `timesketch`, `velociraptor`, `iris`, `portainer`, `backend`, `nginx`
-
 ### Change Platform IP
 
 Repoint an already-installed platform to a new IP (e.g. after moving the
