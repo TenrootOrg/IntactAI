@@ -227,3 +227,24 @@ jobs:
           name: release-package-${{ steps.tag.outputs.tag }}
           path: ci-output/*
           retention-days: 7
+
+      # VERSION lived only in the per-module workflow, so a legacy single-bundle
+      # release left the branch's VERSION at whatever the PREVIOUS release set --
+      # and with is_new_CI = FALSE that is every release. A box upgraded by this
+      # bundle then reports a version the branch never claims.
+      #
+      # Last step, after the assets are attached: the action's own contract says
+      # to call it only once that has happened, because the caller's job graph
+      # is the proof that stamping is safe (it replaced a workflow that polled
+      # for up to 110 minutes precisely because it could not know).
+      #
+      # `uses: ./` resolves against the checked-out RELEASE TAG, so the tag must
+      # carry .github/actions/stamp-version. Every tag from intact-20260811 on
+      # does; re-building something older by hand would skip stamping with a
+      # "local action not found" error rather than a silent no-op.
+      - name: Stamp VERSION on the source branch
+        if: github.event_name == 'release'
+        uses: ./.github/actions/stamp-version
+        with:
+          tag: ${{ steps.tag.outputs.tag }}
+          target-commitish: ${{ github.event.release.target_commitish }}
