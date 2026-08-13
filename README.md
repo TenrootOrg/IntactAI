@@ -2,8 +2,6 @@
 
 A comprehensive security platform integrating Velociraptor EDR, ELK Stack, TimeSketch, IRIS, and custom management tools.
 
-<!-- readme propagation test 2026-04-29 -->
-
 ## License
 
 Intact.AI is licensed under the **GNU Affero General Public License v3.0
@@ -173,6 +171,54 @@ Open these on the IntactAI server:
 
 **Minimum-viable deployment:** open 443 inbound from analysts, 8000 inbound from endpoint subnets, 443 outbound during install. Everything else is opt-in per module.
 
+## Upgrades
+
+One release at a time (N → N+1). Each hop is tested as a single step; skipping
+releases is not.
+
+Four routes, all the same engine underneath (`scripts/upgrade.sh`):
+
+| Route | Where | Use it when |
+|---|---|---|
+| **Online Upgrade** | Dashboard → Settings | The box can reach GitHub |
+| **Prepare Package** | Dashboard → Settings | Build one file to carry to an air-gapped box |
+| **Import Package** | Dashboard → Settings | Apply a package you carried in |
+| **CLI** | shell | Scripted runs, recovery, single-module repair |
+
+```bash
+sudo bash scripts/upgrade.sh <tag>                     # online
+sudo bash scripts/upgrade.sh --package <file|dir>      # air-gap
+sudo bash scripts/upgrade.sh --package <dir> --dry-run # plan only, changes nothing
+sudo bash scripts/upgrade.sh --list                    # what is available
+
+sudo bash scripts/prepare_package.sh <tag>             # build one carry-in file
+```
+
+`--only a,b` is taken literally — omitting `intact` upgrades those modules
+against the current platform code, which is warned about but allowed, because
+repairing one module without moving the platform is a legitimate thing to want
+from a shell. The dashboard always includes `intact`. `--reinstall a,b`
+re-applies a module already at the target version.
+
+**Release shapes.** `20260811` onward publishes one asset per module plus
+`<tag>.index.json` and `<tag>.manifest.json`; `20260810` and earlier publish a
+single `intact-upgrade-<tag>.tar.gz`, split into `.part-NN` when large. Both
+apply identically — point `--package` at a directory of assets, a single file,
+or repeat the flag.
+
+**Host dependencies are reported, never applied.** The engine runs inside a
+helper container, so installing `docker-ce` would restart the daemon and kill
+the run mid-flight. An upgrade tells you when the host is behind the release;
+apply it yourself:
+
+```bash
+sudo bash scripts/update_host_deps.sh --package <release dir>   # --dry-run first
+```
+
+**What survives.** Data volumes and per-box state survive an upgrade. Files no
+package can ship — `modules/*/secrets/*.env`, TLS certificates — are generated
+when missing. Downgrades are refused outright, with no `--force`.
+
 ## Scripts
 
 ### Module Repair
@@ -212,19 +258,10 @@ sudo bash scripts/change_ip.sh "$(grep -E '^domain:' config.yaml | awk '{print $
 > unchanged**. `-y`/`--yes` is still accepted but is now a no-op. This is
 > deliberate — `change_ip.sh` doubles as the platform **repair** tool.
 
-What it does:
-1. Sets `domain: <NEW_IP>` in `config.yaml`
-2. Re-propagates the IP into `modules/velociraptor/.env`
-3. Sweeps `modules/` + `scripts/` for any stray old-IP literals and replaces them
-4. Regenerates the TLS certificates with `CN=<NEW_IP>` (nginx + IRIS)
-5. Patches the Velociraptor server config, restarts it so the client
-   config + API config regenerate, and restarts the backend
-6. Refreshes the nginx containers (clears upstream DNS cache + serves the new cert)
-7. Regenerates the Velociraptor client installers in `client_installers/`
-
-It is idempotent (re-running with the current IP re-applies everything but
-the IP sweeps become no-ops) and safe to re-run if interrupted — which is
-exactly why it works as a repair tool.
+It sets `domain:`, re-propagates the IP, regenerates the TLS certificates and
+Velociraptor configs, refreshes nginx, and rebuilds the client installers.
+Idempotent and safe to re-run after an interruption — which is what makes it a
+repair tool.
 
 > **Note:** Velociraptor agents already deployed on endpoints have the
 > old server IP baked in and will **not** reconnect. Redeploy those
@@ -237,44 +274,22 @@ exactly why it works as a repair tool.
 To remove Intact.AI components (containers, volumes, data):
 
 ```bash
-# Interactive mode - choose what to remove
-sudo bash scripts/clean.sh
-
-# Remove everything (full uninstall)
-sudo bash scripts/clean.sh --all
-
-# Remove containers only (keep data)
-sudo bash scripts/clean.sh --containers
-
-# Remove without confirmation prompts
-sudo bash scripts/clean.sh --all --force
+sudo bash scripts/clean.sh                 # interactive
+sudo bash scripts/clean.sh --all --force   # full uninstall, no prompts
 ```
 
-Available options:
-- `--all` - Remove everything (containers, volumes, data, configs)
-- `--containers` - Remove containers only (keep volumes and data)
-- `--volumes` - Remove Docker volumes only
-- `--images` - Remove Docker images only
-- `--data` - Remove data directory only
-- `--logs` - Remove log files only
+Scopes: `--all`, `--containers`, `--volumes`, `--images`, `--data`, `--logs`.
 
 ---
 
 ### Updating the Velociraptor artifact bundle
 
-The curated Velociraptor artifacts (Artifact Exchange / DetectRaptor / Sigma /
-Rapid7 / Triage / TenRoot — ~400 definitions) are committed in
-`modules/velociraptor/bundled_artifacts/` and **baked into the velociraptor
-image**, then loaded on boot via Velociraptor's `--definitions` flag. This
-replaces the old per-artifact API import (which took ~37 min on a fresh
-air-gapped install) — the definitions are present the instant Velociraptor
-starts, identically for a fresh install, an online upgrade, and an offline
-package apply.
-
-Because the bundle is a static, version-controlled snapshot, refresh it
-whenever you want to pick up upstream artifact changes (e.g. a new
-Velociraptor release that updated the Artifact Exchange, or new TenRoot
-artifacts) — typically once per release:
+~400 curated artifacts (Artifact Exchange / DetectRaptor / Sigma / Rapid7 /
+Triage / TenRoot) are committed in `modules/velociraptor/bundled_artifacts/`,
+baked into the velociraptor image and loaded on boot via `--definitions`, so
+they are present the instant Velociraptor starts — install, upgrade or
+air-gapped apply alike. Refresh the snapshot when you want upstream changes,
+typically once per release:
 
 ```bash
 # On a box with a RUNNING Velociraptor + internet (the dev/build host):
@@ -286,13 +301,9 @@ git add modules/velociraptor/bundled_artifacts
 git commit -m "Refresh Velociraptor artifact bundle"
 ```
 
-The script downloads the latest TenRoot pack, runs the upstream import
-artifacts (`Server.Import.ArtifactBundle` — the pre-0.77 name
-`Server.Import.ArtifactExchange` is used automatically on older servers — plus
-DetectRaptor + Extras), waits for them to settle, and re-exports every
-non-built-in artifact into the folder. The new bundle takes effect the next
-time the velociraptor image is rebuilt (install / online upgrade /
-prepare-package).
+It runs the upstream import artifacts (plus DetectRaptor and Extras) and
+re-exports every non-built-in artifact. The new bundle takes effect the next
+time the velociraptor image is rebuilt.
 
 > Forensic **tools** (Hayabusa, KAPE/EZ tools, YARA, etc.) are delivered
 > separately via the tool-inventory download path — see the `download_tools`
