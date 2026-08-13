@@ -289,11 +289,33 @@ def resume_legacy_two_phase() -> bool:
         return False
 
     def _list(v):
+        """Module names out of whatever shape 0726 stored.
+
+        The two columns are NOT the same shape, and assuming they were is a
+        silent no-op rather than an error:
+
+          target_modules     a JSON OBJECT, module -> version. The writer takes
+                             `state_modules`, built as
+                             {k: v for k, v in modules_dict.items() ...}
+                             (upgrade/__init__.py in intact-20260726), so it is
+                             a dict on every path that reaches awaiting_restart.
+          completed_modules  a JSON ARRAY of names.
+
+        Treating a dict as "not a list" and returning [] made todo empty, and
+        the resume then declined with "Phase 1 left nothing to finish" -- on
+        every real box, while a hand-written list-shaped row passed a test.
+        A dict's KEYS are the module names; its values are target versions the
+        engine re-derives from the package anyway.
+        """
         try:
             out = json.loads(v or "[]")
-            return [str(x) for x in out] if isinstance(out, list) else []
         except (ValueError, TypeError):
             return [x.strip() for x in (v or "").split(",") if x.strip()]
+        if isinstance(out, dict):
+            return [str(k) for k in out]
+        if isinstance(out, list):
+            return [str(x) for x in out]
+        return []
 
     todo = [m for m in _list(row["target_modules"])
             if m not in _list(row["completed_modules"])]
