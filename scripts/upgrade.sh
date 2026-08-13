@@ -485,6 +485,9 @@ main() {
     hostdeps_report
     plan_reject_downgrades || return 2
     plan_check_disk || return 2
+    # Advisory, and intentionally not `|| return 2`: see plan_check_memory.
+    # It must run AFTER plan_check_disk, which publishes PLAN_LARGEST_TAR.
+    plan_check_memory
 
     local work; work="$(plan_work_count)"
     if (( UPGRADE_DRY_RUN )); then

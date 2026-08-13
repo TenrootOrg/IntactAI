@@ -284,6 +284,13 @@ _human_size() {
     numfmt --to=iec "${1:-0}" 2>/dev/null || echo "${1:-0}B"
 }
 
+# Free space on the filesystem holding <dir>, in whole GB. Empty when df
+# cannot answer -- callers treat that as "unknown", never as zero, because a
+# check that silently reads 0 refuses every upgrade.
+_free_gb() {
+    df -B1G --output=avail "${1:-/}" 2>/dev/null | tail -1 | tr -d ' '
+}
+
 # Check if a value is truthy (handles yaml boolean variations)
 # Usage: if is_enabled "$value"; then ...
 is_enabled() {

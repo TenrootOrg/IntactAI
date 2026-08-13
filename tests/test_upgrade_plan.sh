@@ -266,5 +266,146 @@ test_every_module_in_the_order_has_a_pin_source() {
     done
 }
 
+# ---------------------------------------------------------------------------
+# plan_image_tars — the sizing input. It got three things wrong, each of which
+# pushed the estimate a different way, and the two errors happened to point in
+# opposite directions so neither showed up as an obviously silly number.
+# ---------------------------------------------------------------------------
+
+_pkg_setup() {   # build a fake extracted package under UPKG_DIR
+    UPKG_DIR="$(mktemp -d)"
+    mkdir -p "${UPKG_DIR}/images" "${UPKG_DIR}/manifests"
+}
+_pkg_teardown() { [[ "${UPKG_DIR:-}" == /tmp/* ]] && rm -rf "$UPKG_DIR"; }
+
+_sidecar() {     # <module> <img>:<size> ...
+    local mod="$1"; shift
+    local imgs="" sizes="" pair
+    for pair in "$@"; do
+        imgs="${imgs:+${imgs}, }\"${pair%%:*}\""
+        sizes="${sizes:+${sizes}, }\"${pair%%:*}\": ${pair##*:}"
+    done
+    printf '{"contents": {"images": [%s], "image_sizes": {%s}}}\n' "$imgs" "$sizes" \
+        > "${UPKG_DIR}/manifests/${mod}.json"
+}
+
+test_image_tars_counts_only_planned_modules() {
+    _setup; _pkg_setup
+    : > "${UPKG_DIR}/images/elk-1.tar"; : > "${UPKG_DIR}/images/iris-1.tar"
+    _sidecar elk  "elk-1.tar:1000"
+    _sidecar iris "iris-1.tar:9000"
+    PLAN_ACTION[elk]="upgrade"
+    PLAN_ACTION[iris]="noop"
+    local out; out="$(plan_image_tars)"
+    assert_contains "$out" "elk-1.tar" "the planned module must be counted"
+    assert_not_contains "$out" "iris-1.tar" \
+        "a module the plan skips must not demand headroom"
+    _pkg_teardown
+}
+
+test_image_tars_uses_the_size_the_sidecar_records() {
+    _setup; _pkg_setup
+    : > "${UPKG_DIR}/images/elk-1.tar"     # zero bytes on disk
+    _sidecar elk "elk-1.tar:1234567"
+    PLAN_ACTION[elk]="upgrade"
+    assert_contains "$(plan_image_tars)" "1234567" \
+        "the CI-recorded size, not the placeholder on disk"
+}
+
+test_image_tars_falls_back_to_every_tar_without_sidecars() {
+    _setup; _pkg_setup
+    # A legacy single bundle has no manifests/ at all. Over-estimating is the
+    # safe direction, so it counts everything loadable.
+    printf 'x' > "${UPKG_DIR}/images/a.tar"
+    printf 'x' > "${UPKG_DIR}/images/b.tar"
+    _tar_is_docker_image() { return 0; }
+    local out; out="$(plan_image_tars)"
+    assert_contains "$out" "a.tar" "legacy fallback must count everything"
+    assert_contains "$out" "b.tar" "legacy fallback must count everything"
+    _pkg_teardown
+}
+
+test_image_tars_ignores_a_non_docker_data_tar() {
+    _setup; _pkg_setup
+    printf 'x' > "${UPKG_DIR}/images/aws_sigma-1.tar"
+    # The SIGMA rule pack is streamed into /opt/sigma-rules, never docker
+    # loaded, so budgeting for its layers is pure over-count.
+    _tar_is_docker_image() { [[ "$1" != *aws_sigma* ]]; }
+    assert_not_contains "$(plan_image_tars)" "aws_sigma" \
+        "a plain data tar never enters the docker store"
+    _pkg_teardown
+}
+
+test_image_tars_counts_a_tar_gz_backend_image() {
+    _setup; _pkg_setup
+    printf 'x' > "${UPKG_DIR}/images/intact-backend-t.tar.gz"
+    _tar_is_docker_image() { return 0; }
+    assert_contains "$(plan_image_tars)" "intact-backend-t.tar.gz" \
+        "the .tar.gz form _intact_ensure_image accepts was sized at zero"
+    _pkg_teardown
+}
+
+# ---------------------------------------------------------------------------
+# plan_check_memory — advisory only. The two asserts that matter are that it
+# cannot fail a run and cannot fail a run *in the dashboard*.
+# ---------------------------------------------------------------------------
+
+test_memory_preflight_never_returns_nonzero() {
+    _setup
+    PLAN_LARGEST_TAR=1600000000        # the customer's kibana tar
+    assert_true plan_check_memory
+    PLAN_LARGEST_TAR=0                 # nothing to load
+    assert_true plan_check_memory
+}
+
+test_memory_preflight_never_logs_an_error_line() {
+    _setup
+    # upgrade_launcher.py maps any [ERROR] line to run status `failed`, so an
+    # error here would mark a healthy customer upgrade as failed in the UI even
+    # though this check never blocks. That is why it is log_warn throughout.
+    PLAN_LARGEST_TAR=999999999999      # guarantees the warning path
+    plan_check_memory
+    assert_not_contains "$(cat "$LOG_FILE")" "[ERROR]" \
+        "plan_check_memory must never log at error level"
+}
+
+test_memory_preflight_is_silent_when_nothing_will_be_loaded() {
+    _setup
+    PLAN_LARGEST_TAR=0
+    plan_check_memory
+    assert_not_contains "$(cat "$LOG_FILE")" "Memory looks tight" \
+        "no images to load means nothing to warn about"
+}
+
+test_memory_preflight_warns_when_the_largest_tar_exceeds_available() {
+    _setup
+    PLAN_LARGEST_TAR=999999999999
+    _plan_stack_memory() { return 0; }
+    plan_check_memory
+    assert_contains "$(cat "$LOG_FILE")" "Memory looks tight" \
+        "a tar larger than available memory is the whole point"
+}
+
+test_memory_preflight_does_not_suggest_stopping_a_module_it_will_upgrade() {
+    _setup
+    PLAN_LARGEST_TAR=999999999999
+    PLAN_ACTION[elk]="upgrade"
+    _plan_stack_memory() { printf 'elk\t9999999999\n'; }
+    plan_check_memory
+    assert_not_contains "$(cat "$LOG_FILE")" "modules/elk/docker-compose.yaml stop" \
+        "the module brings its own stack down -- suggesting it is noise"
+}
+
+test_memory_preflight_names_a_stack_worth_stopping() {
+    _setup
+    PLAN_LARGEST_TAR=999999999999
+    PLAN_ACTION[timesketch]="noop"
+    _plan_stack_memory() { printf 'timesketch\t4100000000\n'; }
+    plan_check_memory
+    local log; log="$(cat "$LOG_FILE")"
+    assert_contains "$log" "timesketch" "name the heaviest stack"
+    assert_contains "$log" "docker compose" "and give a runnable command"
+}
+
 run_all_tests
 rm -f "$LOG_FILE"; rm -rf "$SCRIPT_DIR"

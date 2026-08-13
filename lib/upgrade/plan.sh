@@ -308,6 +308,89 @@ plan_reject_downgrades() {
 }
 
 # ---------------------------------------------------------------------------
+# plan_image_tars — "<path>\t<bytes>" for every tar THIS PLAN will actually
+# load, newline separated. Empty when there is nothing to load.
+#
+# Three things it fixes, all of which made the old inline `find` wrong:
+#
+#   scope    it summed every tar in images/, including modules the plan had
+#            already decided to skip. A 9-asset package upgrading 2 modules
+#            demanded headroom for all 9 and refused upgrades it could do.
+#   format   the glob was '*.tar', but _intact_ensure_image also accepts
+#            intact-backend-<tag>.tar.gz -- which was therefore sized at zero
+#            AND expands to more than its on-disk size.
+#   kind     the aws_sigma rule pack is a plain data tar streamed into
+#            /opt/sigma-rules by _u_install_sigma_pack; it never enters the
+#            docker store, so budgeting for its layers is pure over-count.
+#
+# Attribution comes from the manifests/<module>.json sidecars each per-module
+# asset carries (contents.images + contents.image_sizes) -- the same source
+# lib/package.sh already reads on the install path, and exact rather than
+# guessed from filename prefixes. A legacy single bundle has no sidecars, so
+# it falls back to every tar in images/: over-estimating is the safe direction
+# for a check whose failure mode is refusing an upgrade.
+# ---------------------------------------------------------------------------
+plan_image_tars() {
+    local images_dir="${UPKG_DIR}/images"
+    [[ -d "$images_dir" ]] || return 0
+
+    # Modules this run will actually touch.
+    local m wanted=""
+    for m in "${UPGRADE_ORDER[@]}"; do
+        case "${PLAN_ACTION[$m]:-}" in
+            upgrade|install) wanted+="${m} " ;;
+        esac
+    done
+
+    local emitted=0 img owner size f
+    if compgen -G "${UPKG_DIR}/manifests/*.json" >/dev/null 2>&1; then
+        while IFS='|' read -r img owner size; do
+            [[ -n "$img" && -n "$owner" ]] || continue
+            [[ " $wanted " == *" $owner "* ]] || continue
+            f="${images_dir}/${img}"
+            [[ -f "$f" ]] || continue
+            [[ -n "$size" ]] || size="$(stat -c%s "$f" 2>/dev/null || echo 0)"
+            printf '%s\t%s\n' "$f" "$size"
+            emitted=1
+        done < <(python3 -c "
+import json, glob, os, sys
+root = sys.argv[1]
+owner, size = {}, {}
+for p in glob.glob(os.path.join(root, 'manifests', '*.json')):
+    module = os.path.splitext(os.path.basename(p))[0]
+    try:
+        m = json.load(open(p))
+    except Exception:
+        continue
+    c = m.get('contents') or {}
+    sizes = c.get('image_sizes') or {}
+    for img in c.get('images') or []:
+        owner[img] = module
+        if img in sizes:
+            size[img] = sizes[img]
+for img in sorted(owner):
+    print(f'{img}|{owner[img]}|{size.get(img, \"\")}')
+" "$UPKG_DIR" 2>/dev/null)
+    fi
+
+    (( emitted )) && return 0
+
+    # Legacy bundle, or sidecars that named nothing we recognise. Count
+    # everything loadable and let the estimate run high.
+    for f in "$images_dir"/*.tar "$images_dir"/*.tar.gz; do
+        [[ -f "$f" ]] || continue
+        # A .tar.gz cannot be inspected by _tar_is_docker_image without
+        # decompressing it; the only one we ship is the backend image, so
+        # treat it as an image and move on.
+        case "$f" in
+            *.tar) _tar_is_docker_image "$f" || continue ;;
+        esac
+        printf '%s\t%s\n' "$f" "$(stat -c%s "$f" 2>/dev/null || echo 0)"
+    done
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # plan_check_disk — enough headroom for the images this package will load.
 #
 # Sized on the image tars because that is what doubles: each tar's layers are
@@ -315,22 +398,29 @@ plan_reject_downgrades() {
 # config_validate.py:172-268.
 # ---------------------------------------------------------------------------
 plan_check_disk() {
-    local images_dir="${UPKG_DIR}/images"
-    local need_gb=2 tars_bytes=0 largest=0 sz f
-    if [[ -d "$images_dir" ]]; then
-        while IFS= read -r f; do
-            sz=$(stat -c%s "$f" 2>/dev/null || echo 0)
-            tars_bytes=$((tars_bytes + sz))
-            (( sz > largest )) && largest=$sz
-        done < <(find "$images_dir" -maxdepth 1 -name '*.tar' 2>/dev/null)
+    local need_gb=2 tars_bytes=0 largest=0 n=0 sz f
+    while IFS=$'\t' read -r f sz; do
+        [[ -n "$f" ]] || continue
+        tars_bytes=$((tars_bytes + sz))
+        (( sz > largest )) && largest=$sz
+        n=$((n + 1))
+    done < <(plan_image_tars)
+    if (( n )); then
         # Layers land in the docker store while the tar is still on disk, but
         # each tar is deleted as soon as it loads -- so the peak is roughly
         # half the total plus the biggest single tar, not the whole set twice.
+        #
+        # That was ASPIRATIONAL until 2026-08-13: it described lib/package.sh's
+        # installer, and this function's own caller kept every tar for the
+        # whole run. upkg_release_loaded_tar (lib/upgrade/package.sh) is what
+        # makes the sentence above true; do not change one without the other.
         need_gb=$(( (tars_bytes / 2 + largest) / 1000000000 + 2 ))
     fi
+    # Publish for plan_check_memory, so a box is not scanned twice.
+    PLAN_LARGEST_TAR="$largest"
 
     local free_gb
-    free_gb="$(df -B1G --output=avail "${SCRIPT_DIR}" 2>/dev/null | tail -1 | tr -d ' ')"
+    free_gb="$(_free_gb "${SCRIPT_DIR}")"
     [[ -n "$free_gb" ]] || { log_warn "could not determine free disk space"; return 0; }
 
     if (( free_gb < need_gb )); then
@@ -339,7 +429,7 @@ plan_check_disk() {
         log_error "  pins is usually the biggest win."
         return 1
     fi
-    log_info "Disk: ${free_gb}G free on ${SCRIPT_DIR}, ~${need_gb}G needed"
+    log_info "Disk: ${free_gb}G free on ${SCRIPT_DIR}, ~${need_gb}G needed for ${n} image tar(s)"
 
     # The tars extract under $SCRIPT_DIR, but the LAYERS they unpack into
     # live wherever Docker's own data root is -- a separate mount on many
@@ -350,7 +440,7 @@ plan_check_disk() {
     docker_root="$("${DOCKER_BIN:-docker}" info --format '{{.DockerRootDir}}' 2>/dev/null)"
     if [[ -n "$docker_root" && -d "$docker_root" ]]; then
         local docker_free_gb
-        docker_free_gb="$(df -B1G --output=avail "$docker_root" 2>/dev/null | tail -1 | tr -d ' ')"
+        docker_free_gb="$(_free_gb "$docker_root")"
         if [[ -n "$docker_free_gb" ]] && (( docker_free_gb < need_gb )); then
             log_error "Not enough disk: ${docker_free_gb}G free on ${docker_root} (Docker's data root)"
             log_error "  for images this package needs to load (~${need_gb}G)."
@@ -360,6 +450,132 @@ plan_check_disk() {
         fi
         log_info "Disk: ${docker_free_gb:-?}G free on ${docker_root} (Docker's data root)"
     fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# _plan_stack_memory — "<module>\t<anon bytes>" for each running module,
+# heaviest first. Empty when nothing can be measured.
+#
+# Reads the cgroup directly rather than shelling out to `docker stats`.
+# `docker stats` SAMPLES: it waits a full interval per container even with
+# --no-stream, and on a box that is already thrashing -- which is precisely
+# when this runs -- it is slow enough to be indistinguishable from the stall
+# it is trying to explain. A preflight must never become the hang.
+#
+# `anon` and not `memory.current`: current includes page cache, which the
+# kernel reclaims under pressure. Counting it would rank a container that has
+# merely READ a lot of data above one genuinely holding the RAM, and tell the
+# operator to stop the wrong stack.
+# ---------------------------------------------------------------------------
+_plan_stack_memory() {
+    declare -F u_containers_of >/dev/null 2>&1 || return 0
+    local ps_out
+    ps_out="$(timeout 10 "${DOCKER_BIN:-docker}" ps --format '{{.ID}} {{.Names}}' 2>/dev/null)" || return 0
+    [[ -n "$ps_out" ]] || return 0
+
+    # container name -> module
+    declare -A owner=()
+    local m c
+    for m in "${UPGRADE_ORDER[@]}"; do
+        for c in $(u_containers_of "$m"); do owner["$c"]="$m"; done
+    done
+
+    declare -A total=()
+    local id name bytes p
+    while read -r id name; do
+        [[ -n "$id" && -n "$name" ]] || continue
+        m="${owner[$name]:-}"
+        [[ -n "$m" ]] || continue
+        bytes=""
+        for p in "/sys/fs/cgroup/system.slice/docker-${id}*.scope/memory.stat" \
+                 "/sys/fs/cgroup/docker/${id}*/memory.stat"; do
+            local f; for f in $p; do
+                [[ -r "$f" ]] || continue
+                bytes="$(awk '$1=="anon"{print $2; exit}' "$f" 2>/dev/null)"
+                [[ -n "$bytes" ]] && break 2
+            done
+        done
+        if [[ -z "$bytes" ]]; then
+            for p in "/sys/fs/cgroup/memory/docker/${id}*/memory.usage_in_bytes" \
+                     "/sys/fs/cgroup/memory/system.slice/docker-${id}*.scope/memory.usage_in_bytes"; do
+                local f2; for f2 in $p; do
+                    [[ -r "$f2" ]] || continue
+                    bytes="$(cat "$f2" 2>/dev/null)"
+                    [[ -n "$bytes" ]] && break 2
+                done
+            done
+        fi
+        [[ "$bytes" =~ ^[0-9]+$ ]] || continue
+        total["$m"]=$(( ${total[$m]:-0} + bytes ))
+    done <<< "$ps_out"
+
+    for m in "${!total[@]}"; do printf '%s\t%s\n' "$m" "${total[$m]}"; done \
+        | sort -k2 -rn
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# plan_check_memory — advisory. NEVER blocks, NEVER logs at error level.
+#
+# Nothing in either engine has ever looked at memory before a multi-GB
+# `docker load`. On 2026-08-13 a box with 25 containers, 296 MiB available and
+# 2.3 GiB of swap already in use sat on a 1.6 GB kibana load for six minutes
+# with no output at all; disk was fine (47 G free) so every existing preflight
+# passed. Those two numbers are where the thresholds below come from.
+#
+# WARN ONLY, and deliberately so:
+#   * upgrade_launcher.py maps any [ERROR] line to run status `failed`, so
+#     even a non-blocking log_error would mark a perfectly good customer
+#     upgrade as failed in the dashboard.
+#   * memory is recoverable mid-run -- the operator stops a stack and the load
+#     proceeds. Disk is not. Refusing on a transient reading is worse than the
+#     slow load it warns about.
+#   * lib/modules/shared.sh already established "memory is log-only, by
+#     explicit design" in this codebase. This extends that with something
+#     actionable rather than reversing it.
+# ---------------------------------------------------------------------------
+plan_check_memory() {
+    local mi=/proc/meminfo
+    [[ -r "$mi" ]] || return 0
+
+    local avail_kb swap_total_kb swap_free_kb
+    avail_kb="$(awk '/^MemAvailable:/{print $2; exit}' "$mi" 2>/dev/null)"
+    swap_total_kb="$(awk '/^SwapTotal:/{print $2; exit}' "$mi" 2>/dev/null)"
+    swap_free_kb="$(awk '/^SwapFree:/{print $2; exit}' "$mi" 2>/dev/null)"
+    [[ "$avail_kb" =~ ^[0-9]+$ ]] || return 0
+    : "${swap_total_kb:=0}"; : "${swap_free_kb:=0}"
+    [[ "$swap_total_kb" =~ ^[0-9]+$ ]] || swap_total_kb=0
+    [[ "$swap_free_kb"  =~ ^[0-9]+$ ]] || swap_free_kb=0
+
+    local avail=$(( avail_kb * 1024 ))
+    local swap_used=$(( (swap_total_kb - swap_free_kb) * 1024 ))
+    local largest="${PLAN_LARGEST_TAR:-0}"
+    (( largest > 0 )) || return 0
+
+    local tight=0
+    (( avail < largest ))       && tight=1
+    (( swap_used > 536870912 )) && tight=1
+    (( tight )) || return 0
+
+    log_warn "Memory looks tight for this upgrade."
+    log_warn "  available: $(_human_size "$avail"), swap in use: $(_human_size "$swap_used")"
+    log_warn "  largest image to load: $(_human_size "$largest")"
+    log_warn "  The upgrade will still run, but 'docker load' may take many minutes"
+    log_warn "  with no output while the kernel swaps."
+
+    # Name stacks worth stopping -- but never one this run is about to upgrade
+    # anyway, since the module brings it down itself.
+    local shown=0 m bytes
+    while IFS=$'\t' read -r m bytes; do
+        [[ -n "$m" ]] || continue
+        case "${PLAN_ACTION[$m]:-}" in upgrade|install) continue ;; esac
+        (( shown == 0 )) && log_warn "  To speed it up, stop a stack you are not using and re-run:"
+        log_warn "    $(printf '%-12s %8s' "$m" "$(_human_size "$bytes")")  sudo docker compose -f modules/${m}/docker-compose.yaml stop"
+        shown=$((shown + 1))
+        (( shown >= 3 )) && break
+    done < <(_plan_stack_memory)
+
     return 0
 }
 
