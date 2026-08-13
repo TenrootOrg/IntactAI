@@ -76,6 +76,15 @@ upgrade_module_velociraptor() {
 
     u_do --timeout 300 "stop velociraptor" -- _u_compose "$dir" down --remove-orphans
     u_do "stamp velociraptor pins" -- _velo_stamp_env "$envf" "$target"
+    # config.yaml too, not just the .env. `--only elk` is supported and skips
+    # the intact module that would normally merge the package pins in, so
+    # config.yaml keeps the OLD version while the module moves. That is not
+    # cosmetic: update_env_files (install.sh, change_ip.sh) re-derives every
+    # module .env FROM config.yaml, so the next repair silently REGRESSES the
+    # pin -- and for Elasticsearch a regressed pin means the node refuses to
+    # start at all against a data directory a newer version wrote. Observed on
+    # this box 2026-08-13. plaso and aws_sigma already did this.
+    u_do "pin velociraptor in config.yaml" -- _pin_module_version velociraptor "$target"
     u_do --timeout 600 "stage client binaries" -- _velo_stage_binaries "$target"
     u_do --timeout 1200 "resolve velociraptor-server:${target}" -- _velo_resolve_image "$target"
     u_do --timeout 600 "start velociraptor" -- _u_compose "$dir" up -d --no-build --pull never

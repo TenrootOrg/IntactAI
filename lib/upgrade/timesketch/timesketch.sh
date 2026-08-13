@@ -127,6 +127,10 @@ upgrade_module_timesketch() {
 
     u_do --timeout 600 "stop timesketch" -- _u_compose "$dir" down --remove-orphans
     u_do "stamp TIMESKETCH_VERSION" -- _u_stamp "$envf" "TIMESKETCH_VERSION=${target}"
+    # config.yaml too — see the note in modules/elk.sh. `--only timesketch`
+    # skips the intact merge, and update_env_files would then regress this
+    # pin on the next install.sh/change_ip.sh run.
+    u_do "pin timesketch in config.yaml" -- _pin_module_version timesketch "$target"
 
     if (( pg_migrate )); then
         u_do --timeout 1800 "migrate Postgres ${_TS_PG_FROM} -> ${_TS_PG_TO}" -- \

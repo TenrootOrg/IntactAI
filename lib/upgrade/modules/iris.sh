@@ -42,6 +42,15 @@ upgrade_module_iris() {
 
     u_do --timeout 300 "stop iris" -- _u_compose "$dir" down --remove-orphans
     u_do "stamp iris pin" -- _u_stamp "$envf" "IRIS_VERSION=${target}"
+    # config.yaml too, not just the .env. `--only elk` is supported and skips
+    # the intact module that would normally merge the package pins in, so
+    # config.yaml keeps the OLD version while the module moves. That is not
+    # cosmetic: update_env_files (install.sh, change_ip.sh) re-derives every
+    # module .env FROM config.yaml, so the next repair silently REGRESSES the
+    # pin -- and for Elasticsearch a regressed pin means the node refuses to
+    # start at all against a data directory a newer version wrote. Observed on
+    # this box 2026-08-13. plaso and aws_sigma already did this.
+    u_do "pin iris in config.yaml" -- _pin_module_version iris "$target"
     u_do "stamp iris sidecar pins" -- _u_stamp_transitive iris
     u_do "iris web certificate" -- ensure_iris_web_cert
     # The 5 files under modules/iris/secrets/ are gitignored Docker Compose

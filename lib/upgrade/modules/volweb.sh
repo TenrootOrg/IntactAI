@@ -48,6 +48,15 @@ upgrade_module_volweb() {
     # One config.yaml pin drives both images.
     u_do "stamp volweb pins" -- _u_stamp "$envf" \
         "VOLWEB_BACKEND_VERSION=${target}" "VOLWEB_FRONTEND_VERSION=${target}"
+    # config.yaml too, not just the .env. `--only elk` is supported and skips
+    # the intact module that would normally merge the package pins in, so
+    # config.yaml keeps the OLD version while the module moves. That is not
+    # cosmetic: update_env_files (install.sh, change_ip.sh) re-derives every
+    # module .env FROM config.yaml, so the next repair silently REGRESSES the
+    # pin -- and for Elasticsearch a regressed pin means the node refuses to
+    # start at all against a data directory a newer version wrote. Observed on
+    # this box 2026-08-13. plaso and aws_sigma already did this.
+    u_do "pin volweb in config.yaml" -- _pin_module_version volweb "$target"
     u_do "stamp volweb sidecar pins" -- _u_stamp_transitive volweb
     u_do --timeout 900 "start volweb" -- _u_volweb_compose_up "$dir"
 

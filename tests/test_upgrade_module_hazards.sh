@@ -114,6 +114,28 @@ else
     fail "velociraptor is not in PRIMARY_IMAGES" "the loader would look for a tar that is never packaged"
 fi
 
+echo "== a module upgrade must pin config.yaml, not just its .env =="
+# `--only elk` is supported and skips the intact module that would merge the
+# package's pins into config.yaml. The module .env then moves while config.yaml
+# does not -- and update_env_files (install.sh, change_ip.sh) re-derives every
+# .env FROM config.yaml, so the next repair silently REGRESSES the pin.
+#
+# For Elasticsearch that is fatal: it refuses to open a data directory a newer
+# version wrote. Observed on a live box 2026-08-13 — ES running 9.4.6 with both
+# pins reading 9.4.5, one recreate away from being unstartable.
+for pair in "elk:modules/elk.sh" "iris:modules/iris.sh" "volweb:modules/volweb.sh" \
+            "portainer:modules/portainer.sh" "timesketch:timesketch/timesketch.sh" \
+            "velociraptor:velociraptor/velociraptor.sh" "plaso:modules/plaso.sh" \
+            "aws_sigma:modules/aws_sigma.sh"; do
+    mod="${pair%%:*}"; rel="${pair#*:}"
+    if grep -q "_pin_module_version" "${ROOT}/lib/upgrade/${rel}"; then
+        ok "${mod} pins config.yaml"
+    else
+        fail "${mod} pins config.yaml" \
+             "its .env would move while config.yaml stays stale; change_ip.sh then regresses it"
+    fi
+done
+
 echo
 echo "${PASS}/${TOTAL} passed"
 [[ "$PASS" == "$TOTAL" ]] || exit 1
