@@ -193,6 +193,43 @@ def _add_missing_env_keys() -> None:
         print(f"[UPGRADE-LAUNCHER] .env key check skipped: {e}", flush=True)
 
 
+def _to_host_path(p: str) -> str:
+    """Translate a path THIS CONTAINER can see into the one the host uses.
+
+    The launcher writes cli_args into the host launch script verbatim, and the
+    helper container mounts only HOST_PATH:HOST_PATH -- so a container path
+    handed to the engine simply does not exist when it gets there.
+
+    That is not hypothetical for the legacy resume: intact-20260726 records
+    package_dir as its OWN view of the extraction, e.g.
+    /app/data/tmp/intact-upgrade-1786612698 (verbatim from a customer's log).
+    The resume checked os.path.isdir() -- true, in here -- then passed it
+    straight through, and the engine died with
+
+        [ERROR] Package not found: /app/data/tmp/intact-upgrade-testresume
+
+    one second in, having logged a confident "finishing ... with the bash
+    engine" first. Reproduced on a real appliance 2026-08-13.
+
+    Both bind mounts have to be handled. WORKDIR (/app/workdir) is the checkout,
+    but the extraction lives under /app/data, which is a SEPARATE mount of
+    HOST_PATH/data -- so a lone WORKDIR->HOST_PATH replace fixes nothing here.
+    Anything already absolute-on-the-host, or unrecognised, is returned
+    untouched: guessing at a path we cannot account for would be worse than
+    letting the engine report it plainly.
+    """
+    if not p:
+        return p
+    for cpath, hpath in ((WORKDIR, HOST_PATH), ("/app/data", f"{HOST_PATH}/data")):
+        if not cpath:
+            continue
+        if p == cpath:
+            return hpath
+        if p.startswith(cpath + "/"):
+            return hpath + p[len(cpath):]
+    return p
+
+
 def resume_legacy_two_phase() -> bool:
     """Finish an upgrade a pre-bash release abandoned at its Phase-1 restart.
 
@@ -299,7 +336,12 @@ def resume_legacy_two_phase() -> bool:
     except Exception:
         pass   # a missing run row must not stop the resume
 
-    err = launch(run_id, ["--package", pkg, "--only", ",".join(todo)])
+    # The engine runs on the HOST; pkg is this container's view of the path.
+    host_pkg = _to_host_path(pkg)
+    if host_pkg != pkg:
+        print(f"[STARTUP] legacy resume: {pkg} -> {host_pkg} for the host engine",
+              flush=True)
+    err = launch(run_id, ["--package", host_pkg, "--only", ",".join(todo)])
     if err:
         print(f"[STARTUP] legacy resume failed to start: {err}", flush=True)
         return False
