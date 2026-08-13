@@ -399,6 +399,24 @@ main() {
             # which is why two upgrade-dl-intact-2026082* dirs totalling 2.2 GB
             # were still on the dev box days later.
             UPKG_SCRATCH="${UPKG_SCRATCH} ${dl}"
+            # An explicit --only is the operator stating exactly which modules
+            # they want, so there is no reason to download the rest: a release
+            # carries ~5.5 GB across nine assets and `--only elk` applies one of
+            # them. Driven by --only rather than by the computed plan because
+            # the plan is only knowable AFTER extraction, and --only is knowable
+            # now -- the automatic version needs a manifest-first restructure
+            # and is deliberately not attempted here.
+            #
+            # `intact` is added whether or not it was asked for. Even when it is
+            # NOT being upgraded, its asset carries
+            # source/intact/scripts/upgrade.sh, and without that on disk the
+            # stage-0 hop below has nothing to exec into -- the box would then
+            # apply the release using its own older engine and say nothing.
+            if [[ -n "${UPGRADE_ONLY:-}" ]]; then
+                INTACT_RELEASE_ONLY_MODULES="${UPGRADE_ONLY//,/ } intact"
+                export INTACT_RELEASE_ONLY_MODULES
+                log_info "Fetching only: ${INTACT_RELEASE_ONLY_MODULES}"
+            fi
             log_info "Fetching release ${UPGRADE_TAG} …"
             upgrade_fetch_release "$UPGRADE_TAG" "$dl" || return 2
             upkg_expand_args "$dl" || return 2

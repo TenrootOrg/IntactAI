@@ -105,8 +105,23 @@ try:
 except Exception:
     index = None
 if index:
+    # An UPGRADE may take a subset: a release typically moves 2 of 9 pins, and
+    # fetching the other seven costs GB of download and the same again of
+    # extraction to apply nothing. INTACT_RELEASE_ONLY_MODULES names what to
+    # take, space separated. Unset means everything, which is what install.sh
+    # needs -- "an INSTALL takes the COMPLETE module set", per the header of this
+    # very function -- so install.sh never sets it and behaviour there is
+    # unchanged.
+    #
+    # `intact` is force-added by the caller, never optional: it carries
+    # source/intact/scripts/upgrade.sh, and without it the stage-0 hop has
+    # nothing to exec into and the box silently applies the release with its
+    # OWN older engine.
+    only = {m for m in (os.environ.get("INTACT_RELEASE_ONLY_MODULES") or "").split() if m}
     attached, missing = set(names), []
-    for entry in (index.get("assets") or {}).values():
+    for mod, entry in (index.get("assets") or {}).items():
+        if only and mod not in only:
+            continue
         whole, sha = entry["asset"], entry.get("sha256") or ""
         parts = [p for p in (entry.get("parts") or []) if p in attached]
         if whole in attached:
