@@ -93,16 +93,11 @@ RELEASE_MODULES = {
     "elk",
     "iris",
     "portainer",
-    # TEMPORARY, intact-20260811 only: an OLD-CI single-bundle release cut for
-    # the stuck 0726 fleet, which needs elk/iris/portainer and the platform and
-    # nothing else. Restore the four below before the next release a customer
-    # installs -- main() prints a PARTIAL RELEASE banner naming exactly what is
-    # missing, and _FULL_RELEASE_MODULES is deliberately left complete so it can.
-    # "timesketch",
-    # "plaso",
-    # "velociraptor",   # both kinds -- 0.77.1 and the legacy 0.7.1 client
-    # "volweb",
-    # "aws_sigma",
+    "timesketch",
+    "plaso",
+    "velociraptor",   # both kinds -- 0.77.1 and the legacy 0.7.1 client
+    "volweb",
+    "aws_sigma",
 }
 
 # TRIMMING THIS SET IS A TESTING SHORTCUT, AND IT DOES NOT LOOK LIKE ONE.
