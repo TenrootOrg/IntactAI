@@ -39,6 +39,18 @@ UPKG_LOOSE_MANIFEST="" # a manifest.json found beside the assets, not inside one
 # instant this file is sourced in the new process.
 : "${UPKG_SCRATCH:=}"
 
+# Bytes reclaimed by upkg_release_loaded_tar, reported once at the end of the
+# run. Same reasoning as UPKG_SCRATCH for the `:` form -- the freeing happens
+# in the re-exec'd process, and a plain assignment would reset it on source.
+: "${U_TARS_FREED:=0}"
+# Set when any image load fails, so the EXIT path keeps the extraction for a
+# retry instead of making the operator re-download several GB.
+: "${U_KEEP_SCRATCH:=0}"
+# basename -> 1 for every tar already loaded and freed this run. Lets a later
+# _u_ensure_image tell "the package never carried this" apart from "we loaded
+# it and the image still is not there", which are very different bugs.
+declare -gA _U_TAR_FREED 2>/dev/null || true
+
 # ---------------------------------------------------------------------------
 # upkg_expand_args <arg...>
 #
@@ -533,6 +545,24 @@ upkg_acquire() {
 # but still-running upgrade legitimately owns (the flock in scripts/upgrade.sh
 # is what actually prevents two runs colliding; this is just reclaiming
 # space from ones that are definitely over).
+#
+# The patterns cover the INSTALL path too -- pkg-* (lib/package.sh), unwrap-*
+# (lib/args.sh) and load-* (lib/package.sh's per-image load log). They were
+# missing, so install leftovers were never reclaimed by anything: a 1.1 GB
+# unwrap-jA2bY0 from an install two days earlier was still sitting in data/tmp
+# on the dev box, alongside 2.2 GB of upgrade-dl-* that this sweep DID know
+# about but which nothing had registered for cleanup (see scripts/upgrade.sh).
+#
+# Two names are deliberately absent and must stay that way:
+#   import-pkg-*  a package staged by the dashboard's import flow. The sweep
+#                 runs at the START of the next upgrade, so a name matched
+#                 here could delete a staged package out from under a run that
+#                 has not begun extracting yet. It is reclaimed on terminal
+#                 state instead -- routes/upgrade_routes.py:355.
+#   upgrade-*     too broad: upgrade-<run_id>.log and upgrade-<run_id>.done.json
+#                 are the dashboard's run records and upgrade.lock is the live
+#                 flock target. Only the three specific upgrade-{pkg,unwrap,dl}-*
+#                 prefixes above are scratch.
 # ---------------------------------------------------------------------------
 upkg_sweep_stale_scratch() {
     local hours="${1:-48}"
@@ -546,7 +576,8 @@ upkg_sweep_stale_scratch() {
                   \( -name 'upgrade-pkg-*' -o -name 'upgrade-unwrap-*' \
                      -o -name 'upgrade-dl-*' -o -name 'intact-rollback-*' \
                      -o -name 'velo-upgrade-*' -o -name 'dl-list-*' \
-                     -o -name 'dl-status-*' \) 2>/dev/null)
+                     -o -name 'dl-status-*' \
+                     -o -name 'pkg-*' -o -name 'unwrap-*' -o -name 'load-*' \) 2>/dev/null)
     (( n > 0 )) && log_info "  swept ${n} stale scratch item(s) left from an earlier run (older than ${hours}h)"
     return 0
 }
@@ -569,5 +600,84 @@ upkg_cleanup() {
     # module directories.
     find "${SCRIPT_DIR}/modules" -maxdepth 2 -name '.env.upgrade-bak-*' \
          -type f -mtime +7 -delete 2>/dev/null
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# upkg_path_is_our_scratch <path>
+#
+# True only when <path> lives inside scratch THIS RUN created. The one thing
+# standing between free-as-you-go (below) and deleting a customer's carry-in
+# media, so it is default-deny: anything it cannot positively account for is
+# left alone.
+#
+# `sudo bash scripts/upgrade.sh --package /media/usb/intact-upgrade-<tag>`
+# against an already-extracted tree makes UPKG_DIR the operator's own
+# directory. Those files are frequently the only copy -- an air-gapped site
+# carried them in physically -- so a wrong answer here is unrecoverable.
+#
+# UPKG_SCRATCH is the authority, not the path shape: upkg_extract registers
+# $work BEFORE extracting into it (see above), and the stage-0 hop exports the
+# variable across `exec` (scripts/upgrade.sh), so the process that actually
+# loads the images still knows what it created.
+#
+# readlink -f BEFORE the prefix compare is not decoration. A plain string test
+# would accept data/tmp/upgrade-pkg-XXXX/images when that directory is a
+# symlink to /media/usb -- the prefix matches, the file does not live there,
+# and the delete lands on the operator's media.
+# ---------------------------------------------------------------------------
+upkg_path_is_our_scratch() {
+    local p="${1:-}" d rp
+    [[ -n "$p" ]] || return 1
+    rp="$(readlink -f -- "$p" 2>/dev/null)" || return 1
+    [[ -n "$rp" ]] || return 1
+
+    # 1. inside a directory this run registered.
+    for d in ${UPKG_SCRATCH}; do
+        [[ -n "$d" ]] || continue
+        d="$(readlink -f -- "$d" 2>/dev/null)" || continue
+        [[ -n "$d" ]] || continue
+        [[ "$rp" == "$d"/* ]] && return 0
+    done
+
+    # 2. a hand retry against an extraction we made on an earlier run: our own
+    #    naming, under our own data/tmp. Deliberately tighter than
+    #    upkg_cleanup's `/tmp/*` arm -- that one only ever removes paths it had
+    #    already registered, so it can afford to be loose. Here this IS the
+    #    check, and a mktemp fallback landing in /tmp is covered by rule 1
+    #    anyway (same process, or exported across the hop).
+    case "$rp" in
+        "${SCRIPT_DIR}/data/tmp/upgrade-pkg-"*|"${SCRIPT_DIR}/data/tmp/upgrade-unwrap-"*)
+            return 0 ;;
+    esac
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# upkg_release_loaded_tar <tar>
+#
+# Free an image tar whose layers are now in the docker store. The installer
+# has done this since the 22 GB-scratch measurement (lib/package.sh); the
+# upgrade path never did, so a full release held every extracted tar on disk
+# until the run ended -- while plan_check_disk sized the run on the assumption
+# that it did not.
+#
+# Callers MUST have confirmed the load succeeded AND the image is present. A
+# tar whose load failed is the only copy of that image on an air-gapped box.
+# ---------------------------------------------------------------------------
+upkg_release_loaded_tar() {
+    local tar="${1:-}"
+    [[ -n "$tar" && -f "$tar" ]] || return 0
+    if [[ "${INTACT_UPGRADE_KEEP_TARS:-0}" == "1" ]]; then
+        return 0
+    fi
+    if ! upkg_path_is_our_scratch "$tar"; then
+        log_info "    keeping $(basename "$tar") — not inside scratch this run created"
+        return 0
+    fi
+    local sz; sz="$(stat -c%s "$tar" 2>/dev/null || echo 0)"
+    if rm -f -- "$tar" 2>/dev/null; then
+        U_TARS_FREED=$(( ${U_TARS_FREED:-0} + sz ))
+    fi
     return 0
 }

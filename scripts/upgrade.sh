@@ -391,6 +391,14 @@ main() {
     else
         if [[ -n "$UPGRADE_TAG" ]]; then
             local dl="${SCRIPT_DIR}/data/tmp/upgrade-dl-${UPGRADE_TAG}"
+            # Registered BEFORE the fetch, not after: a download interrupted
+            # half way still leaves several GB behind, and registering on
+            # success would miss exactly the case that strands the most.
+            # Until now this directory was never registered at all, so
+            # upkg_cleanup never removed it and only the 48h sweep ever did --
+            # which is why two upgrade-dl-intact-2026082* dirs totalling 2.2 GB
+            # were still on the dev box days later.
+            UPKG_SCRATCH="${UPKG_SCRATCH} ${dl}"
             log_info "Fetching release ${UPGRADE_TAG} …"
             upgrade_fetch_release "$UPGRADE_TAG" "$dl" || return 2
             upkg_expand_args "$dl" || return 2

@@ -374,11 +374,29 @@ _u_ensure_image() {
         if RUN_HEARTBEAT_QUIET=1 run_with_heartbeat "loading ${tarname}" 1800 \
              bash -c '"$1" load -i "$2" >>"$3" 2>&1' _ "${DOCKER_BIN:-docker}" \
              "${UPKG_DIR}/images/${tarname}" "${LOG_FILE:-/dev/null}"; then
-            _u_image_present "$ref" && return 0
+            if _u_image_present "$ref"; then
+                # Only now: the layers are in the store, so the tar is dead
+                # weight. A failed load falls through and keeps its tar --
+                # offline, it is the only copy of this image in existence.
+                _U_TAR_FREED["$tarname"]=1
+                upkg_release_loaded_tar "${UPKG_DIR}/images/${tarname}"
+                return 0
+            fi
             log_error "  ${tarname} loaded but ${ref} is still not present"
+            U_KEEP_SCRATCH=1
             return 1
         fi
         log_error "  could not load ${tarname}"
+        U_KEEP_SCRATCH=1
+        return 1
+    fi
+    # Loaded and freed earlier in this run, yet the ref is still missing: the
+    # package's tar does not contain the image its manifest names. Say so,
+    # rather than falling through to a pull that hides a broken package (and
+    # cannot work at all offline).
+    if [[ -n "$tarname" && -n "${_U_TAR_FREED[$tarname]:-}" ]]; then
+        log_error "  ${tarname} was loaded earlier in this run, but ${ref} is still absent"
+        log_error "  — the package's tar does not contain the image its manifest names."
         return 1
     fi
     if [[ "${INTACT_UPGRADE_OFFLINE:-0}" == "1" ]]; then
@@ -462,9 +480,20 @@ _u_load_tars_matching() {
         for f in "${UPKG_DIR}"/images/${prefix}*.tar; do
             [[ -f "$f" ]] || continue
             log_info "  loading $(basename "$f")"
-            RUN_HEARTBEAT_QUIET=1 run_with_heartbeat "loading $(basename "$f")" 1800 \
+            if RUN_HEARTBEAT_QUIET=1 run_with_heartbeat "loading $(basename "$f")" 1800 \
                 bash -c '"$1" load -i "$2" >>"$3" 2>&1' _ "${DOCKER_BIN:-docker}" \
-                "$f" "${LOG_FILE:-/dev/null}" && n=$((n + 1))
+                "$f" "${LOG_FILE:-/dev/null}"; then
+                n=$((n + 1))
+                # Free as we go. This is the bulk loader -- a module's primary
+                # AND transitive images (postgres, opensearch, redis, rabbitmq,
+                # nginx) -- so it is where the tars pile up fastest.
+                _U_TAR_FREED["$(basename "$f")"]=1
+                upkg_release_loaded_tar "$f"
+            else
+                # Keep it: a retry re-runs only the load, and offline this tar
+                # is the only copy of the image.
+                U_KEEP_SCRATCH=1
+            fi
         done
     done
     log_info "  loaded ${n} image tar(s) from the package"

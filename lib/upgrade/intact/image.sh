@@ -23,11 +23,18 @@ _intact_ensure_image() {
         if RUN_HEARTBEAT_QUIET=1 run_with_heartbeat "loading the backend image" 1800 \
              bash -c '"$1" load -i "$2" >>"$3" 2>&1' _ "${DOCKER_BIN:-docker}" \
              "$tar" "${LOG_FILE:-/dev/null}"; then
-            _u_image_present "$ref" && return 0
+            if _u_image_present "$ref"; then
+                # $tar is the loop variable, so the .tar.gz form is covered too.
+                _U_TAR_FREED["$(basename "$tar")"]=1
+                upkg_release_loaded_tar "$tar"
+                return 0
+            fi
             log_error "  ${tar} loaded but ${ref} is still absent"
+            U_KEEP_SCRATCH=1
             return 1
         fi
         log_error "  could not load $(basename "$tar")"
+        U_KEEP_SCRATCH=1
         return 1
     done
 

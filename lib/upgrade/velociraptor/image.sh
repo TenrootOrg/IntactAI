@@ -68,8 +68,16 @@ _velo_resolve_image() {
     local tar="${UPKG_DIR}/images/velociraptor-${target}.tar"
     if [[ -f "$tar" ]]; then
         log_info "  loading ${ref} from the package"
-        "${DOCKER_BIN:-docker}" load -i "$tar" >>"${LOG_FILE:-/dev/null}" 2>&1 \
-            && _u_image_present "$ref" && return 0
+        if "${DOCKER_BIN:-docker}" load -i "$tar" >>"${LOG_FILE:-/dev/null}" 2>&1 \
+           && _u_image_present "$ref"; then
+            _U_TAR_FREED["$(basename "$tar")"]=1
+            upkg_release_loaded_tar "$tar"
+            return 0
+        fi
+        # Kept deliberately: velociraptor's fallback is to BUILD, which runs
+        # apt-get and cannot work air-gapped, so the tar is the only route on
+        # an offline box and must survive for a retry.
+        U_KEEP_SCRATCH=1
         log_warn "  the bundled tar did not yield ${ref}"
     fi
 

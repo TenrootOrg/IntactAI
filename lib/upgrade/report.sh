@@ -39,6 +39,14 @@ print_upgrade_report() {
         for item in "${UPGRADE_FAILED[@]}"; do log_error "  ✘ ${item}"; done
     fi
 
+    # Make the freeing visible. Silent reclamation is indistinguishable from
+    # no reclamation in a support bundle, and this number is the whole point of
+    # upkg_release_loaded_tar -- if it ever reads 0B on a real package, the
+    # scratch guard is refusing every path and nobody would otherwise notice.
+    if (( ${U_TARS_FREED:-0} > 0 )); then
+        log_info "Reclaimed $(_human_size "${U_TARS_FREED}") of image tars as they loaded"
+    fi
+
     if (( ${#UPGRADE_OK[@]} == 0 && ${#UPGRADE_DEGRADED[@]} == 0 \
           && ${#UPGRADE_ROLLED_BACK[@]} == 0 && ${#UPGRADE_FAILED[@]} == 0 )); then
         log_info "Nothing to do — every module was already at its target version."
