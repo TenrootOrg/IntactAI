@@ -836,6 +836,44 @@ upkg_path_is_our_scratch() {
 # Callers MUST have confirmed the load succeeded AND the image is present. A
 # tar whose load failed is the only copy of that image on an air-gapped box.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Cross-subshell state.
+#
+# u_do runs every step through _u_run_with_deadline, which forks `( "$@" ) &`
+# so it can kill a whole process group on timeout. A shell variable assigned
+# inside that fork is gone the moment it exits -- so U_TARS_FREED never reached
+# the report, and U_KEEP_SCRATCH never reached the EXIT trap. The second one
+# matters: a FAILED image load could not mark the run, the trap reclaimed the
+# extraction anyway, and the operator had to re-download several GB to retry --
+# precisely what the flag exists to avoid. Files cross a fork; variables do not.
+# Found on a live run 2026-08-13; the unit tests call these directly and so
+# never saw it.
+# ---------------------------------------------------------------------------
+_upkg_state_dir() { printf '%s' "${SCRIPT_DIR}/data/tmp"; }
+_upkg_tally_file() { printf '%s/.upgrade-tars-freed' "$(_upkg_state_dir)"; }
+_upkg_keep_file()  { printf '%s/.upgrade-keep-scratch' "$(_upkg_state_dir)"; }
+
+# Call instead of `U_KEEP_SCRATCH=1` so it survives u_do's fork.
+u_mark_keep_scratch() {
+    U_KEEP_SCRATCH=1
+    mkdir -p "$(_upkg_state_dir)" 2>/dev/null
+    : > "$(_upkg_keep_file)" 2>/dev/null || true
+}
+u_keep_scratch_requested() {
+    [[ "${U_KEEP_SCRATCH:-0}" == "1" || -f "$(_upkg_keep_file)" ]]
+}
+# Total bytes freed this run, summed from the tally.
+u_tars_freed_bytes() {
+    local f; f="$(_upkg_tally_file)"
+    [[ -f "$f" ]] || { printf '0'; return 0; }
+    awk '{t+=$1} END{printf "%d", t+0}' "$f" 2>/dev/null || printf '0'
+}
+u_clear_run_state() {
+    U_KEEP_SCRATCH=0
+    rm -f "$(_upkg_tally_file)" "$(_upkg_keep_file)" 2>/dev/null
+    return 0
+}
+
 upkg_release_loaded_tar() {
     local tar="${1:-}"
     [[ -n "$tar" && -f "$tar" ]] || return 0
@@ -849,6 +887,10 @@ upkg_release_loaded_tar() {
     local sz; sz="$(stat -c%s "$tar" 2>/dev/null || echo 0)"
     if rm -f -- "$tar" 2>/dev/null; then
         U_TARS_FREED=$(( ${U_TARS_FREED:-0} + sz ))
+        # And to disk, because this usually runs inside u_do's forked subshell
+        # where the variable above dies with the fork.
+        mkdir -p "$(_upkg_state_dir)" 2>/dev/null
+        printf '%s\n' "$sz" >> "$(_upkg_tally_file)" 2>/dev/null || true
     fi
     return 0
 }

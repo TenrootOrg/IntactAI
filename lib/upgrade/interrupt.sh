@@ -95,13 +95,14 @@ u_install_interrupt_trap() {
 _u_exit_cleanup() {
     local rc=$?
     trap - EXIT
-    if [[ "${U_KEEP_SCRATCH:-0}" == "1" ]]; then
+    if declare -F u_keep_scratch_requested >/dev/null 2>&1 && u_keep_scratch_requested; then
         log_warn "  an image failed to load — keeping the extracted package for a retry:"
         log_warn "    ${UPKG_DIR:-?}"
         log_warn "    sudo bash ${SCRIPT_DIR}/scripts/upgrade.sh --package-dir ${UPKG_DIR:-?} --root ${SCRIPT_DIR}"
         log_warn "    (swept automatically after 48h)"
     elif declare -F upkg_cleanup >/dev/null 2>&1; then
         upkg_cleanup
+        declare -F u_clear_run_state >/dev/null 2>&1 && u_clear_run_state
     fi
     return $rc
 }

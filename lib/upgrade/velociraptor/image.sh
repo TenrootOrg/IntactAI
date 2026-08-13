@@ -77,7 +77,7 @@ _velo_resolve_image() {
         # Kept deliberately: velociraptor's fallback is to BUILD, which runs
         # apt-get and cannot work air-gapped, so the tar is the only route on
         # an offline box and must survive for a retry.
-        U_KEEP_SCRATCH=1
+        u_mark_keep_scratch
         log_warn "  the bundled tar did not yield ${ref}"
     fi
 

@@ -28,7 +28,45 @@
 # 40,000-line upgrade log is why these were missed in the first place.
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# THE APPLIANCE, which is not necessarily the checkout this script lives in.
+#
+# This used to be `dirname $BASH_SOURCE/../..` unconditionally, i.e. "the repo
+# I am part of". On a box where the git checkout and the appliance are the same
+# directory that is right; on one where they are NOT -- a dev checkout at
+# ~/intact-dev beside a running appliance at ~/intact-0726 -- it is silently,
+# destructively wrong. The restore below tears down containers and REMOVES
+# DOCKER VOLUMES, and volumes are global: pointing this at the checkout wiped
+# the real appliance's data and moved the checkout aside, .git included.
+# Observed 2026-08-13, and appliance_snapshot.sh already carried a comment
+# warning about the same class from the day before.
+#
+# INTACT_PATH first (the installer's own convention, and what
+# appliance_snapshot.sh honours), then $PWD if it looks like an appliance, and
+# only then this script's own repo. Refuses rather than guesses if what it
+# lands on is not an appliance.
+if [[ -n "${INTACT_PATH:-}" ]]; then
+    ROOT="$INTACT_PATH"
+elif [[ -f "$PWD/VERSION" && -d "$PWD/modules/backend" && -f "$PWD/config.yaml" ]]; then
+    ROOT="$PWD"
+else
+    # NO fallback to this script's own repo. That fallback is what made the
+    # accident possible: a dev checkout has config.yaml and modules/backend
+    # too, so every "is this an appliance?" test passes on it and the guard
+    # waves through the exact mistake it was added to catch. A tool that
+    # removes docker volumes gets an explicit target or nothing.
+    echo "chain_test: refusing to guess which appliance to act on." >&2
+    echo "  This script RESTORES A SNAPSHOT: it stops containers and REMOVES" >&2
+    echo "  DOCKER VOLUMES, and volumes are global -- aiming it at the wrong" >&2
+    echo "  directory destroys the real appliance's data." >&2
+    echo "  Say which box, explicitly:" >&2
+    echo "    INTACT_PATH=/path/to/appliance bash scripts/dev/chain_test.sh ..." >&2
+    echo "  (or run it from inside the appliance directory)" >&2
+    exit 2
+fi
+if [[ ! -f "${ROOT}/config.yaml" || ! -d "${ROOT}/modules/backend" ]]; then
+    echo "chain_test: ${ROOT} is not an Intact.AI appliance." >&2
+    exit 2
+fi
 SNAP=""
 PACKAGES=()
 KEEP_GOING=0
@@ -195,13 +233,81 @@ except Exception: print('')" 2>/dev/null | head -1)"
     say ""
     say "══ applying $(basename "$pkg")${tag:+  (expect ${tag})} ══════════════"
 
+    # A one-second version comparison before a ten-minute apply.
+    #
+    # The engine refuses a downgrade outright (plan_reject_downgrades), which is
+    # correct and must stay -- Elasticsearch will not open a data directory a
+    # newer version wrote. But discovering it AFTER verifying and extracting
+    # 2.8 GB wastes ten minutes, and a locally built package is the likely
+    # culprit: build_local_release_assets stamps pins from the BUILD MACHINE's
+    # config.yaml (pins_source=local-fallback), which drifts behind whatever
+    # baseline the snapshot holds. Exactly that cost twenty minutes on
+    # 2026-08-13, reported only as a bare "rc=2".
+    if [[ -n "$tag" ]]; then
+        local _older
+        _older="$(python3 - "$pkg" "$ROOT" <<'PY' 2>/dev/null
+import json, os, re, sys, glob
+pkg, root = sys.argv[1], sys.argv[2]
+man = None
+for c in ([pkg] if os.path.isfile(pkg) else glob.glob(os.path.join(pkg, "*.manifest.json"))):
+    if c.endswith(".json"):
+        try: man = json.load(open(c)); break
+        except Exception: pass
+if not man: raise SystemExit(0)
+PIN = {"elk": ("modules/elk/.env", "ELASTIC_VERSION"),
+       "iris": ("modules/iris/.env", "IRIS_VERSION"),
+       "timesketch": ("modules/timesketch/.env", "TIMESKETCH_VERSION"),
+       "velociraptor": ("modules/velociraptor/.env", "VELOCIRAPTOR_VERSION"),
+       "volweb": ("modules/volweb/.env", "VOLWEB_BACKEND_VERSION"),
+       "portainer": ("modules/portainer/.env", "PORTAINER_VERSION")}
+def key(v):
+    v = str(v).lstrip("v")
+    return [int(x) for x in v.split(".")] if re.fullmatch(r"\d+(\.\d+)*", v) else None
+for mod, want in (man.get("versions") or {}).items():
+    if mod not in PIN: continue
+    f, k = PIN[mod]
+    try: cur = next(l.split("=",1)[1].strip() for l in open(os.path.join(root, f))
+                    if l.startswith(k + "="))
+    except Exception: continue
+    a, b = key(want), key(cur)
+    if a and b and a < b:
+        print(f"{mod} {cur} -> {want}")
+PY
+)"
+        if [[ -n "$_older" ]]; then
+            while IFS= read -r l; do
+                [[ -n "$l" ]] && warn "package is OLDER than the box: ${l} — the engine will refuse this run"
+            done <<< "$_older"
+            warn "  a locally built package stamps pins from THIS machine's config.yaml;"
+            warn "  raise them, or use --package with only the modules that move forward."
+        fi
+    fi
+
+    # mkdir first: the restore above replaces $ROOT wholesale, and if data/tmp
+    # does not exist yet upgrade.sh cannot touch --log, silently falls back to
+    # a mktemp under /tmp, and this log path stays empty.
+    sudo mkdir -p "$ROOT/data/tmp" 2>/dev/null
     log="$ROOT/data/tmp/chain-$(date +%s).log"
+
+    # 2>&1 into the log, NOT >/dev/null. upgrade.sh's two earliest refusals --
+    # "not an Intact.AI checkout" and "not an Intact.AI appliance" -- happen
+    # BEFORE $LOG_FILE exists, so they can only go to stderr. Discarding it
+    # meant an rc=2 arrived with a completely empty log and no way to tell
+    # which refusal fired; 2026-08-13 that cost twenty minutes and a rerun to
+    # discover the engine had correctly refused a downgrade.
     if sudo bash "$ROOT/scripts/upgrade.sh" --package "$pkg" --root "$ROOT" \
-            --log "$log" >/dev/null 2>&1; then
+            --log "$log" >>"$log" 2>&1; then
         ok "upgrade.sh rc=0"
     else
         rc=$?
         bad "upgrade.sh rc=0" "rc=${rc} — see ${log}"
+        # Show WHY, here, rather than making someone go and read the file. The
+        # refusals are one or two lines and they are the whole answer.
+        local why
+        why="$(sudo grep -iE '\[ERROR\]|DOWNGRADE REFUSED|not an Intact\.AI|Not enough disk|is missing image' "$log" 2>/dev/null | head -4)"
+        [[ -n "$why" ]] && while IFS= read -r l; do
+            printf '        %s\n' "$(cut -c1-110 <<< "$l")"
+        done <<< "$why"
         (( KEEP_GOING )) || { say ""; say "stopping (use --keep-going to continue)"; break; }
     fi
 

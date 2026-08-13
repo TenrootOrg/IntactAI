@@ -45,7 +45,21 @@ if [ -n "${INTACT_PATH:-}" ]; then
 elif [ -f "$PWD/VERSION" ] && [ -d "$PWD/modules/backend" ]; then
     ROOT="$PWD"
 else
-    ROOT="/home/tenroot/intact-dev"
+    # A HARDCODED PATH USED TO LIVE HERE, and it is how a restore aimed at the
+    # appliance landed on a dev checkout instead: containers stopped, docker
+    # volumes removed (they are global, so the REAL appliance lost its data),
+    # and the checkout moved aside with its .git. Observed 2026-08-13, one day
+    # after the comment above was written about the same hazard.
+    #
+    # Refuse instead of guessing. This subcommand destroys volumes; a default
+    # that is right on one machine and catastrophic on another is not a default
+    # worth having.
+    # `err` is defined further down; this runs before it exists.
+    echo "appliance_snapshot: cannot tell which appliance to act on." >&2
+    echo "  \$INTACT_PATH is unset and \$PWD is not an appliance root." >&2
+    echo "  This script REMOVES DOCKER VOLUMES. Say which box explicitly:" >&2
+    echo "    INTACT_PATH=/path/to/appliance $0 $*" >&2
+    exit 2
 fi
 STORE="${APPLIANCE_SNAPSHOT_DIR:-$HOME/appliance-snapshots}"
 MODULES=(portainer volweb velociraptor iris timesketch elk nginx backend)

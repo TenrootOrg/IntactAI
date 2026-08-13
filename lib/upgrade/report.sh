@@ -43,8 +43,9 @@ print_upgrade_report() {
     # no reclamation in a support bundle, and this number is the whole point of
     # upkg_release_loaded_tar -- if it ever reads 0B on a real package, the
     # scratch guard is refusing every path and nobody would otherwise notice.
-    if (( ${U_TARS_FREED:-0} > 0 )); then
-        log_info "Reclaimed $(_human_size "${U_TARS_FREED}") of image tars as they loaded"
+    local _freed; _freed="$(u_tars_freed_bytes 2>/dev/null || echo 0)"
+    if (( _freed > 0 )); then
+        log_info "Reclaimed $(_human_size "$_freed") of image tars as they loaded"
     fi
 
     if (( ${#UPGRADE_OK[@]} == 0 && ${#UPGRADE_DEGRADED[@]} == 0 \

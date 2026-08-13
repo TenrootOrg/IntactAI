@@ -186,7 +186,7 @@ test_a_failed_load_keeps_scratch_for_retry() {
     for f in "${ROOT}/lib/upgrade/modules/shared.sh" \
              "${ROOT}/lib/upgrade/intact/image.sh" \
              "${ROOT}/lib/upgrade/velociraptor/image.sh"; do
-        grep -q 'U_KEEP_SCRATCH=1' "$f" || miss+=("$(basename "$f")")
+        grep -q 'u_mark_keep_scratch' "$f" || miss+=("$(basename "$f")")
     done
     assert_eq "${#miss[@]}" "0" "no keep-on-failure in: ${miss[*]:-}"
 }
@@ -422,6 +422,59 @@ test_the_deferred_map_crosses_the_stage0_hop() {
     # nothing while reporting success.
     local n; n="$(grep -c 'export UPKG_DEFERRED' "${ROOT}/scripts/upgrade.sh")"
     assert_ne "$n" "0" "UPKG_DEFERRED must be exported across the hop"
+}
+
+# --- state that must survive u_do's fork -----------------------------------
+# u_do runs every step through _u_run_with_deadline, which forks `( "$@" ) &`.
+# A shell variable set in that fork dies with it. The counter was merely
+# cosmetic; U_KEEP_SCRATCH was not -- a FAILED image load could not mark the
+# run, so the EXIT trap reclaimed the extraction anyway and the operator had to
+# re-download several GB to retry, which is exactly what the flag prevents.
+# Caught on a live run 2026-08-13, invisible to tests that call these directly.
+
+test_freed_bytes_survive_a_subshell() {
+    _setup
+    local work="${SCRIPT_DIR}/data/tmp/upgrade-pkg-sub"
+    mkdir -p "${work}/images"
+    head -c 4096 /dev/zero > "${work}/images/x.tar"
+    UPKG_SCRATCH="$work"
+    # exactly how u_do invokes a step
+    ( upkg_release_loaded_tar "${work}/images/x.tar" ) &
+    wait
+    assert_false test -f "${work}/images/x.tar"
+    assert_ne "$(u_tars_freed_bytes)" "0" "the tally must cross the fork"
+    _teardown
+}
+
+test_keep_scratch_survives_a_subshell() {
+    _setup
+    mkdir -p "${SCRIPT_DIR}/data/tmp"
+    assert_false u_keep_scratch_requested
+    ( u_mark_keep_scratch ) &
+    wait
+    assert_true u_keep_scratch_requested
+    _teardown
+}
+
+test_every_keep_scratch_call_site_uses_the_helper() {
+    # A bare `U_KEEP_SCRATCH=1` inside a step is silently lost. Assert none
+    # remain in the module code.
+    local hits
+    # package.sh holds the helper (and its comment); everywhere else must call it.
+    hits="$(grep -rn 'U_KEEP_SCRATCH=1' "${ROOT}/lib/upgrade" --include='*.sh' \
+            | grep -v '/package\.sh:' || true)"
+    assert_eq "${hits}" "" "these assign U_KEEP_SCRATCH directly and will not survive u_do's fork"
+}
+
+test_run_state_is_cleared() {
+    _setup
+    mkdir -p "${SCRIPT_DIR}/data/tmp"
+    u_mark_keep_scratch
+    printf '10\n' >> "$(_upkg_tally_file)"
+    u_clear_run_state
+    assert_false u_keep_scratch_requested
+    assert_eq "$(u_tars_freed_bytes)" "0"
+    _teardown
 }
 
 run_all_tests

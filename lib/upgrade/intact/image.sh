@@ -30,11 +30,11 @@ _intact_ensure_image() {
                 return 0
             fi
             log_error "  ${tar} loaded but ${ref} is still absent"
-            U_KEEP_SCRATCH=1
+            u_mark_keep_scratch
             return 1
         fi
         log_error "  could not load $(basename "$tar")"
-        U_KEEP_SCRATCH=1
+        u_mark_keep_scratch
         return 1
     done
 

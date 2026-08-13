@@ -388,11 +388,11 @@ _u_ensure_image() {
                 return 0
             fi
             log_error "  ${tarname} loaded but ${ref} is still not present"
-            U_KEEP_SCRATCH=1
+            u_mark_keep_scratch
             return 1
         fi
         log_error "  could not load ${tarname}"
-        U_KEEP_SCRATCH=1
+        u_mark_keep_scratch
         return 1
     fi
     # Loaded and freed earlier in this run, yet the ref is still missing: the
@@ -497,7 +497,7 @@ _u_load_tars_matching() {
             else
                 # Keep it: a retry re-runs only the load, and offline this tar
                 # is the only copy of the image.
-                U_KEEP_SCRATCH=1
+                u_mark_keep_scratch
             fi
         done
     done
