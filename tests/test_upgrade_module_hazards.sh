@@ -137,5 +137,37 @@ for pair in "elk:modules/elk.sh" "iris:modules/iris.sh" "volweb:modules/volweb.s
 done
 
 echo
+echo "== elk's host preflight must not fail merely because it runs in a container =="
+# The dashboard runs the engine inside a helper container
+# (upgrade_launcher.py: docker run -d --name intact-upgrade-runner-<run_id>).
+# A container has no systemd, so `systemctl is-system-running` answers "offline"
+# there however healthy the host is -- and elk is the ONLY module that calls
+# preflight_host_check. Left fatal, that rolled elk back on EVERY dashboard
+# upgrade while the same package applied from a shell succeeded. Observed
+# 2026-08-13 on a real box: "systemd state = offline (cgroup-unit creation will
+# fail)" -> "elk - host preflight (rc=1); restored to 9.4.2", with the host
+# itself reporting `running` at that moment.
+P="${ROOT}/lib/modules/shared.sh"
+if grep -q '/.dockerenv' "$P"; then
+    ok "the systemd probe is skipped when running in a container"
+else
+    fail "the systemd probe is skipped when running in a container" \
+         "elk cannot be upgraded from the dashboard without this"
+fi
+if grep -q "skipping the systemd probe" "$P"; then
+    ok "and it says so rather than passing silently"
+else
+    fail "and it says so rather than passing silently" \
+         "a check that was not performed must not read as a check that passed"
+fi
+# The probe must still exist for the host path -- deleting it would be the
+# other wrong fix.
+if grep -q 'systemctl is-system-running' "$P"; then
+    ok "the probe still runs on a real host"
+else
+    fail "the probe still runs on a real host" "it exists for the 2026-06-15 cgroup failure"
+fi
+
+echo
 echo "${PASS}/${TOTAL} passed"
 [[ "$PASS" == "$TOTAL" ]] || exit 1

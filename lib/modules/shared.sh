@@ -434,7 +434,29 @@ preflight_host_check() {
     # systemd status — `degraded` is OK (some unrelated unit failed), but
     # `offline` / `stopping` / no-systemd means cgroup-unit creation will
     # break compose-up the way it broke the 2026-06-15 test-1 install.
-    if command -v systemctl >/dev/null 2>&1; then
+    # INSIDE A CONTAINER THIS CHECK CANNOT SEE WHAT IT IS ASKING ABOUT.
+    #
+    # The dashboard runs this engine in a helper container (upgrade_launcher.py:
+    # `docker run -d --name intact-upgrade-runner-<run_id>`), and a container has
+    # no systemd -- `systemctl is-system-running` answers "offline" there no
+    # matter how healthy the host is. The question being asked is whether THE
+    # HOST can create cgroup units, and the containers are created on the host
+    # through the docker socket, so the host's systemd is what governs.
+    #
+    # Left as a hard failure, this made elk -- the only module that calls this --
+    # roll back on EVERY dashboard-driven upgrade, while the same package applied
+    # from a shell on the same box succeeded. Observed 2026-08-13:
+    #   [preflight ELK Stack] systemd state = offline (cgroup-unit creation will fail)
+    #   ↩ elk — host preflight (rc=1); restored to 9.4.2
+    # with `systemctl is-system-running` reporting `running` on the host at the
+    # same moment.
+    #
+    # So: skip the probe when we are demonstrably not on the host. Say so, rather
+    # than passing silently -- an operator reading the log should know the check
+    # was not performed instead of believing it passed.
+    if [[ -f /.dockerenv ]] || grep -qa 'docker\|containerd' /proc/1/cgroup 2>/dev/null; then
+        log_info "  [preflight $module_name] running in a container — skipping the systemd probe (the host's systemd governs, and it is not visible from here)"
+    elif command -v systemctl >/dev/null 2>&1; then
         local sysd_state
         sysd_state=$(systemctl is-system-running 2>/dev/null || true)
         case "$sysd_state" in
