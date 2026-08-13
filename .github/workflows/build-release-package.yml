@@ -80,7 +80,18 @@ jobs:
     outputs:
       run: ${{ steps.c.outputs.run }}
     steps:
+      # The DEFAULT BRANCH, explicitly -- NOT the release tag. On a
+      # `release: published` event checkout's default ref is the tag, so this
+      # gate was reading release-ci.conf out of the TAG's tree. Every tag cut
+      # before that file existed carries no conf at all, so both gates fell
+      # through to the default whatever main said: editing the switch,
+      # committing and pushing changed nothing -- which is exactly what the
+      # file instructs you to do. Sparse: the conf is all this job reads.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: .github/release-ci.conf
+          sparse-checkout-cone-mode: false
       - id: c
         run: |
           set -euo pipefail
@@ -93,7 +104,20 @@ jobs:
                   .github/release-ci.conf; then
             NEW=false
           fi
-          echo "is_new_CI = ${NEW}"
+          echo "is_new_CI = ${NEW}  (read from ${GITHUB_REF_NAME}'s default branch, not the tag)"
+          # Both workflows are release-triggered, so BOTH always show up in the
+          # Actions list -- GitHub cannot consult a file before starting a run.
+          # Only one BUILDS. Say which, loudly, so the other one does not look
+          # like something that needs cancelling.
+          if [ "$NEW" = "false" ]; then
+            echo "### BUILDING -- legacy single-bundle" >> "$GITHUB_STEP_SUMMARY"
+            echo "\`is_new_CI = ${NEW}\`, so this workflow owns the release." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### STOOD DOWN -- nothing to cancel" >> "$GITHUB_STEP_SUMMARY"
+            echo "\`is_new_CI = ${NEW}\`, so **per-module assets (NEW)** builds this release." >> "$GITHUB_STEP_SUMMARY"
+            echo "This run is a no-op by design; let it finish." >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice title=Stood down::per-module assets (NEW) is building this release. Nothing to cancel."
+          fi
           [ "$NEW" = "false" ] && echo "run=yes" >> "$GITHUB_OUTPUT" || echo "run=no" >> "$GITHUB_OUTPUT"
 
   build-package:
