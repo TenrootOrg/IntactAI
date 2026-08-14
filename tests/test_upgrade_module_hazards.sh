@@ -397,5 +397,55 @@ else
 fi
 
 echo
+echo "== the Kibana data view must actually be reachable =="
+# Kibana serves TLS itself (SERVER_SSL_ENABLED=true), so the probe's
+# http://127.0.0.1:5601 could never return 200 and the data view was never
+# re-asserted on any box. It read as a timeout, not a wrong scheme:
+#   17:57:46 "Kibana is now available" / 17:58:59 "did not answer in 120s".
+E="${ROOT}/lib/upgrade/modules/elk.sh"
+KB="$(sed -n 's/^\s*local kb="\(.*\)"$/\1/p' "$E" | head -1)"
+if [[ "$KB" == https://* ]]; then
+    ok "the Kibana probe speaks https (${KB})"
+else
+    fail "the Kibana probe speaks https" "got '${KB}' — a TLS port never answers plain HTTP"
+fi
+# Self-signed cert: without -k every request fails the handshake.
+if sed -n '/_u_kibana_data_view()/,/^}/p' "$E" | grep -q 'curl -sk'; then
+    ok "and passes -k for the self-signed cert"
+else
+    fail "and passes -k for the self-signed cert"
+fi
+# The two implementations must assert the SAME data view, or fixing the scheme
+# just creates a second near-duplicate in Discover.
+SH_TITLE="$(sed -n 's/^\s*local view_title="\(.*\)"$/\1/p' "$E" | head -1)"
+PY_TITLE="$(sed -n 's/^DATA_VIEW_TITLE = "\(.*\)"$/\1/p' "${ROOT}/modules/backend/services/kibana_init.py" | head -1)"
+if [[ -n "$SH_TITLE" && "$SH_TITLE" == "$PY_TITLE" ]]; then
+    ok "elk.sh and kibana_init.py agree on the title ('${SH_TITLE}')"
+else
+    fail "elk.sh and kibana_init.py agree on the title" \
+         "elk.sh='${SH_TITLE}' kibana_init.py='${PY_TITLE}' — divergence duplicates the view"
+fi
+# 409 means the backend's initialiser won the race; that is success, not failure.
+if sed -n '/_u_kibana_data_view()/,/^}/p' "$E" | grep -q '"409"'; then
+    ok "a 409 from a concurrent creator counts as success"
+else
+    fail "a 409 from a concurrent creator counts as success"
+fi
+# The wait only mattered once the request could succeed at all.
+DL="$(sed -n 's/^\s*local deadline=\([0-9]*\)$/\1/p' "$E" | head -1)"
+if [[ -n "$DL" ]] && (( DL >= 300 )); then
+    ok "the readiness wait allows for a slow/swapping box (${DL}s)"
+else
+    fail "the readiness wait allows for a slow/swapping box" \
+         "got '${DL}'; Kibana took ~10min from container start on a swapping box"
+fi
+# It must stay best-effort: a missing data view may never fail an upgrade.
+if grep -q '_u_kibana_data_view || log_warn' "$E"; then
+    ok "a missing data view still only warns"
+else
+    fail "a missing data view still only warns"
+fi
+
+echo
 echo "${PASS}/${TOTAL} passed"
 [[ "$PASS" == "$TOTAL" ]] || exit 1

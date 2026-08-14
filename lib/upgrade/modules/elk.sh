@@ -158,27 +158,59 @@ _u_kibana_data_view() {
     local user pass code
     user="$(read_env_var "$envf" ELASTIC_USER 2>/dev/null || echo elastic)"
     pass="$(read_env_var "$envf" ELASTIC_PASSWORD 2>/dev/null || echo '')"
-    local kb="http://127.0.0.1:5601"
+    # HTTPS, AND -k. Kibana serves TLS itself (modules/elk/docker-compose.yaml
+    # sets SERVER_SSL_ENABLED=true with its own cert), so `http://` here never
+    # got an answer and this function could not succeed on any box. The failure
+    # read like impatience rather than a wrong scheme:
+    #
+    #   17:57:44  Kibana http server running at https://0.0.0.0:5601
+    #   17:57:46  Kibana is now available
+    #   17:58:59  Kibana did not answer in 120s; skipping the data view
+    #
+    # Kibana had been up for 73s. Elasticsearch sits directly above Kibana in
+    # that compose file with xpack.security.http.ssl.enabled=false, which is
+    # very likely where the plain-HTTP assumption came from.
+    #
+    # health/probes.sh already documents that an HTTP probe on 5601 "would
+    # report a false outage", and lib/health.sh prints https://…:5601 -- this
+    # was the last caller still on http://. Localhost rather than the container
+    # name because this runs on the HOST, where intact_kibana does not resolve.
+    local kb="https://127.0.0.1:5601"
 
+    # Title, name and 409-handling are kept identical to
+    # modules/backend/services/kibana_init.py, which is the canonical client.
+    # They had drifted: this asserted "artifact*" while the backend creates
+    # "artifact_*". Fixing only the scheme would therefore have created a
+    # SECOND, near-duplicate data view in Discover -- worse than the silent
+    # no-op it replaced.
+    local view_title="artifact_*"
+    local view_name="Velociraptor Artifacts"
+
+    # Kibana rebuilds its saved objects after an upgrade and answers late: on a
+    # swapping box it took ~10 minutes from container start. 120s was only
+    # harmless while the scheme was wrong and nothing could succeed anyway.
+    local deadline=600
     local waited=0
-    while (( waited < 120 )); do
-        code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -u "${user}:${pass}" \
+    while (( waited < deadline )); do
+        code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 -u "${user}:${pass}" \
                 "${kb}/api/status" 2>/dev/null)"
         [[ "$code" == "200" ]] && break
         sleep 5; waited=$((waited + 5))
     done
     [[ "$code" == "200" ]] || { log_info "  Kibana did not answer in ${waited}s; skipping the data view"; return 1; }
 
-    if curl -s --max-time 10 -u "${user}:${pass}" "${kb}/api/data_views" 2>/dev/null \
-         | grep -q '"title":"artifact\*"'; then
-        log_info "  Kibana data view 'artifact*' already present"
+    if curl -sk --max-time 10 -u "${user}:${pass}" "${kb}/api/data_views" 2>/dev/null \
+         | grep -qF "\"title\":\"${view_title}\""; then
+        log_info "  Kibana data view '${view_title}' already present"
         return 0
     fi
-    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 -u "${user}:${pass}" \
+    code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 20 -u "${user}:${pass}" \
         -X POST "${kb}/api/data_views/data_view" \
         -H 'kbn-xsrf: true' -H 'Content-Type: application/json' \
-        -d '{"data_view":{"title":"artifact*","timeFieldName":"@timestamp"}}' 2>/dev/null)"
-    [[ "$code" =~ ^(200|201)$ ]] && { log_success "  Kibana data view 'artifact*' created"; return 0; }
+        -d "{\"data_view\":{\"title\":\"${view_title}\",\"name\":\"${view_name}\",\"timeFieldName\":\"@timestamp\"}}" 2>/dev/null)"
+    # 409 is success: the backend's own initialiser may have created it first.
+    [[ "$code" == "409" ]] && { log_info "  Kibana data view '${view_title}' already present"; return 0; }
+    [[ "$code" =~ ^(200|201)$ ]] && { log_success "  Kibana data view '${view_title}' created"; return 0; }
     log_warn "  Kibana data view creation returned HTTP ${code}"
     return 1
 }
