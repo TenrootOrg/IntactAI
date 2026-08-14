@@ -96,6 +96,39 @@ else
     fail "the upgrade rebuilds the velociraptor image" \
          "a Dockerfile/entrypoint fix would never reach the box"
 fi
+# ...and a tag that already exists must NOT short-circuit the release's image.
+#
+# The tag is velociraptor-server:<UPSTREAM version>, but the image also bakes in
+# our bundled_artifacts, entrypoint.sh and client binaries. Change an artifact
+# without bumping upstream and the tag is identical while the contents are not.
+# _velo_resolve_image returned early on _u_image_present, so the packaged image
+# was never loaded: an appliance upgraded 0726 -> 0811 -> 0813 still logged
+# "invalid token '#'" for IRIS.Sync.Asset and tenRoot.IRIS.Timeline.Add on every
+# boot, months after 8bfdbc0 fixed them, because velociraptor stayed 0.77.1 and
+# `resolve` matched the tag and skipped in 1s.
+#
+# Assert the ORDER: the package tar is consulted before image presence.
+_tar_ln="$(grep -n 'local tar=' "$V" | head -1 | cut -d: -f1)"
+_present_ln="$(grep -n '_u_image_present "\$ref" && {\|if _u_image_present "\$ref"; then' "$V" | head -1 | cut -d: -f1)"
+if [[ -n "$_tar_ln" && -n "$_present_ln" ]] && (( _tar_ln < _present_ln )); then
+    ok "the packaged image is preferred over an existing tag"
+else
+    fail "the packaged image is preferred over an existing tag" \
+         "a matching tag skips the load, so artifact fixes never reach the box"
+fi
+# And it must say so, rather than silently swapping the image underneath.
+if grep -q 'does not change when our artifacts do' "$V"; then
+    ok "and the log explains why a present image is reloaded"
+else
+    fail "and the log explains why a present image is reloaded"
+fi
+# A stale image with no usable tar is still usable, but must be flagged.
+if grep -q 'bundled artifacts may be older than this release' "$V"; then
+    ok "keeping a stale image warns about its baked content"
+else
+    fail "keeping a stale image warns about its baked content" \
+         "silently reusing it is what hid this for months"
+fi
 # It must build from the RELEASE's build inputs, not the box's stale ones.
 if grep -q '_intact_refresh_module_code' "${ROOT}/lib/upgrade/intact/assets.sh"; then
     ok "module build inputs are refreshed before the build"

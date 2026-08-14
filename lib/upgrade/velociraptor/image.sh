@@ -57,17 +57,46 @@ _velo_stage_binaries() {
     return 0
 }
 
-# Present -> load the tar -> build. Building is last and loudly flagged: it
+# Package tar -> present -> build. Building is last and loudly flagged: it
 # runs apt-get and cannot work air-gapped.
 _velo_resolve_image() {
     local target="$1" dir; dir="$(_VELO_DIR)"
     local ref="velociraptor-server:${target}"
 
-    _u_image_present "$ref" && { log_info "  ${ref} already present"; return 0; }
-
+    # THE PACKAGE'S TAR WINS OVER A TAG THAT ALREADY EXISTS.
+    #
+    # This used to return early on `_u_image_present "$ref"`, which looks like a
+    # sensible fast path and is not: the tag is `velociraptor-server:<UPSTREAM
+    # version>`, but the image also bakes in OUR content -- bundled_artifacts,
+    # entrypoint.sh, the client binaries (Dockerfile :37-40, :85, :87). Change an
+    # artifact without bumping upstream and the tag is byte-identical while the
+    # contents are not, so the box kept whatever it first baked and the release's
+    # own image was never loaded.
+    #
+    # That is not hypothetical. 8bfdbc0 fixed two artifacts that carried `#`
+    # comments (invalid in VQL, where comments are `--` or `//`), and it shipped
+    # in intact-20260813. An appliance upgraded 0726 -> 0811 -> 0813 still logged,
+    # on every boot:
+    #
+    #   While compiling artifact IRIS.Sync.Asset: ... invalid token '#'
+    #   While compiling artifact tenRoot.IRIS.Timeline.Add: ... invalid token '#'
+    #
+    # because velociraptor stayed 0.77.1 the whole way, so `resolve` matched the
+    # tag and skipped in 1s. IRIS asset sync and timeline push were dead, the fix
+    # was in the package, and no upgrade could ever deliver it.
+    #
+    # CI already builds this tar from the TARGET release's source, deliberately
+    # (packager/package.py refreshes the build files first "so the image is built
+    # from the current Dockerfile + full artifact bundle -- not whatever stale
+    # copy is on this box"). Loading it is what makes that guarantee real.
     local tar="${UPKG_DIR}/images/velociraptor-${target}.tar"
     if [[ -f "$tar" ]]; then
-        log_info "  loading ${ref} from the package"
+        if _u_image_present "$ref"; then
+            log_info "  ${ref} is present, but the package carries this release's image — loading it"
+            log_info "  (the tag is upstream's version and does not change when our artifacts do)"
+        else
+            log_info "  loading ${ref} from the package"
+        fi
         if "${DOCKER_BIN:-docker}" load -i "$tar" >>"${LOG_FILE:-/dev/null}" 2>&1 \
            && _u_image_present "$ref"; then
             _U_TAR_FREED["$(basename "$tar")"]=1
@@ -79,6 +108,18 @@ _velo_resolve_image() {
         # an offline box and must survive for a retry.
         u_mark_keep_scratch
         log_warn "  the bundled tar did not yield ${ref}"
+    fi
+
+    # No usable tar. An image that is already here still beats failing the
+    # module -- but say plainly that its baked content is whatever it was, since
+    # that is the state the errors above come from.
+    if _u_image_present "$ref"; then
+        if [[ -f "$tar" ]]; then
+            log_warn "  keeping the existing ${ref}; its bundled artifacts may be older than this release"
+        else
+            log_info "  ${ref} already present (this package carries no velociraptor image)"
+        fi
+        return 0
     fi
 
     if [[ "${INTACT_UPGRADE_OFFLINE:-0}" == "1" ]]; then
