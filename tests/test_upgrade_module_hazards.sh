@@ -447,5 +447,95 @@ else
 fi
 
 echo
+echo "== an upgrade in flight must be recognisable by every gate =="
+# The browser's import path continues the UPLOAD's row rather than opening a
+# second one, so a running import is typed upgrade_package_upload, not upgrade.
+# Three filters compared against "upgrade" alone, and each broke differently:
+# reconcile_on_boot skipped the run (left running/0%/no exit code, helper
+# container never removed, 1.26GB pinned), the concurrency gate would not have
+# blocked a second upgrade, and /api/upgrade/active -- whose whole purpose is
+# reattaching after the backend restart signs the operator out -- could not see
+# it, so the upgrade looked stuck with no information while it was still going.
+if python3 - "$ROOT" <<'PYCHK'
+import ast, re, sys, os
+root = sys.argv[1]
+launcher = os.path.join(root, "modules/backend/services/upgrade_launcher.py")
+routes   = os.path.join(root, "modules/backend/routes/upgrade_routes.py")
+
+src = open(launcher, encoding="utf-8").read()
+types = None
+for node in ast.parse(src).body:
+    if isinstance(node, ast.Assign) and any(
+            getattr(t, "id", "") == "UPGRADE_AUTOMATION_TYPES" for t in node.targets):
+        types = {e.value for e in node.value.elts}
+if not types:
+    print("UPGRADE_AUTOMATION_TYPES not found"); sys.exit(1)
+
+# Every automation_type the routes CREATE for a run that launches a helper must
+# be reconcilable. create_automation_run('<type>', ...) for the import path.
+rsrc = open(routes, encoding="utf-8").read()
+created = set(re.findall(r"create_automation_run\(\s*['\"]([a-z_]+)['\"]", rsrc))
+if "upgrade_package_upload" not in created:
+    print("the import path no longer creates upgrade_package_upload"); sys.exit(1)
+missing = {"upgrade_package_upload"} - types
+if missing:
+    print(f"reconcile cannot see: {sorted(missing)}"); sys.exit(1)
+sys.exit(0)
+PYCHK
+then
+    ok "the type the import path creates is one reconcile accepts"
+else
+    fail "the type the import path creates is one reconcile accepts" \
+         "a restarted backend abandons the run: stuck at running/0%, helper left behind"
+fi
+# No filter may hard-code the bare string any more.
+if grep -nE "automation_type\\\"?\)? (!=|not in) \(?'?\\\"?upgrade'?\\\"?\)?$" \
+     "${ROOT}/modules/backend/routes/upgrade_routes.py" >/dev/null 2>&1; then
+    fail "no gate compares automation_type against \"upgrade\" alone"
+else
+    ok "no gate compares automation_type against \"upgrade\" alone"
+fi
+# The gate and /active must both go through the shared constant.
+if [[ "$(grep -c 'upgrade_launcher.UPGRADE_AUTOMATION_TYPES' "${ROOT}/modules/backend/routes/upgrade_routes.py")" -ge 2 ]]; then
+    ok "the concurrency gate and /api/upgrade/active share the launcher's list"
+else
+    fail "the concurrency gate and /api/upgrade/active share the launcher's list"
+fi
+
+echo
+echo "== a sidecar that moves must not leave its old image behind =="
+# _u_prune_old_module_images renders <repo>:<MODULE version>, but a sidecar
+# carries its own pin. timesketch stayed 20260630 across a release while its
+# opensearch went 2.11.0 -> 2.19.5: the prune returned early on old == new and
+# 1.22GB of opensearchproject/opensearch:2.11.0 survived every upgrade. It was
+# the largest single item in 3.64GB of reclaimable images on a clean run.
+S="${ROOT}/lib/upgrade/modules/shared.sh"
+if grep -q '_u_prune_sidecar_image()' "$S"; then
+    ok "there is a sidecar prune"
+else
+    fail "there is a sidecar prune" "module-version pruning cannot see sidecar pins"
+fi
+# It has to run where the transition is known -- the stamp loop.
+if sed -n '/sidecar pin \${env_var}/,/^        fi$/p' "$S" | grep -q '_u_prune_sidecar_image'; then
+    ok "it runs where the old -> new transition is known"
+else
+    fail "it runs where the old -> new transition is known" \
+         "nowhere else knows the previous sidecar pin"
+fi
+# Repo names must come from image_map.py, not be re-spelled here.
+if sed -n '/_u_prune_sidecar_image()/,/^}/p' "$S" | grep -q 'TRANSITIVE_IMAGES'; then
+    ok "repo names come from image_map.py"
+else
+    fail "repo names come from image_map.py" \
+         "a second spelling can disagree with what actually shipped the image"
+fi
+# Shared repos: removal must stay reliant on docker's own in-use refusal.
+if sed -n '/_u_prune_sidecar_image()/,/^}/p' "$S" | grep -q 'image rm'; then
+    ok "removal uses docker image rm, which refuses while a tag is in use"
+else
+    fail "removal uses docker image rm, which refuses while a tag is in use"
+fi
+
+echo
 echo "${PASS}/${TOTAL} passed"
 [[ "$PASS" == "$TOTAL" ]] || exit 1

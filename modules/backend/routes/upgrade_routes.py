@@ -92,7 +92,11 @@ def _upgrade_gate():
         blocking = None
         try:
             for run in (get_all_automation_runs() or []):
-                if run.get("automation_type") != "upgrade":
+                # Shared with the launcher: the browser's import path continues
+                # the UPLOAD's row, so an import in flight is typed
+                # upgrade_package_upload. Comparing against "upgrade" alone let
+                # a second upgrade start while an import was still running.
+                if run.get("automation_type") not in upgrade_launcher.UPGRADE_AUTOMATION_TYPES:
                     continue
                 if run.get("status") != "running":
                     continue
@@ -1087,7 +1091,14 @@ def get_active_upgrade_run():
 
     best = None
     for run in runs:
-        if run.get('automation_type') not in ('upgrade', 'prepare_package'):
+        # An import in flight is typed upgrade_package_upload (the browser path
+        # continues the upload's own row), so excluding it defeated the very
+        # purpose of this endpoint: after the backend restart signed the
+        # operator out mid-import, the UI had nothing to reattach to and the
+        # upgrade looked stuck with no information, while it was in fact still
+        # running through the remaining modules.
+        if run.get('automation_type') not in (
+                *upgrade_launcher.UPGRADE_AUTOMATION_TYPES, 'prepare_package'):
             continue
         if (run.get('status') or '').lower() not in ACTIVE:
             continue

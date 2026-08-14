@@ -308,6 +308,49 @@ for img, tar in ns.get('PRIMARY_IMAGES', {}).get(sys.argv[2], []):
 " "$f" "$module" "$version" 2>/dev/null
 }
 
+# Remove the old image for ONE sidecar whose pin just moved.
+#
+# The primary-image prune below cannot cover these: it renders <repo>:<module
+# version>, and a sidecar carries its own pin. timesketch stayed at 20260630
+# across a release while its opensearch went 2.11.0 -> 2.19.5, so the prune
+# returned early on old == new and 1.22 GB of opensearch:2.11.0 survived every
+# upgrade. Measured on an appliance after a clean 9-module run: 3.64 GB of
+# reclaimable images, of which this was the largest single item.
+#
+# Reads the SAME image_map.py the packager and the boot-time reclaim use, so
+# repo names cannot drift between what ships an image and what removes it.
+#
+# Leans on the identical safety net as the primary prune: several of these
+# repos are SHARED between modules (image_map.py says so), and `docker image
+# rm` refuses while any container still references the tag. That refusal is
+# what makes calling this unconditionally correct rather than risky.
+_u_prune_sidecar_image() {
+    local module="$1" dep="$2" old="$3"
+    [[ -n "$old" && "$old" != "None" ]] || return 0
+    local f="${SCRIPT_DIR}/modules/backend/services/image_map.py"
+    [[ -f "$f" ]] || return 0
+
+    local old_ref
+    old_ref="$(python3 -c "
+import sys
+ns = {}
+exec(open(sys.argv[1], encoding='utf-8').read(), ns)
+want = sys.argv[3].lower()
+for entry in ns.get('TRANSITIVE_IMAGES', {}).get(sys.argv[2], []):
+    dep, img = entry[0], entry[1]
+    if dep.lower() == want or want.startswith(dep.lower()):
+        print(img.format(tag=sys.argv[4]))
+        break
+" "$f" "$module" "$dep" "$old" 2>/dev/null)"
+    [[ -n "$old_ref" ]] || return 0
+
+    if "${DOCKER_BIN:-docker}" image inspect "$old_ref" >/dev/null 2>&1; then
+        "${DOCKER_BIN:-docker}" image rm "$old_ref" >/dev/null 2>&1 \
+            && log_info "  cleaned up old sidecar image: ${old_ref}"
+    fi
+    return 0
+}
+
 # Remove <repo>:<old> for every primary image a module owns, once the module
 # has genuinely committed to <new>. Never fatal, never even logged as a
 # warning on failure: `docker image rm` refuses on its own when the tag is
@@ -569,6 +612,13 @@ _u_stamp_transitive() {
             update_env_var "$envf" "$env_var" "$value" || return 1
             log_info "  sidecar pin ${env_var}: ${current:-unset} -> ${value} (from ${src})"
             n=$((n + 1))
+            # A sidecar that moved leaves its old image behind. This is the only
+            # place that knows the transition: _u_prune_old_module_images keys
+            # off the MODULE's version, and a sidecar has its own pin. So
+            # timesketch could go 20260630 -> 20260630 (module unchanged, prune
+            # returns early) while opensearch went 2.11.0 -> 2.19.5, and the
+            # 1.22 GB 2.11.0 image stayed on the box forever.
+            _u_prune_sidecar_image "$module" "$man_key" "$current"
         fi
     done
     (( n == 0 )) && log_info "  sidecar pins already current"

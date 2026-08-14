@@ -54,7 +54,29 @@ from services.workflow_service import (
 # plain subprocess), so it has no helper container and does not belong in
 # reconcile_on_boot()'s sweep -- its own restart-recovery, if it needs any,
 # is a route-level concern, not this module's.
-UPGRADE_AUTOMATION_TYPES = ("upgrade",)
+# Every automation_type that can own an upgrade in flight -- i.e. that can have
+# a helper_container and a done_path in its details, and therefore needs
+# reconciling after the backend restarts mid-run.
+#
+# `upgrade_package_upload` belongs here and was missing. The browser's import
+# path deliberately CONTINUES the upload's own row rather than opening a second
+# one (upgrade_routes.py: "one row for the whole import"), so the run that owns
+# the helper is typed upgrade_package_upload, not upgrade. reconcile_on_boot's
+# first guard therefore skipped it, and an import that restarted the backend
+# mid-run was abandoned:
+#
+#   status: running, progress: 0, exit_code: None   -- 34 minutes after the
+#   upgrade had finished with rc=0 and written its .done.json
+#
+# Observed on a 0811 -> 0813 import: the run's log froze at the exact second the
+# backend swapped (17:45:38), the remaining 8 modules ran unwatched to 18:06,
+# the dashboard showed a run still going at 0%, _finalize never ran, and the
+# helper container was left behind pinning the previous backend image (1.26 GB).
+#
+# The same import completed cleanly one release earlier only because the backend
+# swap happened at the very END of that run, so the tailer lived long enough to
+# finalize in-process and never needed reconciliation at all.
+UPGRADE_AUTOMATION_TYPES = ("upgrade", "upgrade_package_upload")
 
 _DOCKER_BIN = "docker"
 
