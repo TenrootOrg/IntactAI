@@ -104,6 +104,21 @@ _ts_bootstrap_alembic() {
 # bootstrap above did not happen or did not work, and running `db upgrade`
 # would either fail loudly or -- worse -- a stamp-then-upgrade would mark the
 # schema as migrated without touching it.
+# Does the database already carry a timesketch schema?
+#
+# Distinguishes "alembic_version is empty because nothing has ever run against a
+# bare database" from "empty because timesketch-web built the schema itself with
+# create_all". The two need opposite remedies (migrate vs stamp), and the only
+# thing that tells them apart is whether the tables are actually there. Keyed on
+# a table that has existed for the life of the schema rather than a raw count,
+# so a partially-created database does not read as populated.
+_ts_schema_is_populated() {
+    local d="${DOCKER_BIN:-docker}" reg
+    reg="$($d exec intact_timesketch_postgres psql -U timesketch -d timesketch -tAc \
+        "SELECT to_regclass('searchindex')" 2>/dev/null | tr -d '[:space:]')"
+    [[ -n "$reg" && "$reg" != "NULL" ]]
+}
+
 _ts_db_upgrade() {
     local target="$1"
     local d="${DOCKER_BIN:-docker}"
@@ -135,8 +150,41 @@ _ts_db_upgrade() {
         # Observed enabling timesketch on a box that had it off and applying a
         # full release, 2026-08-14.
         if [[ "${U_FROM:-}" == "not installed" ]]; then
-            log_info "  alembic_version is empty and this is a fresh install —"
-            log_info "  running the migrations from base to build the schema."
+            # ...BUT "EMPTY" DOES NOT MEAN "NO SCHEMA".
+            #
+            # timesketch-web builds the full schema itself on first start
+            # (db.create_all()), which is WHY alembic_version is empty: the
+            # tables exist, no migration ever ran, so there is nothing to
+            # record. Replaying base -> head over that schema re-applies DDL
+            # that is already there and dies on the first ALTER:
+            #
+            #   (psycopg2.errors.DuplicateColumn) column "group_id" of relation
+            #   "searchindex_accesscontrolentry" already exists
+            #
+            # Observed 2026-08-14 with 117 tables present and group_id already
+            # on the table alembic was trying to add it to. The schema was at
+            # head; it was merely unstamped. So stamp it -- the same thing the
+            # untracked-alembic bootstrap above does, which cannot help here
+            # because on an install it runs before the stack is up.
+            #
+            # Only when the database is genuinely bare is base -> head right.
+            if _ts_schema_is_populated; then
+                log_info "  alembic_version is empty and this is a fresh install, but the"
+                log_info "  schema is already built (timesketch-web created it) — stamping head."
+                if ! $d exec intact_timesketch_web tsctl db stamp -d /migrations head >>"${LOG_FILE:-/dev/null}" 2>&1; then
+                    log_error "  tsctl db stamp failed"
+                    return 1
+                fi
+                after="$(_ts_alembic_revision)"
+                if [[ -z "$after" ]]; then
+                    log_error "  stamp reported success but alembic_version is still empty"
+                    return 1
+                fi
+                log_success "  schema stamped at ${after}"
+                return 0
+            fi
+            log_info "  alembic_version is empty, this is a fresh install and the database"
+            log_info "  is bare — running the migrations from base to build the schema."
         else
             log_error "  alembic_version is empty; refusing to upgrade the schema."
             log_error "  Stamping head here would mark the database as migrated without"

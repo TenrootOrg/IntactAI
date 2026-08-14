@@ -197,7 +197,13 @@ else
 fi
 # The distinction must be on the install/upgrade flag, not on something
 # incidental like whether migrations were staged.
-if grep -B4 'refusing to upgrade the schema' "$S" | grep -q 'not installed'; then
+#
+# Assert the STRUCTURE, not the proximity: this was a `grep -B4` around the
+# refusal until the fresh-install branch grew a populated-schema case between
+# the two and pushed them ~30 lines apart. The behaviour had not changed; the
+# assertion was just measuring distance. Scope to the empty-alembic block and
+# ask whether it branches on U_FROM at all.
+if sed -n '/if \[\[ -z "\$before" \]\]; then/,/^    fi$/p' "$S" | grep -q 'U_FROM:-.*== "not installed"'; then
     ok "the two cases are told apart by U_FROM"
 else
     fail "the two cases are told apart by U_FROM"
@@ -232,6 +238,44 @@ if grep -q 'up -d --no-build --pull never' "$P"; then
 else
     fail "a failed UPGRADE still brings the old stack back" \
          "that is the whole point of the undo on an upgrade"
+fi
+
+echo
+echo "== a fresh install must STAMP an already-built schema, not replay it =="
+# timesketch-web builds the schema itself on first start (create_all), which is
+# why alembic_version is empty. Replaying base -> head over it dies on the first
+# ALTER: (psycopg2.errors.DuplicateColumn) column "group_id" of relation
+# "searchindex_accesscontrolentry" already exists -- observed 2026-08-14 with
+# 117 tables present. Empty alembic_version does NOT imply a bare database.
+S="${ROOT}/lib/upgrade/timesketch/schema.sh"
+if grep -q '_ts_schema_is_populated()' "$S"; then
+    ok "there is a probe distinguishing a bare database from a built one"
+else
+    fail "there is a probe distinguishing a bare database from a built one"
+fi
+if sed -n '/U_FROM:-.*== "not installed"/,/^        else/p' "$S" | grep -q 'if _ts_schema_is_populated; then'; then
+    ok "the fresh-install branch consults it before choosing a remedy"
+else
+    fail "the fresh-install branch consults it before choosing a remedy" \
+         "a populated schema would be migrated from base and die on DuplicateColumn"
+fi
+if sed -n '/if _ts_schema_is_populated; then/,/^            fi/p' "$S" | grep -q 'tsctl db stamp -d /migrations head'; then
+    ok "a populated schema is stamped at head"
+else
+    fail "a populated schema is stamped at head"
+fi
+# A genuinely bare database must still be migrated, or a real install builds nothing.
+if grep -q 'is bare — running the migrations from base' "$S"; then
+    ok "a bare database is still migrated from base"
+else
+    fail "a bare database is still migrated from base"
+fi
+# The refusal on a pre-existing database must survive all of this.
+if grep -q 'refusing to upgrade the schema' "$S"; then
+    ok "an existing install with empty alembic_version is still refused"
+else
+    fail "an existing install with empty alembic_version is still refused" \
+         "that guard is what stops a silent stamp over an unmigrated schema"
 fi
 
 echo
