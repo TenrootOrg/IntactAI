@@ -113,10 +113,36 @@ _ts_db_upgrade() {
     local before after
     before="$(_ts_alembic_revision)"
     if [[ -z "$before" ]]; then
-        log_error "  alembic_version is empty; refusing to upgrade the schema."
-        log_error "  Stamping head here would mark the database as migrated without"
-        log_error "  migrating it, and the mismatch would only surface much later."
-        return 1
+        # A FRESH INSTALL IS THE ONE CASE WHERE EMPTY IS CORRECT.
+        #
+        # The refusal below is about an EXISTING database: empty there means the
+        # bootstrap did not take, and a stamp-then-upgrade would mark a schema
+        # migrated without touching it. On a database that was created minutes
+        # ago there is no schema to mismatch -- empty means "no migration has
+        # run yet", which is exactly when `tsctl db upgrade` should run: alembic
+        # walks base -> head and builds the schema.
+        #
+        # Without this branch timesketch can never be installed by the engine.
+        # `bootstrap alembic if untracked` (timesketch.sh) runs BEFORE the stack
+        # is up, so on an install it correctly reports "no timesketch-web
+        # container yet; nothing to bootstrap" and no-ops -- and the only
+        # re-stamp afterwards is gated on a Postgres MAJOR migration. So the
+        # install reached here with an empty table every time and rolled itself
+        # back:
+        #
+        #   ↩ timesketch — apply database migrations (rc=1); install undone
+        #
+        # Observed enabling timesketch on a box that had it off and applying a
+        # full release, 2026-08-14.
+        if [[ "${U_FROM:-}" == "not installed" ]]; then
+            log_info "  alembic_version is empty and this is a fresh install —"
+            log_info "  running the migrations from base to build the schema."
+        else
+            log_error "  alembic_version is empty; refusing to upgrade the schema."
+            log_error "  Stamping head here would mark the database as migrated without"
+            log_error "  migrating it, and the mismatch would only surface much later."
+            return 1
+        fi
     fi
 
     if ! $d exec intact_timesketch_web tsctl db upgrade -d /migrations >>"${LOG_FILE:-/dev/null}" 2>&1; then

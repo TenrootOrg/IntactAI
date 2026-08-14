@@ -169,5 +169,40 @@ else
 fi
 
 echo
+echo "== timesketch: an empty alembic table blocks UPGRADES, not INSTALLS =="
+# The refusal exists because on an EXISTING database an empty alembic_version
+# means the bootstrap did not take, and stamping head would mark an unmigrated
+# schema as migrated. But on a FRESH install empty is the correct state -- the
+# database was created minutes ago and alembic must walk base -> head to build
+# the schema.
+#
+# Applied to both, it made timesketch impossible to install through the engine:
+# `bootstrap alembic if untracked` runs before the stack is up, so on an install
+# it no-ops ("no timesketch-web container yet"), the only re-stamp afterwards is
+# gated on a Postgres MAJOR migration, and the run rolled itself back with
+#   ↩ timesketch — apply database migrations (rc=1); install undone
+# Observed 2026-08-14 enabling timesketch and applying a full release.
+S="${ROOT}/lib/upgrade/timesketch/schema.sh"
+if grep -q 'U_FROM:-.*== "not installed"' "$S"; then
+    ok "a fresh install is allowed to migrate from base"
+else
+    fail "a fresh install is allowed to migrate from base" \
+         "without this timesketch cannot be installed by the engine at all"
+fi
+if grep -q 'refusing to upgrade the schema' "$S"; then
+    ok "an UPGRADE with an empty alembic table is still refused"
+else
+    fail "an UPGRADE with an empty alembic table is still refused" \
+         "that refusal is what stops a stamp-then-upgrade masking an unmigrated schema"
+fi
+# The distinction must be on the install/upgrade flag, not on something
+# incidental like whether migrations were staged.
+if grep -B4 'refusing to upgrade the schema' "$S" | grep -q 'not installed'; then
+    ok "the two cases are told apart by U_FROM"
+else
+    fail "the two cases are told apart by U_FROM"
+fi
+
+echo
 echo "${PASS}/${TOTAL} passed"
 [[ "$PASS" == "$TOTAL" ]] || exit 1
