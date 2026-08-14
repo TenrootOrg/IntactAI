@@ -166,13 +166,28 @@ _velo_refresh_downloads() {
     legacy="$(read_config "['versions']['velociraptor_legacy']" 2>/dev/null || echo '')"
     [[ "$legacy" == "None" ]] && legacy=""
 
-    local pruned=0 f v
+    # Sweep everything the PLACE step below can put here, not a narrower shape.
+    #
+    # This matched `velociraptor-v*` while the placement copies `velociraptor*`,
+    # so any binary whose name did not carry a `-v<version>-` (a differently
+    # named upstream asset, an `.msi` without the version infix) was placed on
+    # every upgrade and never once considered for pruning. It would accumulate
+    # silently and read as "0 stale pruned" forever.
+    #
+    # Files whose version cannot be parsed are still NOT deleted -- guessing
+    # would risk removing something an operator put here on purpose. They are
+    # counted and reported instead, so accumulation is visible rather than
+    # invisible, which is the actual failure being fixed.
+    local pruned=0 unknown=0 f v
     while IFS= read -r f; do
-        v="$(sed -n 's/.*velociraptor-v\([0-9.]*\)-.*/\1/p' <<< "$(basename "$f")")"
-        [[ -n "$v" ]] || continue
+        v="$(sed -n 's/.*velociraptor[-_]v\{0,1\}\([0-9][0-9]*\.[0-9][0-9.]*\).*/\1/p' <<< "$(basename "$f")")"
+        if [[ -z "$v" ]]; then
+            unknown=$((unknown + 1))
+            continue
+        fi
         [[ "$v" == "$current" || ( -n "$legacy" && "$v" == "$legacy" ) ]] && continue
         rm -f "$f" && pruned=$((pruned + 1))
-    done < <(find "$dl" -maxdepth 1 -name 'velociraptor-v*' -type f 2>/dev/null)
+    done < <(find "$dl" -maxdepth 1 -name 'velociraptor*' -type f 2>/dev/null)
 
     local placed=0
     if [[ -n "$pkg" && -d "${pkg}/binaries" ]]; then
@@ -185,6 +200,7 @@ _velo_refresh_downloads() {
     fi
 
     log_info "  downloads: ${placed} placed, ${pruned} stale pruned (keeping ${current}${legacy:+ and legacy ${legacy}})"
+    (( unknown )) && log_info "  downloads: ${unknown} file(s) with no recognisable version left untouched"
     return 0
 }
 
