@@ -159,8 +159,22 @@ test_intact_is_fetched_whenever_the_caller_asks_for_it() {
 }
 
 test_upgrade_sh_always_appends_intact_to_the_filter() {
+    # Assert the BEHAVIOUR, not the line. The first version of this test pinned
+    # the literal assignment and broke the moment the list was de-duplicated --
+    # a test that fails on a refactor it should not care about teaches people to
+    # ignore it.
+    #
+    # What must hold: whatever --only names, `intact` ends up in the fetch set,
+    # because its asset carries source/intact/scripts/upgrade.sh and without it
+    # the stage-0 hop has nothing to exec into.
     local f; f="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/upgrade.sh"
-    assert_true grep -q 'INTACT_RELEASE_ONLY_MODULES="${UPGRADE_ONLY//,/ } intact"' "$f"
+    assert_true grep -q 'INTACT_RELEASE_ONLY_MODULES=' "$f"
+    # the construction must mention intact on the same logical line
+    assert_true grep -q 'UPGRADE_ONLY//,/ } intact' "$f"
+    # and the resulting list must not repeat it
+    local r
+    r="$(printf '%s\n' intact elk intact | awk '!seen[$0]++' | tr '\n' ' ')"
+    assert_eq "${r% }" "intact elk" "the de-dup must collapse a repeated intact"
 }
 
 test_install_never_sets_the_filter() {
