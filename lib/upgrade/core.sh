@@ -353,7 +353,21 @@ u_end() {
 
         case "$verdict" in
             up)
-                log_success "  health: ${module} is UP${detail:+ (${detail})}"
+                # A probe answering 200 says the primary service is up. It says
+                # nothing about the rest of the stack, and "the rest" includes
+                # the module's own reverse proxy -- the thing users actually
+                # reach. Downgrade rather than fail: the service IS answering,
+                # so rolling back would be disproportionate, but reporting a
+                # clean install over a crash-looping container is the lie this
+                # gate exists to prevent.
+                local looping; looping="$(u_crashlooping_of "$module")"
+                if [[ -n "${looping// /}" ]]; then
+                    verdict="degraded"
+                    log_warn "  health: ${module} answers, but these containers are crash-looping: ${looping% }"
+                    UPGRADE_DEGRADED+=("${module} — crash-looping: ${looping% }")
+                else
+                    log_success "  health: ${module} is UP${detail:+ (${detail})}"
+                fi
                 ;;
             degraded)
                 log_warn "  health: ${module} is DEGRADED${detail:+ (${detail})} — not rolling back"

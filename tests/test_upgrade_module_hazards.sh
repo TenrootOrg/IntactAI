@@ -309,5 +309,60 @@ else
 fi
 
 echo
+echo "== a probe answering 200 must not certify a crash-looping stack =="
+# timesketch installed, reported "health: timesketch is UP (timesketch-web HTTP
+# 200)" and "0 error(s)" -- while intact_timesketch_nginx, the module's own
+# front door, was in Restarting(1) on an unreadable certificate. u_containers_of
+# lists four timesketch containers and nginx is not one of them, so the gate
+# could not have seen it. Observed 2026-08-14.
+H="${ROOT}/lib/upgrade/health/core.sh"
+C="${ROOT}/lib/upgrade/core.sh"
+if grep -q 'u_crashlooping_of()' "$H"; then
+    ok "there is a crash-loop probe"
+else
+    fail "there is a crash-loop probe"
+fi
+# It must enumerate from Docker's labels, not the hand-maintained list that
+# omitted nginx in the first place.
+if grep -A4 'u_crashlooping_of()' "$H" | grep -q 'com.docker.compose.project'; then
+    ok "it enumerates by compose project label, not u_containers_of"
+else
+    fail "it enumerates by compose project label, not u_containers_of" \
+         "the hand-maintained list is exactly what missed intact_timesketch_nginx"
+fi
+if grep -A4 'u_crashlooping_of()' "$H" | grep -q 'status=restarting'; then
+    ok "it filters on restarting"
+else
+    fail "it filters on restarting"
+fi
+# The 'up' arm must consult it and downgrade rather than log success blindly.
+UPARM="$(sed -n '/^            up)/,/^                ;;/p' "$C")"
+if printf '%s' "$UPARM" | grep -q 'u_crashlooping_of'; then
+    ok "the up verdict consults the crash-loop probe"
+else
+    fail "the up verdict consults the crash-loop probe" \
+         "otherwise a 200 from the primary service certifies the whole stack"
+fi
+if printf '%s' "$UPARM" | grep -q 'verdict="degraded"'; then
+    ok "a crash-looping stack downgrades to degraded"
+else
+    fail "a crash-looping stack downgrades to degraded"
+fi
+# Degraded, NOT down: the service is answering, so rolling back is
+# disproportionate -- but it must still reach the report.
+if printf '%s' "$UPARM" | grep -q 'UPGRADE_DEGRADED+='; then
+    ok "and is recorded in the report rather than silently logged"
+else
+    fail "and is recorded in the report rather than silently logged" \
+         "the whole failure was that the report said 0 errors"
+fi
+if printf '%s' "$UPARM" | grep -q 'U_FAILED=1'; then
+    fail "a crash-loop does not trigger a rollback" \
+         "the primary service answers; unwinding a working upgrade is worse"
+else
+    ok "a crash-loop does not trigger a rollback"
+fi
+
+echo
 echo "${PASS}/${TOTAL} passed"
 [[ "$PASS" == "$TOTAL" ]] || exit 1

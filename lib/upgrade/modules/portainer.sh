@@ -38,6 +38,7 @@ upgrade_module_portainer() {
     # pin -- and for Elasticsearch a regressed pin means the node refuses to
     # start at all against a data directory a newer version wrote. Observed on
     # this box 2026-08-13. plaso and aws_sigma already did this.
+    u_undo_pin portainer
     u_do "pin portainer in config.yaml" -- _pin_module_version portainer "$target"
     u_do "assert server and agent versions match" -- _u_portainer_versions_match
     u_do --timeout 600 "start portainer" -- _u_compose "$dir" up -d --no-build --pull never

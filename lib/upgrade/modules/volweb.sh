@@ -56,6 +56,7 @@ upgrade_module_volweb() {
     # pin -- and for Elasticsearch a regressed pin means the node refuses to
     # start at all against a data directory a newer version wrote. Observed on
     # this box 2026-08-13. plaso and aws_sigma already did this.
+    u_undo_pin volweb
     u_do "pin volweb in config.yaml" -- _pin_module_version volweb "$target"
     u_do "stamp volweb sidecar pins" -- _u_stamp_transitive volweb
     u_do --timeout 900 "start volweb" -- _u_volweb_compose_up "$dir"

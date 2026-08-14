@@ -55,6 +55,7 @@ upgrade_module_elk() {
     # pin -- and for Elasticsearch a regressed pin means the node refuses to
     # start at all against a data directory a newer version wrote. Observed on
     # this box 2026-08-13. plaso and aws_sigma already did this.
+    u_undo_pin elk
     u_do "pin elk in config.yaml" -- _pin_module_version elk "$target"
     u_do --timeout 900 "start elk" -- \
         _u_compose "$dir" up -d --no-build --pull never

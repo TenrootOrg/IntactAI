@@ -169,6 +169,97 @@ PYPIN
     return 1
 }
 
+# _unpin_module_version <key>
+#
+# Remove versions.<key> from config.yaml entirely, so the file says "this module
+# is not installed" rather than naming a version.
+#
+# Exists for rollback. A failed INSTALL that leaves its pin behind is worse than
+# a cosmetic lie: the pin is what U_FROM reads, so the next attempt sees an
+# installed version, plans an UPGRADE rather than an install, and every
+# install-only branch stops firing. For timesketch that means the empty-alembic
+# refusal triggers and the operator can never retry -- one failed install and
+# the module is unreachable until someone hand-edits config.yaml.
+#
+# Absent key is success: this is an undo, and undoing a write that never landed
+# is a no-op, not an error.
+_unpin_module_version() {
+    local key="$1"
+
+    if [[ -z "$key" ]]; then
+        log_warn "_unpin_module_version: refusing empty key"
+        return 1
+    fi
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        log_warn "_unpin_module_version: ${CONFIG_FILE} not found"
+        return 1
+    fi
+
+    if python3 - "$CONFIG_FILE" "$key" <<'PYUNPIN'
+import os, re, sys, tempfile
+
+path, key = sys.argv[1], sys.argv[2]
+
+with open(path, "r", encoding="utf-8") as fh:
+    lines = fh.readlines()
+
+start = None
+for i, line in enumerate(lines):
+    if re.match(r"^versions\s*:\s*$", line):
+        start = i
+        break
+if start is None:
+    sys.stderr.write("no top-level 'versions:' block in config.yaml\n")
+    raise SystemExit(1)
+
+end = len(lines)
+for i in range(start + 1, len(lines)):
+    stripped = lines[i].strip()
+    if not stripped or stripped.startswith("#"):
+        continue
+    if not lines[i][:1].isspace():
+        end = i
+        break
+
+pat = re.compile(r"^\s+" + re.escape(key) + r"\s*:")
+for i in range(start + 1, end):
+    if pat.match(lines[i]):
+        del lines[i]
+        break
+else:
+    raise SystemExit(0)          # nothing to undo
+
+payload = "".join(lines)
+
+# Same durability contract as _pin_module_version: a complete fsync'd copy
+# exists before the real file is truncated, and the truncate is in-place rather
+# than os.replace so the inode (and any bind-mount of it) survives.
+d = os.path.dirname(os.path.abspath(path)) or "."
+fd, tmp = tempfile.mkstemp(dir=d, prefix=".config.yaml.unpin-")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(payload)
+        fh.flush()
+        os.fsync(fh.fileno())
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(payload)
+        fh.flush()
+        os.fsync(fh.fileno())
+finally:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+PYUNPIN
+    then
+        log_info "  config.yaml: removed versions.${key}"
+        return 0
+    fi
+
+    log_warn "_unpin_module_version: failed to remove versions.${key} from ${CONFIG_FILE}"
+    return 1
+}
+
 print_installation_config_summary() {
     log_info "=========================================="
     log_info "Installation configuration summary"

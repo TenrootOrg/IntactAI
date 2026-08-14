@@ -17,6 +17,7 @@ upgrade_module_plaso() {
     # plaso is not in the install-function table, so it is always dispatched as
     # an UPGRADE and the generic enable-on-install writeback never fires --
     # leaving modules.plaso.enabled false forever. plaso.py:23-31.
+    u_undo_pin plaso
     u_do "enable plaso in config.yaml" -- _pin_module_version plaso "$target"
 
     # Nothing runs, so there is nothing to probe. The job runner reads the pin

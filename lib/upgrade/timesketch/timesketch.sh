@@ -130,6 +130,7 @@ upgrade_module_timesketch() {
     # config.yaml too — see the note in modules/elk.sh. `--only timesketch`
     # skips the intact merge, and update_env_files would then regress this
     # pin on the next install.sh/change_ip.sh run.
+    u_undo_pin timesketch
     u_do "pin timesketch in config.yaml" -- _pin_module_version timesketch "$target"
 
     if (( pg_migrate )); then

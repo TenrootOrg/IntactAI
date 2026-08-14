@@ -50,6 +50,7 @@ upgrade_module_iris() {
     # pin -- and for Elasticsearch a regressed pin means the node refuses to
     # start at all against a data directory a newer version wrote. Observed on
     # this box 2026-08-13. plaso and aws_sigma already did this.
+    u_undo_pin iris
     u_do "pin iris in config.yaml" -- _pin_module_version iris "$target"
     u_do "stamp iris sidecar pins" -- _u_stamp_transitive iris
     u_do "iris web certificate" -- ensure_iris_web_cert

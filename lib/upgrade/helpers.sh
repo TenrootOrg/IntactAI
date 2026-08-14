@@ -58,3 +58,29 @@ read_env_var() {
     echo "$line"
     return 0
 }
+
+# u_undo_pin <module> [cfg_key]
+#
+# Register the undo for a config.yaml version pin. Call it BEFORE the u_do that
+# pins, in the PARENT shell -- u_do runs its command in a forked subshell
+# (`( "$@" ) &` in _u_run_with_deadline), so a u_undo issued from inside the
+# pinned function appends to the child's copy of U_UNDO and dies with the fork.
+#
+# All seven modules pinned without registering any undo, so a rolled-back run
+# left versions.<m> behind. On an UPGRADE that is merely untidy -- the module is
+# still installed, just mislabelled. On a failed INSTALL it strands the box:
+# U_FROM reads the pin, the retry plans an upgrade instead of an install, the
+# install-only branches never fire, and for timesketch the empty-alembic
+# refusal makes every subsequent attempt fail identically. Observed 2026-08-14:
+# three consecutive runs only reached the install path because the pin was
+# cleared by hand between them.
+u_undo_pin() {
+    local module="$1" key="${2:-$1}" prev
+
+    prev="$(read_config "['versions']['${key}']" 2>/dev/null || echo '')"
+    if [[ -n "$prev" ]]; then
+        u_undo "_pin_module_version '${key}' '${prev}'"
+    else
+        u_undo "_unpin_module_version '${key}'"
+    fi
+}

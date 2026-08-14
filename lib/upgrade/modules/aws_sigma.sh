@@ -19,6 +19,7 @@ upgrade_module_aws_sigma() {
     # Keep the env var name: renaming it would break every consumer, and the
     # config migration deliberately does not rename it either.
     u_do "stamp CLOUDTRAIL_VERSION" -- _u_stamp "$envf" "CLOUDTRAIL_VERSION=${target}"
+    u_undo_pin aws_sigma
     u_do "enable aws_sigma in config.yaml" -- _pin_module_version aws_sigma "$target"
 
     u_end aws_sigma none

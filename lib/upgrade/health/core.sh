@@ -45,6 +45,27 @@ u_containers_of() {
     esac
 }
 
+# Containers in <module>'s compose project that are stuck in a restart loop.
+#
+# Deliberately NOT built from u_containers_of: that list is hand-maintained and
+# incomplete, which is exactly how this was missed. timesketch lists four
+# containers and omits intact_timesketch_nginx, so an install whose nginx was
+# crash-looping on a bad certificate still reported
+#
+#   health: timesketch is UP (timesketch-web HTTP 200)
+#   install completed with 0 error(s)
+#
+# with the module's own front door down. Docker's compose-project label is
+# authoritative and covers containers nobody remembered to add to the list.
+#
+# Unknown or unlabelled projects yield nothing, so a module whose containers are
+# not compose-managed simply keeps its previous verdict rather than failing.
+u_crashlooping_of() {
+    local module="$1" d="${DOCKER_BIN:-docker}"
+    $d ps -a --filter "label=com.docker.compose.project=${module}" \
+           --filter "status=restarting" --format '{{.Names}}' 2>/dev/null | tr '\n' ' '
+}
+
 # The container whose absence means "this module is not installed".
 u_primary_container_of() {
     case "$1" in
