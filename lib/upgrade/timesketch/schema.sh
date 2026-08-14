@@ -194,6 +194,44 @@ _ts_db_upgrade() {
     fi
 
     if ! $d exec intact_timesketch_web tsctl db upgrade -d /migrations >>"${LOG_FILE:-/dev/null}" 2>&1; then
+        # THE PROBE ABOVE RACES timesketch-web's create_all.
+        #
+        # Deciding bare-vs-built BEFORE the migration cannot be made reliable:
+        # timesketch-web builds the schema at startup, concurrently with this
+        # code, so the answer changes underneath us. Measured on one run:
+        #
+        #   12:07:27  "the database is bare" -> chose migrate-from-base
+        #   12:07:36  DuplicateColumn: column "group_id" ... already exists
+        #
+        # Nine seconds apart, opposite truths, one correct remedy. So do not
+        # rely on the pre-check alone -- decide from the failure, when the
+        # database has stopped moving.
+        #
+        # An empty alembic_version here means NOTHING was applied: alembic
+        # records each revision as it goes, so a partial migration would have
+        # left one. Empty + a populated schema is create_all's work and nothing
+        # else, which is exactly the case that should have been stamped.
+        #
+        # A NON-empty alembic_version is a genuine partial migration and must
+        # still fail -- stamping there would bury a half-migrated schema.
+        if [[ "${U_FROM:-}" == "not installed" ]] \
+           && [[ -z "$(_ts_alembic_revision)" ]] \
+           && _ts_schema_is_populated; then
+            log_info "  tsctl db upgrade failed, but alembic_version is empty and the schema"
+            log_info "  is present — timesketch-web built it while the probe was running."
+            log_info "  Stamping head rather than replaying DDL over an existing schema."
+            if ! $d exec intact_timesketch_web tsctl db stamp -d /migrations head >>"${LOG_FILE:-/dev/null}" 2>&1; then
+                log_error "  tsctl db stamp failed"
+                return 1
+            fi
+            after="$(_ts_alembic_revision)"
+            if [[ -z "$after" ]]; then
+                log_error "  stamp reported success but alembic_version is still empty"
+                return 1
+            fi
+            log_success "  schema stamped at ${after}"
+            return 0
+        fi
         log_error "  tsctl db upgrade failed"
         return 1
     fi

@@ -279,5 +279,35 @@ else
 fi
 
 echo
+echo "== the bare-vs-built decision must survive the create_all race =="
+# timesketch-web builds the schema at startup, concurrently with the probe, so a
+# pre-check alone cannot be right. One run: 12:07:27 "the database is bare",
+# 12:07:36 DuplicateColumn on group_id. Decide from the FAILURE too, when the
+# database has stopped moving.
+S="${ROOT}/lib/upgrade/timesketch/schema.sh"
+BLK="$(sed -n '/tsctl db upgrade -d \/migrations/,/^    fi$/p' "$S")"
+if printf '%s' "$BLK" | grep -q 'tsctl db stamp -d /migrations head'; then
+    ok "a failed upgrade can still recover by stamping"
+else
+    fail "a failed upgrade can still recover by stamping" \
+         "the pre-check alone loses the race and the install dies on DuplicateColumn"
+fi
+# Recovery is gated on all three: fresh install, nothing applied, schema present.
+for g in 'U_FROM:-.*== "not installed"' '\-z "\$(_ts_alembic_revision)"' '_ts_schema_is_populated'; do
+    if printf '%s' "$BLK" | grep -q "$g"; then
+        ok "recovery is gated on: $g"
+    else
+        fail "recovery is gated on: $g"
+    fi
+done
+# A partial migration must NOT be stamped over.
+if printf '%s' "$BLK" | grep -q 'log_error "  tsctl db upgrade failed"'; then
+    ok "a non-empty alembic_version still fails the run"
+else
+    fail "a non-empty alembic_version still fails the run" \
+         "stamping a half-migrated schema buries the mismatch"
+fi
+
+echo
 echo "${PASS}/${TOTAL} passed"
 [[ "$PASS" == "$TOTAL" ]] || exit 1
