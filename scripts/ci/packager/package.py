@@ -100,7 +100,7 @@ TRANSITIVE_ENV_KEYS = {
 }
 
 
-def _reject_fabricated_mount_dirs(source_root):
+def _reject_fabricated_mount_dirs(source_root, logger=None):
     """Refuse to package a directory sitting where a bind-mounted FILE belongs.
 
     Docker's rule for a bind-mount source that does not exist is to fabricate
@@ -117,6 +117,17 @@ def _reject_fabricated_mount_dirs(source_root):
     Only EMPTY directories are rejected: plenty of mounts are legitimately
     directories (elk's config/pipeline), and a non-empty one is real content.
     """
+    # This module has no module-level `log`: every function rebinds it from its
+    # `logger` argument. This one did not, so its eight log() calls raised
+    #
+    #     Package preparation failed: name 'log' is not defined
+    #
+    # the moment it found an offender -- i.e. the guard crashed exactly when it
+    # was working, swallowing the REFUSING TO BUILD diagnostic below (which
+    # names the offending paths and the one-line fix) and handing the operator a
+    # NameError instead. Silent until 2026-08-14, because it only logs on a hit.
+    log = logger or (lambda msg, level="info": print(f"[{level}] {msg}"))
+
     import re as _re
     mount_re = _re.compile(r'^\s*-\s*(\./[^:]+):')
     envfile_hdr = _re.compile(r'^\s*env_file:')
@@ -1468,7 +1479,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                 # cost a customer upgrade, a support bundle and three retries to find.
                 # Refuse to build rather than ship it -- an empty directory here is never
                 # legitimate, and the fix is one rmdir on the build box.
-                _reject_fabricated_mount_dirs(extracted_root)
+                _reject_fabricated_mount_dirs(extracted_root, log)
                 
                 log("  Copying full repo into package source/intact/ ...", "info")
                 shutil.copytree(
