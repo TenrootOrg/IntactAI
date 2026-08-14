@@ -413,7 +413,12 @@ main() {
             # stage-0 hop below has nothing to exec into -- the box would then
             # apply the release using its own older engine and say nothing.
             if [[ -n "${UPGRADE_ONLY:-}" ]]; then
-                INTACT_RELEASE_ONLY_MODULES="${UPGRADE_ONLY//,/ } intact"
+                # De-duplicated: --only intact already names it, and appending
+                # unconditionally logged "Fetching only: intact elk portainer
+                # intact". Harmless downstream (the filter is a set) but it reads
+                # like a bug in a support log, which costs someone a diagnosis.
+                INTACT_RELEASE_ONLY_MODULES="$(printf '%s\n' ${UPGRADE_ONLY//,/ } intact | awk '!seen[$0]++' | tr '\n' ' ')"
+                INTACT_RELEASE_ONLY_MODULES="${INTACT_RELEASE_ONLY_MODULES% }"
                 export INTACT_RELEASE_ONLY_MODULES
                 log_info "Fetching only: ${INTACT_RELEASE_ONLY_MODULES}"
             fi
