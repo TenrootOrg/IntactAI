@@ -204,5 +204,36 @@ else
 fi
 
 echo
+echo "== an UNDONE INSTALL must not leave the stack running =="
+# _ts_bring_back_up brought the stack up unconditionally. Right for a failed
+# UPGRADE (the box had timesketch before and must still have it after); wrong
+# for a failed INSTALL, where `up -d` starts a stack the operator never had --
+# while the report says "install undone, timesketch is still not installed".
+# Observed 2026-08-14: 8 containers running, 4 volumes, TIMESKETCH_VERSION
+# stamped in .env AND config.yaml, over a database whose migration had just
+# failed. The shared unwind (_u_compose_up_old) has branched on
+# PLAN_ACTION == install for a while; this module's own undo had not.
+P="${ROOT}/lib/upgrade/timesketch/postgres.sh"
+if grep -q 'PLAN_ACTION\[timesketch\]:-.*== install' "$P"; then
+    ok "the timesketch undo branches on install"
+else
+    fail "the timesketch undo branches on install" \
+         "a failed install would leave a live stack the report calls uninstalled"
+fi
+# It must STOP after the down on that branch -- not fall through to `up -d`.
+if sed -n '/PLAN_ACTION\[timesketch\]:-.*== install/,/^    fi/p' "$P" | grep -q 'return 0'; then
+    ok "and stops after the teardown instead of bringing it up"
+else
+    fail "and stops after the teardown instead of bringing it up"
+fi
+# The upgrade path must still restore the stack.
+if grep -q 'up -d --no-build --pull never' "$P"; then
+    ok "a failed UPGRADE still brings the old stack back"
+else
+    fail "a failed UPGRADE still brings the old stack back" \
+         "that is the whole point of the undo on an upgrade"
+fi
+
+echo
 echo "${PASS}/${TOTAL} passed"
 [[ "$PASS" == "$TOTAL" ]] || exit 1

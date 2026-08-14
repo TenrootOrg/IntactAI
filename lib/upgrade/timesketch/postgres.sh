@@ -144,6 +144,34 @@ _ts_restore_db() {
 
 _ts_bring_back_up() {
     local dir; dir="$(_TS_DIR)"
+
+    # AN UNDONE INSTALL MUST NOT LEAVE THE STACK RUNNING.
+    #
+    # This brought the stack back up unconditionally, which is right when an
+    # UPGRADE fails -- the box had timesketch before and must still have it
+    # after. On a failed INSTALL there is nothing to bring back: the module was
+    # not there when the run started, so `up -d` here starts a stack the
+    # operator never had, while the report says the opposite:
+    #
+    #   ↩ timesketch — apply database migrations (rc=1); install undone,
+    #     timesketch is still not installed
+    #
+    # Observed 2026-08-14: eight timesketch containers running, four volumes
+    # created, TIMESKETCH_VERSION stamped in .env and config.yaml -- behind a
+    # database whose schema migration had just failed, so the service was live
+    # over an empty schema and the NEXT upgrade would treat it as installed.
+    #
+    # The shared unwind already gets this right (_u_compose_up_old branches on
+    # PLAN_ACTION == install and stops after `down`); this module's own undo
+    # simply never learned it. Same rule, same lack of -v: an install that
+    # created the volumes leaves them empty, and refusing to delete volumes in
+    # an unwind is a deliberate choice made once, elsewhere.
+    if [[ "${PLAN_ACTION[timesketch]:-}" == install ]]; then
+        log_info "  timesketch was not installed before this run — removing what the failed install created"
+        _u_compose "$dir" down --remove-orphans
+        return 0
+    fi
+
     _u_compose "$dir" down --remove-orphans
     _u_compose "$dir" up -d --no-build --pull never
 }
