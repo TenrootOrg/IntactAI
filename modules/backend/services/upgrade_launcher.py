@@ -534,6 +534,15 @@ def _run_paths(run_id: str):
     return log_path, done_path, host_log_path, host_done_path
 
 
+def _cancel_path(run_id: str) -> str:
+    """Where Stop writes, and where the engine polls.
+
+    Derived from the log path rather than passed as another argument, because
+    the engine derives it the same way (${LOG_FILE%.log}.cancel) and a single
+    convention cannot drift out of step the way two plumbed values can."""
+    return f"{WORKDIR}/data/tmp/upgrade-{run_id}.cancel"
+
+
 def _current_backend_image() -> Optional[str]:
     """The image intact_backend is ACTUALLY running right now, not a
     reconstruction from BACKEND_VERSION/.env -- avoids ever spawning the
@@ -712,17 +721,37 @@ def launch(run_id: str, cli_args: List[str]) -> Optional[str]:
         "done_path": done_path,
         "tail_offset": 0,
     }))
-    register_cleanup(run_id, lambda: _stop_helper(container_name))
+    register_cleanup(run_id, lambda: _stop_helper(container_name, _cancel_path(run_id)))
     _start_tailer(run_id)
     return None
 
 
-def _stop_helper(container_name: str) -> None:
+def _stop_helper(container_name: str, cancel_path: str = "") -> None:
     """Cleanup callback for the Stop button (request_stop -> registered
-    callbacks). SIGTERM first so upgrade.sh's own interrupt trap
-    (lib/upgrade/interrupt.sh) gets to unwind whatever module is mid-flight
-    instead of the container just vanishing under it."""
+    callbacks).
+
+    THE MARKER, NOT THE SIGNAL, IS WHAT STOPS THE RUN. This used to rely on
+    SIGTERM reaching upgrade.sh's interrupt trap, and that trap is not in force
+    when it matters: during module work bash holds SIGTERM at its default
+    disposition (measured on a live engine at the instant of the kill,
+    SigCgt=0000000043813efa -- bit 14 clear), so `docker stop` killed the engine
+    outright. No unwind, no report, rollbacks abandoned mid-module, and ~1.4 GB
+    of scratch left behind per attempt.
+
+    So write the marker the engine polls for (lib/upgrade/core.sh checks it once
+    a second inside its deadline loop) BEFORE stopping the container, and give
+    it time to unwind. The stop below is still the backstop for a helper that is
+    wedged somewhere the poll cannot reach.
+    """
+    if cancel_path:
+        try:
+            os.makedirs(os.path.dirname(cancel_path), exist_ok=True)
+            with open(cancel_path, "w", encoding="utf-8") as f:
+                f.write("stop requested\n")
+        except Exception:
+            pass
     try:
+        # -t 30 gives the poll (1s) and the unwind room to finish first.
         subprocess.run([_DOCKER_BIN, "stop", "-t", "30", container_name],
                         capture_output=True, timeout=40)
     except Exception:
@@ -944,7 +973,7 @@ def reconcile_on_boot() -> None:
                 # log goes silent at exactly that moment, which reads as
                 # confirmation that it stopped.
                 register_cancel_event(run_id)
-                register_cleanup(run_id, lambda cn=container_name: _stop_helper(cn))
+                register_cleanup(run_id, lambda cn=container_name, cp=_cancel_path(run_id): _stop_helper(cn, cp))
                 _start_tailer(run_id)
             else:
                 # Helper is gone (killed, host reboot, `docker rm` by hand)

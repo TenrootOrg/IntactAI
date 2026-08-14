@@ -95,6 +95,12 @@ u_install_interrupt_trap() {
 _u_exit_cleanup() {
     local rc=$?
     trap - EXIT
+
+    # Consume the cancel marker. It is keyed to this run's log name, so a stale
+    # one cannot reach a fresh run -- but reconciliation resumes a run under its
+    # ORIGINAL run_id, and that run would then cancel itself the moment it
+    # started, for a Stop the operator pressed on a previous attempt.
+    [[ -n "${LOG_FILE:-}" ]] && rm -f "${LOG_FILE%.log}.cancel" 2>/dev/null
     if declare -F u_keep_scratch_requested >/dev/null 2>&1 && u_keep_scratch_requested; then
         log_warn "  an image failed to load — keeping the extracted package for a retry:"
         log_warn "    ${UPKG_DIR:-?}"

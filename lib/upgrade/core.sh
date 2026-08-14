@@ -118,6 +118,19 @@ u_do() {
         return 1
     fi
 
+    # Cancel is checked HERE as well as inside the deadline loop, because only
+    # 36 of the 91 steps pass --timeout; the rest run synchronously with no loop
+    # to poll from. Checking at the step boundary means a Stop lands within one
+    # step instead of only during a timed one, and it lands BEFORE the step runs
+    # rather than halfway through it -- so there is less to unwind, not more.
+    if [[ -n "${LOG_FILE:-}" && -f "${LOG_FILE%.log}.cancel" ]]; then
+        log_warn "  cancel requested — not starting '${label}'"
+        U_FAILED=1
+        U_LABEL="cancelled before ${label}"
+        U_RC=130
+        return 1
+    fi
+
     # Byte offset into the log BEFORE the step runs, so failure detail is
     # exactly what this step emitted rather than a blind `tail`. Same trick
     # run_compose_up_with_retry uses to classify compose failures
@@ -154,7 +167,11 @@ u_do() {
                     | grep -v '^[[:space:]]*$' | tail -5)"
     fi
 
-    if (( rc == 124 )); then
+    if (( rc == 130 )); then
+        # Not a failure of the step: the operator asked to stop. Named as such
+        # so the report does not read like the module broke.
+        log_error "${U_MODULE}: CANCELLED during '${label}' — unwinding"
+    elif (( rc == 124 )); then
         log_error "${U_MODULE}: step '${label}' TIMED OUT after ${timeout}s"
     else
         log_error "${U_MODULE}: step '${label}' failed (rc=${rc})"
@@ -266,8 +283,39 @@ _u_run_with_deadline() {
     (( _had_job_control )) || set +m
     _U_RUNNING_PID="$pid"
 
+    # A CANCEL CANNOT RIDE ON SIGTERM. During module work bash holds SIGTERM at
+    # its DEFAULT disposition -- measured directly on a running engine at the
+    # instant of the kill:
+    #
+    #   SigCgt=0000000043813efa   ->  bit 14 clear, SIGTERM NOT caught
+    #
+    # so `docker stop` / Ctrl-C killed the engine outright: no trap, no unwind,
+    # no report, registered rollbacks abandoned mid-module (one cancel left
+    # timesketch fully down) and ~1.4 GB of scratch leaked per attempt, which is
+    # the exact leak interrupt.sh exists to prevent. The trap IS installed --
+    # verified post-hop as SigCgt=0000000000014002 with
+    # `trap -- '_u_handle_interrupt' SIGTERM` -- it simply is not in force while
+    # the shell waits on the foreground step, which is essentially all the time.
+    #
+    # So cancellation is polled, not signalled. This loop already wakes every
+    # second; a marker file next to the run's log is checked there, which makes
+    # a Stop deterministic regardless of what the shell is doing when it lands.
+    # The trap stays as the fast path for the cases where it does fire.
+    local cancel_file=""
+    [[ -n "${LOG_FILE:-}" ]] && cancel_file="${LOG_FILE%.log}.cancel"
+
     while kill -0 "$pid" 2>/dev/null; do
         local now=$(( SECONDS - start ))
+        if [[ -n "$cancel_file" && -f "$cancel_file" ]]; then
+            log_warn "  cancel requested — stopping '${label}'"
+            kill -TERM "-${pid}" 2>/dev/null
+            sleep 2
+            kill -KILL "-${pid}" 2>/dev/null
+            wait "$pid" 2>/dev/null
+            _U_RUNNING_PID=""
+            U_LAST_ELAPSED="$now"
+            return 130
+        fi
         if (( now >= secs )); then
             log_error "  ${label} exceeded ${secs}s — killing it"
             kill -TERM "-${pid}" 2>/dev/null

@@ -537,5 +537,57 @@ else
 fi
 
 echo
+echo "== a cancel must not depend on SIGTERM being trapped =="
+# Measured on a live engine at the instant of the kill:
+#   SigCgt=0000000043813efa  -> bit 14 clear, SIGTERM NOT caught
+# The trap IS installed (post-hop: SigCgt=0000000000014002, trap -p shows it),
+# it is just not in force while the shell waits on the foreground step -- which
+# is essentially all the time. So `docker stop` killed the engine outright: no
+# unwind, no report, rollbacks abandoned, ~1.4GB scratch leaked per attempt.
+C="${ROOT}/lib/upgrade/core.sh"
+if grep -q 'cancel_file="${LOG_FILE%.log}.cancel"' "$C"; then
+    ok "the deadline loop polls a cancel marker"
+else
+    fail "the deadline loop polls a cancel marker" "signal delivery cannot be relied on here"
+fi
+# Only 36 of 91 steps pass --timeout; the rest never enter that loop.
+if sed -n '/^u_do()/,/^}/p' "$C" | grep -q 'cancel requested — not starting'; then
+    ok "and u_do checks it at every step boundary, timed or not"
+else
+    fail "and u_do checks it at every step boundary, timed or not" \
+         "most steps run synchronously and would never see the marker"
+fi
+# It must unwind, not just exit: rc 130 flows into the normal failure path.
+if grep -q 'CANCELLED during' "$C"; then
+    ok "a cancel is reported as a cancel, not a step failure"
+else
+    fail "a cancel is reported as a cancel, not a step failure"
+fi
+# The marker must be consumed, or a resumed run cancels itself instantly.
+if grep -q 'rm -f "${LOG_FILE%.log}.cancel"' "${ROOT}/lib/upgrade/interrupt.sh"; then
+    ok "the marker is consumed on exit"
+else
+    fail "the marker is consumed on exit" \
+         "reconciliation resumes under the original run_id and would self-cancel"
+fi
+# The backend must write the marker BEFORE stopping the container.
+U="${ROOT}/modules/backend/services/upgrade_launcher.py"
+if python3 - "$U" <<'PYC'
+import sys, re
+s = open(sys.argv[1], encoding="utf-8").read()
+body = s[s.index("def _stop_helper"):]
+body = body[:body.index("\ndef ", 1)]
+w = body.find("open(cancel_path")
+d = body.find('"stop"')
+sys.exit(0 if (w != -1 and d != -1 and w < d) else 1)
+PYC
+then
+    ok "Stop writes the marker before docker stop"
+else
+    fail "Stop writes the marker before docker stop" \
+         "stopping first races the engine to death before it can unwind"
+fi
+
+echo
 echo "${PASS}/${TOTAL} passed"
 [[ "$PASS" == "$TOTAL" ]] || exit 1
