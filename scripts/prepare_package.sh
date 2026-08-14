@@ -690,12 +690,44 @@ if [ -n "$BUNDLE_PLAN" ]; then
         esac
     done <<< "$BUNDLE_PLAN"
     if [ -n "$BUNDLE_SHA_URL" ] && [ -f "$BUNDLE_NAME" ]; then
-        hdrs=(-H "X-GitHub-Api-Version: 2022-11-28")
+        # Accept: application/octet-stream is NOT optional on an API asset URL.
+        # $BUNDLE_SHA_URL is https://api.github.com/repos/O/R/releases/assets/<id>
+        # (the plan builder above stores a["url"], not browser_download_url), and
+        # GitHub serves that endpoint content-negotiated: with this header you get
+        # the asset's BYTES, without it you get the asset's JSON METADATA and a
+        # 200 either way -- so `curl -f` is happy and the file on disk is a
+        # pretty-printed object.
+        #
+        # It was missing here, and only here: the five sibling fetches (the
+        # legacy path, index.json, manifest.json, the module fan-out, and the
+        # bundle .tar in the loop immediately above) all send it. `awk '{print $1}'`
+        # then returned the first field of EVERY line of that JSON, so `want`
+        # became the multi-line string `{ / "url": / "id": / ...` and every real
+        # release with a published sidecar failed to package:
+        #
+        #   dependency bundle FAILED its checksum (want {
+        #   "url":
+        #   "id":
+        #   "..., got 1cee8a822b4cea98...) -- refusing to package
+        #
+        # Reported from a real intact-20260813 prepare run, 2026-08-13, after all
+        # nine module assets had downloaded and verified cleanly.
+        hdrs=(-H "X-GitHub-Api-Version: 2022-11-28" -H "Accept: application/octet-stream")
         [ -n "${GITHUB_TOKEN:-}" ] && hdrs+=(-H "Authorization: Bearer $GITHUB_TOKEN")
         curl -fsSL "${hdrs[@]}" -o "$BUNDLE_NAME.sha256" "$BUNDLE_SHA_URL"
-        want="$(awk '{print $1}' "$BUNDLE_NAME.sha256")"
+        want="$(awk 'NR==1{print $1}' "$BUNDLE_NAME.sha256")"
         got="$(sha256sum "$BUNDLE_NAME" | awk '{print $1}')"
         rm -f "$BUNDLE_NAME.sha256"
+        # Say WHICH failure this is. A sidecar that is not a hex digest at all is
+        # a broken fetch, not a corrupt download, and the two want opposite
+        # responses from whoever reads the log -- conflating them is what made
+        # the bug above read as "the bundle is corrupt" for a whole release.
+        if ! printf '%s' "$want" | grep -qE '^[0-9a-f]{64}$'; then
+            err "dependency bundle sidecar is not a sha256 (got '${want:0:40}') -- the"
+            err "  .sha256 fetch returned something other than the file's bytes;"
+            err "  refusing to package rather than guess."
+            exit 1
+        fi
         if [ "$want" != "$got" ]; then
             err "dependency bundle FAILED its checksum (want ${want:0:16}..., got ${got:0:16}...) -- refusing to package"
             exit 1

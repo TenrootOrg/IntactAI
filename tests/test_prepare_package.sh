@@ -15,6 +15,7 @@
 set -u
 cd "$(dirname "${BASH_SOURCE[0]}")"
 source ./helpers.sh
+ROOT="$(cd .. && pwd)"
 
 WORK="$(mktemp -d)"
 FIX="${WORK}/fixtures"
@@ -73,16 +74,51 @@ JSON
 # ---------------------------------------------------------------------------
 # Fake curl: every call in prepare_package.sh puts the URL as the last
 # argument and an output path (if any) after "-o". Route by URL substring.
+#
+# IT ALSO HONOURS `Accept:`, and that is the whole point of it now.
+#
+# GitHub serves /releases/assets/<id> content-negotiated: with
+# `Accept: application/octet-stream` you get the asset's BYTES, without it you
+# get the asset's JSON METADATA -- and 200 either way, so `curl -f` succeeds
+# and the file on disk is a pretty-printed object. prepare_package.sh lost that
+# header on exactly one fetch (the system-bundle .sha256 sidecar) and every real
+# release with a published sidecar refused to package, reporting it as a
+# corrupt bundle:
+#
+#   dependency bundle FAILED its checksum (want {
+#   "url":
+#   "id":
+#   "..., got 1cee8a822b4cea98...)
+#
+# This stub used to ignore headers entirely, so it handed back sidecar CONTENT
+# regardless -- which is why test_bad_bundle_checksum_aborts_the_run passed
+# against the broken code for as long as the bug existed. A stub that cannot
+# express the failure cannot test for it.
 # ---------------------------------------------------------------------------
 cat > "${BIN}/curl" <<CURL
 #!/bin/bash
 url="\${@: -1}"
 out=""
 prev=""
+want_bytes=0
 for a in "\$@"; do
     [[ "\$prev" == "-o" ]] && out="\$a"
+    [[ "\$a" == "Accept: application/octet-stream" ]] && want_bytes=1
     prev="\$a"
 done
+# An API asset URL without the octet-stream Accept returns METADATA, not bytes.
+# The tags endpoint is genuinely JSON and is not content-negotiated.
+if [[ "\$want_bytes" == "0" && "\$url" == */fake/asset/* ]]; then
+    meta='{
+  "url": "https://api.github.com/repos/O/R/releases/assets/123",
+  "id": 123456789,
+  "node_id": "RA_kwDO",
+  "name": "asset",
+  "content_type": "application/octet-stream"
+}'
+    if [[ -n "\$out" ]]; then printf '%s\\n' "\$meta" > "\$out"; else printf '%s\\n' "\$meta"; fi
+    exit 0
+fi
 case "\$url" in
     */releases/tags/*) cat "${FIX}/release.json" ;;
     */fake/asset/index) cp "${FIX}/index.json" "\$out" ;;
@@ -178,6 +214,27 @@ test_a_release_without_the_merged_manifest_is_refused() {
     assert_contains "$(cat "${WORK}/stderr3.log")" "manifest.json" \
         "the failure must name the missing manifest"
     assert_true test ! -f "${out_dir}/intact-upgrade-${TAG}.tar"
+}
+
+test_the_sidecar_fetch_asks_for_bytes_not_metadata() {
+    # The failure this guards is silent and total: GitHub answers 200 either
+    # way, so curl -f succeeds and the "checksum" on disk is a JSON object.
+    # Assert the header directly, so a regression says WHY rather than surfacing
+    # three lines later as "the wrapper has no system bundle".
+    local f="${ROOT}/scripts/prepare_package.sh"
+    local n bad=0
+    # Every hdrs=( assignment in the file must carry the octet-stream Accept.
+    while IFS=: read -r n line; do
+        [[ "$line" == *"Accept: application/octet-stream"* ]] || { bad=1; echo "    line ${n} lacks Accept: ${line}" >&2; }
+    done < <(grep -n 'hdrs=(' "$f")
+    assert_eq "$bad" "0" "every API-asset curl must send Accept: application/octet-stream"
+}
+
+test_a_sidecar_that_is_not_a_digest_is_named_as_such() {
+    # A sidecar that parses to something which is not 64 hex chars is a BROKEN
+    # FETCH, not a corrupt download. Conflating the two is what made this read
+    # as "the bundle is corrupt" for an entire release.
+    assert_true grep -q "is not a sha256" "${ROOT}/scripts/prepare_package.sh"
 }
 
 run_all_tests
