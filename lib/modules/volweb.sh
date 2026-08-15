@@ -212,6 +212,220 @@ EOF
 }
 
 
+# ---------------------------------------------------------------------------
+# _seed_yara_from_bundle <seed-dir>
+#
+# Imports the bundled YARA rule zips (<seed-dir>/yara_rulesets/*.zip, named by
+# <seed-dir>/manifest.json's contents.yara_rulesets[] -- name/filename/
+# description/source_url per entry, written by scripts/ci/packager/package.py)
+# into VolWeb's own yararulesets table, entirely inside intact_volweb_backend
+# via its own Django ORM. Mirrors what routes/maintenance_routes.py's GitHub
+# importer does internally, minus the clone step.
+#
+# Ported from services/upgrade/volweb.py:_seed_yara_from_bundle, deleted by
+# f4ab33a ("upgrade: delete the in-container engine"). That commit relocated
+# five symbols with "live callers outside the upgrade engine" before deleting
+# the package -- this bash function was the sixth, so seed_yara_rulesets()
+# below has been calling a module that no longer exists in the backend image
+# since 2026-08-09, unconditionally falling through to the online path (and,
+# on an air-gapped box, to an empty YARA corpus) on every single install.
+# Confirmed live on an intact-20260813 install, 2026-08-15.
+#
+# Idempotent: YaraRuleSet is get_or_create'd by name, YaraRule by etag (a hash
+# of name+content+source_url), so a re-run just updates metadata.
+# ---------------------------------------------------------------------------
+_seed_yara_from_bundle() {
+    local seed_dir="$1" manifest="${1}/manifest.json"
+
+    # Same race the deleted code's docstring documents (confirmed live
+    # 2026-08-06): Django apps migrate independently, so intact_volweb_backend
+    # answering HTTP health checks (deploy_volweb's own wait, well before this
+    # runs) does not mean the yararulesets app has finished migrating.
+    local _yr_wait=0
+    while [[ $_yr_wait -lt 60 ]]; do
+        if docker exec --user app -w /home/app/web -i intact_volweb_backend \
+                python3 manage.py shell <<'EOF' >/dev/null 2>&1
+from yararulesets.models import YaraRuleSet
+YaraRuleSet.objects.exists()
+EOF
+        then
+            break
+        fi
+        sleep 5
+        ((_yr_wait += 5))
+    done
+    if (( _yr_wait >= 60 )); then
+        log_warn "    YARA seed: intact_volweb_backend not ready for ORM queries after 60s"
+        return 1
+    fi
+
+    local specs_list; specs_list="$(mktemp)"
+    python3 -c "
+import json, sys
+m = json.load(open(sys.argv[1]))
+for e in ((m.get('contents') or {}).get('yara_rulesets')) or []:
+    fn, name = e.get('filename'), e.get('name')
+    if fn and name:
+        print('\t'.join([name, fn, e.get('description', ''), e.get('source_url', 'bundled')]))
+" "$manifest" > "$specs_list" 2>/dev/null
+    if [[ ! -s "$specs_list" ]]; then
+        log_warn "    YARA seed: no rulesets described in the bundled manifest"
+        rm -f "$specs_list"; return 1
+    fi
+
+    # Copy each zip into the container and build the in-container spec list --
+    # docker cp, not a bind mount, so this works whether or not
+    # intact_volweb_backend shares a filesystem with the host.
+    local jsonl; jsonl="$(mktemp)"
+    local name fname desc url src dst
+    while IFS=$'\t' read -r name fname desc url; do
+        src="${seed_dir}/yara_rulesets/${fname}"
+        if [[ ! -f "$src" ]]; then
+            log_warn "    ✗ ${name}: bundled zip missing on disk (${src})"
+            continue
+        fi
+        dst="/tmp/intact-yara-${fname}"
+        if ! docker cp "$src" "intact_volweb_backend:${dst}" >/dev/null 2>&1; then
+            log_warn "    ✗ ${name}: docker cp into intact_volweb_backend failed"
+            continue
+        fi
+        python3 -c "
+import json, sys
+print(json.dumps({'name': sys.argv[1], 'zip_path': sys.argv[2],
+                   'description': sys.argv[3], 'source_url': sys.argv[4]}))
+" "$name" "$dst" "$desc" "$url" >> "$jsonl"
+    done < "$specs_list"
+    rm -f "$specs_list"
+
+    if [[ ! -s "$jsonl" ]]; then
+        log_warn "    YARA seed: no zips successfully copied"
+        rm -f "$jsonl"; return 1
+    fi
+    local specs_json
+    specs_json="$(python3 -c "
+import json, sys
+print(json.dumps([json.loads(l) for l in open(sys.argv[1])]))
+" "$jsonl")"
+    rm -f "$jsonl"
+
+    # The ingest script runs INSIDE intact_volweb_backend via manage.py shell
+    # (same mechanism seed_volweb_admin() already uses), reading the spec list
+    # from an env var rather than inlining JSON into the script -- sidesteps
+    # the shell-quoting nightmare of embedding untrusted names/URLs in source.
+    local result rc
+    result="$(INTACT_YARA_SPECS="$specs_json" docker exec --user app -w /home/app/web \
+            -i -e INTACT_YARA_SPECS intact_volweb_backend python3 manage.py shell <<'PYEOF' 2>&1
+import os, re, zipfile, hashlib, tempfile, shutil, json
+from yararulesets.models import YaraRuleSet
+from yararules.models import YaraRule
+try:
+    from yararules.utils import BatchUploadManager
+except Exception:
+    BatchUploadManager = None
+
+specs = json.loads(os.environ['INTACT_YARA_SPECS'])
+out = {'total': 0, 'rulesets': []}
+for spec in specs:
+    name = spec['name']
+    zip_path = spec['zip_path']
+    description = spec.get('description', '')
+    source_url = spec.get('source_url', 'bundled')
+    if not os.path.exists(zip_path):
+        out['rulesets'].append({'name': name, 'error': 'zip missing on container'})
+        continue
+    ruleset, _ = YaraRuleSet.objects.get_or_create(name=name, defaults={'description': description})
+    created = 0
+    skipped = 0
+    yara_files = []
+    extract_dir = tempfile.mkdtemp(prefix='intact-yara-')
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(extract_dir)
+        for root, _dirs, files in os.walk(extract_dir):
+            for fn in files:
+                if fn.lower().endswith(('.yar', '.yara')):
+                    yara_files.append(os.path.join(root, fn))
+        ctx = BatchUploadManager(ruleset_id=ruleset.id).batch_context() if BatchUploadManager else None
+        if ctx is not None:
+            ctx.__enter__()
+        try:
+            for path in yara_files:
+                try:
+                    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                    rule_name = os.path.splitext(os.path.basename(path))[0]
+                    mo = re.search(r'rule\s+(\w+)', content)
+                    if mo:
+                        rule_name = mo.group(1)
+                    etag = hashlib.md5(f"{rule_name}_{content}_{source_url}".encode()).hexdigest()
+                    obj, was_created = YaraRule.objects.get_or_create(
+                        etag=etag,
+                        defaults={
+                            'name': rule_name,
+                            'rule_content': content,
+                            'description': description or f"Imported from bundled package: {os.path.basename(path)}",
+                            'linked_yararuleset': ruleset,
+                            'source': 'bundled',
+                            'url': source_url,
+                            'is_active': True,
+                        },
+                    )
+                    if was_created:
+                        created += 1
+                    else:
+                        skipped += 1
+                except Exception:
+                    continue
+        finally:
+            if ctx is not None:
+                ctx.__exit__(None, None, None)
+    finally:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+    out['total'] += created
+    out['rulesets'].append({
+        'name': name,
+        'files_found': len(yara_files),
+        'created': created,
+        'skipped_duplicates': skipped,
+    })
+print('INTACT_YARA_RESULT=' + json.dumps(out))
+PYEOF
+)"
+    rc=$?
+
+    # Best-effort cleanup of the copied zips regardless of outcome.
+    printf '%s' "$specs_json" | python3 -c "
+import json, sys
+for e in json.load(sys.stdin):
+    print(e['zip_path'])
+" 2>/dev/null | while read -r p; do
+        docker exec intact_volweb_backend rm -f "$p" >/dev/null 2>&1
+    done
+
+    if (( rc != 0 )); then
+        log_warn "    YARA seed: ingest failed: $(printf '%s' "$result" | tail -c 500)"
+        return 1
+    fi
+    local result_line
+    result_line="$(printf '%s\n' "$result" | grep '^INTACT_YARA_RESULT=' | tail -1)"
+    if [[ -z "$result_line" ]]; then
+        log_warn "    YARA seed: ingest ran but produced no result line ($(printf '%s' "$result" | tail -c 300))"
+        return 1
+    fi
+    printf '%s' "${result_line#INTACT_YARA_RESULT=}" | python3 -c "
+import json, sys
+r = json.load(sys.stdin)
+print(f\"  imported {r.get('total', 0)} new rule(s) across {len(r.get('rulesets', []))} ruleset(s)\")
+for rs in r.get('rulesets', []):
+    if 'error' in rs:
+        print(f\"    x {rs['name']}: {rs['error']}\")
+    else:
+        print(f\"    - {rs['name']}: {rs.get('files_found', 0)} files -> \"
+              f\"{rs.get('created', 0)} new, {rs.get('skipped_duplicates', 0)} already present\")
+" | while IFS= read -r _line; do log_info "$_line"; done
+    return 0
+}
+
 seed_yara_rulesets() {
     # BUNDLED FIRST. The release ships these rule zips inside the volweb asset
     # (package.py bundles them precisely "so apply can seed VolWeb's
@@ -223,15 +437,14 @@ seed_yara_rulesets() {
     # INSIDE the volweb container, so INTACT_AIRGAP could never have stopped
     # it from out here; it just failed slowly against an unreachable host.
     #
-    # Delegates to services/upgrade/volweb.py:_seed_yara_from_bundle, the same
-    # importer the upgrade path uses, rather than reimplementing ORM ingest in
-    # bash. It reads <dir>/manifest.json + <dir>/yara_rulesets/*.zip, which is
-    # the shape install.sh staged.
+    # Delegates to _seed_yara_from_bundle() above -- a bash-native port, run
+    # entirely against intact_volweb_backend's own Django ORM. It reads
+    # <dir>/manifest.json + <dir>/yara_rulesets/*.zip, which is the shape
+    # install.sh staged.
     #
     # SELF-GUARDED, same reasoning as bootstrap_iris_api_key: this is no
     # longer called from inside deploy_volweb (which already knew volweb was
-    # enabled and up), but from the main sequence after deploy_backend --
-    # the bundled path needs intact_backend, which deploy_volweb runs before.
+    # enabled and up), but from the main sequence after deploy_backend.
     # So the checks deploy_volweb used to guarantee for free now have to be
     # made explicit here.
     local volweb_enabled
@@ -249,21 +462,7 @@ seed_yara_rulesets() {
     if [[ -f "${_seed_dir}/manifest.json" ]] \
             && ls "${_seed_dir}"/yara_rulesets/*.zip >/dev/null 2>&1; then
         log_info "  Seeding YARA rulesets from the release package (no download)..."
-        # Capture THEN print. `docker exec ... | sed` would report sed's exit
-        # status, so the success branch would be taken even when the seed
-        # failed -- the failure would be invisible and the online fallback
-        # would never run.
-        local _yout _yrc
-        _yout="$(docker exec intact_backend python3 -c "
-import sys
-sys.path.insert(0, '/app')
-from services.upgrade.volweb import _seed_yara_from_bundle
-r = _seed_yara_from_bundle('${_seed_dir}', lambda m, l='info': print(m))
-sys.exit(0 if r.get('success') else 1)
-" 2>&1)"
-        _yrc=$?
-        [[ -n "$_yout" ]] && printf '%s\n' "$_yout" | sed 's/^/    /'
-        if (( _yrc == 0 )); then
+        if _seed_yara_from_bundle "$_seed_dir"; then
             log_success "  YARA seeded from the bundled rule sets"
             return 0
         fi

@@ -490,9 +490,10 @@ for p in glob.glob(f'{work}/*/manifests/intact.json') + glob.glob(f'{work}/*/man
     # on re-runs, same rule as the binaries loop above.
     # The YARA destination mirrors a package layout on purpose --
     # `<dir>/manifest.json` + `<dir>/yara_rulesets/*.zip` -- because that is
-    # exactly what services/upgrade/volweb.py:_seed_yara_from_bundle() already
-    # consumes. Staging into that shape lets seed_yara_rulesets() delegate to
-    # the tested importer instead of reimplementing ORM ingest in bash.
+    # exactly what lib/modules/volweb.sh:_seed_yara_from_bundle() consumes
+    # (a bash-native port; the Python original it was ported from was deleted
+    # by f4ab33a without anyone noticing this staging shape was still feeding
+    # a caller).
     local _yara_seed="${SCRIPT_DIR}/data/yara-seed"
     local _stage_pairs=(
         # <find-path-under-work>|<destination dir>|<label>
