@@ -89,7 +89,7 @@ modules:
   # feeding the fusion engine). No container image; the versioned artifact is the
   # AWS SIGMA rule pack (see versions.aws_sigma). Ships OFF until validated.
   aws_sigma:
-    enabled: false
+    enabled: true
   o365rc:
     enabled: false
   # Plaso — log2timeline timeline parser. On-demand image: pulled by the
@@ -116,7 +116,22 @@ modules:
   portainer:
     enabled: true
     id: admin
-    password: '1234qwer!@#$' # Portainer requires >=12 chars; shorter values get a randomly-generated one instead (see lib/modules.sh)
+    # CHANGE THIS BEFORE THE APPLIANCE IS REACHABLE BY ANYONE ELSE.
+    #
+    # This file is committed, so whatever sits here is public and identical on
+    # every default install -- "complex" does not make it secret. It is a
+    # starting credential, not a secret, and Portainer's admin account is a
+    # window onto the whole container layer.
+    #
+    # Constraints if you replace it: Portainer enforces >= 12 characters even
+    # when seeded via --admin-password-file, and a value that fails validation
+    # leaves the admin account silently uncreated with the UI stuck in its
+    # timed-out "initial setup" state. Anything empty, shorter than 12, or
+    # equal to the RETIRED default `1234qwer!@#$` is refused outright and
+    # replaced with a random password (read it from
+    # modules/portainer/secrets/admin_password) -- see
+    # generate_portainer_secrets in lib/modules/portainer.sh.
+    password: 'Ch4nge-Me!Intact2026'
   timesketch:
     enabled: true
     id: tenroot
