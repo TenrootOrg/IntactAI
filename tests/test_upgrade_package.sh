@@ -420,5 +420,93 @@ test_an_unreadable_extracted_manifest_does_not_hand_over_precedence() {
     _teardown
 }
 
+# ---------------------------------------------------------------------------
+# upkg_acquire with a partial (--only) fetch
+# ---------------------------------------------------------------------------
+
+# A merged manifest naming both elk's and iris's files (real sha256, the
+# module asset actually on disk contains only elk's), same shape
+# build-release-assets.yml/index publishes.
+_write_two_module_manifest() {
+    local path="$1"
+    python3 -c "
+import hashlib, json, sys
+def sha(b):
+    h = hashlib.sha256(); h.update(b); return h.hexdigest()
+shas = {
+    'images/elk-9.9.9.tar': sha(b'not a real image\n'),
+    'images/iris-v2.4.27.tar': sha(b'not a real iris image\n'),
+    'manifests/elk.json': sha(json.dumps({'module': 'elk'}).encode()),
+}
+json.dump({'package_version': '1.0',
+           'created_by': 'build-release-assets.yml/index',
+           'versions': {'elk': '9.9.9', 'iris': 'v2.4.27'},
+           'contents': {'release_tag': 'intact-test', 'sha256': shas}},
+          open(sys.argv[1], 'w'))
+" "$path"
+}
+
+test_an_only_scoped_fetch_is_verified_against_what_it_extracted() {
+    # THE bug this exists to fix. --only trims the DOWNLOAD to fewer modules
+    # than the manifest describes (lib/release.sh), but the merged
+    # manifest.json it ships still lists every module's files. Before the
+    # fix, upkg_acquire always ran the full-manifest check, which treats
+    # every manifest path missing from disk as fatal -- so a real --only run
+    # (e.g. "upgrade --only intact,velociraptor") always failed here even on
+    # a perfectly good fetch, because iris/elk/etc.'s files were never
+    # downloaded ON PURPOSE. Observed live on intact-20260813, 2026-08-15.
+    _setup
+    _make_module_asset elk.tar elk 9.9.9
+    mkdir -p "${WORK}/only"
+    cp "${WORK}/elk.tar" "${WORK}/only/"
+    _write_two_module_manifest "${WORK}/only/intact-test.manifest.json"
+
+    assert_true upkg_expand_args "${WORK}/only"
+    INTACT_RELEASE_ONLY_MODULES="elk intact"
+    assert_true upkg_acquire "${UPKG_ASSETS[@]}"
+    unset INTACT_RELEASE_ONLY_MODULES
+    assert_contains "$(cat "$LOG_FILE")" "package contents verified"
+    _teardown
+}
+
+test_an_only_scoped_fetch_still_catches_a_tampered_file() {
+    # Narrowing the SCOPE must not narrow the CHECK: a file the run did
+    # extract, that does not match the manifest, is still fatal.
+    _setup
+    _make_module_asset elk.tar elk 9.9.9
+    rm -rf "${WORK}/x"; mkdir "${WORK}/x"
+    tar -xf "${WORK}/elk.tar" -C "${WORK}/x"
+    echo "TAMPERED" > "${WORK}/x/intact-upgrade-test/images/elk-9.9.9.tar"
+    ( cd "${WORK}/x" && tar -cf "${WORK}/elk2.tar" intact-upgrade-test )
+    mkdir -p "${WORK}/only"
+    cp "${WORK}/elk2.tar" "${WORK}/only/elk.tar"
+    _write_two_module_manifest "${WORK}/only/intact-test.manifest.json"
+
+    assert_true upkg_expand_args "${WORK}/only"
+    INTACT_RELEASE_ONLY_MODULES="elk intact"
+    assert_false upkg_acquire "${UPKG_ASSETS[@]}"
+    unset INTACT_RELEASE_ONLY_MODULES
+    assert_contains "$(cat "$LOG_FILE")" "do not match the release manifest"
+    _teardown
+}
+
+test_a_full_fetch_still_refuses_a_module_missing_from_disk() {
+    # The safety net --only intentionally turns off must otherwise stay ON:
+    # in a FULL (non---only, non-lazy) run, a module the manifest describes
+    # but that never landed on disk is a real problem (a dropped asset, a
+    # failed extraction) and upkg_acquire must still refuse it, not shrug
+    # because some other module's files were present and valid.
+    _setup
+    _make_module_asset elk.tar elk 9.9.9
+    mkdir -p "${WORK}/full"
+    cp "${WORK}/elk.tar" "${WORK}/full/"
+    _write_two_module_manifest "${WORK}/full/intact-test.manifest.json"
+
+    assert_true upkg_expand_args "${WORK}/full"
+    assert_false upkg_acquire "${UPKG_ASSETS[@]}"
+    assert_contains "$(cat "$LOG_FILE")" "verification FAILED"
+    _teardown
+}
+
 run_all_tests
 rm -f "$LOG_FILE"; rm -rf "$SCRIPT_DIR"

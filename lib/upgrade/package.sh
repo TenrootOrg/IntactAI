@@ -677,6 +677,20 @@ PY
 #
 # The whole pre-flight, in the order the checks have to happen: verify the
 # bytes, refuse unsafe members, extract, read the manifest, verify the files.
+#
+# The file-verification step has two shapes, same reasoning as the
+# upkg_extract_deferred header above: upkg_verify_file_checksums asserts over
+# EVERY path the merged manifest describes, which is only valid when the tree
+# it is checking is the WHOLE release. Two things can make it deliberately
+# partial at this point: INTACT_RELEASE_ONLY_MODULES trimmed which assets were
+# even downloaded (--only), or upkg_extract deferred some of them to their
+# module's turn (INTACT_UPGRADE_LAZY_EXTRACT, left non-empty in UPKG_DEFERRED).
+# Either way, files for modules not yet on disk are ABSENT ON PURPOSE, not
+# missing, so the full-manifest check would fail every such run. Route through
+# the scoped verifier instead, over every file this call actually extracted --
+# each asset's own sha256 (checked above) already guarantees nothing inside it
+# was truncated or swapped wholesale; this re-checks every file that landed on
+# disk against the release's own per-file map, same guarantee, narrower scope.
 # ---------------------------------------------------------------------------
 upkg_acquire() {
     local expect="${UPGRADE_EXPECT_SHA256:-}"
@@ -694,7 +708,18 @@ upkg_acquire() {
 
     upkg_extract "${assets[@]}" || return 1
     upkg_read_manifest || return 1
-    upkg_verify_file_checksums || return 1
+
+    if [[ -n "${INTACT_RELEASE_ONLY_MODULES:-}" || -n "${UPKG_DEFERRED:-}" ]]; then
+        local _acquired; _acquired="$(mktemp)"
+        find "$UPKG_DIR" -type f -printf '%P\n' 2>/dev/null | sort > "$_acquired"
+        upkg_verify_paths_against_manifest "$_acquired"
+        local rc=$?
+        rm -f "$_acquired"
+        (( rc == 0 )) || return 1
+        log_success "  package contents verified (partial fetch)"
+    else
+        upkg_verify_file_checksums || return 1
+    fi
     return 0
 }
 
