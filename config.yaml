@@ -87,7 +87,12 @@ options:
 modules:
   # CloudTrail — native AWS DFIR detection (CloudTrail events + SIGMA rules,
   # feeding the fusion engine). No container image; the versioned artifact is the
-  # AWS SIGMA rule pack (see versions.aws_sigma). Ships OFF until validated.
+  # AWS SIGMA rule pack (see versions.aws_sigma).
+  #
+  # Now ON by default. It has no long-running container and no service to fail:
+  # enabling it makes the rule pack part of every install and upgrade, and the
+  # upgrade engine treats it as policy 'none' (nothing to health-probe) for that
+  # reason. Set false to leave the AWS detection content off this host.
   aws_sigma:
     enabled: true
   o365rc:
