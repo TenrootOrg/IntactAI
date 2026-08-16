@@ -235,11 +235,17 @@ sudo bash scripts/upgrade.sh --list                    # what is available
 sudo bash scripts/prepare_package.sh <tag>             # build one carry-in file
 ```
 
-`--only a,b` is taken literally — omitting `intact` upgrades those modules
-against the current platform code, which is warned about but allowed, because
-repairing one module without moving the platform is a legitimate thing to want
-from a shell. The dashboard always includes `intact`. `--reinstall a,b`
-re-applies a module already at the target version.
+**Which modules get upgraded.** Automatically — the engine compares each
+module's installed version against the package's and moves only the ones that
+differ. Everything else is left alone. To choose yourself:
+
+```bash
+--only a,b        # just these
+--skip a,b        # everything except these
+--reinstall a,b   # re-apply one already at target (repairs a half-landed upgrade)
+--dry-run         # print the plan, change nothing
+--plan <tag>      # fetch just the manifest (~0.2 MB) and show the plan, no payload
+```
 
 **Release shapes.** `20260811` onward publishes one asset per module plus
 `<tag>.index.json` and `<tag>.manifest.json`; `20260810` and earlier publish a
