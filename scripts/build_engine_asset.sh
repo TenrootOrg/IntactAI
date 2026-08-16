@@ -46,10 +46,18 @@ trap 'rm -rf "$STAGE"' EXIT
 # of this split is that the bootstrap never touches it), data/, .git/, tests/,
 # qa/. Keeping this asset small is what makes it safe to fetch before anything
 # else has been decided.
+# scripts/ci and scripts/dev are EXCLUDED, and that is not tidiness.
+# scripts/dev/make_test_package.sh fabricates packages from a live tree and
+# carries a secret-leak class that must not travel to a customer box; scripts/ci
+# needs a full backend image to import services.image_map and is meaningless off
+# a runner. The existing bootstrap-asset job strips both for exactly this
+# reason -- this asset ships to the same places, so it strips them too.
 tar -C "$SRC" -cf - \
     --exclude='__pycache__' --exclude='*.pyc' \
+    --exclude='scripts/ci' --exclude='scripts/dev' \
     lib scripts install.sh 2>/dev/null | tar -C "$STAGE" -xf - || {
     echo "could not stage the engine tree" >&2; exit 1; }
+rm -rf "${STAGE}/scripts/ci" "${STAGE}/scripts/dev"
 
 # The bootstrap's escape hatch. A release that genuinely cannot be driven by
 # the current handover contract bumps this, and every older bootstrap refuses
