@@ -81,68 +81,6 @@ u_primary_container_of() {
 }
 
 # ---------------------------------------------------------------------------
-# u_module_is_present <module>  -- 0 present, 1 absent, 2 cannot tell.
-#
-# "Is this module on the box?", answered by looking at the box rather than by
-# consulting a declared flag. Seven of the ten modules run a container, and for
-# those the container's existence IS the answer -- `docker inspect` succeeds for
-# a stopped or crashed one and fails only when it was never created or has been
-# removed, which is exactly the distinction wanted.
-#
-# The other three are not services and have no container to look at:
-#
-#   plaso      an image pulled per job
-#   o365rc     an image the backend runs on demand
-#   aws_sigma  a rule pack on disk, no image at all
-#
-# For those the .env pin cannot stand in: a full package seeds pins for every
-# module it carries, including ones the operator never installed, so a pin
-# proves only that a package went past -- which is the case the comment in
-# plan_current_versions already warns about.
-#
-# 2 = CANNOT TELL is a real answer, not a failure. aws_sigma's rules live at
-# /opt/sigma-rules on the HOST, and the dashboard runs this engine in a helper
-# container that mounts only the docker socket and the appliance checkout -- so
-# a path probe there would report "absent" from the UI and "present" from a
-# shell, for the same box. That is the trap preflight_host_check's systemd probe
-# already documents. Better to say the question was not answerable than to
-# answer it differently depending on who asked.
-# ---------------------------------------------------------------------------
-u_module_is_present() {
-    local m="$1" primary
-    primary="$(u_primary_container_of "$m")"
-    if [[ -n "$primary" ]]; then
-        "${DOCKER_BIN:-docker}" inspect "$primary" >/dev/null 2>&1 && return 0
-        return 1
-    fi
-
-    # Image-backed modules. `docker images -q <repo>` is tag-agnostic on
-    # purpose: during an upgrade the tag on disk is the OLD one, and the
-    # question is whether the module is here at all, not whether it is current.
-    # Answered over the docker socket, which the helper container does mount --
-    # so this reads the same from a shell and from the dashboard.
-    local repo=""
-    case "$m" in
-        plaso)  repo="log2timeline/plaso" ;;
-        o365rc) repo="anssi/dfir-o365rc" ;;
-    esac
-    if [[ -n "$repo" ]]; then
-        [[ -n "$("${DOCKER_BIN:-docker}" images -q "$repo" 2>/dev/null)" ]] && return 0
-        return 1
-    fi
-
-    # aws_sigma: host filesystem only.
-    if [[ "$m" == "aws_sigma" ]]; then
-        if [[ -f /.dockerenv ]] || grep -qa 'docker\|containerd' /proc/1/cgroup 2>/dev/null; then
-            return 2
-        fi
-        compgen -G "/opt/sigma-rules/rules/cloud/aws/*.yml" >/dev/null 2>&1 && return 0
-        return 1
-    fi
-    return 2
-}
-
-# ---------------------------------------------------------------------------
 # Low-level helpers
 # ---------------------------------------------------------------------------
 
