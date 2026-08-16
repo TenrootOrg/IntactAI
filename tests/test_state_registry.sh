@@ -95,4 +95,33 @@ test_migrate_with_only_a_canonical_copy_relinks_the_historical_path() {
     [[ "${ROOT}/${rel}" -ef "${ROOT}/${canon_rel}" ]] || _fail "historical path not re-linked from the canonical copy"
 }
 
+test_a_package_skeleton_never_dethrones_real_state() {
+    _fresh_root
+    # The live IRIS disaster, reduced: canonical holds the real CA, a
+    # delivery step recreated the tracked .gitkeep skeleton at the live path.
+    local rel="modules/iris/config/certificates/rootCA"
+    local canon_rel; canon_rel="$(state_canonical_path "$rel")"
+    mkdir -p "${ROOT}/${canon_rel}"
+    echo "REAL-CA-KEY" > "${ROOT}/${canon_rel}/irisRootCAKey.pem"
+    mkdir -p "${ROOT}/${rel}"; : > "${ROOT}/${rel}/.gitkeep"
+    assert_true state_migrate_one "$ROOT" "$rel"
+    [[ -f "${ROOT}/${canon_rel}/irisRootCAKey.pem" ]] || _fail "real CA dethroned by a .gitkeep skeleton"
+    ls "${ROOT}/$(dirname "$canon_rel")" | grep -q superseded && _fail "skeleton case must not create .superseded litter"
+    assert_eq "$(cat "${ROOT}/${rel}/irisRootCAKey.pem" 2>/dev/null)" "REAL-CA-KEY" \
+        "historical path must reach the real CA again"
+}
+
+test_a_genuinely_updated_live_copy_still_wins() {
+    _fresh_root
+    # The timesketch.conf case: live carries newer real content; it must win.
+    local rel="modules/timesketch/config/timesketch.conf"
+    local canon_rel; canon_rel="$(state_canonical_path "$rel")"
+    mkdir -p "$(dirname "${ROOT}/${canon_rel}")"
+    echo "stale" > "${ROOT}/${canon_rel}"
+    echo "migrated-credential" > "${ROOT}/${rel}"
+    assert_true state_migrate_one "$ROOT" "$rel"
+    assert_eq "$(cat "${ROOT}/${canon_rel}")" "migrated-credential" "the real live copy wins"
+    ls "${ROOT}/$(dirname "$canon_rel")" | grep -q superseded || _fail "the stale copy must be kept as .superseded"
+}
+
 run_all_tests

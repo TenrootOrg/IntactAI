@@ -133,6 +133,28 @@ state_is_migrated() {
 # it, and an absolute link would break the moment a box is moved or restored to
 # a different directory -- which is exactly what a disaster-recovery restore
 # does.
+# "Empty skeleton": a path carrying no state — a zero-byte file, or a
+# directory whose only content is git placeholder files. This is exactly what
+# the tracked repo ships at state paths (modules/iris/…/rootCA/.gitkeep), so
+# it is what a package-delivery step recreates; nothing the box GENERATES at
+# these paths ever looks like this.
+_state_is_empty_skeleton() {
+    local p="$1"
+    if [[ -f "$p" ]]; then
+        [[ ! -s "$p" ]]
+        return
+    fi
+    [[ -d "$p" ]] || return 1
+    local f
+    while IFS= read -r f; do
+        case "$(basename "$f")" in
+            .gitkeep|.gitignore) : ;;
+            *) return 1 ;;
+        esac
+    done < <(find "$p" -mindepth 1 2>/dev/null)
+    return 0
+}
+
 state_migrate_one() {
     local root="$1" rel="$2"
     local live="${root}/${rel}"
@@ -146,12 +168,29 @@ state_migrate_one() {
     if [[ -e "$live" && ! -L "$live" ]]; then
         # Real file or directory still at the historical path.
         if [[ -e "$canon" ]]; then
-            # Both exist: the live copy is the one the box has been running
-            # with, so it wins. Keep the other as .superseded rather than
-            # deleting anything that might be the only copy of a CA.
-            mv "$canon" "${canon}.superseded.$$" 2>/dev/null || true
+            # Both exist. The live copy NORMALLY wins -- it is the one the box
+            # has been running with (verified live: timesketch.conf's live
+            # copy carried the migrated postgres credential while the stored
+            # one was stale).
+            #
+            # EXCEPT when the live copy is an empty skeleton. The package
+            # tracks placeholder dirs (.gitkeep) at several state paths, and
+            # a delivery step recreating one of those OVER the symlink must
+            # not dethrone real state: on a live box this exact case moved
+            # the IRIS CA, web certs and ALL FIVE iris secrets (including the
+            # postgres password guarding existing case data) aside into
+            # .superseded and left .gitkeep-only dirs as canonical -- the
+            # next iris recreate would have regenerated secrets and locked
+            # the appliance out of its own database.
+            if _state_is_empty_skeleton "$live" && ! _state_is_empty_skeleton "$canon"; then
+                rm -rf "$live" 2>/dev/null
+            else
+                mv "$canon" "${canon}.superseded.$$" 2>/dev/null || true
+            fi
         fi
-        mv "$live" "$canon" || return 1
+        if [[ -e "$live" ]]; then
+            mv "$live" "$canon" || return 1
+        fi
     elif [[ ! -e "$canon" ]]; then
         # Nothing to migrate and nothing stored: the generator has not run yet.
         # Leaving no symlink is correct -- the generator creates a real file at
