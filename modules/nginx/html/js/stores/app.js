@@ -45,6 +45,10 @@ document.addEventListener('alpine:init', () => {
     // App store - tab switching and navigation
     Alpine.store('app', {
         currentTab: 'dashboard',
+        // Set on the FIRST entry into Case Analysis; every later entry reloads
+        // the iframe instead. Declared here rather than sprung into existence in
+        // switchTab so it is reactive state like everything else on this store.
+        _analysisFrameLoaded: false,
         modulesOpen: false,
         sidebarCollapsed: localStorage.getItem('sidebarCollapsed') === 'true',
 
@@ -133,6 +137,27 @@ document.addEventListener('alpine:init', () => {
             } catch (e) { /* headless */ }
             if (tab.startsWith('modules-')) {
                 this.modulesOpen = true;
+            }
+            // Case Analysis lives in an IFRAME, which is a separate document that
+            // keeps whatever it fetched when it first loaded. Leaving the tab and
+            // coming back re-SHOWED that document without re-fetching, so the
+            // report, cost badge and config rail could be arbitrarily old — a
+            // Rescan or a model change made elsewhere was invisible until the
+            // operator hit browser-refresh, and nothing on screen said so.
+            //
+            // Skipped on the first entry: the frame is loading its initial
+            // document already, and reloading it there just fetches everything
+            // twice — and a report fetch is not cheap.
+            if (tab === 'case-analysis') {
+                const frame = document.getElementById('analysis-frame');
+                if (frame) {
+                    if (this._analysisFrameLoaded) {
+                        try { frame.contentWindow.location.reload(); }
+                        catch (e) { frame.src = frame.src; }   // cross-origin fallback
+                    } else {
+                        this._analysisFrameLoaded = true;
+                    }
+                }
             }
             // Module-specific initializations
             if (tab === 'modules-timesketch') { populateTimeSketchClients(); loadTimesketchBlueprintsDropdown(); }
