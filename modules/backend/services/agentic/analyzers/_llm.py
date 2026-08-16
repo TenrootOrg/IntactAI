@@ -90,16 +90,37 @@ def _estimate_llm_cost(model: str, in_tokens: int, out_tokens: int) -> float:
     # (incl. DeepSeek, Qwen, Mistral, …) so any model the operator picks under
     # Settings > Agentic > OpenRouter is priced without hardcoding. Pricing values
     # are USD PER TOKEN (not per-million).
+    #
+    # Probe IN PRIORITY ORDER, and note the first entry keeps the `~`:
+    # OpenRouter ships the alias itself as a catalog row (`~deepseek/
+    # deepseek-v4-flash-latest`) carrying ITS OWN pricing, which is not the
+    # base model's — the alias bills ~7% above `deepseek/deepseek-v4-flash`.
+    # The `key` used above has the `~` stripped for prefix-matching the
+    # hardcoded table, so looking the catalog up with it missed the exact row
+    # and every `-latest` alias priced at $0 while spending real money. Falling
+    # back to the stripped forms is right when the alias row is absent, but it
+    # must stay a FALLBACK, or an exactly-priced alias silently gets the base
+    # model's rate.
+    probe_order = [model.lower()]                       # the alias row, `~` intact
+    probe_order.append(key)                             # same id without `~`
+    if key.endswith("-latest"):
+        probe_order.append(key[: -len("-latest")])      # the base model
     try:
         from services.llm_catalogs.openrouter import load_catalog
+        by_id = {}
         for m in (load_catalog() or []):
-            if key in (str(m.get("id", "")).lower(), str(m.get("canonical_id", "")).lower()):
-                pr = m.get("pricing") or {}
-                pin = float(pr.get("prompt") or 0.0)
-                pout = float(pr.get("completion") or 0.0)
-                if pin or pout:
-                    return in_tokens * pin + out_tokens * pout
-                break
+            pr = m.get("pricing") or {}
+            pin = float(pr.get("prompt") or 0.0)
+            pout = float(pr.get("completion") or 0.0)
+            if not (pin or pout):
+                continue
+            for ident in (m.get("id"), m.get("canonical_id")):
+                if ident:
+                    by_id.setdefault(str(ident).lower(), (pin, pout))
+        for cand in probe_order:
+            if cand in by_id:
+                pin, pout = by_id[cand]
+                return in_tokens * pin + out_tokens * pout
     except Exception:
         pass
     return 0.0

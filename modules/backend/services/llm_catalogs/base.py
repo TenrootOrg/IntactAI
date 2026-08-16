@@ -29,7 +29,22 @@ class CatalogStore:
         self._cache: Dict = {"models": [], "mtime": 0.0, "fetched_at": 0.0}
 
     def write(self, models: List[Dict], unenriched_count: int = 0) -> Dict:
-        """Atomically write the catalog file. Returns summary dict."""
+        """Atomically write the catalog file. Returns summary dict.
+
+        Refuses to replace an existing catalog with an EMPTY one. A fetch can
+        succeed at the HTTP level and still yield nothing usable — an auth
+        error rendered as `{}`, or an upstream schema change that makes every
+        entry fail _normalize. Writing that would swap a working 400-model
+        catalog for zero models and report success, and the damage is silent:
+        pricing reads 0.00 and context windows fall back to a constant. The
+        previous catalog is strictly better than nothing, so it stays.
+        """
+        if not models:
+            existing = self.load()
+            if existing:
+                return {"success": False, "model_count": len(existing),
+                        "error": "refused to overwrite the existing catalog "
+                                 f"({len(existing)} models) with an empty one"}
         payload = {
             "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "source": self.source_url,
@@ -74,9 +89,37 @@ class CatalogStore:
             print(f"[{self.provider.upper()}-CATALOG] Failed to read {self.file_path}: {e}", flush=True)
             return []
 
+    @staticmethod
+    def _selectable(m: Dict) -> bool:
+        """Should this model be offerable in the model picker?
+
+        Drops rows we cannot put a number against, and ONLY those:
+
+          - `openrouter/auto`, `/fusion`, `/pareto-code`, … are routers. The
+            price depends on whichever model the router picks at request time,
+            so no cost estimate shown before the run can be honest.
+          - `google/lyria-*` are music-generation models that carry no token
+            pricing and are not text LLMs at all.
+
+        A `:free` model is KEPT: $0 is its real price, not missing data. The
+        caller renders it as "free" rather than as a blank price.
+        """
+        pricing = m.get("pricing") or {}
+        try:
+            has_price = (float(pricing.get("prompt") or 0) > 0
+                         or float(pricing.get("completion") or 0) > 0)
+        except (TypeError, ValueError):
+            has_price = False
+        return has_price or str(m.get("id", "")).endswith(":free")
+
     def search(self, q: str = "", limit: int = 10, offset: int = 0) -> Dict:
-        """Substring-filter the catalog by id+name, paginated."""
-        models = self.load()
+        """Substring-filter the catalog by id+name, paginated.
+
+        Unpriceable models are filtered out here rather than at refresh time,
+        so the on-disk catalog stays a faithful mirror of upstream and
+        _estimate_llm_cost can still resolve anything already configured.
+        """
+        models = [m for m in self.load() if self._selectable(m)]
         catalog_meta = {}
         if os.path.exists(self.file_path):
             try:

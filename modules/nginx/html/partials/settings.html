@@ -698,11 +698,20 @@
                                             <span x-show="selectedModel?.max_output_tokens">
                                                 Max output: <span class="text-gray-300" x-text="(selectedModel?.max_output_tokens ?? 0).toLocaleString()"></span>
                                             </span>
-                                            <span x-show="selectedModel?.pricing?.prompt">
+                                            <span x-show="parseFloat(selectedModel?.pricing?.prompt ?? 0) > 0
+                                                       || parseFloat(selectedModel?.pricing?.completion ?? 0) > 0">
                                                 $<span x-text="(parseFloat(selectedModel?.pricing?.prompt ?? 0) * 1000000).toFixed(2)"></span>/M&nbsp;in
                                                 ·
                                                 $<span x-text="(parseFloat(selectedModel?.pricing?.completion ?? 0) * 1000000).toFixed(2)"></span>/M&nbsp;out
                                             </span>
+                                            <!-- $0 is this model's real price, not missing data. The old
+                                                 `x-show="pricing.prompt"` treated 0 as falsy and hid the
+                                                 whole line, so a free model looked identical to one whose
+                                                 price we simply could not resolve. -->
+                                            <span x-show="selectedModel
+                                                       && parseFloat(selectedModel?.pricing?.prompt ?? 0) === 0
+                                                       && parseFloat(selectedModel?.pricing?.completion ?? 0) === 0"
+                                                  class="text-green-400">free</span>
                                         </div>
                                         <div x-show="unenriched > 0" class="mt-1 text-[10px] text-yellow-600">
                                             <span x-text="unenriched"></span> entries un-enriched
@@ -911,6 +920,19 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                         ? ('OK — replied in ' + $store.settings.llmTestResult.elapsed_ms + 'ms')
                                         : ('Failed: ' + ($store.settings.llmTestResult.error || 'unknown'))"></span>
                             </template>
+                            <!-- The model list, prices and context windows come from the
+                                 provider's catalog on disk. Saving refreshes it for the
+                                 provider you saved; this refreshes it on demand, without
+                                 having to re-save settings just to pull new models. -->
+                            <!-- Result goes to the page banner (showMessage), not inline:
+                                 an inline span here sits between two buttons in a
+                                 justify-end row, so it shoved Save sideways on every
+                                 update and said the same thing the banner already said. -->
+                            <button @click="$store.settings.updateCatalog()" :disabled="$store.settings.updatingCatalog"
+                                    class="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 px-4 py-2 rounded text-sm font-medium mr-2"
+                                    title="Fetch the current model list, prices and context windows for the selected provider. The existing catalog is kept if the fetch fails or returns nothing.">
+                                <span x-text="$store.settings.updatingCatalog ? 'Updating…' : 'Update catalog'"></span>
+                            </button>
                             <button @click="$store.settings.saveAgentic()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium">
                                 <span x-text="$store.settings.saving ? 'Saving...' : 'Save Agentic Settings'"></span>
                             </button>
@@ -1212,11 +1234,20 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                             <span x-show="selectedModel?.max_output_tokens">
                                                 Max output: <span class="text-gray-300" x-text="(selectedModel?.max_output_tokens ?? 0).toLocaleString()"></span>
                                             </span>
-                                            <span x-show="selectedModel?.pricing?.prompt">
+                                            <span x-show="parseFloat(selectedModel?.pricing?.prompt ?? 0) > 0
+                                                       || parseFloat(selectedModel?.pricing?.completion ?? 0) > 0">
                                                 $<span x-text="(parseFloat(selectedModel?.pricing?.prompt ?? 0) * 1000000).toFixed(2)"></span>/M&nbsp;in
                                                 ·
                                                 $<span x-text="(parseFloat(selectedModel?.pricing?.completion ?? 0) * 1000000).toFixed(2)"></span>/M&nbsp;out
                                             </span>
+                                            <!-- $0 is this model's real price, not missing data. The old
+                                                 `x-show="pricing.prompt"` treated 0 as falsy and hid the
+                                                 whole line, so a free model looked identical to one whose
+                                                 price we simply could not resolve. -->
+                                            <span x-show="selectedModel
+                                                       && parseFloat(selectedModel?.pricing?.prompt ?? 0) === 0
+                                                       && parseFloat(selectedModel?.pricing?.completion ?? 0) === 0"
+                                                  class="text-green-400">free</span>
                                         </div>
                                     </div>
                                 </div>

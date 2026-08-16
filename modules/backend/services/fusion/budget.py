@@ -27,7 +27,7 @@ MAX_STEPDOWNS = 2
 
 
 # --------------------------------------------------------------------------
-# Adaptive budget — opt-in per case ("Use the model's full context").
+# Adaptive budget — always on (was the per-case "Use the model's full context").
 # --------------------------------------------------------------------------
 # The constants above are hand-picked for a hypothetical ~128k-context model and
 # never consult the model actually selected. That is wrong in BOTH directions:

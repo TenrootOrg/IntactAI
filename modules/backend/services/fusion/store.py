@@ -181,10 +181,10 @@ def _llm_payload_budget(d):
     stored graph you browse); the LLM only ever receives the top-N entities that
     fit the char budget, so a 500k graph cap can't overflow the model context.
 
-    The ceiling is normally the static _LLM_MAX_BUDGET_CHARS (written for a
-    ~128k-context model). With the case's 'Use the model's full context' flag on,
-    it is instead DERIVED from the selected model's real context window — see
-    budget.adaptive_budget(). Returns (llm_max_entities, budget_chars)."""
+    The ceiling starts at the static _LLM_MAX_BUDGET_CHARS (written for a
+    ~128k-context model) and is then DERIVED from the selected model's real
+    context window — see budget.adaptive_budget(). Returns
+    (llm_max_entities, budget_chars)."""
     n = d.get("max_entities")
     try:
         n = int(n)
@@ -193,26 +193,27 @@ def _llm_payload_budget(d):
     n = max(20, n)
 
     budget_chars = _LLM_MAX_BUDGET_CHARS
-    # DEFAULT ON (key absent => True). The static ceiling was written for a
-    # ~128k-context model and silently wasted most of a modern window; deriving
-    # from the selected model is the better default, and it can only ever RAISE
-    # the ceiling (see below), so switching it on cannot shrink an existing
-    # case's payload. An explicit False is still honoured.
-    if d.get("llm_use_full_context", True):
-        try:
-            from services.agentic.analyzers._llm import get_model_context_length
-            model, provider, _ = _configured_fusion_model()
-            adaptive = budget.adaptive_budget(
-                get_model_context_length(model or "", provider or ""),
-                _effective_output_cap(d))
-            if adaptive:
-                # Only ever RAISE the ceiling here, never lower it: a small local
-                # model resolving to a tiny window would otherwise starve the
-                # report to a few entities the moment the flag is ticked, which
-                # is not what "use the full context" means to an operator.
-                budget_chars = max(budget_chars, adaptive[0])
-        except Exception:  # noqa: BLE001 — never break fusion over a budget hint
-            pass
+    # LOCKED ON. This used to be the case's 'Use the model's full context'
+    # checkbox. It never earned the choice: the static ceiling was written for a
+    # ~128k-context model and silently wasted most of a modern window, and the
+    # derivation below can only ever RAISE the ceiling — so turning it OFF could
+    # not cap spend against any measured baseline, it could only pin the payload
+    # back to an obsolete constant. Cost is steered by the three settings that
+    # actually bound it: Entity limit, Identity limit and Output token cap.
+    try:
+        from services.agentic.analyzers._llm import get_model_context_length
+        model, provider, _ = _configured_fusion_model()
+        adaptive = budget.adaptive_budget(
+            get_model_context_length(model or "", provider or ""),
+            _effective_output_cap(d))
+        if adaptive:
+            # Only ever RAISE the ceiling here, never lower it: a small local
+            # model resolving to a tiny window would otherwise starve the
+            # report to a few entities, which is not what "use the full
+            # context" means to an operator.
+            budget_chars = max(budget_chars, adaptive[0])
+    except Exception:  # noqa: BLE001 — never break fusion over a budget hint
+        pass
 
     safe_cap = budget_chars // _LLM_CHARS_PER_ENTITY            # entities that fit the context
     return min(n, safe_cap), budget_chars
@@ -237,25 +238,28 @@ def _llm_identity_budget(d):
 
 
 def _effective_output_cap(d):
-    """Max tokens the model WRITES per LLM call for THIS case. Uses the per-case
-    'Output token cap' if the operator set one; otherwise DEFAULTS TO THE SELECTED
-    MODEL'S MAX OUTPUT (there is no global Settings cap anymore — Case Analysis is
-    the only LLM consumer). Always clamped to the model max so a stale/oversized
-    value can never exceed what the model allows."""
+    """Max tokens the model WRITES per LLM call for THIS case: ALWAYS the selected
+    model's max output. This was a per-case 'Output token cap' field; see the
+    LOCKED block in update_case_config for why it stopped being a choice.
+
+    Deliberately ignores any stored llm_max_output_tokens rather than reading it
+    with a default: cases configured before the field was removed still carry a
+    value, and they must not stay truncated until someone re-saves them."""
     model, provider, _ = _configured_fusion_model()
-    model_max = _model_max_output(model, provider)
-    n = d.get("llm_max_output_tokens")
-    try:
-        n = int(n)
-    except (TypeError, ValueError):
-        n = 0
-    return max(256, min(n, model_max)) if n and n > 0 else model_max
+    return _model_max_output(model, provider)
 
 
 # Rescan-cost model: a rescan makes 2 LLM passes (report + advisory), each gets
 # the distilled payload (~fusion_approx tokens) + a small system prompt, and
 # writes up to the output cap. All approximate — for a pre-spend sanity number.
 _RESCAN_LLM_CALLS = 2
+
+# Expected tokens the model WRITES per call, for the cost estimate only — never a
+# limit on generation. A fused report and its advisory land in the low thousands;
+# this is the figure to tune if the estimate reads consistently high or low
+# against real invoices. It exists because the real ceiling (the model max) is a
+# useless basis for a dollar estimate — see estimate_rescan_cost.
+_RESCAN_EXPECTED_OUT_TOKENS = 8000
 _SYS_PROMPT_TOKENS = 3000
 _DEFAULT_OUTPUT_TOKENS = 4000
 
@@ -310,9 +314,13 @@ def estimate_rescan_cost(d):
     fused_in = int(ab.get("fusion_approx") or 0)
     model, provider, mode = _configured_fusion_model()
     calls = _RESCAN_LLM_CALLS
-    # Output defaults to the MODEL'S MAX (the operator can cap it lower).
     model_max_out = _model_max_output(model, provider)
-    out_per_call = _effective_output_cap(d)
+    # Estimate on EXPECTED output, not on the ceiling. _effective_output_cap is
+    # now always the model max (the per-case cap was removed), and a model that
+    # may write 384k tokens does not write 384k tokens — it writes a report and
+    # stops. Costing the ceiling would put a number two orders of magnitude too
+    # large in front of the operator, which is worse than no number at all.
+    out_per_call = min(_RESCAN_EXPECTED_OUT_TOKENS, _effective_output_cap(d))
     out_tokens = out_per_call * calls
 
     def _side(in_one):
@@ -1727,10 +1735,6 @@ def set_analysis_config(case_id, cfg) -> dict:
             patch["max_entities"] = max(100, min(int(cfg["max_entities"]), MAX_GRAPH_ENTITIES))
         except (TypeError, ValueError):
             pass
-    if "llm_use_full_context" in cfg:      # derive the payload budget from the
-                                           # selected model's real context window
-                                           # instead of the static constant
-        patch["llm_use_full_context"] = bool(cfg.get("llm_use_full_context"))
     if "max_identities" in cfg:            # identity rows in the LLM payload — a
                                            # ceiling INSIDE max_entities, not a separate
                                            # budget (see _llm_identity_budget); empty/0
@@ -1740,22 +1744,23 @@ def set_analysis_config(case_id, cfg) -> dict:
             patch["max_identities"] = max(0, int(v)) if v not in (None, "") else None
         except (TypeError, ValueError):
             pass
-    if "llm_max_output_tokens" in cfg:     # cap on tokens the model WRITES per call
-        try:
-            v = int(cfg["llm_max_output_tokens"])
-            if v:
-                mdl, prov, _ = _configured_fusion_model()
-                patch["llm_max_output_tokens"] = max(256, min(v, _model_max_output(mdl, prov)))
-            else:
-                patch["llm_max_output_tokens"] = None   # empty = default to model max
-        except (TypeError, ValueError):
-            pass
     # LOCKED platform-wide (operator can't change; UI shows them fixed/disabled):
     #   - chat ALWAYS sends full context — host-resolution mode makes chat robotic.
     #   - the report is ALWAYS explicit (real cmdline / path / hash per finding).
+    #   - the payload budget is ALWAYS derived from the selected model's real
+    #     context window — see _llm_payload_budget for why this stopped being a
+    #     choice. A stored False on an existing case is overridden here.
+    #   - the output cap is ALWAYS the selected model's max. The old per-case
+    #     field capped at 64000 in the UI while models allow far more, so its
+    #     only reachable effect was TRUNCATING a report mid-sentence. A cap is a
+    #     ceiling, not a target: the model stops when the report is done, so
+    #     removing it does not spend more, it just stops cutting reports short.
+    #     A stored value on an existing case is cleared here.
     # Enforced here so no request can override, and again at every read site below.
     patch["chat_send_full_context"] = True
     patch["report_detail"] = "explicit"
+    patch["llm_use_full_context"] = True
+    patch["llm_max_output_tokens"] = None
     if "fusion_modules" in cfg:            # which modules fuse (only available ones honored)
         mods = normalize_modules(cfg.get("fusion_modules"))
         patch["fusion_modules"] = [m for m in mods

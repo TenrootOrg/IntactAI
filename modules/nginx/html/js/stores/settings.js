@@ -54,6 +54,7 @@ document.addEventListener('alpine:init', () => {
         offlineModelsError: '',
         llmTesting: false,
         llmTestResult: null,
+        updatingCatalog: false,
         message: '',
         messageType: '',
 
@@ -216,6 +217,54 @@ document.addEventListener('alpine:init', () => {
                 this.showMessage('Error: ' + e.message, 'error');
             }
             this.saving = false;
+        },
+
+        // Refresh the selected provider's model catalog on demand.
+        //
+        // Same routes saveAgentic() fires, but reachable without re-saving —
+        // catalogs otherwise only move when someone happens to save Agentic
+        // settings, so a box configured once can serve months-old prices and
+        // context windows. Nothing else in the UI updates them since System
+        // Maintenance was removed.
+        //
+        // The backend never replaces a good catalog with an empty one (see
+        // CatalogStore.write), so a failed update leaves the previous list in
+        // place and says so, rather than emptying the model dropdown.
+        async updateCatalog() {
+            const provider = this.config.agentic?.online_llm?.provider;
+            const route = {
+                openrouter: 'refresh-openrouter-models',
+                claude:     'refresh-anthropic-models',
+                openai:     'refresh-openai-models',
+                gemini:     'refresh-gemini-models',
+                'codex-subscription': 'refresh-codex-models'
+            }[provider];
+            if (!route) {
+                this.showMessage('No catalog for provider "' + (provider || 'unset') + '"', 'error');
+                return;
+            }
+            this.updatingCatalog = true;
+            try {
+                const r = await fetch('/api/maintenance/' + route, { method: 'POST' });
+                const d = await r.json().catch(() => ({}));
+                const result = (d && typeof d.success === 'boolean') ? d : { success: false, error: 'HTTP ' + r.status };
+                if (result.success) {
+                    this.showMessage(result.model_count + ' models updated', 'success');
+                    // Same event saveAgentic() dispatches, so the model combobox
+                    // re-queries instead of showing the pre-refresh list.
+                    window.dispatchEvent(new CustomEvent('llm-catalog-refreshed', { detail: { provider } }));
+                    this._refreshCaseAnalysis();
+                } else {
+                    // The backend keeps the previous catalog rather than emptying it
+                    // (CatalogStore.write), so say that plainly — "failed" alone would
+                    // read as "the model list is now gone".
+                    this.showMessage('Catalog not updated, kept the previous one: '
+                                     + (result.error || 'unknown error'), 'error');
+                }
+            } catch (e) {
+                this.showMessage('Catalog not updated, kept the previous one: ' + e.message, 'error');
+            }
+            this.updatingCatalog = false;
         },
 
         // Case Analysis runs in an IFRAME (cases.html?view=analysis), so it is a
