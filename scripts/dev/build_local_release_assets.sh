@@ -309,17 +309,29 @@ _beimg="intact-backend:${TAG}"
 if docker image inspect "$_beimg" >/dev/null 2>&1; then
     _was="$(docker image inspect -f '{{index .Config.Labels "org.intact.commit"}}' \
             "$_beimg" 2>/dev/null || true)"
-    case "$_was" in
-        "$COMMIT") log "backend image $_beimg is from this commit — reusing" ;;
-        ""|"<no value>")
-            log "removing $_beimg: baked before builds were labelled, so it"
-            log "  cannot be shown to match $COMMIT. Rebaking is cheap (docker"
-            log "  caches every layer the tree did not touch)."
-            docker rmi -f "$_beimg" >/dev/null 2>&1 || true ;;
-        *)
-            log "removing $_beimg: baked from ${_was:0:12}, building ${COMMIT:0:12}"
-            docker rmi -f "$_beimg" >/dev/null 2>&1 || true ;;
-    esac
+    if [ "$_was" = "$COMMIT" ]; then
+        log "backend image $_beimg is from this commit — reusing"
+    else
+        # Building the tag the toolchain itself is tagged as removes the
+        # toolchain out from under the module loop -- `docker run` then goes
+        # to Docker Hub for an image that exists in no registry and dies with
+        # "pull access denied". The toolchain only needs the backend's python
+        # deps, which any commit's bake satisfies, so preserve it under a name
+        # this block can never target.
+        if [ "$_beimg" = "$BUILD_IMAGE" ]; then
+            docker tag "$_beimg" intact-backend-toolchain:local
+            BUILD_IMAGE="intact-backend-toolchain:local"
+            log "toolchain was $_beimg itself — kept as $BUILD_IMAGE for this build"
+        fi
+        case "$_was" in
+            ""|"<no value>")
+                log "removing $_beimg: baked before builds were labelled, so it"
+                log "  cannot be shown to match $COMMIT. Rebaking is cheap (docker"
+                log "  caches every layer the tree did not touch)." ;;
+            *)  log "removing $_beimg: baked from ${_was:0:12}, building ${COMMIT:0:12}" ;;
+        esac
+        docker rmi -f "$_beimg" >/dev/null 2>&1 || true
+    fi
 fi
 
 # ── build one asset per module ────────────────────────────────────────────
