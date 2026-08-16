@@ -54,17 +54,12 @@ sudo bash install.sh
 
 ### Air-gapped installation
 
-> **Supported from `intact-20260813` onward.** Earlier releases do not carry
-> everything an offline box needs, so use `20260813` or later as the package tag
-> — including when installing a site that will later run older module versions.
+> Supported from `intact-20260813` onward.
 
-The box never reaches the internet. Everything it needs is carried in on one
-file; `--package` makes the installer take **every** image and dependency from
-that file instead of a registry, and fail loudly on anything missing rather than
-quietly reaching out.
+`--package` makes the installer take every image and dependency from the file
+you carry in, never from a registry.
 
-**On a machine that HAS internet** (any Linux box with `curl`, `python3`, `tar` —
-it does not have to be an appliance):
+On a machine with internet:
 
 ```bash
 git clone --branch <tag> https://github.com/TenrootOrg/IntactAI.git intact
@@ -72,35 +67,19 @@ cd intact
 bash scripts/prepare_package.sh <tag> /media/usb    # writes intact-upgrade-<tag>.tar
 ```
 
-Copy **both** the checkout and the `.tar` to the target — `install.sh` lives in
-the checkout, so the package alone is not enough to start.
-
-**On the air-gapped box:**
+Carry **both** the checkout and the `.tar` across — `install.sh` lives in the
+checkout. Then on the air-gapped box:
 
 ```bash
 cd /path/to/intact
-nano config.yaml                                     # IP/domain and passwords
+nano config.yaml                                    # IP/domain and passwords
 sudo bash install.sh --package /media/usb/intact-upgrade-<tag>.tar
 ```
 
-`--package` is repeatable and accepts a directory of per-module assets as well
-as a single wrapped file, so a release downloaded asset-by-asset works without
-re-wrapping:
-
-```bash
-sudo bash install.sh --package /media/usb/assets/        # a directory
-sudo bash install.sh --package a.tar --package b.tar     # several files
-```
-
-**If Docker is not already installed** on the target, also carry the release's
-`<tag>-system-bundle.tar` asset. It contains the Docker engine and the host
-packages (`python3-yaml`, `jq`, `git`, …) as a local apt repository, so the
-installer can satisfy its own prerequisites offline. Put it in the same
-directory as the package, or point `--package` at it explicitly. Without it, an
-air-gapped box with no Docker cannot proceed.
-
-**Upgrading the same box later** uses the same carry-in file and needs neither
-the backend nor the dashboard — see [Upgrades](#upgrades).
+`--package` is repeatable and also takes a directory of per-module assets. If
+Docker is not already installed, carry the release's `<tag>-system-bundle.tar`
+too and put it beside the package — it provides the engine and host packages
+offline.
 
 ## Services & Ports
 
