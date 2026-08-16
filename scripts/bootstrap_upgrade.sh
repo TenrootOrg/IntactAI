@@ -106,7 +106,9 @@ EOF
 # Nothing is rejected as unknown -- an unknown flag is by definition a flag
 # some future engine understands and this file does not, which is the normal
 # case, not an error. Getting this wrong is how argv became a cross-release
-# contract in the first place (see _U_DROPPABLE_OPTS in scripts/upgrade.sh).
+# contract in the first place -- upgrade.sh used to carry an allowlist of
+# flags it was safe to drop when handing to an older engine, which is now
+# deleted along with the argv handover that needed it.
 # ---------------------------------------------------------------------------
 _TAG=""; _ROOT=""; _ENGINE=""; _PKG=""; _LOG=""; _VERIFY=1
 _PREPARE=0; _PREPARE_OUT=""
@@ -249,31 +251,34 @@ _find_engine() {
 }
 
 # ---------------------------------------------------------------------------
-# No engine asset to be had -> hand straight back to the caller's own engine.
+# No engine to be had -> REFUSE. There is deliberately no fallback.
 #
-# Releases published before <tag>-engine.tar.gz existed have no such asset, and
-# an air-gapped operator may be holding one of them on a USB stick for months.
-# Refusing those would turn a design improvement into an outage, so the absence
-# of the new asset is a fallback, not an error: the caller re-runs its own
-# acquire + late-hop path, which is exactly what it did before this file
-# existed. INTACT_UPGRADE_LEGACY is what stops it bouncing back here forever.
+# The earlier draft fell back to running the appliance's own engine. That is
+# precisely the behaviour this whole design exists to remove: the upgrade would
+# then be driven by the code already on the box rather than by the code that
+# shipped with the release being installed, and it would do so SILENTLY, which
+# is the worst version -- an operator reading "upgrade complete" has no way to
+# know which engine produced it.
+#
+# One mechanism, or two mechanisms to keep in agreement forever. Refusing here
+# means the failure is loud, early, and nothing has been touched.
 # ---------------------------------------------------------------------------
-_fall_back_to_caller() {
-    local caller="${INTACT_UPGRADE_CALLER:-}"
-    [[ -f "$caller" ]] || _die "no ${_TAG:+${_TAG} }engine asset could be found or fetched,
-  and there is no local upgrade engine to fall back to.
-  Apply this release from a shell using its own checkout:
-    sudo bash <checkout>/scripts/upgrade.sh ${_TAG}"
+_no_engine() {
+    _die "could not obtain the ${_TAG:+${_TAG} }upgrade engine.
 
-    _warn "no engine asset for ${_TAG:-this package} — it predates the split-out"
-    _warn "  engine. Falling back to this appliance's own upgrade engine, which"
-    _warn "  will hand over from inside the package as it did before."
-    export INTACT_UPGRADE_LEGACY=1
-    exec bash "$caller" --root "$_ROOT" "${_FWD[@]}"
+  The upgrade must run the TARGET release's code, and that code could not be
+  fetched or found. Nothing has been changed.
+
+  Give it the engine directly:
+    --engine <path to ${_TAG:-<tag>}-engine.tar.gz>
+
+  Or extract it from the package you are applying and run it in place:
+    tar -xf <package> '*-engine.tar.gz' && tar -xzf ${_TAG:-<tag>}-engine.tar.gz -C /tmp/engine
+    sudo bash /tmp/engine/scripts/upgrade.sh --root ${_ROOT} <args>"
 }
 
 _ENGINE_TAR="$(_find_engine)" || _ENGINE_TAR=""
-[[ -f "$_ENGINE_TAR" ]] || _fall_back_to_caller
+[[ -f "$_ENGINE_TAR" ]] || _no_engine
 
 # ---------------------------------------------------------------------------
 # Verify. This is about to be given root, so a missing checksum is a decision

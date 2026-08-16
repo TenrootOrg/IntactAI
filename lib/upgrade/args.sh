@@ -107,7 +107,8 @@ parse_upgrade_args() {
             # A VERSIONED FILE INSTEAD OF ARGV, because argv turned out to be a
             # cross-release contract and cross-release contracts are exactly
             # what this design removes: adding --reinstall broke every import
-            # of an earlier package until _U_DROPPABLE_OPTS was bolted on
+            # of an earlier package until an allowlist of droppable flags
+            # was bolted on (since deleted with the argv handover)
             # (2026-08-11). The file carries a `schema` integer and is
             # additive-only -- this engine reads the keys it knows and ignores
             # the rest, so a newer bootstrap can add fields without breaking
