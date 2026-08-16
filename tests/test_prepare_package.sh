@@ -38,6 +38,18 @@ echo "fake deb" > "${FIX}/bundle-src/pkg.deb"
 tar -cf "${FIX}/${TAG}-system-bundle.tar" -C "${FIX}/bundle-src" .
 sha256sum "${FIX}/${TAG}-system-bundle.tar" | awk '{print $1}' > "${FIX}/${TAG}-system-bundle.tar.sha256"
 
+# The upgrade engine. prepare_package.sh REQUIRES this: it has to travel inside
+# the package, because the box that applies one has no network and the
+# bootstrap refuses rather than fall back to that box's own older engine. A
+# package without it cannot be applied, so building one is a hard failure --
+# which means this fixture has to publish it, exactly as a real release does.
+mkdir -p "${FIX}/eng-src/scripts" "${FIX}/eng-src/lib"
+printf '#!/bin/bash\necho engine\n' > "${FIX}/eng-src/scripts/upgrade.sh"
+: > "${FIX}/eng-src/lib/common.sh"; : > "${FIX}/eng-src/install.sh"
+echo 1 > "${FIX}/eng-src/BOOTSTRAP_PROTOCOL"
+tar -czf "${FIX}/${TAG}-engine.tar.gz" -C "${FIX}/eng-src" .
+( cd "${FIX}" && sha256sum "${TAG}-engine.tar.gz" > "${TAG}-engine.tar.gz.sha256" )
+
 cat > "${FIX}/index.json" <<JSON
 {
   "assets": {
@@ -126,6 +138,8 @@ case "\$url" in
     */fake/asset/velociraptor) cp "${FIX}/${TAG}-velociraptor.tar" "\$out" ;;
     */fake/asset/bundle-sha) cp "${FIX}/${TAG}-system-bundle.tar.sha256" "\$out" ;;
     */fake/asset/bundle) cp "${FIX}/${TAG}-system-bundle.tar" "\$out" ;;
+    */${TAG}-engine.tar.gz.sha256) cp "${FIX}/${TAG}-engine.tar.gz.sha256" "\$out" ;;
+    */${TAG}-engine.tar.gz) cp "${FIX}/${TAG}-engine.tar.gz" "\$out" ;;
     *) echo "fake curl: unrecognised URL: \$url" >&2; exit 1 ;;
 esac
 exit 0
