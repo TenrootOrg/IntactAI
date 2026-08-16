@@ -229,8 +229,6 @@ above are a convenience wrapper that launches the same engine.
 ```bash
 sudo bash scripts/upgrade.sh <tag>                     # online
 sudo bash scripts/upgrade.sh --package <file|dir>      # air-gap
-sudo bash scripts/upgrade.sh --package <dir> --dry-run # plan only, changes nothing
-sudo bash scripts/upgrade.sh --list                    # what is available
 
 sudo bash scripts/prepare_package.sh <tag>             # build one carry-in file
 ```
@@ -243,19 +241,7 @@ differ. Everything else is left alone. To choose yourself:
 --only a,b        # just these
 --skip a,b        # everything except these
 --reinstall a,b   # re-apply one already at target (repairs a half-landed upgrade)
---dry-run         # print the plan, change nothing
---plan <tag>      # fetch just the manifest (~0.2 MB) and show the plan, no payload
 ```
-
-**Release shapes.** `20260811` onward publishes one asset per module plus
-`<tag>.index.json` and `<tag>.manifest.json`; `20260810` and earlier publish a
-single `intact-upgrade-<tag>.tar.gz`, split into `.part-NN` when large. Both
-apply identically — point `--package` at a directory of assets, a single file,
-or repeat the flag.
-
-**What survives.** Data volumes and per-box state survive an upgrade. Files no
-package can ship — `modules/*/secrets/*.env`, TLS certificates — are generated
-when missing. Downgrades are refused outright, with no `--force`.
 
 ## Scripts
 
