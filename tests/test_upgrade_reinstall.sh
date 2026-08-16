@@ -173,8 +173,17 @@ else
     fail "the bootstrap execs the forwarded args" "handover no longer passes argv through"
 fi
 
+# --no-verify is not stripped any more -- it is REFUSED, because verifying the
+# engine before running it as root stopped being optional. Assert the refusal
+# exists rather than that the flag is quietly dropped.
+if grep -q -- '--no-verify) _die' "$BOOT"; then
+    ok "--no-verify is refused with a reason, not silently ignored"
+else
+    fail "--no-verify is refused" "it can still skip verification, or dies without saying why"
+fi
+
 # Its own flags must NOT be forwarded: the engine has never heard of them.
-for _own in --engine --no-verify --prepare; do
+for _own in --engine --prepare; do
     if grep -q -- "${_own}" <(sed -n '/^_FWD=()/,/^done$/p' "$BOOT"); then
         ok "${_own} is stripped from the passthrough"
     else

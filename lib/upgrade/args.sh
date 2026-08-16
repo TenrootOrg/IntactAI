@@ -21,10 +21,16 @@
 upgrade_usage() {
     cat <<'USAGE'
 Usage:
-  sudo bash scripts/upgrade.sh <tag>                    upgrade from a GitHub release
-  sudo bash scripts/upgrade.sh --package <file|dir>...  upgrade from local assets
-  sudo bash scripts/upgrade.sh --list                   show available releases
-  sudo bash scripts/upgrade.sh --plan <tag>             show the plan for a release, cheaply
+  sudo bash scripts/bootstrap_upgrade.sh <tag>                   upgrade from a GitHub release
+  sudo bash scripts/bootstrap_upgrade.sh --package <file|dir>    upgrade from local assets
+  sudo bash scripts/upgrade.sh --list                            show available releases
+  sudo bash scripts/upgrade.sh --plan <tag>                      show the plan, cheaply
+
+  bootstrap_upgrade.sh is the command. It fetches the target release's engine,
+  verifies it against its published sha256, and hands over -- so the upgrade
+  runs the code that shipped WITH the release being installed, not this one.
+  THIS script is what it hands over to; running it directly still works and
+  still hops, which is the route for a box too old to bootstrap itself.
 
 Options:
   --package <path>      A release asset, a directory of them, or a single-file
@@ -126,15 +132,17 @@ parse_upgrade_args() {
             --handoff=*) UPGRADE_HANDOFF="${1#*=}"; shift ;;
             # Bootstrap-owned, accepted and ignored HERE.
             #
-            # An operator types these at scripts/upgrade.sh, whose early hop
-            # forwards them to scripts/bootstrap_upgrade.sh -- but this parser
-            # runs first, on the way in, and would otherwise reject them as
-            # "Unknown option" before the hop ever happened. They are also
-            # stripped from the bootstrap's own passthrough, so they never
-            # arrive here a second time after the handover.
+            # An operator types this at scripts/upgrade.sh, whose early hop
+            # forwards it to scripts/bootstrap_upgrade.sh -- but this parser
+            # runs first, on the way in, and would otherwise reject it as
+            # "Unknown option" before the hop ever happened. It is also
+            # stripped from the bootstrap's own passthrough, so it never
+            # arrives here a second time after the handover.
+            #
+            # --no-verify used to be accepted here too. It is gone: verifying
+            # the engine before running it as root is not optional any more.
             --engine)    shift 2 ;;
             --engine=*)  shift ;;
-            --no-verify) shift ;;
             --only)      UPGRADE_ONLY="${2:-}"; shift 2 ;;
             --only=*)    UPGRADE_ONLY="${1#*=}"; shift ;;
             --skip)      UPGRADE_SKIP="${2:-}"; shift 2 ;;

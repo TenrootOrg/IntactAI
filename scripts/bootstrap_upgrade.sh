@@ -86,7 +86,6 @@ Every other flag is passed through untouched.
   --engine <file>  use this engine tarball instead of fetching one (air-gap)
   --prepare [dir]  build a carry-in package for <tag> using the TARGET
                    release's own prepare_package.sh, instead of upgrading
-  --no-verify      skip the sha256 check. Only for a locally built engine.
 
 The air-gapped round trip, both halves running the target's code:
 
@@ -110,7 +109,7 @@ EOF
 # flags it was safe to drop when handing to an older engine, which is now
 # deleted along with the argv handover that needed it.
 # ---------------------------------------------------------------------------
-_TAG=""; _ROOT=""; _ENGINE=""; _PKG=""; _LOG=""; _VERIFY=1
+_TAG=""; _ROOT=""; _ENGINE=""; _PKG=""; _LOG=""
 _PREPARE=0; _PREPARE_OUT=""
 _ARGS=("$@")
 _i=0
@@ -138,7 +137,14 @@ while (( _i < $# )); do
         --package=*) _PKG="${_a#*=}" ;;
         --log)       _LOG="${_ARGS[$((_i+1))]:-}"; _i=$((_i+1)) ;;
         --log=*)     _LOG="${_a#*=}" ;;
-        --no-verify) _VERIFY=0 ;;
+        # Refused HERE, with the reason, rather than forwarded to the engine
+        # for a generic "Unknown option" from a program the operator did not
+        # invoke. It used to skip the sha256 check on code about to be run as
+        # root; there is no version of that which is safe enough to keep.
+        --no-verify) _die "--no-verify has been removed.
+  The engine is verified against its published sha256 before it is run as root,
+  and that is not optional. build_engine_asset.sh writes a .sha256 beside every
+  asset it produces, so a locally built engine has one too." ;;
         -*)          : ;;                       # someone else's flag; pass it on
         *)           [[ -z "$_TAG" ]] && _TAG="$_a" ;;
     esac
@@ -147,8 +153,8 @@ done
 
 # Strip only the flags THIS script owns and re-emits itself.
 #
-#   --engine / --no-verify   ours alone; the target engine has never heard of
-#                            them and exits 2 on "Unknown option".
+#   --engine                 ours alone; the target engine has never heard of
+#                            it and exits 2 on "Unknown option".
 #   --root / --handoff       we pass authoritative values below (--root is
 #                            resolved here, including its default), so leaving
 #                            the originals in would emit each flag twice.
@@ -162,7 +168,6 @@ while (( _i < $# )); do
     case "$_a" in
         --engine|--root|--handoff)          _i=$((_i+1)) ;;   # skip it AND its value
         --engine=*|--root=*|--handoff=*)    : ;;
-        --no-verify)                        : ;;
         # --prepare selects WHICH target script runs; it is never forwarded.
         # Its optional value is skipped only when it is actually a value.
         --prepare)   [[ "${_ARGS[$((_i+1))]:-}" != "" && "${_ARGS[$((_i+1))]:-}" != -* ]] && _i=$((_i+1)) ;;
@@ -186,6 +191,37 @@ fi
 # have one -- it is producing a file to carry elsewhere. Requiring config.yaml
 # or a writable data/tmp there would make the connected half of the air-gapped
 # round trip demand an installed platform it does not need.
+# ---------------------------------------------------------------------------
+# WHERE DOWNLOADS LAND, AND WHERE THE ENGINE IS EXTRACTED. These are different
+# on purpose, and the second one is a security boundary.
+#
+# The appliance tree is OPERATOR-OWNED BY DESIGN -- lib/permissions.sh does
+# `chown -R "${uid}:${gid}" "${SCRIPT_DIR}"`, so data/tmp is
+# `drwxr-xr-x tenroot tenroot`. This script runs as root and execs what it
+# extracts. Extracting into that tree means root executing code out of a
+# directory an unprivileged user can write, and the extraction path is
+# PREDICTABLE because it is keyed on the published release's digest -- so a
+# local user could pre-create engine-<digest>/scripts/upgrade.sh and have it
+# run as root.
+#
+# So the engine goes somewhere only root can write. Downloads may still land in
+# the appliance tree: a tarball there is inert, and it is verified against its
+# sha256 before anything is extracted from it.
+# ROOT-ONLY WHEN WE ARE ROOT; PRIVATE-TEMP OTHERWISE.
+#
+# The hazard is specifically "root execs code out of a directory a lesser user
+# can write". Running unprivileged -- which --prepare does, since packaging
+# needs no root -- that hazard does not exist: the user is executing their own
+# code either way, and demanding a root-only path would simply make the
+# unprivileged paths fail. `mktemp -d` gives 0700 under an unpredictable name,
+# so nobody else can pre-create or tamper with it; the cost is no reuse across
+# calls, which is the right trade for a path that is not privileged.
+if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    _ENGINE_ROOT="/var/lib/intact/engine"
+else
+    _ENGINE_ROOT=""
+fi
+
 if (( _PREPARE )); then
     _TMP="$(mktemp -d 2>/dev/null)" || _die "cannot create a working directory"
     [[ -n "$_PREPARE_OUT" ]] || _PREPARE_OUT="$PWD"
@@ -195,6 +231,17 @@ else
     [[ -f "${_ROOT}/config.yaml" ]] || _warn "no config.yaml under ${_ROOT} — is that the appliance root?"
     _TMP="${_ROOT}/data/tmp"
     mkdir -p "$_TMP" 2>/dev/null || _die "cannot write ${_TMP}"
+fi
+
+# 0700 root-only. `mkdir -m` sets the mode at creation rather than leaving a
+# window where it is world-traversable, and the mode is re-asserted in case the
+# directory already existed with something laxer.
+if [[ -n "$_ENGINE_ROOT" ]]; then
+    mkdir -p "$_ENGINE_ROOT" 2>/dev/null || _die "cannot create ${_ENGINE_ROOT}"
+    chmod 700 "$_ENGINE_ROOT" 2>/dev/null || true
+else
+    _ENGINE_ROOT="$(mktemp -d 2>/dev/null)" \
+        || _die "cannot create a private directory for the engine"
 fi
 
 # ---------------------------------------------------------------------------
@@ -244,9 +291,16 @@ _find_engine() {
     # published before this asset existed, and _fall_back_to_caller handles it
     # in a sentence. Letting curl print "Failed to connect" first makes a normal
     # fallback read like a fault.
-    curl -fLsS --retry 3 --retry-delay 2 --max-time 300 -o "$dest" "$url" 2>/dev/null || return 1
-    curl -fLsS --retry 3 --max-time 60 -o "${dest}.sha256" "${url}.sha256" 2>/dev/null \
-        || _warn "no ${fname}.sha256 published; cannot verify what was downloaded"
+    # --proto/--proto-redir '=https': -L will otherwise follow a redirect to
+    # http/ftp/file. NOT pinning the redirect HOST -- GitHub redirects release
+    # downloads to objects.githubusercontent.com, so a same-host rule would
+    # break every online upgrade. Content is protected by the sha256 below;
+    # this only stops a protocol downgrade.
+    curl -fLsS --proto '=https' --proto-redir '=https' \
+         --retry 3 --retry-delay 2 --max-time 300 -o "$dest" "$url" 2>/dev/null || return 1
+    curl -fLsS --proto '=https' --proto-redir '=https' \
+         --retry 3 --max-time 60 -o "${dest}.sha256" "${url}.sha256" 2>/dev/null \
+        || _warn "could not fetch ${fname}.sha256 — verification below will refuse"
     printf '%s' "$dest"
 }
 
@@ -284,25 +338,32 @@ _ENGINE_TAR="$(_find_engine)" || _ENGINE_TAR=""
 # Verify. This is about to be given root, so a missing checksum is a decision
 # the operator makes explicitly, not a default.
 # ---------------------------------------------------------------------------
-if (( _VERIFY )); then
-    _sha_file=""
-    for _c in "${_ENGINE_TAR}.sha256" "$(dirname "$_ENGINE_TAR")/$(basename "$_ENGINE_TAR").sha256"; do
-        [[ -f "$_c" ]] && { _sha_file="$_c"; break; }
-    done
-    if [[ -n "$_sha_file" ]] && command -v sha256sum >/dev/null 2>&1; then
-        _want="$(awk '{print $1; exit}' "$_sha_file" 2>/dev/null)"
-        _got="$(sha256sum "$_ENGINE_TAR" 2>/dev/null | awk '{print $1}')"
-        if [[ -z "$_want" || "$_want" != "$_got" ]]; then
-            _die "engine checksum mismatch — refusing to run it.
+# VERIFICATION IS NOT OPTIONAL. There used to be a --no-verify escape and a
+# warn-and-continue path when no .sha256 was found. Both meant running
+# downloaded code as root with no check, which is the one thing this script
+# exists to avoid. build_engine_asset.sh writes a .sha256 beside every asset it
+# produces, so even a locally built engine has one -- the escape bought nothing.
+_sha_file=""
+for _c in "${_ENGINE_TAR}.sha256" "$(dirname "$_ENGINE_TAR")/$(basename "$_ENGINE_TAR").sha256"; do
+    [[ -f "$_c" ]] && { _sha_file="$_c"; break; }
+done
+command -v sha256sum >/dev/null 2>&1 \
+    || _die "sha256sum is not available, so the engine cannot be verified.
+  Refusing to run downloaded code as root unchecked."
+[[ -n "$_sha_file" ]] || _die "no .sha256 beside ${_ENGINE_TAR}.
+  The engine cannot be verified, and it is about to be run as root.
+  Either re-download the release (the checksum is published beside the asset),
+  or point --engine at an asset that has its .sha256 next to it."
+
+_want="$(awk '{print $1; exit}' "$_sha_file" 2>/dev/null)"
+_got="$(sha256sum "$_ENGINE_TAR" 2>/dev/null | awk '{print $1}')"
+if [[ -z "$_want" || "$_want" != "$_got" ]]; then
+    _die "engine checksum mismatch — refusing to run it.
   expected ${_want:-<unreadable>}
   got      ${_got:-<unreadable>}
-  Re-download the release, or pass --no-verify if you built this engine yourself."
-        fi
-        _say "engine verified (sha256 ${_got:0:16}…)"
-    else
-        _warn "no sha256 beside the engine tarball; running it unverified"
-    fi
+  Re-download the release."
 fi
+_say "engine verified (sha256 ${_got:0:16}…)"
 
 # ---------------------------------------------------------------------------
 # Extract and check the protocol.
@@ -315,20 +376,65 @@ fi
 # collide on one path.
 _eng_id="$(sha256sum "$_ENGINE_TAR" 2>/dev/null | awk '{print substr($1,1,16)}')"
 [[ -n "$_eng_id" ]] || _eng_id="${_TAG:-pkg}"
-_DEST="${_TMP}/engine-${_eng_id}"
+_DEST="${_ENGINE_ROOT}/engine-${_eng_id}"
 
-if [[ -f "${_DEST}/scripts/upgrade.sh" ]]; then
-    _say "reusing the engine already extracted at ${_DEST}"
+# REUSE IS EARNED, NOT ASSUMED.
+#
+# The first version of this reused any directory whose NAME matched the digest:
+#
+#     if [[ -f "${_DEST}/scripts/upgrade.sh" ]]; then   # <- no verification
+#
+# A name is not a proof. The digest is the published release's, so the path is
+# predictable, and anything able to create that directory could hand root a
+# script of its choosing. What is actually being asserted is "root put this
+# here and nobody else has touched it", so check exactly that: owned by uid 0,
+# mode 0700, and the entry point not writable by group or other.
+_engine_dir_is_trustworthy() {
+    local d="$1" own mode
+    [[ -d "$d" && -f "${d}/scripts/upgrade.sh" ]] || return 1
+    own="$(stat -c '%u' "$d" 2>/dev/null)" || return 1
+    # Must be owned by whoever is about to exec it. As root that means uid 0 --
+    # the whole point. Unprivileged, the engine root is a fresh mktemp dir that
+    # nothing else can reach, so "owned by me" is the same guarantee.
+    [[ "$own" == "${EUID:-$(id -u)}" ]] || return 1
+    mode="$(stat -c '%a' "$d" 2>/dev/null)" || return 1
+    [[ "$mode" == "700" ]] || return 1
+    mode="$(stat -c '%a' "${d}/scripts/upgrade.sh" 2>/dev/null)" || return 1
+    [[ "$mode" =~ [2367]$|[2367][0-9]$ ]] && return 1
+    return 0
+}
+
+if _engine_dir_is_trustworthy "$_DEST"; then
+    _say "reusing the verified engine at ${_DEST}"
 else
+    # Anything that failed the test is replaced, not repaired: we did not put
+    # it there, so we do not know what else is in it.
     rm -rf "$_DEST" 2>/dev/null
-    mkdir -p "$_DEST" 2>/dev/null || _die "cannot create ${_DEST}"
-    tar -xzf "$_ENGINE_TAR" -C "$_DEST" 2>/dev/null \
-        || tar -xf "$_ENGINE_TAR" -C "$_DEST" 2>/dev/null \
-        || _die "could not extract ${_ENGINE_TAR}"
+    # THE TARBALL DOES NOT GET TO DECIDE WHO OWNS THE ENGINE, OR ITS MODES.
+    #
+    # Extracting as root, tar defaults to --same-owner and restores the modes
+    # stored in the archive, ignoring umask entirely. Both defaults are wrong
+    # here. An archive whose entries carry a non-root uid -- including the "./"
+    # entry, which re-chowns the destination directory itself -- would leave
+    # root about to exec files an unprivileged user owns, and that user could
+    # swap them between extraction and exec. Observed directly: a fixture built
+    # by a normal user produced a tenroot-owned engine directory.
+    #
+    # --no-same-owner  -> everything lands root-owned
+    # --no-same-permissions -> modes come from our umask, not the archive
+    #
+    # Done at extraction rather than by chmod/chown afterwards, because those
+    # leave a window in which the files exist with the wrong owner or mode.
+    ( umask 077
+      mkdir -p "$_DEST" || exit 1
+      tar --no-same-owner --no-same-permissions -xzf "$_ENGINE_TAR" -C "$_DEST" 2>/dev/null \
+          || tar --no-same-owner --no-same-permissions -xf "$_ENGINE_TAR" -C "$_DEST" 2>/dev/null ) \
+        || _die "could not extract ${_ENGINE_TAR} to ${_DEST}"
+    chmod 700 "$_DEST" 2>/dev/null || true
     # Keep the few most recent and drop the rest, so a box that has upgraded a
     # dozen times is not storing a dozen engines. Best-effort by design: a
     # failure to prune must never fail an upgrade.
-    ls -1dt "${_TMP}"/engine-* 2>/dev/null | tail -n +4 | while read -r _old; do
+    ls -1dt "${_ENGINE_ROOT}"/engine-* 2>/dev/null | tail -n +4 | while read -r _old; do
         [[ "$_old" == "$_DEST" ]] || rm -rf "$_old" 2>/dev/null
     done
 fi
@@ -361,6 +467,22 @@ if (( _proto > _BOOTSTRAP_KNOWS )); then
     sudo bash ${_DEST}/scripts/upgrade.sh --root ${_ROOT} <args>" 2
 fi
 
+# NOTHING GROUP- OR WORLD-WRITABLE MAY BE EXEC'D.
+#
+# scripts/upgrade.sh applies the same rule to its own libs and `chmod`s the
+# problem away ("a group-writable lib/ is a privilege-escalation path"). Here we
+# extracted the tree ourselves, under umask 077, into a root-only directory --
+# so a writable file means an assumption has already failed. Refuse; do not
+# repair. Repairing would hide whatever put it there.
+_offender=""
+while IFS= read -r _f; do
+    _m="$(stat -c '%a' "$_f" 2>/dev/null)" || continue
+    if [[ "$_m" =~ [2367]$|[2367][0-9]$ ]]; then _offender="$_f"; break; fi
+done < <(find "$_DEST" -type f -name '*.sh' 2>/dev/null)
+[[ -z "$_offender" ]] || _die "the extracted engine has a group- or world-writable file:
+    ${_offender}
+  Refusing to run it as root. Remove ${_DEST} and retry."
+
 # Syntax-check before handing over. Nothing on the appliance has been touched
 # at this point -- only a download and an extraction -- so a broken engine is
 # refused for free here, instead of dying mid-module with no rollback.
@@ -388,11 +510,9 @@ _HANDOFF="${_TMP}/upgrade-handoff-$$.json"
     printf '  "engine_tarball": "%s",\n' "$_ENGINE_TAR"
     printf '  "target_tag": "%s",\n'     "${_TAG}"
     printf '  "package": "%s",\n'        "${_PKG}"
-    printf '  "verified": %s\n'          "$( ((_VERIFY)) && echo true || echo false )"
+    printf '  "verified": true\n'
     printf '}\n'
 } > "$_HANDOFF" 2>/dev/null || _HANDOFF=""
-
-export INTACT_UPGRADE_ENGINE_DIR="$_DEST"
 
 # --prepare: hand to the target's packager. Its signature is
 # `prepare_package.sh <tag> [output_dir] [modules_csv]` -- positional, and it
@@ -416,7 +536,10 @@ _say "handing over to the ${_TAG:-target} release's own upgrade engine"
 _say "  ${_TARGET}"
 
 export INTACT_UPGRADE_REEXEC=1
-export INTACT_UPGRADE_HANDOFF="$_HANDOFF"
+# --handoff is passed as a FLAG, not also as an env var. It used to be both;
+# since this exec's directly the environment would survive, so the pair was
+# redundant. The flag wins because it is visible in `ps` and in the launcher's
+# recorded command, which is where anyone debugging a run will look.
 
 _exec=(bash "$_TARGET" --root "$_ROOT")
 [[ -n "$_HANDOFF" ]] && _exec+=(--handoff "$_HANDOFF")
