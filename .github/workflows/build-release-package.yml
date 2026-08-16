@@ -83,13 +83,17 @@ on:
   #
   # TEMPORARY (2026-08-12) — re-enabled to test the intact-20260726 ->
   # intact-20260811 upgrade path end to end via a real release publish.
-  # RE-DISABLE (comment this back out) once that test is done: leaving it on
-  # doubles build time/resources for every future release, which is exactly
-  # why it was turned off in the first place.
-  # Back on 2026-08-12: this is the shape being cut right now, for a stuck
-  # intact-20260726 box -- the only shape such a box can take.
-  release:
-    types: [published]
+  # That test finished; this was never turned back off, so every release
+  # since kept building a second ~5.5 GB copy of itself for nothing --
+  # confirmed 2026-08-16 with both workflows firing on the same publish, the
+  # OLD one finishing while the NEW one was still running.
+  #
+  # RE-DISABLED 2026-08-16 (commented back out, as the note above always said
+  # to do once the test was done). workflow_dispatch stays live below: if a
+  # stuck intact-20260726 box turns up, dispatch this workflow by hand
+  # against the tag and it produces exactly the bundle that box can take.
+  # release:
+  #   types: [published]
   workflow_dispatch:
     inputs:
       tag:
