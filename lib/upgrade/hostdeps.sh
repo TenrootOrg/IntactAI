@@ -18,6 +18,24 @@
 #      installed by something running on the machine, which is what
 #      scripts/update_host_deps.sh is for.
 #
+# TODO (not done, recorded so it is not re-derived): BOTH reasons above are
+# properties of the CONTAINER-launched path only. Invoked from a shell,
+# scripts/upgrade.sh runs ON THE HOST -- there is no helper container to kill,
+# and apt-get is perfectly reachable. The two cases are already distinguishable
+# (upgrade_launcher.py sets the environment the re-exec path keys off; see
+# INTACT_UPGRADE_REEXEC in scripts/upgrade.sh), so a CLI run could apply host
+# deps itself and only the dashboard-launched run would stay report-only.
+#
+# That would fold update_host_deps.sh into the upgrade for the case that needs
+# it most: the air-gapped operator, who is already at a shell with the
+# system-bundle in hand and today has to know a second script exists. Two
+# things to settle first -- the Docker restart takes every container down
+# mid-upgrade, so it has to happen BEFORE the module loop rather than during
+# it; and an upgrade that reboots the daemon needs its own confirmation, since
+# "upgrade the platform" and "restart the machine's Docker" are different
+# consents. Deliberately NOT documented in the README yet, so the docs do not
+# describe a split that is expected to go away.
+#
 # WHAT IT CAN HONESTLY SEE. The Docker daemon's version, over docker.sock --
 # that is genuinely the HOST's daemon, not the container's. The other packages
 # in the bundle (python3, jq, curl...) are host state a container cannot

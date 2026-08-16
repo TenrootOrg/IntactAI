@@ -247,32 +247,6 @@ single `intact-upgrade-<tag>.tar.gz`, split into `.part-NN` when large. Both
 apply identically — point `--package` at a directory of assets, a single file,
 or repeat the flag.
 
-### Two different things get upgraded
-
-| | `scripts/upgrade.sh` | `scripts/update_host_deps.sh` |
-|---|---|---|
-| **Upgrades** | the **platform** — module images, containers, backend code, schemas | the **host OS** — Docker engine and apt packages (`python3-yaml`, `jq`, …) |
-| **Touches** | containers only | the machine itself: `apt-get`, and it **restarts Docker** |
-| **Run** | routinely, per release | rarely — only when an upgrade says the host is behind |
-| **Downtime** | per module, seconds | every container on the box, including the dashboard |
-
-You will run `upgrade.sh` many times and `update_host_deps.sh` almost never.
-Most releases need no host change at all.
-
-**Host dependencies are reported, never applied automatically.** An upgrade can
-run inside a helper container, and installing `docker-ce` restarts the daemon —
-which would kill that container mid-run and leave an interrupted `apt` behind.
-Broken dpkg state on the host is worse than the drift it was fixing, and a
-container cannot `apt-get` its host regardless. So the upgrade **tells you** the
-host is behind and stops there; this script is what acts on it, deliberately, as
-a person:
-
-```bash
-sudo bash scripts/update_host_deps.sh --package <dir|system-bundle.tar> --dry-run
-sudo bash scripts/update_host_deps.sh --package <dir|system-bundle.tar>
-sudo bash scripts/update_host_deps.sh --tag <release>    # downloads it (needs internet)
-```
-
 **What survives.** Data volumes and per-box state survive an upgrade. Files no
 package can ship — `modules/*/secrets/*.env`, TLS certificates — are generated
 when missing. Downgrades are refused outright, with no `--force`.
