@@ -986,10 +986,12 @@ def report_header(graph, *, window=None, min_severity="informational") -> str:
     from datetime import datetime, timezone
     assets, findings = scope(graph, window=window, min_severity=min_severity)
     sev = _sev_tally(findings)
-    w = window or {}
-    start, end = (w.get("start") or "open"), (w.get("end") or "now")
     ts = [f.ts for f in findings if f.ts]
     span = f"{min(ts)} → {max(ts)}" if ts else "no time-anchored activity"
+    # Analysis window and severity floor are deliberately NOT here: they restate
+    # the case Configuration rather than describing the evidence, and the
+    # narrative's Limitations section already states the floor where it matters
+    # (as a caveat on what the report could not see, not as a header field).
     rows = [
         "> **All timestamps are UTC.**",
         "",
@@ -1001,8 +1003,6 @@ def report_header(graph, *, window=None, min_severity="informational") -> str:
         f"({sev.get('critical',0)} critical, {sev.get('high',0)} high, "
         f"{sev.get('medium',0)} medium) |",
         f"| **Evidence span** | {span} |",
-        f"| **Analysis window** | {start} → {end} |",
-        f"| **Severity floor** | {min_severity} — findings below this are excluded |",
         f"| **Entities correlated** | {len(graph.entities):,} across {len(graph.relationships):,} links |",
     ]
     return "\n".join(rows) + "\n"
