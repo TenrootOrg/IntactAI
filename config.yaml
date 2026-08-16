@@ -159,7 +159,7 @@ modules:
 project_name: intact
 versions:
   elk: '9.4.4'
-  iris: v2.4.27
+  iris: v2.4.29
   plaso: '20260512'
   portainer: 2.39.5
   timesketch: '20260630'
