@@ -111,6 +111,10 @@ services:
       # account token instead").
       - ELASTICSEARCH_USERNAME=kibana_system
       - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD:-changeme}
+      # xpack.encryptedSavedObjects / security / reporting encryption keys come
+      # from env_file below, NOT from here and NOT from .env — .env is tracked
+      # in git and a credential written there gets staged. See
+      # generate_elk_secrets() in lib/modules/elk.sh for the whole rationale.
       - xpack.security.enabled=true
       - xpack.spaces.enabled=false
       - SERVER_NAME=kibana
@@ -125,6 +129,12 @@ services:
       - SERVER_SSL_ENABLED=true
       - SERVER_SSL_CERTIFICATE=/certs/cert.crt
       - SERVER_SSL_KEY=/certs/key.key
+    # Generated once per box by generate_elk_secrets() (lib/modules/elk.sh) and
+    # never rotated — the key is what decrypts saved objects already written.
+    # Both install (orchestrator + deploy_elk) and upgrade (lib/upgrade/modules/
+    # elk.sh) create it before any compose up here, so it is always present.
+    env_file:
+      - ./secrets/kibana-keys.env
     volumes:
       - ../nginx/ssl/nginx-cert.crt:/certs/cert.crt:ro
       - ../nginx/ssl/nginx-cert.key:/certs/key.key:ro

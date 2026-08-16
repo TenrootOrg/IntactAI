@@ -49,6 +49,12 @@ run_post_install_init() {
         log_warn "Maintenance had issues - check logs above"
     fi
     rm -f "$maintenance_output"
+
+    # Last thing before the service tests: Kibana has been up for minutes by
+    # now, so its indices exist and can finally be swept. See
+    # elk_settle_single_node_replicas() for why this cannot live in the ELK init
+    # container. Non-fatal by design.
+    elk_settle_single_node_replicas || true
 }
 
 # ============================================================================

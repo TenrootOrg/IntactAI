@@ -137,6 +137,26 @@ services:
       - timesketch_upload:/usr/share/timesketch/upload
       - timesketch_logs:/var/log/timesketch
     restart: unless-stopped
+    # timesketch-web is the DB INITIALISER for the whole stack: the vendor
+    # entrypoint creates the schema, and web-legacy / web-v3 / worker all run
+    # that same entrypoint. They used `depends_on: - timesketch-web` in short
+    # form, which waits only for the container to be CREATED — so on a fresh
+    # install four containers raced to create the same tables and the loser
+    # died:
+    #   psycopg2.errors.DuplicateTable: relation "user" already exists
+    #   [ERROR] Exception in worker process   (gunicorn, wsgi_error.log)
+    # Observed 2026-08-16. This healthcheck is what lets the dependants wait
+    # for "schema is ready" instead of "process has been spawned".
+    #
+    # Plain HTTP on the container's own port: the vendor app serves HTTP here
+    # and timesketch-nginx is what terminates TLS. 302 is a pass (it redirects
+    # to the login page), which is why --fail alone is not enough.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -o /dev/null -w '%{http_code}' http://localhost:5000/ | grep -qE '^(200|302)$$'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
     depends_on:
       timesketch-postgres:
         condition: service_healthy
@@ -172,7 +192,13 @@ services:
       - timesketch_logs:/var/log/timesketch
     restart: unless-stopped
     depends_on:
-      - timesketch-web
+      # LONG form with a condition, not `- timesketch-web`. This container runs
+      # the same vendor entrypoint, which creates the schema; the short form
+      # waits only for timesketch-web to be created, so both raced the DB and
+      # the loser died on `DuplicateTable: relation "user" already exists`.
+      # See the healthcheck on timesketch-web.
+      timesketch-web:
+        condition: service_healthy
     networks:
       - intact_network        # reached by timesketch-nginx
       - timesketch_internal   # reaches postgres / opensearch / redis
@@ -197,7 +223,13 @@ services:
       - timesketch_logs:/var/log/timesketch
     restart: unless-stopped
     depends_on:
-      - timesketch-web
+      # LONG form with a condition, not `- timesketch-web`. This container runs
+      # the same vendor entrypoint, which creates the schema; the short form
+      # waits only for timesketch-web to be created, so both raced the DB and
+      # the loser died on `DuplicateTable: relation "user" already exists`.
+      # See the healthcheck on timesketch-web.
+      timesketch-web:
+        condition: service_healthy
     networks:
       - intact_network        # reached by timesketch-nginx
       - timesketch_internal   # reaches postgres / opensearch / redis
@@ -248,7 +280,13 @@ services:
       - timesketch_logs:/var/log/timesketch
     restart: unless-stopped
     depends_on:
-      - timesketch-web
+      # LONG form with a condition, not `- timesketch-web`. This container runs
+      # the same vendor entrypoint, which creates the schema; the short form
+      # waits only for timesketch-web to be created, so both raced the DB and
+      # the loser died on `DuplicateTable: relation "user" already exists`.
+      # See the healthcheck on timesketch-web.
+      timesketch-web:
+        condition: service_healthy
     networks:
       - intact_network        # reached by timesketch-nginx
       - timesketch_internal   # reaches postgres / opensearch / redis

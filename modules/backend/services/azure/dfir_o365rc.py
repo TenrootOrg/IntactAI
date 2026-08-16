@@ -58,6 +58,33 @@ def is_available() -> Dict[str, any]:
         'message': ''
     }
 
+    # DON'T PROBE A MODULE THE OPERATOR TURNED OFF. The dashboard polls
+    # /api/config/azure/certificate on every Settings render, and this ran
+    # `docker image inspect` unconditionally — so a box with
+    # `modules.o365rc.enabled: false` logged, forever:
+    #
+    #   [warning]   Command failed: Error response from daemon:
+    #               No such image: anssi/dfir-o365rc:latest
+    #
+    # The image is absent because the module is off, which is the configured
+    # outcome, not a fault. Answering with the real reason is also more useful
+    # than "image not found": that told the operator to `docker pull` something
+    # they had deliberately declined, and on an air-gapped box they cannot.
+    #
+    # Checked here rather than in the route so every caller — the route,
+    # collectors.py, and the two internal callers below — agrees.
+    try:
+        from config import is_module_enabled
+        if not is_module_enabled('o365rc'):
+            result['message'] = ('Microsoft 365 / Azure collection is disabled in '
+                                 'config.yaml (modules.o365rc.enabled). Enable it and '
+                                 're-run install.sh to set it up.')
+            return result
+    except Exception:
+        # Config unreadable — fall through and probe, which is the old
+        # behaviour and strictly more informative than guessing.
+        pass
+
     # Check Docker image
     check = run_command(f"docker image inspect {_docker_image()}", logger=None)
     result['has_image'] = check.get('success', False)

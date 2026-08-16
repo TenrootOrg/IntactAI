@@ -997,10 +997,6 @@ create_velociraptor_collector() {
 # =============================================================================
 
 download_sigma_rules() {
-    _airgap_asset_check "SIGMA detection rules" "/opt/sigma-rules/rules" \
-        "cloud detection packs (aws_sigma / o365rc) will have no rules" \
-        && return 0
-
     # Download SIGMA detection rules for Azure security automation
     # Clones SigmaHQ rules repository for offline use
 
@@ -1010,6 +1006,50 @@ download_sigma_rules() {
     local cloudtrail_enabled=$(read_config "['modules']['aws_sigma']['enabled']")
     if ! is_enabled "$azure_enabled" && ! is_enabled "$cloudtrail_enabled"; then
         log_info "Azure + CloudTrail modules disabled, skipping SIGMA rules download"
+        return 0
+    fi
+
+    # AIR-GAP. This used to lead with a bare _airgap_asset_check whose
+    # consequence line read "cloud detection packs (aws_sigma / o365rc) will
+    # have no rules" -- fired BEFORE the enabled-checks above and with no
+    # knowledge of the bundled rule pack, so it was wrong in both directions.
+    # The 2026-08-16 install warned about o365rc, which is DISABLED, and about
+    # aws_sigma, which logged "AWS SIGMA rule pack 2026.04 installed (57
+    # rules)" a second later: install_bundled_rule_packs() feeds
+    # /opt/sigma-rules/rules/cloud/aws straight from the package and never
+    # needs the SigmaHQ clone at all.
+    #
+    # So name only the packs that will ACTUALLY end up ruleless: enabled, and
+    # with no other source of rules. When that list is empty there is nothing
+    # to warn about and the run should say so rather than manufacturing a
+    # warning it will then have to explain away.
+    if [[ "${INTACT_AIRGAP:-0}" == "1" ]]; then
+        if [[ -e /opt/sigma-rules/rules ]]; then
+            log_info "  SIGMA detection rules: already present (staged from the package) — not downloading"
+            return 0
+        fi
+
+        local -a stranded=()
+        # o365rc has exactly one source: the SigmaHQ clone. Offline, an
+        # enabled o365rc genuinely ends up with no Azure rules.
+        is_enabled "$azure_enabled" && stranded+=("o365rc")
+        # aws_sigma is fed by the bundled pack instead, staged into
+        # data/tmp/rule-packs/ by the image loader and applied by
+        # install_bundled_rule_packs(). Both spellings, same as there.
+        if is_enabled "$cloudtrail_enabled" \
+                && ! compgen -G "${SCRIPT_DIR}/data/tmp/rule-packs/aws_sigma-*.tar" >/dev/null 2>&1 \
+                && ! compgen -G "${SCRIPT_DIR}/data/tmp/rule-packs/cloudtrail-*.tar" >/dev/null 2>&1; then
+            stranded+=("aws_sigma")
+        fi
+
+        if (( ${#stranded[@]} > 0 )); then
+            local names="${stranded[*]}"
+            log_warn "  SIGMA detection rules: NOT in the package and cannot be downloaded offline."
+            log_warn "    Consequence: ${names// /, } will have no detection rules"
+            INSTALL_WARNINGS+=("  air-gap: SIGMA detection rules unavailable — ${names// /, } will have no detection rules")
+        else
+            log_info "  SIGMA detection rules: not in this package, and not needed — every enabled cloud pack gets its rules from elsewhere"
+        fi
         return 0
     fi
 

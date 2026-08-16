@@ -53,6 +53,13 @@ modules/portainer/secrets/*
 modules/volweb/secrets/*
 !modules/volweb/secrets/.gitkeep
 
+# Kibana's xpack encryptedSavedObjects / security / reporting encryption keys
+# (generated on install). Same reason as the Timesketch entry below: NOT
+# modules/elk/.env, which is tracked. These are never rotated — the key is
+# what decrypts every saved object already written.
+modules/elk/secrets/*
+!modules/elk/secrets/.gitkeep
+
 # Timesketch Postgres password (generated on install). NOT modules/timesketch/
 # .env — that file is tracked, so a credential written there gets staged by the
 # next `git add`.

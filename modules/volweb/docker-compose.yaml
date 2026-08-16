@@ -86,6 +86,31 @@ services:
     depends_on:
       - intact_volweb_postgresdb
       - intact_volweb_redis
+    # THE MIGRATOR. All three backend-image containers (this, workers,
+    # workers_yarascan) run the same upstream entrypoint, which does
+    # `manage.py migrate` before starting its process. On a fresh install they
+    # raced the empty database and two of them died:
+    #   psycopg2.errors.DuplicateTable: relation "authtoken_token" already exists
+    #   psycopg2.errors.DuplicateTable: relation "django_celery_results_groupresult" already exists
+    # `restart: unless-stopped` papered over it ~30 s later, so the install
+    # "succeeded" with two full tracebacks in it and a window in which a
+    # migration could half-apply. Observed 2026-08-16.
+    #
+    # Electing one migrator and gating the others on it is the same shape the
+    # workers_yarascan comment below already uses for the shared-media-dir
+    # race. Daphne binds :8000 only AFTER migrate returns, so "answering on
+    # 8000" is a true signal that the schema is settled — which is exactly what
+    # deploy_volweb() has always waited for by hand.
+    #
+    # 404 counts as healthy: the app serves no route at / or /api/health (it
+    # logs "Not Found: /api/health"), and the question here is only whether
+    # daphne is up. --fail alone would therefore never pass.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/ | grep -qE '^(200|301|302|404)$$'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
     environment:
       - DATABASE=postgres
       - DATABASE_HOST=intact_volweb_postgresdb
@@ -161,9 +186,20 @@ services:
     # single long extraction is unaffected.
     command: celery -A backend worker --loglevel=INFO -Q celery --max-memory-per-child 3000000 --max-tasks-per-child 8
     restart: unless-stopped
+    # Mapping form throughout — compose rejects a depends_on that mixes the
+    # list and mapping spellings, so the two plain waits are spelled with the
+    # explicit `service_started`, which is what the short form means anyway.
     depends_on:
-      - intact_volweb_redis
-      - intact_volweb_postgresdb
+      intact_volweb_redis:
+        condition: service_started
+      intact_volweb_postgresdb:
+        condition: service_started
+      # Wait for the migrator (see intact_volweb_backend's healthcheck). This
+      # container's entrypoint runs `manage.py migrate` too; by the time it
+      # does, every migration is already applied and it is a no-op instead of
+      # a DuplicateTable crash.
+      intact_volweb_backend:
+        condition: service_healthy
     environment:
       - DATABASE=postgres
       - DATABASE_HOST=intact_volweb_postgresdb
@@ -229,10 +265,19 @@ services:
     # with condition: service_started is a one-shot wait — once workers
     # is up, yarascan launches; afterwards Docker's restart policy keeps
     # both alive independently as designed.
+    # Mapping form for the same reason as intact_volweb_workers above.
     depends_on:
-      - intact_volweb_redis
-      - intact_volweb_postgresdb
-      - intact_volweb_workers
+      intact_volweb_redis:
+        condition: service_started
+      intact_volweb_postgresdb:
+        condition: service_started
+      # Unchanged in meaning: still the one-shot "workers is up" wait that
+      # serialises the shared volweb_media mkdir described above.
+      intact_volweb_workers:
+        condition: service_started
+      # And, like workers, wait for migrations to be settled by the migrator.
+      intact_volweb_backend:
+        condition: service_healthy
     environment:
       - DATABASE=postgres
       - DATABASE_HOST=intact_volweb_postgresdb

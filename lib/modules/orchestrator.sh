@@ -24,6 +24,10 @@ start_services() {
     echo ""
     generate_portainer_secrets
     echo ""
+    # Kibana's encryption keys — must exist before deploy_elk, which is [1/8]
+    # and whose compose file declares secrets/kibana-keys.env as an env_file.
+    generate_elk_secrets
+    echo ""
     # No nginx Basic Auth secret to generate any more — the dashboard login is
     # now an application-level session set up in the browser on first visit
     # (config.yaml's top-level `first_login: true`, handled by

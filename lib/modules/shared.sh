@@ -82,7 +82,42 @@ PYFIX
 
 generate_certificates() {
     log_info "Generating SSL certificates..."
-    local domain="${DOMAIN:-localhost}"
+
+    # DOMAIN is exported by exactly one thing in this repo: scripts/change_ip.sh.
+    # install.sh never set it, so the old `${DOMAIN:-localhost}` meant EVERY
+    # fresh install -- online and air-gapped alike -- issued CN=localhost for
+    # the one cert that serves nginx (443), Kibana's native TLS (5601) and
+    # IRIS's web cert. A name mismatch on every service, on a run that reports
+    # SUCCESS. The 2026-08-16 air-gapped install logged, four lines apart:
+    #     [INFO] Domain: 192.168.120.10
+    #     [INFO]   Generating Nginx SSL certificate for domain: localhost
+    # It stayed invisible because change_ip.sh DOES export DOMAIN and the
+    # README recommends re-running it as the repair tool, so everyone who hit
+    # this fixed it by accident.
+    #
+    # config.yaml is the same source lib/config.sh:386 already stamps
+    # VELOX_PUBLIC_IP from, so the cert and Velociraptor now agree by
+    # construction. change_ip.sh's export still takes precedence, so its
+    # behaviour is unchanged.
+    local domain="${DOMAIN:-$(read_config "['domain']")}"
+    [[ -z "$domain" || "$domain" == "None" ]] && domain="localhost"
+
+    # subjectAltName, not CN alone. Every current browser ignores CN for name
+    # matching (RFC 2818 deprecated it; Chrome dropped the fallback in 58), so
+    # a CN-only cert is rejected even when the CN is exactly right -- fixing
+    # the CN above without this would swap one silent mismatch for another.
+    #
+    # localhost/127.0.0.1 are ALWAYS in the list alongside the real domain,
+    # because the installer's own gates dial the loopback name:
+    # "Waiting for TimeSketch API (https://localhost:5000)" and Kibana's
+    # healthcheck on https://localhost:5601. Both pass -k today; keeping them
+    # in the SAN means a later tightening cannot strand them.
+    local san="DNS:localhost,IP:127.0.0.1"
+    if [[ "$domain" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+        san="IP:${domain},${san}"
+    elif [[ "$domain" != "localhost" ]]; then
+        san="DNS:${domain},${san}"
+    fi
 
     # Nginx SSL
     local nginx_ssl="${SCRIPT_DIR}/modules/nginx/ssl"
@@ -97,9 +132,11 @@ generate_certificates() {
     # FORCE_CERT_REGEN=1 and must NOT `rm` the cert first.
     if [[ ! -f "$nginx_ssl/nginx-cert.crt" || "${FORCE_CERT_REGEN:-0}" == "1" ]]; then
         log_info "  Generating Nginx SSL certificate for domain: $domain"
+        log_info "    subjectAltName: $san"
         openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
             -keyout "$nginx_ssl/nginx-cert.key" \
             -out "$nginx_ssl/nginx-cert.crt" \
+            -addext "subjectAltName=${san}" \
             -subj "/CN=$domain/O=Intact.AI/C=US" 2>/dev/null
         log_success "  Generated Nginx SSL certificate"
     else
@@ -483,7 +520,22 @@ preflight_host_check() {
     # DNS — only a warning. Some modules don't need internet (e.g. the
     # offline-apply path), so a broken /etc/resolv.conf shouldn't block
     # them. install.sh's online path needs github.com though.
-    if ! getent hosts github.com >/dev/null 2>&1; then
+    #
+    # NOT ASKED AT ALL WHEN AIR-GAPPED. There is no internet by construction,
+    # so "DNS lookup failed" is not a finding -- it is the premise. The
+    # 2026-08-16 air-gapped install ended on 8 warnings of which FIVE were this
+    # line, one per module, each printed immediately before that same module
+    # logged "images already loaded from the package — not pulling". Warnings
+    # that are always wrong train an operator to skim past the one that isn't.
+    #
+    # INTACT_AIRGAP is set by lib/args.sh (exported at :235) whenever --package
+    # was given, and lib/deps.sh:536 already skips the connectivity check on
+    # exactly this flag -- this is the same decision, one layer down. Say the
+    # probe was skipped rather than passing silently, matching the convention
+    # the systemd probe above already uses.
+    if [[ "${INTACT_AIRGAP:-0}" == "1" ]]; then
+        log_info "  [preflight $module_name] air-gapped — skipping the DNS probe (no registry or GitHub fetch will be attempted)"
+    elif ! getent hosts github.com >/dev/null 2>&1; then
         log_warn "  [preflight $module_name] DNS lookup for github.com failed — online image pulls may fail"
     fi
 

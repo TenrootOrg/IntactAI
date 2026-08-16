@@ -4,6 +4,7 @@ Config Routes - Configuration endpoints (frontend config, cloud config)
 """
 
 import json
+import time
 from flask import Blueprint, jsonify, request
 from services.file_storage_service import load_frontend_config, save_frontend_config
 
@@ -273,6 +274,28 @@ def _alias_entries_for_provider(provider: str):
     return out
 
 
+# How long to leave a provider's bootstrap refresh alone after one fails.
+#
+# "Bootstrap when the catalog file is missing" re-fired on EVERY request,
+# because on an air-gapped box the file is missing permanently. The 2026-08-16
+# install logged ~15 of these in 24 seconds, each a DNS lookup + HTTPS attempt
+# blocking a request thread while the dashboard polled:
+#
+#   [OPENROUTER-CATALOG] Fetching OpenRouter model catalog from https://openrouter.ai/api/v1/models...
+#   [OPENROUTER-CATALOG] [warning] Fetch failed: ... Temporary failure in name resolution
+#   ... x15
+#
+# Five minutes is short enough that a box which has just been given a network
+# recovers on its own without anyone thinking about it, and long enough that a
+# permanently offline box stops hammering a name it cannot resolve.
+#
+# Per provider, in memory only: a backend restart is itself a reasonable "try
+# again now" signal, and persisting a negative result risks outliving the
+# condition that caused it.
+_CATALOG_BOOTSTRAP_COOLDOWN_S = 300
+_catalog_bootstrap_failed_at: dict = {}
+
+
 def _serve_catalog(catalog_module, provider_name: str, bootstrap: bool = True):
     """Standard wrapper: prepend alias entries, then catalog matches.
 
@@ -281,15 +304,32 @@ def _serve_catalog(catalog_module, provider_name: str, bootstrap: bool = True):
     direct providers this is a no-op when the API key isn't configured
     — `refresh_catalog` returns success=False without raising.
 
+    A failed bootstrap is remembered for _CATALOG_BOOTSTRAP_COOLDOWN_S so an
+    offline box stops retrying on every poll. The explicit
+    "Update catalog" button calls refresh_catalog() directly and is
+    deliberately NOT gated by this — an operator who has just plugged in a
+    network should not be told to wait.
+
     Aliases ALWAYS appear (modulo the search filter) so the dropdown is
     never empty, even when no API key is configured for the provider.
     """
     q, limit, offset = _parse_catalog_query()
     if bootstrap and not catalog_module.load_catalog():
-        try:
-            catalog_module.refresh_catalog()
-        except Exception as e:
-            print(f"[CATALOG] Bootstrap refresh failed: {e}", flush=True)
+        last_fail = _catalog_bootstrap_failed_at.get(provider_name, 0)
+        if (time.time() - last_fail) < _CATALOG_BOOTSTRAP_COOLDOWN_S:
+            pass  # cooling down; serve aliases/mirror instead of re-dialling
+        else:
+            try:
+                result = catalog_module.refresh_catalog()
+                # refresh_catalog reports failure by return value, not by
+                # raising — an unreachable host comes back {'success': False}.
+                if isinstance(result, dict) and not result.get("success"):
+                    _catalog_bootstrap_failed_at[provider_name] = time.time()
+                else:
+                    _catalog_bootstrap_failed_at.pop(provider_name, None)
+            except Exception as e:
+                _catalog_bootstrap_failed_at[provider_name] = time.time()
+                print(f"[CATALOG] Bootstrap refresh failed: {e}", flush=True)
     catalog_result = catalog_module.search(q=q, limit=limit, offset=offset)
     q_lower = (q or "").strip().lower()
 

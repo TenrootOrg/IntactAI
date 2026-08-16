@@ -28,6 +28,13 @@ upgrade_module_elk() {
     u_do "host preflight" -- preflight_host_check "ELK Stack"
     u_do "shared TLS cert" -- _u_ensure_nginx_cert
     u_do "elasticsearch credentials" -- ensure_elk_credentials
+    # Same reasoning as ensure_elk_credentials directly above: seeded on BOTH
+    # paths, never rotated. A box installed before the keys existed has been
+    # running on a random-per-boot key, so first generation here loses nothing
+    # — there is no saved object encrypted under a stable key to orphan. It
+    # must run before the compose up below, which now reads
+    # secrets/kibana-keys.env as an env_file.
+    u_do "kibana encryption keys" -- generate_elk_secrets
 
     bak="$(backup_file_for_rollback "$envf")" || bak=""
     u_undo "_u_compose_up_old elk"

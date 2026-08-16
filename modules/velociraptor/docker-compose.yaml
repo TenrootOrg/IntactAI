@@ -62,6 +62,22 @@ services:
       - "8000:8000"             # TLS Frontend (client connections) — public
       - "127.0.0.1:8001:8001"   # gRPC API — backend uses the container name
     restart: unless-stopped
+    # Velociraptor raises its own file-descriptor limit at startup and, with no
+    # ulimits block here, inherits the daemon default and fails:
+    #   "Error increasing limit operation not permitted. This might work better
+    #    as root."
+    # It then runs on the default soft limit. A server fronting every enrolled
+    # endpoint on 8000 while writing the datastore is exactly the workload that
+    # runs out of descriptors, and the failure mode is refused client
+    # connections rather than anything that names fds.
+    #
+    # Same block VolWeb's services already carry. This only raises the SOFT
+    # limit to a hard limit the container is granted, which needs no extra
+    # privilege — do NOT reach for `privileged` here.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     networks:
       - intact_network
 

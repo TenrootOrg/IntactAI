@@ -61,6 +61,16 @@ if [[ "$nodes" == "1" ]]; then
   echo "[elk-setup] Single-node cluster — setting replicas to 0 (a replica cannot be allocated on one node, which is what leaves the cluster yellow forever)."
 
   # New indices, including the ones Kibana creates later.
+  #
+  # priority 0 ON PURPOSE — do not raise it. Composable templates do not merge;
+  # the highest-priority match wins outright, so a `*` template above Elastic's
+  # own logs-*-* / metrics-*-* templates would replace their ECS mappings along
+  # with the replica count. This container is also a one-shot that completes
+  # BEFORE Kibana starts, so it cannot see the indices Kibana creates minutes
+  # later — which is why the cluster was observed drifting back to yellow after
+  # this script correctly reported green (2026-08-16). The follow-up sweep lives
+  # in elk_settle_single_node_replicas() (lib/modules/elk.sh), which runs late in
+  # the install and only when the cluster is actually single-node and yellow.
   curl -s -o /dev/null -u "elastic:${ELASTIC_PASSWORD}" \
     -X PUT "${ES_URL}/_index_template/intact-single-node" \
     -H 'Content-Type: application/json' \

@@ -323,8 +323,27 @@ try:
 except Exception:
     BatchUploadManager = None
 
+# COMPILE PROBE. VolWeb validates each rule with a bare
+# `yara.compile(source=...)` (volatility_engine/engine.py:555) -- no external
+# variables declared -- so any rule referencing `filepath`, `filename` or
+# `extension` fails to compile and is silently unusable at scan time:
+#
+#   ERROR/ForkPoolWorker-17 Syntax error in rule 'webshell_php_by_string_obfuscation':
+#                           line 97: undefined identifier "filepath"
+#
+# 13 of the 1743 rules seeded on 2026-08-16 were in that state, and the
+# install reported a flat "imported 1743 new rule(s)" with no hint of it.
+# Counting them here does NOT change which rules are stored -- dropping rules
+# from the corpus on the strength of a heuristic would be the riskier change,
+# and the underlying fix belongs upstream in how VolWeb calls yara.compile.
+# This only makes the number the installer prints an honest one.
+try:
+    import yara as _yara
+except Exception:
+    _yara = None
+
 specs = json.loads(os.environ['INTACT_YARA_SPECS'])
-out = {'total': 0, 'rulesets': []}
+out = {'total': 0, 'rulesets': [], 'compile_probe': _yara is not None}
 for spec in specs:
     name = spec['name']
     zip_path = spec['zip_path']
@@ -336,6 +355,8 @@ for spec in specs:
     ruleset, _ = YaraRuleSet.objects.get_or_create(name=name, defaults={'description': description})
     created = 0
     skipped = 0
+    uncompilable = 0
+    uncompilable_names = []
     yara_files = []
     extract_dir = tempfile.mkdtemp(prefix='intact-yara-')
     try:
@@ -357,6 +378,16 @@ for spec in specs:
                     mo = re.search(r'rule\s+(\w+)', content)
                     if mo:
                         rule_name = mo.group(1)
+                    # Same call VolWeb's own validator makes, so this predicts
+                    # exactly what it will decide at scan time.
+                    if _yara is not None:
+                        try:
+                            _yara.compile(source=content)
+                        except Exception as _ce:
+                            uncompilable += 1
+                            if len(uncompilable_names) < 5:
+                                uncompilable_names.append(
+                                    '%s (%s)' % (rule_name, str(_ce)[:70]))
                     etag = hashlib.md5(f"{rule_name}_{content}_{source_url}".encode()).hexdigest()
                     obj, was_created = YaraRule.objects.get_or_create(
                         etag=etag,
@@ -387,6 +418,8 @@ for spec in specs:
         'files_found': len(yara_files),
         'created': created,
         'skipped_duplicates': skipped,
+        'uncompilable': uncompilable,
+        'uncompilable_names': uncompilable_names,
     })
 print('INTACT_YARA_RESULT=' + json.dumps(out))
 PYEOF
@@ -415,13 +448,28 @@ for e in json.load(sys.stdin):
     printf '%s' "${result_line#INTACT_YARA_RESULT=}" | python3 -c "
 import json, sys
 r = json.load(sys.stdin)
+bad = sum(rs.get('uncompilable', 0) for rs in r.get('rulesets', []))
 print(f\"  imported {r.get('total', 0)} new rule(s) across {len(r.get('rulesets', []))} ruleset(s)\")
 for rs in r.get('rulesets', []):
     if 'error' in rs:
         print(f\"    x {rs['name']}: {rs['error']}\")
     else:
-        print(f\"    - {rs['name']}: {rs.get('files_found', 0)} files -> \"
-              f\"{rs.get('created', 0)} new, {rs.get('skipped_duplicates', 0)} already present\")
+        line = (f\"    - {rs['name']}: {rs.get('files_found', 0)} files -> \"
+                f\"{rs.get('created', 0)} new, {rs.get('skipped_duplicates', 0)} already present\")
+        if rs.get('uncompilable'):
+            line += f\", {rs['uncompilable']} will not compile\"
+        print(line)
+# Said only when it happened, and with the reason -- 'N rules imported' on its
+# own reads as 'N rules usable', which is what made this invisible.
+if bad:
+    print(f\"  NOTE: {bad} imported rule(s) do not compile and will be skipped at scan time.\")
+    print(f\"        These reference YARA external variables (filepath / filename / extension)\")
+    print(f\"        that VolWeb's scanner does not declare. Examples:\")
+    for rs in r.get('rulesets', []):
+        for nm in (rs.get('uncompilable_names') or [])[:3]:
+            print(f\"          - {nm}\")
+elif not r.get('compile_probe', False):
+    print(f\"  (rule compilation was not verified — the yara module was not importable here)\")
 " | while IFS= read -r _line; do log_info "$_line"; done
     return 0
 }

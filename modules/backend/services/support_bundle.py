@@ -63,13 +63,180 @@ def _list_intact_containers(logger: Callable) -> List[str]:
     return names
 
 
-def _collect_container_logs(container: str, dest_dir: str, logger: Callable) -> Optional[int]:
+# ---------------------------------------------------------------------------
+# Credential scrubbing for anything log-shaped that goes into the bundle.
+#
+# _copy_compose_configs refuses to ship .env files at all, reasoning that "even
+# with redaction they risk leaking secrets if the regex misses a key naming
+# convention". That reasoning is right for a file that is ENTIRELY credentials.
+# It also meant nobody looked at the logs, and the same class of secret walked
+# in through one:
+#
+#   intact_iris_app.log:
+#     WARNING :: post_init :: create_safe_admin :: >>> Administrator password: 123123
+#
+# IRIS prints the admin password on first boot, and every bundle taken from a
+# fresh install has shipped it. Found in intact-support-20260816-105415.zip.
+#
+# This is defence in depth, NOT a licence to relax the .env rule above — an
+# allowlist of what may leave the box beats a denylist of what may not, so the
+# .env exclusion stays exactly as it is.
+#
+# Deliberately anchored on the credential's LABEL rather than on value shapes.
+# Matching "things that look like secrets" would eat hostnames, hashes and
+# base64 payloads that are the whole point of a triage log; matching
+# `password:` cannot.
+_REDACTED = '[REDACTED]'
+
+# Words that appear where a secret would but ARE the diagnostic. Redacting
+# these is worse than useless -- it inverts the meaning of the line. The first
+# pass over the 2026-08-16 bundle turned
+#     github_token: not set
+# into
+#     github_token: [REDACTED] set
+# which tells a support engineer the exact opposite of the truth.
+_NON_SECRET_VALUES = {
+    'not', 'none', 'null', 'nil', 'unset', 'empty', 'missing', 'absent',
+    'n/a', 'na', '-', '--', '(none)', '<none>', '<unset>', '""', "''",
+    'set', 'configured', 'true', 'false', 'yes', 'no', 'ok', 'enabled',
+    'disabled', 'required', 'optional', 'default', 'unknown',
+}
+# Values the emitting program already masked (amqp://guest:**@…,
+# http://elastic:xxxxxx@…). Leaving them as-is keeps the log readable and
+# loses nothing, since there is no secret left in them.
+_ALREADY_MASKED = re.compile(r'^[*x•]+$', re.I)
+# Colourised container logs (Portainer, Velociraptor) put a reset sequence
+# BETWEEN the label and the value, so the captured value starts with an escape
+# rather than with the character the checks below look at. Stripped for the
+# decision only -- the line is written back with its formatting intact.
+_ANSI = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
+
+
+def _is_real_secret(value: str) -> bool:
+    v = _ANSI.sub('', value).strip().strip('.,;)"\'')
+    if not v or v.lower() in _NON_SECRET_VALUES:
+        return False
+    # A FILESYSTEM PATH IS NOT THE SECRET IT POINTS AT. Portainer logs
+    #     generated a new Chisel private key file | private-key=/data/chisel/private-key.pem
+    # and `--admin-password-file=/run/secrets/...` is the same shape. Redacting
+    # these hides where the material lives, which is exactly what a support
+    # engineer needs, while protecting nothing -- the file is not in the bundle.
+    if v.startswith(('/', './', '../', '~/')):
+        return False
+    return not _ALREADY_MASKED.match(v)
+
+
+def _mask_pair(m):
+    """`<label><sep><secret>` -> `<label><sep>[REDACTED]`."""
+    return m.group(0) if not _is_real_secret(m.group(2)) else m.group(1) + _REDACTED
+
+
+def _mask_url(m):
+    """`scheme://user:<secret>@host` -> keeps the trailing `@`."""
+    return m.group(0) if not _is_real_secret(m.group(2)) else m.group(1) + _REDACTED + m.group(3)
+
+
+def _mask_bearer(m):
+    """`Bearer <token>`, but only when the token actually looks like one.
+
+    A plain length threshold matched Velociraptor's
+        GUI will use the Basic authenticator
+    and redacted the word "authenticator". Real tokens are >= 16 chars AND
+    carry a digit or base64/JWT punctuation; English words carry neither.
+    """
+    tok = m.group(2)
+    if len(tok) < 16 or not re.search(r'[0-9._\-+/=]', tok):
+        return m.group(0)
+    return m.group(1) + _REDACTED
+
+
+_SECRET_PATTERNS = [
+    # `password: hunter2`, `POSTGRES_PASSWORD=hunter2`, `passwd = hunter2`, and
+    # IRIS's own arrow form, which it uses in a SECOND line that the `[:=]`
+    # rule alone missed entirely:
+    #   run_post_init :: You can now login with user administrator and
+    #                    password >>> 123123 <<< on 8443
+    # The separator is load-bearing: it keeps prose like "password
+    # authentication failed for user postgres" -- a genuinely useful
+    # diagnostic line -- intact.
+    (re.compile(r'((?:password|passwd|pwd)\s*(?:[:=]|>>>)\s*)(\S+)', re.I), _mask_pair),
+    # Key/token assignments. Scoped to the qualified spellings; a bare `key:`
+    # matches far too much ordinary log and config output to be safe.
+    (re.compile(r'((?:api[_-]?key|secret[_-]?key|encryption[_-]?key|access[_-]?key|'
+                r'private[_-]?key|auth[_-]?token|access[_-]?token|secret|token)'
+                r'\s*[:=]\s*)(\S+)', re.I), _mask_pair),
+    # Authorization: Bearer <jwt>
+    (re.compile(r'((?:Bearer|Basic)\s+)(\S+)'), _mask_bearer),
+    # Credentials inside a URL: scheme://user:secret@host
+    (re.compile(r'(://[^:/@\s]+:)([^@/\s]+)(@)'), _mask_url),
+]
+
+
+def _redact_file(path: str) -> int:
+    """Scrub credentials from a collected log, in place. Returns the number of
+    lines changed (not matches), or 0 if nothing was touched.
+
+    Streams line by line to a sibling temp file rather than reading the whole
+    thing: these go up to SERVICE_LOG_TAIL_BYTES each, and intact_volweb_workers
+    alone was 776 KB in the last bundle.
+
+    Never raises. A bundle that failed to build because redaction hit an
+    undecodable byte would be worse than the thing it is guarding against, and
+    the caller is a best-effort collector throughout.
+    """
+    if not os.path.isfile(path):
+        return 0
+    tmp = path + '.redacting'
+    changed = 0
+    try:
+        # errors='replace' so a binary-ish log line can't abort the pass.
+        with open(path, 'r', encoding='utf-8', errors='replace') as src, \
+                open(tmp, 'w', encoding='utf-8') as dst:
+            for line in src:
+                original = line
+                for pattern, repl in _SECRET_PATTERNS:
+                    line = pattern.sub(repl, line)
+                if line != original:
+                    changed += 1
+                dst.write(line)
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        return 0
+
+    if changed == 0:
+        # Nothing to do — drop the copy rather than churn the original's mtime.
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+        return 0
+    try:
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+        return 0
+    return changed
+
+
+def _collect_container_logs(container: str, dest_dir: str, logger: Callable,
+                            redaction: Optional[Dict] = None) -> Optional[int]:
     """Write `docker logs --tail N --timestamps <container>` to a file.
     Returns the line count on success, None on failure.
 
     If the container produces no stdout (e.g. timesketch_web logs to file,
     not stdout), we drop the resulting 0-byte file from the bundle —
     the manifest still records `log_lines: 0` so the absence is observable.
+
+    `redaction`, when given, accumulates {'files', 'lines'} for the manifest —
+    see _redact_file. Credentials are scrubbed before the file is counted, so
+    the line count reported is the count of what actually ships.
     """
     out_path = os.path.join(dest_dir, f"{container}.log")
     # --tail and --timestamps both supported on every modern docker.
@@ -81,6 +248,10 @@ def _collect_container_logs(container: str, dest_dir: str, logger: Callable) -> 
         return None
     if not os.path.exists(out_path):
         return None
+    _n = _redact_file(out_path)
+    if _n and redaction is not None:
+        redaction['files'] = redaction.get('files', 0) + 1
+        redaction['lines'] = redaction.get('lines', 0) + _n
     # Quick line count for the manifest. Cheap because docker logs already
     # capped at CONTAINER_LOG_TAIL_LINES.
     try:
@@ -109,7 +280,8 @@ _SKIP_LOG_BASENAMES = {
 _SKIP_LOG_DIR_PARTS = {'apt'}  # /var/log/apt/* is always installer noise
 
 
-def _collect_real_log_files(container: str, dest_dir: str, logger: Callable) -> int:
+def _collect_real_log_files(container: str, dest_dir: str, logger: Callable,
+                            redaction: Optional[Dict] = None) -> int:
     """Auto-discover real (non-symlink) log files under /var/log/ inside a
     container and copy them out. Catches the app-level logs that
     `docker logs` misses — gunicorn wsgi_error.log, celery worker.log,
@@ -161,6 +333,10 @@ def _collect_real_log_files(container: str, dest_dir: str, logger: Callable) -> 
         )
         res = _run(cmd, timeout=15)
         if res['success'] and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+            _n = _redact_file(out_path)
+            if _n and redaction is not None:
+                redaction['files'] = redaction.get('files', 0) + 1
+                redaction['lines'] = redaction.get('lines', 0) + _n
             n += 1
         else:
             try:
@@ -631,10 +807,14 @@ def prepare_support_bundle(run_id: str, logger: Callable) -> Dict:
         # Phase 3 — per-container docker logs.
         logger(f"=== Phase 3/7: collecting docker logs (--tail {CONTAINER_LOG_TAIL_LINES}) ===", 'info')
         containers_dir = os.path.join(bundle_root, 'containers')
+        # Accumulated across phases 3 and 4 and reported in the manifest, so a
+        # support engineer reading a line that ends in [REDACTED] knows it was
+        # scrubbed on purpose rather than truncated by a collection bug.
+        redaction: Dict = {'files': 0, 'lines': 0}
         for idx, c in enumerate(containers):
             if _check_cancel():
                 raise RuntimeError('cancelled')
-            lines = _collect_container_logs(c, containers_dir, logger)
+            lines = _collect_container_logs(c, containers_dir, logger, redaction)
             # Merge with any size info seeded in Phase 2 so each container's
             # manifest entry ends up as {'size': '...', 'log_lines': N}.
             entry = manifest['containers'].setdefault(c, {})
@@ -656,10 +836,15 @@ def prepare_support_bundle(run_id: str, logger: Callable) -> Dict:
         for c in containers:
             if _check_cancel():
                 raise RuntimeError('cancelled')
-            n = _collect_real_log_files(c, svc_dir, logger)
+            n = _collect_real_log_files(c, svc_dir, logger, redaction)
             if n:
                 manifest['service_log_files'] += n
                 logger(f"  ✓ {c}: {n} on-disk log file(s)", 'info')
+
+        manifest['redacted'] = dict(redaction)
+        if redaction['lines']:
+            logger(f"  ✓ scrubbed credentials from {redaction['lines']} line(s) "
+                   f"across {redaction['files']} log file(s)", 'info')
 
         # Phase 5 — every workflow run as JSON.
         update_run_status(run_id, 'running', progress=80)
