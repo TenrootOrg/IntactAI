@@ -77,13 +77,24 @@ _usage() {
 Usage:
   bootstrap_upgrade.sh <tag> [--root <dir>] [passthrough args...]
   bootstrap_upgrade.sh --package <file|dir> [--engine <file>] [--root <dir>] [...]
+  bootstrap_upgrade.sh <tag> --prepare [<output-dir>]
 
-Fetches the target release's upgrade engine, verifies it, and hands over to it.
-Every other flag is passed through to that engine untouched.
+Fetches the target release's own code, verifies it, and hands over to it.
+Every other flag is passed through untouched.
 
   --root <dir>     the appliance to act on (default: this script's checkout)
   --engine <file>  use this engine tarball instead of fetching one (air-gap)
+  --prepare [dir]  build a carry-in package for <tag> using the TARGET
+                   release's own prepare_package.sh, instead of upgrading
   --no-verify      skip the sha256 check. Only for a locally built engine.
+
+The air-gapped round trip, both halves running the target's code:
+
+  # on a machine with internet -- needs no appliance
+  bash bootstrap_upgrade.sh intact-20260813 --prepare /media/usb
+
+  # on the air-gapped box
+  sudo bash bootstrap_upgrade.sh --package /media/usb/intact-upgrade-intact-20260813.tar
 EOF
 }
 
@@ -98,12 +109,25 @@ EOF
 # contract in the first place (see _U_DROPPABLE_OPTS in scripts/upgrade.sh).
 # ---------------------------------------------------------------------------
 _TAG=""; _ROOT=""; _ENGINE=""; _PKG=""; _LOG=""; _VERIFY=1
+_PREPARE=0; _PREPARE_OUT=""
 _ARGS=("$@")
 _i=0
 while (( _i < $# )); do
     _a="${_ARGS[$_i]}"
     case "$_a" in
         -h|--help)   _usage; exit 0 ;;
+        # Build a package with the TARGET release's packager rather than with
+        # whatever checkout the operator happens to be standing in. Same
+        # argument as the upgrade itself: the package's shape is decided by the
+        # release it is FOR, so the release it is for should be what writes it.
+        # An optional value, because `--prepare` with no directory is the
+        # common case and should not need a placeholder.
+        --prepare)   _PREPARE=1
+                     case "${_ARGS[$((_i+1))]:-}" in
+                         ""|-*) : ;;
+                         *) _PREPARE_OUT="${_ARGS[$((_i+1))]}"; _i=$((_i+1)) ;;
+                     esac ;;
+        --prepare=*) _PREPARE=1; _PREPARE_OUT="${_a#*=}" ;;
         --root)      _ROOT="${_ARGS[$((_i+1))]:-}"; _i=$((_i+1)) ;;
         --root=*)    _ROOT="${_a#*=}" ;;
         --engine)    _ENGINE="${_ARGS[$((_i+1))]:-}"; _i=$((_i+1)) ;;
@@ -137,6 +161,10 @@ while (( _i < $# )); do
         --engine|--root|--handoff)          _i=$((_i+1)) ;;   # skip it AND its value
         --engine=*|--root=*|--handoff=*)    : ;;
         --no-verify)                        : ;;
+        # --prepare selects WHICH target script runs; it is never forwarded.
+        # Its optional value is skipped only when it is actually a value.
+        --prepare)   [[ "${_ARGS[$((_i+1))]:-}" != "" && "${_ARGS[$((_i+1))]:-}" != -* ]] && _i=$((_i+1)) ;;
+        --prepare=*)                        : ;;
         *)                                  _FWD+=("$_a") ;;
     esac
     _i=$((_i+1))
@@ -151,10 +179,21 @@ if [[ -z "$_ROOT" ]]; then
     _ROOT="$(cd -P "$(dirname "$_self")/.." 2>/dev/null && pwd)"
 fi
 [[ -d "$_ROOT" ]] || _die "appliance root not found: ${_ROOT}"
-[[ -f "${_ROOT}/config.yaml" ]] || _warn "no config.yaml under ${_ROOT} — is that the appliance root?"
 
-_TMP="${_ROOT}/data/tmp"
-mkdir -p "$_TMP" 2>/dev/null || _die "cannot write ${_TMP}"
+# --prepare runs on a BUILD machine, which has no appliance and no reason to
+# have one -- it is producing a file to carry elsewhere. Requiring config.yaml
+# or a writable data/tmp there would make the connected half of the air-gapped
+# round trip demand an installed platform it does not need.
+if (( _PREPARE )); then
+    _TMP="$(mktemp -d 2>/dev/null)" || _die "cannot create a working directory"
+    [[ -n "$_PREPARE_OUT" ]] || _PREPARE_OUT="$PWD"
+    mkdir -p "$_PREPARE_OUT" 2>/dev/null || _die "cannot write ${_PREPARE_OUT}"
+    _PREPARE_OUT="$(cd "$_PREPARE_OUT" && pwd)"
+else
+    [[ -f "${_ROOT}/config.yaml" ]] || _warn "no config.yaml under ${_ROOT} — is that the appliance root?"
+    _TMP="${_ROOT}/data/tmp"
+    mkdir -p "$_TMP" 2>/dev/null || _die "cannot write ${_TMP}"
+fi
 
 # ---------------------------------------------------------------------------
 # Locate the engine tarball. Three sources, in order of how explicit they are.
@@ -270,8 +309,18 @@ tar -xzf "$_ENGINE_TAR" -C "$_DEST" 2>/dev/null \
     || tar -xf "$_ENGINE_TAR" -C "$_DEST" 2>/dev/null \
     || _die "could not extract ${_ENGINE_TAR}"
 
-_TARGET="${_DEST}/scripts/upgrade.sh"
-[[ -f "$_TARGET" ]] || _die "the engine tarball has no scripts/upgrade.sh — it is not an Intact.AI engine asset"
+# Which of the target's scripts we are here to run. Both come out of the same
+# asset, so both are the target release's own code -- which is the whole point:
+# the release decides its own package shape AND how that shape is applied, and
+# neither decision is made by the box that happens to be typing the command.
+if (( _PREPARE )); then
+    _TARGET="${_DEST}/scripts/prepare_package.sh"
+    [[ -f "$_TARGET" ]] || _die "the ${_TAG} engine has no scripts/prepare_package.sh;
+  this release cannot build its own carry-in package."
+else
+    _TARGET="${_DEST}/scripts/upgrade.sh"
+    [[ -f "$_TARGET" ]] || _die "the engine tarball has no scripts/upgrade.sh — it is not an Intact.AI engine asset"
+fi
 
 # Refuse LOUDLY and specifically, rather than misparsing. This is the one
 # branch that makes freezing this file safe.
@@ -319,12 +368,31 @@ _HANDOFF="${_TMP}/upgrade-handoff-$$.json"
     printf '}\n'
 } > "$_HANDOFF" 2>/dev/null || _HANDOFF=""
 
+export INTACT_UPGRADE_ENGINE_DIR="$_DEST"
+
+# --prepare: hand to the target's packager. Its signature is
+# `prepare_package.sh <tag> [output_dir] [modules_csv]` -- positional, and it
+# knows nothing of --root/--handoff, so those are not passed. The engine
+# tarball carries no modules/, which is exactly right here: prepare_package.sh
+# fetches the release's assets itself.
+if (( _PREPARE )); then
+    [[ -n "$_TAG" ]] || _die "--prepare needs a release tag: bootstrap_upgrade.sh <tag> --prepare [dir]"
+    _say "building a ${_TAG} package with that release's own packager"
+    _say "  ${_TARGET}  ->  ${_PREPARE_OUT}"
+    # POSITIONAL, and _FWD is deliberately NOT forwarded. _FWD still contains
+    # the tag (it is a positional, not a flag), so forwarding it would land the
+    # tag in prepare_package.sh's third slot -- modules_csv -- and quietly build
+    # a package for a module named "intact-20260813". Module selection is not
+    # plumbed through this path yet; run the target's prepare_package.sh
+    # directly from ${_DEST} if you need it.
+    exec bash "$_TARGET" "$_TAG" "$_PREPARE_OUT"
+fi
+
 _say "handing over to the ${_TAG:-target} release's own upgrade engine"
 _say "  ${_TARGET}"
 
 export INTACT_UPGRADE_REEXEC=1
 export INTACT_UPGRADE_HANDOFF="$_HANDOFF"
-export INTACT_UPGRADE_ENGINE_DIR="$_DEST"
 
 _exec=(bash "$_TARGET" --root "$_ROOT")
 [[ -n "$_HANDOFF" ]] && _exec+=(--handoff "$_HANDOFF")
