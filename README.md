@@ -61,6 +61,52 @@ nano config.yaml
 sudo bash install.sh
 ```
 
+### Air-gapped installation
+
+The box never reaches the internet. Everything it needs is carried in on one
+file; `--package` makes the installer take **every** image and dependency from
+that file instead of a registry, and fail loudly on anything missing rather than
+quietly reaching out.
+
+**On a machine that HAS internet** (any Linux box with `curl`, `python3`, `tar` —
+it does not have to be an appliance):
+
+```bash
+git clone --branch <tag> https://github.com/TenrootOrg/IntactAI.git intact
+cd intact
+bash scripts/prepare_package.sh <tag> /media/usb    # writes intact-upgrade-<tag>.tar
+```
+
+Copy **both** the checkout and the `.tar` to the target — `install.sh` lives in
+the checkout, so the package alone is not enough to start.
+
+**On the air-gapped box:**
+
+```bash
+cd /path/to/intact
+nano config.yaml                                     # IP/domain and passwords
+sudo bash install.sh --package /media/usb/intact-upgrade-<tag>.tar
+```
+
+`--package` is repeatable and accepts a directory of per-module assets as well
+as a single wrapped file, so a release downloaded asset-by-asset works without
+re-wrapping:
+
+```bash
+sudo bash install.sh --package /media/usb/assets/        # a directory
+sudo bash install.sh --package a.tar --package b.tar     # several files
+```
+
+**If Docker is not already installed** on the target, also carry the release's
+`<tag>-system-bundle.tar` asset. It contains the Docker engine and the host
+packages (`python3-yaml`, `jq`, `git`, …) as a local apt repository, so the
+installer can satisfy its own prerequisites offline. Put it in the same
+directory as the package, or point `--package` at it explicitly. Without it, an
+air-gapped box with no Docker cannot proceed.
+
+**Upgrading the same box later** uses the same carry-in file and needs neither
+the backend nor the dashboard — see [Upgrades](#upgrades).
+
 ## Services
 
 Everything terminates TLS through the main nginx. Access is `https://YOUR_IP`
@@ -163,7 +209,13 @@ Four routes, all the same engine underneath (`scripts/upgrade.sh`):
 | **Online Upgrade** | Dashboard → Settings | The box can reach GitHub |
 | **Prepare Package** | Dashboard → Settings | Build one file to carry to an air-gapped box |
 | **Import Package** | Dashboard → Settings | Apply a package you carried in |
-| **CLI** | shell | Scripted runs, recovery, single-module repair |
+| **CLI** | shell | Air-gapped boxes, scripted runs, recovery, single-module repair |
+
+The CLI route needs **neither the backend nor the dashboard**. `scripts/upgrade.sh`
+talks only to Docker and to this checkout, so it works when the platform is
+broken — which is when you most need it: the backend stopped or crash-looping,
+nginx down and no dashboard, you on SSH with no browser. The dashboard routes
+above are a convenience wrapper that launches the same engine.
 
 ```bash
 sudo bash scripts/upgrade.sh <tag>                     # online
