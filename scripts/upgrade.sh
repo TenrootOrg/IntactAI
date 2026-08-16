@@ -354,7 +354,11 @@ main() {
     # process that actually finishes -- there is no gap where a second
     # invocation could slip in between "handing over" and the target
     # release's own upgrade.sh resuming.
-    if [[ -z "${INTACT_UPGRADE_REEXEC:-}" ]]; then
+    # INTACT_UPGRADE_LEGACY is set by the bootstrap when it could not obtain an
+    # engine asset and handed control straight back here. That process inherits
+    # fd 9 with the lock already held across the `exec`, so re-opening it would
+    # drop and re-take a lock this same process already owns.
+    if [[ -z "${INTACT_UPGRADE_REEXEC:-}" && -z "${INTACT_UPGRADE_LEGACY:-}" ]]; then
         mkdir -p "${SCRIPT_DIR}/data/tmp" 2>/dev/null || true
         exec 9>"${SCRIPT_DIR}/data/tmp/upgrade.lock" 2>/dev/null || true
         if ! flock -n 9; then
@@ -378,6 +382,40 @@ main() {
         fi
         velo_refresh "${UPGRADE_PACKAGE_DIR:-}"
         return $?
+    fi
+
+    # ------------------------------------------------- early hop (stage 1) ---
+    # HAND OVER BEFORE ACQUIRING ANYTHING.
+    #
+    # The late hop further down has always run AFTER acquire -- download the
+    # release, sniff the wrapper, read the manifest, and only then exec the
+    # target's engine. Which means the OLD engine had to correctly parse the
+    # NEW release's package in order to reach the new engine whose job was to
+    # parse it. A release changed its wrapper from .tar to .tar.gz and boxes
+    # could not upgrade at all: the failure landed inside the circle.
+    #
+    # So: before a single byte of payload is touched, delegate to
+    # scripts/bootstrap_upgrade.sh, whose entire job is fetch -> verify -> exec
+    # and which understands no format that can change. Everything below this
+    # point then runs in the TARGET release's code, which is the only code that
+    # can be expected to understand the target release's package.
+    #
+    # NOT A HARD DEPENDENCY. A release that predates the split-out engine asset
+    # has no <tag>-engine.tar.gz to fetch; the bootstrap detects that and execs
+    # straight back here with INTACT_UPGRADE_LEGACY=1, which skips this block
+    # and falls through to acquire + the late hop exactly as before. Old
+    # packages keep working, and this is why the late hop is kept rather than
+    # replaced.
+    if [[ -z "${INTACT_UPGRADE_REEXEC:-}" && -z "${INTACT_UPGRADE_LEGACY:-}" ]]; then
+        local _boot="${_CODE_DIR}/scripts/bootstrap_upgrade.sh"
+        if [[ -f "$_boot" ]]; then
+            log_info ""
+            log_info "Fetching the target release's own upgrade engine before touching anything."
+            # Where to come back to if there is no engine asset to be had.
+            export INTACT_UPGRADE_CALLER="${_CODE_DIR}/scripts/upgrade.sh"
+            export INTACT_UPGRADE_ROOT="$SCRIPT_DIR"
+            exec bash "$_boot" --root "$SCRIPT_DIR" "${_ORIG_ARGS[@]}"
+        fi
     fi
 
     # ---------------------------------------------------------- acquire -----

@@ -135,9 +135,23 @@ def _engine_for_helper():
 
     WORKDIR is this container's view of the appliance; HOST_PATH is the same
     tree as the DAEMON sees it, which is what the helper must be given.
+
+    PREFERS THE BOOTSTRAP. scripts/bootstrap_upgrade.sh fetches the TARGET
+    release's engine, verifies it and execs it before anything parses a
+    package -- so the dashboard drives the upgrade with the new release's code
+    rather than with whatever this (old, installed) backend shipped. That is
+    the same reason the shell path hops: this route is old code on every
+    upgrade, by definition.
+
+    Falls through to scripts/upgrade.sh when the bootstrap is absent, which is
+    every appliance installed before it existed. upgrade.sh's own early hop
+    then re-execs the bootstrap if IT has one, and the whole thing degrades to
+    the pre-split behaviour if neither does. No box loses the ability to
+    upgrade because of this preference.
     """
-    if os.path.isfile(os.path.join(WORKDIR, "scripts", "upgrade.sh")):
-        return f"{HOST_PATH}/scripts/upgrade.sh", False
+    for _rel in ("scripts/bootstrap_upgrade.sh", "scripts/upgrade.sh"):
+        if os.path.isfile(os.path.join(WORKDIR, _rel)):
+            return f"{HOST_PATH}/{_rel}", False
     return _BUNDLED_ENGINE, True
 
 

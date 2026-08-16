@@ -713,6 +713,32 @@ jobs:
           echo "---"
           cat "out/$TAG.manifest.json"
 
+      # ---------------------------------------------------------------- engine
+      # THE UPGRADE ENGINE, AS ITS OWN ASSET. A few hundred KB of lib/ +
+      # scripts/ + install.sh, published beside the index and the manifest.
+      #
+      # WHY IT IS SEPARATE FROM THE MODULE ASSETS. An installed box has to run
+      # the TARGET release's upgrade code, and it has to get there before it
+      # parses anything -- because whatever it parses first is a format the
+      # target release can no longer change. Shipping the engine only inside
+      # the multi-hundred-MB intact module asset meant the old engine had to
+      # unwrap the new payload to find the new engine that would have unwrapped
+      # the new payload. A .tar -> .tar.gz change landed squarely in that
+      # circle and boxes could not upgrade.
+      #
+      # THE NAME AND THE LAYOUT INSIDE ARE FROZEN. scripts/bootstrap_upgrade.sh
+      # is installed on every box and cannot be fixed retroactively, so it looks
+      # for exactly "<tag>-engine.tar.gz" containing a flat scripts/upgrade.sh.
+      # Renaming this asset, nesting it under a directory, or dropping the
+      # .sha256 breaks every box already in the field. Do not "tidy" it.
+      # scripts/build_engine_asset.sh owns the layout; call it, do not hand-roll
+      # a tar here, or the two definitions will drift.
+      - name: build the frozen upgrade-engine asset
+        run: |
+          set -euo pipefail
+          bash scripts/build_engine_asset.sh "$TAG" . out
+          ls -l "out/$TAG-engine.tar.gz" "out/$TAG-engine.tar.gz.sha256"
+
       - uses: actions/upload-artifact@v4
         with:
           name: release-index
@@ -1070,6 +1096,12 @@ jobs:
               -o -name "$TAG-system-bundle.tar" \
               -o -name "$TAG-system-bundle.tar.sha256" \
               -o -name "$TAG-bootstrap.tar.sha256" \
+              `# The engine tarball itself is already matched by the` \
+              `# "$TAG-*.tar.gz" pattern above; only its checksum needs naming.` \
+              `# scripts/bootstrap_upgrade.sh REQUIRES this file -- without it the` \
+              `# engine is fetched and run unverified, which is a downgrade in` \
+              `# trust for something about to be given root.` \
+              -o -name "$TAG-engine.tar.gz.sha256" \
             \) -print0 \
             | sort -z \
             | xargs -0 gh release upload "$TAG" --clobber

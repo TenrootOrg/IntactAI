@@ -83,6 +83,7 @@ parse_upgrade_args() {
     UPGRADE_EXPECT_SHA256=""
     UPGRADE_VELO_REFRESH_ONLY=0
     UPGRADE_PACKAGE_DIR=""
+    UPGRADE_HANDOFF=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -101,6 +102,30 @@ parse_upgrade_args() {
             # below and does not get swallowed as the release tag.
             --root)      shift 2 ;;
             --root=*)    shift ;;
+            # The bootstrap's handover file (scripts/bootstrap_upgrade.sh).
+            #
+            # A VERSIONED FILE INSTEAD OF ARGV, because argv turned out to be a
+            # cross-release contract and cross-release contracts are exactly
+            # what this design removes: adding --reinstall broke every import
+            # of an earlier package until _U_DROPPABLE_OPTS was bolted on
+            # (2026-08-11). The file carries a `schema` integer and is
+            # additive-only -- this engine reads the keys it knows and ignores
+            # the rest, so a newer bootstrap can add fields without breaking
+            # this parser, and an older one can omit them without breaking it
+            # either. Neither side has to guess what the other understands.
+            --handoff)   UPGRADE_HANDOFF="${2:-}"; shift 2 ;;
+            --handoff=*) UPGRADE_HANDOFF="${1#*=}"; shift ;;
+            # Bootstrap-owned, accepted and ignored HERE.
+            #
+            # An operator types these at scripts/upgrade.sh, whose early hop
+            # forwards them to scripts/bootstrap_upgrade.sh -- but this parser
+            # runs first, on the way in, and would otherwise reject them as
+            # "Unknown option" before the hop ever happened. They are also
+            # stripped from the bootstrap's own passthrough, so they never
+            # arrive here a second time after the handover.
+            --engine)    shift 2 ;;
+            --engine=*)  shift ;;
+            --no-verify) shift ;;
             --only)      UPGRADE_ONLY="${2:-}"; shift 2 ;;
             --only=*)    UPGRADE_ONLY="${1#*=}"; shift ;;
             --skip)      UPGRADE_SKIP="${2:-}"; shift 2 ;;

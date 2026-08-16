@@ -828,6 +828,44 @@ WRAP_MEMBERS=("$TAG.index.json")
 # The merged manifest rides second, right behind the index -- both are tiny and
 # both are read from the head of the stream (see the index-first note below).
 [ -n "$MANIFEST_NAME" ] && [ -f "$MANIFEST_NAME" ] && WRAP_MEMBERS+=("$MANIFEST_NAME")
+
+# ---------------------------------------------------------------------------
+# The upgrade ENGINE, at the TOP LEVEL of the wrapper and near the head of the
+# stream.
+#
+# It is already in this package -- buried inside the intact module asset at
+# source/intact/. That is useless to the thing that needs it: an installed
+# bootstrap must reach the target release's engine BEFORE it parses anything,
+# and digging it out of a module asset means parsing the payload first. Which
+# is the exact circularity that made a .tar -> .tar.gz change unupgradeable.
+#
+# So it rides here too, under its own frozen name, where
+# scripts/bootstrap_upgrade.sh can pull it out by name with one tar call and no
+# format detection. A few hundred KB against a multi-GB package.
+# ---------------------------------------------------------------------------
+_engine_dl() {
+    local base="${INTACT_GH_DL_BASE:-https://github.com}/${REPO:-TenrootOrg/IntactAI}/releases/download/${TAG}"
+    local n
+    for n in "${TAG}-engine.tar.gz" "${TAG}-engine.tar.gz.sha256"; do
+        [ -f "$n" ] && continue
+        curl -fLsS --retry 3 --max-time 120 -o "$n" "${base}/${n}" 2>/dev/null || return 1
+    done
+    return 0
+}
+if _engine_dl; then
+    WRAP_MEMBERS+=("${TAG}-engine.tar.gz" "${TAG}-engine.tar.gz.sha256")
+    log "including the upgrade engine (${TAG}-engine.tar.gz)"
+else
+    # Not fatal. A release published before the engine asset existed simply
+    # does not have one, and the bootstrap already treats its absence as
+    # "fall back to the appliance's own engine" rather than as an error.
+    # Saying so here means an operator carrying this package to an air-gapped
+    # site knows which path it will take before they get there.
+    rm -f "${TAG}-engine.tar.gz" "${TAG}-engine.tar.gz.sha256" 2>/dev/null
+    log "no ${TAG}-engine.tar.gz published for this release — the target box will"
+    log "  fall back to its own upgrade engine (this is the pre-split behaviour)"
+fi
+
 WRAP_MEMBERS+=("${ASSETS[@]}")
 [ -n "$BUNDLE_PLAN" ] && [ -f "$BUNDLE_NAME" ] && WRAP_MEMBERS+=("$BUNDLE_NAME")
 
