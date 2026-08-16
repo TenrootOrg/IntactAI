@@ -63,6 +63,10 @@ sudo bash install.sh
 
 ### Air-gapped installation
 
+> **Supported from `intact-20260813` onward.** Earlier releases do not carry
+> everything an offline box needs, so use `20260813` or later as the package tag
+> — including when installing a site that will later run older module versions.
+
 The box never reaches the internet. Everything it needs is carried in on one
 file; `--package` makes the installer take **every** image and dependency from
 that file instead of a registry, and fail loudly on anything missing rather than
@@ -201,6 +205,11 @@ during install. Everything else is opt-in per module.
 
 One release at a time (N → N+1). Each hop is tested as a single step; skipping
 releases is not.
+
+> **Air-gapped upgrades are supported from `intact-20260813` onward.** A box on
+> an earlier release must reach GitHub for at least one hop to get to
+> `20260813`; from there every subsequent upgrade can be carried in on a
+> package with no network at all.
 
 Four routes, all the same engine underneath (`scripts/upgrade.sh`):
 
