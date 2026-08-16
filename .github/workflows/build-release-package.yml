@@ -88,8 +88,26 @@ on:
   # why it was turned off in the first place.
   # Back on 2026-08-12: this is the shape being cut right now, for a stuck
   # intact-20260726 box -- the only shape such a box can take.
-  release:
-    types: [published]
+  #
+  # RE-DISABLED 2026-08-16, which is what the 2026-08-12 note above said to do
+  # once that test was done. It never happened, so every release since has built
+  # a second ~5.5 GB copy of itself for nobody -- roughly doubling the time and
+  # transfer to cut one.
+  #
+  # DISPATCH, NOT DELETED, and the distinction matters. A 0726 box cannot read a
+  # per-module release (find_release_package hardcodes intact-upgrade-<tag>.tar.gz)
+  # and cannot read the current wrapper either, because its own code opens
+  # packages with tarfile.open(path, 'r:gz') while prepare_package.sh now writes
+  # a PLAIN tar. If such a box turns up, dispatch this workflow by hand against
+  # the tag and it produces exactly the bundle that box can take.
+  #
+  # The better answer for a 0726 box is now <tag>-bootstrap.tar: download it,
+  # extract it, and run its own scripts/upgrade.sh --root <appliance> <tag>. That
+  # route uses NONE of the old box's code, which is the whole point -- whereas
+  # this workflow exists to feed the old box's own engine. Prefer the bootstrap;
+  # keep this for the case where nobody can get to a shell.
+  # release:
+  #   types: [published]
   workflow_dispatch:
     inputs:
       tag:
