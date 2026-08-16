@@ -521,7 +521,13 @@ def rescan(case_id):
     if not store.get_case(case_id):
         return jsonify({"error": "case not found"}), 404
     cfg = request.get_json(silent=True) or {}
-    res = store.rescan(case_id, cfg)
+    try:
+        res = store.rescan(case_id, cfg)
+    except store.FusionBusy as e:
+        # 409, not 500: the request is well-formed, the case is simply busy. The
+        # config the operator just saved IS persisted (set_analysis_config runs
+        # before the fuse), so retrying re-fuses with it — nothing is lost.
+        return jsonify({"error": str(e), "busy": True}), 409
     return jsonify({"case_id": case_id, "status": "rescanned", **res})
 
 

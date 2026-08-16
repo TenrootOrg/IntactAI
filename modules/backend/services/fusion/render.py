@@ -301,7 +301,64 @@ def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"
         "identities": _known_identities(
             graph, limit=DEFAULT_MAX_IDENTITIES if max_identities is None
                          else max(0, int(max_identities))),
+        # Per-host coverage roll-up. Exists because a narrative written from
+        # `findings` alone follows finding VOLUME, and volume lives on noisy
+        # workstations: a domain controller with 7 findings (two of them severe)
+        # got a passing mention while a workstation with 27 got the whole story.
+        # This states every host once, with its weight, so no host can be skipped
+        # silently and the model can see which are infrastructure.
+        "host_coverage": _host_coverage(graph, assets, findings),
     }
+
+
+# Hosts whose ROLE matters more than their finding count. A CA or DC with a
+# handful of findings outranks a workstation with dozens, and the narrative has
+# to say so — certificate findings anywhere in a case become a different class
+# of problem the moment they touch the CA.
+_HOST_ROLE_HINTS = (
+    ("dc", "domain controller"), ("ca", "certificate authority"),
+    ("mecm", "config manager / software distribution"),
+    ("sccm", "config manager / software distribution"),
+    ("sql", "database server"), ("exch", "mail server"),
+)
+
+
+def _host_role(label: str) -> str:
+    """Best-effort role from the hostname. Naming is a convention, not a fact, so
+    this is a HINT for the narrative to verify — never asserted as ground truth."""
+    lo = (label or "").lower()
+    for token, role in _HOST_ROLE_HINTS:
+        # token as a word-ish fragment: ALDC02 -> dc, ALCA01 -> ca
+        if token in lo:
+            return role
+    return ""
+
+
+def _host_coverage(graph, assets, findings) -> list:
+    """One row per host: weight, span and role hint — so every host is visible to
+    the narrative even when its finding count is small."""
+    rows = []
+    for a in assets:
+        label = a.label
+        fs = [f for f in findings if a.id in (f.asset_ids or [])]
+        ts = sorted([f.ts for f in fs if f.ts])
+        row = {
+            "host": label,
+            "severity": a.severity,
+            "finding_count": len(fs),
+            "first_activity": ts[0] if ts else None,
+            "last_activity": ts[-1] if ts else None,
+            "cross_host_findings": sum(1 for f in fs if f.kind == "cross_host"),
+        }
+        role = _host_role(label)
+        if role:
+            row["role_hint"] = role
+        rows.append(row)
+    # Severity first, then volume: the order the narrative should prioritise, not
+    # the order finding counts alone would suggest.
+    _sev = {"critical": 0, "high": 1, "medium": 2, "low": 3, "informational": 4}
+    rows.sort(key=lambda r: (_sev.get(r["severity"], 9), -r["finding_count"]))
+    return rows
 
 
 def distilled(graph, *, window=None, min_severity="informational", max_entities=60,
@@ -693,7 +750,11 @@ def risk_table_md(graph, *, window=None, min_severity="informational") -> str:
     rows = risk_table(graph, window=window, min_severity=min_severity)
     if not rows:
         return ""
-    out = ["## 🎯 Identity Risk — who to focus on first\n",
+    # "Host Risk", not "Identity Risk": every column here is a HOST (Host, Risk,
+    # Severity, Findings, Coverage). It predated the Identities feature and the
+    # old name now sits beside a real "Identities and Attribution" section about
+    # people, so the two read as the same thing when they are not.
+    out = ["## Host Risk — who to focus on first\n",
            "Endpoints ranked by risk (0-100) — severity tier sets the band "
            "(critical 80-100, high 60-79, medium 40-59, low 20-39) so a 'critical' host "
            "always outranks a 'high' one; finding intensity orders hosts within the band. "
@@ -910,8 +971,45 @@ def _high_confidence_iocs(graph, validations=None):
     return kept, len(iocs) - len(kept)
 
 
+def report_header(graph, *, window=None, min_severity="informational") -> str:
+    """Provenance block: what was examined, over what period, under what filter.
+
+    Every professional DFIR report opens with this and ours did not — it began at
+    "## Executive Summary" with no statement of scope, so a reader could not tell
+    which hosts were in scope, how much data backed it, or what the filters
+    excluded. Without that, "9 hosts, 93 findings" is unfalsifiable: findings
+    BELOW the severity floor or outside the window are invisible, and a reader who
+    does not know the floor cannot tell absence-of-evidence from evidence-of-
+    absence. Timestamps are stamped UTC explicitly for the same reason — a
+    forensic timeline whose zone is assumed is a timeline that gets misread.
+    """
+    from datetime import datetime, timezone
+    assets, findings = scope(graph, window=window, min_severity=min_severity)
+    sev = _sev_tally(findings)
+    w = window or {}
+    start, end = (w.get("start") or "open"), (w.get("end") or "now")
+    ts = [f.ts for f in findings if f.ts]
+    span = f"{min(ts)} → {max(ts)}" if ts else "no time-anchored activity"
+    rows = [
+        "> **All timestamps are UTC.**",
+        "",
+        f"| | |",
+        f"|---|---|",
+        f"| **Report generated** | {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')} |",
+        f"| **Hosts in scope** | {len(assets)} |",
+        f"| **Findings** | {len(findings)} "
+        f"({sev.get('critical',0)} critical, {sev.get('high',0)} high, "
+        f"{sev.get('medium',0)} medium) |",
+        f"| **Evidence span** | {span} |",
+        f"| **Analysis window** | {start} → {end} |",
+        f"| **Severity floor** | {min_severity} — findings below this are excluded |",
+        f"| **Entities correlated** | {len(graph.entities):,} across {len(graph.relationships):,} links |",
+    ]
+    return "\n".join(rows) + "\n"
+
+
 def facts_md(graph, *, window=None, min_severity="informational", initial_access=None,
-             dispositions=None, validations=None, detail="auto") -> str:
+             dispositions=None, validations=None, detail="auto", narrated=False) -> str:
     """DETERMINISTIC report body — Priority Hosts table, cross-host correlation,
     analyst validations, ONE flat chronological timeline, IOC appendix, MITRE,
     recommendations. Appended verbatim to every report; NEVER sent to the LLM.
@@ -926,16 +1024,30 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
     out.append(f"_Report detail: **{eff_detail}** ({reason})._\n")
 
     # ---- Attack Assessment (infrastructure-wide story from the timeline) ----
-    aa = _attack_assessment(graph, assets, findings, window=window,
-                            initial_access=initial_access)
-    if aa:
-        out.append(aa)
+    # Suppressed when the model wrote the narrative: it reconstructs the same
+    # intrusion the LLM's "Attack Narrative" just told, in weaker prose, directly
+    # underneath it. The per-host progression it carried is not lost — it now goes
+    # INTO the payload as host_coverage, where it does more good.
+    if not narrated:
+        aa = _attack_assessment(graph, assets, findings, window=window,
+                                initial_access=initial_access)
+        if aa:
+            out.append(aa)
 
     # ---- Cross-host correlation (stated ONCE) -------------------------
     xh = [f for f in findings if f.kind == "cross_host"]
     shared_hashes = [e for e in graph.by_type("ioc")
                      if e.attrs.get("ioc_kind") == "hash" and "cross_host" in e.flags]
-    if xh or shared_hashes:
+    if narrated:
+        # The LLM writes its own "Cross-Host Correlation" with hashes, direction
+        # and reasoning. Emitting this one too produced two sections of the same
+        # name in one report, the second strictly weaker. Keep only the fact the
+        # bullet list had that the narrative does not reliably state — the shared
+        # hash COUNT — and attach it to the IOC appendix that holds them.
+        if shared_hashes:
+            out.append(f"_{len(shared_hashes)} file hash(es) are shared across hosts "
+                       f"(tool reuse / lateral transfer) — listed in the IOC appendix below._\n")
+    elif xh or shared_hashes:
         out.append("## Cross-Host Correlation\n")
         from collections import Counter
         for title, n in Counter(f.title for f in xh).items():   # collapse identical titles

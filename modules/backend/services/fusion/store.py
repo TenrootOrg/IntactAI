@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 
 from .schema import FusionGraph
 from . import correlate, llm_sim, keys, render, budget
@@ -244,9 +245,12 @@ def _effective_output_cap(d):
 
     Deliberately ignores any stored llm_max_output_tokens rather than reading it
     with a default: cases configured before the field was removed still carry a
-    value, and they must not stay truncated until someone re-saves them."""
+    value, and they must not stay truncated until someone re-saves them.
+
+    Clamped to _MAX_OUTPUT_TOKENS_PER_CALL — see there for why asking a provider
+    for the model's true maximum makes the request fail outright."""
     model, provider, _ = _configured_fusion_model()
-    return _model_max_output(model, provider)
+    return min(_model_max_output(model, provider), _MAX_OUTPUT_TOKENS_PER_CALL)
 
 
 # Rescan-cost model: a rescan makes 2 LLM passes (report + advisory), each gets
@@ -262,6 +266,33 @@ _RESCAN_LLM_CALLS = 2
 _RESCAN_EXPECTED_OUT_TOKENS = 8000
 _SYS_PROMPT_TOKENS = 3000
 _DEFAULT_OUTPUT_TOKENS = 4000
+
+# Ceiling on what we ASK the model to be allowed to write, per call.
+#
+# Not the model's maximum, deliberately. max_tokens is a RESERVATION against the
+# key's remaining allowance, not a bill -- OpenRouter refuses a request whose
+# worst case it cannot cover, before generating a token:
+#
+#   402: "You requested up to 384000 tokens, but can only afford 298717"
+#        limit_source: openrouter_credits
+#
+# So the same request succeeds on a cheap model and fails on a pricier one at
+# the same balance: asking for a full 384k output reserves 384k * the model's
+# OUTPUT RATE, and moving deepseek-v4-flash -> deepseek-v4-pro multiplied that
+# reservation ~18x. Nothing was wrong with the key or the credit; the single
+# call simply tried to reserve more of a monthly cap than it had left. It is
+# also self-worsening under concurrency -- the affordable figure fell 373396 ->
+# 298717 across retries while other fuses held reservations of their own.
+#
+# The failure is silent: generate_report catches it and returns the
+# deterministic report, so the symptom reads as "the narrative stopped working
+# when I changed model" rather than as a billing refusal.
+#
+# 32k is far more than any report needs (the longest reference technical report
+# is ~21k tokens) and reserves cents rather than a dollar. It bounds the
+# RESERVATION, not the answer -- if a report ever genuinely hits this, raise it
+# rather than letting it truncate.
+_MAX_OUTPUT_TOKENS_PER_CALL = 32000
 
 
 def _configured_fusion_model():
@@ -1068,7 +1099,46 @@ def _contribution_for_run(run, log=None):
     return [], []
 
 
+class FusionBusy(RuntimeError):
+    """A fuse is already running for this case, in another thread."""
+
+
+_FUSE_LOCKS: dict = {}
+_FUSE_LOCKS_GUARD = threading.Lock()
+
+
+def _fuse_lock(case_id):
+    """Per-case re-entrant lock. RLock, not Lock, because several callers fuse
+    from inside an operation that is itself under the lock (set_disposition ->
+    fuse_case). Re-entrancy lets the SAME thread nest freely while still
+    rejecting a genuinely concurrent fuse from another request."""
+    with _FUSE_LOCKS_GUARD:
+        return _FUSE_LOCKS.setdefault(case_id, threading.RLock())
+
+
 def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -> FusionGraph:
+    """Fuse the case. Refuses to run concurrently with itself.
+
+    Saving the Configuration rail triggers a rescan, and nothing stopped a second
+    one starting on top of a first still in progress. That was survivable while a
+    fuse took seconds and made no model calls; with the narrative on by default a
+    fuse can sit for minutes on an LLM response, so the window is now wide enough
+    to hit by hand -- observed with two calls to the provider in flight for the
+    same case at once, both billed, the loser's writes silently overwritten.
+    """
+    lock = _fuse_lock(case_id)
+    if not lock.acquire(blocking=False):
+        raise FusionBusy(
+            "a fuse is already running for this case — wait for it to finish "
+            "(the report can take minutes while the model writes the narrative)")
+    try:
+        return _fuse_case_locked(case_id, contributions_override=contributions_override,
+                                 log=log, _record=_record)
+    finally:
+        lock.release()
+
+
+def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record=True) -> FusionGraph:
     ws = _ws()
     d = get_case(case_id)
 
@@ -1176,8 +1246,16 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
         # re-fuse) → it may now be behind. Surface a "report not up to date" hint.
         report_dirty = True
     else:
+        # Decided BEFORE the log line so the progress message describes what is
+        # actually about to happen. It used to read "deterministic report" in
+        # every case, which was true while the narrative was opt-in and became a
+        # lie the moment it became the default -- the operator watched 88% for
+        # minutes while the box sat on an LLM call the log said it was not making.
+        _narrate = (not d.get("air_gap_analysis")) and llm_sim._use_real()
         _plog("Refusion · generating report", "info",
-              "deterministic report, advisory & checklist", pct=88)
+              ("narrated report (this waits on the model), advisory & checklist"
+               if _narrate else
+               "deterministic report, advisory & checklist"), pct=88)
         llm_ent, llm_chars = _llm_payload_budget(d)
         llm_ident = _llm_identity_budget(d)
         llm_out = _effective_output_cap(d)
@@ -1197,7 +1275,7 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
             # nobody did, so the product was judged on the template. Tick
             # "Air-gap analysis" in Case Analysis -> Configuration for the old
             # behaviour on a box with no route to a provider.
-            prefer_llm=(not d.get("air_gap_analysis")) and llm_sim._use_real(),
+            prefer_llm=_narrate,
             max_entities=llm_ent, budget_chars=llm_chars, max_output_tokens=llm_out,
             detail="explicit", max_identities=llm_ident)
         # ADVISORY analyst pass — incident-grouping + grounded hypotheses. Stored
@@ -1586,10 +1664,20 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
     """Re-narrate report + advisory from the STORED graph (no re-collect/re-fuse),
     applying the case's audience + master_prompt + Timeline triage. Deterministic by
     default (free); pass use_llm=True (the 'Regenerate report' button) for the premium
-    LLM narrative — the only place report generation spends tokens."""
+    LLM narrative — the only place report generation spends tokens.
+
+    "Air-gap analysis" overrides use_llm. The Analysis tab's Regenerate button
+    always sends use_llm=True, so without this an air-gapped box would still try
+    to reach a provider and sit out the connection timeout on the one action the
+    flag exists to make instant. Toggling the flag and pressing Regenerate is
+    therefore enough to switch between the narrated and deterministic report —
+    no re-fuse needed, since the graph is unchanged.
+    """
     if audience:
         set_branding(case_id, audience=audience)
     d = get_case(case_id)
+    if d.get("air_gap_analysis"):
+        use_llm = False
     g = load_graph(case_id)
     window = d.get("time_window") or None
     min_sev = d.get("min_severity", "informational")
@@ -1631,8 +1719,21 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
             prefer_llm=use_llm, max_entities=llm_ent, budget_chars=llm_chars,
             max_output_tokens=llm_out, detail="explicit", max_identities=llm_ident)
         if use_llm and model:
-            log_case_event(case_id, "Report · LLM responded", "success",
-                           f"narrative generated ({len(report):,} chars)")
+            # generate_report swallows a failed call and returns the DETERMINISTIC
+            # report with a "_Live LLM unavailable (...)_" line appended. Logging
+            # success unconditionally here therefore reported "LLM responded" for
+            # a call that 402'd, on a report the model never wrote — and the char
+            # count reinforced it, since it measures the whole markdown including
+            # the deterministic tables, not the narrative. Read the marker back
+            # instead of assuming.
+            _marker = "_Live LLM unavailable"
+            if _marker in (report or ""):
+                _why = (report.split(_marker, 1)[1].split("\n", 1)[0] or "").strip(" (_.")
+                log_case_event(case_id, "Report · LLM call failed", "warning",
+                               f"{_why or 'provider unavailable'} — deterministic report used instead")
+            else:
+                log_case_event(case_id, "Report · LLM responded", "success",
+                               f"narrative generated ({len(report):,} chars)")
         analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
                                    dispositions=d.get("dispositions") or None,
                                    max_entities=llm_ent, budget_chars=llm_chars,
