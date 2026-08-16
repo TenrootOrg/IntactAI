@@ -365,12 +365,20 @@ main() {
             log_info "Fetching the target release's own upgrade engine before touching anything."
             exec bash "$_boot" --root "$SCRIPT_DIR" "${_ORIG_ARGS[@]}"
         fi
-        # No bootstrap next to this script: this checkout predates it. Say so
-        # rather than quietly proceeding with the wrong engine.
-        log_warn "scripts/bootstrap_upgrade.sh is missing from ${_CODE_DIR}."
-        log_warn "  This run will use THIS checkout's engine, which is not"
-        log_warn "  necessarily the target release's. Re-run from a checkout or"
-        log_warn "  engine asset of the release you are installing."
+        # No bootstrap beside this script. NOT refused, because this is also
+        # the shape of the legitimate manual path: an operator who cloned the
+        # TARGET release and ran its upgrade.sh is already running target-side,
+        # which is the whole objective -- there is nothing left to hand over
+        # to. It is the documented route for a box too old to bootstrap itself.
+        #
+        # Said out loud anyway, because the same shape covers the bad case:
+        # running an OLD checkout's upgrade.sh against a newer tag. Only the
+        # operator knows which of the two this is.
+        log_warn "No scripts/bootstrap_upgrade.sh beside this script, so this run"
+        log_warn "  uses the engine at ${_CODE_DIR}."
+        log_warn "  That is correct if this checkout IS the release you are"
+        log_warn "  installing. If it is not, stop and run the target release's"
+        log_warn "  own upgrade.sh instead."
     fi
 
     # ---------------------------------------------------------- acquire -----
@@ -461,6 +469,17 @@ main() {
     # ------------------------------------------------------------- plan -----
     plan_current_versions
     plan_build
+    # --dry-run --json is a MACHINE-READABLE answer for the dashboard, so the
+    # human table and the advisory chatter below would corrupt the stream.
+    # Everything that follows still runs -- the refusals below are the point of
+    # asking -- their output just goes to the log rather than to stdout.
+    if (( UPGRADE_DRY_RUN )) && (( UPGRADE_JSON )); then
+        plan_reject_downgrades || return 2
+        plan_check_disk || return 2
+        plan_print_json
+        upkg_cleanup
+        return 0
+    fi
     plan_print_table
     hostdeps_report
     plan_reject_downgrades || return 2

@@ -181,8 +181,15 @@ parse_upgrade_args() {
         fi
         return 0
     fi
-    if (( UPGRADE_JSON )); then
-        echo "--json only means something with --list or --plan." >&2
+    # --json is also valid with --dry-run: that combination is how the
+    # dashboard asks the TARGET release what a package contains and what it
+    # would do. Before it existed, the backend answered those questions by
+    # parsing the package itself -- old code interpreting a new release's
+    # format, which is the circularity this whole design removes. The engine
+    # already acquires, verifies and plans under --dry-run; --json only changes
+    # which printer renders the result.
+    if (( UPGRADE_JSON )) && (( ! UPGRADE_DRY_RUN )); then
+        echo "--json only means something with --list, --plan or --dry-run." >&2
         exit 2
     fi
     if [[ -n "$UPGRADE_TAG" && ${#UPGRADE_PACKAGE_ARGS[@]} -gt 0 ]]; then

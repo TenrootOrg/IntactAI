@@ -116,6 +116,10 @@ _EXIT_STATUS = {0: "completed", 3: "completed", 130: "cancelled", 143: "cancelle
 # The engine copy baked into this image (modules/backend/Dockerfile), used only
 # when the appliance has none of its own.
 _BUNDLED_ENGINE = "/app/host-engine/scripts/upgrade.sh"
+# The bootstrap from the same baked-in copy. Preferred over _BUNDLED_ENGINE for
+# anything that STARTS an upgrade: it goes and gets the target release's engine
+# instead of applying this image's own.
+_BUNDLED_BOOTSTRAP = "/app/host-engine/scripts/bootstrap_upgrade.sh"
 
 
 def _engine_for_helper():
@@ -149,10 +153,19 @@ def _engine_for_helper():
     the pre-split behaviour if neither does. No box loses the ability to
     upgrade because of this preference.
     """
-    for _rel in ("scripts/bootstrap_upgrade.sh", "scripts/upgrade.sh"):
-        if os.path.isfile(os.path.join(WORKDIR, _rel)):
-            return f"{HOST_PATH}/{_rel}", False
-    return _BUNDLED_ENGINE, True
+    # THE BOOTSTRAP, OR NOTHING LOCAL.
+    #
+    # scripts/upgrade.sh is deliberately NOT a fallback here. Running it would
+    # drive the upgrade with THIS release's engine -- the very code being
+    # replaced -- and it would do so silently, so an operator reading "upgrade
+    # complete" could not tell which engine produced it. The bootstrap fetches
+    # the TARGET release's engine, verifies it, and runs that instead.
+    if os.path.isfile(os.path.join(WORKDIR, "scripts/bootstrap_upgrade.sh")):
+        return f"{HOST_PATH}/scripts/bootstrap_upgrade.sh", False
+    # Nothing on the appliance: fall back to the copy baked into THIS image,
+    # which is still a bootstrap, not an engine -- so it too will go and fetch
+    # the target's code rather than apply its own.
+    return _BUNDLED_BOOTSTRAP, True
 
 
 _BUNDLED_ENGINE_ROOT = "/app/host-engine"

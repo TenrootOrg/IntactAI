@@ -9,18 +9,30 @@ version comparison — lives in lib/upgrade/*.sh and is reached here only by
 calling `scripts/upgrade.sh`, never reimplemented.
 
 WHERE EACH ENDPOINT RUNS:
-  refs, plan            subprocess (scripts/upgrade.sh --list/--plan --json)
+  refs                  subprocess (scripts/upgrade.sh --list --json) -- the
+                        ONLY local invocation, because "which releases exist?"
+                        is asked before a target engine could be fetched
+  plan                  subprocess (bootstrap_upgrade.sh <tag> --plan --json)
+                        -- answered by the TARGET release's engine
   quota                 in-process (one direct GitHub API call)
   online, offline        HELPER CONTAINER (services.upgrade_launcher) --
                         the intact module always recreates intact_backend
                         first, so this cannot be a subprocess of this process
-  prepare                subprocess, own thread — never recreates the
-                        backend, so no helper container is needed
-  package-info, preflight, list-packages, upload-preflight, peek-manifest,
-  upload-run, active     in-process, manifest/disk reads only -- lifted
-                        nearly verbatim from the deleted engine's own
-                        routes, since none of that logic ever depended on
-                        the Python engine itself, only on the filesystem.
+  prepare                subprocess, own thread (bootstrap_upgrade.sh
+                        <tag> --prepare) -- built by the TARGET release's
+                        packager; never recreates the backend, so no helper
+                        container is needed
+  package-info,          the target engine, via bootstrap_upgrade.sh
+  upload-preflight       --package <p> --dry-run [--json]. This backend no
+                        longer decides what a package contains: it is the
+                        release being replaced, so its idea of the format is
+                        by definition the old one.
+  peek-manifest          the ONE remaining local parse, and non-authoritative
+                        -- a pre-upload courtesy so a slow-link operator can
+                        review before sending 5 GB. Degrades to success=false,
+                        never to a refusal.
+  list-packages,         in-process, filesystem listing only.
+  upload-run, active
 
 SECURITY: _reject_package_path is unchanged from the deleted engine and
 still load-bearing -- arguably MORE so now, since a `package_path` reaching
@@ -58,8 +70,13 @@ from services import upgrade_launcher
 
 upgrade_bp = Blueprint('upgrade', __name__)
 
+# THE ONE LOCAL INVOCATION LEFT, and the only one that can be.
+#
+# `--list` answers "which releases exist?", which is asked BEFORE a target is
+# chosen -- so there is no target engine to fetch and defer to. Everything that
+# interprets a chosen release (plan, preview, prepare, apply) goes through
+# BOOTSTRAP_SH below. Do not add a second use of this constant.
 UPGRADE_SH = f"{WORKDIR}/scripts/upgrade.sh"
-PREPARE_SH = f"{WORKDIR}/scripts/prepare_package.sh"
 LOCK_PATH = f"{WORKDIR}/data/tmp/upgrade.lock"
 
 # The one entry point that is allowed to decide anything about a release.
@@ -154,21 +171,70 @@ def _reject_package_path(package_path):
 
 
 def _read_package_manifest(package_path):
-    """Read manifest.json (or <tag>.manifest.json -- both end in
-    'manifest.json') from a local package tarball, straight off disk. No
-    bash involved: this is a pure read for a UI preview, cheap enough to do
-    inline rather than paying a subprocess for it."""
-    import tarfile
+    """Ask the package's OWN engine what it contains.
+
+    This used to open the tarball here and look for manifest.json. That is this
+    backend -- the release being replaced -- deciding how a newer release's
+    package is laid out, and it is the same circularity that made a
+    .tar -> .tar.gz change unupgradeable, one level up from the shell path. It
+    also silently defined the package format: the moment a release changed it,
+    the preview went blank or wrong with nothing to explain why.
+
+    So the question is delegated. The bootstrap pulls the engine out of the
+    package by its one frozen name, and that engine -- the one that BUILT this
+    package -- answers with `--dry-run --json`. Read-only: --dry-run acquires,
+    verifies and plans, then stops without touching the appliance.
+
+    Returns {} when the answer cannot be had, and the callers render that as
+    "preview unavailable" rather than refusing the upgrade. A preview is a
+    convenience; turning it into a gate is how a format change became an
+    outage.
+    """
+    if not os.path.isfile(BOOTSTRAP_SH):
+        print("[UPGRADE] no bootstrap_upgrade.sh; cannot ask the package's engine",
+              flush=True)
+        return {}
+    cmd = (f"bash {shlex.quote(BOOTSTRAP_SH)} "
+           f"--package {shlex.quote(package_path)} --dry-run --json")
     try:
-        with tarfile.open(package_path, 'r') as tar:
-            for member in tar.getmembers():
-                if member.name.endswith('manifest.json'):
-                    f = tar.extractfile(member)
-                    if f:
-                        return json.load(f)
+        result = run_command(cmd, timeout=300)
     except Exception as e:
-        print(f"[UPGRADE] Failed to read package manifest: {e}", flush=True)
-    return {}
+        print(f"[UPGRADE] package preview failed: {e}", flush=True)
+        return {}
+    if not result.get("success"):
+        print(f"[UPGRADE] package preview exited non-zero: "
+              f"{(result.get('stderr') or '')[:200]}", flush=True)
+        return {}
+    # plan_print_json emits ONE line, last, after the bootstrap's [INFO] lines
+    # and the engine's own progress. Scan backwards for the first line that
+    # parses as an object rather than slicing at the first "{" in the stream --
+    # a path or a log message containing a brace would otherwise capture it.
+    doc = None
+    for line in reversed((result.get("stdout") or "").splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            doc = json.loads(line)
+            break
+        except ValueError:
+            continue
+    if doc is None:
+        print("[UPGRADE] package preview produced no JSON plan", flush=True)
+        return {}
+
+    # Shape it the way this route's callers already expect. The engine answers
+    # with a PLAN (what it would do to each module), which is strictly more
+    # useful than the raw manifest this used to return -- `versions` is derived
+    # from it so existing consumers keep working, and `plan` is passed through
+    # for anything that wants the actions and the current-vs-target detail.
+    entries = doc.get("modules") or []
+    return {
+        "versions": {e["module"]: e["target"] for e in entries
+                     if e.get("target") and e.get("action") != "skip"},
+        "contents": {},
+        "plan": entries,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +303,11 @@ def _fetch_plan(tag):
     lists, same as the deleted engine's compute_plan did.
     """
     result = run_command(
-        f"bash {shlex.quote(UPGRADE_SH)} --plan {shlex.quote(tag)} --json",
+        # Through the bootstrap: --plan reads the TARGET release's manifest, so
+        # the code doing the reading must be the target's. This engine's parser
+        # only understands the formats that existed when it shipped.
+        f"bash {shlex.quote(BOOTSTRAP_SH)} {shlex.quote(tag)} "
+        f"--plan {shlex.quote(tag)} --json",
         timeout=60)
 
     # Parse BEFORE deciding the command failed. --plan reports a refusal by
@@ -721,15 +791,17 @@ def _run_prepare(run_id, tag):
     # `exec` means the final stdout line is still prepare_package.sh's own, so
     # the "last line is the package path" contract below is unchanged; the
     # bootstrap's few [INFO] lines ahead of it fall through to the log.
-    if os.path.isfile(BOOTSTRAP_SH):
-        cmd = ["bash", BOOTSTRAP_SH, tag, "--prepare", out_dir]
-    else:
-        # This checkout predates the bootstrap. Say which packager is running
-        # rather than letting the operator assume it was the target's.
-        add_log_to_run(run_id,
-                       "scripts/bootstrap_upgrade.sh is missing; building with THIS "
-                       "release's packager, which may not match " + tag, "info")
-        cmd = ["bash", PREPARE_SH, tag, out_dir]
+    if not os.path.isfile(BOOTSTRAP_SH):
+        # NO LOCAL FALLBACK. Building with this release's packager would lay out
+        # a package for a different release's engine to read, which is the
+        # circularity this design removes -- and it would look identical to a
+        # correct build. Refuse instead.
+        update_run_status(run_id, "failed",
+                          error="scripts/bootstrap_upgrade.sh is missing from this "
+                                "appliance, so the target release's packager cannot "
+                                "be fetched. Nothing was built.")
+        return
+    cmd = ["bash", BOOTSTRAP_SH, tag, "--prepare", out_dir]
     try:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -907,7 +979,10 @@ def preflight_upgrade_package():
         return err
 
     only = (data.get('only') or '').strip()
-    cmd = f"bash {shlex.quote(UPGRADE_SH)} --package {shlex.quote(package_path)} --dry-run"
+    # The bootstrap finds the engine at the package's top level and hands over,
+    # so the package is inspected by the release that built it.
+    cmd = (f"bash {shlex.quote(BOOTSTRAP_SH)} "
+           f"--package {shlex.quote(package_path)} --dry-run")
     if only:
         cmd += f" --only {shlex.quote(only)}"
 
@@ -1042,6 +1117,19 @@ def peek_manifest_from_blob():
     upload -- so the Import review modal can show what's in the file
     immediately. Body: raw tar bytes. Falls back gracefully (200,
     success=false) so the caller can fall back to the post-upload path.
+
+    THE ONE PLACE THIS BACKEND STILL PARSES A PACKAGE, and deliberately so.
+    Everything that DECIDES anything -- prepare, plan, preflight, preview,
+    apply -- now goes through scripts/bootstrap_upgrade.sh and is answered by
+    the target release's own engine. This does not decide: it is a courtesy
+    peek at a local file so an operator on a slow air-gapped link can review a
+    package before spending an hour uploading 5 GB of it. The engine still
+    validates the real thing at apply time, and _read_package_manifest above
+    re-answers the same question properly once the file has landed.
+    Consequently a format this parser cannot read must degrade to
+    success=false and NEVER to a refusal -- the caller then uploads and reviews
+    afterwards, which is the target-side path. If that trade ever stops being
+    worth it, delete this route: nothing downstream depends on its answer.
     """
     try:
         blob = request.get_data()

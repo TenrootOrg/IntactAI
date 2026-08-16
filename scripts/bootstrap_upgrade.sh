@@ -307,12 +307,31 @@ fi
 # ---------------------------------------------------------------------------
 # Extract and check the protocol.
 # ---------------------------------------------------------------------------
-_DEST="${_TMP}/engine-${_TAG:-pkg}.$$"
-rm -rf "$_DEST" 2>/dev/null
-mkdir -p "$_DEST" 2>/dev/null || _die "cannot create ${_DEST}"
-tar -xzf "$_ENGINE_TAR" -C "$_DEST" 2>/dev/null \
-    || tar -xf "$_ENGINE_TAR" -C "$_DEST" 2>/dev/null \
-    || _die "could not extract ${_ENGINE_TAR}"
+# CONTENT-ADDRESSED, not per-PID. The first draft keyed this on $$, so every
+# invocation left an extracted engine behind -- and the dashboard calls this on
+# every page render to ask what a package contains, so that leaks a directory
+# per page view. Keying on the tarball's own digest means a repeat call reuses
+# the extraction it already verified, and two different engines can never
+# collide on one path.
+_eng_id="$(sha256sum "$_ENGINE_TAR" 2>/dev/null | awk '{print substr($1,1,16)}')"
+[[ -n "$_eng_id" ]] || _eng_id="${_TAG:-pkg}"
+_DEST="${_TMP}/engine-${_eng_id}"
+
+if [[ -f "${_DEST}/scripts/upgrade.sh" ]]; then
+    _say "reusing the engine already extracted at ${_DEST}"
+else
+    rm -rf "$_DEST" 2>/dev/null
+    mkdir -p "$_DEST" 2>/dev/null || _die "cannot create ${_DEST}"
+    tar -xzf "$_ENGINE_TAR" -C "$_DEST" 2>/dev/null \
+        || tar -xf "$_ENGINE_TAR" -C "$_DEST" 2>/dev/null \
+        || _die "could not extract ${_ENGINE_TAR}"
+    # Keep the few most recent and drop the rest, so a box that has upgraded a
+    # dozen times is not storing a dozen engines. Best-effort by design: a
+    # failure to prune must never fail an upgrade.
+    ls -1dt "${_TMP}"/engine-* 2>/dev/null | tail -n +4 | while read -r _old; do
+        [[ "$_old" == "$_DEST" ]] || rm -rf "$_old" 2>/dev/null
+    done
+fi
 
 # Which of the target's scripts we are here to run. Both come out of the same
 # asset, so both are the target release's own code -- which is the whole point:
