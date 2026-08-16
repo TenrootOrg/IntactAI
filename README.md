@@ -111,7 +111,7 @@ air-gapped box with no Docker cannot proceed.
 **Upgrading the same box later** uses the same carry-in file and needs neither
 the backend nor the dashboard — see [Upgrades](#upgrades).
 
-## Services
+## Services & Ports
 
 Everything terminates TLS through the main nginx. Access is `https://YOUR_IP`
 unless a port is listed. `install.sh` starts containers only for enabled
@@ -136,70 +136,15 @@ modules.
 > are the biggest RAM/CPU consumers. On a small host, `docker stop` the stacks
 > you are not using.
 
-## Configuration
 
-Edit `config.yaml` before installation:
+**Firewall.** `443` in from analysts (Dashboard, `/velociraptor/`, `/api/`) and
+`8000` in from endpoint subnets — Velociraptor agents phone home on 8000, and if
+it is blocked they silently never appear in the Clients list. `80` redirects to
+HTTPS. The module ports above should be locked to the analyst subnet.
 
-```yaml
-domain: 192.168.1.96  # Your server IP or domain
-
-modules:
-  # On-prem forensics (each has its own container + UI)
-  velociraptor:
-    enabled: true
-    id: admin
-    password: 'your-password'
-  timesketch:
-    enabled: true
-    id: admin
-    password: 'your-password'
-  elk:
-    enabled: true
-    id: elastic
-    password: 'your-password'
-  iris:                 # id is fixed to 'administrator'
-    enabled: true
-    password: 'your-password'
-  volweb:               # memory forensics (Volatility 3 + YARA)
-    enabled: true
-    id: admin
-    password: 'your-password'
-  portainer:
-    enabled: false
-    id: admin
-    password: 'your-password'
-
-  # Feature modules (run in the backend / on-demand — no dedicated container)
-  plaso:                # log2timeline timeline engine (on-demand image)
-    enabled: true
-  cloudtrail:           # AWS CloudTrail DFIR — ships OFF until validated
-    enabled: false
-  o365rc:               # Microsoft 365 / Azure AD DFIR (DFIR-O365RC)
-    enabled: false
-
-versions:               # main module pins (sub-component pins also live here)
-  velociraptor: 0.77.1
-  velociraptor_legacy: '0.7.1'   # legacy binary for older / Win7 endpoints
-  timesketch: '20260617'
-  elk: 9.4.2
-  iris: 'v2.4.27'
-  volweb: '3.16.0'
-  portainer: 2.39.1
-  plaso: '20260512'
-  cloudtrail: '2026.04'
-```
-
-## Network / Firewall Ports
-
-| Port | Direction | What it carries |
-|---|---|---|
-| **443** | in + out | **In:** Dashboard, `/velociraptor/`, `/api/` — the main one. **Out:** install (Docker Hub, GitHub, Ubuntu apt, PyPI) and, per enabled module, LLM providers / `*.microsoftonline.com` + `graph.microsoft.com` / `*.amazonaws.com` / GitHub for YARA. Outbound is skippable if you install and upgrade from packages. |
-| **8000** | in | **Required.** Velociraptor agents phone home here. Blocked, and agents silently never appear in the Clients list. |
-| **80** | in | HTTP → HTTPS redirect |
-| **5000 · 5601 · 8002 · 8443 · 9443** | in | TimeSketch · Kibana · VolWeb · IRIS · Portainer. Lock these to the analyst subnet. |
-
-**Minimum viable:** 443 in from analysts, 8000 in from endpoint subnets, 443 out
-during install. Everything else is opt-in per module.
+`443` outbound is used during install and upgrade, and by enabled modules that
+call out (LLM providers, Microsoft Graph, AWS). It can be skipped entirely if
+you install and upgrade from packages.
 
 ## Upgrades
 
@@ -247,36 +192,17 @@ differ. Everything else is left alone. To choose yourself:
 
 ### Change Platform IP
 
-Repoint an already-installed platform to a new IP (e.g. after moving the
-VM to a different network). `config.yaml`'s `domain:` is the single
-source of truth; this script updates it and re-runs the same propagation
-the installer uses, then recreates/restarts the affected containers.
+Repoints an installed platform to a new IP — and doubles as the repair tool:
+re-run it with the **current** IP to regenerate certs, configs and containers
+when something is broken.
 
 ```bash
-# Change the platform IP (always non-interactive — never prompts)
 sudo bash scripts/change_ip.sh 192.168.120.11
-
-# Re-run with the CURRENT IP to REPAIR a broken state
-# (re-applies config, regenerates certs, recreates/heals the module
-#  containers). This is the fix when a UI is down after an IP change.
-sudo bash scripts/change_ip.sh "$(grep -E '^domain:' config.yaml | awk '{print $2}')"
 ```
 
-> The script always runs **force + non-interactive**: it never asks for
-> confirmation, and it re-applies the full pipeline **even when the IP is
-> unchanged**. `-y`/`--yes` is still accepted but is now a no-op. This is
-> deliberate — `change_ip.sh` doubles as the platform **repair** tool.
-
-It sets `domain:`, re-propagates the IP, regenerates the TLS certificates and
-Velociraptor configs, refreshes nginx, and rebuilds the client installers.
-Idempotent and safe to re-run after an interruption — which is what makes it a
-repair tool.
-
-> **Note:** Velociraptor agents already deployed on endpoints have the
-> old server IP baked in and will **not** reconnect. Redeploy those
-> endpoints with the freshly generated installers in `client_installers/`,
-> or keep the old IP reachable as an alias. Browser TLS warnings are
-> expected (self-signed certificate).
+> Velociraptor agents already on endpoints have the old IP baked in and will
+> **not** reconnect. Redeploy them with the new installers in
+> `client_installers/`, or keep the old IP reachable as an alias.
 
 ### Clean/Uninstall
 
