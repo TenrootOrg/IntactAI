@@ -62,6 +62,20 @@ UPGRADE_SH = f"{WORKDIR}/scripts/upgrade.sh"
 PREPARE_SH = f"{WORKDIR}/scripts/prepare_package.sh"
 LOCK_PATH = f"{WORKDIR}/data/tmp/upgrade.lock"
 
+# The one entry point that is allowed to decide anything about a release.
+#
+# THIS BACKEND IS OLD CODE ON EVERY UPGRADE, by definition -- it is the version
+# being replaced. So it must not be the thing that decides how a newer release
+# is packaged or applied: that is the circularity which made a .tar -> .tar.gz
+# change unupgradeable, one level up from the shell path.
+#
+# bootstrap_upgrade.sh fetches <tag>-engine.tar.gz, verifies it, and execs it.
+# Everything after that -- packaging, parsing, planning, applying -- is the
+# target release's own code. This backend's only remaining knowledge of a
+# release is the frozen asset name, which is the one thing that can never
+# change.
+BOOTSTRAP_SH = f"{WORKDIR}/scripts/bootstrap_upgrade.sh"
+
 # Single-writer gate + run acquisition under one mutex closes the
 # check-then-create TOCTOU on a double-click: two simultaneous requests
 # could both see the lock free before either creates its run.
@@ -695,14 +709,35 @@ _PREPARE_LOG_RE = re.compile(r'^\[prepare\](\[ERROR\])?\s?(.*)$')
 def _run_prepare(run_id, tag):
     out_dir = "/data/upgrade_packages"
     os.makedirs(out_dir, exist_ok=True)
-    cmd = ["bash", PREPARE_SH, tag, out_dir]
+
+    # BUILD THE PACKAGE WITH THE TARGET RELEASE'S PACKAGER, not this one.
+    #
+    # A package's shape is decided by the release it is FOR, so that release
+    # should be what writes it -- otherwise an old prepare_package.sh lays out a
+    # package for a new engine to read, and the two disagree the first time the
+    # layout moves. `--prepare` makes the bootstrap fetch <tag>'s engine and
+    # exec ITS prepare_package.sh.
+    #
+    # `exec` means the final stdout line is still prepare_package.sh's own, so
+    # the "last line is the package path" contract below is unchanged; the
+    # bootstrap's few [INFO] lines ahead of it fall through to the log.
+    if os.path.isfile(BOOTSTRAP_SH):
+        cmd = ["bash", BOOTSTRAP_SH, tag, "--prepare", out_dir]
+    else:
+        # This checkout predates the bootstrap. Say which packager is running
+        # rather than letting the operator assume it was the target's.
+        add_log_to_run(run_id,
+                       "scripts/bootstrap_upgrade.sh is missing; building with THIS "
+                       "release's packager, which may not match " + tag, "info")
+        cmd = ["bash", PREPARE_SH, tag, out_dir]
     try:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             start_new_session=True,
         )
     except Exception as e:
-        update_run_status(run_id, "failed", error=f"could not start prepare_package.sh: {e}")
+        update_run_status(run_id, "failed",
+                          error=f"could not start {os.path.basename(cmd[1])}: {e}")
         return
 
     register_cleanup(run_id, lambda p=proc: terminate_subprocess(p))
@@ -724,7 +759,7 @@ def _run_prepare(run_id, tag):
     rc = proc.wait()
     if rc != 0:
         update_run_status(run_id, "failed",
-                          error=f"prepare_package.sh exited {rc}")
+                          error=f"{os.path.basename(cmd[1])} exited {rc}")
         return
 
     # Contract (tests/test_prepare_package.sh): the script's own last stdout
@@ -733,7 +768,7 @@ def _run_prepare(run_id, tag):
     final_path = next((l for l in reversed(lines) if l.strip()), None)
     if not final_path or not os.path.isfile(final_path):
         update_run_status(run_id, "failed",
-                          error="prepare_package.sh exited 0 but produced no package")
+                          error=f"{os.path.basename(cmd[1])} exited 0 but produced no package")
         return
 
     info = {
