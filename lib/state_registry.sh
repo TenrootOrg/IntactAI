@@ -106,9 +106,25 @@ state_canonical_path() {
 # True when the path has already been migrated (is a symlink into data/state).
 state_is_migrated() {
     local root="$1" rel="$2"
-    [[ -L "${root}/${rel}" ]] || return 1
-    local tgt; tgt="$(readlink "${root}/${rel}" 2>/dev/null)" || return 1
-    [[ "$tgt" == *"data/state/"* ]]
+    local live="${root}/${rel}"
+    local canon="${root}/$(state_canonical_path "$rel")"
+    if [[ -L "$live" ]]; then
+        local tgt; tgt="$(readlink "$live" 2>/dev/null)" || return 1
+        [[ "$tgt" == *"data/state/"* ]] || return 1
+        # A FILE behind a symlink is only HALF migrated. Containers that
+        # bind-mount the file's parent DIRECTORY (./config:/etc/timesketch)
+        # see the symlink itself, and its relative target — ../../../data/…
+        # — does not exist inside the container. tsctl then ran against no
+        # config at all, "succeeded", and wrote its stamp nowhere. Report
+        # not-migrated so the migration replaces the symlink with a hard
+        # link (below). Directory entries stay symlinks: directories cannot
+        # be hard-linked, and compose files bind them per-path, which Docker
+        # resolves on the host at container create.
+        [[ -f "$canon" ]] && return 1
+        return 0
+    fi
+    # Hard-linked file: same inode on both paths.
+    [[ -e "$live" && "$live" -ef "$canon" ]]
 }
 
 # Move one registered path into data/state and leave a relative symlink behind.
@@ -143,12 +159,32 @@ state_migrate_one() {
         return 0
     fi
 
-    # Link the historical path at the stored one, relative to its own directory.
+    # Link the historical path at the stored one.
+    #
+    # FILES get a HARD link: a real file at both paths, so a container that
+    # bind-mounts the parent directory reads real content — the symlink form
+    # dangled inside every timesketch container (its relative target lives
+    # outside the mounted directory) and tsctl "stamped" a database it never
+    # reached. Host-side generators keep working: the render/openssl writers
+    # truncate in place, which updates the shared inode. data/ still survives
+    # every mirror because the inode lives on regardless of which name a tree
+    # operation removes; the next migration run re-links whichever side is
+    # missing.
+    #
+    # DIRECTORIES keep the relative symlink (directories cannot be
+    # hard-linked); their composes bind them per-path, which Docker resolves
+    # on the host at container create — verified live by IRIS, whose cert
+    # dirs are migrated and whose stack is healthy.
+    rm -rf "$live" 2>/dev/null
+    if [[ -f "$canon" ]]; then
+        ln "$canon" "$live" 2>/dev/null && return 0
+        # Cross-device (data/ on another filesystem): fall through to the
+        # symlink, which at least keeps every host-side path working.
+    fi
     local up; up="$(dirname "$rel")"
     local depth; depth="$(awk -F/ '{print NF}' <<< "$up")"
     local prefix=""; local i
     for (( i = 0; i < depth; i++ )); do prefix+="../"; done
-    rm -rf "$live" 2>/dev/null
     ln -s "${prefix}${canon_rel}" "$live" || return 1
     return 0
 }
