@@ -313,9 +313,19 @@ def _configured_fusion_model():
 
 
 def _model_max_output(model, provider):
-    """The configured model's max output tokens (catalog/alias resolved). This is
-    the DEFAULT output cap — i.e. let the model write up to its own ceiling unless
-    the operator sets a smaller cap. Falls back to _DEFAULT_OUTPUT_TOKENS."""
+    """The configured model's max output tokens (catalog/alias resolved).
+
+    When the catalog does not carry one, fall back to _MAX_OUTPUT_TOKENS_PER_CALL
+    rather than _DEFAULT_OUTPUT_TOKENS. 4000 is a floor from an era of smaller
+    models and is now actively harmful: a reasoning model spends its output
+    budget thinking BEFORE it emits visible text, so at 4000 against a large
+    payload the whole budget goes to reasoning and the reply comes back empty
+    with HTTP 200 — the "(the model returned an empty answer)" failure.
+
+    This is not hypothetical for unpriced catalogs: codex-cli reports
+    max_output_tokens=None for every model it serves, so a freshly connected
+    subscription resolved to 4000 and would have failed exactly that way.
+    """
     try:
         from services.agentic.analyzers._llm import get_model_max_output_tokens
         mx = get_model_max_output_tokens(model or "", provider or "claude")
@@ -323,7 +333,7 @@ def _model_max_output(model, provider):
             return int(mx)
     except Exception:
         pass
-    return _DEFAULT_OUTPUT_TOKENS
+    return _MAX_OUTPUT_TOKENS_PER_CALL
 
 
 def estimate_rescan_cost(d):
