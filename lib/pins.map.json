@@ -1,0 +1,102 @@
+{
+  "_comment": [
+    "WHERE EVERY VERSION PIN LIVES. One table, read by bash and by Python.",
+    "",
+    "The pins are declared by the RELEASE, in the modules/*/.env files it ships",
+    "-- those are tracked, so a checkout already carries them before install.sh",
+    "runs. config.yaml's `versions:` block was a second copy of the same facts,",
+    "and the copy is what caused trouble: update_env_files re-derived .env FROM",
+    "config.yaml, so a stamped .env could be silently regressed to an older pin.",
+    "For Elasticsearch that means a node that will not open a data directory a",
+    "newer version wrote, which is not a cosmetic failure.",
+    "",
+    "This file exists so the mapping itself is not duplicated in turn. Before it,",
+    "the same knowledge lived in three places: _PIN_SOURCE in lib/upgrade/plan.sh",
+    "(primary pins), the _stamp_transitive_env_from_config call sites in",
+    "lib/modules/*.sh (transitive pins), and release_module_set() in",
+    "scripts/ci/build_release_package.py (which read config.yaml instead). Three",
+    "copies of one fact is how they drift.",
+    "",
+    "JSON on purpose: bash already shells out to python3 for JSON at 17 sites,",
+    "and CI's resolver is Python. A bash associative array would have had to be",
+    "parsed by Python, or duplicated into it.",
+    "",
+    "  primary     the pin that IS the module's version -- what an upgrade moves",
+    "              and what the plan compares. Exactly one per module.",
+    "  lockstep    keys that must always equal the primary. Kibana is pinned",
+    "              separately but MUST equal Elasticsearch; VolWeb releases its",
+    "              frontend and backend together. Listing them makes the",
+    "              alignment structural instead of something to remember.",
+    "  transitive  sidecar images the module runs but does not version -- its",
+    "              Postgres, Redis, OpenSearch, RabbitMQ. They move on their own",
+    "              schedule and are pinned independently."
+  ],
+  "schema": 1,
+  "modules": {
+    "intact": {
+      "file": "modules/backend/.env",
+      "primary": "BACKEND_VERSION",
+      "transitive": { "TUSD_VERSION": "backend_tusd" }
+    },
+    "elk": {
+      "file": "modules/elk/.env",
+      "primary": "ELASTIC_VERSION",
+      "lockstep": ["KIBANA_VERSION"]
+    },
+    "timesketch": {
+      "file": "modules/timesketch/.env",
+      "primary": "TIMESKETCH_VERSION",
+      "transitive": {
+        "OPENSEARCH_VERSION": "timesketch_opensearch",
+        "POSTGRES_VERSION": "timesketch_postgres",
+        "REDIS_VERSION": "timesketch_redis",
+        "NGINX_VERSION": "timesketch_nginx"
+      }
+    },
+    "iris": {
+      "file": "modules/iris/.env",
+      "primary": "IRIS_VERSION",
+      "transitive": { "RABBITMQ_VERSION": "iris_rabbitmq" }
+    },
+    "velociraptor": {
+      "file": "modules/velociraptor/.env",
+      "primary": "VELOCIRAPTOR_VERSION"
+    },
+    "volweb": {
+      "file": "modules/volweb/.env",
+      "primary": "VOLWEB_BACKEND_VERSION",
+      "lockstep": ["VOLWEB_FRONTEND_VERSION"],
+      "transitive": {
+        "VOLWEB_POSTGRES_VERSION": "volweb_postgres",
+        "VOLWEB_REDIS_VERSION": "volweb_redis"
+      },
+      "note": "The one module whose .env is NOT tracked -- it holds generated secrets (DJANGO_SECRET, the Postgres password) and is rendered from .env.template. Its pins therefore have to come from the template, not from a shipped .env."
+    },
+    "portainer": {
+      "file": "modules/portainer/.env",
+      "primary": "PORTAINER_VERSION",
+      "lockstep": ["PORTAINER_AGENT_VERSION"]
+    },
+    "plaso": {
+      "file": "modules/backend/.env",
+      "primary": "PLASO_VERSION"
+    },
+    "aws_sigma": {
+      "file": "modules/backend/.env",
+      "primary": "CLOUDTRAIL_VERSION"
+    },
+    "o365rc": {
+      "file": "modules/backend/.env",
+      "primary": "DFIR_O365RC_VERSION"
+    }
+  },
+  "standalone": {
+    "_comment": "Pinned things that are not modules and have no module .env of their own: rule packs and data bundles. They land in the backend's .env because that is the container that consumes them.",
+    "file": "modules/backend/.env",
+    "keys": {
+      "SIGMA_RULES_VERSION": "sigma_rules",
+      "DFIQ_VERSION": "dfiq",
+      "VELOCIRAPTOR_LEGACY_VERSION": "velociraptor_legacy"
+    }
+  }
+}

@@ -76,7 +76,7 @@ _version_is_older() {
 # plan_current_versions — what is running right now.
 # ---------------------------------------------------------------------------
 plan_current_versions() {
-    local m spec file key val primary
+    local m spec file key val
     for m in "${UPGRADE_ORDER[@]}"; do
         spec="${_PIN_SOURCE[$m]:-}"
         [[ -n "$spec" ]] || { PLAN_CURRENT[$m]=""; continue; }
@@ -84,15 +84,24 @@ plan_current_versions() {
         key="${spec##*:}"
         val="$(read_env_var "$file" "$key" 2>/dev/null || echo "")"
 
-        # A pin in .env does not mean the module is running -- a full package
-        # seeds pins for modules the operator has turned off. Where there is a
-        # container to look at, its absence is the truth.
-        primary="$(u_primary_container_of "$m")"
-        if [[ -n "$primary" ]] && ! "${DOCKER_BIN:-docker}" inspect "$primary" >/dev/null 2>&1; then
-            PLAN_CURRENT[$m]=""
-        else
-            PLAN_CURRENT[$m]="$val"
-        fi
+        # A pin in .env does not mean the module is installed -- a full package
+        # seeds pins for modules the operator never deployed, so a pin proves
+        # only that a package went past. The box itself is the truth.
+        #
+        # u_module_is_present covers all ten: the container for the seven that
+        # run one, an image probe over the docker socket for plaso and o365rc,
+        # and the rules directory for aws_sigma. It returns 2 for "cannot tell"
+        # -- aws_sigma's rules are on the host and the dashboard's helper
+        # container cannot see them -- and that case KEEPS THE PIN rather than
+        # guessing. Reading "absent" there would silently drop the module from
+        # every upgrade driven from the UI while a shell run still upgraded it,
+        # which is worse than the pin being slightly optimistic.
+        u_module_is_present "$m"
+        case $? in
+            0) PLAN_CURRENT[$m]="$val" ;;
+            1) PLAN_CURRENT[$m]="" ;;
+            *) PLAN_CURRENT[$m]="$val" ;;
+        esac
     done
     return 0
 }
