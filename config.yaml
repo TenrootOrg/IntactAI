@@ -256,7 +256,7 @@ versions:
   # floating `nginx:alpine` default — pinned so install/upgrade are reproducible.
   # Independent from timesketch_nginx above (separate container + .env); pin each
   # to the version IT was tested with, not a shared one. Stock nginx alpine tag.
-  nginx:                 '1.31.2-alpine'
+  nginx:                 '1.31.3-alpine'
   # tusd resumable-upload sidecar (intact_tusd in the backend compose). Pinned
   # here so install/upgrade drive one reproducible tag; a bump recreates the
   # container (docker restart alone keeps the old image). Docker Hub:
