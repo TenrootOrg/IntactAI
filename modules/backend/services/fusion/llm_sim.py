@@ -1052,9 +1052,19 @@ def _classify_llm_error(exc) -> str:
     # comes true. Observed: Anthropic replying 400 "Your credit balance is too
     # low", surfaced to the operator as "check the API key and internet
     # connection" while the key was listing models fine.
+    # OpenRouter phrases the same condition three ways and matched NONE of the
+    # patterns below, so a funded-out account surfaced as a bare "APIStatusError"
+    # and the report just said the LLM was unavailable:
+    #   "Insufficient credits. Add more using .../settings/credits"
+    #   "This request requires more credits, or fewer max_tokens"
+    #   metadata.limit_source: "openrouter_credits"
+    # The last one is the reliable signal — it is a machine field rather than
+    # prose, so it survives upstream rewording.
     if any(t in s for t in ("credit balance is too low", "insufficient_quota",
                             "exceeded your current quota", "billing",
-                            "purchase credits", "payment required")):
+                            "purchase credits", "payment required",
+                            "insufficient credits", "requires more credits",
+                            "openrouter_credits", "settings/credits")):
         return "no_credit"
     if any(t in s for t in ("no endpoints available", "no allowed providers",
                             "data policy", "guardrail")):
