@@ -113,45 +113,32 @@ _MODULE_BANNER = re.compile(
 _EXIT_STATUS = {0: "completed", 3: "completed", 130: "cancelled", 143: "cancelled"}
 
 
-# The engine copy baked into this image (modules/backend/Dockerfile), used only
-# when the appliance has none of its own.
-_BUNDLED_ENGINE = "/app/host-engine/scripts/upgrade.sh"
-# The bootstrap from the same baked-in copy. Preferred over _BUNDLED_ENGINE for
-# anything that STARTS an upgrade: it goes and gets the target release's engine
-# instead of applying this image's own.
+# The bootstrap from the engine copy baked into this image
+# (modules/backend/Dockerfile), used only when the appliance has none of its
+# own. Still a bootstrap, not an engine: it fetches the target release's code
+# rather than applying this image's own.
 _BUNDLED_BOOTSTRAP = "/app/host-engine/scripts/bootstrap_upgrade.sh"
 
 
 def _engine_for_helper():
     """(path the helper should run, whether it is the bundled fallback).
 
-    Normally the appliance's own scripts/upgrade.sh, which is the file every
-    upgrade mirrors into place and the one an operator would run by hand.
+    Normally the appliance's own scripts/bootstrap_upgrade.sh: it fetches the
+    TARGET release's engine, verifies it and execs it before anything parses a
+    package -- so the dashboard drives the upgrade with the new release's code
+    rather than with whatever this (old, installed) backend shipped. This
+    route is old code on every upgrade, by definition.
 
     The fallback exists for a box that has never had it: an intact-20260726
     appliance reaches this code by way of its OWN Import UI, whose Phase 1
     swaps in this image and then hands to a Phase 2 that was deleted with the
     Python engine. It comes back showing the upgrade UI with nothing on disk
-    for that UI to call. Running the bundled copy against --root <appliance>
-    is the same _CODE_DIR / SCRIPT_DIR split the in-package stage-0 hop uses,
-    and the intact module then mirrors lib/ and scripts/ onto the box -- so
-    this path is taken at most once per appliance, ever.
+    for that UI to call. The bundled copy is the same bootstrap, run against
+    --root <appliance>; the intact module then mirrors lib/ and scripts/ onto
+    the box -- so this path is taken at most once per appliance, ever.
 
     WORKDIR is this container's view of the appliance; HOST_PATH is the same
     tree as the DAEMON sees it, which is what the helper must be given.
-
-    PREFERS THE BOOTSTRAP. scripts/bootstrap_upgrade.sh fetches the TARGET
-    release's engine, verifies it and execs it before anything parses a
-    package -- so the dashboard drives the upgrade with the new release's code
-    rather than with whatever this (old, installed) backend shipped. That is
-    the same reason the shell path hops: this route is old code on every
-    upgrade, by definition.
-
-    Falls through to scripts/upgrade.sh when the bootstrap is absent, which is
-    every appliance installed before it existed. upgrade.sh's own early hop
-    then re-execs the bootstrap if IT has one, and the whole thing degrades to
-    the pre-split behaviour if neither does. No box loses the ability to
-    upgrade because of this preference.
     """
     # THE BOOTSTRAP, OR NOTHING LOCAL.
     #
@@ -468,12 +455,12 @@ def ensure_host_engine() -> bool:
     Two things keep this from being reckless:
 
     * NOT WHILE AN UPGRADE IS RUNNING. The helper executes the appliance's own
-      scripts/upgrade.sh, and bash reads a script as it goes -- rewriting it
-      underneath a live run is a way to corrupt one. The intact module recreates
-      this container mid-upgrade, so that restart lands squarely inside the
-      danger window. In practice the stage-0 hop means the executing copy is the
-      package's, not the box's, but the lock is cheap and the failure would be
-      baffling.
+      scripts/bootstrap_upgrade.sh, and bash reads a script as it goes --
+      rewriting it underneath a live run is a way to corrupt one. The intact
+      module recreates this container mid-upgrade, so that restart lands
+      squarely inside the danger window. In practice the bootstrap hands over
+      to the fetched engine before any of this is rewritten, but the lock is
+      cheap and the failure would be baffling.
     * ONLY FILES THAT DIFFER. On a healthy box every file already matches, so a
       restart writes nothing and mtimes stay put.
     """

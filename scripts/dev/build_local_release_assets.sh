@@ -507,6 +507,27 @@ if (( BOOTSTRAP )); then
     log "  $(du -h "$WORK/${TAG}-bootstrap.tar" | cut -f1) -> ${TAG}-bootstrap.tar"
 fi
 
+# ── the frozen upgrade-engine asset ───────────────────────────────────────
+# Mirrors the CI `bootstrap-asset` job's engine build. NOT optional: since the
+# bootstrap handover, a release without <tag>-engine.tar.gz cannot be upgraded
+# to (bootstrap_upgrade.sh refuses rather than fall back) and prepare_package.sh
+# aborts against it -- so a local release without one only tests yesterday's
+# architecture. Skipped, loudly, only when building from a source tree that
+# predates the builder script itself.
+#
+# CI runs build_engine_asset.sh on a checkout whose VERSION was stamped by the
+# stamp-version action; the equivalent here is stamping the STAGED copy (the
+# drift check above deliberately ignores VERSION for exactly this reason).
+if [[ -f "$STAGE/scripts/build_engine_asset.sh" ]]; then
+    log "building the upgrade-engine asset (${TAG}-engine.tar.gz)"
+    echo "$TAG" > "$STAGE/VERSION"
+    bash "$STAGE/scripts/build_engine_asset.sh" "$TAG" "$STAGE" "$WORK"
+else
+    log "WARNING: $STAGE/scripts/build_engine_asset.sh not present in this"
+    log "  source tree -- the release will have NO engine asset, and nothing"
+    log "  built after the bootstrap handover will be able to upgrade to it."
+fi
+
 # ── system bundle (--system-bundle) ───────────────────────────────────────
 # Mirrors the `system-bundle` job: Docker + host dependencies as .deb files
 # with an apt Packages index, so install.sh can satisfy host deps on a machine
@@ -590,6 +611,7 @@ fi
 # per-asset manifests above which are build-only.
 find "$WORK" -maxdepth 1 \( -name "$TAG-*.tar" -o -name "$TAG-*.tar.gz" \
      -o -name "$TAG-bootstrap.tar.sha256" -o -name "$TAG-system-bundle.tar.sha256" \
+     -o -name "$TAG-engine.tar.gz.sha256" \
      -o -name "intact-upgrade-$TAG.tar" -o -name "intact-upgrade-$TAG.tar.gz" \
      -o -name "intact-upgrade-$TAG.tar.gz.part-*" \) \
      -exec sh -c 'ln -f "$1" "$2/$(basename "$1")" 2>/dev/null || cp -f "$1" "$2/"' _ {} "$OUT" \;

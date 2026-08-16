@@ -865,7 +865,8 @@ def _run_prepare(run_id, tag):
 def prepare_upgrade_package():
     """Prepare a hand-carry package for `tag`, for an air-gapped site.
 
-    Runs scripts/prepare_package.sh as a plain background subprocess --
+    Runs the bootstrap, which fetches the TARGET release's own
+    prepare_package.sh and execs that, as a plain background subprocess --
     it never touches docker.sock or recreates the backend, so it needs no
     helper container, just a thread. No lock either: two prepares racing
     into the SAME fixed output name would clobber each other, so this
@@ -962,9 +963,9 @@ def get_upgrade_package_info():
 def preflight_upgrade_package():
     """Would this package apply cleanly? Changes nothing on the appliance.
 
-    scripts/upgrade.sh --package <path> --dry-run does the real work here --
-    extract, verify, plan, downgrade-check -- so this endpoint reuses it
-    rather than a second validator. It briefly takes the upgrade lock (the
+    bootstrap_upgrade.sh --package <path> --dry-run does the real work here
+    -- the package's own engine is extracted, verified and asked to plan, so
+    this endpoint reuses it rather than a second validator. It briefly takes the upgrade lock (the
     same one a real apply would), which is fine: preflight is a deliberate
     pre-apply check, not something polled in the background.
 

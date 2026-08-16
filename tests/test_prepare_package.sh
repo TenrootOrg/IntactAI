@@ -174,6 +174,14 @@ test_wrapper_includes_the_system_bundle() {
     # air-gapped site, which is the worst place to find out.
     assert_contains "$listing" "${TAG}.manifest.json" \
         "the wrapper must carry the merged manifest, or the target refuses the package"
+    # The engine, at the TOP LEVEL of the wrapper (bootstrap_upgrade.sh pulls
+    # it out with one named `tar -xf --wildcards`). The fixture exists so the
+    # build doesn't abort; this asserts it actually made it INTO the wrapper --
+    # an engine-less wrapper is unappliable on any box with the bootstrap.
+    assert_contains "$listing" "${TAG}-engine.tar.gz" \
+        "the wrapper must carry the engine, or the bootstrap refuses the package"
+    assert_contains "$listing" "${TAG}-engine.tar.gz.sha256" \
+        "the engine's checksum must travel with it"
 
     # Extract and confirm the bundled bundle really is the one served, not a
     # placeholder / zero-byte member.

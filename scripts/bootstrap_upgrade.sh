@@ -66,6 +66,18 @@ _ENGINE_NAME_FMT='%s-engine.tar.gz'
 INTACT_REPO="${INTACT_REPO:-TenrootOrg/IntactAI}"
 INTACT_GH_DL_BASE="${INTACT_GH_DL_BASE:-https://github.com}"
 
+# https-only by default: -L would otherwise follow a redirect to http/ftp/file.
+# When the operator has EXPLICITLY pointed INTACT_GH_DL_BASE at an http://
+# mirror (a LAN distribution point, or scripts/dev/serve_local_release.sh),
+# http is allowed for that base. Content is still protected by the MANDATORY
+# sha256 check below -- the https rule only ever guarded against a protocol
+# downgrade smuggled in by a redirect, and an operator who typed http:// has
+# already made that call for their own mirror.
+_CURL_PROTO='=https'
+case "$INTACT_GH_DL_BASE" in
+    http://*) _CURL_PROTO='=http,https' ;;
+esac
+
 _say()  { printf '[%s] [INFO] %s\n'  "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 _warn() { printf '[%s] [WARN] %s\n'  "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
 # "$1", not "$*": the optional second argument is the EXIT CODE, and $* would
@@ -287,18 +299,24 @@ _find_engine() {
     local url="${INTACT_GH_DL_BASE}/${INTACT_REPO}/releases/download/${_TAG}/${fname}"
     local dest="${_TMP}/${fname}"
     _say "fetching the ${_TAG} upgrade engine (${fname})" >&2
-    # 2>/dev/null: a missing engine asset is the EXPECTED answer for any release
-    # published before this asset existed, and _fall_back_to_caller handles it
-    # in a sentence. Letting curl print "Failed to connect" first makes a normal
-    # fallback read like a fault.
-    # --proto/--proto-redir '=https': -L will otherwise follow a redirect to
-    # http/ftp/file. NOT pinning the redirect HOST -- GitHub redirects release
-    # downloads to objects.githubusercontent.com, so a same-host rule would
-    # break every online upgrade. Content is protected by the sha256 below;
-    # this only stops a protocol downgrade.
-    curl -fLsS --proto '=https' --proto-redir '=https' \
-         --retry 3 --retry-delay 2 --max-time 300 -o "$dest" "$url" 2>/dev/null || return 1
-    curl -fLsS --proto '=https' --proto-redir '=https' \
+    # curl's stderr is kept and surfaced on failure: there is no fallback any
+    # more, so a failed fetch ends in _no_engine's refusal -- and "Protocol
+    # http not supported" or "Failed to connect" is exactly the sentence the
+    # operator needs to see before that refusal. (An earlier 2>/dev/null here
+    # hid a protocol mismatch completely.)
+    # --proto/--proto-redir: see _CURL_PROTO above. NOT pinning the redirect
+    # HOST -- GitHub redirects release downloads to
+    # objects.githubusercontent.com, so a same-host rule would break every
+    # online upgrade. Content is protected by the sha256 below.
+    local err="${dest}.curl-err"
+    if ! curl -fLsS --proto "$_CURL_PROTO" --proto-redir "$_CURL_PROTO" \
+         --retry 3 --retry-delay 2 --max-time 300 -o "$dest" "$url" 2>"$err"; then
+        [[ -s "$err" ]] && _warn "engine fetch failed: $(tail -n 1 "$err")"
+        rm -f "$err"
+        return 1
+    fi
+    rm -f "$err"
+    curl -fLsS --proto "$_CURL_PROTO" --proto-redir "$_CURL_PROTO" \
          --retry 3 --max-time 60 -o "${dest}.sha256" "${url}.sha256" 2>/dev/null \
         || _warn "could not fetch ${fname}.sha256 — verification below will refuse"
     printf '%s' "$dest"
