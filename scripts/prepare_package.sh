@@ -856,14 +856,28 @@ if _engine_dl; then
     WRAP_MEMBERS+=("${TAG}-engine.tar.gz" "${TAG}-engine.tar.gz.sha256")
     log "including the upgrade engine (${TAG}-engine.tar.gz)"
 else
-    # Not fatal. A release published before the engine asset existed simply
-    # does not have one, and the bootstrap already treats its absence as
-    # "fall back to the appliance's own engine" rather than as an error.
-    # Saying so here means an operator carrying this package to an air-gapped
-    # site knows which path it will take before they get there.
+    # FATAL, HERE, ON THE MACHINE THAT STILL HAS A NETWORK.
+    #
+    # This used to warn and carry on, saying the target box would "fall back to
+    # its own upgrade engine". That fallback no longer exists -- the bootstrap
+    # refuses when it cannot obtain the target's engine, deliberately, so an
+    # upgrade is never driven by the code it is replacing. A package without
+    # the engine is therefore a package that CANNOT BE APPLIED.
+    #
+    # The whole point of this file is to be carried somewhere with no network.
+    # Finding out at THAT end means an operator at an air-gapped site holding a
+    # package they can neither apply nor re-fetch -- which is precisely the
+    # failure this design exists to remove. Fail where it is still fixable.
     rm -f "${TAG}-engine.tar.gz" "${TAG}-engine.tar.gz.sha256" 2>/dev/null
-    log "no ${TAG}-engine.tar.gz published for this release — the target box will"
-    log "  fall back to its own upgrade engine (this is the pre-split behaviour)"
+    err "could not obtain ${TAG}-engine.tar.gz."
+    err "  The engine has to travel INSIDE this package: the box that applies it"
+    err "  has no network, and the bootstrap refuses rather than fall back to"
+    err "  that box's own older engine. This package would not be applicable."
+    err "  Either ${TAG} predates the engine asset, or the download failed:"
+    err "    ${INTACT_GH_DL_BASE:-https://github.com}/${REPO}/releases/download/${TAG}/${TAG}-engine.tar.gz"
+    err "  To build one from a ${TAG} checkout instead:"
+    err "    bash scripts/build_engine_asset.sh ${TAG} <checkout> <dir-beside-this-package>"
+    exit 1
 fi
 
 WRAP_MEMBERS+=("${ASSETS[@]}")
