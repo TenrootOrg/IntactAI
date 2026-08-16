@@ -90,7 +90,16 @@ class CatalogStore:
             return []
 
     @staticmethod
-    def _selectable(m: Dict) -> bool:
+    def _has_price(m: Dict) -> bool:
+        pricing = m.get("pricing") or {}
+        try:
+            return (float(pricing.get("prompt") or 0) > 0
+                    or float(pricing.get("completion") or 0) > 0)
+        except (TypeError, ValueError):
+            return False
+
+    @classmethod
+    def _selectable(cls, m: Dict) -> bool:
         """Should this model be offerable in the model picker?
 
         Drops rows we cannot put a number against, and ONLY those:
@@ -103,14 +112,11 @@ class CatalogStore:
 
         A `:free` model is KEPT: $0 is its real price, not missing data. The
         caller renders it as "free" rather than as a blank price.
+
+        ONLY MEANINGFUL ON A METERED CATALOG — see search(), which applies this
+        just when the catalog prices anything at all.
         """
-        pricing = m.get("pricing") or {}
-        try:
-            has_price = (float(pricing.get("prompt") or 0) > 0
-                         or float(pricing.get("completion") or 0) > 0)
-        except (TypeError, ValueError):
-            has_price = False
-        return has_price or str(m.get("id", "")).endswith(":free")
+        return cls._has_price(m) or str(m.get("id", "")).endswith(":free")
 
     def search(self, q: str = "", limit: int = 10, offset: int = 0) -> Dict:
         """Substring-filter the catalog by id+name, paginated.
@@ -118,8 +124,17 @@ class CatalogStore:
         Unpriceable models are filtered out here rather than at refresh time,
         so the on-disk catalog stays a faithful mirror of upstream and
         _estimate_llm_cost can still resolve anything already configured.
+
+        The filter applies ONLY to a metered catalog — one that prices at least
+        one model. A subscription catalog (codex-cli) legitimately prices
+        nothing: the operator pays a flat fee, so every entry has `pricing: {}`.
+        Filtering those on "has a price" emptied the picker completely and the
+        UI then told the operator to refresh a catalog that was already present
+        and correct, which is a maddening thing to be told.
         """
-        models = [m for m in self.load() if self._selectable(m)]
+        models = self.load()
+        if any(self._has_price(m) for m in models):
+            models = [m for m in models if self._selectable(m)]
         catalog_meta = {}
         if os.path.exists(self.file_path):
             try:

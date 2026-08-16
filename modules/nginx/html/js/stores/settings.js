@@ -230,39 +230,50 @@ document.addEventListener('alpine:init', () => {
         // The backend never replaces a good catalog with an empty one (see
         // CatalogStore.write), so a failed update leaves the previous list in
         // place and says so, rather than emptying the model dropdown.
+        // Refreshes EVERY provider's catalog, not only the selected one.
+        //
+        // Refreshing just the current provider looked reasonable and wasn't: the
+        // reason to press this is usually that you are ABOUT to switch provider
+        // and the new one's model list is stale or empty, which is exactly the
+        // case where "refresh the current provider" does nothing useful. Each
+        // provider is an independent catalog file, a failure on one must not stop
+        // the others, and the ones with no credential simply return success=false
+        // and are reported as skipped rather than as errors.
         async updateCatalog() {
-            const provider = this.config.agentic?.online_llm?.provider;
-            const route = {
-                openrouter: 'refresh-openrouter-models',
-                claude:     'refresh-anthropic-models',
-                openai:     'refresh-openai-models',
-                gemini:     'refresh-gemini-models',
-                'codex-subscription': 'refresh-codex-models'
-            }[provider];
-            if (!route) {
-                this.showMessage('No catalog for provider "' + (provider || 'unset') + '"', 'error');
-                return;
-            }
+            const providers = [
+                ['OpenRouter', 'refresh-openrouter-models'],
+                ['Anthropic',  'refresh-anthropic-models'],
+                ['OpenAI',     'refresh-openai-models'],
+                ['Gemini',     'refresh-gemini-models'],
+                ['Codex',      'refresh-codex-models'],
+            ];
             this.updatingCatalog = true;
-            try {
-                const r = await fetch('/api/maintenance/' + route, { method: 'POST' });
-                const d = await r.json().catch(() => ({}));
-                const result = (d && typeof d.success === 'boolean') ? d : { success: false, error: 'HTTP ' + r.status };
-                if (result.success) {
-                    this.showMessage(result.model_count + ' models updated', 'success');
-                    // Same event saveAgentic() dispatches, so the model combobox
-                    // re-queries instead of showing the pre-refresh list.
-                    window.dispatchEvent(new CustomEvent('llm-catalog-refreshed', { detail: { provider } }));
-                    this._refreshCaseAnalysis();
-                } else {
-                    // The backend keeps the previous catalog rather than emptying it
-                    // (CatalogStore.write), so say that plainly — "failed" alone would
-                    // read as "the model list is now gone".
-                    this.showMessage('Catalog not updated, kept the previous one: '
-                                     + (result.error || 'unknown error'), 'error');
-                }
-            } catch (e) {
-                this.showMessage('Catalog not updated, kept the previous one: ' + e.message, 'error');
+            const ok = [], failed = [];
+            // Sequential, not parallel: several of these hit the same upstream
+            // account, and a burst is the fastest way to trip a rate limit on the
+            // one action whose whole point is to succeed quietly.
+            for (const [name, route] of providers) {
+                try {
+                    const r = await fetch('/api/maintenance/' + route, { method: 'POST' });
+                    const d = await r.json().catch(() => ({}));
+                    if (d && d.success) ok.push(name + ' ' + (d.model_count ?? '?'));
+                    else failed.push(name);
+                } catch (e) { failed.push(name); }
+            }
+            if (ok.length) {
+                // The backend never replaces a good catalog with an empty one
+                // (CatalogStore.write), so anything that failed still has whatever
+                // it had before — say "skipped", not "lost".
+                this.showMessage('Catalogs updated — ' + ok.join(', ')
+                                 + (failed.length ? '  ·  skipped: ' + failed.join(', ')
+                                                    + ' (no credential, or unreachable)' : ''),
+                                 'success');
+                window.dispatchEvent(new CustomEvent('llm-catalog-refreshed',
+                    { detail: { provider: this.config.agentic?.online_llm?.provider } }));
+                this._refreshCaseAnalysis();
+            } else {
+                this.showMessage('No catalog could be updated — previous lists kept. '
+                                 + 'Check connectivity and provider credentials.', 'error');
             }
             this.updatingCatalog = false;
         },

@@ -686,7 +686,7 @@
                                              class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded px-3 py-2 text-xs text-gray-400">
                                             No matching models in the catalog for
                                             <span class="text-white" x-text="$store.settings.config.agentic.online_llm.provider"></span>.
-                                            Run <span class="text-blue-400">Maintenance → Refresh</span> to update, or check the provider's docs.
+                                            Press <span class="text-blue-400">Update catalog</span> below, or check the provider's docs.
                                         </div>
                                         <!-- Currently-selected model info: context window + max output
                                              tokens + price. Pulled from the catalog entry so it stays
@@ -1049,7 +1049,7 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                         <div x-show="open && results.length === 0 && !loading && ($store.settings.config.timesketch.google_ai_model || '').length > 0"
                                              class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded px-3 py-2 text-xs text-gray-400">
                                             No matching Gemini models in the catalog.
-                                            Run <span class="text-blue-400">Maintenance → Refresh</span> to update it.
+                                            Press <span class="text-blue-400">Update catalog</span> below to refresh it.
                                         </div>
                                         <div x-show="selectedModel" class="mt-1 text-[11px] text-gray-500 flex flex-wrap gap-x-4">
                                             <span x-show="selectedModel?.context_length">
@@ -1226,7 +1226,7 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                         <div x-show="open && results.length === 0 && !loading && ($store.settings.config.timesketch.openrouter_model || '').length > 0"
                                              class="absolute z-50 w-full mt-1 bg-gray-800 border border-gray-600 rounded px-3 py-2 text-xs text-gray-400">
                                             No matching models in the OpenRouter catalog.
-                                            Run <span class="text-blue-400">Maintenance → Refresh</span> to update it.
+                                            Press <span class="text-blue-400">Update catalog</span> below to refresh it.
                                         </div>
                                         <div x-show="selectedModel" class="mt-1 text-[11px] text-gray-500 flex flex-wrap gap-x-4">
                                             <span x-show="selectedModel?.context_length">
