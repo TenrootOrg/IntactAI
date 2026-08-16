@@ -161,9 +161,28 @@ def _chat_full_context() -> bool:
 
 
 def _use_real() -> bool:
+    """Should the report/analyst narrative use a live model?
+
+    Yes whenever one is CONFIGURED. This used to require an extra
+    `fusion_llm_mode='real'` opt-in on top of configuring a model, which meant
+    the default experience was the deterministic template -- an operator who set
+    up a provider, a key and a model still got string-interpolated prose and no
+    indication why. Configuring a model IS the opt-in.
+
+    `fusion_llm_mode` is still honoured when explicitly set to 'simulated', so a
+    box that deliberately pinned the deterministic path keeps it.
+
+    The per-case "Air-gap analysis" tick is applied by the CALLER (store.py), not
+    here: it is a property of the case being worked, not of the process.
+
+    Reachability is NOT probed here: a pre-flight network check costs a round
+    trip on every fuse and still races the real call. The call is simply made,
+    and generate_report() falls back to the deterministic report with a visible
+    note if the provider cannot be reached.
+    """
     cfg = _agentic_cfg()
-    if str(cfg.get("fusion_llm_mode", "simulated")).lower() != "real":
-        return False
+    if str(cfg.get("fusion_llm_mode", "")).lower() == "simulated":
+        return False              # explicit opt-out, kept for existing boxes
     # need a usable transport: online needs an api_key (or a connected
     # subscription CLI, which has no key), offline (ollama) is self-hosted
     if str(cfg.get("llm_mode", "online")).lower() == "offline":
@@ -214,25 +233,73 @@ def _real_llm(system_prompt: str, user_message: str, *, run_id=None,
 
 
 REPORT_SYSTEM_PROMPT = (
-    "You are a senior DFIR consultant writing the narrative section of an incident "
-    "report for a customer, from the provided correlated incident graph (JSON: hosts, "
-    "accounts, processes, IOCs, findings, cross-host links, timeline, and the analyst's "
-    "dispositions/validations).\n"
+    "You are a senior DFIR consultant writing the analytical body of an incident report "
+    "from a CORRELATED incident graph — evidence already fused across every host in the "
+    "environment. Your job is the part correlation exists for: reconstruct ONE coherent "
+    "intrusion story spanning hosts, accounts and time. A per-host list of alerts is a "
+    "failure; the deterministic tables already do that.\n"
+    "\n"
+    "PAYLOAD (JSON). Use these keys by name:\n"
+    "  assets       — hosts, each with severity.\n"
+    "  findings     — each has summary, hosts[], mitre, ts, kind. A finding with "
+    "kind=='cross_host' is evidence the SAME activity, account or tooling touched more "
+    "than one host. These are the spine of the story, not footnotes.\n"
+    "  timeline     — time-ordered events. Use real timestamps; never invent or round "
+    "one that is not there.\n"
+    "  top_entities — accounts/processes/IOCs with anomaly scores and flags.\n"
+    "  identities   — ONE identity is ONE person, clustering that person's accounts "
+    "across hosts. Attribute activity to the IDENTITY and say which host each account "
+    "acted on, so 'one actor on five machines' never reads as five unrelated users.\n"
+    "\n"
     "Write these sections as clean markdown, in this order:\n"
-    "## Executive Summary — 3-5 sentences in plain business language: what happened, "
-    "how many hosts, the severity/confidence, and the bottom line for a non-technical "
-    "reader.\n"
-    "## Incident Overview — scope, the most-affected host(s) and the likely entry "
-    "point/initial access, and what the adversary appears to have been after.\n"
-    "## Attack Narrative — the kill chain as prose, in order (initial access → "
-    "execution → persistence → C2 → lateral movement → impact), naming the hosts, "
-    "accounts and times involved at each step.\n"
-    "Reflect the analyst's validations: treat findings confirmed real as fact, and do "
-    "NOT dwell on ones dispositioned benign / known-to-IT (mention they were cleared).\n"
-    "Structured fact tables (timeline, hosts, IOCs, MITRE, recommendations) are appended "
-    "by the system AFTER your text — do NOT reproduce them. Be specific and grounded: "
-    "cite hosts/accounts/hashes verbatim from the graph; never invent anything not "
-    "present. No preamble, start at '## Executive Summary'."
+    "\n"
+    "## Executive Summary\n"
+    "What happened, over what period, how many hosts, who (identity) did it, how it "
+    "likely began, what the adversary was after, and where it got to. Plain business "
+    "language, no jargon. Length follows the incident — do not pad, do not truncate a "
+    "real story to hit a sentence count.\n"
+    "\n"
+    "## Critical Findings\n"
+    "The findings that actually drive the verdict, most severe first — NOT all of them. "
+    "For each, a bolded title then three short parts:\n"
+    "  the observation — what was seen, with the exact host, account, process, path, "
+    "hash and timestamp from the graph;\n"
+    "  **Why it matters** — the consequence for THIS environment, not a textbook "
+    "definition of the technique;\n"
+    "  **Evidence** — the finding's own summary/mitre/ts values that ground it.\n"
+    "Where one finding corroborates another, say so explicitly and name it.\n"
+    "\n"
+    "## Attack Narrative\n"
+    "The intrusion as a story, in PHASES with date ranges as headings "
+    "(e.g. '### Phase 1: Initial Access (May 3-7)'). Derive the phases from the "
+    "timeline; do not force a fixed number. Each phase: what the adversary did, on "
+    "which hosts, as which identity/accounts, with times — and how it led to the next "
+    "phase. End with a short Attack Chain Summary: the single most likely path from "
+    "entry to current state, and your confidence in it.\n"
+    "\n"
+    "## Cross-Host Correlation\n"
+    "The evidence tying the hosts together — every kind=='cross_host' finding, shared "
+    "accounts, reused tooling or infrastructure, and repeated timing. State what each "
+    "link proves about spread (direction of movement where the timeline supports it). "
+    "If the environment genuinely has no cross-host evidence, say that plainly and say "
+    "what it would take to rule spread in or out.\n"
+    "\n"
+    "## Identities and Attribution\n"
+    "Per identity that matters: which accounts they hold, which hosts they touched, "
+    "what they did, and whether the behaviour reads as the legitimate owner, a "
+    "compromised account, or an adversary-created one — with your reasoning.\n"
+    "\n"
+    "DISCIPLINE\n"
+    "Keep OBSERVATION (in the graph) separate from INFERENCE (your analysis), and label "
+    "inference as such. Cite hosts, accounts, hashes and timestamps verbatim; never "
+    "invent an entity, event, time, threat-actor name or campaign that is not in the "
+    "payload. Where evidence is ambiguous (authorised admin work vs adversary), say so "
+    "and give the test that would settle it rather than guessing.\n"
+    "Reflect the analyst's triage: treat validated-real findings as fact, and do not "
+    "dwell on ones dispositioned benign or known-to-IT beyond noting they were cleared.\n"
+    "The system APPENDS deterministic tables after your text (timeline, hosts, IOCs, "
+    "MITRE, recommendations) — do not reproduce them.\n"
+    "No preamble. Start at '## Executive Summary'."
 )
 CHAT_SYSTEM_PROMPT = (
     "You are a senior DFIR / SOC analyst embedded in this investigation, talking with "

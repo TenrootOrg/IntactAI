@@ -329,6 +329,9 @@ def get_case(case_id):
                     # LOCKED to the model max: no per-case output cap any more.
                     # Kept in the response for API compatibility (None = model max).
                     "llm_max_output_tokens": None,
+                    # No route to a model provider: write the deterministic report
+                    # instead of waiting out a connection timeout on every fuse.
+                    "air_gap_analysis": bool(d.get("air_gap_analysis", False)),
                     # LOCKED ON: the LLM payload is always sized from the selected
                     # model's REAL context window, never the static ~128k-model
                     # constant. Kept in the response for API compatibility.

@@ -1189,7 +1189,15 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
             master_prompt=d.get("master_prompt"), mask=mask,
             dispositions=d.get("dispositions") or None,
             validations=d.get("timeline_validations") or None,
-            prefer_llm=False,   # first scan = fast, free, deterministic; LLM on Rescan
+            # First scan narrates with the model whenever one is configured and the
+            # case is not marked air-gap. It used to be hardcoded False -- "fast,
+            # free, deterministic; LLM on Rescan" -- which meant the report an
+            # operator actually READ was the string-interpolated template, and the
+            # real narrative only existed if they knew to press Regenerate. Almost
+            # nobody did, so the product was judged on the template. Tick
+            # "Air-gap analysis" in Case Analysis -> Configuration for the old
+            # behaviour on a box with no route to a provider.
+            prefer_llm=(not d.get("air_gap_analysis")) and llm_sim._use_real(),
             max_entities=llm_ent, budget_chars=llm_chars, max_output_tokens=llm_out,
             detail="explicit", max_identities=llm_ident)
         # ADVISORY analyst pass — incident-grouping + grounded hypotheses. Stored
@@ -1735,6 +1743,11 @@ def set_analysis_config(case_id, cfg) -> dict:
             patch["max_entities"] = max(100, min(int(cfg["max_entities"]), MAX_GRAPH_ENTITIES))
         except (TypeError, ValueError):
             pass
+    if "air_gap_analysis" in cfg:          # no route to a model provider: write the
+                                           # deterministic report immediately rather
+                                           # than spending a connection timeout
+                                           # discovering there is no network.
+        patch["air_gap_analysis"] = bool(cfg.get("air_gap_analysis"))
     if "max_identities" in cfg:            # identity rows in the LLM payload — a
                                            # ceiling INSIDE max_entities, not a separate
                                            # budget (see _llm_identity_budget); empty/0
