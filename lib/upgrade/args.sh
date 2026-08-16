@@ -89,9 +89,17 @@ parse_upgrade_args() {
         case "$1" in
             --package)   UPGRADE_PACKAGE_ARGS+=("${2:-}"); shift 2 ;;
             --package=*) UPGRADE_PACKAGE_ARGS+=("${1#*=}"); shift ;;
-            # Internal: the stage-0 re-exec hands the already-extracted tree to
-            # the target release's own upgrade.sh so it is not re-downloaded,
-            # re-verified and re-extracted a second time.
+            # An already-extracted package tree, so it is not re-downloaded,
+            # re-verified and re-extracted.
+            #
+            # No longer set by any handover: the old in-package hop fired after
+            # acquire and passed this to the engine it exec'd, and that hop is
+            # gone -- the bootstrap hands over BEFORE acquire, so the process
+            # that extracts is the one that uses it. Kept as an OPERATOR flag,
+            # which is the only remaining caller: lib/upgrade/interrupt.sh and
+            # velo_refresh.sh both print it as the way to resume against a
+            # package this box has already unpacked, instead of paying for the
+            # extraction twice.
             --package-dir)   UPGRADE_PACKAGE_DIR="${2:-}"; shift 2 ;;
             --package-dir=*) UPGRADE_PACKAGE_DIR="${1#*=}"; shift ;;
             --log)       LOG_FILE="${2:-}"; shift 2 ;;

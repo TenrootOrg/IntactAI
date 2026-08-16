@@ -38,7 +38,8 @@ UPKG_LOOSE_MANIFEST="" # a manifest.json found beside the assets, not inside one
 # scripts/upgrade.sh exports this before `exec`-ing into the target release's
 # upgrade.sh so the process that actually reaches upkg_cleanup can still
 # remove what the ORIGINAL process's upkg_acquire extracted (the re-exec'd
-# process skips extraction entirely -- it is handed --package-dir). A plain
+# process skips extraction entirely -- it is handed --package-dir, which is now
+# only ever an operator resuming by hand, not a handover). A plain
 # `UPKG_SCRATCH=""` here would silently clobber that inherited value the
 # instant this file is sourced in the new process.
 : "${UPKG_SCRATCH:=}"
