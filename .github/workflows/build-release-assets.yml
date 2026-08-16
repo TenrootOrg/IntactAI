@@ -247,14 +247,23 @@ jobs:
       - name: Save packager image as artifact
         run: |
           mkdir -p /tmp/docker-images
-          docker save intact-backend:ci-packager | gzip > /tmp/docker-images/intact-backend-ci-packager.tar.gz
+          # NO `| gzip`, and compression-level: 0 below. A `docker save` is
+          # already-compressed layers, so this used to deflate the same bytes
+          # THREE times: gzip here, then the artifact store's own zip, then an
+          # inflate in each of the 9 matrix legs that downloads it. The
+          # workflow already measured what that buys on this kind of content --
+          # 0.55%, see the note above the module-asset checksum step -- so all
+          # three passes were paying a full single-threaded scan for nothing.
+          docker save intact-backend:ci-packager > /tmp/docker-images/intact-backend-ci-packager.tar
           ls -lh /tmp/docker-images/
 
       - name: Upload packager image
         uses: actions/upload-artifact@v4
         with:
           name: docker-image-packager
-          path: /tmp/docker-images/intact-backend-ci-packager.tar.gz
+          path: /tmp/docker-images/intact-backend-ci-packager.tar
+          # Store, do not deflate: see the note above.
+          compression-level: 0
           retention-days: 1
 
   # ------------------------------------------------------------------ build
@@ -287,7 +296,7 @@ jobs:
           path: /tmp/docker-images
 
       - name: Load Docker image
-        run: docker load < /tmp/docker-images/intact-backend-ci-packager.tar.gz
+        run: docker load < /tmp/docker-images/intact-backend-ci-packager.tar
 
       # The intact module's asset bundles a `docker save` of intact-backend:<tag>
       # for customers to load. That image is built from this exact checkout at
@@ -420,6 +429,20 @@ jobs:
           path: |
             out/*
             !out/*.json
+          # STORE, DO NOT DEFLATE. These are `docker save` output -- layers that
+          # are already gzipped at rest. This workflow already measured what a
+          # second pass buys on exactly this content and stopped doing it for
+          # the tars themselves: 0.55%, 31 MB on 5.44 GB, "for a single-threaded
+          # pass over all of it" (see the checksum step above). The artifact
+          # store was still doing that same deflate one layer up, and paying it
+          # FOUR times over -- once compressing on upload, then inflating in
+          # each of verify-assets and publish.
+          #
+          # Safe by construction, not by argument: publish re-hashes every asset
+          # after this round trip and compares against the index sha256 -- the
+          # same digest a box checks its download against -- so a byte lost here
+          # fails the release rather than shipping.
+          compression-level: 0
           retention-days: 3
 
       # .meta.json + .manifest.json. The per-asset `.manifest.json` the builder
@@ -737,7 +760,7 @@ jobs:
   #    the git history that workflow covers, and the one a customer's
   #    air-gap USB stick actually carries.
   verify-assets:
-    needs: [resolve, build]
+    needs: [resolve, build, index]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -856,7 +879,8 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # ----------------------------------------------------------- dry-run-apply
+
+  # ------------------------------------------- dry-run apply (in verify)
   # The package this job downloads is EXACTLY what a customer would get.
   # Nothing before this point has ever run upgrade.sh against a real,
   # CI-built release -- every prior proof used a synthetic package built by
@@ -875,19 +899,15 @@ jobs:
   # that the real package this run built actually ACQUIRES, VERIFIES and
   # PLANS against a real appliance root, through the stage-0 hop, with the
   # code CI just built.
-  dry-run-apply:
-    needs: [resolve, build, index]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.resolve.outputs.commit }}
 
-      - uses: actions/download-artifact@v4
-        with:
-          path: all
-          pattern: asset-*
-
+      # ---- dry-run apply, folded in from the former dry-run-apply job -------
+      # Merged 2026-08-16. It was a separate job that downloaded the SAME
+      # ~5.5 GB of asset-* this one already has -- so the release payload came
+      # out of the artifact store three times per run (here, there, and
+      # publish). Same artifacts, same gate on publish, no reason for two
+      # runners. Folding it in removes one full download and one full copy of
+      # the release off a runner the publish job notes has ~21 GB free.
+      #
       - uses: actions/download-artifact@v4
         with:
           path: all
@@ -944,7 +964,7 @@ jobs:
 
   # ----------------------------------------------------------------- attach
   publish:
-    needs: [resolve, build, index, system-bundle, bootstrap-asset, verify-assets, dry-run-apply]
+    needs: [resolve, build, index, system-bundle, bootstrap-asset, verify-assets]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
