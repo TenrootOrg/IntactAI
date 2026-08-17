@@ -118,70 +118,54 @@ you install and upgrade from packages.
 
 ## Upgrades
 
-Jump straight to any newer release in one run — you don't have to step through
-the ones in between. Every module asset is absolute ("this *is* elk 9.4.4"), so
-the target release's engine compares what the box already has against what that
-release wants and moves each module directly to its target, whatever it was
-running before. A 0726 → 0821 jump in a single hop, with all evidence preserved,
-is a tested path.
+Jump straight to any newer release in one run — each module asset is absolute
+("this *is* elk 9.4.4"), so the target's engine moves every module from whatever
+the box has directly to target. A 0726 → 0821 single hop, evidence preserved, is
+a tested path.
 
-> **Air-gapped upgrades are supported from `intact-20260813` onward.** A box on
-> an earlier release must reach GitHub for at least one hop to get to
-> `20260813`; from there every subsequent upgrade can be carried in on a
-> package with no network at all.
-
-Four routes, all the same engine underneath (`scripts/upgrade.sh`):
+`bootstrap_upgrade.sh` fetches the target release's own engine
+(`<tag>-engine.tar.gz`), verifies its sha256, then hands over — so the upgrade is
+driven by the release being installed, never by this box's code. Four routes, one
+engine:
 
 | Route | Where | Use it when |
 |---|---|---|
 | **Online Upgrade** | Dashboard → Settings | The box can reach GitHub |
-| **Prepare Package** | Dashboard → Settings | Build one file to carry to an air-gapped box |
+| **Prepare Package** | Dashboard → Settings | Build a file to carry to an air-gapped box |
 | **Import Package** | Dashboard → Settings | Apply a package you carried in |
-| **CLI** | shell | Air-gapped boxes, scripted runs, recovery, single-module repair |
+| **CLI** | shell | Air-gapped, scripted, recovery, single-module repair |
 
-The CLI route needs **neither the backend nor the dashboard**. It talks only to
-Docker and to this checkout, so it works when the platform is broken — which is
-when you most need it: the backend stopped or crash-looping, nginx down and no
-dashboard, you on SSH with no browser. The dashboard routes above are a
-convenience wrapper that launches the same engine.
+The CLI needs neither the backend nor the dashboard, so it still works when the
+platform is broken:
 
 ```bash
-sudo bash scripts/bootstrap_upgrade.sh <tag>                 # online
-sudo bash scripts/bootstrap_upgrade.sh --package <file|dir>  # air-gap
-
-bash scripts/bootstrap_upgrade.sh <tag> --prepare /media/usb # build a carry-in file
+sudo bash scripts/bootstrap_upgrade.sh <tag>                  # online
+sudo bash scripts/bootstrap_upgrade.sh --package <file|dir>   # air-gap apply
+bash scripts/bootstrap_upgrade.sh <tag> --prepare /media/usb  # build a carry-in file
 ```
 
-**The upgrade runs the target release's code, not this box's.**
-`bootstrap_upgrade.sh` fetches `<tag>-engine.tar.gz`, checks it against its
-published sha256, and hands over. Everything after that — reading the package,
-planning, applying, health checks, rollback — is the code that shipped with the
-release being installed. So a release is free to change its package format, its
-flags or its whole engine without stranding the boxes that need to install it.
-`scripts/upgrade.sh` still works directly and does the same handover itself.
-
-Air-gapped, both halves running the target's code and **nothing else to carry**:
+**Air-gap round trip** — `--prepare` on any online machine (no appliance needed)
+writes one file carrying both the engine and the images; apply it offline.
+Air-gap is supported from `intact-20260813` onward:
 
 ```bash
-# on a machine with internet (no appliance needed)
 bash scripts/bootstrap_upgrade.sh intact-20260813 --prepare /media/usb
-
-# on the air-gapped box
 sudo bash scripts/bootstrap_upgrade.sh --package /media/usb/intact-upgrade-intact-20260813.tar
 ```
 
-The engine rides at the top level of that package, so the second command needs
-no checkout and no network — earlier releases required carrying both.
-
-**Which modules get upgraded.** Automatically — the engine compares each
-module's installed version against the package's and moves only the ones that
-differ. Everything else is left alone. To choose yourself:
+**Old box with no upgrade tooling** — a release before `intact-20260813` (e.g.
+`intact-20260726`) has no `scripts/upgrade.sh` of its own. Hand-carry the single
+self-contained bootstrap script and make the first hop to `20260813`; every route
+above works from there:
 
 ```bash
---only a,b        # just these
---skip a,b        # everything except these
---reinstall a,b   # re-apply one already at target (repairs a half-landed upgrade)
+# copy scripts/bootstrap_upgrade.sh onto the box, then:
+sudo bash bootstrap_upgrade.sh intact-20260813 --root /path/to/intact
 ```
+
+**Which modules move** is automatic — only those whose version differs. Override
+with `--only a,b`, `--skip a,b`, or `--reinstall a,b` (re-apply one already at
+target, to repair a half-landed upgrade).
 
 ## Scripts
 
