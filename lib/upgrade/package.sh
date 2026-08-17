@@ -89,10 +89,18 @@ upkg_expand_args() {
         # properly. CI never caught it because dry-run-apply collects only from
         # the per-module build artifacts, and these two upload separately.
         if [[ -d "$p" ]]; then
+            # *-engine.tar.gz joined the non-module set with the bootstrap
+            # handover: it is stage 1's payload (flat lib/ + scripts/, its own
+            # root), already extracted and EXEC'D by bootstrap_upgrade.sh
+            # before this code runs. Collecting it as a module asset gives the
+            # merged tree extra top-level roots and the "found 3: scripts lib
+            # intact-upgrade-<tag>" refusal -- which killed the first real
+            # Import of a prepared wrapper.
             while IFS= read -r f; do UPKG_ASSETS+=("$f"); done \
                 < <(find "$p" -maxdepth 1 \( -name '*.tar.gz' -o -name '*.tar' \) \
                          ! -name '*-system-bundle.tar' \
-                         ! -name '*-bootstrap.tar' | sort)
+                         ! -name '*-bootstrap.tar' \
+                         ! -name '*-engine.tar.gz' | sort)
             if [[ -z "$UPKG_SYSTEM_BUNDLE" ]]; then
                 UPKG_SYSTEM_BUNDLE="$(find "$p" -maxdepth 1 -name '*-system-bundle.tar' \
                                       2>/dev/null | head -1)"
@@ -147,7 +155,11 @@ upkg_expand_args() {
                 log_error "Could not unwrap $(basename "$p")"; return 1; }
             while IFS= read -r f; do
                 case "$(basename "$f")" in
-                    *-system-bundle.tar|*-bootstrap.tar) continue ;;
+                    # The engine rides at the wrapper's top level for STAGE 1
+                    # (bootstrap_upgrade.sh pulls it out and execs it before
+                    # this runs); it is not a module asset and merging it in
+                    # hands the tree a second and third root.
+                    *-system-bundle.tar|*-bootstrap.tar|*-engine.tar.gz) continue ;;
                 esac
                 expanded+=("$f")
             done < <(find "$unwrap" -maxdepth 1 \( -name '*.tar.gz' -o -name '*.tar' \) | sort)
