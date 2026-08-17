@@ -39,7 +39,8 @@ echo "== a whole release page in one folder =="
 collected() {
     find "$TMP" -maxdepth 1 \( -name '*.tar.gz' -o -name '*.tar' \) \
          ! -name '*-system-bundle.tar' \
-         ! -name '*-bootstrap.tar' -printf '%f\n' | sort | tr '\n' ' '
+         ! -name '*-bootstrap.tar' \
+         ! -name '*-engine.tar.gz' -printf '%f\n' | sort | tr '\n' ' '
 }
 check "only the module assets are collected" \
       "$(collected)" "${TAG}-elk.tar ${TAG}-portainer.tar.gz "
@@ -54,9 +55,13 @@ legacy() {
 check "without the bootstrap rule it would take one too many" "$(legacy)" "3"
 
 echo
-echo "== every collection site carries BOTH exclusions =="
+echo "== every collection site carries ALL THREE exclusions =="
 # Three places expand a directory into assets. All three must agree, or a
 # package behaves differently depending on which entry point read it.
+# *-engine.tar.gz joined the set with the bootstrap handover: stage 1's
+# payload, flat lib/+scripts/ under its own roots — merging it in is the
+# 'found 3: scripts lib intact-upgrade-<tag>' refusal that killed the first
+# real Import of a prepared wrapper.
 sites=(
     "lib/upgrade/package.sh:upgrade, --package <dir>"
     "lib/args.sh:install.sh, --package <dir>"
@@ -64,18 +69,19 @@ sites=(
 for entry in "${sites[@]}"; do
     f="${ROOT}/${entry%%:*}"; what="${entry#*:}"
     if grep -q -- "! -name '\*-system-bundle.tar'" "$f" \
-       && grep -q -- "! -name '\*-bootstrap.tar'" "$f"; then
+       && grep -q -- "! -name '\*-bootstrap.tar'" "$f" \
+       && grep -q -- "! -name '\*-engine.tar.gz'" "$f"; then
         ok "${what}"
     else
-        fail "${what}" "one of the two exclusions is missing in ${entry%%:*}"
+        fail "${what}" "one of the three exclusions is missing in ${entry%%:*}"
     fi
 done
 # The wrapper branch (a prepare_package.sh tarball, not a directory) is a
 # separate loop in the same file and was equally affected.
-if grep -q '\*-system-bundle.tar|\*-bootstrap.tar) continue' "${ROOT}/lib/upgrade/package.sh"; then
+if grep -q '\*-system-bundle.tar|\*-bootstrap.tar|\*-engine.tar.gz) continue' "${ROOT}/lib/upgrade/package.sh"; then
     ok "upgrade, unwrapped prepare_package.sh tarball"
 else
-    fail "upgrade, unwrapped prepare_package.sh tarball" "the wrapper branch still only skips system-bundle"
+    fail "upgrade, unwrapped prepare_package.sh tarball" "the wrapper branch must skip system-bundle, bootstrap AND engine"
 fi
 
 echo
