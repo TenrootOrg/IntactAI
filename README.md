@@ -118,8 +118,12 @@ you install and upgrade from packages.
 
 ## Upgrades
 
-One release at a time (N → N+1). Each hop is tested as a single step; skipping
-releases is not.
+Jump straight to any newer release in one run — you don't have to step through
+the ones in between. Every module asset is absolute ("this *is* elk 9.4.4"), so
+the target release's engine compares what the box already has against what that
+release wants and moves each module directly to its target, whatever it was
+running before. A 0726 → 0821 jump in a single hop, with all evidence preserved,
+is a tested path.
 
 > **Air-gapped upgrades are supported from `intact-20260813` onward.** A box on
 > an earlier release must reach GitHub for at least one hop to get to
