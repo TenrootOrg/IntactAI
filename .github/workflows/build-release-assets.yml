@@ -516,6 +516,26 @@ jobs:
           ( cd out && sha256sum "${TAG}-bootstrap.tar" > "${TAG}-bootstrap.tar.sha256" )
           ls -lh out
 
+      # The frozen contract, asserted on the real asset -- not the builder's
+      # own claim about it. build_engine_asset.sh self-probes the layout; this
+      # additionally proves the two things a box in the field depends on:
+      # the published checksum verifies, and the engine's args.sh actually
+      # understands --handoff (the flag bootstrap_upgrade.sh hands it). A
+      # release whose engine failed either check must never publish.
+      - name: Verify the engine asset honours the frozen contract
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          ( cd out && sha256sum -c "${TAG}-engine.tar.gz.sha256" )
+          probe="$(mktemp -d)"
+          tar -xzf "out/${TAG}-engine.tar.gz" -C "$probe"
+          test -f "$probe/BOOTSTRAP_PROTOCOL"
+          test "$(cat "$probe/VERSION")" = "$TAG"
+          test -f "$probe/scripts/upgrade.sh"        # flat, no leading dir
+          grep -q -- '--handoff' "$probe/lib/upgrade/args.sh"
+          echo "engine asset OK: checksum verifies, flat layout, --handoff accepted"
+
       - uses: actions/upload-artifact@v4
         with:
           name: bootstrap
@@ -728,32 +748,14 @@ jobs:
           echo "---"
           cat "out/$TAG.manifest.json"
 
-      # ---------------------------------------------------------------- engine
-      # THE UPGRADE ENGINE, AS ITS OWN ASSET. A few hundred KB of lib/ +
-      # scripts/ + install.sh, published beside the index and the manifest.
-      #
-      # WHY IT IS SEPARATE FROM THE MODULE ASSETS. An installed box has to run
-      # the TARGET release's upgrade code, and it has to get there before it
-      # parses anything -- because whatever it parses first is a format the
-      # target release can no longer change. Shipping the engine only inside
-      # the multi-hundred-MB intact module asset meant the old engine had to
-      # unwrap the new payload to find the new engine that would have unwrapped
-      # the new payload. A .tar -> .tar.gz change landed squarely in that
-      # circle and boxes could not upgrade.
-      #
-      # THE NAME AND THE LAYOUT INSIDE ARE FROZEN. scripts/bootstrap_upgrade.sh
-      # is installed on every box and cannot be fixed retroactively, so it looks
-      # for exactly "<tag>-engine.tar.gz" containing a flat scripts/upgrade.sh.
-      # Renaming this asset, nesting it under a directory, or dropping the
-      # .sha256 breaks every box already in the field. Do not "tidy" it.
-      # scripts/build_engine_asset.sh owns the layout; call it, do not hand-roll
-      # a tar here, or the two definitions will drift.
-      - name: build the frozen upgrade-engine asset
-        run: |
-          set -euo pipefail
-          bash scripts/build_engine_asset.sh "$TAG" . out
-          ls -l "out/$TAG-engine.tar.gz" "out/$TAG-engine.tar.gz.sha256"
-
+      # The upgrade engine is NOT built here. It used to be -- this job and
+      # bootstrap-asset each ran scripts/build_engine_asset.sh and each
+      # uploaded <tag>-engine.tar.gz, so every release built the same asset
+      # twice and publish collected whichever copy landed last. The single
+      # authoritative build lives in bootstrap-asset (which also derives the
+      # legacy <tag>-bootstrap.tar from it), and publish attaches it from that
+      # job's `bootstrap` artifact. This job publishes only the index and the
+      # merged manifest.
       - uses: actions/upload-artifact@v4
         with:
           name: release-index
