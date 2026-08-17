@@ -62,26 +62,24 @@ you carry in, never from a registry.
 On a machine with internet:
 
 ```bash
-# the release you want — change this one line when a newer one is out
-VER=intact-20260813
-
-# download and unpack it into the project folder "intact"
-curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/$VER.tar.gz" -o "$VER.tar.gz"
-mkdir -p intact && tar -xzf "$VER.tar.gz" --strip-components=1 -C intact
-bash intact/scripts/prepare_package.sh "$VER" .     # writes intact-upgrade-$VER.tar
+# download and unpack the release into the project folder "intact"
+# (to install a different release, replace intact-20260813 with its tag)
+curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20260813.tar.gz" -o intact-20260813.tar.gz
+mkdir -p intact && tar -xzf intact-20260813.tar.gz --strip-components=1 -C intact
+bash intact/scripts/prepare_package.sh intact-20260813 .   # writes intact-upgrade-intact-20260813.tar
 ```
 
-Carry **both** the `intact` folder and `intact-upgrade-$VER.tar` across
+Carry **both** the `intact` folder and `intact-upgrade-intact-20260813.tar` across
 (`install.sh` lives in the folder). Then on the air-gapped box:
 
 ```bash
 cd intact
 nano config.yaml                                    # IP/domain and passwords
-sudo bash install.sh --package "../intact-upgrade-$VER.tar"
+sudo bash install.sh --package ../intact-upgrade-intact-20260813.tar
 ```
 
 `--package` is repeatable and also takes a directory of per-module assets. If
-Docker is not already installed, carry the release's `$VER-system-bundle.tar`
+Docker is not already installed, carry the release's `intact-20260813-system-bundle.tar`
 too and put it beside the package — it provides the engine and host packages
 offline.
 
@@ -123,36 +121,35 @@ you install and upgrade from packages.
 ## Upgrades
 
 An upgrade runs the **target release's own code** against your live `intact`
-folder. You download the release next to it (into a folder named for the
-version), then run that release's `scripts/upgrade.sh --root ./intact` — it
-upgrades only the modules whose version differs, so you can jump straight to any
-newer release in one hop. **The only thing you ever change is `VER` on the first
-line.**
+folder. You download the release next to it (into a folder named for it), then
+run that release's `scripts/upgrade.sh --root ./intact` — it upgrades only the
+modules whose version differs, so you can jump straight to any newer release in
+one hop. Every command below is copy-paste; **to target a different release,
+replace `intact-20260813` with its tag.**
 
 ```bash
-# the release you want — change this one line when a newer one is out
-VER=intact-20260813
-
-# download it next to ./intact, into a folder named for the version
-curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/$VER.tar.gz" -o "$VER.tar.gz"
-mkdir -p "$VER" && tar -xzf "$VER.tar.gz" --strip-components=1 -C "$VER"
+# download the release next to ./intact, into a folder named for it
+curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20260813.tar.gz" -o intact-20260813.tar.gz
+mkdir -p intact-20260813 && tar -xzf intact-20260813.tar.gz --strip-components=1 -C intact-20260813
 ```
 
 **Online** (the box reaches GitHub):
 
 ```bash
-sudo bash "$VER/scripts/upgrade.sh" "$VER" --root ./intact
+sudo bash intact-20260813/scripts/upgrade.sh intact-20260813 --root ./intact
 ```
 
-**Air-gapped** — build the carry-in file on any online machine, apply it offline:
+**Air-gapped** — build the carry-in file on any online machine, apply it offline.
+Each machine is a fresh shell, so the tag is written out in full on both:
 
 ```bash
-# online machine: one file with the engine + every image
+# on the ONLINE machine: one file with the engine + every image
 # (add module names for a subset, e.g. add  portainer  as a last argument)
-bash "$VER/scripts/prepare_package.sh" "$VER" .                # -> intact-upgrade-$VER.tar
+bash intact-20260813/scripts/prepare_package.sh intact-20260813 .   # -> intact-upgrade-intact-20260813.tar
 
-# carry the  "$VER"  folder and  intact-upgrade-$VER.tar  to the box, then:
-sudo bash "$VER/scripts/upgrade.sh" --package "intact-upgrade-$VER.tar" --root ./intact
+# carry the  intact-20260813  folder and  intact-upgrade-intact-20260813.tar  to the box,
+# then on the AIR-GAPPED box:
+sudo bash intact-20260813/scripts/upgrade.sh --package intact-upgrade-intact-20260813.tar --root ./intact
 ```
 
 **Pick modules / preview** — add any of these to a run above:
