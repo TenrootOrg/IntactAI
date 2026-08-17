@@ -359,6 +359,16 @@ bad, unknown = [], []
 for rel in (l.rstrip("\n") for l in open(listfile)):
     if not rel or rel in ("manifest.json",):
         continue
+    # Per-asset metadata, not content: every per-module asset carries its own
+    # manifests/<module>.json sidecar (see upkg_read_manifest), and the merged
+    # manifest's sha256 map describes the package's CONTENT, not the metadata
+    # describing it. The full-manifest verifier never sees these (it walks the
+    # map, not the disk); this scoped walk of everything extracted does, and
+    # refusing over them failed every --only fetch of an otherwise perfect
+    # package. Their integrity is already covered by the asset archive's own
+    # sha256, verified before extraction.
+    if rel.startswith("manifests/") and rel.endswith(".json"):
+        continue
     want = smap.get(rel)
     if want is None:
         unknown.append(rel); continue
