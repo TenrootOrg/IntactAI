@@ -28,7 +28,25 @@ data/cve_cache/
 # holds the CA private key — never commit. Keep the dir (.gitkeep) so the
 # bind-mount target exists in a fresh checkout.
 data/velociraptor/*
+
 !data/velociraptor/.gitkeep
+
+# Per-box state relocated by lib/state_registry.sh, and the upgrade's backups
+# of it.
+#
+# THE IGNORE RULES DID NOT FOLLOW THE FILES. Each of these is ignored at its
+# ORIGINAL path -- modules/iris/secrets/*, modules/nginx/ssl/*, and so on --
+# but state_registry.sh moves them under data/state/ and leaves symlinks
+# behind, and those rules match the old paths only. So the relocation quietly
+# un-ignored a private CA key (irisRootCAKey.pem), the shared TLS key,
+# IRIS_SECRET_KEY, the security salt and both Postgres passwords: a bare
+# `git add -A` would have staged every one of them.
+#
+# data/upgrade-backups/ is the same class -- the upgrade copies .env files and
+# module config there before touching them, so it inherits whatever secrets
+# those carry.
+data/state/
+data/upgrade-backups/
 
 # Python cache
 __pycache__/

@@ -193,51 +193,6 @@ unset _lib
 # install-side verify_installation. Both are wanted, and the upgrade one is
 # sourced second so its definitions win where the names collide.
 
-# Options THIS engine accepts that an OLDER packaged engine may not, and
-# which are safe to drop rather than fail on.
-#
-# The stage-0 hop forwards the operator's arguments verbatim to the target
-# release's own upgrade.sh, and that engine's arg parser rejects anything it
-# does not know with "Unknown option" and exit 2. So the moment a flag is
-# added here, every import of an EARLIER package made with it dies before
-# touching anything -- a new backend plus a package from a month ago is an
-# entirely ordinary combination, and this is exactly the air-gapped site that
-# cannot just fetch a newer one. Found 2026-08-11 by --reinstall doing this
-# against an intact-20260817 package.
-#
-# An allowlist, deliberately not "drop anything the target does not know":
-# silently dropping --expect-sha256 would turn a refused package into an
-# applied one. Only flags whose absence merely means "the run does less"
-# belong here.
-_U_DROPPABLE_OPTS=" --reinstall "
-
-# Fills the named array with _ORIG_ARGS minus any droppable option the target
-# engine has no parser for. Detected by reading the target's own args.sh
-# rather than running it: this happens before the hop, and the hop is the
-# point of no return for a run that has already extracted a package.
-_u_forwardable_args() {
-    local target_sh="$1"; local -n _out="$2"
-    local target_args="${target_sh%/scripts/upgrade.sh}"
-    [[ "$target_args" == "$target_sh" ]] && target_args="${target_sh%/upgrade.sh}"
-    target_args="${target_args}/lib/upgrade/args.sh"
-
-    _out=()
-    local i=0 a
-    while (( i < ${#_ORIG_ARGS[@]} )); do
-        a="${_ORIG_ARGS[$i]}"
-        local bare="${a%%=*}"
-        if [[ "$_U_DROPPABLE_OPTS" == *" ${bare} "* ]] \
-           && ! grep -q -- "${bare})" "$target_args" 2>/dev/null; then
-            log_warn "The package's own upgrade engine predates ${bare}; dropping it."
-            [[ "$a" == *=* ]] || i=$((i + 1))   # also skip its separate value
-            i=$((i + 1))
-            continue
-        fi
-        _out+=("$a")
-        i=$((i + 1))
-    done
-}
-
 main() {
     parse_upgrade_args "${_ORIG_ARGS[@]}"
 
@@ -380,6 +335,52 @@ main() {
         return $?
     fi
 
+    # ------------------------------------------------- early hop (stage 1) ---
+    # HAND OVER BEFORE ACQUIRING ANYTHING.
+    #
+    # The late hop further down has always run AFTER acquire -- download the
+    # release, sniff the wrapper, read the manifest, and only then exec the
+    # target's engine. Which means the OLD engine had to correctly parse the
+    # NEW release's package in order to reach the new engine whose job was to
+    # parse it. A release changed its wrapper from .tar to .tar.gz and boxes
+    # could not upgrade at all: the failure landed inside the circle.
+    #
+    # So: before a single byte of payload is touched, delegate to
+    # scripts/bootstrap_upgrade.sh, whose entire job is fetch -> verify -> exec
+    # and which understands no format that can change. Everything below this
+    # point then runs in the TARGET release's code, which is the only code that
+    # can be expected to understand the target release's package.
+    #
+    # THE ONLY HANDOVER. There is no fallback and no second mechanism: if the
+    # target release's engine cannot be obtained, the bootstrap refuses and
+    # nothing is touched. Falling back to THIS engine would mean the upgrade was
+    # driven by the code already on the box instead of the code that shipped
+    # with the release being installed -- silently, which is the worst version
+    # of that, because "upgrade complete" would not say which engine produced
+    # it.
+    if [[ -z "${INTACT_UPGRADE_REEXEC:-}" ]]; then
+        local _boot="${_CODE_DIR}/scripts/bootstrap_upgrade.sh"
+        if [[ -f "$_boot" ]]; then
+            log_info ""
+            log_info "Fetching the target release's own upgrade engine before touching anything."
+            exec bash "$_boot" --root "$SCRIPT_DIR" "${_ORIG_ARGS[@]}"
+        fi
+        # No bootstrap beside this script. NOT refused, because this is also
+        # the shape of the legitimate manual path: an operator who cloned the
+        # TARGET release and ran its upgrade.sh is already running target-side,
+        # which is the whole objective -- there is nothing left to hand over
+        # to. It is the documented route for a box too old to bootstrap itself.
+        #
+        # Said out loud anyway, because the same shape covers the bad case:
+        # running an OLD checkout's upgrade.sh against a newer tag. Only the
+        # operator knows which of the two this is.
+        log_warn "No scripts/bootstrap_upgrade.sh beside this script, so this run"
+        log_warn "  uses the engine at ${_CODE_DIR}."
+        log_warn "  That is correct if this checkout IS the release you are"
+        log_warn "  installing. If it is not, stop and run the target release's"
+        log_warn "  own upgrade.sh instead."
+    fi
+
     # ---------------------------------------------------------- acquire -----
     local assets=()
     if [[ -n "${UPGRADE_PACKAGE_DIR:-}" ]]; then
@@ -439,71 +440,25 @@ main() {
         upkg_acquire "${assets[@]}" || return 2
     fi
 
-    # -------------------------------------------------------- stage-0 hop ---
-    # Hand control to the TARGET release's upgrade.sh, ALWAYS (not just when
-    # it differs from this file), once per run. That is the thing the old
-    # two-phase restart dance was straining to achieve from inside a
-    # container it was replacing, for ~1,300 lines: whatever runs is the
-    # logic shipped WITH the release being installed, not whatever happened
-    # to already be on the box.
+    # NO SECOND HOP HERE, ON PURPOSE.
     #
-    # "Always" used to be "unless byte-identical to this script" (`cmp -s`).
-    # That is not a safety check: this ONE FILE can be identical across a
-    # version bump while lib/upgrade/*.sh underneath it is not, and every
-    # test package built from this repo's own tree (make_test_package.sh) IS
-    # byte-identical by construction -- so the hop had never once fired
-    # outside a fabricated exception, confirmed by zero "handing over" lines
-    # in any run log. Comparing bytes answered the wrong question.
+    # This used to be where control passed to the target release's own
+    # upgrade.sh -- AFTER acquire had already downloaded the release, sniffed
+    # the wrapper with `tar -tf` and read the manifest. Which meant the OLD
+    # engine had to parse the NEW release's package in order to reach the new
+    # engine whose job was to parse it. A .tar -> .tar.gz change landed inside
+    # that circle and boxes could not upgrade at all.
     #
-    # scripts/ is where this lives now; the repo-root path is what packages
-    # built before the move carry, and a package is exactly the kind of thing
-    # that sits on a USB stick for months. Both are accepted.
-    local target_sh=""
-    local _cand
-    for _cand in "${UPKG_DIR}/source/intact/scripts/upgrade.sh" \
-                 "${UPKG_DIR}/source/intact/upgrade.sh"; do
-        [[ -f "$_cand" ]] && { target_sh="$_cand"; break; }
-    done
-    if [[ -z "${INTACT_UPGRADE_REEXEC:-}" && -n "$target_sh" ]]; then
-        # Syntax-check before handing over control, not after. Nothing has
-        # touched the appliance yet at this point (acquire/verify only), so a
-        # target that fails `bash -n` is refused cleanly here instead of
-        # dying somewhere in the middle of a module with no rollback for
-        # whatever it had already started.
-        if ! bash -n "$target_sh" 2>/dev/null; then
-            log_error "The package's own upgrade.sh (${target_sh}) does not"
-            log_error "  parse as bash. Refusing before touching anything."
-            log_error "  This is a broken or corrupted release package, not"
-            log_error "  a problem with this appliance."
-            return 2
-        fi
-        log_info ""
-        log_info "This package ships its own upgrade.sh; handing over to it so the"
-        log_info "upgrade runs the logic that was tested with ${UPKG_VERSIONS[intact]:-this release}."
-        export INTACT_UPGRADE_REEXEC=1
-        # UPKG_SCRATCH so the process that actually reaches upkg_cleanup can
-        # still remove what THIS process's upkg_acquire extracted -- it will
-        # not re-extract (--package-dir skips straight to reading the
-        # manifest), so without this the scratch dir under data/tmp/ would
-        # never be removed by anyone. lib/upgrade/package.sh initialises this
-        # var with `: "${UPKG_SCRATCH:=}"` rather than a plain assignment
-        # specifically so sourcing it in the new process does not clobber
-        # what was just exported.
-        export UPKG_SCRATCH
-        # The deferred-asset map: without it the re-exec'd process, which skips
-        # acquire entirely, would reach each module's turn with nothing to
-        # extract and silently upgrade nothing.
-        export UPKG_DEFERRED
-        # --root: the new process's own bootstrap resolves _CODE_DIR to
-        # wherever target_sh lives (inside the extracted package) -- SCRIPT_DIR
-        # has to be told explicitly, or it would default to that same
-        # extracted tree and the whole run would silently apply against
-        # scratch instead of the appliance. This is the fix for that.
-        local _fwd=()
-        _u_forwardable_args "$target_sh" _fwd
-        exec bash "$target_sh" --package-dir "$UPKG_DIR" --log "$LOG_FILE" \
-             --root "$SCRIPT_DIR" "${_fwd[@]}"
-    fi
+    # scripts/bootstrap_upgrade.sh does the same handover BEFORE any of that,
+    # against a fixed asset name it cannot misparse, so by the time execution
+    # reaches this line it is ALREADY the target release's code. A second hop
+    # here would be a no-op at best and a re-entry loop at worst, and keeping
+    # two handover mechanisms means two things to keep in agreement forever.
+    #
+    # Deleted with it: _U_DROPPABLE_OPTS and _u_forwardable_args, which existed
+    # only because this hop forwarded argv -- a cross-release contract that
+    # changed. The bootstrap passes a versioned --handoff file instead.
+
 
     # Past the hop, so `exec` cannot have skipped it and the scratch this
     # process is about to read belongs to this process. Before the plan, so
@@ -514,6 +469,17 @@ main() {
     # ------------------------------------------------------------- plan -----
     plan_current_versions
     plan_build
+    # --dry-run --json is a MACHINE-READABLE answer for the dashboard, so the
+    # human table and the advisory chatter below would corrupt the stream.
+    # Everything that follows still runs -- the refusals below are the point of
+    # asking -- their output just goes to the log rather than to stdout.
+    if (( UPGRADE_DRY_RUN )) && (( UPGRADE_JSON )); then
+        plan_reject_downgrades || return 2
+        plan_check_disk || return 2
+        plan_print_json
+        upkg_cleanup
+        return 0
+    fi
     plan_print_table
     hostdeps_report
     plan_reject_downgrades || return 2

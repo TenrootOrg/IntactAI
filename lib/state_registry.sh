@@ -106,9 +106,25 @@ state_canonical_path() {
 # True when the path has already been migrated (is a symlink into data/state).
 state_is_migrated() {
     local root="$1" rel="$2"
-    [[ -L "${root}/${rel}" ]] || return 1
-    local tgt; tgt="$(readlink "${root}/${rel}" 2>/dev/null)" || return 1
-    [[ "$tgt" == *"data/state/"* ]]
+    local live="${root}/${rel}"
+    local canon="${root}/$(state_canonical_path "$rel")"
+    if [[ -L "$live" ]]; then
+        local tgt; tgt="$(readlink "$live" 2>/dev/null)" || return 1
+        [[ "$tgt" == *"data/state/"* ]] || return 1
+        # A FILE behind a symlink is only HALF migrated. Containers that
+        # bind-mount the file's parent DIRECTORY (./config:/etc/timesketch)
+        # see the symlink itself, and its relative target — ../../../data/…
+        # — does not exist inside the container. tsctl then ran against no
+        # config at all, "succeeded", and wrote its stamp nowhere. Report
+        # not-migrated so the migration replaces the symlink with a hard
+        # link (below). Directory entries stay symlinks: directories cannot
+        # be hard-linked, and compose files bind them per-path, which Docker
+        # resolves on the host at container create.
+        [[ -f "$canon" ]] && return 1
+        return 0
+    fi
+    # Hard-linked file: same inode on both paths.
+    [[ -e "$live" && "$live" -ef "$canon" ]]
 }
 
 # Move one registered path into data/state and leave a relative symlink behind.
@@ -117,6 +133,28 @@ state_is_migrated() {
 # it, and an absolute link would break the moment a box is moved or restored to
 # a different directory -- which is exactly what a disaster-recovery restore
 # does.
+# "Empty skeleton": a path carrying no state — a zero-byte file, or a
+# directory whose only content is git placeholder files. This is exactly what
+# the tracked repo ships at state paths (modules/iris/…/rootCA/.gitkeep), so
+# it is what a package-delivery step recreates; nothing the box GENERATES at
+# these paths ever looks like this.
+_state_is_empty_skeleton() {
+    local p="$1"
+    if [[ -f "$p" ]]; then
+        [[ ! -s "$p" ]]
+        return
+    fi
+    [[ -d "$p" ]] || return 1
+    local f
+    while IFS= read -r f; do
+        case "$(basename "$f")" in
+            .gitkeep|.gitignore) : ;;
+            *) return 1 ;;
+        esac
+    done < <(find "$p" -mindepth 1 2>/dev/null)
+    return 0
+}
+
 state_migrate_one() {
     local root="$1" rel="$2"
     local live="${root}/${rel}"
@@ -130,12 +168,29 @@ state_migrate_one() {
     if [[ -e "$live" && ! -L "$live" ]]; then
         # Real file or directory still at the historical path.
         if [[ -e "$canon" ]]; then
-            # Both exist: the live copy is the one the box has been running
-            # with, so it wins. Keep the other as .superseded rather than
-            # deleting anything that might be the only copy of a CA.
-            mv "$canon" "${canon}.superseded.$$" 2>/dev/null || true
+            # Both exist. The live copy NORMALLY wins -- it is the one the box
+            # has been running with (verified live: timesketch.conf's live
+            # copy carried the migrated postgres credential while the stored
+            # one was stale).
+            #
+            # EXCEPT when the live copy is an empty skeleton. The package
+            # tracks placeholder dirs (.gitkeep) at several state paths, and
+            # a delivery step recreating one of those OVER the symlink must
+            # not dethrone real state: on a live box this exact case moved
+            # the IRIS CA, web certs and ALL FIVE iris secrets (including the
+            # postgres password guarding existing case data) aside into
+            # .superseded and left .gitkeep-only dirs as canonical -- the
+            # next iris recreate would have regenerated secrets and locked
+            # the appliance out of its own database.
+            if _state_is_empty_skeleton "$live" && ! _state_is_empty_skeleton "$canon"; then
+                rm -rf "$live" 2>/dev/null
+            else
+                mv "$canon" "${canon}.superseded.$$" 2>/dev/null || true
+            fi
         fi
-        mv "$live" "$canon" || return 1
+        if [[ -e "$live" ]]; then
+            mv "$live" "$canon" || return 1
+        fi
     elif [[ ! -e "$canon" ]]; then
         # Nothing to migrate and nothing stored: the generator has not run yet.
         # Leaving no symlink is correct -- the generator creates a real file at
@@ -143,12 +198,32 @@ state_migrate_one() {
         return 0
     fi
 
-    # Link the historical path at the stored one, relative to its own directory.
+    # Link the historical path at the stored one.
+    #
+    # FILES get a HARD link: a real file at both paths, so a container that
+    # bind-mounts the parent directory reads real content — the symlink form
+    # dangled inside every timesketch container (its relative target lives
+    # outside the mounted directory) and tsctl "stamped" a database it never
+    # reached. Host-side generators keep working: the render/openssl writers
+    # truncate in place, which updates the shared inode. data/ still survives
+    # every mirror because the inode lives on regardless of which name a tree
+    # operation removes; the next migration run re-links whichever side is
+    # missing.
+    #
+    # DIRECTORIES keep the relative symlink (directories cannot be
+    # hard-linked); their composes bind them per-path, which Docker resolves
+    # on the host at container create — verified live by IRIS, whose cert
+    # dirs are migrated and whose stack is healthy.
+    rm -rf "$live" 2>/dev/null
+    if [[ -f "$canon" ]]; then
+        ln "$canon" "$live" 2>/dev/null && return 0
+        # Cross-device (data/ on another filesystem): fall through to the
+        # symlink, which at least keeps every host-side path working.
+    fi
     local up; up="$(dirname "$rel")"
     local depth; depth="$(awk -F/ '{print NF}' <<< "$up")"
     local prefix=""; local i
     for (( i = 0; i < depth; i++ )); do prefix+="../"; done
-    rm -rf "$live" 2>/dev/null
     ln -s "${prefix}${canon_rel}" "$live" || return 1
     return 0
 }

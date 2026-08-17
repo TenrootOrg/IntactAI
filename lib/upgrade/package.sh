@@ -38,7 +38,8 @@ UPKG_LOOSE_MANIFEST="" # a manifest.json found beside the assets, not inside one
 # scripts/upgrade.sh exports this before `exec`-ing into the target release's
 # upgrade.sh so the process that actually reaches upkg_cleanup can still
 # remove what the ORIGINAL process's upkg_acquire extracted (the re-exec'd
-# process skips extraction entirely -- it is handed --package-dir). A plain
+# process skips extraction entirely -- it is handed --package-dir, which is now
+# only ever an operator resuming by hand, not a handover). A plain
 # `UPKG_SCRATCH=""` here would silently clobber that inherited value the
 # instant this file is sourced in the new process.
 : "${UPKG_SCRATCH:=}"
@@ -88,10 +89,18 @@ upkg_expand_args() {
         # properly. CI never caught it because dry-run-apply collects only from
         # the per-module build artifacts, and these two upload separately.
         if [[ -d "$p" ]]; then
+            # *-engine.tar.gz joined the non-module set with the bootstrap
+            # handover: it is stage 1's payload (flat lib/ + scripts/, its own
+            # root), already extracted and EXEC'D by bootstrap_upgrade.sh
+            # before this code runs. Collecting it as a module asset gives the
+            # merged tree extra top-level roots and the "found 3: scripts lib
+            # intact-upgrade-<tag>" refusal -- which killed the first real
+            # Import of a prepared wrapper.
             while IFS= read -r f; do UPKG_ASSETS+=("$f"); done \
                 < <(find "$p" -maxdepth 1 \( -name '*.tar.gz' -o -name '*.tar' \) \
                          ! -name '*-system-bundle.tar' \
-                         ! -name '*-bootstrap.tar' | sort)
+                         ! -name '*-bootstrap.tar' \
+                         ! -name '*-engine.tar.gz' | sort)
             if [[ -z "$UPKG_SYSTEM_BUNDLE" ]]; then
                 UPKG_SYSTEM_BUNDLE="$(find "$p" -maxdepth 1 -name '*-system-bundle.tar' \
                                       2>/dev/null | head -1)"
@@ -146,7 +155,11 @@ upkg_expand_args() {
                 log_error "Could not unwrap $(basename "$p")"; return 1; }
             while IFS= read -r f; do
                 case "$(basename "$f")" in
-                    *-system-bundle.tar|*-bootstrap.tar) continue ;;
+                    # The engine rides at the wrapper's top level for STAGE 1
+                    # (bootstrap_upgrade.sh pulls it out and execs it before
+                    # this runs); it is not a module asset and merging it in
+                    # hands the tree a second and third root.
+                    *-system-bundle.tar|*-bootstrap.tar|*-engine.tar.gz) continue ;;
                 esac
                 expanded+=("$f")
             done < <(find "$unwrap" -maxdepth 1 \( -name '*.tar.gz' -o -name '*.tar' \) | sort)
@@ -357,6 +370,16 @@ if not smap:
 bad, unknown = [], []
 for rel in (l.rstrip("\n") for l in open(listfile)):
     if not rel or rel in ("manifest.json",):
+        continue
+    # Per-asset metadata, not content: every per-module asset carries its own
+    # manifests/<module>.json sidecar (see upkg_read_manifest), and the merged
+    # manifest's sha256 map describes the package's CONTENT, not the metadata
+    # describing it. The full-manifest verifier never sees these (it walks the
+    # map, not the disk); this scoped walk of everything extracted does, and
+    # refusing over them failed every --only fetch of an otherwise perfect
+    # package. Their integrity is already covered by the asset archive's own
+    # sha256, verified before extraction.
+    if rel.startswith("manifests/") and rel.endswith(".json"):
         continue
     want = smap.get(rel)
     if want is None:

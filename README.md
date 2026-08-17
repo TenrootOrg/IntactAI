@@ -135,18 +135,39 @@ Four routes, all the same engine underneath (`scripts/upgrade.sh`):
 | **Import Package** | Dashboard → Settings | Apply a package you carried in |
 | **CLI** | shell | Air-gapped boxes, scripted runs, recovery, single-module repair |
 
-The CLI route needs **neither the backend nor the dashboard**. `scripts/upgrade.sh`
-talks only to Docker and to this checkout, so it works when the platform is
-broken — which is when you most need it: the backend stopped or crash-looping,
-nginx down and no dashboard, you on SSH with no browser. The dashboard routes
-above are a convenience wrapper that launches the same engine.
+The CLI route needs **neither the backend nor the dashboard**. It talks only to
+Docker and to this checkout, so it works when the platform is broken — which is
+when you most need it: the backend stopped or crash-looping, nginx down and no
+dashboard, you on SSH with no browser. The dashboard routes above are a
+convenience wrapper that launches the same engine.
 
 ```bash
-sudo bash scripts/upgrade.sh <tag>                     # online
-sudo bash scripts/upgrade.sh --package <file|dir>      # air-gap
+sudo bash scripts/bootstrap_upgrade.sh <tag>                 # online
+sudo bash scripts/bootstrap_upgrade.sh --package <file|dir>  # air-gap
 
-sudo bash scripts/prepare_package.sh <tag>             # build one carry-in file
+bash scripts/bootstrap_upgrade.sh <tag> --prepare /media/usb # build a carry-in file
 ```
+
+**The upgrade runs the target release's code, not this box's.**
+`bootstrap_upgrade.sh` fetches `<tag>-engine.tar.gz`, checks it against its
+published sha256, and hands over. Everything after that — reading the package,
+planning, applying, health checks, rollback — is the code that shipped with the
+release being installed. So a release is free to change its package format, its
+flags or its whole engine without stranding the boxes that need to install it.
+`scripts/upgrade.sh` still works directly and does the same handover itself.
+
+Air-gapped, both halves running the target's code and **nothing else to carry**:
+
+```bash
+# on a machine with internet (no appliance needed)
+bash scripts/bootstrap_upgrade.sh intact-20260813 --prepare /media/usb
+
+# on the air-gapped box
+sudo bash scripts/bootstrap_upgrade.sh --package /media/usb/intact-upgrade-intact-20260813.tar
+```
+
+The engine rides at the top level of that package, so the second command needs
+no checkout and no network — earlier releases required carrying both.
 
 **Which modules get upgraded.** Automatically — the engine compares each
 module's installed version against the package's and moves only the ones that

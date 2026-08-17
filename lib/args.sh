@@ -154,7 +154,8 @@ parse_install_args() {
                     < <(find "$_p" -maxdepth 1 \
                              \( -name '*.tar.gz' -o -name '*.tar' \) \
                              ! -name '*-system-bundle.tar' \
-                             ! -name '*-bootstrap.tar' | sort)
+                             ! -name '*-bootstrap.tar' \
+                             ! -name '*-engine.tar.gz' | sort)
             else
                 _expanded+=("$_p")
             fi
@@ -220,7 +221,14 @@ parse_install_args() {
                     if _is_system_bundle_tar_name "$_f"; then
                         _note_system_bundle_candidate "$_f"
                     else
-                        _expanded+=("$_f")
+                        case "$(basename -- "$_f")" in
+                            # Stage 1's payload (the frozen upgrade engine) and
+                            # the no-checkout bootstrap tar ride beside the
+                            # module assets; neither is a module image set and
+                            # load_images_from_package() must not see them.
+                            *-engine.tar.gz|*-bootstrap.tar) ;;
+                            *) _expanded+=("$_f") ;;
+                        esac
                     fi
                 done < <(find "$_unwrap_dir" -maxdepth 1 \
                              \( -name '*.tar.gz' -o -name '*.tar' \) | sort)

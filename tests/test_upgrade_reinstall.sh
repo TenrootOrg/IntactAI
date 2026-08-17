@@ -128,73 +128,68 @@ fi
 
 echo "== stage-0 hop: an older packaged engine must not choke on it =="
 
-# The filter from scripts/upgrade.sh, against fabricated target trees: one
-# whose args.sh knows --reinstall and one whose does not.
-log_warn() { :; }
-_U_DROPPABLE_OPTS=" --reinstall "
-_u_forwardable_args() {
-    local target_sh="$1"; local -n _out="$2"
-    local target_args="${target_sh%/scripts/upgrade.sh}"
-    [[ "$target_args" == "$target_sh" ]] && target_args="${target_sh%/upgrade.sh}"
-    target_args="${target_args}/lib/upgrade/args.sh"
-    _out=()
-    local i=0 a
-    while (( i < ${#_ORIG_ARGS[@]} )); do
-        a="${_ORIG_ARGS[$i]}"
-        local bare="${a%%=*}"
-        if [[ "$_U_DROPPABLE_OPTS" == *" ${bare} "* ]] \
-           && ! grep -q -- "${bare})" "$target_args" 2>/dev/null; then
-            log_warn "dropping ${bare}"
-            [[ "$a" == *=* ]] || i=$((i + 1))
-            i=$((i + 1))
-            continue
-        fi
-        _out+=("$a")
-        i=$((i + 1))
-    done
-}
+# ---------------------------------------------------------------------------
+# The argv filter this file used to test is GONE, along with the handover that
+# needed it.
+#
+# scripts/upgrade.sh used to exec the target engine with the operator's argv,
+# so a flag this engine knew and an older packaged engine did not would kill
+# the run with "Unknown option" -- which is what --reinstall did on 2026-08-11,
+# and why an allowlist of droppable flags was bolted on.
+#
+# Handover now goes through scripts/bootstrap_upgrade.sh, which forwards argv
+# UNTOUCHED and strips only the flags it owns itself. An unknown flag is no
+# longer a problem to be filtered: it is a flag some engine understands and the
+# bootstrap does not, which is the normal case. So what needs testing is the
+# opposite property -- that nothing is dropped, and that the bootstrap's own
+# flags do not leak through to an engine that would reject them.
+# ---------------------------------------------------------------------------
+BOOT="${ROOT}/scripts/bootstrap_upgrade.sh"
 
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-for kind in old new; do
-    mkdir -p "${TMP}/${kind}/lib/upgrade" "${TMP}/${kind}/scripts"
-    touch "${TMP}/${kind}/scripts/upgrade.sh"
+if [[ -f "$BOOT" ]]; then
+    ok "scripts/bootstrap_upgrade.sh exists"
+else
+    fail "scripts/bootstrap_upgrade.sh exists" "the single handover path is missing"
+fi
+
+# The old mechanism must be genuinely gone, not merely unused -- two handover
+# paths is two things to keep in agreement forever.
+for _dead in _u_forwardable_args _U_DROPPABLE_OPTS INTACT_UPGRADE_LEGACY; do
+    if grep -q "^[^#]*${_dead}" "${ROOT}/scripts/upgrade.sh"; then
+        fail "${_dead} is gone from upgrade.sh" "the old argv handover is still live"
+    else
+        ok "${_dead} is gone from upgrade.sh"
+    fi
 done
-printf '%s\n' '--only) X ;;' '--skip) Y ;;'       > "${TMP}/old/lib/upgrade/args.sh"
-printf '%s\n' '--only) X ;;' '--reinstall) Z ;;'  > "${TMP}/new/lib/upgrade/args.sh"
 
-fwd() { local -n _r=OUT; _ORIG_ARGS=("${@:2}"); _u_forwardable_args "$1" OUT; echo "${OUT[*]}"; }
-
-check "old engine: --reinstall and its value are both dropped" \
-      "$(fwd "${TMP}/old/scripts/upgrade.sh" --only intact,portainer --reinstall portainer --dry-run)" \
-      "--only intact,portainer --dry-run"
-check "old engine: the --reinstall=x form is dropped as one token" \
-      "$(fwd "${TMP}/old/scripts/upgrade.sh" --only=intact --reinstall=portainer --dry-run)" \
-      "--only=intact --dry-run"
-check "new engine: --reinstall survives" \
-      "$(fwd "${TMP}/new/scripts/upgrade.sh" --only intact --reinstall portainer)" \
-      "--only intact --reinstall portainer"
-check "nothing else is ever dropped" \
-      "$(fwd "${TMP}/old/scripts/upgrade.sh" --only intact --expect-sha256 abc123 --dry-run)" \
-      "--only intact --expect-sha256 abc123 --dry-run"
-# The allowlist is the whole point: dropping a digest anchor would turn a
-# package that should be REFUSED into one that gets applied.
-check "--expect-sha256 is not droppable even though the old engine is fake" \
-      "$(fwd "${TMP}/old/scripts/upgrade.sh" --expect-sha256 deadbeef)" \
-      "--expect-sha256 deadbeef"
-
-if grep -q '_u_forwardable_args' "${ROOT}/scripts/upgrade.sh"; then
-    ok "the hop in scripts/upgrade.sh uses the filter"
+# --reinstall is the flag that started all of this: it must reach the engine.
+_probe() {
+    # Print what the bootstrap would exec, without fetching or running anything.
+    sed -n 's/.*exec "\${_exec\[@\]}" "\${_FWD\[@\]}".*/FORWARDS_FWD/p' "$BOOT"
+}
+if [[ -n "$(_probe)" ]]; then
+    ok "the bootstrap execs the forwarded args"
 else
-    fail "the hop in scripts/upgrade.sh uses the filter" "args are forwarded raw again"
+    fail "the bootstrap execs the forwarded args" "handover no longer passes argv through"
 fi
-# The exec is wrapped across two lines, so this anchors on its last argument
-# rather than the whole statement.
-if grep -q '__root "\$SCRIPT_DIR" "\${_fwd\[@\]}"' \
-        <(sed 's/^ *//; s/^--root/__root/' "${ROOT}/scripts/upgrade.sh"); then
-    ok "the hop execs the FILTERED args, not _ORIG_ARGS"
+
+# --no-verify is not stripped any more -- it is REFUSED, because verifying the
+# engine before running it as root stopped being optional. Assert the refusal
+# exists rather than that the flag is quietly dropped.
+if grep -q -- '--no-verify) _die' "$BOOT"; then
+    ok "--no-verify is refused with a reason, not silently ignored"
 else
-    fail "the hop execs the filtered args" "still passing _ORIG_ARGS verbatim"
+    fail "--no-verify is refused" "it can still skip verification, or dies without saying why"
 fi
+
+# Its own flags must NOT be forwarded: the engine has never heard of them.
+for _own in --engine --prepare; do
+    if grep -q -- "${_own}" <(sed -n '/^_FWD=()/,/^done$/p' "$BOOT"); then
+        ok "${_own} is stripped from the passthrough"
+    else
+        fail "${_own} is stripped from the passthrough" "would reach the engine as Unknown option"
+    fi
+done
 
 echo
 echo "${PASS}/${TOTAL} passed"

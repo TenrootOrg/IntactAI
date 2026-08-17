@@ -289,8 +289,14 @@ test_the_exit_trap_is_registered_after_the_stage0_hop() {
     # `exec` does not run EXIT traps, but registering BEFORE the hop would
     # still be wrong the day that changes -- the handing-over process must not
     # reclaim scratch the new one is about to read. Assert the ordering.
+    #
+    # The hop is now the exec into scripts/bootstrap_upgrade.sh, and it happens
+    # BEFORE acquire rather than after it, so there is no extraction in flight
+    # to protect at that point. The ordering assertion is kept anyway: it is
+    # cheap, and "clean up only what this process owns" is the invariant, not
+    # the particular hop it was written against.
     local hop trap_line
-    hop="$(grep -n 'exec bash "$target_sh"' "${ROOT}/scripts/upgrade.sh" | cut -d: -f1 | head -1)"
+    hop="$(grep -n 'exec bash "$_boot"' "${ROOT}/scripts/upgrade.sh" | cut -d: -f1 | head -1)"
     trap_line="$(grep -n 'u_install_exit_cleanup_trap' "${ROOT}/scripts/upgrade.sh" | grep -v '^.*()' | cut -d: -f1 | tail -1)"
     assert_ne "$hop" "" "should find the stage-0 hop"
     assert_ne "$trap_line" "" "should find the trap registration"
@@ -416,12 +422,22 @@ test_extract_deferred_is_a_noop_for_a_module_already_on_disk() {
     _teardown
 }
 
-test_the_deferred_map_crosses_the_stage0_hop() {
-    # Without the export the re-exec'd process -- which skips acquire entirely
-    # -- reaches each module's turn with nothing to extract, and would upgrade
-    # nothing while reporting success.
-    local n; n="$(grep -c 'export UPKG_DEFERRED' "${ROOT}/scripts/upgrade.sh")"
-    assert_ne "$n" "0" "UPKG_DEFERRED must be exported across the hop"
+test_the_deferred_map_does_not_need_to_cross_the_hop() {
+    # It used to. The old hop fired AFTER acquire, so the re-exec'd process
+    # skipped extraction entirely and had to inherit UPKG_DEFERRED or it would
+    # reach each module's turn with nothing to extract -- upgrading nothing
+    # while reporting success.
+    #
+    # The hop now fires BEFORE acquire, so the process that builds the deferred
+    # map is the same one that consumes it. Exporting it across a hop that no
+    # longer exists would be cargo cult; what matters is that acquire still
+    # happens on the far side of the handover.
+    local hop acquire
+    hop="$(grep -n 'exec bash "$_boot"' "${ROOT}/scripts/upgrade.sh" | cut -d: -f1 | head -1)"
+    acquire="$(grep -n -- '---------- acquire -----' "${ROOT}/scripts/upgrade.sh" | cut -d: -f1 | head -1)"
+    assert_ne "$hop" "" "should find the stage-0 hop"
+    assert_ne "$acquire" "" "should find the acquire phase"
+    assert_true test "$acquire" -gt "$hop"
 }
 
 # --- state that must survive u_do's fork -----------------------------------

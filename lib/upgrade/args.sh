@@ -21,10 +21,16 @@
 upgrade_usage() {
     cat <<'USAGE'
 Usage:
-  sudo bash scripts/upgrade.sh <tag>                    upgrade from a GitHub release
-  sudo bash scripts/upgrade.sh --package <file|dir>...  upgrade from local assets
-  sudo bash scripts/upgrade.sh --list                   show available releases
-  sudo bash scripts/upgrade.sh --plan <tag>             show the plan for a release, cheaply
+  sudo bash scripts/bootstrap_upgrade.sh <tag>                   upgrade from a GitHub release
+  sudo bash scripts/bootstrap_upgrade.sh --package <file|dir>    upgrade from local assets
+  sudo bash scripts/upgrade.sh --list                            show available releases
+  sudo bash scripts/upgrade.sh --plan <tag>                      show the plan, cheaply
+
+  bootstrap_upgrade.sh is the command. It fetches the target release's engine,
+  verifies it against its published sha256, and hands over -- so the upgrade
+  runs the code that shipped WITH the release being installed, not this one.
+  THIS script is what it hands over to; running it directly still works and
+  still hops, which is the route for a box too old to bootstrap itself.
 
 Options:
   --package <path>      A release asset, a directory of them, or a single-file
@@ -83,14 +89,23 @@ parse_upgrade_args() {
     UPGRADE_EXPECT_SHA256=""
     UPGRADE_VELO_REFRESH_ONLY=0
     UPGRADE_PACKAGE_DIR=""
+    UPGRADE_HANDOFF=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --package)   UPGRADE_PACKAGE_ARGS+=("${2:-}"); shift 2 ;;
             --package=*) UPGRADE_PACKAGE_ARGS+=("${1#*=}"); shift ;;
-            # Internal: the stage-0 re-exec hands the already-extracted tree to
-            # the target release's own upgrade.sh so it is not re-downloaded,
-            # re-verified and re-extracted a second time.
+            # An already-extracted package tree, so it is not re-downloaded,
+            # re-verified and re-extracted.
+            #
+            # No longer set by any handover: the old in-package hop fired after
+            # acquire and passed this to the engine it exec'd, and that hop is
+            # gone -- the bootstrap hands over BEFORE acquire, so the process
+            # that extracts is the one that uses it. Kept as an OPERATOR flag,
+            # which is the only remaining caller: lib/upgrade/interrupt.sh and
+            # velo_refresh.sh both print it as the way to resume against a
+            # package this box has already unpacked, instead of paying for the
+            # extraction twice.
             --package-dir)   UPGRADE_PACKAGE_DIR="${2:-}"; shift 2 ;;
             --package-dir=*) UPGRADE_PACKAGE_DIR="${1#*=}"; shift ;;
             --log)       LOG_FILE="${2:-}"; shift 2 ;;
@@ -101,6 +116,33 @@ parse_upgrade_args() {
             # below and does not get swallowed as the release tag.
             --root)      shift 2 ;;
             --root=*)    shift ;;
+            # The bootstrap's handover file (scripts/bootstrap_upgrade.sh).
+            #
+            # A VERSIONED FILE INSTEAD OF ARGV, because argv turned out to be a
+            # cross-release contract and cross-release contracts are exactly
+            # what this design removes: adding --reinstall broke every import
+            # of an earlier package until an allowlist of droppable flags
+            # was bolted on (since deleted with the argv handover)
+            # (2026-08-11). The file carries a `schema` integer and is
+            # additive-only -- this engine reads the keys it knows and ignores
+            # the rest, so a newer bootstrap can add fields without breaking
+            # this parser, and an older one can omit them without breaking it
+            # either. Neither side has to guess what the other understands.
+            --handoff)   UPGRADE_HANDOFF="${2:-}"; shift 2 ;;
+            --handoff=*) UPGRADE_HANDOFF="${1#*=}"; shift ;;
+            # Bootstrap-owned, accepted and ignored HERE.
+            #
+            # An operator types this at scripts/upgrade.sh, whose early hop
+            # forwards it to scripts/bootstrap_upgrade.sh -- but this parser
+            # runs first, on the way in, and would otherwise reject it as
+            # "Unknown option" before the hop ever happened. It is also
+            # stripped from the bootstrap's own passthrough, so it never
+            # arrives here a second time after the handover.
+            #
+            # --no-verify used to be accepted here too. It is gone: verifying
+            # the engine before running it as root is not optional any more.
+            --engine)    shift 2 ;;
+            --engine=*)  shift ;;
             --only)      UPGRADE_ONLY="${2:-}"; shift 2 ;;
             --only=*)    UPGRADE_ONLY="${1#*=}"; shift ;;
             --skip)      UPGRADE_SKIP="${2:-}"; shift 2 ;;
@@ -155,8 +197,15 @@ parse_upgrade_args() {
         fi
         return 0
     fi
-    if (( UPGRADE_JSON )); then
-        echo "--json only means something with --list or --plan." >&2
+    # --json is also valid with --dry-run: that combination is how the
+    # dashboard asks the TARGET release what a package contains and what it
+    # would do. Before it existed, the backend answered those questions by
+    # parsing the package itself -- old code interpreting a new release's
+    # format, which is the circularity this whole design removes. The engine
+    # already acquires, verifies and plans under --dry-run; --json only changes
+    # which printer renders the result.
+    if (( UPGRADE_JSON )) && (( ! UPGRADE_DRY_RUN )); then
+        echo "--json only means something with --list, --plan or --dry-run." >&2
         exit 2
     fi
     if [[ -n "$UPGRADE_TAG" && ${#UPGRADE_PACKAGE_ARGS[@]} -gt 0 ]]; then

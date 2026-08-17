@@ -828,6 +828,58 @@ WRAP_MEMBERS=("$TAG.index.json")
 # The merged manifest rides second, right behind the index -- both are tiny and
 # both are read from the head of the stream (see the index-first note below).
 [ -n "$MANIFEST_NAME" ] && [ -f "$MANIFEST_NAME" ] && WRAP_MEMBERS+=("$MANIFEST_NAME")
+
+# ---------------------------------------------------------------------------
+# The upgrade ENGINE, at the TOP LEVEL of the wrapper and near the head of the
+# stream.
+#
+# It is already in this package -- buried inside the intact module asset at
+# source/intact/. That is useless to the thing that needs it: an installed
+# bootstrap must reach the target release's engine BEFORE it parses anything,
+# and digging it out of a module asset means parsing the payload first. Which
+# is the exact circularity that made a .tar -> .tar.gz change unupgradeable.
+#
+# So it rides here too, under its own frozen name, where
+# scripts/bootstrap_upgrade.sh can pull it out by name with one tar call and no
+# format detection. A few hundred KB against a multi-GB package.
+# ---------------------------------------------------------------------------
+_engine_dl() {
+    local base="${INTACT_GH_DL_BASE:-https://github.com}/${REPO:-TenrootOrg/IntactAI}/releases/download/${TAG}"
+    local n
+    for n in "${TAG}-engine.tar.gz" "${TAG}-engine.tar.gz.sha256"; do
+        [ -f "$n" ] && continue
+        curl -fLsS --retry 3 --max-time 120 -o "$n" "${base}/${n}" 2>/dev/null || return 1
+    done
+    return 0
+}
+if _engine_dl; then
+    WRAP_MEMBERS+=("${TAG}-engine.tar.gz" "${TAG}-engine.tar.gz.sha256")
+    log "including the upgrade engine (${TAG}-engine.tar.gz)"
+else
+    # FATAL, HERE, ON THE MACHINE THAT STILL HAS A NETWORK.
+    #
+    # This used to warn and carry on, saying the target box would "fall back to
+    # its own upgrade engine". That fallback no longer exists -- the bootstrap
+    # refuses when it cannot obtain the target's engine, deliberately, so an
+    # upgrade is never driven by the code it is replacing. A package without
+    # the engine is therefore a package that CANNOT BE APPLIED.
+    #
+    # The whole point of this file is to be carried somewhere with no network.
+    # Finding out at THAT end means an operator at an air-gapped site holding a
+    # package they can neither apply nor re-fetch -- which is precisely the
+    # failure this design exists to remove. Fail where it is still fixable.
+    rm -f "${TAG}-engine.tar.gz" "${TAG}-engine.tar.gz.sha256" 2>/dev/null
+    err "could not obtain ${TAG}-engine.tar.gz."
+    err "  The engine has to travel INSIDE this package: the box that applies it"
+    err "  has no network, and the bootstrap refuses rather than fall back to"
+    err "  that box's own older engine. This package would not be applicable."
+    err "  Either ${TAG} predates the engine asset, or the download failed:"
+    err "    ${INTACT_GH_DL_BASE:-https://github.com}/${REPO}/releases/download/${TAG}/${TAG}-engine.tar.gz"
+    err "  To build one from a ${TAG} checkout instead:"
+    err "    bash scripts/build_engine_asset.sh ${TAG} <checkout> <dir-beside-this-package>"
+    exit 1
+fi
+
 WRAP_MEMBERS+=("${ASSETS[@]}")
 [ -n "$BUNDLE_PLAN" ] && [ -f "$BUNDLE_NAME" ] && WRAP_MEMBERS+=("$BUNDLE_NAME")
 
