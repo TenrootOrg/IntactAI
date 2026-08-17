@@ -866,7 +866,9 @@ jobs:
 
   # -------------------------------------------------------------- verify
   # The dry-run apply gate: run the REAL package this build produced against a
-  # fixture appliance root, through the stage-0 hop, stopping before any swap.
+  # fixture appliance root with the engine CI just built, stopping before any
+  # swap. (The stage-0 hop is skipped here and unit-tested separately -- see the
+  # Dry-run step.)
   #
   # Per-asset PACKAGE SHAPE and SECRET (gitleaks) checks used to live here, in a
   # serial loop that re-downloaded all ~5.5 GB and scanned each asset one after
@@ -914,8 +916,7 @@ jobs:
   # many pin combinations already lives in tests/test_upgrade_plan.sh with
   # synthetic fixtures. What THIS job proves cannot be proven any other way --
   # that the real package this run built actually ACQUIRES, VERIFIES and
-  # PLANS against a real appliance root, through the stage-0 hop, with the
-  # code CI just built.
+  # PLANS against a real appliance root, with the code CI just built.
 
       # ---- dry-run apply, folded in from the former dry-run-apply job -------
       # Merged 2026-08-16. It was a separate job that downloaded the SAME
@@ -976,8 +977,18 @@ jobs:
       - name: Dry-run apply against the fixture
         run: |
           set -euo pipefail
-          sudo bash scripts/upgrade.sh --root "${GITHUB_WORKSPACE}/fixture" \
-            --package pkgdir --dry-run
+          # INTACT_UPGRADE_REEXEC=1 skips upgrade.sh's stage-0 hop. Post-merge,
+          # upgrade.sh execs scripts/bootstrap_upgrade.sh to FETCH the target
+          # engine before touching anything -- but here the checkout already IS
+          # the target engine, and pkgdir carries only module assets (no engine
+          # to hand over to), so the hop would look for an engine that isn't
+          # there and exit 2. The flag runs the engine we just built directly,
+          # which is exactly what this job tests: that the built package
+          # ACQUIRES / VERIFIES / PLANS. The stage-0 hop itself (fetch -> verify
+          # -> exec) is covered by tests/test_bootstrap_exec.sh. `sudo env` so
+          # the var survives sudo's env reset.
+          sudo env INTACT_UPGRADE_REEXEC=1 bash scripts/upgrade.sh \
+            --root "${GITHUB_WORKSPACE}/fixture" --package pkgdir --dry-run
 
   # ----------------------------------------------------------------- attach
   publish:
