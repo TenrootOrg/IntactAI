@@ -67,8 +67,8 @@ cd intact
 bash scripts/prepare_package.sh <tag> /media/usb    # writes intact-upgrade-<tag>.tar
 ```
 
-Carry **both** the checkout and the `.tar` across — `install.sh` lives in the
-checkout. Then on the air-gapped box:
+Carry **both** the `intact` folder (the one `git clone` made) and the `.tar`
+across — `install.sh` lives in that folder. Then on the air-gapped box:
 
 ```bash
 cd /path/to/intact
@@ -154,13 +154,16 @@ sudo bash scripts/bootstrap_upgrade.sh --package /media/usb/intact-upgrade-intac
 ```
 
 **Old box with no upgrade tooling** — a release before `intact-20260813` (e.g.
-`intact-20260726`) has no `scripts/upgrade.sh` of its own. Hand-carry the single
-self-contained bootstrap script and make the first hop to `20260813`; every route
-above works from there:
+`intact-20260726`) has no `scripts/upgrade.sh` of its own. Pull the target
+release's code into the `intact` folder first (this replaces `scripts/` and
+`lib/` — the engine; your live `config.yaml` is skip-worktree, so it is left
+alone), then run its upgrade. Every route above works from there:
 
 ```bash
-# copy scripts/bootstrap_upgrade.sh onto the box, then:
-sudo bash bootstrap_upgrade.sh intact-20260813 --root /path/to/intact
+cd /path/to/intact
+git fetch
+git checkout intact-20260813        # pull in the target release's engine
+sudo bash scripts/upgrade.sh        # its own code upgrades this box to 20260813
 ```
 
 **Which modules move** is automatic — only those whose version differs. Override
