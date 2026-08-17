@@ -21,15 +21,16 @@ present) are what actually gate the flow.
 | **Docker Engine** | 20.10 | 24.0+ | 20.10 is the Compose-v2-plugin era. IntactAI drives everything through `docker compose` (v2). |
 | **Docker Compose** | v2 (plugin) | v2 latest | The legacy `docker-compose` v1 binary is **not** supported. |
 
-The version constants live in two places and must stay in sync with this table:
+The version constants live in `lib/common.sh` →
+`INTACT_MIN_DOCKER_VERSION`, `INTACT_REC_DOCKER_VERSION`,
+`INTACT_SUPPORTED_UBUNTU`, and both install and upgrade read them from there:
+the upgrade engine is now shell (`scripts/upgrade.sh` + `lib/`), driven from
+the target release's own code via `scripts/bootstrap_upgrade.sh`, so it runs
+the same `check_docker_version` as the installer. (The old Python preflight
+in `modules/backend/services/upgrade/config_validate.py` was deleted with the
+in-container engine.)
 
-- Shell (install): `lib/common.sh` → `INTACT_MIN_DOCKER_VERSION`,
-  `INTACT_REC_DOCKER_VERSION`, `INTACT_SUPPORTED_UBUNTU`.
-- Python (upgrade preflight): `modules/backend/services/upgrade/config_validate.py`
-  → `MIN_DOCKER_VERSION`, `REC_DOCKER_VERSION`.
-
-All three can be overridden via environment variables of the same name for the
-shell checks (e.g. in CI).
+They can be overridden via environment variables of the same name (e.g. in CI).
 
 ## Where the checks run
 

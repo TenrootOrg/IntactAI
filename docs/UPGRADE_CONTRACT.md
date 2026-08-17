@@ -1,7 +1,26 @@
 # The upgrade contract
 
-Read this before changing anything under `modules/backend/services/upgrade/`,
-`modules/backend/docker-compose.yaml`, or `scripts/ci/build_release_package.py`.
+> **STALE — pending rewrite.** This document describes the in-container Python
+> upgrade engine (`modules/backend/services/upgrade/`, the Phase 1 / Phase 2
+> handover) that was **deleted** in favour of a shell engine driven from the
+> target release's own code. The sections below are kept for historical
+> reference only and no longer describe how an upgrade runs.
+>
+> The current architecture:
+> - **`scripts/bootstrap_upgrade.sh`** — frozen stage 1: fetch the target
+>   release's `<tag>-engine.tar.gz`, verify its sha256, exec it. This is the
+>   one documented upgrade command.
+> - **`scripts/upgrade.sh` + `lib/upgrade/*.sh`** — the engine the bootstrap
+>   hands over to; it applies the package module by module.
+> - **`scripts/build_engine_asset.sh`** — builds the frozen engine asset.
+> - The three dashboard flows (online upgrade, prepare package, import
+>   package) all route through the bootstrap; see
+>   `modules/backend/routes/upgrade_routes.py` and
+>   `modules/backend/services/upgrade_launcher.py`.
+
+Read this before changing anything under `scripts/upgrade.sh`,
+`lib/upgrade/`, `scripts/bootstrap_upgrade.sh`, or
+`scripts/ci/build_release_package.py`.
 
 ## How an upgrade actually works
 
