@@ -306,9 +306,18 @@ def _fetch_plan(tag):
         # Through the bootstrap: --plan reads the TARGET release's manifest, so
         # the code doing the reading must be the target's. This engine's parser
         # only understands the formats that existed when it shipped.
-        f"bash {shlex.quote(BOOTSTRAP_SH)} {shlex.quote(tag)} "
+        #
+        # The tag appears ONCE, as --plan's value. The bootstrap's
+        # non-consuming scan still finds it (--plan is not a flag it knows, so
+        # the tag is the first bare positional and selects which engine to
+        # fetch) and forwards the argv verbatim. Passing the tag a second time
+        # in front made the target engine see a positional TARGET as well as
+        # --plan, which its args.sh refuses ("give it a tag, not a release
+        # tag or --package too") -- found the first time this endpoint ran
+        # against a real engine.
+        f"bash {shlex.quote(BOOTSTRAP_SH)} "
         f"--plan {shlex.quote(tag)} --json",
-        timeout=60)
+        timeout=120)
 
     # Parse BEFORE deciding the command failed. --plan reports a refusal by
     # printing its JSON reason and exiting non-zero, which is right for a CLI
