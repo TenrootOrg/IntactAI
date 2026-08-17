@@ -35,7 +35,6 @@ set -euo pipefail
 
 BUNDLE=0
 BUNDLE_ONLY=0
-BOOTSTRAP=0
 SYSBUNDLE=0
 ARGS=()
 for a in "$@"; do
@@ -47,14 +46,18 @@ for a in "$@"; do
         # per-module index entirely. There is no point spending an hour on nine
         # module assets to get it.
         --bundle-only) BUNDLE=1; BUNDLE_ONLY=1 ;;
-        # The two NEW-shape assets that are not module assets. Off by default:
-        # neither is read by an upgrade (the engine skips both), so the common
-        # case -- building a package to test an upgrade -- should not pay for
-        # them. --system-bundle in particular runs a ubuntu:24.04 container and
-        # downloads ~1 GB of .deb files.
-        --bootstrap)      BOOTSTRAP=1 ;;
+        # --system-bundle: the one NEW-shape asset that is not a module asset.
+        # Off by default -- no upgrade reads it (the engine skips it), so the
+        # common case (building a package to test an upgrade) should not pay for
+        # it. It runs a ubuntu:24.04 container and downloads ~1 GB of .deb files.
+        # The <tag>-engine.tar.gz asset is ALWAYS built (see below); it is not
+        # gated by a flag.
         --system-bundle)  SYSBUNDLE=1 ;;
-        --all-assets)     BOOTSTRAP=1; SYSBUNDLE=1 ;;
+        --all-assets)     SYSBUNDLE=1 ;;
+        # Retired 2026-08-17: the legacy <tag>-bootstrap.tar twin is no longer
+        # built (the engine asset supersedes it). Accepted as a no-op so old
+        # invocations do not error.
+        --bootstrap)      printf '[local-build] note: --bootstrap is retired (the engine asset supersedes it); ignoring\n' ;;
         *) ARGS+=("$a") ;;
     esac
 done
@@ -497,27 +500,9 @@ PY
 # system-bundle sidecar below is deliberately the FULL sha256sum line instead;
 # they disagree in CI and copying that disagreement is the point of this
 # script.
-if (( BOOTSTRAP )); then
-    log "building the bootstrap asset"
-    _bs_parent="$WORK/bootstrap-stage"
-    rm -rf "$_bs_parent"
-    mkdir -p "$_bs_parent/$TAG"
-    cp -a "$STAGE/install.sh" "$STAGE/lib" "$STAGE/scripts" "$_bs_parent/$TAG/"
-    # Neither belongs on a customer box: scripts/ci needs a full backend image
-    # to import services.image_map, and scripts/dev fabricates packages FROM a
-    # live tree -- shipping it is how make_test_package.sh's own secret-leak
-    # class would travel to a customer instead of just this repo.
-    rm -rf "$_bs_parent/$TAG/scripts/ci" "$_bs_parent/$TAG/scripts/dev"
-    if ! bash -n "$_bs_parent/$TAG/scripts/upgrade.sh"; then
-        err "the staged scripts/upgrade.sh does not parse -- refusing to ship it"
-        exit 1
-    fi
-    tar -C "$_bs_parent" -cf "$WORK/${TAG}-bootstrap.tar" "$TAG"
-    sha256sum "$WORK/${TAG}-bootstrap.tar" | awk '{print $1}' \
-        > "$WORK/${TAG}-bootstrap.tar.sha256"
-    rm -rf "$_bs_parent"
-    log "  $(du -h "$WORK/${TAG}-bootstrap.tar" | cut -f1) -> ${TAG}-bootstrap.tar"
-fi
+# The legacy <tag>-bootstrap.tar twin was retired 2026-08-17 -- the frozen
+# engine asset below (<tag>-engine.tar.gz) supersedes it, and nothing in the
+# field references the old name (the bootstrap never shipped in a real release).
 
 # ── the frozen upgrade-engine asset ───────────────────────────────────────
 # Mirrors the CI `bootstrap-asset` job's engine build. NOT optional: since the
@@ -622,7 +607,7 @@ fi
 # lib/release.sh reads the system-bundle one back), unlike the .meta.json and
 # per-asset manifests above which are build-only.
 find "$WORK" -maxdepth 1 \( -name "$TAG-*.tar" -o -name "$TAG-*.tar.gz" \
-     -o -name "$TAG-bootstrap.tar.sha256" -o -name "$TAG-system-bundle.tar.sha256" \
+     -o -name "$TAG-system-bundle.tar.sha256" \
      -o -name "$TAG-engine.tar.gz.sha256" \
      -o -name "intact-upgrade-$TAG.tar" -o -name "intact-upgrade-$TAG.tar.gz" \
      -o -name "intact-upgrade-$TAG.tar.gz.part-*" \) \

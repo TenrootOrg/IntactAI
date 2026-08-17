@@ -373,6 +373,103 @@ jobs:
             '
           ls -lh "$GITHUB_WORKSPACE/out"
 
+      # SHAPE + SECRET SCAN, per module, HERE -- not in a serial post-build job.
+      # This asset is already on local disk (no artifact round-trip) and the
+      # matrix runs every module at once, so each asset is checked in parallel
+      # instead of one runner re-downloading all ~5.5 GB and scanning them in
+      # series (what verify-assets used to do). fail-fast on the matrix means a
+      # leak or a bad shape kills the release immediately -- exactly the gate a
+      # partial or leaky release needs. Runs BEFORE "Checksum and split" so it
+      # sees one whole tarball, never a .part-NN.
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          VERSION="8.21.2"
+          curl -fsSL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Check this asset's shape and scan it for secrets
+        env:
+          MODULE: ${{ matrix.module }}
+        working-directory: out
+        run: |
+          set -euo pipefail
+          mod="$MODULE"
+          pkg="$(ls -1 *.tar *.tar.gz 2>/dev/null | head -1 || true)"
+          test -n "$pkg" || { echo "::error::${mod}: no asset tarball to check"; exit 1; }
+
+          ex="$(mktemp -d)"
+          case "$pkg" in
+            *.tar.gz) tar -xzf "$pkg" -C "$ex" ;;
+            *)        tar -xf  "$pkg" -C "$ex" ;;
+          esac
+
+          fail=0
+          roots="$(find "$ex" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+          if [ "$roots" != "1" ]; then
+            echo "::error::${mod}: expected one top-level dir in the asset, found ${roots}"
+            fail=1
+          fi
+          root="$(find "$ex" -mindepth 1 -maxdepth 1 -type d | head -1)"
+
+          if [ -n "$root" ] && [ ! -f "${root}/manifests/${mod}.json" ]; then
+            echo "::error::${mod}: missing manifests/${mod}.json sidecar"
+            fail=1
+          fi
+
+          if [ "$mod" = "intact" ] && [ -n "$root" ]; then
+            up="${root}/source/intact/scripts/upgrade.sh"
+            if [ ! -f "$up" ]; then
+              echo "::error::intact: no source/intact/scripts/upgrade.sh -- the stage-0 hop has nothing to exec into"
+              fail=1
+            elif ! bash -n "$up"; then
+              echo "::error::intact: source/intact/scripts/upgrade.sh does not parse"
+              fail=1
+            fi
+          fi
+
+          # config.yaml, a module live .env, a TLS/CA private key, a secrets/
+          # dir -- the exact leak class make_test_package.sh demonstrated. None
+          # belong in a package a customer downloads.
+          if [ -n "$root" ]; then
+            bad="$(find "$root" \( \
+                  -name 'config.yaml' \
+               -o -path '*/modules/*/.env' \
+               -o -name '*.key' -o -name '*.pem' \
+               -o -type d -name 'secrets' \
+              \) 2>/dev/null)"
+            if [ -n "$bad" ]; then
+              echo "::error::${mod}: package carries file(s) that must never ship:"
+              echo "$bad" | sed 's/^/::error::  /'
+              fail=1
+            fi
+
+            echo "[gitleaks] scanning ${mod} asset..."
+            # -v so a failure NAMES the findings; --redact keeps the values out
+            # of the log.
+            if ! gitleaks detect --source "$root" --no-git --no-banner --redact -v \
+                   --report-path "${GITHUB_WORKSPACE}/gitleaks-${mod}.json" \
+                   --report-format json \
+                   --config "${GITHUB_WORKSPACE}/.gitleaks.toml"; then
+              echo "::error::${mod}: gitleaks found a secret in the built asset"
+              fail=1
+            fi
+          fi
+
+          rm -rf "$ex"
+          exit $fail
+
+      - name: Upload gitleaks report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report-${{ matrix.module }}
+          path: ${{ github.workspace }}/gitleaks-*.json
+          if-no-files-found: ignore
+          retention-days: 7
+
       # 2 GiB per release asset. The sha256 of the WHOLE tarball, taken
       # pre-split, already lives in the builder's .meta.json and from there in
       # the index -- it is NOT written out as a per-asset `.sha256` file. The
@@ -502,41 +599,24 @@ jobs:
         with:
           ref: ${{ needs.resolve.outputs.commit }}
 
-      # ONE BUILDER, TWO NAMES -- deliberately, for exactly one release.
+      # ONE ASSET: <tag>-engine.tar.gz -- flat layout, gzipped, carrying
+      # BOOTSTRAP_PROTOCOL, the name scripts/bootstrap_upgrade.sh looks for.
+      # scripts/build_engine_asset.sh owns the layout so it cannot drift.
       #
-      # <tag>-engine.tar.gz is the real asset: flat layout, gzipped, carrying
-      # BOOTSTRAP_PROTOCOL, and the name scripts/bootstrap_upgrade.sh looks for.
-      # <tag>-bootstrap.tar is the same code under the older name and shape, kept
-      # so anything already pointing at it -- docs, a runbook, an operator's
-      # muscle memory -- does not break the day this lands.
-      #
-      # They used to be built by two different tar lines, which is how the layout
-      # drifts; and a drifted layout cannot be fixed on a box whose bootstrap is
-      # already installed. scripts/build_engine_asset.sh now owns the layout, and
-      # the legacy name is derived from its output rather than rebuilt.
-      #
-      # RETIRE <tag>-bootstrap.tar once no release in support still references
-      # it. It is 960 KB uncompressed against 296 KB for the same content
-      # gzipped, and it carries no protocol marker, so it can only ever be run
-      # by hand.
-      - name: Build the upgrade-engine asset (and the legacy bootstrap name)
+      # The legacy <tag>-bootstrap.tar twin was RETIRED here (2026-08-17): it was
+      # the same code under the older name/shape, kept only so anything already
+      # pointing at it would not break -- but the bootstrap never shipped in a
+      # real release, so nothing in the field references it, and the engine asset
+      # supersedes it. The apply-side "not a module" excludes for `*-bootstrap.tar`
+      # (lib/args.sh, lib/upgrade/package.sh) stay as harmless defence in case an
+      # old hand-built package still carries one.
+      - name: Build the upgrade-engine asset
         env:
           TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           set -euo pipefail
           mkdir -p out
           bash scripts/build_engine_asset.sh "$TAG" . out
-
-          # Legacy shape: same files, nested under <tag>/, uncompressed.
-          STAGE_PARENT="$(mktemp -d)"
-          mkdir -p "${STAGE_PARENT}/${TAG}"
-          tar -xzf "out/${TAG}-engine.tar.gz" -C "${STAGE_PARENT}/${TAG}"
-          tar -C "$STAGE_PARENT" -cf "out/${TAG}-bootstrap.tar" "$TAG"
-          # sha256sum's own format (hash + filename), NOT a bare hash. The two
-          # spellings were split across assets -- system-bundle used this one,
-          # bootstrap used `awk '{print $1}'` -- so `sha256sum -c` worked on one
-          # and not the other, for no reason anybody chose.
-          ( cd out && sha256sum "${TAG}-bootstrap.tar" > "${TAG}-bootstrap.tar.sha256" )
           ls -lh out
 
       # The frozen contract, asserted on the real asset -- not the builder's
@@ -775,10 +855,9 @@ jobs:
       # bootstrap-asset each ran scripts/build_engine_asset.sh and each
       # uploaded <tag>-engine.tar.gz, so every release built the same asset
       # twice and publish collected whichever copy landed last. The single
-      # authoritative build lives in bootstrap-asset (which also derives the
-      # legacy <tag>-bootstrap.tar from it), and publish attaches it from that
-      # job's `bootstrap` artifact. This job publishes only the index and the
-      # merged manifest.
+      # authoritative build lives in bootstrap-asset, and publish attaches it
+      # from that job's `bootstrap` artifact. This job publishes only the index
+      # and the merged manifest.
       - uses: actions/upload-artifact@v4
         with:
           name: release-index
@@ -786,22 +865,18 @@ jobs:
           retention-days: 3
 
   # -------------------------------------------------------------- verify
-  # Two checks against the FILES a customer will actually download, not
-  # against the builder's own claims about them.
+  # The dry-run apply gate: run the REAL package this build produced against a
+  # fixture appliance root, through the stage-0 hop, stopping before any swap.
   #
-  # 1. PACKAGE SHAPE. Every asset must extract to the shared
-  #    intact-upgrade-<tag>/ top level, carry its manifests/<module>.json
-  #    sidecar, and -- this is the check that would have caught the exact
-  #    leak scripts/dev/make_test_package.sh demonstrated on a live box --
-  #    contain neither config.yaml, nor a module's live .env, nor a TLS/CA
-  #    private key, nor a secrets/ directory. The intact asset additionally
-  #    must carry a syntactically valid source/intact/scripts/upgrade.sh,
-  #    since that is exactly the file the stage-0 hop execs into on every
-  #    single upgrade.
-  # 2. SECRETS. gitleaks against the extracted tree, same config the repo
-  #    itself is scanned with (secret-scan.yml) -- a DIFFERENT artifact than
-  #    the git history that workflow covers, and the one a customer's
-  #    air-gap USB stick actually carries.
+  # Per-asset PACKAGE SHAPE and SECRET (gitleaks) checks used to live here, in a
+  # serial loop that re-downloaded all ~5.5 GB and scanned each asset one after
+  # another. They now run inside the `build` matrix, on the leg that built each
+  # asset, in parallel and on local disk -- same checks (one shared
+  # intact-upgrade-<tag>/ root, the manifests/<module>.json sidecar, no
+  # config.yaml / live .env / TLS key / secrets dir, intact's upgrade.sh parses,
+  # gitleaks with the repo's own .gitleaks.toml), just no longer bottlenecked on
+  # one runner after the whole matrix finishes. This job keeps only the dry-run,
+  # which genuinely needs every asset together in one package dir.
   verify-assets:
     needs: [resolve, build, index]
     runs-on: ubuntu-latest
@@ -815,113 +890,12 @@ jobs:
           path: all
           pattern: asset-*
 
-      - name: Install gitleaks
-        run: |
-          set -euo pipefail
-          VERSION="8.21.2"
-          curl -fsSL \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" \
-            | sudo tar -xz -C /usr/local/bin gitleaks
-          gitleaks version
-
-      - name: Check every asset shape and scan it for secrets
-        env:
-          TAG: ${{ needs.resolve.outputs.tag }}
-        run: |
-          set -euo pipefail
-          fail=0
-          for dir in all/asset-*; do
-            mod="$(basename "$dir" | sed 's/^asset-//')"
-            echo "=== ${mod} ==="
-
-            pkg="$(find "$dir" -maxdepth 1 \( -name "*.tar" -o -name "*.tar.gz" \) | head -1)"
-            if [ -z "$pkg" ]; then
-              part1="$(find "$dir" -maxdepth 1 -name '*.part-00' | head -1)"
-              if [ -z "$part1" ]; then
-                echo "::error::${mod}: no asset tarball in ${dir}"; fail=1; continue
-              fi
-              pkg="${dir}/reassembled-${mod}.tar"
-              cat "${part1%.part-00}".part-* > "$pkg"
-            fi
-
-            ex="$(mktemp -d)"
-            case "$pkg" in
-              *.tar.gz) tar -xzf "$pkg" -C "$ex" ;;
-              *)        tar -xf  "$pkg" -C "$ex" ;;
-            esac
-
-            roots="$(find "$ex" -mindepth 1 -maxdepth 1 -type d | wc -l)"
-            if [ "$roots" != "1" ]; then
-              echo "::error::${mod}: expected one top-level dir in the asset, found ${roots}"
-              fail=1
-            fi
-            root="$(find "$ex" -mindepth 1 -maxdepth 1 -type d | head -1)"
-
-            if [ -n "$root" ] && [ ! -f "${root}/manifests/${mod}.json" ]; then
-              echo "::error::${mod}: missing manifests/${mod}.json sidecar"
-              fail=1
-            fi
-
-            if [ "$mod" = "intact" ] && [ -n "$root" ]; then
-              up="${root}/source/intact/scripts/upgrade.sh"
-              if [ ! -f "$up" ]; then
-                echo "::error::intact: no source/intact/scripts/upgrade.sh -- the stage-0 hop has nothing to exec into"
-                fail=1
-              elif ! bash -n "$up"; then
-                echo "::error::intact: source/intact/scripts/upgrade.sh does not parse"
-                fail=1
-              fi
-            fi
-
-            # The exact leak class scripts/dev/make_test_package.sh
-            # demonstrated: config.yaml, a module live .env, a TLS/CA
-            # private key, a secrets/ directory. None of these belong in a
-            # package a customer downloads.
-            if [ -n "$root" ]; then
-              bad="$(find "$root" \( \
-                    -name 'config.yaml' \
-                 -o -path '*/modules/*/.env' \
-                 -o -name '*.key' -o -name '*.pem' \
-                 -o -type d -name 'secrets' \
-                \) 2>/dev/null)"
-              if [ -n "$bad" ]; then
-                echo "::error::${mod}: package carries file(s) that must never ship:"
-                echo "$bad" | sed 's/^/::error::  /'
-                fail=1
-              fi
-
-              echo "[gitleaks] scanning ${mod} asset..."
-              # -v so a failure NAMES the findings. Without it gitleaks logs
-              # "leaks found: 70" and stops, which is not something anyone can
-              # act on -- the run that hit this had to be reproduced locally to
-              # learn which files were involved. --redact is already on, so the
-              # values themselves never reach the log.
-              if ! gitleaks detect --source "$root" --no-git --no-banner --redact -v \
-                     --report-path "${GITHUB_WORKSPACE}/gitleaks-${mod}.json" \
-                     --report-format json \
-                     --config "${GITHUB_WORKSPACE}/.gitleaks.toml"; then
-                echo "::error::${mod}: gitleaks found a secret in the built asset"
-                fail=1
-              fi
-            fi
-
-            rm -rf "$ex"
-          done
-          exit $fail
-
-      # The JSON reports outlive the runner only if they are uploaded. -v
-      # already names the findings in the log; this is for the case where the
-      # log is long and someone wants to diff two runs or feed the findings to
-      # a tool. `if: always()` because the interesting run is the failing one.
-      - name: Upload gitleaks reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gitleaks-reports
-          path: ${{ github.workspace }}/gitleaks-*.json
-          if-no-files-found: ignore
-          retention-days: 7
-
+      # NOTE: per-asset shape-check + gitleaks moved into the `build` matrix
+      # (see "Check this asset's shape and scan it for secrets" there). Each
+      # asset is now scanned in parallel on the leg that built it, on local
+      # disk, instead of one runner re-downloading all ~5.5 GB and scanning
+      # them in series. This job now does only the dry-run apply -- which
+      # genuinely needs every asset together in one package dir.
 
   # ------------------------------------------- dry-run apply (in verify)
   # The package this job downloads is EXACTLY what a customer would get.
@@ -1132,7 +1106,6 @@ jobs:
               -o -name "$TAG.manifest.json" \
               -o -name "$TAG-system-bundle.tar" \
               -o -name "$TAG-system-bundle.tar.sha256" \
-              -o -name "$TAG-bootstrap.tar.sha256" \
               `# The engine tarball itself is already matched by the` \
               `# "$TAG-*.tar.gz" pattern above; only its checksum needs naming.` \
               `# scripts/bootstrap_upgrade.sh REQUIRES this file -- without it the` \
