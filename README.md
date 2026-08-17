@@ -62,13 +62,15 @@ you carry in, never from a registry.
 On a machine with internet:
 
 ```bash
-git clone --branch <tag> https://github.com/TenrootOrg/IntactAI.git intact
-cd intact
+# download and unpack the release's code (no git)
+curl -fL https://github.com/TenrootOrg/IntactAI/archive/refs/tags/<tag>.tar.gz -o intact-<tag>.tar.gz
+tar -xzf intact-<tag>.tar.gz                        # unpacks to IntactAI-<tag>/
+cd IntactAI-<tag>
 bash scripts/prepare_package.sh <tag> /media/usb    # writes intact-upgrade-<tag>.tar
 ```
 
-Carry **both** the `intact` folder (the one `git clone` made) and the `.tar`
-across — `install.sh` lives in that folder. Then on the air-gapped box:
+Carry **both** the `IntactAI-<tag>` folder and the `.tar` across — `install.sh`
+lives in that folder. Then on the air-gapped box:
 
 ```bash
 cd /path/to/intact
@@ -118,52 +120,53 @@ you install and upgrade from packages.
 
 ## Upgrades
 
-Jump straight to any newer release in one run — each module asset is absolute
-("this *is* elk 9.4.4"), so the target's engine moves every module from whatever
-the box has directly to target. A 0726 → 0821 single hop, evidence preserved, is
-a tested path.
+An upgrade runs the **target release's own code** against your box, not this
+box's code. The whole mechanism: get the target release's engine (`install.sh` +
+`lib/` + `scripts/`), copy it over your install, and run `scripts/upgrade.sh` —
+it compares each module's installed version to the target and pulls only the
+images that differ. So you can jump straight to any newer release in one hop
+(0726 → 0821, evidence preserved, is a tested path).
 
-`bootstrap_upgrade.sh` fetches the target release's own engine
-(`<tag>-engine.tar.gz`), verifies its sha256, then hands over — so the upgrade is
-driven by the release being installed, never by this box's code. Four routes, one
-engine:
+**By hand — works on any release, online:**
 
-| Route | Where | Use it when |
-|---|---|---|
-| **Online Upgrade** | Dashboard → Settings | The box can reach GitHub |
-| **Prepare Package** | Dashboard → Settings | Build a file to carry to an air-gapped box |
-| **Import Package** | Dashboard → Settings | Apply a package you carried in |
-| **CLI** | shell | Air-gapped, scripted, recovery, single-module repair |
+```bash
+# 1. download + unpack the target release's code (no git)
+curl -fL https://github.com/TenrootOrg/IntactAI/archive/refs/tags/<tag>.tar.gz -o intact-<tag>.tar.gz
+tar -xzf intact-<tag>.tar.gz                       # -> IntactAI-<tag>/
 
-The CLI needs neither the backend nor the dashboard, so it still works when the
-platform is broken:
+# 2. copy the engine over your install (code only; config.yaml, data/, modules/ untouched)
+cp -rf IntactAI-<tag>/{install.sh,lib,scripts} /path/to/intact/
+
+# 3. run it — the engine pulls the new images itself
+sudo bash /path/to/intact/scripts/upgrade.sh
+```
+
+**Air-gapped** (from `intact-20260813` on) — the online machine only *builds* the
+carry-in file; it is never upgraded, so nothing is copied into an install there
+(delete the folder once the file is written). Carry the `IntactAI-<tag>` folder
+(the engine) and the `.tar` (the images) to the box, and do the copy + apply
+*there*:
+
+```bash
+# online machine — build the file, then you can delete IntactAI-<tag>
+cd IntactAI-<tag> && bash scripts/prepare_package.sh <tag> /media/usb   # -> intact-upgrade-<tag>.tar
+
+# air-gapped box — copy the engine in (step 2), then apply the images:
+cp -rf IntactAI-<tag>/{install.sh,lib,scripts} /path/to/intact/
+sudo bash /path/to/intact/scripts/upgrade.sh --package /media/usb/intact-upgrade-<tag>.tar
+```
+
+**One command** — releases built after the bootstrap merge also publish a small
+`<tag>-engine.tar.gz` (the engine alone, ~300 KB, checksummed).
+`bootstrap_upgrade.sh` fetches, verifies and runs it for you — nothing to
+download or copy by hand — and the dashboard's **Online / Prepare / Import**
+buttons (Settings) are the same thing with a UI (the CLI also works when the
+platform is broken and the dashboard is down):
 
 ```bash
 sudo bash scripts/bootstrap_upgrade.sh <tag>                  # online
 sudo bash scripts/bootstrap_upgrade.sh --package <file|dir>   # air-gap apply
 bash scripts/bootstrap_upgrade.sh <tag> --prepare /media/usb  # build a carry-in file
-```
-
-**Air-gap round trip** — `--prepare` on any online machine (no appliance needed)
-writes one file carrying both the engine and the images; apply it offline.
-Air-gap is supported from `intact-20260813` onward:
-
-```bash
-bash scripts/bootstrap_upgrade.sh intact-20260813 --prepare /media/usb
-sudo bash scripts/bootstrap_upgrade.sh --package /media/usb/intact-upgrade-intact-20260813.tar
-```
-
-**Old box with no upgrade tooling** — a release before `intact-20260813` (e.g.
-`intact-20260726`) has no `scripts/upgrade.sh` of its own. Pull the target
-release's code into the `intact` folder first (this replaces `scripts/` and
-`lib/` — the engine; your live `config.yaml` is skip-worktree, so it is left
-alone), then run its upgrade. Every route above works from there:
-
-```bash
-cd /path/to/intact
-git fetch
-git checkout intact-20260813        # pull in the target release's engine
-sudo bash scripts/upgrade.sh        # its own code upgrades this box to 20260813
 ```
 
 **Which modules move** is automatic — only those whose version differs. Override
