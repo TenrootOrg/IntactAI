@@ -62,24 +62,26 @@ you carry in, never from a registry.
 On a machine with internet:
 
 ```bash
-# download and unpack the release's code (no git)
-curl -fL https://github.com/TenrootOrg/IntactAI/archive/refs/tags/<tag>.tar.gz -o intact-<tag>.tar.gz
-tar -xzf intact-<tag>.tar.gz                        # unpacks to IntactAI-<tag>/
-cd IntactAI-<tag>
-bash scripts/prepare_package.sh <tag> /media/usb    # writes intact-upgrade-<tag>.tar
+# the release you want — change this one line when a newer one is out
+VER=intact-20260813
+
+# download and unpack it into the project folder "intact"
+curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/$VER.tar.gz" -o "$VER.tar.gz"
+mkdir -p intact && tar -xzf "$VER.tar.gz" --strip-components=1 -C intact
+bash intact/scripts/prepare_package.sh "$VER" .     # writes intact-upgrade-$VER.tar
 ```
 
-Carry **both** the `IntactAI-<tag>` folder and the `.tar` across — `install.sh`
-lives in that folder. Then on the air-gapped box:
+Carry **both** the `intact` folder and `intact-upgrade-$VER.tar` across
+(`install.sh` lives in the folder). Then on the air-gapped box:
 
 ```bash
-cd /path/to/intact
+cd intact
 nano config.yaml                                    # IP/domain and passwords
-sudo bash install.sh --package /media/usb/intact-upgrade-<tag>.tar
+sudo bash install.sh --package "../intact-upgrade-$VER.tar"
 ```
 
 `--package` is repeatable and also takes a directory of per-module assets. If
-Docker is not already installed, carry the release's `<tag>-system-bundle.tar`
+Docker is not already installed, carry the release's `$VER-system-bundle.tar`
 too and put it beside the package — it provides the engine and host packages
 offline.
 
@@ -120,58 +122,50 @@ you install and upgrade from packages.
 
 ## Upgrades
 
-An upgrade runs the **target release's own code** against your box, not this
-box's code. The whole mechanism: get the target release's engine (`install.sh` +
-`lib/` + `scripts/`), copy it over your install, and run `scripts/upgrade.sh` —
-it compares each module's installed version to the target and pulls only the
-images that differ. So you can jump straight to any newer release in one hop
-(0726 → 0821, evidence preserved, is a tested path).
-
-**By hand — works on any release, online:**
+An upgrade runs the **target release's own code** against your live `intact`
+folder. You download the release next to it (into a folder named for the
+version), then run that release's `scripts/upgrade.sh --root ./intact` — it
+upgrades only the modules whose version differs, so you can jump straight to any
+newer release in one hop. **The only thing you ever change is `VER` on the first
+line.**
 
 ```bash
-# 1. download + unpack the target release's code (no git)
-curl -fL https://github.com/TenrootOrg/IntactAI/archive/refs/tags/<tag>.tar.gz -o intact-<tag>.tar.gz
-tar -xzf intact-<tag>.tar.gz                       # -> IntactAI-<tag>/
+# the release you want — change this one line when a newer one is out
+VER=intact-20260813
 
-# 2. copy the engine over your install (code only; config.yaml, data/, modules/ untouched)
-cp -rf IntactAI-<tag>/{install.sh,lib,scripts} /path/to/intact/
-
-# 3. run it — the engine pulls the new images itself
-sudo bash /path/to/intact/scripts/upgrade.sh
+# download it next to ./intact, into a folder named for the version
+curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/$VER.tar.gz" -o "$VER.tar.gz"
+mkdir -p "$VER" && tar -xzf "$VER.tar.gz" --strip-components=1 -C "$VER"
 ```
 
-**Air-gapped** (from `intact-20260813` on) — the online machine only *builds* the
-carry-in file; it is never upgraded, so nothing is copied into an install there
-(delete the folder once the file is written). Carry the `IntactAI-<tag>` folder
-(the engine) and the `.tar` (the images) to the box, and do the copy + apply
-*there*:
+**Online** (the box reaches GitHub):
 
 ```bash
-# online machine — build the file, then you can delete IntactAI-<tag>
-cd IntactAI-<tag> && bash scripts/prepare_package.sh <tag> /media/usb   # -> intact-upgrade-<tag>.tar
-
-# air-gapped box — copy the engine in (step 2), then apply the images:
-cp -rf IntactAI-<tag>/{install.sh,lib,scripts} /path/to/intact/
-sudo bash /path/to/intact/scripts/upgrade.sh --package /media/usb/intact-upgrade-<tag>.tar
+sudo bash "$VER/scripts/upgrade.sh" "$VER" --root ./intact
 ```
 
-**One command** — releases built after the bootstrap merge also publish a small
-`<tag>-engine.tar.gz` (the engine alone, ~300 KB, checksummed).
-`bootstrap_upgrade.sh` fetches, verifies and runs it for you — nothing to
-download or copy by hand — and the dashboard's **Online / Prepare / Import**
-buttons (Settings) are the same thing with a UI (the CLI also works when the
-platform is broken and the dashboard is down):
+**Air-gapped** — build the carry-in file on any online machine, apply it offline:
 
 ```bash
-sudo bash scripts/bootstrap_upgrade.sh <tag>                  # online
-sudo bash scripts/bootstrap_upgrade.sh --package <file|dir>   # air-gap apply
-bash scripts/bootstrap_upgrade.sh <tag> --prepare /media/usb  # build a carry-in file
+# online machine: one file with the engine + every image
+# (add module names for a subset, e.g. add  portainer  as a last argument)
+bash "$VER/scripts/prepare_package.sh" "$VER" .                # -> intact-upgrade-$VER.tar
+
+# carry the  "$VER"  folder and  intact-upgrade-$VER.tar  to the box, then:
+sudo bash "$VER/scripts/upgrade.sh" --package "intact-upgrade-$VER.tar" --root ./intact
 ```
 
-**Which modules move** is automatic — only those whose version differs. Override
-with `--only a,b`, `--skip a,b`, or `--reinstall a,b` (re-apply one already at
-target, to repair a half-landed upgrade).
+**Pick modules / preview** — add any of these to a run above:
+
+```bash
+--only portainer         # only these modules
+--skip iris              # every module except these
+--reinstall portainer    # re-apply one already at target (repair a half-landed upgrade)
+--dry-run                # print the plan, change nothing
+```
+
+Or push-button in the dashboard: **Settings → Online Upgrade / Prepare Package /
+Import Package** — the same engine, no shell.
 
 ## Scripts
 
