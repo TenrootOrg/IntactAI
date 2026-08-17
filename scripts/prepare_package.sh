@@ -904,6 +904,51 @@ if dropped:
     print("[prepare]   %-9s %s" % ("excluded", ", ".join(dropped)))
 PY
 
+# Trim the MERGED MANIFEST to the packed modules too -- not just the index.
+# The release manifest's contents.sha256 covers every file in the WHOLE release
+# (1000+ paths across all modules); a subset package carries only some. On apply
+# upkg_verify_file_checksums treats a mapped path missing from the tree as fatal
+# ("the map is the statement of what the package IS"), so an untrimmed manifest
+# makes a perfectly good subset package REFUSED for the other modules' files it
+# was never meant to contain. Filter the map to exactly the files the packed
+# module assets carry (their members, minus the intact-upgrade-<tag>/ top-level
+# dir, match the manifest's relative keys), and the versions to the packed
+# modules. Every kept file is still verified; only absent modules' entries go.
+if [ -n "$MANIFEST_NAME" ] && [ -f "$MANIFEST_NAME" ] && [ "${#ASSETS[@]}" -gt 0 ]; then
+    log "trimming manifest to the packed module(s)"
+    ASSETS_LIST="${ASSETS[*]}" IDX="$TAG.index.json" \
+    python3 - "$MANIFEST_NAME" <<'PY'
+import json, os, sys, tarfile
+man_path = sys.argv[1]
+man = json.load(open(man_path))
+packed_mods = set((json.load(open(os.environ["IDX"])).get("assets") or {}).keys())
+present = set()
+for asset in os.environ["ASSETS_LIST"].split():
+    # module assets only; the engine/system-bundle are flat and not in the map
+    if (not asset or not os.path.exists(asset)
+            or asset.endswith("-engine.tar.gz") or asset.endswith("-system-bundle.tar")):
+        continue
+    try:
+        t = tarfile.open(asset)
+    except Exception:
+        continue
+    for n in t.getnames():
+        p = n.split("/", 1)              # strip the intact-upgrade-<tag>/ prefix
+        if len(p) == 2 and p[1]:
+            present.add(p[1])
+    t.close()
+contents = man.get("contents") or {}
+sha = contents.get("sha256") or {}
+kept = {p: h for p, h in sha.items() if p in present}
+contents["sha256"] = kept
+man["contents"] = contents
+man["versions"] = {m: v for m, v in (man.get("versions") or {}).items() if m in packed_mods}
+json.dump(man, open(man_path, "w"), indent=2)
+print("[prepare]   %-9s %d file checksum(s), %d module pin(s) (dropped %d)"
+      % ("manifest", len(kept), len(man["versions"]), len(sha) - len(kept)))
+PY
+fi
+
 OUT="$OUT_DIR/intact-upgrade-$TAG.tar"
 log "wrapping into a single file"
 # index.json FIRST, deliberately. The Import UI peeks at only the first few MB
