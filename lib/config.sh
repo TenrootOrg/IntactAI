@@ -7,7 +7,6 @@
 # ============================================================================
 
 check_config() {
-    # config.yaml is the OPERATOR'S file and is deliberately not tracked in git
     # config.yaml is TRACKED. There is no config.yaml.example any more: the
     # pre-commit hook (scripts/git-hooks/sanitize-config-yaml.sh) rewrites the
     # STAGED copy back to shipping defaults on every commit -- empty
@@ -24,6 +23,43 @@ check_config() {
         log_error "    git checkout -- config.yaml"
         exit 1
     fi
+
+    # The shipped config.yaml carries a placeholder domain, because a tracked
+    # file cannot ship a real one without imposing the last committer's IP on
+    # every install. Stop here rather than build an appliance around it: domain
+    # becomes the TLS certificate CN, the callback address compiled into every
+    # Velociraptor client installer, and VolWeb's CSRF trusted origin, so a
+    # wrong value does not fail here -- it fails days later as certificate
+    # warnings and agents that never check in. Nothing prompts (install is
+    # non-interactive), so this message is the only thing that makes an operator
+    # aware the value is theirs to set.
+    # Strict on INSTALL, advisory on UPGRADE. An install is about to bake this
+    # value into certificates and client installers, so stopping costs nothing
+    # and saves a rebuild. An upgrade of a box that somehow already carries the
+    # placeholder is a box that is ALREADY misconfigured -- refusing it would
+    # only withhold the fixes without repairing anything -- so it warns instead.
+    # scripts/upgrade.sh sets INTACT_CONFIG_DOMAIN_SOFT before calling.
+    local _domain
+    _domain="$(read_config "['domain']" 2>/dev/null || echo '')"
+    if [[ -z "$_domain" || "$_domain" == "None" || "$_domain" == "CHANGE-ME" ]]; then
+        if [[ "${INTACT_CONFIG_DOMAIN_SOFT:-0}" == "1" ]]; then
+            log_warn "config.yaml has the placeholder domain (${_domain:-unset})."
+            log_warn "  This box's TLS certificate and Velociraptor client installers"
+            log_warn "  are built from it, so they are almost certainly wrong. Fix with:"
+            log_warn "    sudo bash scripts/change_ip.sh <ip-or-hostname>"
+        else
+            log_error "config.yaml still has the placeholder domain."
+            log_error "  Set it to THIS box's IP or hostname before installing:"
+            log_error "    domain: <ip-or-hostname>      # in ${CONFIG_FILE}"
+            log_error ""
+            log_error "  It is baked into the TLS certificate, the Velociraptor client"
+            log_error "  installers and VolWeb's trusted origins, so it cannot be left"
+            log_error "  as a default. To change it after an install, use:"
+            log_error "    sudo bash scripts/change_ip.sh <new-ip>"
+            exit 1
+        fi
+    fi
+
     log_success "Config file found"
 }
 

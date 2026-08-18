@@ -26,7 +26,7 @@ schema_version: 2
 # logins — see the `modules:` section below.
 first_login: true
 
-domain: 192.168.120.11
+domain: CHANGE-ME
 
 # Installation options
 options:

@@ -139,6 +139,22 @@ def test_newlines_are_not_swallowed():
     check("following key intact", "id: tenroot" in out)
 
 
+def test_domain_is_replaced_with_the_placeholder():
+    """A tracked config.yaml must never ship a real address: it becomes the TLS
+    CN and the callback baked into every Velociraptor client installer."""
+    text = "domain: 192.168.120.11\n"
+    out, changed = S.sanitize_main_config(text)
+    check("real domain is replaced", S.PLACEHOLDER_DOMAIN in out, out)
+    check("original IP is gone", "192.168.120.11" not in out, out)
+    check("domain reported as changed", "domain" in changed)
+
+
+def test_placeholder_domain_is_left_alone():
+    text = f"domain: {S.PLACEHOLDER_DOMAIN}\n"
+    out, changed = S.sanitize_main_config(text)
+    check("placeholder domain untouched", out == text and not changed, out)
+
+
 def test_github_token_is_emptied():
     text = "options:\n  github_token: 'ghp_realtokenvalue'\n"
     out, changed = S.sanitize_main_config(text)

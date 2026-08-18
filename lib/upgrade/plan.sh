@@ -123,6 +123,11 @@ plan_current_versions() {
 plan_log_environment() {
     record_install_note "environment: appliance root = ${SCRIPT_DIR:-?}"
     record_install_note "environment: package tag = ${UPGRADE_TAG:-<none>}"
+    # The box's address, echoed so an upgrade log always states what this
+    # appliance believes it is. An upgrade never changes it -- scripts/change_ip.sh
+    # does -- but it is the value behind the TLS cert and every deployed
+    # Velociraptor client, so a support bundle should never leave it implicit.
+    record_install_note "environment: domain = $(read_config "['domain']" 2>/dev/null || echo '<unset>')"
 
     local m
     for m in "${UPGRADE_ORDER[@]}"; do

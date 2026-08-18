@@ -19,6 +19,20 @@ from collections import Counter
 
 DEFAULT_PW = "123123"
 
+# The shipped `domain:` value. config.yaml is TRACKED, so whatever IP the last
+# committer happened to have becomes the default every clone and every extracted
+# release installs with -- and domain is not cosmetic: it is the TLS certificate
+# CN, the callback address baked into every Velociraptor client installer, and
+# VolWeb's CSRF trusted origin. Nothing prompts for it and nothing validated it,
+# so an operator who did not edit config.yaml first got a working-looking install
+# pointed at somebody else's machine, discoverable only later via wrong certs and
+# agents that never check in.
+#
+# A deliberately invalid placeholder instead: it cannot be mistaken for a real
+# address, and check_config (lib/config.sh) refuses to install until it is
+# changed, which is what makes the operator aware they have to set it.
+PLACEHOLDER_DOMAIN = "CHANGE-ME"
+
 # Portainer will not accept DEFAULT_PW: it refuses anything empty, shorter than
 # 12 characters, or equal to the RETIRED default below, and silently leaves the
 # admin account uncreated with the UI stuck in "initial setup"
@@ -109,6 +123,14 @@ def sanitize_main_config(text):
             replacement = DEFAULT_PW_BY_MODULE.get(module, DEFAULT_PW)
             out.append(f"{m.group(1)}{replacement}{m.group(3)}\n")
             changed.append("password")
+            continue
+
+        # domain -> placeholder. See PLACEHOLDER_DOMAIN above: this is the box's
+        # address, not something to inherit from whoever committed last.
+        m = re.match(_pat("domain"), ln)
+        if m and _value(m) != PLACEHOLDER_DOMAIN:
+            out.append(f"{m.group(1)}{PLACEHOLDER_DOMAIN}{m.group(3)}\n")
+            changed.append("domain")
             continue
 
         # A fresh checkout must land in setup mode, or the first install has

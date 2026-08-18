@@ -234,7 +234,9 @@ main() {
         log_error "  sudo bash ${_CODE_DIR}/scripts/upgrade.sh ${_ORIG_ARGS[*]}"
         return 2
     fi
-    check_config
+    # An upgrade must not refuse a box over a value it is not going to write.
+    # See check_config: placeholder domain is fatal on install, a warning here.
+    INTACT_CONFIG_DOMAIN_SOFT=1 check_config
 
     DOCKER_BIN="$(command -v docker 2>/dev/null)"
     if [[ -z "$DOCKER_BIN" ]]; then
