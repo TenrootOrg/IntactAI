@@ -86,6 +86,124 @@ PY
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# _intact_seed_missing_pins — add sidecar pins the operator's config.yaml has
+# never had, BEFORE _intact_validate_config_pins demands them.
+#
+# The validator requires a versions.<module>_<sidecar> key for every enabled
+# module, but nothing on the forward path ever ADDS one: _intact_merge_versions
+# copies only the manifest's top-level `versions:` block (module primaries), and
+# _u_stamp_transitive writes .env, not config.yaml -- and runs ~9 steps LATER
+# anyway. So a box installed before a sidecar pin existed fails validation on a
+# key it had no way to acquire.
+#
+# That is not hypothetical: 0615 carries every timesketch/iris/volweb sidecar but
+# NOT versions.backend_tusd (introduced in 0726), so a real 0615 -> 0813 air-gap
+# run died at "no versions.backend_tusd in config.yaml (sidecar pin)" and, because
+# the snapshot step was then skipped while its undo had already been registered,
+# took intact's rollback down with it. Exactly the shape of the aws_sigma /
+# cloudtrail rename bug documented in _intact_validate_config_pins below.
+#
+# Resolution order per pin, first hit wins -- each source is something the
+# PACKAGE carries, so this works on an air-gapped box:
+#   1. the manifest's contents.transitive_versions (covers timesketch/iris/volweb)
+#   2. the bundled image tar's filename (covers backend_tusd: the packager reads
+#      nginx/backend_tusd from the build checkout's config.yaml and deliberately
+#      does NOT put them in the manifest, so images/tusd-<ver>.tar is the only
+#      statement of the version that ships)
+#   3. the new compose file's ${VAR:-default} (a floor, so a pin is still seeded
+#      if the sidecar image was best-effort and missing)
+#
+# ONLY ever adds an absent key. An operator's existing value is never rewritten.
+_intact_pkg_image_version() {
+    local prefix="$1" f base
+    [[ -n "${UPKG_DIR:-}" ]] || return 0
+    for f in "${UPKG_DIR}"/images/${prefix}*.tar; do
+        [[ -f "$f" ]] || continue
+        base="$(basename "$f" .tar)"
+        printf '%s\n' "${base#"$prefix"}"
+        return 0
+    done
+    return 0
+}
+
+_intact_compose_default() {
+    local compose="$1" var="$2"
+    [[ -f "$compose" ]] || return 0
+    sed -nE "s/.*\\\$\{${var}:-([^}]+)\}.*/\1/p" "$compose" | head -1
+}
+
+_intact_seed_missing_pins() {
+    local src="${1:-${UPKG_DIR:-}}"
+
+    # module -> "ENV_VAR:manifest_key:config_key[:tar_prefix] ..."
+    # Mirrors _u_stamp_transitive's own table (lib/upgrade/modules/shared.sh) --
+    # kept as its own copy for the same reason the validator keeps one: a change
+    # to either is then a visible diff, not an invisible coupling. The optional
+    # 4th field is the bundled-tar prefix, given only where it is unambiguous
+    # (`postgres-` alone would match timesketch's tar when resolving volweb's).
+    local -A _seed=(
+        [timesketch]="OPENSEARCH_VERSION:opensearch:timesketch_opensearch POSTGRES_VERSION:postgres:timesketch_postgres REDIS_VERSION:redis:timesketch_redis NGINX_VERSION:nginx:timesketch_nginx"
+        [iris]="RABBITMQ_VERSION:rabbitmq:iris_rabbitmq:rabbitmq-"
+        [volweb]="VOLWEB_POSTGRES_VERSION:postgres:volweb_postgres:volweb-postgres- VOLWEB_REDIS_VERSION:redis:volweb_redis:volweb-redis-"
+        [intact]="TUSD_VERSION:tusd:backend_tusd:tusd-"
+    )
+    # The compose that states the ${VAR:-default} for each module, inside the
+    # PACKAGE (the new release's), not the box's older copy.
+    local -A _compose=(
+        [timesketch]="modules/timesketch/docker-compose.yaml"
+        [iris]="modules/iris/docker-compose.yaml"
+        [volweb]="modules/volweb/docker-compose.yaml"
+        [intact]="modules/backend/docker-compose.yaml"
+    )
+
+    local m spec entry env_var rest man_key cfg_key tar_prefix cur val how n=0
+    for m in "${UPGRADE_ORDER[@]}"; do
+        spec="${_seed[$m]:-}"
+        [[ -n "$spec" ]] || continue
+        _plan_module_enabled "$m" || continue
+
+        for entry in $spec; do
+            env_var="${entry%%:*}"
+            rest="${entry#*:}"
+            man_key="${rest%%:*}"
+            rest="${rest#*:}"
+            cfg_key="${rest%%:*}"
+            tar_prefix=""
+            [[ "$rest" == *:* ]] && tar_prefix="${rest#*:}"
+
+            cur="$(read_config "['versions']['${cfg_key}']" 2>/dev/null || echo '')"
+            [[ "$cur" == "None" ]] && cur=""
+            [[ -n "$cur" ]] && continue          # operator's value wins, always
+
+            val="$(_u_manifest_transitive "$m" "$man_key")"; how="package manifest"
+            if [[ -z "$val" && -n "$tar_prefix" ]]; then
+                val="$(_intact_pkg_image_version "$tar_prefix")"; how="bundled image ${tar_prefix}*.tar"
+            fi
+            if [[ -z "$val" ]]; then
+                val="$(_intact_compose_default "${src}/${_compose[$m]:-}" "$env_var")"
+                how="compose default for ${env_var}"
+            fi
+            if [[ -z "$val" ]]; then
+                # Not fatal here: the validator right after this is the one that
+                # decides, and it names the key far better than we could.
+                log_warn "  could not resolve a value for versions.${cfg_key}; validation will report it"
+                continue
+            fi
+
+            if _pin_module_version "$cfg_key" "$val"; then
+                log_info "  seeded versions.${cfg_key} = ${val} (from ${how})"
+                n=$((n + 1))
+            else
+                log_warn "  could not write versions.${cfg_key} into config.yaml"
+            fi
+        done
+    done
+
+    (( n )) && log_success "  seeded ${n} sidecar pin(s) this release expects"
+    return 0
+}
+
 # The registry currently holds exactly one migration, 1 -> 2: consolidate the
 # renamed cloudtrail/prowler modules into aws_sigma, carrying `enabled`
 # forward. It does NOT rename the CLOUDTRAIL_VERSION env var -- that is a

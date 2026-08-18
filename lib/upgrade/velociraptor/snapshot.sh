@@ -26,6 +26,135 @@ print(hashlib.sha256(ca.encode()).hexdigest()[:16] if ca else "")
 PY
 }
 
+# ---------------------------------------------------------------------------
+# Legacy config volume -> host bind-mount.
+#
+# THE GAP THIS FIXES. Up to 0726 Velociraptor kept /velociraptor -- including
+# server.config.yaml, i.e. THE CA -- in a named volume (`velociraptor_data`,
+# compose-namespaced to `velociraptor_velociraptor_data`). The host-mount
+# conversion replaced that with `data/velociraptor` and DELETED the volume from
+# the compose file, pointing at a
+# `services/upgrade/velociraptor.migrate_velociraptor_config_to_host()` that has
+# never existed anywhere in this tree: it went with the Python engine and was
+# never rewritten here. So on any 0615/0726 box the new compose simply stops
+# mounting the volume that holds the CA, the bind-mount is empty, entrypoint.sh
+# generates a BRAND NEW CA, and every enrolled client is silently orphaned --
+# reported only as a yellow "first deploy" line.
+#
+# Reading the volume by its Mountpoint rather than through a helper container is
+# deliberate: this runs air-gapped, and there is no image guaranteed to be on the
+# box to `docker run` for the copy. `docker volume inspect` is a public API and
+# gives the real path even when Docker's data-root has been moved.
+_velo_legacy_volume() {
+    local v
+    while IFS= read -r v; do
+        [[ "$v" == *velociraptor_data ]] && { printf '%s\n' "$v"; return 0; }
+    done < <("${DOCKER_BIN:-docker}" volume ls --format '{{.Name}}' 2>/dev/null)
+    return 1
+}
+
+# Echoes the readable host path of <volume>'s content, or nothing.
+_velo_volume_path() {
+    local vol="$1" driver mp
+    driver="$("${DOCKER_BIN:-docker}" volume inspect -f '{{.Driver}}' "$vol" 2>/dev/null)"
+    [[ "$driver" == "local" ]] || { log_warn "  legacy volume ${vol} uses the '${driver:-unknown}' driver; cannot read it directly"; return 1; }
+    mp="$("${DOCKER_BIN:-docker}" volume inspect -f '{{.Mountpoint}}' "$vol" 2>/dev/null)"
+    [[ -n "$mp" && -d "$mp" ]] || { log_warn "  legacy volume ${vol} has no readable mountpoint"; return 1; }
+    printf '%s\n' "$mp"
+}
+
+# Fingerprint a server.config.yaml at an arbitrary path (velo_ca_fp is fixed to
+# the live one).
+_velo_ca_fp_of() {
+    python3 - "$1" <<'PY' 2>/dev/null
+import hashlib, sys
+try:
+    import yaml
+    d = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
+except Exception:
+    print(""); raise SystemExit(0)
+ca = (d.get("CA") or {}).get("private_key") \
+     or (d.get("Client") or {}).get("ca_certificate") or ""
+print(hashlib.sha256(ca.encode()).hexdigest()[:16] if ca else "")
+PY
+}
+
+# Run BEFORE velo_ca_fp/_velo_snapshot/bring-up. Never destructive: it only ever
+# fills an EMPTY host dir. A box that already has a config keeps it.
+_velo_migrate_legacy_config() {
+    local data; data="$(_VELO_DATA)"
+    local host_cfg="${data}/server.config.yaml"
+    local vol mp f n=0
+
+    vol="$(_velo_legacy_volume)" || return 0        # nothing legacy -> nothing to do
+    mp="$(_velo_volume_path "$vol")" || return 0
+
+    if [[ ! -f "${mp}/server.config.yaml" ]]; then
+        return 0                                    # volume exists but holds no config
+    fi
+
+    # Case 1 -- the box already has a live config. Do NOT overwrite it: clients
+    # enrolled since would be cut off. But if the CAs differ, this box was
+    # upgraded WITHOUT this migration and its original CA is still sitting in the
+    # volume, so say so loudly instead of leaving it to be discovered by a fleet
+    # that stopped reporting.
+    if [[ -f "$host_cfg" ]]; then
+        local now old
+        now="$(_velo_ca_fp_of "$host_cfg")"
+        old="$(_velo_ca_fp_of "${mp}/server.config.yaml")"
+        if [[ -n "$now" && -n "$old" && "$now" != "$old" ]]; then
+            log_warn "  this box has a DIFFERENT Velociraptor CA than the legacy volume:"
+            log_warn "    in use now:    ${now}"
+            log_warn "    legacy volume: ${old}  (${vol})"
+            log_warn "  It was upgraded before this migration existed, so a new CA was"
+            log_warn "  generated and clients enrolled against ${old} can no longer connect."
+            log_warn "  The original is intact in ${mp} — restoring it is a deliberate"
+            log_warn "  operation (it cuts off anything enrolled since), so it is not done"
+            log_warn "  automatically here."
+        fi
+        return 0
+    fi
+
+    # Case 2 -- the host dir is empty and the volume has the CA. This is the
+    # 0615/0726 upgrade path: migrate, or the next line of code generates a new CA.
+    mkdir -p "$data" || return 1
+    for f in server.config.yaml client.config.yaml api.config.yaml velociraptor; do
+        if [[ -f "${mp}/${f}" ]]; then
+            cp -p "${mp}/${f}" "${data}/${f}" || {
+                log_error "  could not copy ${f} out of ${vol}"
+                return 1
+            }
+            n=$((n + 1))
+        fi
+    done
+    (( n )) || return 0
+    log_success "  migrated ${n} Velociraptor config file(s) from the legacy volume ${vol}"
+    log_info "  CA preserved: $(_velo_ca_fp_of "$host_cfg")  (the volume is left untouched)"
+    return 0
+}
+
+# A missing CA is only acceptable when the module has genuinely never been
+# deployed. If a legacy config volume exists, a CA existed and we failed to
+# bring it across -- starting Velociraptor then REPLACES it with a new one and
+# every enrolled client is orphaned, unrecoverably from the client side. On the
+# real 0615 -> 0813 run that path was taken silently behind a yellow
+# "first deploy" line, which is exactly why this is now a hard failure.
+_velo_require_ca() {
+    [[ -n "$(velo_ca_fp)" ]] && return 0
+
+    local vol
+    if ! vol="$(_velo_legacy_volume)"; then
+        log_info "  no CA and no legacy volume — genuine first deploy, continuing"
+        return 0
+    fi
+    log_error "  no CA on the host, but the legacy config volume ${vol} exists."
+    log_error "  Starting Velociraptor now would generate a NEW CA and orphan every"
+    log_error "  enrolled client. Refusing. The migration step above should have"
+    log_error "  recovered it — see the warnings it printed; the volume itself is"
+    log_error "  untouched, so the original CA is still recoverable."
+    return 1
+}
+
 _velo_snapshot() {
     local snap="$1" data; data="$(_VELO_DATA)"
     mkdir -p "${snap}/config" || return 1

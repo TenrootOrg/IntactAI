@@ -51,6 +51,16 @@ upgrade_module_velociraptor() {
 
     u_begin velociraptor
 
+    # Up to 0726 the CA lived in the velociraptor_data VOLUME, not on the host.
+    # Recover it before anything reads, snapshots or starts against an empty
+    # data dir -- otherwise entrypoint.sh mints a new CA and orphans the fleet.
+    u_do "migrate legacy config volume" -- _velo_migrate_legacy_config
+
+    # Nothing has been changed at this point (the migration only ever fills an
+    # EMPTY data dir), so failing here is free -- and far cheaper than starting
+    # a server that mints a new CA.
+    u_do "confirm a CA survived the migration" -- _velo_require_ca
+
     ca_before="$(velo_ca_fp)"
     if [[ -z "$ca_before" ]]; then
         log_warn "  could not read the CA fingerprint before the upgrade;"

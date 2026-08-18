@@ -192,7 +192,7 @@ u_do() {
     fi
     if [[ -n "$U_DETAIL" ]]; then
         while IFS= read -r line; do
-            [[ -n "$line" ]] && log_error "    | ${line}"
+            [[ -n "$line" ]] && _u_detail_line "$line"
         done <<< "$U_DETAIL"
     fi
     _u_log_container_failures "$U_DETAIL"
@@ -371,7 +371,32 @@ _u_run_with_deadline() {
 # The command is stored as a string and later `eval`ed. Callers must quote
 # any path that could contain spaces at registration time.
 # ---------------------------------------------------------------------------
+# The captured stderr of a failed step, echoed under it. Prints and logs exactly
+# like log_error but does NOT feed record_install_issue: this is a VERBATIM COPY
+# of output the step already emitted, so counting it again inflates the final
+# banner without adding an issue. The real 0615 -> 0813 run reported "20 errors"
+# for what were two failures -- the pin validation printed 2 error lines, u_do
+# then re-echoed those same 2 as detail, and the report re-listed them again.
+# A count that overstates by 10x is one operators learn to ignore.
+_u_detail_line() {
+    echo -e "${RED}[ERROR]${NC}     | $1"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR]     | $1" >> "$LOG_FILE"
+}
+
 u_undo() {
+    # Once the transaction has failed, u_do is a no-op (see its short-circuit
+    # above) -- so any forward action after that point never ran, and an undo
+    # for it would try to reverse a change that was never made. Registration
+    # must therefore short-circuit on exactly the same condition u_do does.
+    #
+    # This was a real failure, twice in one run: intact's "snapshot the platform
+    # tree" u_do was skipped after the config-pin validation failed, but the
+    # `u_undo "_intact_restore '<snap>'"` beside it is a plain statement, not a
+    # u_do, so it registered anyway -- and the unwind then died on "no snapshot
+    # at <snap>", turning a clean rollback into NEEDS MANUAL REPAIR. Timesketch
+    # lost its rollback the same way (_ts_restore_db against a postgres that the
+    # failed step had left down).
+    (( U_FAILED )) && return 0
     U_UNDO+=("$*")
     log_info "  rollback registered: $*"
     return 0

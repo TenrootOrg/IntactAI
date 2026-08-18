@@ -65,6 +65,10 @@ upgrade_module_intact() {
     #    Both edit in place; see _intact_merge_versions for why that matters.
     u_do "merge version pins into config.yaml" -- _intact_merge_versions "$src"
     u_do "apply config.yaml schema migrations" -- _intact_config_migrations
+    # Seed BEFORE validating. The merge above only carries module-primary pins;
+    # a box older than a sidecar pin (0615 has no versions.backend_tusd) would
+    # otherwise fail validation on a key nothing on this path ever adds.
+    u_do "seed sidecar pins this release expects" -- _intact_seed_missing_pins "$src"
     u_do "validate config.yaml pins" -- _intact_validate_config_pins
 
     # 2. Snapshot before touching anything, and register the undos coarsest

@@ -295,10 +295,31 @@ _u_image_present() {
 # SAME file app.py's boot-time image reclaim and the CI packager both read,
 # so a repo/tar-name change here cannot silently disagree between what
 # prunes an old image and what the box actually shipped it as.
+# Which image_map.py to read: the PACKAGE's, falling back to the box's.
+#
+# The map must describe the release being INSTALLED, not the one being replaced.
+# Reading the box's copy made sidecar selection depend on what the old box
+# happened to ship -- and image_map.py does not exist at all before 0811. On a
+# real 0615 -> 0813 run that meant "no image map entry for timesketch", a
+# fallback to the caller's literal prefixes ("timesketch-"), and so ONLY the
+# primary tar was loaded: opensearch-2.19.5.tar sat unread in the package while
+# compose died on "No such image: opensearchproject/opensearch:2.19.5".
+#
+# Taking it from the package also decouples this from whether `intact` ran: the
+# box's copy is only refreshed when intact mirrors the backend tree, so with the
+# old order a failed/skipped intact silently degraded every later module, and
+# `--only timesketch` could never repair itself.
+_u_image_map_file() {
+    local pkg="${UPKG_DIR:-}/modules/backend/services/image_map.py"
+    [[ -n "${UPKG_DIR:-}" && -f "$pkg" ]] && { printf '%s\n' "$pkg"; return 0; }
+    local box="${SCRIPT_DIR}/modules/backend/services/image_map.py"
+    [[ -f "$box" ]] && { printf '%s\n' "$box"; return 0; }
+    return 1
+}
+
 _u_primary_image_refs() {
     local module="$1" version="$2"
-    local f="${SCRIPT_DIR}/modules/backend/services/image_map.py"
-    [[ -f "$f" ]] || return 1
+    local f; f="$(_u_image_map_file)" || return 1
     python3 -c "
 import sys
 ns = {}
@@ -327,8 +348,7 @@ for img, tar in ns.get('PRIMARY_IMAGES', {}).get(sys.argv[2], []):
 _u_prune_sidecar_image() {
     local module="$1" dep="$2" old="$3"
     [[ -n "$old" && "$old" != "None" ]] || return 0
-    local f="${SCRIPT_DIR}/modules/backend/services/image_map.py"
-    [[ -f "$f" ]] || return 0
+    local f; f="$(_u_image_map_file)" || return 0
 
     local old_ref
     old_ref="$(python3 -c "
@@ -487,8 +507,7 @@ _u_ensure_image() {
 # match "iris-nginx-v2.4.27.tar", because that one starts with "iris-".
 _u_module_tar_prefixes() {
     local module="$1"
-    local f="${SCRIPT_DIR}/modules/backend/services/image_map.py"
-    [[ -f "$f" ]] || return 1
+    local f; f="$(_u_image_map_file)" || return 1
     python3 -c "
 import sys
 ns = {}
@@ -519,7 +538,71 @@ _u_load_module_images() {
         log_warn "  no image map entry for ${module}; falling back to built-in prefixes"
         prefixes=("$@")
     fi
-    _u_load_tars_matching "${prefixes[@]}"
+    _u_load_tars_matching "${prefixes[@]}" || return 1
+    # Everything the package had for this module is now loaded. Prove the set is
+    # actually complete before the module tries to start on it.
+    _u_verify_sidecar_images "$module"
+}
+
+# ---------------------------------------------------------------------------
+# _u_verify_sidecar_images <module>
+#
+# Every sidecar version stamped into the module's .env must have its image in
+# the local store BEFORE compose runs. Every module brings itself up with
+# `--pull never`, so a missing image is fatal online exactly as it is offline --
+# the only difference is whether the operator gets a clear sentence here or the
+# bare `Error response from daemon: No such image: …` from compose after the
+# stack is already down.
+#
+# This is the apply-side half of the 0615 -> 0813 timesketch failure: the pin
+# OPENSEARCH_VERSION 2.11.0 -> 2.19.5 was stamped, opensearch-2.19.5.tar WAS in
+# the package, and it still never loaded because the tar-prefix selection had
+# fallen back to "timesketch-" only. Nothing checked the two agreed.
+_u_verify_sidecar_images() {
+    local module="$1"
+    local mapf; mapf="$(_u_image_map_file)" || return 0
+
+    local envf
+    [[ "$module" == "intact" ]] && envf="${SCRIPT_DIR}/modules/backend/.env" \
+                                || envf="$(_u_env_file "$module")"
+    [[ -f "$envf" ]] || return 0
+
+    local pairs; pairs="$(_u_sidecar_pairs "$module")"
+    [[ -n "$pairs" ]] || return 0
+
+    local missing=() pair env_var rest man_key tag ref
+    for pair in $pairs; do
+        env_var="${pair%%:*}"
+        rest="${pair#*:}"
+        man_key="${rest%%:*}"
+
+        tag="$(read_env_var "$envf" "$env_var" 2>/dev/null || echo '')"
+        [[ -n "$tag" && "$tag" != "None" ]] || continue
+
+        # The repo:tag pattern for this dep, straight from image_map.py.
+        ref="$(python3 -c "
+import sys
+ns = {}
+exec(open(sys.argv[1], encoding='utf-8').read(), ns)
+for dep, pat, _tar in (ns.get('TRANSITIVE_IMAGES', {}).get(sys.argv[2]) or []):
+    if dep == sys.argv[3]:
+        print(pat.replace('{tag}', sys.argv[4]))
+        break
+" "$mapf" "$module" "$man_key" "$tag" 2>/dev/null)"
+        [[ -n "$ref" ]] || continue
+
+        "${DOCKER_BIN:-docker}" image inspect "$ref" >/dev/null 2>&1 \
+            || missing+=("${ref} (${env_var}=${tag})")
+    done
+
+    (( ${#missing[@]} )) || return 0
+    log_error "  ${module}: sidecar image(s) pinned but not present:"
+    local m
+    for m in "${missing[@]}"; do log_error "    - ${m}"; done
+    log_error "  The package did not carry these, or they were not selected for"
+    log_error "  loading. compose runs with --pull never, so it would fail on the"
+    log_error "  first of them with a bare 'No such image' after the stack is down."
+    return 1
 }
 
 _u_load_tars_matching() {
@@ -567,20 +650,31 @@ _u_load_tars_matching() {
 # pins after the `intact` module has merged them in, and intact can be skipped
 # (--only elk) or can fail -- in either case config.yaml still holds the OLD
 # values while the package plainly states the new ones.
+# The one sidecar table: "<ENV_VAR>:<image_map dep>:<config.yaml versions key>".
+# Read by _u_stamp_transitive (writes .env) and _u_verify_sidecar_images (checks
+# the image is present). One table so the stamper and the verifier can never
+# drift into disagreeing about what a module's sidecars even are.
+_u_sidecar_pairs() {
+    case "$1" in
+        timesketch) printf '%s\n' "OPENSEARCH_VERSION:opensearch:timesketch_opensearch" \
+                                  "POSTGRES_VERSION:postgres:timesketch_postgres" \
+                                  "REDIS_VERSION:redis:timesketch_redis" \
+                                  "NGINX_VERSION:nginx:timesketch_nginx" ;;
+        iris)       printf '%s\n' "RABBITMQ_VERSION:rabbitmq:iris_rabbitmq" ;;
+        volweb)     printf '%s\n' "VOLWEB_POSTGRES_VERSION:postgres:volweb_postgres" \
+                                  "VOLWEB_REDIS_VERSION:redis:volweb_redis" ;;
+        intact)     printf '%s\n' "TUSD_VERSION:tusd:backend_tusd" ;;
+        *)          return 0 ;;
+    esac
+}
+
 _u_stamp_transitive() {
     local module="$1"
     local pairs=() pair env_var cfg_key value src
-    case "$module" in
-        timesketch) pairs=("OPENSEARCH_VERSION:opensearch:timesketch_opensearch"
-                           "POSTGRES_VERSION:postgres:timesketch_postgres"
-                           "REDIS_VERSION:redis:timesketch_redis"
-                           "NGINX_VERSION:nginx:timesketch_nginx") ;;
-        iris)       pairs=("RABBITMQ_VERSION:rabbitmq:iris_rabbitmq") ;;
-        volweb)     pairs=("VOLWEB_POSTGRES_VERSION:postgres:volweb_postgres"
-                           "VOLWEB_REDIS_VERSION:redis:volweb_redis") ;;
-        intact)     pairs=("TUSD_VERSION:tusd:backend_tusd") ;;
-        *)          return 0 ;;
-    esac
+    while IFS= read -r pair; do
+        [[ -n "$pair" ]] && pairs+=("$pair")
+    done < <(_u_sidecar_pairs "$module")
+    (( ${#pairs[@]} )) || return 0
 
     local envf
     [[ "$module" == "intact" ]] && envf="${SCRIPT_DIR}/modules/backend/.env" \

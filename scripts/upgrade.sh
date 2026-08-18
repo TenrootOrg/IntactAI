@@ -434,6 +434,15 @@ main() {
             # the same way UPKG_SCRATCH does.
             INTACT_UPGRADE_OFFLINE=1
             export INTACT_UPGRADE_OFFLINE
+            # Same story one layer over: preflight_host_check (lib/modules/shared.sh)
+            # already skips its github.com DNS probe on INTACT_AIRGAP, but only
+            # lib/args.sh -- the INSTALL parser -- ever set it. An air-gapped
+            # UPGRADE therefore warned "DNS lookup for github.com failed — online
+            # image pulls may fail" once per module while every module went on to
+            # load its images from the package, which is the kind of always-wrong
+            # warning that teaches operators to skim past the real ones.
+            INTACT_AIRGAP=1
+            export INTACT_AIRGAP
             upkg_expand_args "${UPGRADE_PACKAGE_ARGS[@]}" || return 2
         fi
         assets=("${UPKG_ASSETS[@]}")
