@@ -91,6 +91,20 @@ u_begin() {
     log_info "=================================================================="
     log_info "${pos}$(printf '%s' "$U_MODULE" | tr '[:lower:]' '[:upper:]'): ${from} -> ${to}"
     log_info "=================================================================="
+
+    # Diagnostic provenance (file-only [NOTE]): the image this module is about
+    # to be swapped away from, and its container state -- so a mid-upgrade
+    # problem can be tied back to exactly what was running. Additive only; the
+    # helpers are null-safe (and no-op if plan.sh/health are not sourced).
+    local _u_primary _u_img _u_state
+    _u_primary="$(u_primary_container_of "$U_MODULE" 2>/dev/null || true)"
+    _u_img="$(_plan_running_image_tag "$U_MODULE" 2>/dev/null || true)"
+    if [[ -n "$_u_primary" ]]; then
+        _u_state="$("${DOCKER_BIN:-docker}" inspect -f '{{.State.Status}}' "$_u_primary" 2>/dev/null || echo "absent")"
+    else
+        _u_state="n/a"
+    fi
+    record_install_note "  images: ${U_MODULE} running ${_u_img:-none} (container ${_u_primary:-none} ${_u_state}) -> ${to}"
     return 0
 }
 

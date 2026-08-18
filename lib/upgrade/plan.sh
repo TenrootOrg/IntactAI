@@ -28,6 +28,8 @@ declare -gA _PIN_SOURCE=(
 declare -gA PLAN_CURRENT=()   # module -> running version, or "" if not installed
 declare -gA PLAN_TARGET=()    # module -> version the package offers
 declare -gA PLAN_ACTION=()    # module -> upgrade | install | noop | skip
+declare -gA PLAN_SOURCE=()    # module -> "<file>:<key>" the INSTALLED value was read from
+declare -gA PLAN_IMAGE=()     # module -> running container image tag, or "" if none
 
 # ---------------------------------------------------------------------------
 # _version_is_older <a> <b>   — true when a < b, CONSERVATIVELY.
@@ -76,10 +78,11 @@ _version_is_older() {
 # plan_current_versions — what is running right now.
 # ---------------------------------------------------------------------------
 plan_current_versions() {
-    local m spec file key val primary
+    local m spec file key val primary present img
     for m in "${UPGRADE_ORDER[@]}"; do
         spec="${_PIN_SOURCE[$m]:-}"
-        [[ -n "$spec" ]] || { PLAN_CURRENT[$m]=""; continue; }
+        PLAN_SOURCE[$m]="$spec"
+        [[ -n "$spec" ]] || { PLAN_CURRENT[$m]=""; PLAN_IMAGE[$m]=""; continue; }
         file="${SCRIPT_DIR}/${spec%%:*}"
         key="${spec##*:}"
         val="$(read_env_var "$file" "$key" 2>/dev/null || echo "")"
@@ -88,12 +91,66 @@ plan_current_versions() {
         # seeds pins for modules the operator has turned off. Where there is a
         # container to look at, its absence is the truth.
         primary="$(u_primary_container_of "$m")"
-        if [[ -n "$primary" ]] && ! "${DOCKER_BIN:-docker}" inspect "$primary" >/dev/null 2>&1; then
+        img="$(_plan_running_image_tag "$m" 2>/dev/null || true)"
+        PLAN_IMAGE[$m]="$img"
+        if [[ -z "$primary" ]]; then
+            PLAN_CURRENT[$m]="$val"
+            present="n/a"
+        elif ! "${DOCKER_BIN:-docker}" inspect "$primary" >/dev/null 2>&1; then
             PLAN_CURRENT[$m]=""
+            present="no"
         else
             PLAN_CURRENT[$m]="$val"
+            present="yes"
         fi
+
+        # Diagnostic provenance (file-only [NOTE]): makes every INSTALLED cell
+        # and every later DOWNGRADE REFUSED traceable to where the version came
+        # from. Additive only -- reads state, changes no decision.
+        record_install_note "installed: ${m} = ${val:-<empty>} (from ${spec}; container ${primary:-none} present=${present}; image tag ${img:-none})"
     done
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# plan_log_environment — up-front snapshot so a later refusal is never a
+# mystery. Mostly file-only [NOTE]; the intact multi-source disagreement is a
+# console WARN because that split-brain is exactly what a stray install leaves
+# behind (a box claiming a version no package ever shipped). Call AFTER
+# plan_current_versions (it consumes PLAN_*). Diagnostics only: reads state,
+# changes nothing, never fails the run.
+# ---------------------------------------------------------------------------
+plan_log_environment() {
+    record_install_note "environment: appliance root = ${SCRIPT_DIR:-?}"
+    record_install_note "environment: package tag = ${UPGRADE_TAG:-<none>}"
+
+    local m
+    for m in "${UPGRADE_ORDER[@]}"; do
+        record_install_note "  installed: ${m} = ${PLAN_CURRENT[$m]:-not installed} (source ${PLAN_SOURCE[$m]:-none}; image ${PLAN_IMAGE[$m]:-none})"
+    done
+
+    # intact is stamped into THREE files at once (_intact_stamp) and different
+    # readers use different precedence, so these can disagree -- which is how a
+    # box ends up claiming a version no package ever shipped. Surface all four
+    # sources up-front, and WARN loudly if the present ones do not agree.
+    local env_v ver_v cfg_v img_v
+    env_v="$(read_env_var "${SCRIPT_DIR}/modules/backend/.env" BACKEND_VERSION 2>/dev/null || echo "")"
+    ver_v="$(tr -d '[:space:]' < "${SCRIPT_DIR}/VERSION" 2>/dev/null || echo "")"
+    cfg_v="$(read_config "['versions']['backend']" 2>/dev/null || echo "")"
+    img_v="$(_plan_running_image_tag intact 2>/dev/null || true)"
+
+    record_install_note "intact version sources: .env=${env_v:-<none>} VERSION=${ver_v:-<none>} config.yaml=${cfg_v:-<none>} image=${img_v:-<none>}"
+
+    # Compare only the sources that are actually present; an empty source is
+    # "nothing to disagree with", not a mismatch.
+    local ref="" disagree=0 s
+    for s in "$env_v" "$ver_v" "$cfg_v" "$img_v"; do
+        [[ -z "$s" ]] && continue
+        if [[ -z "$ref" ]]; then ref="$s"; elif [[ "$s" != "$ref" ]]; then disagree=1; fi
+    done
+    if (( disagree )); then
+        log_warn "intact version sources disagree: .env=${env_v:-<none>} VERSION=${ver_v:-<none>} config.yaml=${cfg_v:-<none>} image=${img_v:-<none>} -- the upgrade uses the .env pin (${env_v:-<none>}); a stray value here explains an unexpected INSTALLED version below"
+    fi
     return 0
 }
 
@@ -283,13 +340,18 @@ _plan_module_enabled() {
 # plan_reject_downgrades — hard abort, no --force.
 # ---------------------------------------------------------------------------
 plan_reject_downgrades() {
-    local m current target bad=0
+    local m current target bad=0 img
     for m in "${UPGRADE_ORDER[@]}"; do
         case "${PLAN_ACTION[$m]:-}" in upgrade) ;; *) continue ;; esac
         current="${PLAN_CURRENT[$m]}"
         target="${PLAN_TARGET[$m]}"
         if _version_is_older "$target" "$current"; then
             log_error "DOWNGRADE REFUSED: ${m} ${current} -> ${target}"
+            # Say WHERE the installed version came from, so an unexpected value
+            # (e.g. a stray intact-YYYYMMDD) points straight at its origin.
+            log_error "  installed version read from ${_PIN_SOURCE[$m]:-unknown}"
+            img="$(_plan_running_image_tag "$m" 2>/dev/null || true)"
+            [[ -n "$img" ]] && log_error "  running container image tag: ${img}"
             bad=1
         fi
     done

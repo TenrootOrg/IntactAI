@@ -468,6 +468,7 @@ main() {
 
     # ------------------------------------------------------------- plan -----
     plan_current_versions
+    plan_log_environment
     plan_build
     # --dry-run --json is a MACHINE-READABLE answer for the dashboard, so the
     # human table and the advisory chatter below would corrupt the stream.
