@@ -16,7 +16,20 @@ services:
       interval: 10s
       timeout: 10s
       retries: 6
-      start_period: 20s
+      # 60s, not 20s. Every iris upgrade does `compose down` then `up`, so this
+      # is always a FRESH container doing an Erlang/Mnesia cold boot, and
+      # iris-app gates on `condition: service_healthy`. At 20s the budget was
+      # 20 + 10x6 = 80s; on 2026-08-18 a UI import (5.8 GB upload + extract +
+      # 11 GB of image loads, 2.5 GB already swapped) blew past it and the whole
+      # stack failed with "dependency failed to start: container
+      # intact_iris_rabbitmq is unhealthy". It was purely timing -- the same
+      # container reported Healthy moments later during the rollback.
+      #
+      # start_period is a GRACE window: failures inside it do not count against
+      # `retries`, so raising it cannot turn a pass into a fail or mask a real
+      # failure -- a broken rabbitmq still fails, just later. 180s total now
+      # matches backend/volweb/elk rather than being the tightest on the box.
+      start_period: 60s
     networks:
       - iris_internal
 
