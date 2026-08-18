@@ -662,25 +662,46 @@ upkg_verify_file_checksums() {
     RUN_HEARTBEAT_QUIET=1 run_with_heartbeat "verifying file checksums" 900 \
         python3 - "$UPKG_MANIFEST" "$UPKG_DIR" <<'PY' || rc=$?
 import hashlib, json, os, sys
+from concurrent.futures import ThreadPoolExecutor
+
 manifest, root = sys.argv[1], sys.argv[2]
 m = json.load(open(manifest, encoding="utf-8"))
 shas = (m.get("contents") or {}).get("sha256") or {}
-bad, missing, ok = [], [], 0
-for rel, want in shas.items():
+
+# Threads, not processes: hashlib drops the GIL around the actual digest work,
+# so this parallelises for real, and most of the wall-clock here is reading
+# ~5.6 GB off disk anyway. Processes would mean pickling the work list and
+# paying fork cost for no gain. Capped at 8 -- past that the disk, not the CPU,
+# is the limit, and this runs on appliances whose cores are already committed
+# to the containers still serving during the upgrade.
+workers = min(8, (os.cpu_count() or 2))
+
+def check(item):
+    rel, want = item
     p = os.path.join(root, rel)
     if not os.path.isfile(p):
-        missing.append(rel); continue
+        return ("missing", rel)
     h = hashlib.sha256()
     with open(p, "rb") as fh:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             h.update(chunk)
-    if h.hexdigest() != want:
-        bad.append(rel)
-    else:
-        ok += 1
-for rel in missing[:10]:
+    return ("ok", rel) if h.hexdigest() == want else ("bad", rel)
+
+bad, missing, ok = [], [], 0
+with ThreadPoolExecutor(max_workers=workers) as pool:
+    for kind, rel in pool.map(check, shas.items()):
+        if kind == "ok":
+            ok += 1
+        elif kind == "missing":
+            missing.append(rel)
+        else:
+            bad.append(rel)
+
+# Sorted so the sample an operator sees is the same on every run; completion
+# order is nondeterministic once the work is spread across threads.
+for rel in sorted(missing)[:10]:
     sys.stderr.write("  MISSING from package: %s\n" % rel)
-for rel in bad[:10]:
+for rel in sorted(bad)[:10]:
     sys.stderr.write("  CHECKSUM MISMATCH: %s\n" % rel)
 if missing or bad:
     sys.stderr.write("  %d verified, %d missing, %d corrupt\n" % (ok, len(missing), len(bad)))

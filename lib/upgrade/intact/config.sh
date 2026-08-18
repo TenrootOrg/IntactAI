@@ -204,60 +204,118 @@ _intact_seed_missing_pins() {
     return 0
 }
 
-# The registry currently holds exactly one migration, 1 -> 2: consolidate the
-# renamed cloudtrail/prowler modules into aws_sigma, carrying `enabled`
-# forward. It does NOT rename the CLOUDTRAIL_VERSION env var -- that is a
-# compat contract with every consumer of it.
+# ---------------------------------------------------------------------------
+# config.yaml schema migrations.
+#
+# An ORDERED REGISTRY of named steps, applied one version at a time, each
+# stamping its own version on success. The previous shape -- a single inline
+# block that did every rename and then stamped the final number -- meant a
+# failure anywhere left config.yaml partly migrated but still labelled with the
+# OLD version, so the next run would redo the half that had already been done.
+# Stepping one version at a time makes an interrupted migration resumable: the
+# file always says exactly which steps have been applied.
+#
+# Rules for a migration function:
+#   * takes the config path, returns 0/1, and NEVER stamps schema_version --
+#     the driver below owns that, so a step cannot lie about what it completed;
+#   * must be IDEMPOTENT. A crash between the edit and the stamp re-runs it;
+#   * edits config.yaml TEXTUALLY and truncates in place. Never yaml.safe_load
+#     + dump: this is the operator's file, carrying their github_token, module
+#     passwords and the comments above half the pins, and a round-trip deletes
+#     all of it. In place because config.yaml is bind-mounted into the backend
+#     BY INODE -- writing a temp file and renaming it over the original leaves
+#     the container reading the old inode while the edit looks applied on disk.
+#
+# NOT the place for new *pins*. A pin that a later release introduces has to be
+# seeded on every upgrade, not once at a version boundary -- a box already at
+# the current schema would never receive it. That is _intact_seed_missing_pins,
+# which runs unconditionally. Migrations are for RESHAPING what is already
+# there; seeding is for filling in what is absent.
+_CONFIG_SCHEMA_TARGET=2
+
+# "<from>:<to>:<description>:<function>"
+_CONFIG_MIGRATIONS=(
+    "1:2:consolidate cloudtrail/prowler into aws_sigma:_cfgmig_1_to_2_aws_sigma"
+)
+
+# Stamp schema_version, inserting it at the top when absent.
+_cfg_stamp_schema() {
+    python3 - "$CONFIG_FILE" "$1" <<'PY'
+import os, re, sys
+path, ver = sys.argv[1], sys.argv[2]
+out = open(path, encoding="utf-8").readlines()
+for i, ln in enumerate(out):
+    if re.match(r"^schema_version\s*:", ln):
+        out[i] = "schema_version: %s\n" % ver
+        break
+else:
+    out.insert(0, "schema_version: %s\n" % ver)
+with open(path, "w", encoding="utf-8") as fh:
+    fh.write("".join(out)); fh.flush(); os.fsync(fh.fileno())
+PY
+}
+
+# 1 -> 2. Renames modules.cloudtrail / modules.prowler to modules.aws_sigma,
+# carrying `enabled` forward. Deliberately does NOT rename the CLOUDTRAIL_VERSION
+# env var: that name is a compat contract with every consumer of it.
+_cfgmig_1_to_2_aws_sigma() {
+    python3 - "$1" <<'PY'
+import os, re, sys
+path = sys.argv[1]
+out = []
+for ln in open(path, encoding="utf-8").readlines():
+    m = re.match(r"^(\s+)(cloudtrail|prowler)(\s*:\s*)$", ln)
+    if m and m.group(2) == "cloudtrail":
+        out.append("%saws_sigma%s\n" % (m.group(1), m.group(3))); continue
+    m2 = re.match(r"^(\s+)cloudtrail(\s*:\s*)(.+)$", ln)
+    if m2:
+        out.append("%saws_sigma%s%s\n" % (m2.group(1), m2.group(2), m2.group(3))); continue
+    out.append(ln)
+with open(path, "w", encoding="utf-8") as fh:
+    fh.write("".join(out)); fh.flush(); os.fsync(fh.fileno())
+PY
+}
+
 _intact_config_migrations() {
     local current
     current="$(read_config "['schema_version']" 2>/dev/null || echo '')"
     [[ "$current" == "None" || -z "$current" ]] && current=1
 
-    local CURRENT_SCHEMA_VERSION=2
-    if (( current >= CURRENT_SCHEMA_VERSION )); then
+    if (( current >= _CONFIG_SCHEMA_TARGET )); then
         log_info "  config.yaml schema is current (v${current})"
         return 0
     fi
 
     cp -p "$CONFIG_FILE" "${CONFIG_FILE}.pre-migration-backup" 2>/dev/null
-    log_info "  migrating config.yaml schema v${current} -> v${CURRENT_SCHEMA_VERSION}"
+    log_info "  migrating config.yaml schema v${current} -> v${_CONFIG_SCHEMA_TARGET}"
 
-    if ! python3 - "$CONFIG_FILE" <<'PY'
-import re, sys
-path = sys.argv[1]
-lines = open(path, encoding="utf-8").readlines()
-out, changed = [], False
+    local entry from to desc fn rest
+    for entry in "${_CONFIG_MIGRATIONS[@]}"; do
+        from="${entry%%:*}"; rest="${entry#*:}"
+        to="${rest%%:*}";    rest="${rest#*:}"
+        desc="${rest%:*}"
+        fn="${rest##*:}"
 
-# modules.cloudtrail / modules.prowler -> modules.aws_sigma, keeping enabled.
-for ln in lines:
-    m = re.match(r"^(\s+)(cloudtrail|prowler)(\s*:\s*)$", ln)
-    if m and m.group(2) == "cloudtrail":
-        out.append("%saws_sigma%s\n" % (m.group(1), m.group(3))); changed = True; continue
-    m2 = re.match(r"^(\s+)cloudtrail(\s*:\s*)(.+)$", ln)
-    if m2:
-        out.append("%saws_sigma%s%s\n" % (m2.group(1), m2.group(2), m2.group(3)))
-        changed = True; continue
-    out.append(ln)
+        (( from < current )) && continue          # already applied
+        (( to > _CONFIG_SCHEMA_TARGET )) && break # not for this release
 
-# Stamp the new schema_version, inserting it first if absent.
-for i, ln in enumerate(out):
-    if re.match(r"^schema_version\s*:", ln):
-        out[i] = "schema_version: 2\n"; break
-else:
-    out.insert(0, "schema_version: 2\n")
+        log_info "    v${from} -> v${to}: ${desc}"
+        if ! "$fn" "$CONFIG_FILE"; then
+            log_error "  schema migration v${from} -> v${to} failed; restoring config.yaml"
+            cp -p "${CONFIG_FILE}.pre-migration-backup" "$CONFIG_FILE" 2>/dev/null
+            return 1
+        fi
+        # Stamp only after the step actually succeeded, so an interruption is
+        # resumable rather than ambiguous.
+        if ! _cfg_stamp_schema "$to"; then
+            log_error "  could not stamp schema v${to}; restoring config.yaml"
+            cp -p "${CONFIG_FILE}.pre-migration-backup" "$CONFIG_FILE" 2>/dev/null
+            return 1
+        fi
+        current="$to"
+    done
 
-payload = "".join(out)
-# Truncate in place: config.yaml is bind-mounted by inode.
-with open(path, "w", encoding="utf-8") as fh:
-    fh.write(payload); fh.flush()
-    import os; os.fsync(fh.fileno())
-PY
-    then
-        log_error "  schema migration failed; restoring config.yaml"
-        cp -p "${CONFIG_FILE}.pre-migration-backup" "$CONFIG_FILE" 2>/dev/null
-        return 1
-    fi
-    log_success "  config.yaml migrated to schema v${CURRENT_SCHEMA_VERSION}"
+    log_success "  config.yaml migrated to schema v${current}"
     return 0
 }
 
