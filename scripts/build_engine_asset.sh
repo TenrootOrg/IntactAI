@@ -66,12 +66,20 @@ rm -rf "${STAGE}/scripts/ci" "${STAGE}/scripts/dev"
 # version number that tracks the release.
 echo "1" > "${STAGE}/BOOTSTRAP_PROTOCOL"
 
-# Informational, so an extracted engine on a support bundle can be identified.
-if [[ -f "${SRC}/VERSION" ]]; then
-    cp "${SRC}/VERSION" "${STAGE}/VERSION"
-else
-    printf '%s\n' "$TAG" > "${STAGE}/VERSION"
-fi
+# Identifies the engine on a support bundle -- and it is $TAG, ALWAYS, never
+# the VERSION file sitting in $SRC.
+#
+# This asset is built FOR $TAG and ships inside $TAG's release, so claiming any
+# other version is simply wrong. Copying $SRC/VERSION also made the build depend
+# on repo state that is written AFTER the build: the release workflow stamps
+# VERSION back onto the source branch in its `publish` job, but `bootstrap-asset`
+# runs early (needs: resolve) and asserts
+# `test "$(cat "$probe/VERSION")" = "$TAG"`. So on the FIRST build of any new tag
+# the checkout still held the PREVIOUS release's VERSION, the assertion failed,
+# publish never ran, and therefore VERSION was never stamped -- a release could
+# only ever succeed on a tag that had already been released once. That is
+# exactly how intact-20260818 failed: the tree said intact-20260813.
+printf '%s\n' "$TAG" > "${STAGE}/VERSION"
 
 NAME="${TAG}-engine.tar.gz"
 
