@@ -19,11 +19,30 @@ from collections import Counter
 
 DEFAULT_PW = "123123"
 
+# Portainer will not accept DEFAULT_PW: it refuses anything empty, shorter than
+# 12 characters, or equal to the RETIRED default below, and silently leaves the
+# admin account uncreated with the UI stuck in "initial setup"
+# (generate_portainer_secrets, lib/modules/portainer.sh). So Portainer's line
+# gets its own replacement value -- rewriting it to 123123 would hand a fresh
+# install a password its own installer rejects.
+PORTAINER_RETIRED_PW = "1234qwer!@#$"          # lib/modules/portainer.sh:9
+PORTAINER_DEFAULT_PW = "Ch4nge-Me!Intact2026"  # what config.yaml actually ships
+
+# The replacement written for a module's `password:` when the staged value is
+# not already a shipping default. Per module, because "the shipped default" is
+# not one value.
+DEFAULT_PW_BY_MODULE = {"portainer": PORTAINER_DEFAULT_PW}
+
 # Values that are ALREADY shipping defaults and must be left exactly as-is.
-# Portainer's is deliberately >=12 chars because Portainer refuses shorter
-# ones; forcing it to 123123 would silently change shipped behaviour
-# (install.sh would then generate a random password instead).
-SHIPPED = {DEFAULT_PW, "1234qwer!@#$"}
+#
+# This set and config.yaml have to agree, and they silently stopped agreeing
+# once: the working Portainer password was shipped in 71835af while this set
+# still listed only the retired one, so the next staged commit would have
+# rewritten it to 123123 -- reintroducing exactly the bug that commit fixed.
+# tests/test_config_sanitizer.py pins them together by asserting that
+# sanitizing the tracked config.yaml is a no-op, so a future rotation fails the
+# test instead of failing an install.
+SHIPPED = {DEFAULT_PW, PORTAINER_RETIRED_PW, PORTAINER_DEFAULT_PW}
 
 # qa/qa-config.yaml: the leaf keys blanked on commit, per top-level section.
 # An allowlist rather than "blank everything" so that adding a non-secret knob
@@ -66,8 +85,15 @@ def _value(match):
 def sanitize_main_config(text):
     """config.yaml -> (sanitized text, list of field names changed)."""
     out, changed = [], []
+    module = None  # the `  <name>:` block the current line sits in
 
     for ln in text.splitlines(keepends=True):
+        # Track the enclosing module so a password can be replaced with the
+        # default that module actually accepts.
+        m_mod = re.match(r"^  ([A-Za-z0-9_]+):\s*$", ln)
+        if m_mod:
+            module = m_mod.group(1)
+
         # options.github_token -> always empty. This is the one that matters: a
         # live PAT to a private org, written at runtime, never something to ship.
         m = re.match(_pat(r"\s*github_token"), ln)
@@ -80,7 +106,8 @@ def sanitize_main_config(text):
         # change these at install time; whatever this box uses is not for git.
         m = re.match(_pat("    password"), ln)
         if m and _value(m) not in SHIPPED:
-            out.append(f"{m.group(1)}{DEFAULT_PW}{m.group(3)}\n")
+            replacement = DEFAULT_PW_BY_MODULE.get(module, DEFAULT_PW)
+            out.append(f"{m.group(1)}{replacement}{m.group(3)}\n")
             changed.append("password")
             continue
 
