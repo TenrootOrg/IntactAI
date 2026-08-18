@@ -116,9 +116,23 @@ upgrade_module_timesketch() {
     # 7. Alembic bootstrap MUST happen against the still-running OLD container.
     u_do --timeout 600 "bootstrap alembic if untracked" -- _ts_bootstrap_alembic "$U_FROM"
 
+    # ORDER MATTERS, and the stack unwinds LIFO -- registered first runs LAST.
+    #
+    # The database restore has to run AFTER the stack is back up, because it
+    # talks to intact_timesketch_postgres over `docker exec`: with the old
+    # order (bring-up registered first, restore last) the restore ran while the
+    # stack was still down, sat in _ts_wait_postgres for its full two-minute
+    # timeout waiting for a container that had been removed, reported "postgres
+    # did not become ready", and failed the unwind. That is what turned the real
+    # 0615 -> 0813 timesketch failure into ROLLBACK FAILED / needs manual
+    # repair, on a box whose data was actually fine.
+    #
+    # Registering it FIRST puts it last in the unwind, so the sequence becomes:
+    #   pin -> .env restore -> bring the old stack up -> restore the database
+    # which is the only order in which each step's prerequisites already exist.
+    (( have_dump )) && u_undo "_ts_restore_db '${dump}'"
     u_undo "_ts_bring_back_up"
     [[ -n "$bak" ]] && u_undo "restore_file_from_backup '${envf}' '${bak}'"
-    (( have_dump )) && u_undo "_ts_restore_db '${dump}'"
 
     u_do --timeout 900 "load timesketch images" -- _u_load_module_images timesketch "timesketch-"
     u_do --timeout 1800 "ensure timesketch:${target}" -- \

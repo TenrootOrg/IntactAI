@@ -36,9 +36,19 @@
 #                         (ELASTIC_VERSION) that _u_stamp must rewrite. Moving
 #                         the file would move the pins with it. Splitting them
 #                         is its own change; until then .env stays put.
-#   velociraptor configs  already inside the velociraptor_datastore VOLUME,
-#                         which is why its CA survives upgrades that lose other
-#                         things. Moving them to a host path is a regression.
+#   velociraptor configs  now a HOST path, data/velociraptor/ -- already under
+#                         data/, so there is nothing for this registry to move.
+#                         (This entry used to claim they lived in the
+#                         velociraptor_datastore volume "which is why the CA
+#                         survives upgrades". That was wrong twice over:
+#                         velociraptor_datastore mounts /var. -- the hunt
+#                         datastore -- and the CA was in velociraptor_data,
+#                         a SEPARATE volume the host-mount conversion dropped
+#                         from the compose file. Believing this comment is why
+#                         Velociraptor was left out of the migration and why a
+#                         real 0615 -> 0813 run silently minted a new CA. The
+#                         volume -> host recovery now lives in
+#                         lib/upgrade/velociraptor/snapshot.sh.)
 #   data/intact.db        already under data/. Nothing to do.
 
 # Relative to the appliance root. Directories are moved whole.
@@ -63,6 +73,15 @@ STATE_PATHS=(
     # "timesketch.conf created from template ... SECRET_KEY randomized").
     "modules/timesketch/config/timesketch.conf"
     "modules/timesketch/config/timesketch_legacy.conf"
+    # postgres.env — the Timesketch database password, generated per box and
+    # 0600. It was in NEITHER list, which is how a real 0813 run came to log
+    # "already at 20260630, but secrets/postgres.env is missing — re-applying
+    # instead of skipping": the file had simply not survived. The engine does
+    # recover (it rotates the role's password to match the regenerated file), so
+    # this is protection against churn rather than data loss -- but it is box
+    # state living under modules/, which is exactly what this registry is for,
+    # and iris/secrets is already here for the same reason.
+    "modules/timesketch/secrets"
 )
 
 # STATE, but deliberately NOT moved. Listed so the inventory is honest and so
@@ -85,9 +104,9 @@ STATE_PATHS=(
 #       snapshot for the same reason.
 #
 #   velociraptor_datastore volume
-#       Already persistent, and already outside the source tree -- which is why
-#       the Velociraptor CA survives upgrades that lose other things. Moving it
-#       to a host path would be a regression.
+#       Already persistent and outside the source tree. It holds the hunt/flow
+#       datastore (mounted at /var.), NOT the CA -- see the correction in the
+#       header above. Moving it to a host path would be a regression.
 STATE_INPLACE=(
     "modules/volweb/.env"
     "modules/elk/.env"
