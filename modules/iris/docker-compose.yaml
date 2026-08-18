@@ -27,9 +27,12 @@ services:
       #
       # start_period is a GRACE window: failures inside it do not count against
       # `retries`, so raising it cannot turn a pass into a fail or mask a real
-      # failure -- a broken rabbitmq still fails, just later. 180s total now
-      # matches backend/volweb/elk rather than being the tightest on the box.
-      start_period: 60s
+      # failure -- a broken rabbitmq still fails, just later.
+      #
+      # Budget is start_period + interval x retries, so this is 120 + 10x6 =
+      # 180s, level with volweb and behind elk's 210s -- rather than the 80s
+      # that made rabbitmq the tightest healthcheck on the appliance.
+      start_period: 120s
     networks:
       - iris_internal
 
