@@ -69,6 +69,10 @@ upgrade_module_intact() {
     # a box older than a sidecar pin (0615 has no versions.backend_tusd) would
     # otherwise fail validation on a key nothing on this path ever adds.
     u_do "seed sidecar pins this release expects" -- _intact_seed_missing_pins "$src"
+    # Same reasoning one level up: nothing on the forward path has ever carried
+    # an options: key onto an existing box, so a 0615 box reached 0818 with no
+    # options.github_token at all and every GitHub call anonymous at 60/hr.
+    u_do "seed options this release expects" -- _intact_seed_missing_options
     u_do "validate config.yaml pins" -- _intact_validate_config_pins
 
     # 2. Snapshot before touching anything, and register the undos coarsest

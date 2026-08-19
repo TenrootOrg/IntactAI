@@ -231,11 +231,12 @@ _intact_seed_missing_pins() {
 # the current schema would never receive it. That is _intact_seed_missing_pins,
 # which runs unconditionally. Migrations are for RESHAPING what is already
 # there; seeding is for filling in what is absent.
-_CONFIG_SCHEMA_TARGET=2
+_CONFIG_SCHEMA_TARGET=3
 
 # "<from>:<to>:<description>:<function>"
 _CONFIG_MIGRATIONS=(
     "1:2:consolidate cloudtrail/prowler into aws_sigma:_cfgmig_1_to_2_aws_sigma"
+    "2:3:rename options.download_forensic_tools to options.download_tools:_cfgmig_2_to_3_download_tools"
 )
 
 # Stamp schema_version, inserting it at the top when absent.
@@ -274,6 +275,201 @@ for ln in open(path, encoding="utf-8").readlines():
 with open(path, "w", encoding="utf-8") as fh:
     fh.write("".join(out)); fh.flush(); os.fsync(fh.fileno())
 PY
+}
+
+# _intact_seed_missing_options — add options: keys this release expects and the
+# operator's config.yaml has never had.
+#
+# The forward path carried NOTHING into options:. _intact_merge_versions copies
+# the manifest's `versions:` block and nothing else, migrations only reshape
+# what is already there, and a release ships no config.yaml at all (the
+# packager's copytree excludes it), so there has never been a template to seed
+# from. Confirmed on a real 0615 -> 0818 upgrade, 2026-08-19: the box came out
+# the far side still holding ['check_module_updates', 'download_forensic_tools']
+# and neither new key.
+#
+# github_token is the one that bites. Without it every api.github.com call is
+# anonymous against a 60-request/hour PER-IP cap, so an upgraded box quietly
+# loses the 5,000/hr limit and the Online Upgrade UI starts reporting "rate
+# limited -- try again later" with nowhere in config.yaml to fix it.
+#
+# Same contract as _intact_seed_missing_pins: ONLY ever adds an absent key,
+# never rewrites an operator's value, and seeds the SHIPPED DEFAULT so a box
+# that never touched the key behaves exactly as a fresh install of this release
+# would. Each seeded key gets a one-line comment; the full explanation lives in
+# the shipped config.yaml, which this deliberately does not try to reproduce.
+_intact_seed_missing_options() {
+    # Passed as argv, one "key<TAB>default<TAB>comment" per argument. NOT on
+    # stdin: the script itself arrives there via the heredoc, so anything piped
+    # in is swallowed before the program can read it -- which is exactly how the
+    # first cut of this function silently seeded nothing at all.
+    local added
+    added="$(python3 - "$CONFIG_FILE" \
+        "download_tools	false	# Also download the OPTIONAL forensic tools (see config.yaml in the release)." \
+        "github_token	''	# GitHub API token: raises 60 req/hr (anonymous) to 5,000 req/hr for upgrades." \
+        <<'PYSEEDOPT'
+import os, re, sys
+path = sys.argv[1]
+want = []
+for row in sys.argv[2:]:
+    if not row.strip():
+        continue
+    key, default, comment = row.split("\t", 2)
+    want.append((key, default, comment))
+
+lines = open(path, encoding="utf-8").readlines()
+
+start = None
+for i, ln in enumerate(lines):
+    if re.match(r"^options\s*:\s*$", ln):
+        start = i
+        break
+
+if start is None:
+    # No options: block at all. Append one at the end of the file rather than
+    # guessing a position among the operator's other top-level blocks.
+    if lines and lines[-1].strip():
+        lines.append("\n")
+    start = len(lines)          # the header's own index, not the blank before it
+    lines.append("options:\n")
+    end = len(lines)
+    present = set()
+    indent = "  "
+else:
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        st = lines[i].strip()
+        if not st or st.startswith("#"):
+            continue
+        if not lines[i][:1].isspace():
+            end = i
+            break
+    present = set()
+    indent = "  "
+    for i in range(start + 1, end):
+        m = re.match(r"^(\s+)([A-Za-z_][A-Za-z0-9_]*)\s*:", lines[i])
+        if m:
+            present.add(m.group(2))
+            indent = m.group(1)
+
+missing = [(k, d, c) for k, d, c in want if k not in present]
+if not missing:
+    raise SystemExit(0)
+
+insert_at = end
+while insert_at > start + 1 and not lines[insert_at - 1].strip():
+    insert_at -= 1
+
+block = []
+for n, (key, default, comment) in enumerate(missing):
+    # A blank line between entries, but not immediately under a header this
+    # call just created -- "options:" followed by an empty line reads like an
+    # empty mapping.
+    if n or insert_at > start + 1:
+        block.append("\n")
+    block.append("%s%s\n" % (indent, comment))
+    block.append("%s%s: %s\n" % (indent, key, default))
+lines[insert_at:insert_at] = block
+
+payload = "".join(lines)
+# In place, never os.replace -- config.yaml is bind-mounted into the backend by
+# inode (see _pin_module_version).
+d = os.path.dirname(os.path.abspath(path)) or "."
+import tempfile
+fd, tmp = tempfile.mkstemp(dir=d, prefix=".config.yaml.opt-")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(payload); fh.flush(); os.fsync(fh.fileno())
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(payload); fh.flush(); os.fsync(fh.fileno())
+finally:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+
+sys.stdout.write(" ".join(k for k, _, _ in missing))
+PYSEEDOPT
+)" || {
+        log_warn "  could not seed options into config.yaml"
+        return 0
+    }
+
+    if [[ -n "$added" ]]; then
+        log_info "  seeded options this release expects: ${added}"
+    fi
+    return 0
+}
+
+# 2 -> 3. options.download_forensic_tools -> options.download_tools.
+#
+# The key was renamed between 0615 and now and NOTHING carried the operator's
+# value across. Worse, on 0615 the old name already had zero readers -- shell
+# or backend -- so an operator who set it `false` got the extra-tool download
+# anyway and had no way to tell. Demonstrated live on a 0615 box, 2026-08-19.
+#
+# Carries the VALUE, not just the name: the flag states an intent the box was
+# never able to honour, and the new key is the first thing that can. The
+# shipped default is `false`, so this only ever changes behaviour for someone
+# who explicitly asked for the optional tools.
+#
+# Renames in place, one line, keeping the operator's comment block above it --
+# and refuses to act if `download_tools` is somehow already present, because
+# two keys of the same name in one mapping is a config.yaml that no longer
+# parses the way anyone intended.
+_cfgmig_2_to_3_download_tools() {
+    python3 - "$1" <<'PYMIG23'
+import os, re, sys
+path = sys.argv[1]
+lines = open(path, encoding="utf-8").readlines()
+
+# The options: block, header to the next column-0 non-comment line.
+start = None
+for i, ln in enumerate(lines):
+    if re.match(r"^options\s*:\s*$", ln):
+        start = i
+        break
+if start is None:
+    raise SystemExit(0)                      # no options block: nothing to rename
+
+end = len(lines)
+for i in range(start + 1, len(lines)):
+    st = lines[i].strip()
+    if not st or st.startswith("#"):
+        continue
+    if not lines[i][:1].isspace():
+        end = i
+        break
+
+old_at = new_at = None
+for i in range(start + 1, end):
+    if re.match(r"^\s+download_forensic_tools\s*:", lines[i]):
+        old_at = i
+    elif re.match(r"^\s+download_tools\s*:", lines[i]):
+        new_at = i
+
+if old_at is None:
+    raise SystemExit(0)                      # already renamed, or never had it
+if new_at is not None:
+    # Both names present -- someone hand-added the new key on an old box. The
+    # live one already says what the operator wants and the dead one is inert,
+    # so this is untidy, not broken. Say so and move on: failing the migration
+    # here would fail the whole intact module and roll the upgrade back over a
+    # config.yaml that works.
+    sys.stderr.write(
+        "config.yaml has both download_forensic_tools (dead) and "
+        "download_tools (live); leaving both alone, download_tools wins\n")
+    raise SystemExit(0)
+
+lines[old_at] = re.sub(r"^(\s+)download_forensic_tools(\s*:)",
+                       r"\1download_tools\2", lines[old_at], count=1)
+
+payload = "".join(lines)
+# Truncate in place, never os.replace: config.yaml is bind-mounted into the
+# backend BY INODE (see _pin_module_version).
+with open(path, "w", encoding="utf-8") as fh:
+    fh.write(payload); fh.flush(); os.fsync(fh.fileno())
+PYMIG23
 }
 
 _intact_config_migrations() {
