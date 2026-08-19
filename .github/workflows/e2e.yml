@@ -27,6 +27,20 @@ name: e2e (manual)
 # the default configuration supports.
 
 on:
+  # Pushing to this one branch is the RUN button while e2e.yml is not on main.
+  # The default-branch rule above applies only to workflow_dispatch; a push
+  # event runs the workflow file from the branch that was pushed, so a dedicated
+  # trigger branch gives manual-feeling runs with main untouched.
+  #
+  # To start a run:   git push --force origin development:e2e-trigger
+  # Every input then takes its default (see the `|| ` fallbacks below), because
+  # a push event carries no inputs.
+  #
+  # TEMPORARY. Delete this trigger once the file reaches main and
+  # workflow_dispatch works properly, or every push to the branch spends a VM.
+  push:
+    branches: [e2e-trigger]
+
   workflow_dispatch:
     inputs:
       ref:
@@ -67,12 +81,12 @@ concurrency:
   # Per ref, and queued rather than cancelled: killing a run halfway leaves a
   # half-installed appliance and a half-written report, which is worse than
   # waiting.
-  group: e2e-${{ github.event.inputs.ref }}
+  group: e2e-${{ github.event.inputs.ref || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   e2e:
-    runs-on: ${{ github.event.inputs.runner }}
+    runs-on: ${{ github.event.inputs.runner || 'ubuntu-latest' }}
     # GitHub's hosted ceiling is 360; leave room for the summary and artifact
     # steps to run after a timed-out install rather than losing the evidence.
     timeout-minutes: 330
@@ -86,10 +100,10 @@ jobs:
       # ------------------------------------------------------------------ 1 --
       - name: Validate the inputs
         env:
-          BUILD_IMAGES: ${{ github.event.inputs.build_images }}
-          MODULE_SET: ${{ github.event.inputs.module_set }}
-          VERSION_OVERRIDE: ${{ github.event.inputs.version_override }}
-          TIMEOUT_MIN: ${{ github.event.inputs.install_timeout_min }}
+          BUILD_IMAGES: ${{ github.event.inputs.build_images || 'backend' }}
+          MODULE_SET: ${{ github.event.inputs.module_set || 'all' }}
+          VERSION_OVERRIDE: ${{ github.event.inputs.version_override || '' }}
+          TIMEOUT_MIN: ${{ github.event.inputs.install_timeout_min || '90' }}
         run: |
           set -euo pipefail
           # Re-validated here rather than trusted, matching the release
@@ -108,7 +122,7 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.ref }}
+          ref: ${{ github.event.inputs.ref || github.ref_name }}
           fetch-depth: 1
 
       # ------------------------------------------------------------------ 2 --
@@ -177,7 +191,7 @@ jobs:
       - name: Resolve the release that supplies the images
         id: images
         env:
-          VERSION_OVERRIDE: ${{ github.event.inputs.version_override }}
+          VERSION_OVERRIDE: ${{ github.event.inputs.version_override || '' }}
         run: |
           set -euo pipefail
           TAG="${VERSION_OVERRIDE:-$(cat VERSION)}"
@@ -197,7 +211,7 @@ jobs:
 
       - name: Build the backend image from this ref
         id: build
-        if: ${{ github.event.inputs.build_images == 'backend' }}
+        if: ${{ (github.event.inputs.build_images || 'backend') == 'backend' }}
         run: |
           set -euo pipefail
           # WHY. main's engine advances continuously while versions.backend
@@ -221,7 +235,7 @@ jobs:
       - name: Stage and configure the appliance
         id: host
         env:
-          MODULE_SET: ${{ github.event.inputs.module_set }}
+          MODULE_SET: ${{ github.event.inputs.module_set || 'all' }}
           BACKEND_TAG: ${{ steps.build.outputs.backend_tag }}
         run: |
           set -euo pipefail
@@ -291,10 +305,10 @@ jobs:
           QA_LINUX_CLIENT: '1'
           QA_FEATURE_SWEEP: '1'
           QA_RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
-          QA_REF: ${{ github.event.inputs.ref }}
+          QA_REF: ${{ github.event.inputs.ref || github.ref_name }}
           QA_IMAGES_TAG: ${{ steps.images.outputs.tag }}
           QA_BUILT_IMAGES: ${{ steps.build.outputs.backend_tag && format('intact-backend:{0}', steps.build.outputs.backend_tag) || '' }}
-          PHASES: ${{ github.event.inputs.phases }}
+          PHASES: ${{ github.event.inputs.phases || '' }}
         run: |
           set -uo pipefail
           cd "${APPLIANCE}"
@@ -360,7 +374,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-${{ github.event.inputs.ref }}-${{ github.run_id }}
+          name: e2e-${{ github.event.inputs.ref || github.ref_name }}-${{ github.run_id }}
           path: _artifacts
           retention-days: 7
           if-no-files-found: warn
@@ -379,7 +393,7 @@ jobs:
             echo ""
             echo "| what | value |"
             echo "|---|---|"
-            echo "| ref | \`${{ github.event.inputs.ref }}\` |"
+            echo "| ref | \`${{ github.event.inputs.ref || github.ref_name }}\` |"
             echo "| upstream images from | \`${IMAGES_TAG:-unknown}\` |"
             echo "| built from this ref | \`${BACKEND_TAG:+intact-backend:$BACKEND_TAG}\`${BACKEND_TAG:+ }${BACKEND_TAG:-none} |"
             echo ""
