@@ -10,6 +10,12 @@ name: e2e (manual)
 # and destroys everything on it. It must never fire from a push, a PR or a
 # release.
 #
+# BEFORE IT CAN BE RUN AT ALL: GitHub only exposes workflow_dispatch for files
+# that exist on the DEFAULT branch. While this file lives only on a side branch
+# the API answers 404 and the "Run workflow" button never appears -- verified,
+# not assumed. Once it is on main you may still dispatch it against any ref, and
+# the definition used is the one on the ref you pick.
+#
 # WHAT A GREEN RUN DOES AND DOES NOT PROVE. install.sh takes its service images
 # from a published RELEASE and refuses to build them (lib/modules/backend.sh),
 # so this exercises the chosen ref's installer, libraries, compose files, nginx
