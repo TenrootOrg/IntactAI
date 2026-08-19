@@ -304,6 +304,7 @@ jobs:
           QA_REPO_DIR: /mnt/intact
           QA_LINUX_CLIENT: '1'
           QA_FEATURE_SWEEP: '1'
+          QA_PIPELINES: '1'
           QA_RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
           QA_REF: ${{ github.event.inputs.ref || github.ref_name }}
           QA_IMAGES_TAG: ${{ steps.images.outputs.tag }}

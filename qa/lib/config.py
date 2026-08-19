@@ -55,6 +55,7 @@ ENV_OVERRIDES = {
     ("windows", "password"): "QA_WIN_PASS",
     ("run", "linux_client"): "QA_LINUX_CLIENT",
     ("run", "feature_sweep"): "QA_FEATURE_SWEEP",
+    ("run", "pipelines"): "QA_PIPELINES",
 }
 
 # Split in two because a Windows endpoint is a property of the PROFILE, not of
@@ -208,8 +209,17 @@ class QAConfig:
 
     @property
     def feature_sweep(self):
-        """Drive the backend's HTTP surface directly over the loopback bypass."""
+        """Drive the backend's HTTP surface and assert on the answers."""
         return _as_bool(self.get("run", "feature_sweep", default=False))
+
+    @property
+    def pipelines(self):
+        """Run each feature's LIGHTWEIGHT blueprint end to end.
+
+        Separate from feature_sweep because it is a different kind of test and a
+        different cost: the sweep is seconds of HTTP, this dispatches real
+        collections and real detection runs and takes minutes."""
+        return _as_bool(self.get("run", "pipelines", default=False))
 
     def timeout(self, stage, default=30):
         """Minutes to wait for a slow stage before calling it failed."""

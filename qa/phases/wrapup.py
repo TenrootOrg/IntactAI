@@ -222,6 +222,49 @@ def _feature_sweep_section(lines, results):
         lines.append("")
 
 
+def _pipelines_section(lines, results):
+    """Which of the product's lightweight blueprints actually ran.
+
+    Separate from the feature sweep because it answers a different question.
+    The sweep says the API responds; this says a collection was dispatched to a
+    real client, a detection engine ran over real evidence, an artefact was
+    built. The skip list matters just as much -- a reader must be able to see at
+    a glance that the Windows pipelines did not run and why.
+    """
+    pr = results.get("pipelines")
+    if not pr or not pr.detail:
+        return
+    d = pr.detail
+
+    lines += ["## Pipelines", ""]
+
+    ran = d.get("ran") or {}
+    if ran:
+        lines += ["| pipeline | blueprint | result |", "|---|---|---|"]
+        for name, info in sorted(ran.items()):
+            bits = []
+            if info.get("findings") is not None:
+                bits.append(f"{info['findings']} finding(s)")
+            if info.get("rows") is not None:
+                bits.append(f"{info['rows']} row(s)")
+            if info.get("bytes"):
+                bits.append(f"{info['bytes'] / 2**20:.1f} MB")
+            if info.get("client_id"):
+                bits.append(f"client {info['client_id']}")
+            lines.append(f"| {name} | `{info.get('blueprint', '-')}` | "
+                         f"{', '.join(bits) or 'completed'} |")
+        lines.append("")
+
+    skipped = d.get("skipped") or []
+    if skipped:
+        lines += ["### Pipelines that did not run, and why", "",
+                  "| pipeline | blueprint | reason |", "|---|---|---|"]
+        for item in skipped:
+            lines.append(f"| {item.get('pipeline')} | "
+                         f"`{item.get('blueprint', '-')}` | {item.get('reason')} |")
+        lines.append("")
+
+
 def _provenance_section(lines, ctx, cfg):
     """Which code and which images this result actually describes.
 
@@ -370,6 +413,7 @@ def _write_report(ctx, cfg):
                   ""]
 
     _feature_sweep_section(lines, results)
+    _pipelines_section(lines, results)
     _provenance_section(lines, ctx, cfg)
 
     # "Windows target state" only when there WAS a Windows target. A section

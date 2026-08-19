@@ -92,7 +92,8 @@ def main():
     ctx = runner_lib.PhaseContext(cfg, tl, run_dir, {}, redactor)
     runner = runner_lib.Runner(ctx)
 
-    from phases import endpoint, endpoint_linux, features, platform, workflows, wrapup
+    from phases import (endpoint, endpoint_linux, features, pipelines,
+                        platform, workflows, wrapup)
     platform.register(runner, cfg)
     endpoint.register(runner, cfg)
     # The Linux profile: enrol the appliance itself as an endpoint, then drive
@@ -100,6 +101,9 @@ def main():
     # config flag is on, so an operator's existing Windows run is unchanged.
     endpoint_linux.register(runner, cfg)
     features.register(runner, cfg)
+    # After the sweep: pipelines dispatch real collections and detection runs,
+    # so they need the client enrolled and the API already proven to answer.
+    pipelines.register(runner, cfg)
     workflows.register(runner, cfg)
     # Collection and teardown are registered last so they run after the
     # workflows: collect BEFORE teardown so nothing needed for the report is

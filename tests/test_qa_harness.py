@@ -20,7 +20,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 QA = os.path.join(ROOT, "qa")
 
 PHASE_FILES = ("platform.py", "endpoint.py", "endpoint_linux.py",
-               "features.py", "workflows.py", "wrapup.py")
+               "features.py", "pipelines.py", "workflows.py", "wrapup.py")
 
 
 def _read(*parts):
@@ -94,7 +94,7 @@ class TestPhaseModules(unittest.TestCase):
     def test_run_qa_registers_every_phase_module(self):
         src = _read("run_qa.py")
         for mod in ("platform", "endpoint", "endpoint_linux", "features",
-                    "workflows", "wrapup"):
+                    "pipelines", "workflows", "wrapup"):
             with self.subTest(module=mod):
                 self.assertIn(f"{mod}.register(runner, cfg)", src,
                               f"{mod} is never registered, so its phases can "
