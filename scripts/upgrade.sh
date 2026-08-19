@@ -313,7 +313,17 @@ main() {
     # release's own upgrade.sh resuming.
     if [[ -z "${INTACT_UPGRADE_REEXEC:-}" ]]; then
         mkdir -p "${SCRIPT_DIR}/data/tmp" 2>/dev/null || true
-        exec 9>"${SCRIPT_DIR}/data/tmp/upgrade.lock" 2>/dev/null || true
+        # The braces matter. `exec` with redirections and NO command applies
+        # them to the SHELL, permanently -- so writing this as
+        # `exec 9>"$LOCK" 2>/dev/null` points fd 2 at /dev/null for the whole
+        # rest of the upgrade, and every process it execs inherits that. It
+        # did exactly that: an engine-less package exited 2 having printed a
+        # 505-byte, fully actionable explanation to a stderr nobody could see,
+        # while the same failure run through bootstrap_upgrade.sh printed it
+        # in full. Docker errors and stray tracebacks went the same way.
+        # Wrapping only the open in a group scopes 2>/dev/null to the group;
+        # the fd-9 open still lands on the shell, which is the part we want.
+        { exec 9>"${SCRIPT_DIR}/data/tmp/upgrade.lock"; } 2>/dev/null || true
         if ! flock -n 9; then
             log_error "Another upgrade is already running against this appliance."
             log_error "  If you are certain nothing is running, remove:"
