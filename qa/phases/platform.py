@@ -92,27 +92,60 @@ def register(runner, cfg):
         r = shell.run(["docker", "compose", "version"])
         ctx.check("docker compose v2 is available", r.ok, actual=r.out.strip()[:80])
 
-        try:
-            import paramiko                                   # noqa: F401
-            ctx.check("paramiko is installed", True)
-        except ImportError:
-            ctx.check("paramiko is installed", False,
-                      note="sudo apt-get install -y python3-paramiko — needed to "
-                           "bootstrap and tear down the Windows client")
+        # paramiko exists to drive the WINDOWS target over SSH. On a Linux-only
+        # profile there is no Windows target, so demanding it would fail a
+        # critical phase over a dependency the run has no use for.
+        if cfg.windows_enabled:
+            try:
+                import paramiko                               # noqa: F401
+                ctx.check("paramiko is installed", True)
+            except ImportError:
+                ctx.check("paramiko is installed", False,
+                          note="sudo apt-get install -y python3-paramiko — needed "
+                               "to bootstrap and tear down the Windows client")
 
         # A run adds roughly: a 4 GB memory image, a 1-3 GB KAPE upload, a ~1 GB
         # support bundle, plus index growth. Docker images are already on disk
         # and are not re-pulled. 12 GB is the floor at which the run cannot
         # finish; 20 GB is where it stops being comfortable.
+        # The floor is configurable because CI needs a much higher one: a run
+        # that also INSTALLS from scratch pulls ~16 GB of images and ~5 GB of
+        # release assets before it writes its first artifact, so 12 GB is right
+        # for a run against an existing box and useless as a gate for a fresh one.
+        min_free = int(cfg.get("run", "min_free_disk_gb", default=12))
         free_gb = shutil.disk_usage("/").free / 2**30
         detail["free_disk_gb"] = round(free_gb, 1)
-        ctx.check("at least 12 GB free", free_gb >= 12,
-                  expected=">=12 GB", actual=f"{free_gb:.1f} GB",
+        ctx.check(f"at least {min_free} GB free", free_gb >= min_free,
+                  expected=f">={min_free} GB", actual=f"{free_gb:.1f} GB",
                   note="a memory image, a KAPE upload and a support bundle")
         if free_gb < 20:
             tl.warn("disk_tight", detail={
                 "free_gb": round(free_gb, 1),
                 "note": "run should fit, but there is little headroom"})
+
+        # RAM is recorded, not asserted. The README asks for 16 GB and a full
+        # install runs ~30 containers including BOTH Elasticsearch and
+        # OpenSearch, so a box at exactly the minimum can complete and can also
+        # OOM-kill rabbitmq halfway. Refusing to start would block the very runs
+        # that tell us where the real floor is; a number in the report lets a
+        # later failure be read against the memory it actually had.
+        try:
+            meminfo = {}
+            with open("/proc/meminfo", encoding="utf-8") as fh:
+                for line in fh:
+                    k, _, v = line.partition(":")
+                    meminfo[k] = v.strip()
+            ram_gb = int(meminfo.get("MemTotal", "0 kB").split()[0]) / 2**20
+            swap_gb = int(meminfo.get("SwapTotal", "0 kB").split()[0]) / 2**20
+            detail["ram_gb"] = round(ram_gb, 1)
+            detail["swap_gb"] = round(swap_gb, 1)
+            if ram_gb + swap_gb < 16:
+                tl.warn("memory_below_documented_minimum", detail={
+                    "ram_gb": round(ram_gb, 1), "swap_gb": round(swap_gb, 1),
+                    "note": "README asks for 16 GB; rabbitmq is the first thing "
+                            "the OOM killer takes"})
+        except OSError:
+            pass
 
         # sudo, tested for real. A wrong password discovered at the install
         # phase means the wipe already happened.
@@ -123,6 +156,19 @@ def register(runner, cfg):
 
         # Windows target reachable and admin — checked before anything is
         # destroyed, for the same reason.
+        #
+        # Skipped entirely on a Linux-only profile. This block used to run
+        # unconditionally and ended in ctx.check(..., False) on ANY exception,
+        # so a run with no Windows box failed a CRITICAL phase and nothing else
+        # executed at all. A machine that was never part of the run must not be
+        # able to fail it — it is recorded as absent, not as broken.
+        if not cfg.windows_enabled:
+            detail["windows"] = "not configured — Linux-only run"
+            tl.warn("windows_not_configured", detail={
+                "note": "enrol/activity/teardown and the workflow phases that "
+                        "need them will report as not reached"})
+            return detail
+
         from lib import winssh
         try:
             with winssh.WindowsTarget(cfg.windows_host, cfg.windows_user,
@@ -197,12 +243,39 @@ def register(runner, cfg):
         log_path = os.path.join(ctx.run_dir, "logs", "install.log")
         ctx.set(install_log=log_path)
 
-        r = shell.sudo(["bash", "install.sh"], cfg.sudo_password,
+        # An air-gap install when a package directory is supplied. Not the
+        # default: INTACT_AIRGAP changes behaviour in roughly fifteen places
+        # (the SigmaHQ clone, tool downloads, Timesketch package fetches all
+        # take different branches), so making it the default would quietly test
+        # a different product from the one a customer installs online.
+        argv = ["bash", "install.sh"]
+        pkg = (os.environ.get("QA_INSTALL_PACKAGE_DIR") or "").strip()
+        if pkg:
+            argv += ["--package", pkg]
+
+        r = shell.sudo(argv, cfg.sudo_password,
                        timeout=cfg.timeout("install", 90) * 60,
-                       cwd=REPO_DIR, log_path=log_path, tl=tl, stage="install")
+                       cwd=REPO_DIR, log_path=log_path, tl=tl, stage="install",
+                       preserve_env=("GITHUB_TOKEN",))
 
         ctx.check("install.sh exited 0", r.ok, actual=r.rc)
         ctx.check("install marker written", os.path.exists(INSTALL_MARKER))
+
+        # The install that exits 0 having done NOTHING.
+        #
+        # check_initialization_marker (lib/common.sh:587) prompts when
+        # /etc/intact-initialized already exists. Under a harness stdin is
+        # closed, `read` gets EOF, the answer is empty, and install.sh prints
+        # "Installation cancelled by user" and exits ZERO.
+        #
+        # The marker check above CANNOT catch this: the file it looks for is
+        # the very one that caused the short-circuit, so it passes. Only the log
+        # text distinguishes "installed successfully" from "declined to install".
+        ctx.check("install did not short-circuit on the initialization marker",
+                  "Installation cancelled by user" not in (r.out or ""),
+                  note="/etc/intact-initialized existed and the confirm prompt "
+                       "read EOF; install.sh exits 0 having changed nothing. "
+                       "Remove the marker before installing.")
 
         # Copy install.sh's own log too — it carries the pre-container phase
         # that our capture starts too late to see on a resumed run.

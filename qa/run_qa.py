@@ -92,9 +92,14 @@ def main():
     ctx = runner_lib.PhaseContext(cfg, tl, run_dir, {}, redactor)
     runner = runner_lib.Runner(ctx)
 
-    from phases import endpoint, platform, workflows, wrapup
+    from phases import endpoint, endpoint_linux, features, platform, workflows, wrapup
     platform.register(runner, cfg)
     endpoint.register(runner, cfg)
+    # The Linux profile: enrol the appliance itself as an endpoint, then drive
+    # the backend's HTTP surface directly. Both self-register only when their
+    # config flag is on, so an operator's existing Windows run is unchanged.
+    endpoint_linux.register(runner, cfg)
+    features.register(runner, cfg)
     workflows.register(runner, cfg)
     # Collection and teardown are registered last so they run after the
     # workflows: collect BEFORE teardown so nothing needed for the report is
@@ -103,11 +108,12 @@ def main():
     # Re-register teardown after collect by reordering: endpoint registered it
     # early (it needs `enrol`), so move it to just before the report.
     _reorder(runner, "teardown", before="report")
+    _reorder(runner, "teardown_linux", before="report")
 
     print("=" * 78)
     print(f"Intact.AI QA — {run_id}")
     print(f"  platform : {cfg.platform_host}")
-    print(f"  windows  : {cfg.windows_host}")
+    print(f"  windows  : {cfg.windows_host or 'none — Linux-only run'}")
     print(f"  results  : {run_dir}")
     print(f"  phases   : {', '.join(p['name'] for p in runner.phases)}")
     if skip:
@@ -116,7 +122,7 @@ def main():
 
     tl.event("run_begin", detail={
         "platform": cfg.platform_host, "windows": cfg.windows_host,
-        "commit": _git_head(), "relocated": relocated})
+        "commit": _git_head(cfg.repo_dir), "relocated": relocated})
 
     results = runner.run(only=only or None, skip=skip or None)
     counts = runner_lib.summarize(results)
@@ -150,11 +156,17 @@ def _reorder(runner, name, before):
     phases.insert(anchor, moving)
 
 
-def _git_head():
+def _git_head(repo_dir=None):
+    """The commit under test.
+
+    Takes the repo from the config rather than a hard-coded /home/tenroot/intact:
+    CI installs to /mnt/intact, and a wrong path here silently reported the
+    commit of whatever tree happened to be at the old location — or None, which
+    is worse, because the report then names no commit at all."""
     try:
-        r = subprocess.run(["git", "-C", "/home/tenroot/intact", "rev-parse",
-                            "--short", "HEAD"], capture_output=True, text=True,
-                           timeout=15)
+        r = subprocess.run(["git", "-C", repo_dir or "/home/tenroot/intact",
+                            "rev-parse", "--short", "HEAD"],
+                           capture_output=True, text=True, timeout=15)
         return r.stdout.strip() or None
     except Exception:                                         # noqa: BLE001
         return None

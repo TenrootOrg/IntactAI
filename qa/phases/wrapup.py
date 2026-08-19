@@ -178,28 +178,131 @@ def register(runner, cfg):
 # --- report --------------------------------------------------------------
 
 
+def _feature_sweep_section(lines, results):
+    """What the backend HTTP sweep found, including what it deliberately did not.
+
+    The skip list is not padding. A reader who sees "142 passed" and no mention
+    of AWS will reasonably assume AWS was covered; naming every endpoint that
+    was not called, and why, is the difference between a report and an advert.
+    """
+    fr = results.get("features")
+    if not fr or not fr.detail:
+        return
+    d = fr.detail
+
+    lines += ["## Feature sweep", ""]
+
+    rows = []
+    for tier, label in (("tier0", "Tier 0 — read-only smoke"),
+                        ("tier1", "Tier 1 — create/read/delete round-trips"),
+                        ("tier2", "Tier 2 — needs an enrolled client")):
+        entries = d.get(tier) or {}
+        if entries:
+            rows.append(f"| {label} | {len(entries)} |")
+    if rows:
+        lines += ["| tier | endpoints exercised |", "|---|---|"] + rows + [""]
+
+    caps = d.get("containers") or {}
+    if caps:
+        lines += ["Containers the platform reported, which is what the sweep "
+                  "used to decide what to skip:", "",
+                  "| service | state |", "|---|---|"]
+        lines += [f"| {k} | {v} |" for k, v in sorted(caps.items())]
+        lines.append("")
+
+    skipped = d.get("skipped") or []
+    if skipped:
+        lines += ["### Not tested, and why", "",
+                  "Each of these needs something this box does not have. They "
+                  "are listed so a green run is never mistaken for full "
+                  "coverage.", "",
+                  "| endpoint | reason |", "|---|---|"]
+        for item in skipped:
+            lines.append(f"| `{item.get('path')}` | {item.get('reason')} |")
+        lines.append("")
+
+
+def _provenance_section(lines, ctx, cfg):
+    """Which code and which images this result actually describes.
+
+    The appliance takes its service images from a published RELEASE, never from
+    the checkout (lib/modules/backend.sh refuses to rebuild). So a run on a
+    branch tests that branch's installer, libraries, compose files and pins
+    against somebody else's containers unless the workflow built them. Without
+    this section a green result reads as "this branch works", which is a
+    stronger claim than the run supports.
+    """
+    import os
+
+    lines += ["## Provenance", "",
+              "| what | value |", "|---|---|"]
+    for label, value in (
+        ("ref", os.environ.get("QA_REF") or "(not recorded)"),
+        ("commit", os.environ.get("QA_COMMIT") or "(not recorded)"),
+        ("appliance tree", cfg.repo_dir or "(default)"),
+        ("install mode",
+         "air-gap (--package)" if os.environ.get("QA_INSTALL_PACKAGE_DIR")
+         else "online"),
+        ("images from release", os.environ.get("QA_IMAGES_TAG") or "(the VERSION file)"),
+        ("images built from this ref", os.environ.get("QA_BUILT_IMAGES") or "none"),
+    ):
+        lines.append(f"| {label} | `{value}` |")
+
+    built = (os.environ.get("QA_BUILT_IMAGES") or "").strip()
+    lines += ["",
+              "Service images come from the release named above. "
+              + (f"The image(s) `{built}` were rebuilt from this ref, so engine "
+                 f"and container match."
+                 if built else
+                 "**No image was rebuilt from this ref**, so this run pairs "
+                 "this ref's engine with the release's containers — a "
+                 "combination no customer runs, since an install or upgrade "
+                 "always brings both from the same release."),
+              ""]
+
+
 def _write_report(ctx, cfg):
     results = ctx.results
     counts = runner_lib.summarize(results)
     lines = []
 
-    lines += [f"# Intact.AI QA run — {ctx.tl.run_id}", "",
-              "**Scope: WINDOWS ONLY.** This run exercises the Windows "
-              "collection path end to end — KAPE into Timesketch, the Windows "
-              "agentic blueprint, and Windows memory into VolWeb. It is not "
-              "full platform coverage, and a green result here says nothing "
-              "about the Linux path.", "",
-              "**Fast-QA profile.** Two Volatility plugins, cleared event "
-              "logs, a 4 GB memory image. Breadth was traded for speed "
-              "deliberately; this proves each path *works*, not that the host "
-              "was forensically examined.", "",
-              "**Yara is checked as having run, not as having matched.** "
-              "Rules come from VolWeb's seeded corpus scoped by blueprint "
-              "category, with no per-run rule-injection endpoint, and the "
-              "pipeline treats zero hits as a legitimate result. So this run "
-              "verifies the yarascan worker executes and returns a result "
-              "set; it does not verify that any detection content is correct.",
-              ""]
+    # The scope banner is derived, never assumed. It used to be a hard-coded
+    # "WINDOWS ONLY", which on a Linux-only run described a machine that was
+    # never part of it -- and the scope banner is the one paragraph a reader
+    # trusts to tell them what a green result is worth.
+    lines += [f"# Intact.AI QA run — {ctx.tl.run_id}", ""]
+
+    if cfg.windows_enabled:
+        lines += ["**Scope: WINDOWS ONLY.** This run exercises the Windows "
+                  "collection path end to end — KAPE into Timesketch, the "
+                  "Windows agentic blueprint, and Windows memory into VolWeb. "
+                  "It is not full platform coverage, and a green result here "
+                  "says nothing about the Linux path.", "",
+                  "**Fast-QA profile.** Two Volatility plugins, cleared event "
+                  "logs, a 4 GB memory image. Breadth was traded for speed "
+                  "deliberately; this proves each path *works*, not that the "
+                  "host was forensically examined.", "",
+                  "**Yara is checked as having run, not as having matched.** "
+                  "Rules come from VolWeb's seeded corpus scoped by blueprint "
+                  "category, with no per-run rule-injection endpoint, and the "
+                  "pipeline treats zero hits as a legitimate result. So this "
+                  "run verifies the yarascan worker executes and returns a "
+                  "result set; it does not verify that any detection content "
+                  "is correct.", ""]
+    else:
+        lines += ["**Scope: LINUX ONLY — no Windows endpoint took part.** "
+                  "Install, hardening and the backend HTTP surface are "
+                  "exercised, and the Velociraptor Linux client is enrolled on "
+                  "the appliance itself. Everything Windows-specific — KAPE "
+                  "into Timesketch, the Windows agentic blueprint, Windows "
+                  "memory into VolWeb — did not run and is listed under *Not "
+                  "reached*. A green result here says nothing about the "
+                  "Windows path, which is how most customers use the product.",
+                  "",
+                  "**The client is the appliance.** Collection is proven to "
+                  "*dispatch and complete*, not to find anything: a Linux "
+                  "appliance host is not a compromised workstation and will "
+                  "not produce the findings a customer's endpoint would.", ""]
 
     lines += ["## Verdict", "",
               f"| result | count |", "|---|---|",
@@ -266,23 +369,41 @@ def _write_report(ctx, cfg):
                   f"| sources | {', '.join(d.get('sources') or []) or 'none'} |",
                   ""]
 
-    td = results.get("teardown")
-    lines += ["## Windows target state", ""]
-    if td and td.detail:
-        clean = td.detail.get("windows_left_clean")
-        lines.append("The target was left **"
-                     + ("clean" if clean else "NOT clean") + "**.")
-        left = td.detail.get("left_behind") or []
-        if left:
-            lines += ["", "Still on the box — remove by hand:", ""]
-            lines += [f"- `{p}`" for p in left]
+    _feature_sweep_section(lines, results)
+    _provenance_section(lines, ctx, cfg)
+
+    # "Windows target state" only when there WAS a Windows target. A section
+    # reading "assume the client is still on the target" is actively misleading
+    # about a machine that never existed.
+    if cfg.windows_enabled:
+        td = results.get("teardown")
+        lines += ["## Windows target state", ""]
+        if td and td.detail:
+            clean = td.detail.get("windows_left_clean")
+            lines.append("The target was left **"
+                         + ("clean" if clean else "NOT clean") + "**.")
+            left = td.detail.get("left_behind") or []
+            if left:
+                lines += ["", "Still on the box — remove by hand:", ""]
+                lines += [f"- `{p}`" for p in left]
+            lines.append("")
+            lines.append(f"Velociraptor service after teardown: "
+                         f"`{td.detail.get('service_after')}`")
+        else:
+            lines.append("Teardown did not run. Assume the Velociraptor client "
+                         "and any staged files are still on the target.")
         lines.append("")
-        lines.append(f"Velociraptor service after teardown: "
-                     f"`{td.detail.get('service_after')}`")
     else:
-        lines.append("Teardown did not run. Assume the Velociraptor client and "
-                     "any staged files are still on the target.")
-    lines.append("")
+        tdl = results.get("teardown_linux")
+        if tdl:
+            lines += ["## Appliance-hosted client", ""]
+            lines.append("The Velociraptor Linux client was installed on the "
+                         "appliance itself and "
+                         + ("removed again."
+                            if tdl.status == "pass"
+                            else "**may still be running** — check "
+                                 "`systemctl status intact-qa-velociraptor`."))
+            lines.append("")
 
     ids = ctx.tl.collected_ids()
     if ids:
