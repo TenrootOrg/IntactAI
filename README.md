@@ -152,18 +152,6 @@ bash intact-20260818/scripts/prepare_package.sh intact-20260818 .   # -> intact-
 sudo bash intact-20260818/scripts/upgrade.sh --package intact-upgrade-intact-20260818.tar --root ./intact
 ```
 
-**Pick modules / preview** — add any of these to a run above:
-
-```bash
---only portainer         # only these modules
---skip iris              # every module except these
---reinstall portainer    # re-apply one already at target (repair a half-landed upgrade)
---dry-run                # print the plan, change nothing
-```
-
-Or push-button in the dashboard: **Settings → Online Upgrade / Prepare Package /
-Import Package** — the same engine, no shell.
-
 ## Scripts
 
 ### Change Platform IP
