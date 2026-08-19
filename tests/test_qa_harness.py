@@ -133,6 +133,39 @@ class TestWindowsIsOptional(unittest.TestCase):
         self.assertIn("if cfg.windows_enabled:", src)
 
 
+class TestWaitContract(unittest.TestCase):
+    """tl.wait(describe=...) takes a CALLABLE, not a description string.
+
+    Found the expensive way: a string passed here raised TypeError from inside
+    tl.wait — and only on the success path, because describe(value) is reached
+    solely when the probe returns something. So the phase worked perfectly, then
+    crashed while logging its own success, and the run reported an error for a
+    thing that had actually succeeded. Static, because the failure needs a live
+    appliance and ten minutes of install to reach.
+    """
+
+    def test_every_wait_passes_a_callable_describe(self):
+        offenders = []
+        for fn in PHASE_FILES:
+            tree = ast.parse(_read("phases", fn))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                f = node.func
+                if not (isinstance(f, ast.Attribute) and f.attr == "wait"):
+                    continue
+                for kw in node.keywords:
+                    if kw.arg != "describe":
+                        continue
+                    if isinstance(kw.value, ast.Constant):
+                        offenders.append(f"{fn}:{kw.value.lineno} describe="
+                                         f"{kw.value.value!r}")
+        self.assertFalse(offenders,
+                         "tl.wait(describe=) must be callable — a constant "
+                         "raises TypeError only when the wait SUCCEEDS: "
+                         + "; ".join(offenders))
+
+
 class TestFeatureSweepSafety(unittest.TestCase):
 
     def test_nothing_the_sweep_calls_is_on_the_denylist(self):

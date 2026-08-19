@@ -312,7 +312,11 @@ jobs:
         run: |
           set -uo pipefail
           cd "${APPLIANCE}"
-          export QA_COMMIT="$(git -C "${APPLIANCE}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+          # From the WORKSPACE, not the appliance tree: the staging step
+          # rsyncs with --exclude .git, so /mnt/intact is not a git repo at all
+          # and this reported "unknown" — leaving the report unable to name the
+          # commit it had just tested, which is most of the point of Provenance.
+          export QA_COMMIT="$(git -C "${GITHUB_WORKSPACE}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
           # --skip wipe: a fresh runner has nothing to tear down, and skipping
           # it also avoids run_qa.py relocating itself to ~/.qa-runner (which it

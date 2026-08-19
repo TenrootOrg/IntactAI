@@ -112,9 +112,15 @@ def register(runner, cfg):
                     if (it.get("hostname") or "").split(".")[0] == me.split(".")[0]]
             return (mine or sorted(fresh))[0]
 
+        # `describe` is a CALLABLE that renders the found value for the log,
+        # not a description of what is being waited for. Passing a string threw
+        # TypeError from inside tl.wait -- and only on the SUCCESS path, since
+        # describe(value) is reached solely when the probe returns something.
+        # So the client enrolled correctly and the harness then crashed
+        # reporting it, turning a working phase into an errored one.
         client_id, waited = tl.wait(
             "linux client checks in", timeout_s=600, poll_s=10, probe=probe,
-            describe="the repacked client contacting its own server on :8000")
+            describe=lambda cid: cid)
         detail["waited_s"] = waited
 
         if not client_id:
