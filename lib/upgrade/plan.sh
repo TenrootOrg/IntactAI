@@ -30,6 +30,11 @@ declare -gA PLAN_TARGET=()    # module -> version the package offers
 declare -gA PLAN_ACTION=()    # module -> upgrade | install | noop | skip
 declare -gA PLAN_SOURCE=()    # module -> "<file>:<key>" the INSTALLED value was read from
 declare -gA PLAN_IMAGE=()     # module -> running container image tag, or "" if none
+# COSMETIC ONLY -- why a row reads the way it does, for the plan table. Kept out
+# of PLAN_ACTION on purpose: the dispatcher (scripts/upgrade.sh) matches that
+# value with a bare `upgrade|install`, so appending ":<note>" to it would drop
+# the module through to `*) continue` and silently skip it.
+declare -gA PLAN_NOTE=()      # module -> short parenthetical for the ACTION column
 
 # ---------------------------------------------------------------------------
 # _version_is_older <a> <b>   — true when a < b, CONSERVATIVELY.
@@ -270,6 +275,12 @@ plan_build() {
     if [[ -n "${UPKG_VERSIONS[intact]:-}" && "${PLAN_ACTION[intact]}" == noop:* ]]; then
         if [[ -z "${UPGRADE_ONLY:-}" || ",${UPGRADE_ONLY}," == *",intact,"* ]]; then
             PLAN_ACTION[intact]="upgrade"
+            # Say why. A row reading "intact-20260818 -> intact-20260818
+            # UPGRADE" while every other module shows "-" looks like a bug in
+            # the planner, and the consequence is real -- this re-mirrors the
+            # backend tree and recreates intact_backend, a service restart
+            # nobody expects from a run that reports nothing else to do.
+            PLAN_NOTE[intact]="rolling tag, always re-applied"
         fi
     fi
     return 0
@@ -680,7 +691,12 @@ plan_print_table() {
         # is absent from the package, which is most of them.
         tgt="${PLAN_TARGET[$m]:--}"
         case "${action%%:*}" in
-            upgrade) printf '  %-16s %-20s %-20s UPGRADE\n' "$m" "$cur" "$tgt" ;;
+            upgrade)
+                if [[ -n "${PLAN_NOTE[$m]:-}" ]]; then
+                    printf '  %-16s %-20s %-20s UPGRADE (%s)\n' "$m" "$cur" "$tgt" "${PLAN_NOTE[$m]}"
+                else
+                    printf '  %-16s %-20s %-20s UPGRADE\n' "$m" "$cur" "$tgt"
+                fi ;;
             install) printf '  %-16s %-20s %-20s INSTALL\n' "$m" "$cur" "$tgt" ;;
             noop)    printf '  %-16s %-20s %-20s -\n'       "$m" "$cur" "$tgt" ;;
             *)       printf '  %-16s %-20s %-20s skip (%s)\n' "$m" "$cur" "$tgt" "$note" ;;
