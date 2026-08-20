@@ -113,8 +113,14 @@ class TestScenarioCatalogue(unittest.TestCase):
         remembers choosing."""
         src = open(WORKFLOW, encoding="utf-8").read()
         default = re.search(r"scenarios:(?:.|\n)*?default:\s*'([^']*)'", src)
-        names = {n.strip() for n in default.group(1).split(",") if n.strip()}
-        if names != {s["name"] for s in self.mod.SCENARIOS}:
+        raw = default.group(1).strip()
+        names = {n.strip() for n in raw.split(",") if n.strip()}
+        # 'all' is not a subset -- it is the keyword the resolver expands to
+        # every scenario. Treating it as one made this guard demand a TEMPORARY
+        # marker on a default that hides nothing.
+        narrowed = raw not in ("", "all") and \
+            names != {s["name"] for s in self.mod.SCENARIOS}
+        if narrowed:
             self.assertRegex(
                 src, r"TEMPORARY \(\d{4}-\d{2}-\d{2}\)",
                 "the scenario default is a subset but carries no TEMPORARY "

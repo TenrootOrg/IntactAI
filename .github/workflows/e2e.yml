@@ -112,13 +112,11 @@ on:
         required: false
         default: 'true'
       scenarios:
-        # TEMPORARY (2026-08-20) -- a subset while the matrix is being proven.
-        # RESTORE THIS TO 'all' once a full run has been seen to work; the
-        # remaining eight scenarios are the ones with no coverage today, so
-        # leaving this narrowed is leaving the gap open.
+        # Restored to 'all' 2026-08-20, once the matrix, the per-scenario jobs
+        # and the aggregate had been proven end to end on a real run.
         description: "Comma-separated scenarios, or 'all'. See the table at the top of this file."
         required: false
-        default: 'install-online,install-package,cli-upgrade'
+        default: 'all'
 
 # Read-only. This workflow downloads release assets and reads the repo; it
 # publishes nothing and must never be able to.
@@ -252,7 +250,7 @@ jobs:
           # push trigger the inputs are absent entirely, so this string is what
           # actually runs. They disagreed once and the run silently tested one
           # scenario instead of three, which looks exactly like a pass.
-          WANTED: ${{ github.event.inputs.scenarios || 'install-online,install-package,cli-upgrade' }}
+          WANTED: ${{ github.event.inputs.scenarios || 'all' }}
         run: |
           set -euo pipefail
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
