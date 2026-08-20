@@ -69,6 +69,12 @@
   .chatbar{display:flex;gap:8px;margin-top:8px}
   .empty{color:var(--muted);text-align:center;margin-top:60px}
   .stat{display:inline-block;margin-right:16px;font-size:13px} .stat b{color:#fff;font-size:18px}
+  /* The same badges inside a config column. 18px is right in the header strip,
+     where it is the headline; beside 11px muted labels it shouts. Size only --
+     the accent colours are inline on each <b> and are deliberately kept, so the
+     green token cut and the amber cost still read as themselves. */
+  .cfgstats .stat{display:block;margin:0 0 3px;font-size:11px}
+  .cfgstats .stat b{font-size:12px}
   .toast{position:fixed;bottom:18px;right:18px;background:var(--panel2);border:1px solid var(--acc);padding:10px 14px;border-radius:8px;display:none;opacity:0;transition:opacity .35s ease;z-index:9999;box-shadow:0 8px 28px rgba(0,0,0,.45);max-width:420px}
   .toast.show{opacity:1}
   .fdetail{position:fixed;top:0;right:0;width:540px;max-width:94vw;height:100vh;background:var(--panel,#161b22);border-left:1px solid var(--bd);box-shadow:-10px 0 30px rgba(0,0,0,.5);transform:translateX(100%);transition:transform .22s ease;z-index:9998;overflow:auto;padding:16px 18px}
@@ -453,7 +459,7 @@ function renderConfig(info){
         <label style="margin-top:8px">Identity limit <span style="color:var(--muted)">(people in the LLM payload)</span></label>
         <input id="cf-maxident" type="number" min="0" max="1000000" step="10" value="${info.max_identities??''}" placeholder="all (up to 500)" title="Max identity rows (people, clustered across hosts) included in the LLM payload for the report &amp; chat. Identities are sent regardless of anomaly score, so a real person is never invisible to the model just because no finding is attached to their account. Independent of the Entity limit above (identities cost ~27 tokens each, far cheaper than an entity row). Empty = up to 500 people, which covers any realistic engagement — recommended. If the payload still overflows the model context, the lowest-risk people are dropped first. Set it lower only to send fewer people (e.g. privacy)."/>
         ${(info.cost_estimate&&info.cost_estimate.model)?`<div style="font-size:11px;color:var(--muted);margin:8px 0 3px">Model <b style="color:var(--tx,#e6edf3)">${esc(info.cost_estimate.model)}</b> — full context in, up to <b style="color:var(--tx,#e6edf3)">${(info.cost_estimate.model_max_output_tokens||0).toLocaleString()}</b> tokens out</div>`:`<div style="font-size:11px;color:var(--muted);margin:8px 0 3px">no model set — configure Settings ▸ Agentic</div>`}
-        <div style="display:flex;flex-direction:column;gap:6px;margin:6px 0 3px">${tokenBadge(info.token_ab)}${costBadge(info.cost_estimate)}</div>
+        <div class="cfgstats" style="margin:6px 0 3px">${tokenBadge(info.token_ab)}${costBadge(info.cost_estimate)}</div>
         <label style="margin-top:6px;display:flex;align-items:center;gap:6px;font-weight:normal" title="Tick only when this box has no route to the model provider. The report is then written deterministically from the correlated graph, immediately, and nothing is sent to a provider. Untick (default) for the written narrative: attack story in phases, cross-host correlation and identity attribution.">
           <input id="cf-airgap" type="checkbox" ${info.air_gap_analysis?'checked':''} style="width:auto"/>
           <span>Air-gap analysis <span style="color:var(--muted)">(no route to the model provider)</span></span>
