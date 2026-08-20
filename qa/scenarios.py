@@ -90,13 +90,29 @@ SCENARIOS = [
      "hop_via": "FIRST_ENGINE",
      "proves": "the air-gap dashboard upgrade"},
 
-    {"name": "ui-online-adopt", "install_from": None, "install_mode": "online",
+    # install_mode is `package` for both, and that is load-bearing rather than
+    # incidental. A backend-only box disables timesketch, and timesketch ships
+    # its own nginx -- so app.py's disabled-module prune reclaims the bare
+    # `nginx` repo, which is where the PLATFORM's reverse proxy also lives, and
+    # deletes it between the backend starting (step 7 of 8) and nginx being
+    # deployed (step 8). The install then dies on "No such image".
+    #
+    # The fix lives in this tree, but the prune runs INSIDE the backend
+    # container, and on an online install that container is the release's
+    # image -- which does not carry the fix and will not until a release ships
+    # it. Package mode is what lets the harness put this ref's backend on the
+    # box before the install needs it.
+    #
+    # What is given up is small: the adopt pair exists to test adoption via
+    # UPGRADE, not the install route, and install-online already covers an
+    # online install.
+    {"name": "ui-online-adopt", "install_from": None, "install_mode": "package",
      "modules": "backend-only", "route": "ui_online",
      "proves": "a customer adopts a feature they never had"},
 
-    {"name": "ui-import-adopt", "install_from": None, "install_mode": "online",
+    {"name": "ui-import-adopt", "install_from": None, "install_mode": "package",
      "modules": "backend-only", "route": "ui_import",
-     "proves": "the same adoption, air-gapped"},
+     "proves": "the same adoption, air-gapped end to end"},
 
     {"name": "rollback", "install_from": None, "install_mode": "online",
      "modules": "all", "route": "cli",

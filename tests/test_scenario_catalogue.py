@@ -125,6 +125,38 @@ class TestScenarioCatalogue(unittest.TestCase):
         self.assertNotIn('cd "${APPLIANCE}"', block,
                          "the harness is being run from the appliance tree")
 
+    def test_the_adopt_scenarios_install_from_a_package(self):
+        """Package mode is what puts this ref's backend on the box.
+
+        A backend-only install disables timesketch, timesketch ships its own
+        nginx, and app.py's disabled-module prune reclaims the bare `nginx`
+        repo -- which is where the PLATFORM's reverse proxy lives too. It is
+        deleted between the backend starting and nginx being deployed, and the
+        install dies on "No such image".
+
+        The fix is in this tree, but the prune runs inside the backend
+        CONTAINER, and on an online install that container is the release's
+        image, which does not carry it. Only the package path lets the harness
+        substitute this ref's build. Flipping either scenario back to online
+        would bring the failure back with no hint as to why."""
+        for name in ("ui-online-adopt", "ui-import-adopt"):
+            row = next(r for r in _catalogue().SCENARIOS if r["name"] == name)
+            self.assertEqual(
+                row["install_mode"], "package",
+                f"{name} must install from a package; an online install loads "
+                f"the release's backend, which lacks the prune fix")
+
+    def test_the_workflow_strips_the_package_backend(self):
+        """The other half of the same coupling: package mode only helps if the
+        release's own backend image is actually kept out of the way."""
+        src = open(WORKFLOW, encoding="utf-8").read()
+        self.assertIn("images/intact-backend-*.tar", src,
+                      "nothing removes the package's backend image, so the "
+                      "corrected pin still resolves to the release's build")
+        self.assertIn('docker tag "intact-backend:${BACKEND_TAG}"', src,
+                      "this ref's build is never given the tag the corrected "
+                      "pin will look for")
+
     def test_every_role_used_is_resolvable(self):
         """A typo'd role would silently resolve to an empty tag, and the
         scenario would install the branch instead of the old box it names."""

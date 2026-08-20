@@ -47,6 +47,15 @@ name: e2e (manual)
 # run the Velociraptor / Timesketch / fusion pipelines -- against the box it
 # finished with, not the one it started from.
 #
+# The adopt pair installs from a PACKAGE rather than online, and that is
+# load-bearing. A backend-only box disables timesketch; timesketch ships its own
+# nginx; and the backend's disabled-module prune reclaims the bare `nginx` repo,
+# which is where the platform's own reverse proxy lives -- deleting it between
+# the backend starting and nginx being deployed. The fix is in this tree, but
+# the prune runs inside the backend CONTAINER, and on an online install that is
+# the release's image. Package mode is what lets this ref's build be the one on
+# the box. install-online still covers the online route.
+#
 # intact-20260811 is deliberately absent as a starting point: its VERSION names a
 # release that was never published and its only asset is intact-only, so it
 # cannot be installed at all. The 0726 scenarios are how an 0811-era box is
@@ -499,6 +508,8 @@ jobs:
         if: ${{ matrix.install_mode == 'package' }}
         env:
           TAG: ${{ steps.images.outputs.tag }}
+          BACKEND_IMAGE: ${{ github.event.inputs.backend_image || 'branch' }}
+          BACKEND_TAG: ${{ steps.build.outputs.backend_tag }}
         run: |
           set -euo pipefail
           DIR="${RUNNER_TEMP}/pkg"
@@ -518,6 +529,49 @@ jobs:
             echo "::error title=No package to install from::$TAG yielded $COUNT asset(s). An air-gapped install needs the per-module assets."
             exit 1
           fi
+          # PUT THIS REF'S BACKEND IN THE PACKAGE'S PLACE.
+          #
+          # lib/config.sh corrects config.yaml's backend pin to whatever tag
+          # the package shipped ("THE PACKAGE WINS OVER THE PIN", so a stale
+          # pin cannot trigger a source rebuild). That is right, and it means
+          # the only way the image built here can be the one deployed is for
+          # the package to stop carrying a backend of its own. Then
+          # INTACT_PKG_BACKEND_TAG falls back to the manifest's
+          # versions.intact, the pin resolves to that tag, and the only image
+          # wearing it is ours.
+          #
+          # Safe to repack: nothing on the --package path verifies asset
+          # digests. lib/args.sh has no sha256 handling at all, and
+          # load_images_from_package reads index.json/manifest.json only to
+          # recognise an OCI tar, never to check one.
+          if [ "$BACKEND_IMAGE" = branch ] && [ -n "${BACKEND_TAG:-}" ]; then
+            ASSET="$(find "$DIR" -maxdepth 1 -name '*-intact.tar.gz' | head -1)"
+            if [ -z "$ASSET" ]; then
+              echo "::error::no intact asset to repack; the package layout changed"
+              exit 1
+            fi
+            WORK="${RUNNER_TEMP}/repack"; rm -rf "$WORK"; mkdir -p "$WORK"
+            tar -xf "$ASSET" -C "$WORK"
+            REMOVED=$(find "$WORK" -path '*/images/intact-backend-*.tar' -print -delete | wc -l)
+            if [ "$REMOVED" -eq 0 ]; then
+              echo "::error::no backend image found inside $(basename "$ASSET") — the release's backend would still win"
+              exit 1
+            fi
+            # `*/` rather than `.`, so the archive keeps the original's
+            # shape: a `./` prefix still extracts to one top-level dir, but
+            # load_images_from_package counts those to decide the assets
+            # merged, and matching the layout it was written for is cheaper
+            # than reasoning about whether the count still holds.
+            #
+            # gzip -1: repacked on every job, and the default level costs
+            # minutes for a ratio nothing downstream cares about.
+            ( cd "$WORK" && tar -I 'gzip -1' -cf "$ASSET.new" */ )
+            mv "$ASSET.new" "$ASSET"
+            rm -rf "$WORK"
+            docker tag "intact-backend:${BACKEND_TAG}" "intact-backend:${TAG}"
+            echo "::notice::removed $REMOVED backend image(s) from $(basename "$ASSET"); intact-backend:${TAG} is now this ref's build"
+          fi
+
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
           echo "::notice::air-gap install from $COUNT asset(s)"
 

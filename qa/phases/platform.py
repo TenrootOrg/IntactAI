@@ -86,6 +86,30 @@ def _running_backend_image():
     return out[0].strip() if out else ""
 
 
+def _image_id(ref):
+    """The content id behind an image reference, or "".
+
+    IDENTITY, not name. When the package's own backend image is kept out of
+    the way, this ref's build is deployed wearing the RELEASE's tag -- so
+    comparing tag strings would report a mismatch and recreate the container
+    onto the very image it is already running. Two names for one id is not a
+    mismatch.
+    """
+    if not ref:
+        return ""
+    r = shell.run(["docker", "image", "inspect", "--format", "{{.Id}}", ref],
+                  timeout=30)
+    out = (r.out or "").strip().splitlines()
+    return out[0].strip() if out and out[0].startswith("sha256:") else ""
+
+
+def _running_backend_id():
+    r = shell.run(["docker", "inspect", "--format", "{{.Image}}",
+                   "intact_backend"], timeout=30)
+    out = (r.out or "").strip().splitlines()
+    return out[0].strip() if out and out[0].startswith("sha256:") else ""
+
+
 def register(runner, cfg):
     tl = runner.ctx.tl
 
@@ -345,9 +369,14 @@ def register(runner, cfg):
 
     # ---------------------------------------------------------------- 0b --
     # ------------------------------------------------------------------ C.5 --
+    # NOT critical. A failure here is already loud -- the check says plainly
+    # that the run is exercising the release's backend while reporting on this
+    # ref -- and aborting would trade every later result for that one line. The
+    # phase is new code; the first runs of it are worth more with the feature
+    # sweep and the pipelines still attached.
     @runner.phase("backend_under_test",
                   "Make this ref's backend image the one that runs",
-                  needs=("install",), critical=True)
+                  needs=("install",))
     def backend_under_test(ctx):
         """Put back the pin the installer deliberately corrects away.
 
@@ -411,10 +440,13 @@ def register(runner, cfg):
 
         want = built.split(",")[0].strip()
         detail["want"] = want
-        if running == want:
+        want_id, running_id = _image_id(want), _running_backend_id()
+        detail["want_id"], detail["running_id"] = want_id, running_id
+        if want_id and running_id == want_id:
             ctx.check("the backend under test is the image built from this ref",
-                      True, expected=want, actual=running,
-                      note="already deployed; nothing to re-pin")
+                      True, expected=want, actual=f"{running} ({want_id[:19]})",
+                      note="already deployed — possibly under the release's "
+                           "own tag, which is the same image either way")
             return detail
 
         tag = want.split(":", 1)[1] if ":" in want else want
@@ -444,7 +476,7 @@ def register(runner, cfg):
         healthy = False
         while time.time() < deadline:
             ok, _why = shell.container_is_ok("intact_backend")
-            if ok and _running_backend_image() == want:
+            if ok and _running_backend_id() == want_id:
                 healthy = True
                 break
             time.sleep(5)
@@ -452,7 +484,7 @@ def register(runner, cfg):
         running = _running_backend_image()
         detail["running_after"] = running
         ctx.check("the backend under test is the image built from this ref",
-                  running == want and healthy,
+                  bool(want_id) and _running_backend_id() == want_id and healthy,
                   expected=want, actual=running,
                   note="if this fails the run is exercising the release's "
                        "backend while reporting on this ref -- the exact "
