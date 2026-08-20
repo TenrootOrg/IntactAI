@@ -603,6 +603,11 @@ jobs:
           QA_LINUX_CLIENT: '1'
           QA_FEATURE_SWEEP: '1'
           QA_PIPELINES: '1'
+          # Safe here and nowhere else: this runner is destroyed
+          # minutes from now, and without planted evidence the
+          # fusion check cannot tell a working detection engine
+          # from a broken one.
+          QA_PLANT_EVIDENCE: '1'
           QA_WINDOWS_EVIDENCE: ${{ runner.temp }}/windows-evidence
           QA_SCENARIO: ${{ matrix.scenario }}
           QA_INSTALL_PACKAGE_DIR: ${{ steps.pkg.outputs.dir || '' }}

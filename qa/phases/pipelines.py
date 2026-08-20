@@ -44,7 +44,7 @@ import re
 import socket
 import time
 
-from lib import api as api_lib, shell
+from lib import api as api_lib, plant as plant_lib, shell
 
 # The lightest blueprint the platform ships for each feature. Ids, not names:
 # selecting by name once picked "Full Triage" over "Event Logs Only" and made a
@@ -84,11 +84,27 @@ def register(runner, cfg):
                       note="the auth phase did not sign in")
             return detail
 
+        # Give the detection engine something to find. Without this a clean
+        # runner yields findings: 0, and the fusion check falls back to
+        # relationships > 0 -- which process-tree edges satisfy on any Linux box,
+        # working or not.
+        if cfg.plant_evidence:
+            detail["planted"] = plant_lib.plant(shell, cfg, tl=ctx.tl)
+            ctx.check("evidence was planted for the detection engine",
+                      all(detail["planted"].values()),
+                      actual=", ".join(k for k, v in detail["planted"].items() if v)
+                      or "nothing planted",
+                      note="each item is chosen from the mapper's own scoring "
+                           "branches and crosses the severity floor by design")
+
         _velociraptor_linux(ctx, c, detail)
         _offline_collector(ctx, c, detail)
         _timesketch(ctx, c, cfg, detail)
         _fusion(ctx, c, detail)
         _windows_evidence(ctx, c, detail)
+
+        if cfg.plant_evidence:
+            plant_lib.unplant(shell, cfg, tl=ctx.tl)
         return detail
 
 
@@ -366,6 +382,18 @@ def _fusion(ctx, c, detail):
               expected=">0", actual=rels,
               note="relationships are what separate correlation from a pile of "
                    "rows; pstree alone should produce spawned edges")
+
+    # The assertion that means something. relationships > 0 passes on any Linux
+    # box; findings > 0 only passes if the engine actually recognised what was
+    # put in front of it.
+    if detail.get("planted"):
+        ctx.check("Fusion: the planted evidence was detected", (finds or 0) > 0,
+                  expected=">0 findings", actual=finds,
+                  note="a suspicious cron command, a SUID binary outside the "
+                       "standard paths, a forced-command SSH key and a second "
+                       "uid-0 account were planted before collection — each "
+                       "crosses the mapper's severity floor on its own, so zero "
+                       "findings means the detection path is broken")
 
 
 # --- evidence produced by the Windows job ----------------------------------

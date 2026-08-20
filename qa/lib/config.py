@@ -62,6 +62,7 @@ ENV_OVERRIDES = {
     ("run", "upgrade_extra"): "QA_UPGRADE_EXTRA",
     ("run", "downgrade_tag"): "QA_DOWNGRADE_TAG",
     ("run", "hop_via"): "QA_HOP_VIA",
+    ("run", "plant_evidence"): "QA_PLANT_EVIDENCE",
 }
 
 # Split in two because a Windows endpoint is a property of the PROFILE, not of
@@ -275,6 +276,15 @@ class QAConfig:
         intact-only (432 MB), which is why the hop is quick — it moves the
         engine and nothing else."""
         return (self.get("run", "hop_via", default="") or "").strip()
+
+    @property
+    def plant_evidence(self):
+        """Put detectable evidence on the box before collecting.
+
+        OFF by default and deliberately: it writes to /etc/passwd, /etc/cron.d
+        and a home directory. Fine on an ephemeral runner destroyed minutes
+        later, unacceptable on anyone's real machine."""
+        return _as_bool(self.get("run", "plant_evidence", default=False))
 
     def timeout(self, stage, default=30):
         """Minutes to wait for a slow stage before calling it failed."""
