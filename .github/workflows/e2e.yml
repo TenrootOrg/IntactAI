@@ -227,6 +227,51 @@ jobs:
             {"scenario": "cli-upgrade",     "install_from": "",
              "install_mode": "online",  "modules": "all", "upgrade_route": "cli",
              "upgrade_extra": "--only portainer --reinstall portainer"},
+
+            # --- upgrade routes, oldest box first ---------------------------
+            # 0615 and 0726 install from REGISTRIES and need no release assets;
+            # they predate the "images only from a package" cutover. 0811 is
+            # deliberately absent: its VERSION names a release that was never
+            # published and its only asset is intact-only, so it cannot be
+            # installed at all.
+            {"scenario": "bootstrap", "install_from": "intact-20260615",
+             "install_mode": "online", "modules": "all",
+             "upgrade_route": "bootstrap", "upgrade_extra": ""},
+
+            # The adopt cases: a box that never had these features, whose
+            # operator now wants them. Expected to expose that
+            # bootstrap_iris_api_key and seed_volweb_admin have no upgrade
+            # counterpart -- the finding, not a flaw in the test.
+            {"scenario": "ui-online-adopt", "install_from": "",
+             "install_mode": "online", "modules": "backend-only",
+             "upgrade_route": "ui_online", "upgrade_extra": ""},
+            {"scenario": "ui-import-adopt", "install_from": "",
+             "install_mode": "online", "modules": "backend-only",
+             "upgrade_route": "ui_import", "upgrade_extra": ""},
+
+            {"scenario": "ui-online-full", "install_from": "intact-20260726",
+             "install_mode": "online", "modules": "shipped",
+             "upgrade_route": "ui_online", "upgrade_extra": ""},
+            {"scenario": "ui-import-full", "install_from": "intact-20260726",
+             "install_mode": "online", "modules": "shipped",
+             "upgrade_route": "ui_import", "upgrade_extra": ""},
+
+            # A failure that must unwind rather than strand the box. The only
+            # path that exercises _unpin_module_version.
+            {"scenario": "rollback", "install_from": "",
+             "install_mode": "online", "modules": "all",
+             "upgrade_route": "cli", "upgrade_extra": "--only portainer --reinstall portainer"},
+
+            {"scenario": "data-preservation", "install_from": "",
+             "install_mode": "online", "modules": "all",
+             "upgrade_route": "cli", "upgrade_extra": "--reinstall iris"},
+
+            # A published release OLDER than the target, so the engine has a
+            # real downgrade to refuse rather than a synthetic one.
+            {"scenario": "refuse-and-repeat", "install_from": "",
+             "install_mode": "online", "modules": "all",
+             "upgrade_route": "cli", "upgrade_extra": "--only portainer --reinstall portainer",
+             "downgrade_tag": "intact-20260726"},
           ]
           known = {r["scenario"] for r in CATALOGUE}
           wanted = (os.environ.get("WANTED") or "").strip()
@@ -439,9 +484,28 @@ jobs:
         env:
           MODULE_SET: ${{ matrix.modules || github.event.inputs.module_set || 'all' }}
           BACKEND_TAG: ${{ steps.build.outputs.backend_tag }}
+          INSTALL_FROM: ${{ matrix.install_from || '' }}
         run: |
           set -euo pipefail
-          sudo rsync -a --exclude .git ./ "${APPLIANCE}/"
+          # TWO TREES when a scenario installs an OLD release.
+          #
+          # The appliance must BE that old version -- its install.sh, its
+          # libraries, its config.yaml -- while the branch under test supplies
+          # the upgrade ENGINE from the workspace. Staging the branch as the
+          # appliance would test upgrading today's code with today's code,
+          # which is not an upgrade.
+          if [ -n "${INSTALL_FROM:-}" ]; then
+            echo "::notice::staging ${INSTALL_FROM} as the appliance; the engine comes from the workspace"
+            git -C "${GITHUB_WORKSPACE}" fetch --depth 1 origin "refs/tags/${INSTALL_FROM}:refs/tags/${INSTALL_FROM}" \
+              || git -C "${GITHUB_WORKSPACE}" fetch --depth 1 origin "${INSTALL_FROM}"
+            rm -rf "${RUNNER_TEMP}/old" && mkdir -p "${RUNNER_TEMP}/old"
+            git -C "${GITHUB_WORKSPACE}" archive "${INSTALL_FROM}" 2>/dev/null \
+              | tar -x -C "${RUNNER_TEMP}/old" \
+              || git -C "${GITHUB_WORKSPACE}" archive FETCH_HEAD | tar -x -C "${RUNNER_TEMP}/old"
+            sudo rsync -a "${RUNNER_TEMP}/old/" "${APPLIANCE}/"
+          else
+            sudo rsync -a --exclude .git ./ "${APPLIANCE}/"
+          fi
           cd "${APPLIANCE}"
 
           # A routable address, never 127.0.0.1. It becomes the TLS CN and the
@@ -462,8 +526,18 @@ jobs:
           sudo python3 - config.yaml "$MODULE_SET" <<'PY'
           import re, sys
           path, module_set = sys.argv[1], sys.argv[2]
-          if module_set == "all":
-              s = open(path).read()
+          # backend-only uses EXPLICIT enabled:false, never an absent key:
+          # install.sh reads absent as disabled, but the upgrade planner
+          # reads absent as ENABLED -- so omitting keys would install
+          # backend-only and then plan an install of everything.
+          s = open(path).read()
+          if module_set == "backend-only":
+              s, n = re.subn(r"^(    enabled: )true$", r"\1false", s, flags=re.M)
+              if not n:
+                  sys.exit("nothing was enabled to turn off — shape changed")
+              open(path, "w").write(s)
+              print("disabled %d module(s); backend and nginx are unconditional" % n)
+          elif module_set == "all":
               s, n = re.subn(r"(\n  o365rc:\n(?:.*\n)*?    enabled: )false",
                              r"\1true", s, count=1)
               if not n:
@@ -471,7 +545,7 @@ jobs:
               open(path, "w").write(s)
           PY
 
-          if [ -n "${BACKEND_TAG:-}" ]; then
+          if [ -n "${BACKEND_TAG:-}" ] && [ -z "${INSTALL_FROM:-}" ]; then
             # Point the pin at the image just built. deploy_backend then finds
             # it locally and skips both the build and the asset load.
             sudo sed -i "s|^  backend:.*|  backend: '${BACKEND_TAG}'|" config.yaml
@@ -529,6 +603,7 @@ jobs:
           QA_SCENARIO: ${{ matrix.scenario }}
           QA_INSTALL_PACKAGE_DIR: ${{ steps.pkg.outputs.dir || '' }}
           QA_UPGRADE_EXTRA: ${{ matrix.upgrade_extra || '' }}
+          QA_DOWNGRADE_TAG: ${{ matrix.downgrade_tag || '' }}
           QA_UPGRADE_TO: ${{ matrix.upgrade_route && steps.images.outputs.tag || '' }}
           QA_RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
           QA_REF: ${{ github.event.inputs.ref || github.ref_name }}

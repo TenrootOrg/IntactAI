@@ -117,6 +117,23 @@ def main():
     _reorder(runner, "teardown", before="report")
     _reorder(runner, "teardown_linux", before="report")
 
+    # On an upgrade scenario the module checks must run against the box the
+    # upgrade LEFT BEHIND, not the one it started from. Registration order puts
+    # them before the upgrade, which would prove the old box worked and say
+    # nothing about the new one — so they move after the verification.
+    #
+    # enrol_linux moves with them: the client is what the collection pipelines
+    # drive, and enrolling before an upgrade that recreates Velociraptor proves
+    # the wrong thing.
+    if any(p["name"] == "upgrade" for p in runner.phases):
+        # `auth` moves too when the box being upgraded is an OLD release.
+        # intact-20260615 has no auth system at all, so claiming the dashboard
+        # can only work once the upgrade has put one there. On a
+        # current-release box it is already in the right place and this is a
+        # no-op.
+        for name in ("auth", "enrol_linux", "features", "pipelines"):
+            _reorder(runner, name, before="collect")
+
     print("=" * 78)
     print(f"Intact.AI QA — {run_id}")
     print(f"  platform : {cfg.platform_host}")

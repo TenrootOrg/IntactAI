@@ -23,6 +23,7 @@ emptied. So `verify_upgrade` asserts state, not exit codes.
 """
 
 import os
+import re
 import time
 
 from lib import appliance, shell, upgrade as up
@@ -44,8 +45,15 @@ def register(runner, cfg):
 
     tl = runner.ctx.tl
 
+    # The shell routes need only a box on disk. Depending on `auth` would be
+    # wrong AND fatal for the oldest scenarios: intact-20260615 predates the
+    # auth system entirely, so the auth phase cannot succeed there — and a
+    # dependency on it would skip the very upgrade the scenario exists to run.
+    # The API routes genuinely need a session, so they keep it.
+    _needs = ("auth",) if route.startswith("ui_") else ("install",)
+
     @runner.phase("upgrade", f"Upgrade via {route} ({UPGRADE_ROUTES[route]})",
-                  needs=("auth",), critical=True)
+                  needs=_needs, critical=True)
     def upgrade(ctx):
         detail = {"scenario": cfg.scenario, "route": route,
                   "target": cfg.upgrade_to}
@@ -59,6 +67,8 @@ def register(runner, cfg):
 
         log_path = os.path.join(ctx.run_dir, "logs", f"upgrade-{route}.log")
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+        _pre_upgrade(ctx, cfg, root, detail)
 
         started = time.time()
         if route in ("bootstrap", "cli"):
@@ -77,10 +87,16 @@ def register(runner, cfg):
 
         # 0 and 3 both report "completed" through the UI. Only the code tells
         # them apart, and "applied but degraded" is not a pass.
+        # A scenario that is SUPPOSED to fail asserts its own outcome instead.
+        if cfg.scenario in _SELF_ASSERTING:
+            _post_upgrade(ctx, cfg, root, detail, rc)
+            return detail
+
         ctx.check("the upgrade exited cleanly", rc == up.RC_CLEAN,
                   expected="0 (clean)", actual=f"{rc} ({up.describe_rc(rc)})",
                   note="exit 3 is reported as 'completed' by the UI — clean and "
                        "degraded are distinguishable only in the exit code")
+        _post_upgrade(ctx, cfg, root, detail, rc)
         return detail
 
     @runner.phase("verify_upgrade", "Prove the upgrade actually landed",
@@ -232,3 +248,162 @@ def _route_for(scenario):
         "refuse-and-repeat": "cli",
         "data-preservation": "cli",
     }.get(scenario)
+
+
+# --- scenario-specific behaviour -------------------------------------------
+#
+# Scenarios whose whole point is a non-zero exit. For these the generic
+# "exited cleanly" assertion would be exactly backwards, so they assert their
+# own outcome instead.
+_SELF_ASSERTING = {"rollback", "refuse-and-repeat"}
+
+
+def _pre_upgrade(ctx, cfg, root, detail):
+    """Whatever this scenario needs to be true before the upgrade runs."""
+    scenario = cfg.scenario
+
+    if scenario in ("ui-online-adopt", "ui-import-adopt"):
+        # The customer case: a box that never had these features, whose
+        # operator now wants them. Flipping the flags is the whole setup —
+        # the upgrade engine is then expected to INSTALL them.
+        enabled = _enable_all_modules(ctx, cfg, root)
+        detail["enabled_for_adoption"] = enabled
+
+    elif scenario == "rollback":
+        # Occupy a port the module must bind, so `compose up` fails DURING its
+        # step — after the pin was written and the undo registered. That is the
+        # only way to reach the unwind: a missing image or a bad mount is
+        # caught by the preflight and refuses before touching anything, which
+        # tests refusal rather than rollback.
+        port = _first_published_port(root, "portainer")
+        detail["held_port"] = port
+        if port:
+            ctx.set(_port_holder=_hold_port(port))
+            ctx.check(f"port {port} was held to force a failure",
+                      ctx.get("_port_holder") is not None, actual=port)
+
+    elif scenario == "data-preservation":
+        appliance.canary_write()
+        detail["canary_seeded"] = appliance.canary_count()
+
+
+def _post_upgrade(ctx, cfg, root, detail, rc):
+    scenario = cfg.scenario
+
+    if scenario == "rollback":
+        holder = ctx.get("_port_holder")
+        if holder is not None:
+            holder.terminate()
+        # rc 1 is the correct answer here: a module failed and was unwound.
+        ctx.check("a failed module rolls the box back", rc == up.RC_ROLLED_BACK,
+                  expected="1 (rolled back)",
+                  actual=f"{rc} ({up.describe_rc(rc)})",
+                  note="the port was held so compose could not bind; the engine "
+                       "must unwind rather than leave the module half-applied")
+        text = "\n".join(detail.get("tail") or [])
+        ctx.check("the report says it rolled back, not that it needs repair",
+                  "ROLLBACK FAILED" not in text.upper(),
+                  actual="clean unwind" if "ROLLBACK FAILED" not in text.upper()
+                  else "ROLLBACK FAILED — the box needs manual repair")
+
+    elif scenario == "refuse-and-repeat":
+        # Two properties in one scenario because both are cheap and both are
+        # planner regressions: a downgrade must be refused before anything is
+        # touched, and re-running the same upgrade must change nothing.
+        before = appliance.version_facts(root)
+        older = cfg.downgrade_tag
+        detail["downgrade_tag"] = older
+        if older:
+            r = up.run_cli(shell, cfg, root, tag=older, tl=ctx.tl,
+                           pin_engine=True)
+            ctx.check("a downgrade is refused", r.rc == up.RC_REFUSED,
+                      expected="2 (refused before touching anything)",
+                      actual=f"{r.rc} ({up.describe_rc(r.rc)})")
+            after = appliance.version_facts(root)
+            ctx.check("the refusal changed nothing", after == before,
+                      actual="unchanged" if after == before else "state moved",
+                      note="'refused' has to mean the box is exactly as it was")
+
+        r2 = up.run_cli(shell, cfg, root, tag=cfg.upgrade_to, tl=ctx.tl,
+                        pin_engine=True)
+        ctx.check("re-running the same upgrade is clean", r2.rc == up.RC_CLEAN,
+                  expected="0", actual=f"{r2.rc} ({up.describe_rc(r2.rc)})",
+                  note="an upgrade that is not idempotent cannot safely be "
+                       "retried after an interruption")
+
+    elif scenario in ("ui-online-adopt", "ui-import-adopt"):
+        _assert_adopted(ctx, root, detail)
+
+
+def _assert_adopted(ctx, root, detail):
+    """Prove the newly enabled modules are genuinely installed, not just present.
+
+    Two of them are expected to fall short, and that is the finding rather than
+    a flaw in the test: bootstrap_iris_api_key, seed_volweb_admin and
+    seed_yara_rulesets are called only from the INSTALLER's orchestrator and
+    have no counterpart anywhere in lib/upgrade/. So IRIS and VolWeb come up,
+    pass their health probes, and the backend still cannot call their APIs.
+    Naming that explicitly is the point.
+    """
+    running = set(shell.run(["docker", "ps", "--format", "{{.Names}}"]).out.splitlines())
+    for module in detail.get("enabled_for_adoption") or []:
+        names = appliance.container_names_of(root, module)
+        if not names:
+            continue
+        ctx.check(f"adopt: {module} has containers running",
+                  any(n in running for n in names),
+                  actual=", ".join(n for n in names if n in running) or "none")
+
+    # The integration the upgrade path does not retrofit.
+    iris_key = shell.run(["docker", "exec", "intact_backend", "python3", "-c",
+                          "import sqlite3;c=sqlite3.connect('/app/data/intact.db');"
+                          "print(c.execute(\"select count(*) from secrets where key like '%iris%'\").fetchone()[0])"])
+    detail["iris_api_key_rows"] = (iris_key.out or "").strip()
+    ctx.check("adopt: the backend holds an IRIS api key",
+              (iris_key.out or "").strip() not in ("", "0"),
+              actual=(iris_key.out or "").strip() or "no answer",
+              note="bootstrap_iris_api_key runs only from the installer's "
+                   "orchestrator and has no counterpart in lib/upgrade/ — if "
+                   "this fails, that is the product gap, not the test")
+
+
+# --- helpers ---------------------------------------------------------------
+
+
+def _enable_all_modules(ctx, cfg, root):
+    """Turn every module on, in place, the way an operator would."""
+    path = os.path.join(root, "config.yaml")
+    r = shell.sudo(["python3", "-c",
+                    "import re,sys;p=sys.argv[1];s=open(p).read();"
+                    "s,n=re.subn(r'^(    enabled: )false$',r'\\1true',s,flags=re.M);"
+                    "open(p,'w').write(s);print(n)", path],
+                   cfg.sudo_password, timeout=60, tl=ctx.tl, stage="upgrade")
+    ctx.check("adopt: modules were enabled in config.yaml", r.ok,
+              actual=(r.out or "").strip()[-40:])
+    return appliance.enabled_modules(root)
+
+
+def _first_published_port(root, module):
+    """A host port the module publishes, read from its own compose file."""
+    compose = os.path.join(root, "modules", module, "docker-compose.yaml")
+    try:
+        text = open(compose, encoding="utf-8").read()
+    except OSError:
+        return None
+    m = re.search(r'^\s*-\s*"?(?:127\.0\.0\.1:)?(\d{2,5}):\d{2,5}"?\s*$',
+                  text, re.M)
+    return int(m.group(1)) if m else None
+
+
+def _hold_port(port):
+    """Bind a port so the module cannot, and hand back the holder to release."""
+    import subprocess
+    try:
+        return subprocess.Popen(
+            ["python3", "-c",
+             f"import socket,time;s=socket.socket();"
+             f"s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);"
+             f"s.bind(('0.0.0.0',{port}));s.listen(1);time.sleep(3600)"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:                                         # noqa: BLE001
+        return None

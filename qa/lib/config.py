@@ -60,6 +60,7 @@ ENV_OVERRIDES = {
     ("run", "upgrade_to"): "QA_UPGRADE_TO",
     ("run", "upgrade_package"): "QA_UPGRADE_PACKAGE",
     ("run", "upgrade_extra"): "QA_UPGRADE_EXTRA",
+    ("run", "downgrade_tag"): "QA_DOWNGRADE_TAG",
 }
 
 # Split in two because a Windows endpoint is a property of the PROFILE, not of
@@ -254,6 +255,14 @@ class QAConfig:
         a command that runs as root."""
         raw = (self.get("run", "upgrade_extra", default="") or "").strip()
         return raw.split() if raw else []
+
+    @property
+    def downgrade_tag(self):
+        """A published release older than the target, for the refusal check.
+
+        Real rather than synthetic: the engine compares actual pins, so a made-up
+        tag would be refused for the wrong reason."""
+        return (self.get("run", "downgrade_tag", default="") or "").strip()
 
     def timeout(self, stage, default=30):
         """Minutes to wait for a slow stage before calling it failed."""
