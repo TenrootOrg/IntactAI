@@ -1,19 +1,16 @@
-"""The workflow's scenario list and the harness must describe the same thing.
+"""The scenario catalogue is one list, and both sides must actually use it.
 
-Two files independently name the scenarios: the CATALOGUE inside
-.github/workflows/e2e.yml decides which jobs run, and _route_for() in
-qa/phases/upgrade.py decides which phases each one registers. Nothing at
-runtime checks they agree.
+qa/scenarios.py is now the single source of truth: the workflow's resolve job
+imports it, and qa/phases/upgrade.py asks it which route a scenario uses. That
+removes the drift class rather than guarding it — two copies of anything drift,
+and when the fusion allowlist and the Linux blueprint drifted exactly this way,
+nine artefacts were collected and silently discarded for weeks.
 
-If they drift, the failure is silent and expensive in exactly the way the
-fusion/blueprint drift was: a scenario whose name the harness does not
-recognise registers NO upgrade phases at all, so the job installs an appliance,
-asserts nothing about any upgrade, and reports a clean pass. A green run that
-tested nothing is worse than a red one.
-
-Dependency-free by the usual rule — the suite runs on a dev box, in CI and on a
-live appliance — so the catalogue is pulled out of the YAML by locating the
-embedded program rather than by parsing the workflow.
+What is still worth pinning: that neither side has quietly grown its own copy
+again, that every route named has an implementation, and that the push fallback
+matches the dispatch default — because a workflow_dispatch `default:` does not
+apply to a push, and when those two disagreed a run tested one scenario while
+the file advertised three.
 """
 
 import ast
@@ -27,117 +24,101 @@ PHASE = os.path.join(ROOT, "qa/phases/upgrade.py")
 
 
 def _catalogue():
-    """Every scenario row the workflow can dispatch."""
-    src = open(WORKFLOW, encoding="utf-8").read()
-    rows = []
-    for m in re.finditer(r'\{"scenario":\s*"([^"]+)"(.*?)\}', src, re.S):
-        name, body = m.group(1), m.group(2)
-        route = re.search(r'"upgrade_route":\s*"([^"]*)"', body)
-        modules = re.search(r'"modules":\s*"([^"]*)"', body)
-        rows.append({
-            "scenario": name,
-            "upgrade_route": route.group(1) if route else "",
-            "modules": modules.group(1) if modules else "",
-        })
-    return rows
+    """The rows the workflow can dispatch — straight from the shared module."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "qa_scenarios", os.path.join(ROOT, "qa/scenarios.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
-def _harness_routes():
-    """{scenario: route} from _route_for's return dict."""
-    tree = ast.parse(open(PHASE, encoding="utf-8").read())
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "_route_for":
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.Dict):
-                    return {k.value: v.value
-                            for k, v in zip(sub.keys, sub.values)
-                            if isinstance(k, ast.Constant)
-                            and isinstance(v, ast.Constant)}
-    return {}
-
-
-def _known_routes():
-    src = open(PHASE, encoding="utf-8").read()
-    m = re.search(r"UPGRADE_ROUTES\s*=\s*\{(.*?)\n\}", src, re.S)
-    return set(re.findall(r'"([a-z_]+)":', m.group(1))) if m else set()
+def _phase_src():
+    return open(PHASE, encoding="utf-8").read()
 
 
 class TestScenarioCatalogue(unittest.TestCase):
 
     def setUp(self):
-        self.catalogue = _catalogue()
-        self.routes = _harness_routes()
-        self.known = _known_routes()
-        # A parser that silently returns nothing would make every assertion
-        # below trivially true.
-        self.assertTrue(self.catalogue, "no scenarios parsed from the workflow")
-        self.assertTrue(self.routes, "_route_for did not parse")
-        self.assertTrue(self.known, "UPGRADE_ROUTES did not parse")
+        self.mod = _catalogue()
+        self.assertTrue(self.mod.SCENARIOS, "the catalogue is empty")
 
-    def test_every_upgrade_scenario_is_known_to_the_harness(self):
-        """A scenario the harness does not recognise registers no upgrade
-        phases, installs an appliance, asserts nothing, and passes."""
-        missing = sorted(
-            r["scenario"] for r in self.catalogue
-            if r["upgrade_route"] and r["scenario"] not in self.routes)
-        self.assertFalse(
-            missing,
-            "the workflow dispatches these but _route_for does not know them, "
-            "so they would silently test nothing: " + ", ".join(missing))
+    def test_the_workflow_imports_the_shared_catalogue(self):
+        """Not its own copy. A second list is how the last drift happened."""
+        src = open(WORKFLOW, encoding="utf-8").read()
+        self.assertIn("import scenarios as S", src,
+                      "the workflow must import qa/scenarios.py rather than "
+                      "carrying its own scenario list")
+        self.assertNotIn('CATALOGUE = [', src,
+                         "the workflow has grown its own catalogue again")
 
-    def test_the_two_files_agree_on_which_route_each_scenario_uses(self):
-        wrong = []
-        for row in self.catalogue:
-            want = row["upgrade_route"]
-            if not want:
-                continue
-            got = self.routes.get(row["scenario"])
-            if got != want:
-                wrong.append(f"{row['scenario']}: workflow={want} harness={got}")
-        self.assertFalse(wrong, "; ".join(wrong))
+    def test_the_harness_asks_the_catalogue_for_routes(self):
+        src = _phase_src()
+        self.assertIn("scenarios.route_for(scenario)", src,
+                      "the harness must ask the shared catalogue, not keep a "
+                      "second route map")
 
-    def test_install_only_scenarios_register_no_upgrade_route(self):
-        """The inverse mistake: an install-only scenario that the harness
-        thinks upgrades would try to upgrade to nothing."""
-        wrong = [r["scenario"] for r in self.catalogue
-                 if not r["upgrade_route"] and r["scenario"] in self.routes]
-        self.assertFalse(
-            wrong, "install-only scenario(s) mapped to an upgrade route: "
-                   + ", ".join(wrong))
+    def test_every_route_named_is_implemented(self):
+        unknown = sorted({s.get("route") for s in self.mod.SCENARIOS if s.get("route")}
+                         - set(self.mod.ROUTES))
+        self.assertFalse(unknown,
+                         "route(s) with no description/implementation: "
+                         + ", ".join(unknown))
+
+    def test_every_module_set_is_one_the_workflow_can_apply(self):
+        bad = sorted({s["modules"] for s in self.mod.SCENARIOS}
+                     - set(self.mod.MODULE_SETS))
+        self.assertFalse(bad, "unhandled module set(s): " + ", ".join(bad))
+
+    def test_every_role_used_is_resolvable(self):
+        """A typo'd role would silently resolve to an empty tag, and the
+        scenario would install the branch instead of the old box it names."""
+        used = set()
+        for spec in self.mod.SCENARIOS:
+            for key in ("install_from", "hop_via", "downgrade_from"):
+                if spec.get(key):
+                    used.add(spec[key])
+        unknown = sorted(used - set(self.mod.ROLES))
+        self.assertFalse(unknown, "unknown version role(s): " + ", ".join(unknown))
+
+    def test_resolve_fills_every_field_the_matrix_needs(self):
+        rows = self.mod.resolve([s["name"] for s in self.mod.SCENARIOS],
+                                previous_tag="intact-19700101")
+        needed = {"scenario", "install_from", "install_mode", "modules",
+                  "upgrade_route", "upgrade_extra", "hop_via", "downgrade_tag"}
+        for row in rows:
+            missing = needed - set(row)
+            self.assertFalse(missing,
+                             f"{row.get('scenario')} is missing {missing}")
 
     def test_the_push_fallback_matches_the_dispatch_default(self):
         """A workflow_dispatch `default:` does not apply to a push.
 
-        The push trigger carries no inputs at all, so the `||` fallback is what
-        actually decides which scenarios run. When the two disagreed, a push ran
-        ONE scenario while the file said three -- and a matrix that quietly
-        shrinks reads as a pass.
+        The push trigger carries no inputs at all, so the `||` fallback decides.
+        When the two disagreed, a push ran ONE scenario while the file said
+        three -- and a matrix that quietly shrinks reads as a pass.
         """
         src = open(WORKFLOW, encoding="utf-8").read()
-        default = re.search(
-            r"scenarios:(?:.|\n)*?default:\s*'([^']*)'", src)
+        default = re.search(r"scenarios:(?:.|\n)*?default:\s*'([^']*)'", src)
         fallback = re.search(
             r"WANTED:\s*\$\{\{\s*github\.event\.inputs\.scenarios\s*\|\|\s*'([^']*)'",
             src)
         self.assertTrue(default, "could not find the scenarios input default")
         self.assertTrue(fallback, "could not find the push fallback")
-        self.assertEqual(
-            default.group(1), fallback.group(1),
-            "the dispatch default and the push fallback disagree, so a push "
-            "runs a different set of scenarios than the file advertises")
+        self.assertEqual(default.group(1), fallback.group(1),
+                         "the dispatch default and the push fallback disagree")
 
-    def test_every_route_named_is_implemented(self):
-        unknown = sorted(set(self.routes.values()) - self.known)
-        self.assertFalse(unknown,
-                         "route(s) with no implementation: " + ", ".join(unknown))
-
-    def test_the_module_sets_are_ones_the_workflow_can_apply(self):
-        """`all` and `backend-only` are transformed; `shipped` deliberately
-        means "leave config.yaml as the release ships it". Anything else would
-        be silently ignored and the box would not be what the scenario says."""
-        allowed = {"all", "backend-only", "shipped", ""}
-        bad = sorted({r["modules"] for r in self.catalogue} - allowed)
-        self.assertFalse(bad, "unhandled module set(s): " + ", ".join(bad))
+    def test_the_narrowed_default_is_marked_temporary(self):
+        """A subset that loses its marker becomes a permanent gap nobody
+        remembers choosing."""
+        src = open(WORKFLOW, encoding="utf-8").read()
+        default = re.search(r"scenarios:(?:.|\n)*?default:\s*'([^']*)'", src)
+        names = {n.strip() for n in default.group(1).split(",") if n.strip()}
+        if names != {s["name"] for s in self.mod.SCENARIOS}:
+            self.assertRegex(
+                src, r"TEMPORARY \(\d{4}-\d{2}-\d{2}\)",
+                "the scenario default is a subset but carries no TEMPORARY "
+                "marker saying so")
 
 
 if __name__ == "__main__":

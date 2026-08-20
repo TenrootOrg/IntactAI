@@ -241,26 +241,16 @@ def _optional_modules(ctx, cfg):
 
 
 def _route_for(scenario):
-    return {
-        "bootstrap":       "bootstrap",
-        "cli-upgrade":     "cli",
-        "ui-online-full":  "ui_online",
-        "ui-online-adopt": "ui_online",
-        "ui-import-full":  "ui_import",
-        "ui-import-adopt": "ui_import",
-        "rollback":        "cli",
-        "refuse-and-repeat": "cli",
-        "data-preservation": "cli",
-    }.get(scenario)
+    """One source of truth, shared with the workflow.
 
-
-# --- scenario-specific behaviour -------------------------------------------
-#
-# Scenarios whose whole point is a non-zero exit. For these the generic
-# "exited cleanly" assertion would be exactly backwards, so they assert their
-# own outcome instead.
-_SELF_ASSERTING = {"rollback", "refuse-and-repeat"}
-
+    This used to be a second copy of the scenario list. Two copies of anything
+    drift, and when they do here the failure is silent in the worst way: a
+    scenario the harness does not recognise registers no upgrade phases at all,
+    so the job installs an appliance, asserts nothing about any upgrade, and
+    reports a clean pass.
+    """
+    import scenarios
+    return scenarios.route_for(scenario)
 
 def _pre_upgrade(ctx, cfg, root, detail):
     """Whatever this scenario needs to be true before the upgrade runs."""

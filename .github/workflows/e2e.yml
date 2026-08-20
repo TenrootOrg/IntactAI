@@ -256,96 +256,45 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json, os
-
-          # One row per scenario. `install_from` is a git ref whose tree becomes
-          # the appliance; the branch under test always supplies the ENGINE, so
-          # an upgrade scenario installs an old box and upgrades it with new code.
-          CATALOGUE = [
-            {"scenario": "install-online",  "install_from": "",
-             "install_mode": "online",  "modules": "all", "upgrade_route": ""},
-            {"scenario": "install-package", "install_from": "",
-             "install_mode": "package", "modules": "all", "upgrade_route": ""},
-            # Re-applies the SAME tag with --reinstall. That needs no old box,
-            # and still exercises everything the documented operator path has:
-            # the engine pin, --only, --reinstall, and the whole module loop.
-            {"scenario": "cli-upgrade",     "install_from": "",
-             "install_mode": "online",  "modules": "all", "upgrade_route": "cli",
-             "upgrade_extra": "--only portainer --reinstall portainer"},
-
-            # --- upgrade routes, oldest box first ---------------------------
-            # 0615 and 0726 install from REGISTRIES and need no release assets;
-            # they predate the "images only from a package" cutover. 0811 is
-            # deliberately absent: its VERSION names a release that was never
-            # published and its only asset is intact-only, so it cannot be
-            # installed at all.
-            {"scenario": "bootstrap", "install_from": "intact-20260615",
-             "install_mode": "online", "modules": "all",
-             "upgrade_route": "bootstrap", "upgrade_extra": ""},
-
-            # The adopt cases: a box that never had these features, whose
-            # operator now wants them. Expected to expose that
-            # bootstrap_iris_api_key and seed_volweb_admin have no upgrade
-            # counterpart -- the finding, not a flaw in the test.
-            {"scenario": "ui-online-adopt", "install_from": "",
-             "install_mode": "online", "modules": "backend-only",
-             "upgrade_route": "ui_online", "upgrade_extra": ""},
-            {"scenario": "ui-import-adopt", "install_from": "",
-             "install_mode": "online", "modules": "backend-only",
-             "upgrade_route": "ui_import", "upgrade_extra": ""},
-
-            {"scenario": "ui-online-full", "install_from": "intact-20260726",
-             "install_mode": "online", "modules": "shipped",
-             "upgrade_route": "ui_online", "upgrade_extra": "",
-             # 0726 -> 0811 -> 0818. The middle hop exists because the ENGINE
-             # changes: a 0726 box ships no scripts/upgrade.sh and no bootstrap
-             # at all, so its own in-backend engine must first pull itself onto
-             # the new one. Quick, because the 0811 asset is intact-only.
-             "hop_via": "intact-20260811"},
-            {"scenario": "ui-import-full", "install_from": "intact-20260726",
-             "install_mode": "online", "modules": "shipped",
-             "upgrade_route": "ui_import", "upgrade_extra": "",
-             # 0726 -> 0811 -> 0818. The middle hop exists because the ENGINE
-             # changes: a 0726 box ships no scripts/upgrade.sh and no bootstrap
-             # at all, so its own in-backend engine must first pull itself onto
-             # the new one. Quick, because the 0811 asset is intact-only.
-             "hop_via": "intact-20260811"},
-
-            # A failure that must unwind rather than strand the box. The only
-            # path that exercises _unpin_module_version.
-            {"scenario": "rollback", "install_from": "",
-             "install_mode": "online", "modules": "all",
-             "upgrade_route": "cli", "upgrade_extra": "--only portainer --reinstall portainer"},
-
-            {"scenario": "data-preservation", "install_from": "",
-             "install_mode": "online", "modules": "all",
-             "upgrade_route": "cli", "upgrade_extra": "--reinstall iris"},
-
-            # A published release OLDER than the target, so the engine has a
-            # real downgrade to refuse rather than a synthetic one.
-            {"scenario": "refuse-and-repeat", "install_from": "",
-             "install_mode": "online", "modules": "all",
-             "upgrade_route": "cli", "upgrade_extra": "--only portainer --reinstall portainer",
-             "downgrade_tag": "intact-20260726"},
-          ]
-          known = {r["scenario"] for r in CATALOGUE}
+          import json, os, subprocess, sys
+          sys.path.insert(0, "qa")
+          import scenarios as S
+          
+          # PREVIOUS is resolved from the live release list, so nothing here needs an
+          # edit when a release is cut. The other roles are pins about code history --
+          # which release still installs from registries, which first carried an
+          # on-disk engine -- and those are facts, not dates.
+          target = os.environ.get("IMAGES_TAG") or ""
+          previous = ""
+          try:
+              out = subprocess.run(["gh", "release", "list", "--limit", "30",
+                                    "--json", "tagName"], capture_output=True,
+                                   text=True, timeout=60).stdout
+              tags = [t["tagName"] for t in json.loads(out or "[]")
+                      if t["tagName"].startswith("intact-")]
+              tags.sort(reverse=True)
+              older = [t for t in tags if not target or t < target]
+              previous = older[0] if older else ""
+          except Exception as exc:
+              print(f"::warning::could not resolve PREVIOUS: {exc}", file=sys.stderr)
+          
           wanted = (os.environ.get("WANTED") or "").strip()
-
           if wanted in ("", "all"):
-              rows = CATALOGUE
+              names = [x["name"] for x in S.SCENARIOS]
           else:
               names = [w.strip() for w in wanted.split(",") if w.strip()]
-              unknown = [n for n in names if n not in known]
+              unknown = [n for n in names if n not in S.BY_NAME]
               if unknown:
-                  # Fail here rather than silently running fewer scenarios than
-                  # asked for -- a matrix that quietly shrinks reads as a pass.
+                  # Fail rather than silently run fewer scenarios than asked for -- a
+                  # matrix that quietly shrinks reads exactly like one that passed.
                   raise SystemExit(
                       f"::error::unknown scenario(s): {', '.join(unknown)}. "
-                      f"Known: {', '.join(sorted(known))}")
-              rows = [r for r in CATALOGUE if r["scenario"] in names]
-
+                      f"Known: {', '.join(sorted(S.BY_NAME))}")
+          
+          rows = S.resolve(names, previous_tag=previous)
           print("matrix=" + json.dumps({"include": rows}))
           print("count=%d" % len(rows))
+          print(f"::notice::PREVIOUS resolved to {previous or '(none)'}", file=sys.stderr)
           PY
           echo "::notice::running $(grep -oP 'count=\K\d+' "$GITHUB_OUTPUT" | tail -1) scenario(s)"
 
