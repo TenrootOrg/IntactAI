@@ -362,11 +362,21 @@ def register(runner, cfg):
         container matched. Every run to date tested the RELEASE's backend.
 
         The correction is right for a real install and must not be weakened.
-        What this does instead is what an operator would do afterwards: set
-        the pin, and let the box converge onto it. That is a supported
-        operation, not a hack -- app.py runs self_heal_backend_swap() on every
-        boot precisely to make the running container agree with
-        config.yaml versions.backend.
+        What this does instead is what an operator would do afterwards: point
+        the pin at the image they want and recreate the container.
+
+        Both files, because they have different jobs. modules/backend/.env is
+        what compose actually reads -- the service is
+        `image: intact-backend:${BACKEND_VERSION:?...}` -- so nothing changes
+        without it. config.yaml is the source update_env_files rewrites .env
+        FROM, so leaving it stale would have the next install or upgrade undo
+        this silently.
+
+        (An earlier draft of this said the box converges by itself because
+        app.py calls self_heal_backend_swap() on every boot. That claim comes
+        from a comment in lib/config.sh and is not true of this codebase: no
+        such function exists anywhere in it. The recreate below is explicit
+        for that reason.)
 
         Skips cleanly when the run is deliberately testing the published
         artifact (backend_image=release), and is a no-op when the built image
