@@ -289,6 +289,26 @@ def register(runner, cfg):
         # The marker check above CANNOT catch this: the file it looks for is
         # the very one that caused the short-circuit, so it passes. Only the log
         # text distinguishes "installed successfully" from "declined to install".
+        # AN IMAGE THAT WAS LOADED AND THEN WASN'T THERE. Docker's "No such
+        # image" is a generic message and reads as a packaging gap -- a missing
+        # asset, a bad tag. It is a very different fault when the installer
+        # logged that exact image as successfully loaded minutes earlier:
+        # something on the box deleted it mid-install. That happened for real
+        # (app.py's disabled-module prune reclaiming the platform's own nginx,
+        # because timesketch ships an nginx too) and cost an hour to identify
+        # from logs that never put the two lines side by side.
+        loaded = set(re.findall(r"—\s+(\S+:\S+)\s+\(\d", r.out or ""))
+        missing = set(re.findall(r"No such image:\s+(\S+)", r.out or ""))
+        vanished = sorted(loaded & missing)
+        detail_vanished = vanished
+        ctx.check("every image the installer loaded was still there when used",
+                  not vanished,
+                  expected="nothing deletes an image mid-install",
+                  actual=", ".join(vanished) or "none missing",
+                  note="these were logged as loaded and were gone by the time "
+                       "a module needed them — a deletion on the box, not a "
+                       "packaging gap")
+
         ctx.check("install did not short-circuit on the initialization marker",
                   "Installation cancelled by user" not in (r.out or ""),
                   note="/etc/intact-initialized existed and the confirm prompt "
@@ -321,7 +341,7 @@ def register(runner, cfg):
                   actual=", ".join(unhealthy[:8]) or "all healthy")
 
         return {"containers": len(names), "unhealthy": unhealthy,
-                "install_rc": r.rc}
+                "install_rc": r.rc, "images_vanished": detail_vanished}
 
     # ---------------------------------------------------------------- 0b --
     # ------------------------------------------------------------------ C.5 --

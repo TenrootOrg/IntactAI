@@ -727,6 +727,56 @@ class TestNoHardCodedApplianceePath(unittest.TestCase):
 
 
 
+class TestVanishedImageDetection(unittest.TestCase):
+    """An image logged as loaded, then reported missing, is a deletion.
+
+    Docker's "No such image" reads as a packaging gap -- a missing asset, a bad
+    tag. It means something entirely different when the installer logged that
+    exact image as successfully loaded minutes earlier: something ON THE BOX
+    deleted it mid-install. That happened for real, and it cost an hour to
+    identify because no log put the two lines next to each other.
+
+    The regexes are lifted from platform.py and exercised against real captured
+    output, so a well-meaning tidy-up of either pattern fails here rather than
+    silently reporting "none missing" forever.
+    """
+
+    SAMPLE = (
+        "[SUCCESS]   [2/23] Intact.AI platform — "
+        "intact-backend:intact-20260818 (1.2G, 21s)\n"
+        "[SUCCESS]   [3/23] Intact.AI platform — nginx:1.31.3-alpine (61M, 1s)\n"
+        "[SUCCESS]   [18/23] Intact.AI platform — tusproject/tusd:v2.10.0 (76M, 1s)\n"
+        " Container intact_nginx  Error response from daemon: "
+        "No such image: nginx:1.31.3-alpine\n")
+
+    def _patterns(self):
+        src = _read("phases", "platform.py")
+        loaded = re.search(r'loaded = set\(re\.findall\(r"(.+?)", r\.out', src)
+        missing = re.search(r'missing = set\(re\.findall\(r"(.+?)", r\.out', src)
+        self.assertTrue(loaded and missing,
+                        "the vanished-image check is gone from the install phase")
+        return loaded.group(1), missing.group(1)
+
+    def test_the_patterns_find_the_real_case(self):
+        lp, mp = self._patterns()
+        loaded = set(re.findall(lp, self.SAMPLE))
+        missing = set(re.findall(mp, self.SAMPLE))
+        self.assertIn("nginx:1.31.3-alpine", loaded, "load lines no longer parse")
+        self.assertIn("nginx:1.31.3-alpine", missing, "error lines no longer parse")
+        self.assertEqual(sorted(loaded & missing), ["nginx:1.31.3-alpine"])
+
+    def test_a_clean_install_reports_nothing(self):
+        """No false positives: an install with no missing image must intersect
+        to the empty set, or the check cries wolf on every green run."""
+        lp, mp = self._patterns()
+        clean = "\n".join(l for l in self.SAMPLE.splitlines()
+                          if "No such image" not in l)
+        loaded = set(re.findall(lp, clean))
+        missing = set(re.findall(mp, clean))
+        self.assertTrue(loaded)
+        self.assertEqual(loaded & missing, set())
+
+
 class TestNoDeadOptionalFlag(unittest.TestCase):
     """`optional` was stored and never read, and must not come back.
 
