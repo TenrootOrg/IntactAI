@@ -128,13 +128,15 @@ def _shell_route(ctx, cfg, root, route, log_path, detail):
         # A tag AND a package is legitimate: the tag names the engine, the
         # package supplies the images. Air-gapped runs pass only the package.
         r = up.run_bootstrap(shell, cfg, root, tag=None if pkg else tag,
-                             package=pkg, tl=ctx.tl, log_path=log_path)
+                             package=pkg, extra=cfg.upgrade_extra,
+                             tl=ctx.tl, log_path=log_path)
     else:
         # pin_engine so this genuinely tests THIS checkout's engine rather than
         # hopping to the bootstrap. It also disables the flock, which is safe
         # here only because a scenario owns its whole machine.
         r = up.run_cli(shell, cfg, root, tag=None if pkg else tag, package=pkg,
-                       tl=ctx.tl, log_path=log_path, pin_engine=True)
+                       extra=cfg.upgrade_extra, tl=ctx.tl, log_path=log_path,
+                       pin_engine=True)
 
     detail["argv"] = " ".join(r.argv[:6]) + " …"
     # Two refusals happen before the log file exists and can only reach stderr,

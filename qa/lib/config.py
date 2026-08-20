@@ -59,6 +59,7 @@ ENV_OVERRIDES = {
     ("run", "scenario"): "QA_SCENARIO",
     ("run", "upgrade_to"): "QA_UPGRADE_TO",
     ("run", "upgrade_package"): "QA_UPGRADE_PACKAGE",
+    ("run", "upgrade_extra"): "QA_UPGRADE_EXTRA",
 }
 
 # Split in two because a Windows endpoint is a property of the PROFILE, not of
@@ -243,6 +244,16 @@ class QAConfig:
     def upgrade_package(self):
         """A package on disk to upgrade FROM, for the air-gapped routes."""
         return (self.get("run", "upgrade_package", default="") or "").strip()
+
+    @property
+    def upgrade_extra(self):
+        """Extra CLI flags for the upgrade, as a shell-ish string.
+
+        Split on whitespace, not through a shell: these reach the engine as
+        argv, and a scenario table is not a place to allow shell injection into
+        a command that runs as root."""
+        raw = (self.get("run", "upgrade_extra", default="") or "").strip()
+        return raw.split() if raw else []
 
     def timeout(self, stage, default=30):
         """Minutes to wait for a slow stage before calling it failed."""

@@ -75,6 +75,10 @@ on:
         description: "true to run the windows-latest evidence job (real .evtx, and memory if the driver loads)"
         required: false
         default: 'true'
+      scenarios:
+        description: "Comma-separated scenarios, or 'all'. e.g. install-online,install-package,cli-upgrade"
+        required: false
+        default: 'install-online'
 
 # Read-only. This workflow downloads release assets and reads the repo; it
 # publishes nothing and must never be able to.
@@ -86,6 +90,8 @@ concurrency:
   # half-installed appliance and a half-written report, which is worse than
   # waiting.
   group: e2e-${{ github.event.inputs.ref || github.ref_name }}
+  # Per REF, not per scenario: the matrix jobs are on separate VMs and
+  # must run concurrently. Two dispatches of the same ref still queue.
   cancel-in-progress: false
 
 jobs:
@@ -186,8 +192,69 @@ jobs:
           compression-level: 0     # the zip is already compressed, the image is huge
           if-no-files-found: warn
 
+  # ------------------------------------------------------------------------
+  # Which scenarios to run. Emitted as a matrix so each one gets its OWN VM:
+  # container names, volumes and published ports are global, so two appliances
+  # cannot share a machine. That isolation is also what makes "keep checking the
+  # rest when one fails" free -- the jobs are independent by construction.
+  resolve-scenarios:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+      count:  ${{ steps.pick.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: '${{ github.event.inputs.ref || github.ref_name }}', fetch-depth: 1 }
+      - id: pick
+        env:
+          WANTED: ${{ github.event.inputs.scenarios || 'install-online' }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+
+          # One row per scenario. `install_from` is a git ref whose tree becomes
+          # the appliance; the branch under test always supplies the ENGINE, so
+          # an upgrade scenario installs an old box and upgrades it with new code.
+          CATALOGUE = [
+            {"scenario": "install-online",  "install_from": "",
+             "install_mode": "online",  "modules": "all", "upgrade_route": ""},
+            {"scenario": "install-package", "install_from": "",
+             "install_mode": "package", "modules": "all", "upgrade_route": ""},
+            # Re-applies the SAME tag with --reinstall. That needs no old box,
+            # and still exercises everything the documented operator path has:
+            # the engine pin, --only, --reinstall, and the whole module loop.
+            {"scenario": "cli-upgrade",     "install_from": "",
+             "install_mode": "online",  "modules": "all", "upgrade_route": "cli",
+             "upgrade_extra": "--only portainer --reinstall portainer"},
+          ]
+          known = {r["scenario"] for r in CATALOGUE}
+          wanted = (os.environ.get("WANTED") or "").strip()
+
+          if wanted in ("", "all"):
+              rows = CATALOGUE
+          else:
+              names = [w.strip() for w in wanted.split(",") if w.strip()]
+              unknown = [n for n in names if n not in known]
+              if unknown:
+                  # Fail here rather than silently running fewer scenarios than
+                  # asked for -- a matrix that quietly shrinks reads as a pass.
+                  raise SystemExit(
+                      f"::error::unknown scenario(s): {', '.join(unknown)}. "
+                      f"Known: {', '.join(sorted(known))}")
+              rows = [r for r in CATALOGUE if r["scenario"] in names]
+
+          print("matrix=" + json.dumps({"include": rows}))
+          print("count=%d" % len(rows))
+          PY
+          echo "::notice::running $(grep -oP 'count=\K\d+' "$GITHUB_OUTPUT" | tail -1) scenario(s)"
+
   e2e:
-    needs: [windows-evidence]
+    needs: [windows-evidence, resolve-scenarios]
+    strategy:
+      # The requirement, in one line: a scenario failing must not stop the rest.
+      fail-fast: false
+      matrix: ${{ fromJson(needs.resolve-scenarios.outputs.matrix) }}
     # Runs even if the Windows job failed entirely: the Linux pipelines are the
     # bulk of the value and must not be held hostage to a runner that would not
     # load a driver.
@@ -195,10 +262,12 @@ jobs:
     runs-on: ${{ github.event.inputs.runner || 'ubuntu-latest' }}
     # GitHub's hosted ceiling is 360; leave room for the summary and artifact
     # steps to run after a timed-out install rather than losing the evidence.
+    name: ${{ matrix.scenario }}
     timeout-minutes: 330
 
     env:
       APPLIANCE: /mnt/intact
+      SCENARIO: ${{ matrix.scenario }}
       GH_TOKEN: ${{ github.token }}
       GITHUB_TOKEN: ${{ github.token }}
 
@@ -207,7 +276,7 @@ jobs:
       - name: Validate the inputs
         env:
           BUILD_IMAGES: ${{ github.event.inputs.build_images || 'backend' }}
-          MODULE_SET: ${{ github.event.inputs.module_set || 'all' }}
+          MODULE_SET: ${{ matrix.modules || github.event.inputs.module_set || 'all' }}
           VERSION_OVERRIDE: ${{ github.event.inputs.version_override || '' }}
           TIMEOUT_MIN: ${{ github.event.inputs.install_timeout_min || '90' }}
         run: |
@@ -338,10 +407,37 @@ jobs:
           echo "::notice::built intact-backend:${TAG} from $(git rev-parse --short HEAD)"
 
       # ------------------------------------------------------------------ 4 --
+      - name: Download the release package
+        id: pkg
+        if: ${{ matrix.install_mode == 'package' }}
+        env:
+          TAG: ${{ steps.images.outputs.tag }}
+        run: |
+          set -euo pipefail
+          DIR="${RUNNER_TEMP}/pkg"
+          mkdir -p "$DIR"
+          # Per-module assets, not the wrapper: install.sh --package takes a
+          # DIRECTORY of them, and the system bundle must stay out of it --
+          # _is_system_bundle_tar_name routes that one to the host-deps path,
+          # and letting it into the package set would have the installer try to
+          # apt-install a Docker over the runner's.
+          gh release download "$TAG" -D "$DIR" \
+             --pattern '*.tar.gz' --pattern '*.tar' \
+             --pattern '*.index.json' --pattern '*.manifest.json' || true
+          rm -f "$DIR"/*system-bundle* || true
+          ls -lh "$DIR" | head -20
+          COUNT=$(find "$DIR" -maxdepth 1 -name '*.tar*' | wc -l)
+          if [ "$COUNT" -lt 2 ]; then
+            echo "::error title=No package to install from::$TAG yielded $COUNT asset(s). An air-gapped install needs the per-module assets."
+            exit 1
+          fi
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          echo "::notice::air-gap install from $COUNT asset(s)"
+
       - name: Stage and configure the appliance
         id: host
         env:
-          MODULE_SET: ${{ github.event.inputs.module_set || 'all' }}
+          MODULE_SET: ${{ matrix.modules || github.event.inputs.module_set || 'all' }}
           BACKEND_TAG: ${{ steps.build.outputs.backend_tag }}
         run: |
           set -euo pipefail
@@ -430,6 +526,10 @@ jobs:
           QA_FEATURE_SWEEP: '1'
           QA_PIPELINES: '1'
           QA_WINDOWS_EVIDENCE: ${{ runner.temp }}/windows-evidence
+          QA_SCENARIO: ${{ matrix.scenario }}
+          QA_INSTALL_PACKAGE_DIR: ${{ steps.pkg.outputs.dir || '' }}
+          QA_UPGRADE_EXTRA: ${{ matrix.upgrade_extra || '' }}
+          QA_UPGRADE_TO: ${{ matrix.upgrade_route && steps.images.outputs.tag || '' }}
           QA_RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
           QA_REF: ${{ github.event.inputs.ref || github.ref_name }}
           QA_IMAGES_TAG: ${{ steps.images.outputs.tag }}
@@ -504,7 +604,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-${{ github.event.inputs.ref || github.ref_name }}-${{ github.run_id }}
+          name: e2e-${{ matrix.scenario }}-${{ github.run_id }}
           path: _artifacts
           retention-days: 7
           if-no-files-found: warn
@@ -592,5 +692,93 @@ jobs:
           c = json.load(open(sys.argv[1])).get("counts", {})
           bad = int(c.get("fail", 0)) + int(c.get("error", 0))
           print(f"counts: {c}")
+          sys.exit(1 if bad else 0)
+          PY
+
+  # --------------------------------------------------------------------------
+  # One place that shows every scenario's verdict.
+  #
+  # `always()` because this job exists precisely for the runs where scenarios
+  # failed -- a summary that only appears when everything passed is a summary
+  # nobody needs. It reads each scenario's results.json rather than its exit
+  # status, so "3 of 11 checks failed" is visible without opening a job.
+  aggregate:
+    needs: [e2e]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: e2e-*
+          path: reports
+
+      - name: Render the scenario table
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import glob, json, os
+
+          rows, missing = [], []
+          for path in sorted(glob.glob("reports/*/results.json")):
+              scenario = os.path.basename(os.path.dirname(path)).replace("e2e-", "", 1)
+              scenario = scenario.rsplit("-", 1)[0]      # strip the run id
+              try:
+                  data = json.load(open(path))
+              except Exception as exc:
+                  missing.append((scenario, f"unreadable results.json: {exc}"))
+                  continue
+              c = data.get("counts") or {}
+              failed = [p.get("phase") for p in data.get("phases", [])
+                        if p.get("status") in ("fail", "error")]
+              rows.append((scenario, c, failed))
+
+          # A scenario whose artifact never arrived is NOT a pass. Say so.
+          for d in sorted(glob.glob("reports/*")):
+              scenario = os.path.basename(d).replace("e2e-", "", 1).rsplit("-", 1)[0]
+              if not os.path.exists(os.path.join(d, "results.json")) and \
+                 scenario not in [r[0] for r in rows]:
+                  missing.append((scenario, "no results.json — the run did not reach its report"))
+
+          print("## Scenario results\n")
+          if not rows and not missing:
+              print("No scenario reports were produced at all.\n")
+          else:
+              print("| scenario | verdict | passed | failed | errored | skipped | failing phases |")
+              print("|---|---|---|---|---|---|---|")
+              for scenario, c, failed in rows:
+                  bad = int(c.get("fail", 0)) + int(c.get("error", 0))
+                  verdict = "**PASS**" if not bad else "**FAIL**"
+                  print(f"| `{scenario}` | {verdict} | {c.get('pass',0)} | "
+                        f"{c.get('fail',0)} | {c.get('error',0)} | {c.get('skip',0)} | "
+                        f"{', '.join(failed) or '—'} |")
+              for scenario, why in missing:
+                  print(f"| `{scenario}` | **NO REPORT** | — | — | — | — | {why} |")
+              print()
+
+          total_bad = sum(int(c.get("fail",0)) + int(c.get("error",0)) for _, c, _ in rows)
+          print(f"{len(rows)} scenario(s) reported, {len(missing)} without a report, "
+                f"{total_bad} failing phase(s) in total.\n")
+          PY
+
+      - name: Verdict across all scenarios
+        run: |
+          set -euo pipefail
+          # Deliberately independent of the matrix jobs' own conclusions: a
+          # scenario can exit non-zero for an infrastructure reason, and a
+          # scenario can exit zero having produced no report at all. The reports
+          # are the evidence.
+          python3 - <<'PY'
+          import glob, json, sys
+          bad = 0
+          seen = 0
+          for path in glob.glob("reports/*/results.json"):
+              seen += 1
+              c = (json.load(open(path)).get("counts") or {})
+              bad += int(c.get("fail", 0)) + int(c.get("error", 0))
+          if seen == 0:
+              print("::error::no scenario produced a results.json")
+              sys.exit(1)
+          print(f"{seen} scenario report(s), {bad} failing phase(s)")
           sys.exit(1 if bad else 0)
           PY
