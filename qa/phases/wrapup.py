@@ -19,8 +19,7 @@ def register(runner, cfg):
     tl = runner.ctx.tl
 
     # ----------------------------------------------------------------- E --
-    @runner.phase("collect", "Gather every log the run touched", optional=True,
-                  always=True)
+    @runner.phase("collect", "Gather every log the run touched", always=True)
     def collect(ctx):
         """Runs regardless of what failed — a failed run is exactly when the
         logs matter. Everything is redacted on the way in: container logs carry
@@ -109,8 +108,7 @@ def register(runner, cfg):
         return detail
 
     # --------------------------------------------------------------- F.2 --
-    @runner.phase("revoke", "Confirm the dashboard account is as configured",
-                  optional=True)
+    @runner.phase("revoke", "Confirm the dashboard account is as configured",)
     def revoke(ctx):
         """Leaves qa/123123 in place. Deliberately.
 
@@ -177,7 +175,7 @@ def register(runner, cfg):
 
     # ----------------------------------------------------------------- G --
     @runner.phase("report", "Redaction self-test, then write the report",
-                  optional=True, always=True)
+                  always=True)
     def report(ctx):
         """The redaction canary runs HERE, before the report is composed. A
         redactor nobody tests is a redactor that does not work, and the failure

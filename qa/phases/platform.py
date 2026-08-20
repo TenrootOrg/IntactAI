@@ -402,7 +402,7 @@ def register(runner, cfg):
 
     # ---------------------------------------------------------------- 0c --
     @runner.phase("cloud", "Cloud detection content (AWS SIGMA / Azure o365rc)",
-                  needs=("install",), optional=True)
+                  needs=("install",))
     def cloud(ctx):
         """WRITTEN BUT NOT RUN by default -- see cfg.cloud_tests.
 

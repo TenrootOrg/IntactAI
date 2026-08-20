@@ -183,7 +183,7 @@ def register(runner, cfg):
 
     # ----------------------------------------------------------------- F --
     @runner.phase("teardown", "Remove the client and everything the QA left",
-                  needs=("enrol",), optional=True)
+                  needs=("enrol",))
     def teardown(ctx):
         """Runs after log collection so nothing needed for the report is
         destroyed first, and before the report so teardown problems appear in

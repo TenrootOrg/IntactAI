@@ -150,7 +150,7 @@ def register(runner, cfg):
 
     # ---------------------------------------------------------------- 9L --
     @runner.phase("teardown_linux", "Remove the Linux client from the appliance",
-                  needs=("enrol_linux",), optional=True)
+                  needs=("enrol_linux",))
     def teardown_linux(ctx):
         detail = {}
 

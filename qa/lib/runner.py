@@ -120,16 +120,21 @@ class Runner:
         self.ctx = ctx
         self.phases = []
 
-    def phase(self, name, title, needs=(), critical=False, optional=False,
-              always=False):
+    def phase(self, name, title, needs=(), critical=False, always=False):
         """Register a phase.
 
         critical — a failure here aborts the run. Reserved for the phases that
                    make everything after them meaningless (preflight, install).
                    Everything else records and continues.
-        optional — a failure is reported but does not mark the run failed. For
-                   things that are nice to have (an LLM summary with no key
-                   configured) rather than product behaviour under test.
+        There is deliberately no `optional` flag. There used to be one,
+        documented as "a failure is reported but does not mark the run
+        failed" -- and it was stored and never read, so it did nothing at
+        all. Implementing it would have been worse than deleting it: the
+        phases carrying it included `report`, which is where the redaction
+        canary and the credential scan run. Honouring the flag would have
+        silenced the one check that found a real secret in an uploaded
+        artifact. If a check is not worth failing a run over, do not assert
+        it.
         always   — runs even after a critical phase aborted the run. For the
                    phases whose whole value is realised on a BAD run: collect
                    gathers the logs, report writes results.json. Without this
@@ -143,7 +148,7 @@ class Runner:
             self.phases.append({
                 "name": name, "title": title, "fn": fn,
                 "needs": tuple(needs), "critical": critical,
-                "optional": optional, "always": always})
+                "always": always})
             return fn
         return register
 

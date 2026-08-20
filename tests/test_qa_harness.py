@@ -726,5 +726,33 @@ class TestNoHardCodedApplianceePath(unittest.TestCase):
         self.assertIn("_git_head(cfg.repo_dir)", src)
 
 
+
+class TestNoDeadOptionalFlag(unittest.TestCase):
+    """`optional` was stored and never read, and must not come back.
+
+    It was documented as "a failure is reported but does not mark the run
+    failed", which was simply untrue -- nothing consumed it. Implementing it
+    would have been worse than deleting it: the phases carrying the flag
+    included `report`, where the redaction canary and the credential scan run.
+    Honouring it would have silenced the one check that found a real secret in
+    an uploaded artifact.
+    """
+
+    def test_the_runner_does_not_accept_it(self):
+        src = _read("lib", "runner.py")
+        self.assertNotIn("optional=False", src,
+                         "the optional flag is back; either it is dead again "
+                         "or it now silences checks that should fail a run")
+
+    def test_no_phase_declares_it(self):
+        import glob
+        for path in glob.glob(os.path.join(QA, "phases", "*.py")):
+            with open(path, encoding="utf-8") as fh:
+                body = fh.read()
+            self.assertNotIn(
+                "optional=True", body,
+                f"{os.path.basename(path)} declares a flag the runner ignores")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
