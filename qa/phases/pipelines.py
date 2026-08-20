@@ -305,10 +305,28 @@ def _timesketch(ctx, c, cfg, detail):
     # events the pipeline logs "No events extracted", marks the run COMPLETED and
     # returns without creating a sketch. Only the event count separates a working
     # ingest from that.
-    ctx.check("Timesketch: plaso extracted events from the evidence",
-              (events or 0) > 0, expected=">0", actual=events,
-              note="zero events still reports 'completed' with no sketch -- the "
-                   "silent pass this check exists to catch")
+    # PROPORTIONAL TO THE INPUT, not merely non-zero. ">0" would pass on 3
+    # events from twenty megabytes of logs, which is a broken parse wearing a
+    # working parse's clothes -- and a regression that silently drops a parser
+    # is far likelier than one that produces nothing at all. Measured on a live
+    # appliance: 286,044 events from this host's /var/log, roughly one event
+    # per 70 bytes. One per 100 KB is therefore a floor with three orders of
+    # magnitude of headroom: it cannot flake on a quiet runner, and it cannot
+    # be reached by a parse that has stopped working.
+    # Clamped at 500. Not every byte of evidence yields events in proportion:
+    # lastlog is a SPARSE file, so a runner with a high UID can contribute
+    # megabytes of nulls that parse to nothing, which would inflate a purely
+    # proportional floor into a flake. 500 still sits ~570x below the measured
+    # 286,044, and a parse that has stopped working cannot reach it.
+    floor = min(500, max(1, (info.get("bytes") or 0) // 100_000))
+    ctx.check("Timesketch: plaso extracted events in proportion to the evidence",
+              (events or 0) >= floor,
+              expected=f">={floor} (from {(info.get('bytes') or 0) // 1024} KB "
+                       f"of logs)",
+              actual=events,
+              note="zero events still reports 'completed' with no sketch, and a "
+                   "handful of events from megabytes of logs means parsers "
+                   "stopped matching -- both pass a bare >0 check")
     ctx.check("Timesketch: a sketch was created", bool(sketch),
               actual=sketch.group(1) if sketch else None)
     ctx.check("Timesketch: a timeline was indexed into the sketch", bool(timeline),
@@ -458,9 +476,16 @@ def _timesketch_winevtx(ctx, c, detail, root):
         "run_id": (run or {}).get("id"), "events": events,
         "sketch_id": sketch.group(1) if sketch else None,
         "blueprint": BLUEPRINTS["timesketch"], "evidence": "Windows runner .evtx"}
-    ctx.check("Timesketch/winevtx: plaso extracted events", (events or 0) > 0,
-              expected=">0", actual=events,
-              note="real Windows event logs parsed with the winevtx parser")
+    # Same reasoning as the Linux ingest: scale the floor to what was actually
+    # uploaded. Measured 65,068 events from the runner's own evtx bundle.
+    evtx_bytes = os.path.getsize(path) if os.path.exists(path) else 0
+    floor = min(500, max(1, evtx_bytes // 100_000))
+    ctx.check("Timesketch/winevtx: plaso extracted events in proportion to "
+              "the evidence", (events or 0) >= floor,
+              expected=f">={floor} (from {evtx_bytes // 1024} KB of .evtx)",
+              actual=events,
+              note="real Windows event logs parsed with the winevtx parser; a "
+                   "bare >0 would pass a parser that had stopped matching")
 
 
 def _memory(ctx, c, detail, root):
