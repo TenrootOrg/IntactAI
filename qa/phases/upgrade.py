@@ -431,8 +431,20 @@ def _enable_all_modules(ctx, cfg, root):
                     "s,n=re.subn(r'^(    enabled: )false$',r'\\1true',s,flags=re.M);"
                     "open(p,'w').write(s);print(n)", path],
                    cfg.sudo_password, timeout=60, tl=ctx.tl, stage="upgrade")
-    ctx.check("adopt: modules were enabled in config.yaml", r.ok,
-              actual=(r.out or "").strip()[-40:])
+    # The COUNT, not just the exit code. `re.subn` returning 0 is a perfectly
+    # successful command, and a scenario that enabled nothing would go on to
+    # "adopt" an unchanged box and pass every check downstream without ever
+    # testing the thing it exists for.
+    flipped = (r.out or "").strip().splitlines()[-1:] or ["0"]
+    try:
+        n = int(flipped[0])
+    except ValueError:
+        n = 0
+    ctx.check("adopt: modules were enabled in config.yaml", r.ok and n > 0,
+              expected="at least one module flipped false -> true",
+              actual=f"{n} flipped" if r.ok else (r.out or "")[-120:],
+              note="nothing to adopt means the upgrade has nothing to install "
+                   "and the scenario proves nothing")
     return appliance.enabled_modules(root)
 
 
