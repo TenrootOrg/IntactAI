@@ -91,6 +91,10 @@ on:
         description: "Which first-party images to rebuild from this ref: backend | none. (velociraptor needs binaries install.sh stages, so it is not offered yet.)"
         required: true
         default: backend
+      backend_image:
+        description: "Which backend is under test: branch | release. branch = the image built from this ref actually runs (the pin the installer corrects away is put back); release = the published artifact runs."
+        required: true
+        default: branch
       version_override:
         description: "Release tag supplying the upstream images (e.g. intact-20260818). Empty = the ref's own VERSION file."
         required: false
@@ -328,6 +332,10 @@ jobs:
       - name: Validate the inputs
         env:
           BUILD_IMAGES: ${{ github.event.inputs.build_images || 'backend' }}
+          # `|| 'branch'` is the PUSH fallback and is not decoration: a
+          # workflow_dispatch `default:` does not apply to a push event, so
+          # without it every push-triggered run would see an empty string.
+          BACKEND_IMAGE: ${{ github.event.inputs.backend_image || 'branch' }}
           MODULE_SET: ${{ matrix.modules || github.event.inputs.module_set || 'all' }}
           VERSION_OVERRIDE: ${{ github.event.inputs.version_override || '' }}
           TIMEOUT_MIN: ${{ github.event.inputs.install_timeout_min || '90' }}
@@ -342,6 +350,12 @@ jobs:
           # matrix rather than for the bad input it is meant to catch.
           case "$BUILD_IMAGES" in backend|none) ;; *)
             echo "::error::build_images must be 'backend' or 'none', got '$BUILD_IMAGES'"; exit 1 ;; esac
+          case "$BACKEND_IMAGE" in branch|release) ;; *)
+            echo "::error::backend_image must be 'branch' or 'release', got '$BACKEND_IMAGE'"; exit 1 ;; esac
+          if [ "$BACKEND_IMAGE" = branch ] && [ "$BUILD_IMAGES" != backend ]; then
+            echo "::error::backend_image=branch needs build_images=backend — there is no image from this ref to run"
+            exit 1
+          fi
           # Validated against the catalogue itself, not a hand-kept list. The
           # two drifted the moment scenarios.py grew `shipped` and
           # `backend-only`, and this step refused three scenarios that were
@@ -664,6 +678,10 @@ jobs:
           # Hosted runners are NOPASSWD; `sudo -S` reads this and ignores it.
           QA_SUDO_PASS: ci-runner-passwordless-sudo
           QA_REPO_DIR: /mnt/intact
+          # Which backend the run intends to exercise. The harness asserts the
+          # outcome rather than assuming it, so a run can never report on this
+          # ref while running the release's image.
+          QA_BACKEND_IMAGE: ${{ github.event.inputs.backend_image || 'branch' }}
           QA_LINUX_CLIENT: '1'
           QA_FEATURE_SWEEP: '1'
           QA_PIPELINES: '1'

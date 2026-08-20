@@ -11,6 +11,7 @@ import glob
 import os
 import re
 import shutil
+import time
 
 from lib import api as api_lib
 from lib import shell
@@ -66,6 +67,23 @@ ISOLATED = [
     ("intact_timesketch_postgres", 5432, "Timesketch metadata database"),
     ("intact_timesketch_redis", 6379, "Timesketch task broker"),
 ]
+
+
+def _scenario_upgrades():
+    """Whether this run's scenario performs an upgrade, per the catalogue."""
+    try:
+        import scenarios
+        return bool(scenarios.route_for(os.environ.get("QA_SCENARIO") or ""))
+    except Exception:                                         # noqa: BLE001
+        return False
+
+
+def _running_backend_image():
+    """The image reference intact_backend is actually running, or ""."""
+    r = shell.run(["docker", "inspect", "--format", "{{.Config.Image}}",
+                   "intact_backend"], timeout=30)
+    out = (r.out or "").strip().splitlines()
+    return out[0].strip() if out else ""
 
 
 def register(runner, cfg):
@@ -306,6 +324,111 @@ def register(runner, cfg):
                 "install_rc": r.rc}
 
     # ---------------------------------------------------------------- 0b --
+    # ------------------------------------------------------------------ C.5 --
+    @runner.phase("backend_under_test",
+                  "Make this ref's backend image the one that runs",
+                  needs=("install",), critical=True)
+    def backend_under_test(ctx):
+        """Put back the pin the installer deliberately corrects away.
+
+        The workflow builds intact-backend:ref-<sha> and points
+        config.yaml versions.backend at it, on the reasoning that
+        deploy_backend uses whatever BACKEND_VERSION names. That reasoning was
+        sound and the result was still wrong: when a release package ships a
+        backend image, lib/config.sh overrides the pin with the package's tag
+        -- "THE PACKAGE WINS OVER THE PIN", which exists to stop a stale pin
+        triggering a source rebuild. So the built image was pinned, corrected
+        away, and never deployed, while the report claimed engine and
+        container matched. Every run to date tested the RELEASE's backend.
+
+        The correction is right for a real install and must not be weakened.
+        What this does instead is what an operator would do afterwards: set
+        the pin, and let the box converge onto it. That is a supported
+        operation, not a hack -- app.py runs self_heal_backend_swap() on every
+        boot precisely to make the running container agree with
+        config.yaml versions.backend.
+
+        Skips cleanly when the run is deliberately testing the published
+        artifact (backend_image=release), and is a no-op when the built image
+        is already the one running.
+        """
+        mode = (os.environ.get("QA_BACKEND_IMAGE") or "release").strip()
+        built = (os.environ.get("QA_BUILT_IMAGES") or "").strip()
+        running = _running_backend_image()
+        detail = {"mode": mode, "built": built, "running_before": running}
+
+        # NOT on an upgrade scenario, and the reason is principled rather than
+        # cautious. What those scenarios put under test is the ENGINE, which
+        # comes from the workspace and therefore from this ref; the backend
+        # image is legitimately the target RELEASE's, because that is what
+        # upgrading to a release means. Re-pinning to ref-<sha> beforehand
+        # would also hand the upgrade planner a backend pin that names no
+        # release, which is not a thing any operator's box would present.
+        if _scenario_upgrades():
+            ctx.check("the backend under test is the one this run intends",
+                      True, actual=f"{running} (upgrade scenario)",
+                      note="an upgrade scenario ends on the target release's "
+                           "backend by design; this ref supplies the engine")
+            return detail
+
+        if mode != "branch" or not built:
+            ctx.check("the backend under test is the one this run intends",
+                      True,
+                      actual=f"{running} (mode={mode or 'release'})",
+                      note="testing the published artifact; the image built "
+                           "from this ref, if any, is not deployed")
+            return detail
+
+        want = built.split(",")[0].strip()
+        detail["want"] = want
+        if running == want:
+            ctx.check("the backend under test is the image built from this ref",
+                      True, expected=want, actual=running,
+                      note="already deployed; nothing to re-pin")
+            return detail
+
+        tag = want.split(":", 1)[1] if ":" in want else want
+        root = cfg.repo_dir or REPO_DIR
+
+        # Both surfaces, or they disagree and the box oscillates: .env drives
+        # compose, config.yaml drives the backend's own self-heal on boot.
+        shell.sudo(["sed", "-i",
+                    f"s|^  backend:.*|  backend: '{tag}'|",
+                    os.path.join(root, "config.yaml")],
+                   cfg.sudo_password, tl=tl, stage="backend_under_test")
+        shell.sudo(["sed", "-i",
+                    f"s|^BACKEND_VERSION=.*|BACKEND_VERSION={tag}|",
+                    os.path.join(root, "modules/backend/.env")],
+                   cfg.sudo_password, tl=tl, stage="backend_under_test")
+
+        # --no-build so a missing image fails loudly here rather than being
+        # quietly rebuilt from source into something nobody tested.
+        r = shell.sudo(["docker", "compose", "up", "-d", "--no-build"],
+                       cfg.sudo_password, timeout=600,
+                       cwd=os.path.join(root, "modules/backend"),
+                       tl=tl, stage="backend_under_test")
+        ctx.check("the backend was recreated onto this ref's image", r.ok,
+                  actual=(r.out or "")[-200:] if not r.ok else "recreated")
+
+        deadline = time.time() + 300
+        healthy = False
+        while time.time() < deadline:
+            ok, _why = shell.container_is_ok("intact_backend")
+            if ok and _running_backend_image() == want:
+                healthy = True
+                break
+            time.sleep(5)
+
+        running = _running_backend_image()
+        detail["running_after"] = running
+        ctx.check("the backend under test is the image built from this ref",
+                  running == want and healthy,
+                  expected=want, actual=running,
+                  note="if this fails the run is exercising the release's "
+                       "backend while reporting on this ref -- the exact "
+                       "mismatch this phase exists to prevent")
+        return detail
+
     @runner.phase("security", "Re-check the hardening on a freshly installed box",
                   needs=("install",))
     def security(ctx):

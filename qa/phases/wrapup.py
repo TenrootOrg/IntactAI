@@ -352,6 +352,7 @@ def _provenance_section(lines, ctx, cfg):
          else "online"),
         ("images from release", os.environ.get("QA_IMAGES_TAG") or "(the VERSION file)"),
         ("images built from this ref", os.environ.get("QA_BUILT_IMAGES") or "none"),
+        ("backend under test", os.environ.get("QA_BACKEND_IMAGE") or "release"),
     ):
         lines.append(f"| {label} | `{value}` |")
 
@@ -384,6 +385,12 @@ def _provenance_section(lines, ctx, cfg):
     elif running and running in built:
         verdict = (f"`{running}` was rebuilt from this ref and is the image "
                    f"actually running, so engine and container match.")
+    elif running and _scenario_upgrades():
+        verdict = (f"`{running}` is running, not the `{built}` built here — "
+                   f"which is correct for an upgrade scenario. Upgrading to a "
+                   f"release means ending on that release's backend; what this "
+                   f"ref supplies is the ENGINE that performed the upgrade, "
+                   f"together with the installer and compose files.")
     elif running:
         verdict = (f"**The image built from this ref was not used.** "
                    f"`{built}` was built and pinned, but `{running}` is what "
@@ -577,6 +584,20 @@ def _write_report(ctx, cfg):
                    "phases": [r.to_dict() for r in results.values()]},
                   fh, indent=2, default=str)
     return path
+
+
+def _scenario_upgrades():
+    """Whether this run performed an upgrade, per the shared catalogue.
+
+    Read from scenarios.py rather than a second env var: the workflow already
+    derives everything else from that table, and a duplicate would be one more
+    thing to drift.
+    """
+    try:
+        import scenarios
+        return bool(scenarios.route_for(os.environ.get("QA_SCENARIO") or ""))
+    except Exception:                                         # noqa: BLE001
+        return False
 
 
 def _redact_run_directory(ctx, max_bytes=8_000_000):
