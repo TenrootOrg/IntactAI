@@ -40,6 +40,33 @@ def register(runner, cfg):
         ctx.check("container logs collected", bool(detail["containers"]),
                   actual=len(detail["containers"]))
 
+        # THE STATE OF THE DAEMON, not just what its containers said. An
+        # install once failed with `No such image: nginx:1.31.3-alpine` one
+        # line after logging that exact image as loaded, and none of the
+        # container logs could explain it -- the daemon had been restarted
+        # onto a different data-root mid-install and the whole image store
+        # went with it. `docker info` says that in one line; without it the
+        # diagnosis took an hour of reading installer source. Best-effort by
+        # design: a box too broken to answer is itself the finding, and must
+        # not cost us the logs we already have.
+        for name, argv in (
+                ("docker-images", ["docker", "images", "--digests"]),
+                ("docker-ps-all", ["docker", "ps", "-a", "--no-trunc"]),
+                ("docker-info", ["docker", "info"]),
+                ("disk-free", ["df", "-h"])):
+            try:
+                r = shell.run(argv, timeout=60)
+                path = os.path.join(logs_dir, f"{name}.txt")
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(ctx.redact(r.out or ""))
+                if name == "docker-info":
+                    root = [l.split(":", 1)[1].strip()
+                            for l in (r.out or "").splitlines()
+                            if l.strip().startswith("Docker Root Dir:")]
+                    detail["docker_root"] = root[0] if root else "unknown"
+            except Exception as exc:                          # noqa: BLE001
+                detail[f"{name}_error"] = ctx.redact(str(exc))[:200]
+
         # The platform's own support bundle, rather than re-implementing
         # collection. It has already been shown to carry secrets, so it is
         # redacted like everything else.

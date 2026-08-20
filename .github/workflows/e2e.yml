@@ -380,7 +380,18 @@ jobs:
           # filesystem has nothing like that free.
           sudo systemctl stop docker docker.socket 2>/dev/null || true
           sudo mkdir -p /mnt/docker "${APPLIANCE}"
-          printf '{"data-root":"/mnt/docker"}' | sudo tee /etc/docker/daemon.json >/dev/null
+          # The `features` key is not decoration -- it is what stops install.sh
+          # from throwing this file away. lib/deps.sh:install_docker rewrites
+          # daemon.json WHOLESALE whenever it does not already mention
+          # containerd-snapshotter, and then restarts the daemon. Written with
+          # data-root alone, this file was replaced mid-install, docker came
+          # back on /var/lib/docker, and every image loaded up to that point
+          # vanished -- surfacing much later as `No such image:
+          # nginx:1.31.3-alpine` one line after the installer logged that same
+          # image as successfully loaded. Matching the shape the installer
+          # wants means it leaves the file, and the data-root, alone.
+          printf '{"data-root":"/mnt/docker","features":{"containerd-snapshotter":false}}' \
+            | sudo tee /etc/docker/daemon.json >/dev/null
           sudo systemctl start docker
           docker info --format 'docker root: {{.DockerRootDir}}'
 
@@ -520,6 +531,46 @@ jobs:
               | tar -x -C "${RUNNER_TEMP}/old" \
               || git -C "${GITHUB_WORKSPACE}" archive FETCH_HEAD | tar -x -C "${RUNNER_TEMP}/old"
             sudo rsync -a "${RUNNER_TEMP}/old/" "${APPLIANCE}/"
+
+            # ICMP IS BLOCKED ON HOSTED RUNNERS, and releases up to
+            # intact-20260726 gate the whole install on `ping 8.8.8.8`.
+            # The runner has perfectly good internet; it just cannot send
+            # an echo request, so install.sh aborts in three seconds
+            # having done nothing. That took out every old-release
+            # scenario at once, three seconds into a 90-minute job.
+            #
+            # The product itself already fixed this -- current
+            # lib/common.sh uses _tcp_reachable, a TCP connect carrying
+            # the same meaning -- so this backports one ENVIRONMENT probe
+            # into the staged tree and changes no product behaviour under
+            # test. It refuses to act silently: if the shape is not what
+            # it expects it says so and fails, rather than no-opping and
+            # letting the install die of the same thing a second time.
+            #
+            # Body and terminator sit at the BLOCK BASE, not this `if`'s
+            # indent: YAML strips the block indent, and a heredoc
+            # terminator that ends up indented is never matched.
+            sudo python3 - "${APPLIANCE}/lib/common.sh" <<'PY'
+          import re, sys
+          path = sys.argv[1]
+          src = open(path).read()
+          if "_tcp_reachable" in src:
+              print("connectivity check already uses TCP; nothing to do")
+              sys.exit(0)
+          PORTS = {"8.8.8.8": 53}
+          def swap(m):
+              host = m.group("host")
+              return ("timeout 3 bash -c 'exec 3<>/dev/tcp/%s/%d' &> /dev/null"
+                      % (host, PORTS.get(host, 443)))
+          src, n = re.subn(r"ping -c 1 -W 3 (?P<host>[^\s]+) &> /dev/null", swap, src)
+          if not n:
+              sys.exit("no ping-based connectivity probe found in %s, and no "
+                       "_tcp_reachable either — the shape changed and this patch "
+                       "would have silently done nothing" % path)
+          open(path, "w").write(src)
+          print("replaced %d ping probe(s) with TCP connects" % n)
+          PY
+            echo "::notice::staged tree patched: ping -> TCP probe (ICMP is blocked on hosted runners)"
           else
             sudo rsync -a --exclude .git ./ "${APPLIANCE}/"
           fi

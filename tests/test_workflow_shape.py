@@ -15,6 +15,7 @@ These are the structural rules Actions enforces and YAML does not.
 
 import glob
 import os
+import re
 import unittest
 
 try:
@@ -73,6 +74,42 @@ class TestWorkflowShape(unittest.TestCase):
                 problems += [f"{rel}: {p}" for p
                              in step_problems(job_name, job.get("steps"))]
         self.assertFalse(problems, "workflow steps Actions will reject:\n  "
+                         + "\n  ".join(problems))
+
+    def test_every_heredoc_terminator_is_at_column_zero(self):
+        """An indented terminator is never matched, and the script runs on.
+
+        YAML strips the block indent from a `run: |` script, so a heredoc
+        written at the indent of the `if` it sits inside comes out two columns
+        deep -- and an unquoted terminator must be at column 0. The shell then
+        swallows the remainder of the step as heredoc body and the commands
+        after it never run, with no error. The workflow already carried a
+        comment warning about this; the comment did not stop it happening
+        again."""
+        problems = []
+        for path in WORKFLOWS:
+            with open(path, encoding="utf-8") as fh:
+                doc = yaml.safe_load(fh)
+            rel = os.path.relpath(path, ROOT)
+            for job_name, job in (doc.get("jobs") or {}).items():
+                if not isinstance(job, dict):
+                    continue
+                for step in job.get("steps") or []:
+                    script = step.get("run")
+                    if not isinstance(script, str):
+                        continue
+                    name = step.get("name") or "?"
+                    lines = script.split("\n")
+                    for word in re.findall(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?",
+                                           script):
+                        if not any(l == word for l in lines):
+                            indented = [l for l in lines if l.strip() == word]
+                            problems.append(
+                                f"{rel}: {job_name}/{name}: heredoc <<{word} "
+                                + (f"terminator is indented ({indented[0]!r})"
+                                   if indented else
+                                   "has no terminator at all"))
+        self.assertFalse(problems, "heredocs that will never terminate:\n  "
                          + "\n  ".join(problems))
 
     def test_the_checker_catches_an_orphaned_with(self):

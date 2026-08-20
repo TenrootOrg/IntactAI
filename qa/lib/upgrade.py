@@ -44,15 +44,40 @@ TIMEOUT_PREPARE_S = 2400
 # --- shell routes ----------------------------------------------------------
 
 
+def bootstrap_script(root, fallback_tree):
+    """Where the doorman comes from, and why it may not be the appliance.
+
+    Returns (path, source) — source is "appliance" or "target".
+
+    An old box does not necessarily HAVE a bootstrap: intact-20260615 and
+    intact-20260726 ship neither scripts/bootstrap_upgrade.sh nor
+    scripts/upgrade.sh, which is the very reason the bootstrap exists. The
+    operator fetches it from the release they are moving to, and the script is
+    frozen precisely so that any copy behaves identically. Reading it off the
+    appliance would mean the oldest and most important upgrade scenario could
+    never run at all.
+
+    The appliance's own copy still wins when it has one, so a box that ships a
+    doorman is tested with the doorman it ships.
+    """
+    own = os.path.join(root, "scripts/bootstrap_upgrade.sh")
+    if os.path.exists(own):
+        return own, "appliance"
+    return os.path.join(fallback_tree, "scripts/bootstrap_upgrade.sh"), "target"
+
+
 def run_bootstrap(shell, cfg, root, tag=None, package=None, engine=None,
-                  extra=(), tl=None, log_path=None):
+                  extra=(), tl=None, log_path=None, script=None):
     """The doorman. Returns a CommandResult; .rc is the engine's own exit code.
 
     Every refusal from the bootstrap itself is exit 2 — a bad tag, a missing
     .sha256, a checksum mismatch, an unknown BOOTSTRAP_PROTOCOL. That is the
     point of it: refuse before touching anything.
+
+    `script` overrides where the doorman is read from; `--root` still points at
+    the appliance either way, so the box being upgraded is unchanged.
     """
-    argv = ["bash", os.path.join(root, "scripts/bootstrap_upgrade.sh")]
+    argv = ["bash", script or os.path.join(root, "scripts/bootstrap_upgrade.sh")]
     if tag:
         argv.append(tag)
     if package:

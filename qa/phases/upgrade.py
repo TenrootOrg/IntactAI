@@ -28,6 +28,12 @@ import time
 
 from lib import appliance, shell, upgrade as up
 
+# The tree the HARNESS was checked out into — which is the release under
+# test, and not necessarily the appliance. Derived from this file rather
+# than from cwd so it holds however the run was launched.
+HARNESS_TREE = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
+
 # Which routes actually perform an upgrade. Anything else is an install-only
 # scenario and these phases stay out of the way entirely.
 UPGRADE_ROUTES = {
@@ -153,11 +159,22 @@ def _shell_route(ctx, cfg, root, route, log_path, detail):
     tag = cfg.upgrade_to or None
 
     if route == "bootstrap":
+        # The doorman may have to come from the TARGET tree: the boxes this
+        # scenario starts from ship no upgrade scripts at all, which is the
+        # reason a frozen stage 1 exists in the first place.
+        script, source = up.bootstrap_script(root, HARNESS_TREE)
+        detail["bootstrap_from"] = source
+        ctx.check("the bootstrap script is available to run",
+                  os.path.exists(script), actual=f"{script} ({source})",
+                  note="an old appliance ships no doorman; the operator takes "
+                       "it from the release they are upgrading to")
+        if not os.path.exists(script):
+            return None
         # A tag AND a package is legitimate: the tag names the engine, the
         # package supplies the images. Air-gapped runs pass only the package.
         r = up.run_bootstrap(shell, cfg, root, tag=None if pkg else tag,
                              package=pkg, extra=cfg.upgrade_extra,
-                             tl=ctx.tl, log_path=log_path)
+                             tl=ctx.tl, log_path=log_path, script=script)
     else:
         # pin_engine so this genuinely tests THIS checkout's engine rather than
         # hopping to the bootstrap. It also disables the flock, which is safe
