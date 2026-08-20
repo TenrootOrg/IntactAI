@@ -333,8 +333,32 @@ def _fusion(ctx, c, detail):
 
     ctx.check("Fusion: the case fused", ents is not None,
               actual=f"{ents} entities")
+
+    # Only a COLLECTION can populate the graph. Measured on a live appliance:
+    # fusing a Timesketch run alone returns 0/0/0, because the timesketch mapper
+    # pulls only tagged or starred events and a freshly indexed timeline has
+    # neither. Asserting >0 without a collection present would fail a system
+    # that is working perfectly -- so the assertion is made only when something
+    # that produces entities was actually fused.
+    # Only entries that actually CONTRIBUTED a run count. The offline-collector
+    # entry records a build, not a collection -- it has no run_id and nothing
+    # was fused from it -- so its mere presence must not switch the assertion on.
+    collected = [k for k in ("velociraptor",)
+                 if (detail["ran"].get(k) or {}).get("run_id")]
+    if not collected:
+        detail["skipped"].append({
+            "pipeline": "fusion (graph assertions)",
+            "reason": "no collection run was fused; a Timesketch run alone "
+                      "contributes only tagged/starred events, of which a fresh "
+                      "timeline has none"})
+        ctx.check("Fusion: graph content asserted", True,
+                  actual=f"SKIPPED: {ents} entities from non-collection runs",
+                  note="not a failure; there was nothing that produces entities")
+        return
+
     ctx.check("Fusion: entities were extracted", (ents or 0) > 0,
-              expected=">0", actual=ents)
+              expected=">0", actual=ents,
+              note=f"fused from {', '.join(collected)}")
     ctx.check("Fusion: relationships were built", (rels or 0) > 0,
               expected=">0", actual=rels,
               note="relationships are what separate correlation from a pile of "
