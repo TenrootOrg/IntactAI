@@ -334,16 +334,47 @@ def _provenance_section(lines, ctx, cfg):
         lines.append(f"| {label} | `{value}` |")
 
     built = (os.environ.get("QA_BUILT_IMAGES") or "").strip()
-    lines += ["",
-              "Service images come from the release named above. "
-              + (f"The image(s) `{built}` were rebuilt from this ref, so engine "
-                 f"and container match."
-                 if built else
-                 "**No image was rebuilt from this ref**, so this run pairs "
-                 "this ref's engine with the release's containers — a "
-                 "combination no customer runs, since an install or upgrade "
-                 "always brings both from the same release."),
-              ""]
+
+    # MEASURED, not assumed. This block used to state that a built image meant
+    # "engine and container match", on the strength of the workflow having
+    # built one and pinned config.yaml to it. It does not follow: when a
+    # release package ships a backend image, lib/config.sh deliberately
+    # overrides the pin with the package's tag ("THE PACKAGE WINS OVER THE
+    # PIN", to stop a stale pin triggering a source rebuild) and the freshly
+    # built image is never deployed. Every run so far reported that engine and
+    # container matched while running the release's backend -- a report
+    # claiming coverage it does not have is worse than one that admits the
+    # gap, so ask the daemon what is actually running.
+    running = ""
+    try:
+        r = shell.run(["docker", "inspect", "--format", "{{.Config.Image}}",
+                       "intact_backend"], timeout=30)
+        running = (r.out or "").strip().splitlines()[0] if (r.out or "").strip() else ""
+    except Exception:                                         # noqa: BLE001
+        running = ""
+    lines.append(f"| backend image actually running | `{running or 'unknown'}`|")
+
+    if not built:
+        verdict = ("**No image was rebuilt from this ref**, so this run pairs "
+                   "this ref's engine with the release's containers — a "
+                   "combination no customer runs, since an install or upgrade "
+                   "always brings both from the same release.")
+    elif running and running in built:
+        verdict = (f"`{running}` was rebuilt from this ref and is the image "
+                   f"actually running, so engine and container match.")
+    elif running:
+        verdict = (f"**The image built from this ref was not used.** "
+                   f"`{built}` was built and pinned, but `{running}` is what "
+                   f"is running: a release package ships its own backend "
+                   f"image and lib/config.sh corrects the pin to the "
+                   f"package's tag. This run therefore tested the RELEASE's "
+                   f"backend against this ref's engine, installer and compose "
+                   f"files — not this ref's backend code.")
+    else:
+        verdict = (f"`{built}` was built from this ref, but the running "
+                   f"backend image could not be read, so whether it was "
+                   f"actually used is unknown.")
+    lines += ["", "Service images come from the release named above. " + verdict, ""]
 
 
 def _write_report(ctx, cfg):
