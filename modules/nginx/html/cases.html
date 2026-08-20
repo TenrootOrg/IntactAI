@@ -48,6 +48,14 @@
   .md th,.md td{border:1px solid var(--bd);padding:5px 9px;text-align:left}
   .md th{background:var(--panel2)}
   .md li{margin:2px 0}
+  /* Evidence lines belonging to the finding above them. Indented, toned down and
+     allowed to wrap inside their own bullet, so a long Defender message reads as
+     continuation rather than as the next entry. */
+  .md li.sub{margin-left:20px;list-style:circle;color:var(--muted);font-size:12px}
+  .md li.sub code{font-size:11px;overflow-wrap:anywhere}
+  /* Air between finding groups: the first bullet after an evidence block starts a
+     new finding, and needs to look like one. */
+  .md li.sub + li:not(.sub){margin-top:12px}
   .md strong{color:#fff}
   .chip{display:inline-block;font-size:11px;padding:1px 7px;border-radius:9px;margin-right:5px}
   .c-critical{background:rgba(248,81,73,.18);color:var(--crit)} .c-high{background:rgba(219,109,40,.18);color:var(--high)}
@@ -990,9 +998,20 @@ function mdToHtml(md){
     if(m=line.match(/^### (.*)/)){closeUL();out.push('<h3>'+inline(m[1])+'</h3>');}
     else if(m=line.match(/^## (.*)/)){closeUL();out.push('<h2>'+inline(m[1])+'</h2>');}
     else if(m=line.match(/^# (.*)/)){closeUL();out.push('<h1>'+inline(m[1])+'</h1>');}
-    else if(m=line.match(/^\s*[-*] (.*)/)){if(!inUL){out.push('<ul>');inUL=true;}
-      let t=inline(m[1]).replace(/\[(critical|high|medium|low|informational)\]/i,(_,s)=>`<span class="chip c-${s.toLowerCase()}">${s}</span>`);
-      out.push('<li>'+t+'</li>');}
+    else if(m=line.match(/^([ \t]*)[-*] (.*)/)){if(!inUL){out.push('<ul>');inUL=true;}
+      // The INDENT was being thrown away. facts_md nests per-event evidence
+      // four spaces under the finding it belongs to, and `^\s*[-*] ` matched
+      // that leading run and dropped it -- so every evidence line rendered as
+      // a sibling of its own finding. In the air-gap report, where each
+      // finding carries up to five long Defender strings that wrap over
+      // several visual lines, one flat list of look-alike bullets is unreadable:
+      // there is nothing to say where one finding ends and the next begins.
+      const ind=m[1].replace(/\t/g,'    ').length;
+      let t=inline(m[2]).replace(/\[(critical|high|medium|low|informational)\]/i,(_,s)=>`<span class="chip c-${s.toLowerCase()}">${s}</span>`);
+      // A class rather than a nested <ul>: `<ul>` as a direct child of `<ul>`
+      // is invalid, and this renderer is deliberately minimal. Indent, tone
+      // and spacing carry the hierarchy instead.
+      out.push('<li'+(ind>=2?' class="sub"':'')+'>'+t+'</li>');}
     else if(/^\s*$/.test(line)){closeUL();out.push('<br/>');}
     else {closeUL();out.push('<p>'+inline(line)+'</p>');}
   });
