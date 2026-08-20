@@ -727,6 +727,42 @@ class TestNoHardCodedApplianceePath(unittest.TestCase):
 
 
 
+class TestUpgradeStartTimeouts(unittest.TestCase):
+    """The three upgrade-start endpoints need their own timeout.
+
+    They do real work before answering -- staging a multi-GB package,
+    resolving and verifying assets -- and the API client's default read
+    timeout is 60 seconds. Measured: POST /api/upgrade/offline timed out at
+    60s while staging a package that prepare had just written, and the harness
+    reported a connection error for an upgrade that was starting normally.
+
+    The long wait AFTERWARDS is polled separately and is not what this covers;
+    it is only the call that returns the run id.
+    """
+
+    STARTERS = ("/api/upgrade/prepare", "/api/upgrade/online",
+                "/api/upgrade/offline")
+
+    def test_each_start_call_sets_an_explicit_timeout(self):
+        src = _read("lib", "upgrade.py")
+        for path in self.STARTERS:
+            i = src.index(f'"{path}"')
+            window = src[i:i + 400]
+            self.assertIn(
+                "timeout=START_TIMEOUT_S", window,
+                f"POST {path} relies on the client's 60s default, which is "
+                f"shorter than the work it does before replying")
+
+    def test_the_timeout_is_generous(self):
+        src = _read("lib", "upgrade.py")
+        m = re.search(r"START_TIMEOUT_S\s*=\s*(\d+)", src)
+        self.assertTrue(m, "START_TIMEOUT_S is not defined")
+        self.assertGreaterEqual(
+            int(m.group(1)), 300,
+            "staging a multi-GB package takes minutes; anything tighter puts "
+            "the harness back to reporting a timeout as a failed upgrade")
+
+
 class TestVanishedImageDetection(unittest.TestCase):
     """An image logged as loaded, then reported missing, is a deletion.
 

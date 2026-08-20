@@ -154,12 +154,22 @@ def start_online(c, target, opted_in_optional=(), opted_in_reinstall=()):
         "target": target,
         "opted_in_optional": list(opted_in_optional),
         "opted_in_reinstall": list(opted_in_reinstall),
-    }, expect=(200, 202))
+    }, expect=(200, 202), timeout=START_TIMEOUT_S)
+
+
+# The three upgrade-start endpoints do real work BEFORE they answer -- staging
+# a multi-GB package, resolving and verifying assets -- so the client's default
+# 60s read timeout is far too short for them. Measured: POST
+# /api/upgrade/offline timed out at 60s while staging a package prepare had
+# just written, and the harness reported a connection error for an upgrade that
+# was in fact starting normally. These are the calls that RETURN a run id; the
+# long wait afterwards is polled separately and is not affected by this.
+START_TIMEOUT_S = 900
 
 
 def start_prepare(c, target):
     return c.request("POST", "/api/upgrade/prepare", json={"target": target},
-                     expect=(200, 202))
+                     expect=(200, 202), timeout=START_TIMEOUT_S)
 
 
 def list_packages(c):
@@ -185,6 +195,7 @@ def apply_package(c, package_path, selected_modules=None,
     if expected_sha256:
         payload["expected_sha256"] = expected_sha256
     return c.request("POST", "/api/upgrade/offline", json=payload,
+                     timeout=START_TIMEOUT_S,
                      expect=(200, 202))
 
 
