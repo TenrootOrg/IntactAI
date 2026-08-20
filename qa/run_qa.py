@@ -93,7 +93,7 @@ def main():
     runner = runner_lib.Runner(ctx)
 
     from phases import (endpoint, endpoint_linux, features, pipelines,
-                        platform, workflows, wrapup)
+                        platform, upgrade, workflows, wrapup)
     platform.register(runner, cfg)
     endpoint.register(runner, cfg)
     # The Linux profile: enrol the appliance itself as an endpoint, then drive
@@ -104,6 +104,9 @@ def main():
     # After the sweep: pipelines dispatch real collections and detection runs,
     # so they need the client enrolled and the API already proven to answer.
     pipelines.register(runner, cfg)
+    # Scenario-driven: registers nothing at all unless this run is testing an
+    # upgrade route, so an install-only scenario carries no upgrade phases.
+    upgrade.register(runner, cfg)
     workflows.register(runner, cfg)
     # Collection and teardown are registered last so they run after the
     # workflows: collect BEFORE teardown so nothing needed for the report is

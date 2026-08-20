@@ -21,7 +21,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 QA = os.path.join(ROOT, "qa")
 
 PHASE_FILES = ("platform.py", "endpoint.py", "endpoint_linux.py",
-               "features.py", "pipelines.py", "workflows.py", "wrapup.py")
+               "features.py", "pipelines.py", "upgrade.py", "workflows.py",
+               "wrapup.py")
 
 
 def _read(*parts):
@@ -95,7 +96,7 @@ class TestPhaseModules(unittest.TestCase):
     def test_run_qa_registers_every_phase_module(self):
         src = _read("run_qa.py")
         for mod in ("platform", "endpoint", "endpoint_linux", "features",
-                    "pipelines", "workflows", "wrapup"):
+                    "pipelines", "upgrade", "workflows", "wrapup"):
             with self.subTest(module=mod):
                 self.assertIn(f"{mod}.register(runner, cfg)", src,
                               f"{mod} is never registered, so its phases can "
@@ -279,6 +280,55 @@ class TestIngestTraps(unittest.TestCase):
         self.assertNotRegex(
             src, r"/api/memory/upload(?:.|\n){0,400}?\.zip",
             "the memory image must be uploaded bare, never zipped")
+
+
+class TestUpgradeRoutes(unittest.TestCase):
+    """The two facts about upgrades that a harness gets wrong by default."""
+
+    def test_the_harness_asserts_exit_code_not_status(self):
+        """rc 3 is reported as "completed".
+
+        upgrade_launcher maps 0 AND 3 to "completed" with force=True, because a
+        degraded run necessarily logged an ERROR line that would otherwise flip
+        it to failed. A harness that asserts on status therefore scores "applied
+        but degraded" as a pass -- the exact outcome an upgrade test exists to
+        catch."""
+        src = _read("phases", "upgrade.py")
+        self.assertIn("exit_code", src)
+        self.assertRegex(src, r"rc\s*==\s*up\.RC_CLEAN",
+                         "the upgrade phase must assert the exit code is 0, "
+                         "not merely that the status says completed")
+
+    def test_the_cli_route_pins_the_engine_through_sudo_env(self):
+        """scripts/upgrade.sh execs the bootstrap unless INTACT_UPGRADE_REEXEC
+        is set -- and sudo resets the environment, so setting it in the parent
+        does nothing. Measured: both a plain env dict and preserve_env came back
+        empty. `sudo env VAR=1` is the form that works."""
+        src = _read("lib", "upgrade.py")
+        self.assertIn('"env", "INTACT_UPGRADE_REEXEC=1"', src,
+                      "the engine pin must be passed as `sudo env VAR=1`; an "
+                      "env dict is stripped by sudo and silently ignored")
+
+    def test_every_scenario_maps_to_a_known_route(self):
+        src = _read("phases", "upgrade.py")
+        tree = ast.parse(src)
+        routes, mapped = set(), set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "UPGRADE_ROUTES"
+                    for t in node.targets) and isinstance(node.value, ast.Dict):
+                routes = {k.value for k in node.value.keys
+                          if isinstance(k, ast.Constant)}
+            if isinstance(node, ast.Dict):
+                for k, v in zip(node.keys, node.values):
+                    if isinstance(k, ast.Constant) and isinstance(v, ast.Constant) \
+                            and isinstance(v.value, str) and "-" in str(k.value):
+                        mapped.add(v.value)
+        self.assertTrue(routes, "UPGRADE_ROUTES did not parse")
+        unknown = sorted(mapped - routes)
+        self.assertFalse(unknown,
+                         "scenario(s) map to a route that does not exist: "
+                         + ", ".join(unknown))
 
 
 class TestNoHardCodedApplianceePath(unittest.TestCase):

@@ -56,6 +56,9 @@ ENV_OVERRIDES = {
     ("run", "linux_client"): "QA_LINUX_CLIENT",
     ("run", "feature_sweep"): "QA_FEATURE_SWEEP",
     ("run", "pipelines"): "QA_PIPELINES",
+    ("run", "scenario"): "QA_SCENARIO",
+    ("run", "upgrade_to"): "QA_UPGRADE_TO",
+    ("run", "upgrade_package"): "QA_UPGRADE_PACKAGE",
 }
 
 # Split in two because a Windows endpoint is a property of the PROFILE, not of
@@ -220,6 +223,26 @@ class QAConfig:
         different cost: the sweep is seconds of HTTP, this dispatches real
         collections and real detection runs and takes minutes."""
         return _as_bool(self.get("run", "pipelines", default=False))
+
+    @property
+    def scenario(self):
+        """Which install/upgrade path this run is testing.
+
+        One scenario per job, because container names, volumes and host ports
+        are global — two appliances cannot share a machine. The scenario also
+        decides which phases register at all, so a run only ever contains the
+        phases it can actually satisfy."""
+        return (self.get("run", "scenario", default="") or "").strip()
+
+    @property
+    def upgrade_to(self):
+        """The release tag this scenario upgrades to. Empty = install only."""
+        return (self.get("run", "upgrade_to", default="") or "").strip()
+
+    @property
+    def upgrade_package(self):
+        """A package on disk to upgrade FROM, for the air-gapped routes."""
+        return (self.get("run", "upgrade_package", default="") or "").strip()
 
     def timeout(self, stage, default=30):
         """Minutes to wait for a slow stage before calling it failed."""
