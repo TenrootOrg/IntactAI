@@ -369,7 +369,7 @@ function render(info,md,g){
           <button onclick="doRescanLLM('${info.case_id}')" style="cursor:pointer;background:var(--acc);border-color:var(--acc)">✨ Rescan (LLM)</button>
         </span>
       </div>` : ''}
-      <div style="margin:6px 0 14px">${statSpans(g)}${tokenBadge(info.token_ab)}${costBadge(info.cost_estimate)}</div>
+      <div style="margin:6px 0 14px">${statSpans(g)}</div>
       <div class="tabs">
         <div class="tab ${tab==='config'?'on':''}" data-tab="config" onclick="setTab('config')">⚙ Configuration</div>
         <div class="tab ${tab==='report'?'on':''}" data-tab="report" onclick="setTab('report')">Analysis</div>
@@ -432,6 +432,11 @@ function renderRisk(info){
         </tr></thead><tbody>${body}</tbody></table>`;
   }).catch(e=>{$('#tabc').innerHTML='<div class="empty">risk load failed: '+esc(e.message||e)+'</div>';});
 }
+// The token-cut and cost/report badges render HERE, under the model line,
+// rather than in the header strip beside hosts/entities/links. Those counts are
+// facts about the case; these two are facts about how it is PRICED and what the
+// fusion ontology saves -- the same subject as the model line they now sit
+// under, and configuration rather than a headline.
 function renderConfig(info){
   const aud=info.audience||'both', mk=info.masking||{}, tw=info.time_window||{};
   const opt=(v,l,cur)=>`<option value="${v}" ${cur===v?'selected':''}>${l}</option>`;
@@ -448,6 +453,7 @@ function renderConfig(info){
         <label style="margin-top:8px">Identity limit <span style="color:var(--muted)">(people in the LLM payload)</span></label>
         <input id="cf-maxident" type="number" min="0" max="1000000" step="10" value="${info.max_identities??''}" placeholder="all (up to 500)" title="Max identity rows (people, clustered across hosts) included in the LLM payload for the report &amp; chat. Identities are sent regardless of anomaly score, so a real person is never invisible to the model just because no finding is attached to their account. Independent of the Entity limit above (identities cost ~27 tokens each, far cheaper than an entity row). Empty = up to 500 people, which covers any realistic engagement — recommended. If the payload still overflows the model context, the lowest-risk people are dropped first. Set it lower only to send fewer people (e.g. privacy)."/>
         ${(info.cost_estimate&&info.cost_estimate.model)?`<div style="font-size:11px;color:var(--muted);margin:8px 0 3px">Model <b style="color:var(--tx,#e6edf3)">${esc(info.cost_estimate.model)}</b> — full context in, up to <b style="color:var(--tx,#e6edf3)">${(info.cost_estimate.model_max_output_tokens||0).toLocaleString()}</b> tokens out</div>`:`<div style="font-size:11px;color:var(--muted);margin:8px 0 3px">no model set — configure Settings ▸ Agentic</div>`}
+        <div style="display:flex;flex-direction:column;gap:6px;margin:6px 0 3px">${tokenBadge(info.token_ab)}${costBadge(info.cost_estimate)}</div>
         <label style="margin-top:6px;display:flex;align-items:center;gap:6px;font-weight:normal" title="Tick only when this box has no route to the model provider. The report is then written deterministically from the correlated graph, immediately, and nothing is sent to a provider. Untick (default) for the written narrative: attack story in phases, cross-host correlation and identity attribution.">
           <input id="cf-airgap" type="checkbox" ${info.air_gap_analysis?'checked':''} style="width:auto"/>
           <span>Air-gap analysis <span style="color:var(--muted)">(no route to the model provider)</span></span>
