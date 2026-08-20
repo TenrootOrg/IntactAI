@@ -103,7 +103,13 @@ def build_runner(ctx, cfg):
     # drive, and enrolling before an upgrade that recreates Velociraptor proves
     # the wrong thing.
     if any(p["name"] == "upgrade" for p in runner.phases):
-        moving = ["enrol_linux", "features", "pipelines"]
+        # `security` goes with them. It asserts TODAY's hardening -- 0600 on
+        # every secret, no unauthenticated /api/cases, Elasticsearch closed to
+        # the LAN -- and intact-20260726 predates all of it, so running it
+        # against the box an upgrade STARTS from reported nine failures that
+        # are simply what that release was. The hardening that matters is the
+        # box you end up with.
+        moving = ["security", "enrol_linux", "features", "pipelines"]
 
         # `auth` moves ONLY for the shell routes. intact-20260615 has no auth
         # system at all, so on those the dashboard can only be claimed once the
@@ -123,6 +129,15 @@ def build_runner(ctx, cfg):
 
         for name in moving:
             _reorder(runner, name, before="collect")
+
+        # A dashboard upgrade is driven through the API, so `auth` stays early
+        # -- and the hop has to come before it, because the box being claimed
+        # only has an auth system once the hop has put one there. The shell
+        # routes need no such move: auth is already late for them, and the hop
+        # sits before the upgrade by registration order.
+        if route.startswith("ui_") and any(p["name"] == "hop"
+                                           for p in runner.phases):
+            _reorder(runner, "hop", before="auth")
     return runner
 
 

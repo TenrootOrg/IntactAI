@@ -729,7 +729,13 @@ jobs:
           [ -d "$RUN_DIR/phases" ] && cp -r "$RUN_DIR/phases" _artifacts/ || true
           if [ -d "$RUN_DIR/logs" ]; then
             mkdir -p _artifacts/logs
-            find "$RUN_DIR/logs" -maxdepth 1 -type f \( -name '*.log' -o -name '*.json' \) \
+            # *.txt too: collect writes docker images / ps -a / info / df
+            # there, and those are exactly what an install failure needs. They
+            # were being written and then silently dropped at staging, so a
+            # missing-image failure had no evidence to diagnose it with. The
+            # credential file is not in logs/, so widening this stays safe.
+            find "$RUN_DIR/logs" -maxdepth 1 -type f \
+                 \( -name '*.log' -o -name '*.json' -o -name '*.txt' \) \
                  -exec cp {} _artifacts/logs/ \; || true
           fi
           cp /tmp/capacity.log _artifacts/ 2>/dev/null || true

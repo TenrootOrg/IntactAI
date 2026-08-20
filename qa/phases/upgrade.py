@@ -66,6 +66,24 @@ def register(runner, cfg):
     # The API routes genuinely need a session, so they keep it.
     _needs = ("auth",) if route.startswith("ui_") else ("install",)
 
+    # THE HOP IS ITS OWN PHASE, and it has to run before `auth`.
+    #
+    # It used to happen inside the upgrade phase, which cannot work for the
+    # dashboard routes. Those need a session to drive the upgrade at all, so
+    # `auth` runs first -- but the box they start from is intact-20260726,
+    # which has no auth system: /api/auth/status answers 404. auth is critical,
+    # so the run aborted before the upgrade phase (and therefore the hop) was
+    # ever reached. The hop to intact-20260811 is the very thing that gives the
+    # box an auth system to claim, so it must come first.
+    if cfg.hop_via:
+        @runner.phase("hop", f"Move the box onto {cfg.hop_via} first",
+                      needs=("install",), critical=True)
+        def hop(ctx):
+            return _hop_via(ctx, cfg, cfg.repo_dir or "/mnt/intact",
+                            cfg.hop_via)
+
+        _needs = _needs + ("hop",)
+
     @runner.phase("upgrade", f"Upgrade via {route} ({UPGRADE_ROUTES[route]})",
                   needs=_needs, critical=True)
     def upgrade(ctx):
@@ -81,10 +99,6 @@ def register(runner, cfg):
 
         log_path = os.path.join(ctx.run_dir, "logs", f"upgrade-{route}.log")
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
-
-        # The engine hop, when the box is too old to reach the target directly.
-        if cfg.hop_via:
-            detail["hop"] = _hop_via(ctx, cfg, root, cfg.hop_via)
 
         _pre_upgrade(ctx, cfg, root, detail, log_path)
 

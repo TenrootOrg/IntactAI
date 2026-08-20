@@ -371,7 +371,7 @@ class _FakeCtx:
 class _StubCfg:
     """Enough of a config to register phases, with no appliance anywhere."""
 
-    def __init__(self, scenario):
+    def __init__(self, scenario, hop_via=None):
         self.scenario = scenario
         self.platform_host = "10.0.0.1"
         self.windows_host = None
@@ -384,7 +384,7 @@ class _StubCfg:
         self.upgrade_package = None
         self.upgrade_extra = ()
         self.downgrade_tag = None
-        self.hop_via = None
+        self.hop_via = hop_via
         self.sudo_user = "runner"
         self.sudo_password = "x"
 
@@ -503,7 +503,7 @@ class TestPhaseOrderPerScenario(unittest.TestCase):
     def setUp(self):
         sys.path.insert(0, os.path.join(ROOT, "qa"))
 
-    def _phases_for(self, scenario):
+    def _phases_for(self, scenario, hop_via=None):
         import shutil
         import tempfile
         import run_qa
@@ -516,7 +516,7 @@ class TestPhaseOrderPerScenario(unittest.TestCase):
         tmp = tempfile.mkdtemp(prefix="qa-order-")
         try:
             os.makedirs(os.path.join(tmp, "phases"), exist_ok=True)
-            cfg = _StubCfg(scenario)
+            cfg = _StubCfg(scenario, hop_via)
             ctx = runner_lib.PhaseContext(cfg, _TL(), tmp, {}, lambda t: t)
             return run_qa.build_runner(ctx, cfg).phases
         finally:
@@ -526,7 +526,8 @@ class TestPhaseOrderPerScenario(unittest.TestCase):
         import scenarios
         problems = []
         for row in scenarios.SCENARIOS:
-            phases = self._phases_for(row["name"])
+            phases = self._phases_for(
+                row["name"], scenarios.ROLES.get(row.get("hop_via")))
             order = {p["name"]: i for i, p in enumerate(phases)}
             for p in phases:
                 for dep in p["needs"]:
@@ -538,6 +539,47 @@ class TestPhaseOrderPerScenario(unittest.TestCase):
         self.assertFalse(problems, "phases that can never run:\n  "
                          + "\n  ".join(problems))
 
+    def test_the_hop_runs_before_the_box_is_claimed(self):
+        """A hop exists because the starting box cannot do the job itself.
+
+        ui-online-full and ui-import-full start on intact-20260726, which has
+        no auth system -- /api/auth/status answers 404 -- and `auth` is
+        critical. The hop to intact-20260811 is what puts an auth system on the
+        box, so running it inside the upgrade phase meant the run aborted
+        before the hop it depended on had happened."""
+        import scenarios
+        checked = 0
+        for row in scenarios.SCENARIOS:
+            hop = scenarios.ROLES.get(row.get("hop_via"))
+            if not hop:
+                continue
+            names = [p["name"] for p in self._phases_for(row["name"], hop)]
+            self.assertIn("hop", names, f"{row['name']} declares hop_via but "
+                                        f"registers no hop phase")
+            self.assertLess(names.index("install"), names.index("hop"))
+            if "auth" in names:
+                self.assertLess(
+                    names.index("hop"), names.index("auth"),
+                    f"{row['name']}: the box has no auth system until the hop "
+                    f"has installed one")
+            checked += 1
+        self.assertTrue(checked, "no hop scenarios found to check")
+
+    def test_security_is_asserted_against_the_final_box(self):
+        """It checks TODAY's hardening. An upgrade scenario that starts on an
+        old release would otherwise fail nine checks describing what that
+        release simply was."""
+        import scenarios
+        for row in scenarios.SCENARIOS:
+            if not row.get("route"):
+                continue
+            names = [p["name"] for p in self._phases_for(
+                row["name"], scenarios.ROLES.get(row.get("hop_via")))]
+            self.assertLess(
+                names.index("upgrade"), names.index("security"),
+                f"{row['name']}: hardening is checked before the upgrade, so "
+                f"it describes the box the run started from")
+
     def test_the_ui_routes_authenticate_before_they_upgrade(self):
         """Stated separately because it is the specific thing that broke, and
         because 'the upgrade phase actually runs' is the whole point of those
@@ -546,7 +588,8 @@ class TestPhaseOrderPerScenario(unittest.TestCase):
         for row in scenarios.SCENARIOS:
             if not (row.get("route") or "").startswith("ui_"):
                 continue
-            names = [p["name"] for p in self._phases_for(row["name"])]
+            names = [p["name"] for p in self._phases_for(
+                row["name"], scenarios.ROLES.get(row.get("hop_via")))]
             self.assertIn("auth", names, row["name"])
             self.assertIn("upgrade", names, row["name"])
             self.assertLess(
