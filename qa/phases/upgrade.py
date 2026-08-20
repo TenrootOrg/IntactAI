@@ -79,8 +79,8 @@ def register(runner, cfg):
         @runner.phase("hop", f"Move the box onto {cfg.hop_via} first",
                       needs=("install",), critical=True)
         def hop(ctx):
-            return _hop_via(ctx, cfg, cfg.repo_dir or "/mnt/intact",
-                            cfg.hop_via)
+            root = cfg.repo_dir or "/mnt/intact"
+            return _hop_via(ctx, cfg, root, cfg.hop_via)
 
         _needs = _needs + ("hop",)
 
@@ -218,6 +218,12 @@ def _api_route(ctx, cfg, route, detail):
     if c is None:
         ctx.check("an authenticated client is available", False)
         return None
+
+    # A hop, or any earlier CLI upgrade, may still have a detached helper
+    # finishing the backend recreate. The dashboard refuses with 409 until it
+    # is done, so wait for the box to be idle rather than racing it.
+    detail["settled"] = _wait_for_upgrade_settled(
+        ctx, cfg, cfg.repo_dir or "/mnt/intact")
 
     if route == "ui_online":
         body = up.start_online(c, cfg.upgrade_to,
@@ -580,6 +586,60 @@ def _release_on_unwind(holder, log_path, detail, deadline_s=2400):
         holder.close()
 
     threading.Thread(target=watch, daemon=True).start()
+
+
+def _wait_for_upgrade_settled(ctx, cfg, root, timeout_s=900):
+    """Wait for a previous upgrade's detached helper to finish before driving
+    the dashboard.
+
+    Measured: a UI upgrade started straight after the hop was refused with 409
+    "Another upgrade is already running against this appliance", blocking_run_id
+    null. Null because the backend names the blocking run from its own
+    database, and a CLI upgrade has no row there.
+
+    Nothing was wrong. `scripts/upgrade.sh` returns as soon as it has handed
+    over to a DETACHED HELPER CONTAINER -- spawned from the old image so it
+    survives its own parent being stopped -- and that helper is what actually
+    recreates intact_backend. It holds the flock while it works, and the
+    dashboard is correct to refuse a second upgrade until it is done. The race
+    was the harness's: it treated "the CLI returned 0" as "the box is idle".
+
+    So this waits for the lock to clear AND for the backend to answer again,
+    which is what "the previous upgrade has finished" actually means. If it
+    never settles, the holder is named -- a bare 409 says only "busy", which
+    at that point is exactly what it would not be.
+    """
+    lock = os.path.join(root, "data/tmp/upgrade.lock")
+    deadline = time.time() + timeout_s
+    free = healthy = False
+    while time.time() < deadline:
+        if not free:
+            free = shell.sudo(["flock", "-n", lock, "true"],
+                              cfg.sudo_password, timeout=30).ok
+        if free:
+            healthy, _why = shell.container_is_ok("intact_backend")
+            if healthy:
+                break
+        time.sleep(5)
+
+    detail = {"lock": lock, "free": free, "backend_healthy": healthy}
+    if not (free and healthy):
+        who = shell.sudo(["bash", "-c",
+                          f"fuser -v {lock} 2>&1; echo ---; "
+                          f"lsof {lock} 2>&1 | head -20; echo ---; "
+                          f"docker ps --format '{{{{.Names}}}} {{{{.Status}}}}'"],
+                         cfg.sudo_password, timeout=60)
+        detail["holder"] = (who.out or "").strip()[-900:]
+    ctx.check("the previous upgrade finished before the dashboard is driven",
+              free and healthy,
+              expected="lock released and intact_backend healthy",
+              actual="settled" if (free and healthy)
+                     else detail.get("holder") or "still busy",
+              note="scripts/upgrade.sh returns once it has handed over to a "
+                   "detached helper; the helper holds the lock while it "
+                   "recreates the backend, and the dashboard refuses an "
+                   "upgrade with 409 until it is done")
+    return detail
 
 
 def _hop_via(ctx, cfg, root, tag):
