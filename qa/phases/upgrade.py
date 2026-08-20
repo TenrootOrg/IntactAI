@@ -468,6 +468,43 @@ def _assert_adopted(ctx, root, detail):
               note="bootstrap_iris_api_key runs only from the installer's "
                    "orchestrator and has no counterpart in lib/upgrade/ — if "
                    "this fails, that is the product gap, not the test")
+
+    # VOLWEB, both halves. These were fixed on the strength of matching the
+    # IRIS pattern -- same installer-only caller, same shape -- and NOT on the
+    # strength of anything observed, because nothing here looked. A fix
+    # believed rather than measured is exactly what this suite exists to
+    # replace, so look.
+    admin = shell.run(["docker", "exec", "--user", "app", "-w", "/home/app/web",
+                       "-i", "intact_volweb_backend", "python3", "manage.py",
+                       "shell"], timeout=180,
+                      input_text="from django.contrib.auth import get_user_model\n"
+                                 "print('SUPERUSERS=%d' % get_user_model()"
+                                 ".objects.filter(is_superuser=True).count())\n")
+    m = re.search(r"SUPERUSERS=(\d+)", admin.out or "")
+    detail["volweb_superusers"] = m.group(1) if m else None
+    ctx.check("adopt: VolWeb has an admin account",
+              bool(m) and int(m.group(1)) > 0,
+              expected=">=1 superuser",
+              actual=(m.group(1) if m else (admin.out or "")[-120:] or "no answer"),
+              note="seed_volweb_admin is called from deploy_volweb and nowhere "
+                   "in lib/upgrade/ — without it VolWeb comes up with nobody "
+                   "able to log in")
+
+    c = ctx.get("client")
+    if c is not None:
+        body = c.request("GET", "/api/maintenance/yara-rulesets/status",
+                         expect=(200,)) or {}
+        rules = body.get("rulesets")
+        n = len(rules) if isinstance(rules, list) else 0
+        detail["volweb_yara_rulesets"] = n if body.get("available") else body.get("reason")
+        ctx.check("adopt: VolWeb has YARA rulesets seeded",
+                  bool(body.get("available")) and n > 0,
+                  expected=">=1 ruleset",
+                  actual=(n if body.get("available")
+                          else f"unavailable: {str(body.get('reason'))[:80]}"),
+                  note="seed_yara_rulesets is called from the installer's "
+                       "orchestrator only — without it VolWeb has nothing to "
+                       "scan with")
     return detail
 
 
