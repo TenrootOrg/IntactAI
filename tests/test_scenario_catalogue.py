@@ -70,6 +70,46 @@ class TestScenarioCatalogue(unittest.TestCase):
                      - set(self.mod.MODULE_SETS))
         self.assertFalse(bad, "unhandled module set(s): " + ", ".join(bad))
 
+    def test_the_workflow_validator_accepts_every_module_set(self):
+        """The guard that was missing.
+
+        A previous version of this file checked the catalogue's module sets
+        against MODULE_SETS -- the catalogue against itself, which cannot fail.
+        Meanwhile the workflow's own input validator still hard-coded
+        `all|lean` from an earlier design, so it refused `shipped` and
+        `backend-only` and killed three scenarios before they installed
+        anything. The validator must read the catalogue, not a hand-kept list.
+        """
+        src = open(WORKFLOW, encoding="utf-8").read()
+        self.assertIn("import scenarios;print", src,
+                      "the module_set validator must derive its allowed values "
+                      "from qa/scenarios.py rather than hard-coding them")
+        self.assertNotRegex(
+            src, r'case "\$MODULE_SET" in [a-z|-]+\)',
+            "the workflow still hard-codes the module_set list in a case "
+            "statement; it will drift from the catalogue again")
+
+    def test_the_harness_runs_from_the_workspace_not_the_appliance(self):
+        """Old appliances have no qa/ directory.
+
+        Under the two-tree model the appliance is an OLD release's tree.
+        intact-20260615 carries no harness at all, so running the harness from
+        there dies with ENOENT before a single phase executes -- and the step
+        has continue-on-error, so it reports success while producing nothing.
+        """
+        src = open(WORKFLOW, encoding="utf-8").read()
+        # To the next step, not to the first mention of run_qa.py -- the
+        # explanatory comment names it too, and cutting there truncated the
+        # block before the line this test exists to read.
+        block = src[src.index("Run the QA harness"):]
+        nxt = re.search(r"\n      - (name|uses):", block)
+        block = block[:nxt.start()] if nxt else block
+        self.assertIn('cd "${GITHUB_WORKSPACE}"', block,
+                      "the harness must run from the workspace; the appliance "
+                      "may be an old release with no qa/ directory")
+        self.assertNotIn('cd "${APPLIANCE}"', block,
+                         "the harness is being run from the appliance tree")
+
     def test_every_role_used_is_resolvable(self):
         """A typo'd role would silently resolve to an empty tag, and the
         scenario would install the branch instead of the old box it names."""

@@ -333,8 +333,19 @@ jobs:
           # install has already destroyed the runner's state.
           case "$BUILD_IMAGES" in backend|none) ;; *)
             echo "::error::build_images must be 'backend' or 'none', got '$BUILD_IMAGES'"; exit 1 ;; esac
-          case "$MODULE_SET" in all|lean) ;; *)
-            echo "::error::module_set must be 'all' or 'lean', got '$MODULE_SET'"; exit 1 ;; esac
+          # Validated against the catalogue itself, not a hand-kept list. The
+          # two drifted the moment scenarios.py grew `shipped` and
+          # `backend-only`, and this step refused three scenarios that were
+          # perfectly well defined -- loudly, which is the one good thing about
+          # it, but for no reason.
+          # A membership test, not `case ... in $VAR)`: a `|` inside a variable
+          # is NOT re-parsed as case alternation, so that form refuses
+          # everything including the values it was meant to accept.
+          KNOWN=$(python3 -c "import sys;sys.path.insert(0,'qa');import scenarios;print('\n'.join(scenarios.MODULE_SETS))")
+          if ! printf '%s\n' "$KNOWN" | grep -qxF "$MODULE_SET"; then
+            echo "::error::module_set must be one of: $(echo $KNOWN | tr '\n' ' '), got '$MODULE_SET'"
+            exit 1
+          fi
           case "$TIMEOUT_MIN" in ''|*[!0-9]*)
             echo "::error::install_timeout_min must be a number, got '$TIMEOUT_MIN'"; exit 1 ;; esac
           if [ -n "$VERSION_OVERRIDE" ]; then
@@ -620,7 +631,14 @@ jobs:
           PHASES: ${{ github.event.inputs.phases || '' }}
         run: |
           set -uo pipefail
-          cd "${APPLIANCE}"
+          # Run the harness from the WORKSPACE, not the appliance.
+          #
+          # Under the two-tree model the appliance is an OLD release's tree, and
+          # qa/ did not exist back then -- intact-20260615 carries no harness at
+          # all, so `cd /mnt/intact && python3 qa/run_qa.py` dies with ENOENT
+          # before a single phase runs. The harness belongs to the branch under
+          # test and only POINTS at the appliance, via QA_REPO_DIR.
+          cd "${GITHUB_WORKSPACE}"
           # From the WORKSPACE, not the appliance tree: the staging step
           # rsyncs with --exclude .git, so /mnt/intact is not a git repo at all
           # and this reported "unknown" — leaving the report unable to name the
