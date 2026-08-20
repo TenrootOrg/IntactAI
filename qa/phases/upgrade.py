@@ -151,6 +151,21 @@ def register(runner, cfg):
             detail["after"] = appliance.assert_state(ctx, root, target, "after")
         appliance.assert_canary(ctx, "after")
 
+        # ADOPTION IS VERIFIED HERE, not inside the upgrade phase.
+        #
+        # It used to run in _post_upgrade, which is part of `upgrade` -- and
+        # `upgrade` is critical. So the one check that is EXPECTED to fail,
+        # the IRIS api key the upgrade path never bootstraps, aborted the run
+        # and skipped fourteen phases behind it. The upgrade itself had
+        # succeeded: nine modules enabled, every one of them installed and
+        # running. Losing the feature sweep and the pipelines over a known
+        # product gap is exactly backwards, and it contradicts the rule the
+        # whole matrix is built on -- a failure in one part must not stop the
+        # rest.
+        if cfg.scenario in ("ui-online-adopt", "ui-import-adopt"):
+            detail["adopted"] = _assert_adopted(
+                ctx, root, {"enabled_for_adoption": ctx.get("adopted_modules")})
+
         # The strongest single proof the box agrees with itself: ask the
         # planner again. Anything it upgraded must now read as a no-op —
         # except `intact`, which is a rolling tag and is re-applied by design.
@@ -330,6 +345,7 @@ def _pre_upgrade(ctx, cfg, root, detail, log_path):
         # the upgrade engine is then expected to INSTALL them.
         enabled = _enable_all_modules(ctx, cfg, root)
         detail["enabled_for_adoption"] = enabled
+        ctx.set(adopted_modules=enabled)
 
     elif scenario == "rollback":
         # Occupy a port the module must bind, so `compose up` fails DURING its
@@ -419,8 +435,7 @@ def _post_upgrade(ctx, cfg, root, detail, rc):
                   note="an upgrade that is not idempotent cannot safely be "
                        "retried after an interruption")
 
-    elif scenario in ("ui-online-adopt", "ui-import-adopt"):
-        _assert_adopted(ctx, root, detail)
+
 
 
 def _assert_adopted(ctx, root, detail):
@@ -453,6 +468,7 @@ def _assert_adopted(ctx, root, detail):
               note="bootstrap_iris_api_key runs only from the installer's "
                    "orchestrator and has no counterpart in lib/upgrade/ — if "
                    "this fails, that is the product gap, not the test")
+    return detail
 
 
 # --- helpers ---------------------------------------------------------------
