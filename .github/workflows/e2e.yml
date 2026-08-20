@@ -321,6 +321,9 @@ jobs:
     steps:
       # ------------------------------------------------------------------ 1 --
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref_name }}
+          fetch-depth: 1
 
       - name: Validate the inputs
         env:
@@ -358,9 +361,6 @@ jobs:
             case "$VERSION_OVERRIDE" in intact-*) ;; *)
               echo "::error::version_override must look like intact-YYYYMMDD, got '$VERSION_OVERRIDE'"; exit 1 ;; esac
           fi
-        with:
-          ref: ${{ github.event.inputs.ref || github.ref_name }}
-          fetch-depth: 1
 
       # ------------------------------------------------------------------ 2 --
       - name: "Capacity: measure, reclaim, measure"
