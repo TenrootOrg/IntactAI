@@ -93,7 +93,11 @@ def register(runner, cfg):
         # this is what ties a platform log line back to a QA stage.
         if c:
             per_run = {}
-            for key in ("kape_run_id", "hunt_run_id", "volweb_run_id"):
+            # upgrade_run_id included: an API-driven upgrade's output lives
+            # only in the launcher's run log, and leaving it out is what made a
+            # refusal impossible to diagnose from the artifacts alone.
+            for key in ("kape_run_id", "hunt_run_id", "volweb_run_id",
+                        "upgrade_run_id"):
                 rid = ctx.get(key)
                 if rid:
                     per_run[key] = {"run_id": rid, "logs": c.run_logs(rid)}

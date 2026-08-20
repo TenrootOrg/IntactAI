@@ -22,6 +22,7 @@ module that rolled back so far it stopped existing, an evidence store quietly
 emptied. So `verify_upgrade` asserts state, not exit codes.
 """
 
+import json
 import os
 import re
 import time
@@ -240,8 +241,25 @@ def _api_route(ctx, cfg, route, detail):
         return None
     detail["run_id"] = run_id
 
+    ctx.set(upgrade_run_id=run_id)
     run, rc = up.wait_for_upgrade(c, run_id, ctx.tl, what=f"{route} upgrade")
     detail["status"] = (run or {}).get("status")
+
+    # THE REASON, not just the code. An API-driven upgrade runs server-side, so
+    # its output goes to the launcher's own log and never near the harness's
+    # stdout -- a shell route puts the failure in `tail`, an API route left
+    # `exit_code: 2` and nothing else. "Refused before touching anything" is a
+    # verdict, not a diagnosis, and reconstructing which of the several
+    # refusals it was from timing alone is guesswork.
+    if rc not in (up.RC_CLEAN, None):
+        try:
+            text = c.run_logs(run_id) or ""
+            if not isinstance(text, str):
+                text = json.dumps(text, default=str)
+            lines = [l for l in text.splitlines() if l.strip()]
+            detail["tail"] = [ctx.redact(l)[:300] for l in lines[-25:]]
+        except Exception as exc:                              # noqa: BLE001
+            detail["tail_error"] = ctx.redact(str(exc))[:200]
     # The launcher writes this: a faithful, re-runnable transcript of exactly
     # what the helper container executed. The single best artifact to keep.
     detail["launch_script"] = f"data/tmp/upgrade-launch-{run_id}.sh"
