@@ -177,6 +177,20 @@ LINUX_DEFAULT_ARTIFACTS = [
     "Linux.Syslog.SSHLogin",       # SSH auth events
     "Linux.Forensics.Journal",     # systemd journal
     "Linux.Debian.Packages",       # Installed packages (best-effort, Debian/Ubuntu)
+    # Artefacts the fusion engine already maps, which nothing was collecting.
+    # services/fusion/mappers/agentic.py scores LD_PRELOAD persistence at 70,
+    # memfd execution at 80 and a uid-0 non-root account at 60 -- so these were
+    # the highest-signal Linux detections the product can make, and the case
+    # never saw them. Kept in step with agentic_linux_triage in
+    # config/default_blueprints.yaml; the two lists describe the same triage and
+    # drifting apart is what created the gap.
+    "Linux.Persistence.LdPreload",       # LD_PRELOAD / ld.so.preload persistence
+    "Linux.Detection.MemFD",             # fileless execution from memfd
+    "Linux.Detection.SSHKeyFileCmd",     # authorized_keys command= backdoor
+    "Linux.Detection.IncorrectPermissions",  # world-writable sensitive paths
+    "Linux.Forensics.EnvironmentVariables",  # per-process env (LD_* injection)
+    "Linux.Sys.Getcap",                  # file capabilities (privesc)
+    "Linux.Users.RootUsers",             # uid-0 accounts that are not root
 ]
 
 # macOS triage set — best-effort; the velociraptor binary ships only a handful of
