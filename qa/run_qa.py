@@ -57,39 +57,15 @@ def _self_copy_and_exec(argv, run_id):
         [sys.executable, os.path.join(dest, "run_qa.py")] + argv, env=env))
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--only", help="comma-separated phases to run")
-    ap.add_argument("--skip", help="comma-separated phases to skip")
-    ap.add_argument("--run-id", help="reuse a run id (for a resumed run)")
-    ap.add_argument("--no-relocate", action="store_true",
-                    help="do not copy the harness out of the repo first")
-    args = ap.parse_args()
+def build_runner(ctx, cfg):
+    """Register every phase and put them in the order they must run in.
 
-    only = set(filter(None, (args.only or "").split(",")))
-    skip = set(filter(None, (args.skip or "").split(",")))
-
-    try:
-        cfg = qa_config.load()
-    except qa_config.ConfigError as exc:
-        print(f"\n{exc}\n", file=sys.stderr)
-        return 2
-
-    run_id = args.run_id or os.environ.get("QA_RUN_ID")
-
-    # Relocate unless the wipe is being skipped — no wipe, no self-deletion.
-    wipe_will_run = "wipe" not in skip and (not only or "wipe" in only)
-    relocated = os.environ.get("QA_ALREADY_RELOCATED") == "1"
-    if wipe_will_run and not relocated and not args.no_relocate:
-        run_dir, run_id = timeline_lib.new_run(cfg)
-        _self_copy_and_exec(sys.argv[1:], run_id)
-
-    run_dir, run_id = timeline_lib.new_run(cfg, run_id)
-
-    redactor = qa_redact.Redactor(cfg.secrets())
-    tl = timeline_lib.Timeline(run_dir, run_id, redactor=redactor)
-    ctx = runner_lib.PhaseContext(cfg, tl, run_dir, {}, redactor)
+    Extracted from main() so a test can build the same phase list for a
+    given scenario and check it, without a live appliance. The ordering
+    here is not cosmetic: a phase whose dependency ends up LATER in the
+    list is silently skipped, and a skip is not a failure -- so getting
+    it wrong produces a green run that did nothing.
+    """
     runner = runner_lib.Runner(ctx)
 
     from phases import (endpoint, endpoint_linux, features, pipelines,
@@ -126,13 +102,63 @@ def main():
     # drive, and enrolling before an upgrade that recreates Velociraptor proves
     # the wrong thing.
     if any(p["name"] == "upgrade" for p in runner.phases):
-        # `auth` moves too when the box being upgraded is an OLD release.
-        # intact-20260615 has no auth system at all, so claiming the dashboard
-        # can only work once the upgrade has put one there. On a
-        # current-release box it is already in the right place and this is a
-        # no-op.
-        for name in ("auth", "enrol_linux", "features", "pipelines"):
+        moving = ["enrol_linux", "features", "pipelines"]
+
+        # `auth` moves ONLY for the shell routes. intact-20260615 has no auth
+        # system at all, so on those the dashboard can only be claimed once the
+        # upgrade has put one there.
+        #
+        # A dashboard upgrade is the opposite case and moving `auth` broke it
+        # outright: the ui_online and ui_import routes are DRIVEN through the
+        # authenticated API, so the upgrade phase declares needs=("auth",). With
+        # auth reordered after it, that dependency was unmet, the upgrade phase
+        # was SKIPPED -- and a skip is not a failure, so all four UI scenarios
+        # could report green having never performed an upgrade at all. Exactly
+        # the silent false pass this suite exists to prevent.
+        import scenarios
+        route = scenarios.route_for(cfg.scenario) or ""
+        if not route.startswith("ui_"):
+            moving.insert(0, "auth")
+
+        for name in moving:
             _reorder(runner, name, before="collect")
+    return runner
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--only", help="comma-separated phases to run")
+    ap.add_argument("--skip", help="comma-separated phases to skip")
+    ap.add_argument("--run-id", help="reuse a run id (for a resumed run)")
+    ap.add_argument("--no-relocate", action="store_true",
+                    help="do not copy the harness out of the repo first")
+    args = ap.parse_args()
+
+    only = set(filter(None, (args.only or "").split(",")))
+    skip = set(filter(None, (args.skip or "").split(",")))
+
+    try:
+        cfg = qa_config.load()
+    except qa_config.ConfigError as exc:
+        print(f"\n{exc}\n", file=sys.stderr)
+        return 2
+
+    run_id = args.run_id or os.environ.get("QA_RUN_ID")
+
+    # Relocate unless the wipe is being skipped — no wipe, no self-deletion.
+    wipe_will_run = "wipe" not in skip and (not only or "wipe" in only)
+    relocated = os.environ.get("QA_ALREADY_RELOCATED") == "1"
+    if wipe_will_run and not relocated and not args.no_relocate:
+        run_dir, run_id = timeline_lib.new_run(cfg)
+        _self_copy_and_exec(sys.argv[1:], run_id)
+
+    run_dir, run_id = timeline_lib.new_run(cfg, run_id)
+
+    redactor = qa_redact.Redactor(cfg.secrets())
+    tl = timeline_lib.Timeline(run_dir, run_id, redactor=redactor)
+    ctx = runner_lib.PhaseContext(cfg, tl, run_dir, {}, redactor)
+    runner = build_runner(ctx, cfg)
 
     print("=" * 78)
     print(f"Intact.AI QA — {run_id}")

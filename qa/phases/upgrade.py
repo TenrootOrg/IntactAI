@@ -124,6 +124,14 @@ def register(runner, cfg):
         root = cfg.repo_dir or "/mnt/intact"
         target = cfg.upgrade_to
 
+        # Every route recreates intact_backend, so a session held from before
+        # the upgrade is not to be trusted afterwards -- and on the UI routes
+        # there certainly IS one, because driving the upgrade required it. The
+        # module checks that follow (features, pipelines, enrol_linux) all run
+        # off ctx["client"], so a quietly-dead cookie would surface as a wall
+        # of unrelated 401s attributed to the wrong phase.
+        detail["session"] = _refresh_session(ctx, cfg)
+
         if target:
             detail["after"] = appliance.assert_state(ctx, root, target, "after")
         appliance.assert_canary(ctx, "after")
@@ -465,6 +473,48 @@ def _hold_port(port):
     except OSError:
         s.close()
         return None
+
+
+def _refresh_session(ctx, cfg):
+    """Re-authenticate after an upgrade. Returns what happened, for the report.
+
+    Shell routes have no client yet at this point -- `auth` deliberately runs
+    after them, because the oldest boxes have no auth system to claim until the
+    upgrade has installed one -- so an absent client is expected, not a fault.
+    """
+    if ctx.get("client") is None:
+        return "not authenticated yet (shell route claims the box later)"
+
+    from lib import api as api_lib
+    from phases import platform as platform_mod
+
+    c = api_lib.Client(cfg.platform_host, tl=ctx.tl)
+    try:
+        how = c.ensure_session(platform_mod.QA_DASH_USER,
+                               platform_mod.QA_DASH_PASSWORD)
+        ok = c.is_authenticated()
+    except Exception as exc:                                  # noqa: BLE001
+        ctx.check("the dashboard is reachable after the upgrade", False,
+                  actual=ctx.redact(str(exc))[:200],
+                  note="the upgrade recreated the backend and the box did not "
+                       "come back to a state that accepts a login")
+        return "failed"
+
+    ctx.check("a session can be established after the upgrade", ok,
+              actual="authenticated" if ok else "login refused",
+              note="an upgrade that leaves the operator unable to log back in "
+                   "has failed regardless of its exit code")
+    if not ok:
+        return "failed"
+
+    # Keep the run inside the same persistent case, or the post-upgrade
+    # pipelines would fuse into a different workspace than the pre-upgrade
+    # ones and the comparison would be meaningless.
+    case_id = ctx.get("qa_case_id")
+    if case_id:
+        c.s.headers["X-Case-Id"] = case_id
+    ctx.set(client=c)
+    return f"re-authenticated ({how})"
 
 
 def _release_on_unwind(holder, log_path, detail, deadline_s=2400):

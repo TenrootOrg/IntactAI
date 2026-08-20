@@ -352,6 +352,105 @@ class _FakeCtx:
         return []
 
 
+class _StubCfg:
+    """Enough of a config to register phases, with no appliance anywhere."""
+
+    def __init__(self, scenario):
+        self.scenario = scenario
+        self.platform_host = "10.0.0.1"
+        self.windows_host = None
+        self.linux_client = True
+        self.feature_sweep = True
+        self.pipelines = True
+        self.plant_evidence = True
+        self.repo_dir = "/mnt/intact"
+        self.upgrade_to = "intact-20260818"
+        self.upgrade_package = None
+        self.upgrade_extra = ()
+        self.downgrade_tag = None
+        self.hop_via = None
+        self.sudo_user = "runner"
+        self.sudo_password = "x"
+
+    def get(self, *a, **kw):
+        return kw.get("default")
+
+    def secrets(self):
+        return []
+
+    def __getattr__(self, name):        # anything else a phase module reads
+        return None
+
+
+class TestPhaseOrderPerScenario(unittest.TestCase):
+    """Every phase's dependencies must run BEFORE it, in every scenario.
+
+    A `needs=` naming a phase that ends up later in the list is not an error at
+    runtime -- the phase is simply SKIPPED, and a skip is not a failure. So the
+    failure mode is a green job that never did the thing it exists to do.
+
+    That is not hypothetical. `auth` was reordered after `upgrade` for every
+    upgrade scenario, to suit the shell routes on old boxes that have no auth
+    system to claim yet. The dashboard routes are driven THROUGH the
+    authenticated API and declare needs=("auth",), so all four UI scenarios
+    would have skipped the upgrade entirely and reported success.
+    """
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(ROOT, "qa"))
+
+    def _phases_for(self, scenario):
+        import shutil
+        import tempfile
+        import run_qa
+        from lib import runner as runner_lib
+
+        class _TL:
+            def __getattr__(self, n):
+                return lambda *a, **k: None
+
+        tmp = tempfile.mkdtemp(prefix="qa-order-")
+        try:
+            os.makedirs(os.path.join(tmp, "phases"), exist_ok=True)
+            cfg = _StubCfg(scenario)
+            ctx = runner_lib.PhaseContext(cfg, _TL(), tmp, {}, lambda t: t)
+            return run_qa.build_runner(ctx, cfg).phases
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_every_scenario_orders_its_dependencies_correctly(self):
+        import scenarios
+        problems = []
+        for row in scenarios.SCENARIOS:
+            phases = self._phases_for(row["name"])
+            order = {p["name"]: i for i, p in enumerate(phases)}
+            for p in phases:
+                for dep in p["needs"]:
+                    if dep in order and order[dep] > order[p["name"]]:
+                        problems.append(
+                            f"{row['name']}: {p['name']} needs {dep}, which "
+                            f"runs later -- {p['name']} would be silently "
+                            f"skipped")
+        self.assertFalse(problems, "phases that can never run:\n  "
+                         + "\n  ".join(problems))
+
+    def test_the_ui_routes_authenticate_before_they_upgrade(self):
+        """Stated separately because it is the specific thing that broke, and
+        because 'the upgrade phase actually runs' is the whole point of those
+        four scenarios."""
+        import scenarios
+        for row in scenarios.SCENARIOS:
+            if not (row.get("route") or "").startswith("ui_"):
+                continue
+            names = [p["name"] for p in self._phases_for(row["name"])]
+            self.assertIn("auth", names, row["name"])
+            self.assertIn("upgrade", names, row["name"])
+            self.assertLess(
+                names.index("auth"), names.index("upgrade"),
+                f"{row['name']}: a dashboard upgrade is driven through the "
+                f"authenticated API, so auth must precede it")
+
+
 class TestSelfAssertingScenarios(unittest.TestCase):
     """A scenario excused from "exited cleanly" must assert something instead.
 
