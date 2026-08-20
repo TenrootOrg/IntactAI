@@ -164,8 +164,11 @@ def _offline_collector(ctx, c, detail):
     cfg_id = None
     name = f"QA-CI-{time.strftime('%Y%m%d-%H%M%S')}"
     try:
+        # `config_name`, not `name` -- the route rejects the latter with a 400
+        # naming the field it wanted. Measured, not guessed.
         body = c.request("POST", "/api/velociraptor/offline/configs",
-                         json={"name": name, "artifacts": ["Generic.Client.Info"]},
+                         json={"config_name": name,
+                               "artifacts": ["Generic.Client.Info"]},
                          expect=(200, 201))
         cfg_id = (body or {}).get("config_id") or (body or {}).get("id")
     except Exception as exc:                                  # noqa: BLE001
