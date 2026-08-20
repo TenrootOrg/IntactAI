@@ -727,6 +727,42 @@ class TestNoHardCodedApplianceePath(unittest.TestCase):
 
 
 
+class TestRunLogFlattening(unittest.TestCase):
+    """Client.run_logs returns a LIST of entries, not text.
+
+    The first version of the failure diagnostic treated it as a string,
+    json.dumps-ed it when it wasn't one, and then truncated the single
+    resulting line to 300 characters -- discarding the exact output it had
+    been added to capture. Driven for real rather than grepped, because the
+    bug was in the handling, not the presence.
+    """
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(ROOT, "qa"))
+
+    def test_dict_entries_keep_their_message(self):
+        from phases.upgrade import _log_lines
+        self.assertEqual(
+            _log_lines([{"level": "ERROR", "message": "Refusing: bad tag"}]),
+            ["[ERROR] Refusing: bad tag"])
+
+    def test_a_multiline_entry_becomes_multiple_lines(self):
+        """`the last N lines` has to mean lines. One record carrying thirty
+        lines of engine output must not count as one."""
+        from phases.upgrade import _log_lines
+        self.assertEqual(_log_lines([{"message": "a\nb\nc"}]), ["a", "b", "c"])
+
+    def test_strings_and_oddities_survive(self):
+        from phases.upgrade import _log_lines
+        self.assertEqual(_log_lines(["bare"]), ["bare"])
+        self.assertEqual(len(_log_lines([{"unexpected": 1}])), 1)
+
+    def test_empty_input_is_not_an_error(self):
+        from phases.upgrade import _log_lines
+        self.assertEqual(_log_lines(None), [])
+        self.assertEqual(_log_lines([]), [])
+
+
 class TestUpgradeStartTimeouts(unittest.TestCase):
     """The three upgrade-start endpoints need their own timeout.
 

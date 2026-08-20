@@ -253,11 +253,8 @@ def _api_route(ctx, cfg, route, detail):
     # refusals it was from timing alone is guesswork.
     if rc not in (up.RC_CLEAN, None):
         try:
-            text = c.run_logs(run_id) or ""
-            if not isinstance(text, str):
-                text = json.dumps(text, default=str)
-            lines = [l for l in text.splitlines() if l.strip()]
-            detail["tail"] = [ctx.redact(l)[:300] for l in lines[-25:]]
+            detail["tail"] = [ctx.redact(l)[:300]
+                              for l in _log_lines(c.run_logs(run_id))[-30:]]
         except Exception as exc:                              # noqa: BLE001
             detail["tail_error"] = ctx.redact(str(exc))[:200]
     # The launcher writes this: a faithful, re-runnable transcript of exactly
@@ -604,6 +601,33 @@ def _release_on_unwind(holder, log_path, detail, deadline_s=2400):
         holder.close()
 
     threading.Thread(target=watch, daemon=True).start()
+
+
+def _log_lines(entries):
+    """Flatten what Client.run_logs returns into printable lines.
+
+    It returns a LIST of entries, not text -- each usually a dict carrying a
+    message alongside a level and a timestamp. Treating it as a string and
+    json.dumps-ing it produced a single enormous line, which then got truncated
+    to 300 characters: the diagnostic would have discarded the very output it
+    was added to capture.
+    """
+    out = []
+    for e in entries or []:
+        if isinstance(e, dict):
+            msg = e.get("message") or e.get("line") or e.get("text") or ""
+            if not msg:
+                msg = json.dumps(e, default=str)
+            level = e.get("level") or ""
+            out.append(f"[{level}] {msg}" if level else str(msg))
+        else:
+            out.append(str(e))
+    # An entry may itself be multi-line; a caller asking for the last N lines
+    # means lines, not records.
+    flat = []
+    for line in out:
+        flat.extend(line.splitlines() or [line])
+    return [l for l in flat if l.strip()]
 
 
 def _wait_for_upgrade_settled(ctx, cfg, root, timeout_s=900):
