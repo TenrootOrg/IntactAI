@@ -68,6 +68,10 @@ def register(runner, cfg):
         log_path = os.path.join(ctx.run_dir, "logs", f"upgrade-{route}.log")
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
 
+        # The engine hop, when the box is too old to reach the target directly.
+        if cfg.hop_via:
+            detail["hop"] = _hop_via(ctx, cfg, root, cfg.hop_via)
+
         _pre_upgrade(ctx, cfg, root, detail)
 
         started = time.time()
@@ -407,3 +411,91 @@ def _hold_port(port):
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:                                         # noqa: BLE001
         return None
+
+
+def _hop_via(ctx, cfg, root, tag):
+    """Move the box onto an intermediate release, the way the README says.
+
+    "An upgrade runs the TARGET RELEASE'S OWN CODE against your live intact
+    folder." That is the whole design: you do not ask the old box to upgrade
+    itself, you download the newer release next to it and run that release's
+    scripts/upgrade.sh --root <appliance>. The old box's code never runs.
+
+    Which is why this hop exists at all. A 0726 appliance ships no
+    scripts/upgrade.sh and no bootstrap — verified against the tag — so 0726
+    itself cannot drive anything. But 0811's tree can, and pointing it at the
+    0726 appliance is exactly the documented invocation.
+
+    The hop is cheap on purpose: the 0811 asset carries `intact` alone (432 MB),
+    so it moves the engine and leaves every module pin untouched. The real work
+    happens afterwards, with the box genuinely AT 0811 — which is the point,
+    because a UI upgrade runs on the box and can only be tested from the version
+    the box actually is.
+    """
+    detail = {"tag": tag}
+    workdir = os.path.join(ctx.run_dir, "artifacts", tag)
+    os.makedirs(workdir, exist_ok=True)
+
+    # 1. the release's own tree — this is what will drive the upgrade
+    src_tgz = os.path.join(workdir, f"{tag}-source.tar.gz")
+    tree = os.path.join(workdir, tag)
+    os.makedirs(tree, exist_ok=True)
+    r = shell.run(["curl", "-fLsS", "--retry", "3", "-o", src_tgz,
+                   _release_source_url(tag)], timeout=900)
+    if r.ok:
+        r = shell.run(["tar", "-xzf", src_tgz, "--strip-components=1",
+                       "-C", tree], timeout=300)
+    engine = os.path.join(tree, "scripts/upgrade.sh")
+    ctx.check(f"hop: {tag}'s own tree is on disk", os.path.isfile(engine),
+              actual=engine if os.path.isfile(engine) else "no scripts/upgrade.sh",
+              note="the target release's code is what performs the upgrade; "
+                   "the appliance's own code is never used")
+    if not os.path.isfile(engine):
+        return detail
+
+    # 2. its package — the images and the engine asset
+    pkg = os.path.join(workdir, f"intact-upgrade-{tag}.tar.gz")
+    r = shell.run(["curl", "-fLsS", "--retry", "3", "-o", pkg,
+                   _release_asset_url(tag)], timeout=1800)
+    size = os.path.getsize(pkg) if os.path.exists(pkg) else 0
+    detail["package_bytes"] = size
+    ctx.check(f"hop: the {tag} package downloaded", size > 100 * 2**20,
+              expected=">100 MB", actual=f"{size / 2**20:.0f} MB")
+    if size <= 100 * 2**20:
+        return detail
+
+    # 3. run THAT release's engine against THIS appliance
+    log_path = os.path.join(ctx.run_dir, "logs", f"hop-{tag}.log")
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    res = shell.sudo(["bash", engine, "--package", pkg, "--root", root,
+                      "--log", log_path],
+                     cfg.sudo_password, timeout=up.TIMEOUT_UPGRADE_S,
+                     tl=ctx.tl, stage="upgrade", log_path=log_path,
+                     preserve_env=("GITHUB_TOKEN",))
+    detail["exit_code"] = res.rc
+    detail["tail"] = [l for l in (res.out or "").splitlines() if l.strip()][-6:]
+    ctx.check(f"hop: the box reached {tag}", res.rc == up.RC_CLEAN,
+              expected="0 (clean)", actual=f"{res.rc} ({up.describe_rc(res.rc)})",
+              note="the hop moves `intact` only — module pins stay where they "
+                   "were, and the next upgrade does the real work")
+
+    detail["after"] = appliance.version_facts(root)
+    on_disk = os.path.isfile(os.path.join(root, "scripts/upgrade.sh"))
+    ctx.check("hop: the appliance now carries an engine of its own", on_disk,
+              actual="scripts/upgrade.sh present" if on_disk else "absent",
+              note="a 0726 box has none, and the dashboard upgrade this "
+                   "scenario tests runs from the box itself")
+    return detail
+
+
+def _release_source_url(tag):
+    """The release's own source tree — what the README downloads first."""
+    repo = os.environ.get("INTACT_REPO", "TenrootOrg/IntactAI")
+    base = os.environ.get("INTACT_GH_DL_BASE", "https://github.com")
+    return f"{base}/{repo}/archive/refs/tags/{tag}.tar.gz"
+
+
+def _release_asset_url(tag):
+    repo = os.environ.get("INTACT_REPO", "TenrootOrg/IntactAI")
+    base = os.environ.get("INTACT_GH_DL_BASE", "https://github.com")
+    return f"{base}/{repo}/releases/download/{tag}/intact-upgrade-{tag}.tar.gz"

@@ -61,6 +61,7 @@ ENV_OVERRIDES = {
     ("run", "upgrade_package"): "QA_UPGRADE_PACKAGE",
     ("run", "upgrade_extra"): "QA_UPGRADE_EXTRA",
     ("run", "downgrade_tag"): "QA_DOWNGRADE_TAG",
+    ("run", "hop_via"): "QA_HOP_VIA",
 }
 
 # Split in two because a Windows endpoint is a property of the PROFILE, not of
@@ -263,6 +264,17 @@ class QAConfig:
         Real rather than synthetic: the engine compares actual pins, so a made-up
         tag would be refused for the wrong reason."""
         return (self.get("run", "downgrade_tag", default="") or "").strip()
+
+    @property
+    def hop_via(self):
+        """An intermediate release to pass through before the real upgrade.
+
+        0726 -> 0811 -> 0818 exists because the ENGINE changes: a 0726 box has
+        no scripts/upgrade.sh and no bootstrap at all, so its own in-backend
+        engine must first pull itself onto the new one. The 0811 asset is
+        intact-only (432 MB), which is why the hop is quick — it moves the
+        engine and nothing else."""
+        return (self.get("run", "hop_via", default="") or "").strip()
 
     def timeout(self, stage, default=30):
         """Minutes to wait for a slow stage before calling it failed."""

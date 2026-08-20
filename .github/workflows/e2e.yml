@@ -16,6 +16,42 @@ name: e2e (manual)
 # not assumed. Once it is on main you may still dispatch it against any ref, and
 # the definition used is the one on the ref you pick.
 #
+# THE SCENARIOS. One job each, on its own VM, all running concurrently. A
+# scenario failing cannot stop the others -- container names, volumes and
+# published ports are global, so a fresh machine per scenario is what makes them
+# independent rather than something to engineer.
+#
+#   scenario            installs      then                       proves
+#   ------------------  ------------  -------------------------  ----------------------
+#   install-online      branch        -                          the ordinary install
+#   install-package     branch        -                          the air-gap install;
+#                                                                --package diverges from
+#                                                                online in ~15 places
+#   cli-upgrade         branch        scripts/upgrade.sh         the path the README
+#                                     --only/--reinstall         documents to operators
+#   bootstrap           0615          bootstrap_upgrade.sh       a box too old to have a
+#                                                                usable engine can move
+#   ui-online-full      0726          POST /api/upgrade/online   the dashboard upgrade
+#   ui-import-full      0726          prepare -> offline         the air-gap dashboard
+#                                                                upgrade
+#   ui-online-adopt     backend-only  enable all, then online    a customer ADOPTS a
+#   ui-import-adopt     backend-only  enable all, then import    feature they never had
+#   rollback            branch        upgrade with a held port   a failed module unwinds
+#                                                                instead of stranding
+#   data-preservation   branch        upgrade with evidence      an upgrade does not lose
+#                                                                what the box was holding
+#   refuse-and-repeat   branch        downgrade, then repeat     refusal touches nothing;
+#                                                                a re-run is a no-op
+#
+# EVERY scenario ends by exercising the modules -- enrol a client, sweep the API,
+# run the Velociraptor / Timesketch / fusion pipelines -- against the box it
+# finished with, not the one it started from.
+#
+# intact-20260811 is deliberately absent as a starting point: its VERSION names a
+# release that was never published and its only asset is intact-only, so it
+# cannot be installed at all. The 0726 scenarios are how an 0811-era box is
+# reached.
+#
 # WHAT A GREEN RUN DOES AND DOES NOT PROVE. install.sh takes its service images
 # from a published RELEASE and refuses to build them (lib/modules/backend.sh),
 # so this exercises the chosen ref's installer, libraries, compose files, nginx
@@ -76,9 +112,13 @@ on:
         required: false
         default: 'true'
       scenarios:
-        description: "Comma-separated scenarios, or 'all'. e.g. install-online,install-package,cli-upgrade"
+        # TEMPORARY (2026-08-20) -- a subset while the matrix is being proven.
+        # RESTORE THIS TO 'all' once a full run has been seen to work; the
+        # remaining eight scenarios are the ones with no coverage today, so
+        # leaving this narrowed is leaving the gap open.
+        description: "Comma-separated scenarios, or 'all'. See the table at the top of this file."
         required: false
-        default: 'install-online'
+        default: 'install-online,install-package,cli-upgrade'
 
 # Read-only. This workflow downloads release assets and reads the repo; it
 # publishes nothing and must never be able to.
@@ -251,10 +291,20 @@ jobs:
 
             {"scenario": "ui-online-full", "install_from": "intact-20260726",
              "install_mode": "online", "modules": "shipped",
-             "upgrade_route": "ui_online", "upgrade_extra": ""},
+             "upgrade_route": "ui_online", "upgrade_extra": "",
+             # 0726 -> 0811 -> 0818. The middle hop exists because the ENGINE
+             # changes: a 0726 box ships no scripts/upgrade.sh and no bootstrap
+             # at all, so its own in-backend engine must first pull itself onto
+             # the new one. Quick, because the 0811 asset is intact-only.
+             "hop_via": "intact-20260811"},
             {"scenario": "ui-import-full", "install_from": "intact-20260726",
              "install_mode": "online", "modules": "shipped",
-             "upgrade_route": "ui_import", "upgrade_extra": ""},
+             "upgrade_route": "ui_import", "upgrade_extra": "",
+             # 0726 -> 0811 -> 0818. The middle hop exists because the ENGINE
+             # changes: a 0726 box ships no scripts/upgrade.sh and no bootstrap
+             # at all, so its own in-backend engine must first pull itself onto
+             # the new one. Quick, because the 0811 asset is intact-only.
+             "hop_via": "intact-20260811"},
 
             # A failure that must unwind rather than strand the box. The only
             # path that exercises _unpin_module_version.
@@ -604,6 +654,7 @@ jobs:
           QA_INSTALL_PACKAGE_DIR: ${{ steps.pkg.outputs.dir || '' }}
           QA_UPGRADE_EXTRA: ${{ matrix.upgrade_extra || '' }}
           QA_DOWNGRADE_TAG: ${{ matrix.downgrade_tag || '' }}
+          QA_HOP_VIA: ${{ matrix.hop_via || '' }}
           QA_UPGRADE_TO: ${{ matrix.upgrade_route && steps.images.outputs.tag || '' }}
           QA_RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
           QA_REF: ${{ github.event.inputs.ref || github.ref_name }}
