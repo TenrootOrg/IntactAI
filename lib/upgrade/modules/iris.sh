@@ -74,6 +74,21 @@ upgrade_module_iris() {
         if declare -F enforce_iris_admin_password >/dev/null; then
             enforce_iris_admin_password || log_warn "  could not re-assert the IRIS admin password"
         fi
+        # The backend's IRIS api_key, which ONLY the installer used to write.
+        # bootstrap_iris_api_key was reachable from lib/modules/orchestrator.sh
+        # and from nowhere under lib/upgrade/, so IRIS installed BY AN UPGRADE
+        # -- an operator enabling it in config.yaml and upgrading rather than
+        # re-running install.sh -- came up healthy, passed every container
+        # probe, and left the backend unable to call its API. Measured on a
+        # backend-only box that adopted all nine modules through the dashboard:
+        # every container up, secrets table empty.
+        #
+        # Same shape as the line above it, and for the same reason: idempotent,
+        # writes only what is missing, so it is a no-op on the normal upgrade
+        # where the key already exists.
+        if declare -F bootstrap_iris_api_key >/dev/null; then
+            bootstrap_iris_api_key || log_warn "  could not bootstrap the IRIS api key"
+        fi
         discard_backup "$bak"
     fi
     return $rc

@@ -42,6 +42,38 @@ velo_vql_ready() {
     return 1
 }
 
+# The server address the CLIENTS are told to call home to.
+#
+# modules/velociraptor/.env ships in the repo with a developer's address baked
+# in (VELOX_SERVER_URL=https://192.168.120.11:8000/). update_env_files rewrites
+# it from config.yaml's `domain` — but that is the INSTALL path, and nothing
+# under lib/upgrade/ ever did. On a normal upgrade it does not matter, because
+# install.sh already corrected it. It matters enormously when Velociraptor is
+# installed BY AN UPGRADE: an operator enabling it in config.yaml and
+# upgrading rather than re-running install.sh gets a server that starts, passes
+# every health probe, and hands out clients pointing at 192.168.120.11.
+#
+# Measured on a backend-only box that adopted all nine modules through the
+# dashboard: the client installed, started, and spent ten minutes logging
+# `While getting https://192.168.120.11:8000/ ... Waiting for a reachable
+# server` before the enrolment timed out.
+#
+# Idempotent: on any box install.sh has touched these already equal `domain`,
+# so this rewrites nothing.
+_velo_stamp_domain() {
+    local envf="$1" domain
+    [[ -f "$envf" ]] || return 0
+    domain="$(read_config "['domain']" 2>/dev/null || echo '')"
+    if [[ -z "$domain" || "$domain" == "None" ]]; then
+        log_warn "  config.yaml has no domain; leaving the Velociraptor URLs alone"
+        return 0
+    fi
+    update_env_var "$envf" "VELOX_FRONTEND_HOSTNAME" "$domain"
+    update_env_var "$envf" "VELOX_PUBLIC_IP"         "$domain"
+    update_env_var "$envf" "VELOX_SERVER_URL"        "https://${domain}:8000/"
+    return 0
+}
+
 upgrade_module_velociraptor() {
     local target="$1"
     local dir; dir="$(_VELO_DIR)"
@@ -95,6 +127,7 @@ upgrade_module_velociraptor() {
     # start at all against a data directory a newer version wrote. Observed on
     # this box 2026-08-13. plaso and aws_sigma already did this.
     u_do "pin velociraptor in config.yaml" -- _pin_module_version velociraptor "$target"
+    u_do "point velociraptor at this appliance" -- _velo_stamp_domain "$envf"
     u_do --timeout 600 "stage client binaries" -- _velo_stage_binaries "$target"
     u_do --timeout 1200 "resolve velociraptor-server:${target}" -- _velo_resolve_image "$target"
     u_do --timeout 600 "start velociraptor" -- _u_compose "$dir" up -d --no-build --pull never
