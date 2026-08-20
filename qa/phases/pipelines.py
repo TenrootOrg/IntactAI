@@ -7,40 +7,50 @@ platform ships for that feature, chosen so a full pass costs minutes rather than
 the hour a "Full Investigation" would.
 
   Velociraptor   agentic_linux_triage   the Linux QuickWins collection
-  AWS            aws_quick_triage       sigma over uploaded CloudTrail
-  Azure          azure_quick_triage     sigma over uploaded UAL
   Collector      offline generate       a real Linux collector binary
 
-WHAT CANNOT RUN HERE, and why it is skipped rather than faked. The Timesketch
-pipeline's lightweight blueprint is `timesketch_event_logs`, whose KAPE target
-is `EventLogs` and whose plaso parser is `winevtx` -- Windows event logs. The
-appliance enrols itself as a LINUX client, which has no Windows event logs to
-collect, so the pipeline has nothing to ingest. The same is true of memory:
-`memory_quick_wins` needs an image that Windows.Memory.Acquisition produces.
-Both are recorded as skipped with that reason. Faking either -- pointing them at
-a canned file and calling it a pass -- would be worse than not running them,
-because the report would claim coverage the run does not have.
+  Timesketch     tus purpose=timesketch  real host logs through plaso
+  Fusion         cases/quick + fuse      entities and relationships from them
 
-THE CLOUD PIPELINES ARE REAL, and they are the ones worth having. Both take an
-uploaded evidence file, so the entire sigma detection engine runs with no cloud
-account attached. The CloudTrail fixture is built to match a rule that actually
-ships (`aws_cloudtrail_disable_logging.yml`: eventSource cloudtrail.amazonaws.com
-+ eventName StopLogging), so "zero findings" is a real failure signal rather
-than an artefact of evidence nothing was looking for.
+TIMESKETCH IS NOT WINDOWS-LOCKED -- only its COLLECTION step is. `kape_service`
+hard-codes `Windows.Triage.Targets`, and `/api/timesketch/import` refuses any
+flow that route did not register, so the flow-driven path genuinely needs
+Windows. But `process_kape_upload` is reached by a second door: the tus upload
+with `purpose=timesketch`, which takes a ZIP and no flow at all. And
+`detect_kape_format` classifies by LAYOUT -- any member path containing
+`uploads/` is a "velociraptor" collection -- so real Linux logs under `uploads/`
+go straight through the same pipeline a customer's KAPE collection uses.
+
+Measured on a live appliance with this host's own /var/log: 286,044 plaso events
+(syslog 117k, syslog_traditional 20k, dpkg 4.8k, utmp 929) with the default
+parser set, 10,414 with the `linux` preset. This was never a hypothetical.
+
+WHAT STILL CANNOT RUN, and why it is skipped rather than faked. Memory is
+genuinely blocked in code, not by evidence: `services/memory/pipeline.py`
+registers every image as `os_name="windows"` at all three call sites, every
+shipped blueprint is `volatility3.plugins.windows.*`, and no ISF symbols ship --
+so even a perfect Linux image would fail inside Volatility. It runs only when
+the Windows evidence job supplies a real image; otherwise it is a recorded skip.
+
+The cloud modules (AWS sigma, o365rc) are deliberately NOT exercised here. They
+are a separate concern from the DFIR pipeline this phase covers, and their
+detection engines run over uploaded evidence rather than anything a client
+collects -- so they neither need nor benefit from the machinery below.
 """
 
 import json
+import os
+import re
+import socket
 import time
 
-from lib import api as api_lib
+from lib import api as api_lib, shell
 
 # The lightest blueprint the platform ships for each feature. Ids, not names:
 # selecting by name once picked "Full Triage" over "Event Logs Only" and made a
 # run ten times longer for no extra coverage.
 BLUEPRINTS = {
     "velociraptor_linux": "agentic_linux_triage",
-    "aws": "aws_quick_triage",
-    "azure": "azure_quick_triage",
     "timesketch": "timesketch_event_logs",     # EventLogs / winevtx — Windows only
     "memory": "memory_quick_wins",             # needs an acquired image
 }
@@ -50,6 +60,11 @@ BLUEPRINTS = {
 TIMEOUT_COLLECTION_S = 900
 TIMEOUT_CLOUD_S = 600
 TIMEOUT_COLLECTOR_S = 900
+# Plaso over a few hundred thousand events, then Timesketch's own Celery
+# workers indexing them. Measured at ~2 minutes for 286k events on a live box;
+# the ceiling is generous because indexing is the slow, variable half.
+TIMEOUT_TIMESKETCH_S = 2400
+TIMEOUT_MEMORY_S = 3600
 
 
 def register(runner, cfg):
@@ -69,172 +84,12 @@ def register(runner, cfg):
                       note="the auth phase did not sign in")
             return detail
 
-        _aws(ctx, c, detail)
-        _azure(ctx, c, detail)
         _velociraptor_linux(ctx, c, detail)
         _offline_collector(ctx, c, detail)
-        _record_windows_only_skips(ctx, detail)
+        _timesketch(ctx, c, cfg, detail)
+        _fusion(ctx, c, detail)
+        _windows_evidence(ctx, c, detail)
         return detail
-
-
-# --- AWS -------------------------------------------------------------------
-
-
-def _cloudtrail_fixture():
-    """One CloudTrail record that a SHIPPED rule matches.
-
-    `aws_cloudtrail_disable_logging.yml` ("AWS CloudTrail Important Change")
-    selects eventSource cloudtrail.amazonaws.com with eventName in
-    StopLogging/UpdateTrail/DeleteTrail. Matching a real rule on purpose is what
-    lets "zero findings" mean the detection engine is broken, instead of meaning
-    the fixture described something nothing was looking for.
-
-    Timestamped now, because the quick-triage blueprint carries
-    time_range_days: 1 and a fixture dated last week would be filtered out
-    before any rule saw it -- a green-looking zero for the wrong reason.
-    """
-    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    return json.dumps({"Records": [{
-        "eventVersion": "1.08",
-        "eventTime": now,
-        "eventSource": "cloudtrail.amazonaws.com",
-        "eventName": "StopLogging",
-        "awsRegion": "us-east-1",
-        "sourceIPAddress": "198.51.100.24",
-        "userAgent": "aws-cli/2.15.0",
-        "userIdentity": {"type": "IAMUser", "userName": "qa-ci-fixture",
-                         "arn": "arn:aws:iam::123456789012:user/qa-ci-fixture",
-                         "accountId": "123456789012"},
-        "requestParameters": {"name": "qa-ci-trail"},
-        "responseElements": None,
-        "eventID": "00000000-0000-0000-0000-00000000qa01",
-        "eventType": "AwsApiCall",
-        "recipientAccountId": "123456789012",
-    }]}, indent=2)
-
-
-def _aws(ctx, c, detail):
-    body = _upload_evidence(ctx, c, "/api/aws/upload", "qa-ci-cloudtrail.json",
-                            _cloudtrail_fixture(), "AWS CloudTrail")
-    if not body:
-        return
-    run_id = body.get("run_id")
-    ctx.check("AWS: the uploaded CloudTrail file produced a run", bool(run_id),
-              actual=run_id)
-    if not run_id:
-        return
-
-    try:
-        c.request("POST", "/api/aws/analyze-offline", json={
-            "run_id": run_id,
-            "blueprint": BLUEPRINTS["aws"],
-            # Disabled deliberately: the fixture is stamped now, but a clock
-            # skew of minutes between the runner and the container would
-            # otherwise silently filter the only record away.
-            "time_filter": {"enabled": False},
-            "min_severity": "low",
-        }, expect=(200, 201, 202))
-    except Exception as exc:                                  # noqa: BLE001
-        ctx.check(f"AWS: {BLUEPRINTS['aws']} analysis starts", False,
-                  actual=str(exc)[:180])
-        return
-    ctx.check(f"AWS: {BLUEPRINTS['aws']} analysis starts", True)
-
-    status = _poll_cloud(c, f"/api/aws/status/{run_id}", TIMEOUT_CLOUD_S,
-                         "AWS quick triage")
-    ctx.check("AWS: the analysis reached a terminal state", bool(status),
-              expected="a terminal status", actual=(status or {}).get("status"),
-              note="a run still going after 10 minutes is wedged, not slow")
-    if not status:
-        return
-
-    findings = _findings_count(c, f"/api/aws/findings/{run_id}")
-    detail["ran"]["aws"] = {"run_id": run_id, "findings": findings,
-                            "blueprint": BLUEPRINTS["aws"]}
-    ctx.check("AWS: sigma detection produced findings from the fixture",
-              findings > 0, expected=">0", actual=findings,
-              note="the fixture is a StopLogging event, which the shipped "
-                   "aws_cloudtrail_disable_logging rule selects; zero means "
-                   "the rule pack or the engine is not working")
-
-
-# --- Azure -----------------------------------------------------------------
-
-
-def _ual_fixture():
-    """One M365 Unified Audit Log record, shaped like a real export."""
-    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    return json.dumps([{
-        "CreationTime": now,
-        "Id": "00000000-0000-0000-0000-00000000qa02",
-        "Operation": "UserLoggedIn",
-        "OrganizationId": "00000000-0000-0000-0000-000000000001",
-        "RecordType": 15,
-        "ResultStatus": "Success",
-        "UserKey": "qa-ci-fixture@example.invalid",
-        "UserType": 0,
-        "Workload": "AzureActiveDirectory",
-        "ClientIP": "198.51.100.25",
-        "UserId": "qa-ci-fixture@example.invalid",
-    }], indent=2)
-
-
-def _azure(ctx, c, detail):
-    """Azure's rule pack is not always present, and that is not a failure.
-
-    A live box reported `Azure rules not found: /opt/sigma-rules/rules/cloud/
-    azure` while carrying 57 AWS rules — the SigmaHQ tree simply has no azure
-    directory at the pinned ref. Asserting on detections that cannot exist would
-    produce a permanent red that trains people to ignore this phase, so the
-    availability is checked first and an absent pack is a recorded skip.
-    """
-    try:
-        st = c.get("/api/azure/status", expect=(200, 503))
-    except Exception as exc:                                  # noqa: BLE001
-        detail["skipped"].append({"pipeline": "azure",
-                                  "reason": f"status unavailable: {str(exc)[:90]}"})
-        return
-    if not isinstance(st, dict) or not st.get("available", False):
-        reason = (st or {}).get("message") or "the Azure rule pack is not installed"
-        detail["skipped"].append({"pipeline": "azure", "reason": reason})
-        ctx.check("Azure: pipeline ran", True, actual=f"SKIPPED: {reason}",
-                  note="not a failure; there is no rule pack to detect with")
-        return
-
-    body = _upload_evidence(ctx, c, "/api/azure/upload", "qa-ci-ual.json",
-                            _ual_fixture(), "Azure UAL")
-    if not body:
-        return
-    run_id = body.get("run_id")
-    if not run_id:
-        ctx.check("Azure: the uploaded UAL file produced a run", False)
-        return
-
-    try:
-        c.request("POST", "/api/azure/analyze-offline", json={
-            "run_id": run_id, "blueprint": BLUEPRINTS["azure"],
-            "time_filter": {"enabled": False}, "min_severity": "low",
-        }, expect=(200, 201, 202))
-    except Exception as exc:                                  # noqa: BLE001
-        ctx.check(f"Azure: {BLUEPRINTS['azure']} analysis starts", False,
-                  actual=str(exc)[:180])
-        return
-
-    status = _poll_cloud(c, f"/api/azure/status/{run_id}", TIMEOUT_CLOUD_S,
-                         "Azure quick triage")
-    ctx.check("Azure: the analysis reached a terminal state", bool(status),
-              actual=(status or {}).get("status"))
-    if status:
-        findings = _findings_count(c, f"/api/azure/findings/{run_id}")
-        detail["ran"]["azure"] = {"run_id": run_id, "findings": findings,
-                                  "blueprint": BLUEPRINTS["azure"]}
-        # Recorded, not asserted: a benign UserLoggedIn is not guaranteed to
-        # trip any rule, and inventing a malicious-looking fixture would be
-        # asserting on our own creativity rather than on the product.
-        ctx.check("Azure: the analysis completed and reported findings",
-                  True, actual=findings,
-                  note="count recorded, not asserted — the fixture is a benign "
-                       "sign-in and need not match a rule")
 
 
 # --- Velociraptor ----------------------------------------------------------
@@ -353,99 +208,269 @@ def _offline_collector(ctx, c, detail):
     _delete_quietly(c, f"/api/velociraptor/offline/configs/{cfg_id}")
 
 
-# --- honest skips ----------------------------------------------------------
+# --- Timesketch ------------------------------------------------------------
 
 
-def _record_windows_only_skips(ctx, detail):
-    for pipeline, blueprint, why in (
-        ("timesketch", BLUEPRINTS["timesketch"],
-         "the lightweight blueprint collects Windows EventLogs and parses them "
-         "with plaso's winevtx parser; the appliance enrols itself as a LINUX "
-         "client and has no .evtx to collect"),
-        ("memory", BLUEPRINTS["memory"],
-         "needs an image from Windows.Memory.Acquisition, which requires a "
-         "Windows endpoint"),
-    ):
-        detail["skipped"].append({"pipeline": pipeline, "blueprint": blueprint,
-                                  "reason": why})
-        ctx.check(f"{pipeline}: lightweight blueprint pipeline ran", True,
-                  actual=f"SKIPPED: {blueprint}", note=why)
+def _timesketch(ctx, c, cfg, detail):
+    """Real host logs, through plaso, into a sketch.
+
+    The evidence is this machine's own /var/log -- written by the same sshd,
+    systemd and dpkg a customer's box runs. Nothing is synthesised, which is the
+    point: a fixture only ever proves the parser still parses the fixture.
+
+    `plaso_parser` is sent EXPLICITLY as "" (every parser). The tus hook
+    defaults it to `win7`, and win7 against Linux logs extracts nothing --
+    producing a run that is marked completed with no sketch at all. That silent
+    pass is the failure this phase exists to catch, so it must not be the
+    failure this phase ships with.
+    """
+    from lib import evidence as evidence_lib, tus as tus_lib
+
+    run_dir = ctx.run_dir
+    host = socket.gethostname()
+    zip_path = os.path.join(run_dir, "artifacts", f"{host}.zip")
+
+    def _sudo(argv):
+        r = shell.sudo(argv, cfg.sudo_password, timeout=180, tl=ctx.tl,
+                       stage="pipelines")
+        return r.out if r.ok else ""
+
+    try:
+        info = evidence_lib.build_linux_evidence_zip(zip_path, host, sudo=_sudo)
+    except Exception as exc:                                  # noqa: BLE001
+        ctx.check("Timesketch: host evidence was packaged", False,
+                  actual=str(exc)[:180])
+        return
+
+    ctx.check("Timesketch: host evidence was packaged", bool(info["members"]),
+              expected="at least one log", actual=", ".join(info["members"]) or "none",
+              note="real /var/log content from this machine, not a fixture")
+    if not info["members"]:
+        return
+
+    upload_id = tus_lib.upload(c, zip_path, {
+        "purpose": "timesketch",
+        "filename": f"{host}.zip",          # the hook requires a .zip name
+        "plaso_parser": "",                 # every parser; NOT the win7 default
+        "plaso_workers": "2",
+        "sketch_name": f"QA-CI-{host}",
+        "case_id": str(ctx.get("qa_case_id") or ""),
+    }, tl=ctx.tl, stage="pipelines")
+
+    ctx.check("Timesketch: the evidence uploaded through tus", bool(upload_id),
+              actual=upload_id,
+              note="tus goes through nginx and needs the session cookie; the "
+                   "loopback bypass is not available on this path")
+    if not upload_id:
+        return
+
+    run = _wait_for_upload_run(c, upload_id, host, TIMEOUT_TIMESKETCH_S, ctx.tl)
+    ctx.check("Timesketch: the ingest run reached a terminal state", bool(run),
+              actual=(run or {}).get("status"))
+    if not run:
+        return
+
+    text = _run_log_text(c, run.get("id"))
+    events = _plaso_events(text)
+    sketch = re.search(r"Sketch(?: ID)?:\s*(\d+)", text)
+    timeline = re.search(r"Timeline(?: ID)?:\s*(\d+)", text)
+
+    detail["ran"]["timesketch"] = {
+        "run_id": run.get("id"), "events": events,
+        "sketch_id": sketch.group(1) if sketch else None,
+        "timeline_id": timeline.group(1) if timeline else None,
+        "members": info["members"], "evidence": "this host's /var/log",
+    }
+
+    # THE assertion. A completed run proves nothing: when plaso extracts zero
+    # events the pipeline logs "No events extracted", marks the run COMPLETED and
+    # returns without creating a sketch. Only the event count separates a working
+    # ingest from that.
+    ctx.check("Timesketch: plaso extracted events from the evidence",
+              (events or 0) > 0, expected=">0", actual=events,
+              note="zero events still reports 'completed' with no sketch -- the "
+                   "silent pass this check exists to catch")
+    ctx.check("Timesketch: a sketch was created", bool(sketch),
+              actual=sketch.group(1) if sketch else None)
+    ctx.check("Timesketch: a timeline was indexed into the sketch", bool(timeline),
+              actual=timeline.group(1) if timeline else None)
+    if sketch:
+        ctx.set(sketch_id=sketch.group(1))
+
+
+# --- fusion ----------------------------------------------------------------
+
+
+def _fusion(ctx, c, detail):
+    """Attach every run this phase produced to a case and fuse it.
+
+    `relationships > 0` is the assertion that distinguishes correlation from
+    concatenation -- the harness's own stated most-valuable check. On a Linux
+    host it is well founded rather than hopeful: `Generic.System.Pstree` is in
+    the shipped Linux blueprint, survives the fusion allowlist, and every Linux
+    box has a process tree, so `spawned` edges exist whenever a collection ran.
+    """
+    run_ids = [v["run_id"] for v in detail["ran"].values() if v.get("run_id")]
+    if not run_ids:
+        detail["skipped"].append({"pipeline": "fusion",
+                                  "reason": "no runs were produced to fuse"})
+        return
+
+    try:
+        body = c.request("POST", "/api/cases/quick",
+                         json={"name": f"QA-CI-fusion-{time.strftime('%H%M%S')}",
+                               "run_ids": run_ids},
+                         expect=(200, 201))
+    except Exception as exc:                                  # noqa: BLE001
+        ctx.check("Fusion: the case fused", False, actual=str(exc)[:180])
+        return
+
+    ents = (body or {}).get("entities")
+    rels = (body or {}).get("relationships")
+    finds = (body or {}).get("findings")
+    detail["ran"]["fusion"] = {"entities": ents, "relationships": rels,
+                              "findings": finds, "runs": len(run_ids)}
+
+    ctx.check("Fusion: the case fused", ents is not None,
+              actual=f"{ents} entities")
+    ctx.check("Fusion: entities were extracted", (ents or 0) > 0,
+              expected=">0", actual=ents)
+    ctx.check("Fusion: relationships were built", (rels or 0) > 0,
+              expected=">0", actual=rels,
+              note="relationships are what separate correlation from a pile of "
+                   "rows; pstree alone should produce spawned edges")
+
+
+# --- evidence produced by the Windows job ----------------------------------
+
+
+def _windows_evidence(ctx, c, detail):
+    """Ingest what the windows-latest job harvested, if it ran.
+
+    A Windows runner cannot reach this appliance -- separate VM, no shared
+    network -- so it does not try. It collects its own real .evtx and, if the
+    kernel driver will load, its own memory, and hands them over as artifacts.
+    That covers the two things a Linux host genuinely cannot provide: winevtx
+    input, and a memory image Volatility can actually analyse.
+    """
+    root = (os.environ.get("QA_WINDOWS_EVIDENCE") or "").strip()
+    if not root or not os.path.isdir(root):
+        for pipeline, why in (
+            ("timesketch (winevtx)", "no Windows evidence supplied"),
+            ("memory", "no Windows memory image supplied; the pipeline "
+                       "registers every image as os_name=windows and ships no "
+                       "Linux symbols, so a Linux image cannot substitute"),
+        ):
+            detail["skipped"].append({"pipeline": pipeline, "reason": why})
+            ctx.check(f"{pipeline}: pipeline ran", True,
+                      actual=f"SKIPPED: {why}",
+                      note="not a failure; the evidence was not provided")
+        return
+
+    _timesketch_winevtx(ctx, c, detail, root)
+    _memory(ctx, c, detail, root)
+
+
+def _timesketch_winevtx(ctx, c, detail, root):
+    """The real winevtx path: Windows event logs, KAPE-shaped, plaso winevtx."""
+    from lib import tus as tus_lib
+
+    zips = sorted(f for f in os.listdir(root) if f.lower().endswith(".zip"))
+    if not zips:
+        detail["skipped"].append({"pipeline": "timesketch (winevtx)",
+                                  "reason": "no evtx ZIP in the evidence bundle"})
+        return
+    path = os.path.join(root, zips[0])
+
+    upload_id = tus_lib.upload(c, path, {
+        "purpose": "timesketch",
+        "filename": os.path.basename(path),
+        "plaso_parser": "winevtx",          # the blueprint's own parser
+        "sketch_name": "QA-CI-winevtx",
+        "case_id": str(ctx.get("qa_case_id") or ""),
+    }, tl=ctx.tl, stage="pipelines")
+    ctx.check("Timesketch/winevtx: the evidence uploaded", bool(upload_id),
+              actual=upload_id)
+    if not upload_id:
+        return
+
+    run = _wait_for_upload_run(c, upload_id, os.path.basename(path),
+                               TIMEOUT_TIMESKETCH_S, ctx.tl)
+    text = _run_log_text(c, (run or {}).get("id")) if run else ""
+    events = _plaso_events(text)
+    sketch = re.search(r"Sketch(?: ID)?:\s*(\d+)", text or "")
+    detail["ran"]["timesketch_winevtx"] = {
+        "run_id": (run or {}).get("id"), "events": events,
+        "sketch_id": sketch.group(1) if sketch else None,
+        "blueprint": BLUEPRINTS["timesketch"], "evidence": "Windows runner .evtx"}
+    ctx.check("Timesketch/winevtx: plaso extracted events", (events or 0) > 0,
+              expected=">0", actual=events,
+              note="real Windows event logs parsed with the winevtx parser")
+
+
+def _memory(ctx, c, detail, root):
+    """VolWeb, from an image the Windows job acquired.
+
+    Uploaded BARE, never zipped: inside a ZIP the pipeline's floor is 200 MB and
+    a smaller member is discarded as metadata, while a bare file only has to
+    clear 16 MB. It must also be uncompressed -- the sniffer rejects gzip, zstd
+    and zlib magic outright.
+    """
+    images = sorted(f for f in os.listdir(root)
+                    if f.lower().endswith((".raw", ".bin", ".mem", ".dmp")))
+    if not images:
+        why = ("the Windows runner could not acquire memory (the kernel driver "
+               "would not load)")
+        detail["skipped"].append({"pipeline": "memory", "reason": why})
+        ctx.check("memory: pipeline ran", True, actual=f"SKIPPED: {why}",
+                  note="attempted and reported, never faked")
+        return
+
+    path = os.path.join(root, images[0])
+    size = os.path.getsize(path)
+    if size < 16 * 2**20:
+        why = f"image is {size / 2**20:.1f} MB, below the pipeline's 16 MB floor"
+        detail["skipped"].append({"pipeline": "memory", "reason": why})
+        ctx.check("memory: pipeline ran", True, actual=f"SKIPPED: {why}")
+        return
+
+    try:
+        with open(path, "rb") as fh:
+            body = c.s.post(c.base + "/api/memory/upload",
+                            files={"file": (os.path.basename(path), fh,
+                                            "application/octet-stream")},
+                            data={"mode": "plugin",      # skip the slow YARA corpus
+                                  "case_name": "QA-CI",
+                                  "client_name": "windows-runner"},
+                            timeout=1800)
+    except Exception as exc:                                  # noqa: BLE001
+        ctx.check("memory: the image uploaded", False, actual=str(exc)[:180])
+        return
+
+    ok = body.status_code in (200, 201, 202)
+    ctx.check("memory: the image uploaded", ok, expected="200/202",
+              actual=body.status_code)
+    if not ok:
+        return
+    run_id = (body.json() or {}).get("run_id")
+    run = c.wait_for_run(run_id, TIMEOUT_MEMORY_S, ctx.tl, what="volweb analysis")
+
+    report = ((run or {}).get("details") or {}).get("report_md") or ""
+    plugins = {m.group(1): m.group(2).startswith("\u2713")
+               for m in re.finditer(r"^\|\s*`([^`]+)`\s*\|\s*([^|]+?)\s*\|\s*$",
+                                    report, re.M)}
+    detail["ran"]["memory"] = {"run_id": run_id, "bytes": size,
+                               "plugins_ok": sorted(k for k, v in plugins.items() if v),
+                               "evidence": "Windows runner memory"}
+    ctx.check("memory: the analysis completed", api_lib.run_succeeded(run),
+              actual=(run or {}).get("status"))
+    ctx.check("memory: Volatility produced plugin results",
+              any(plugins.values()), actual=", ".join(sorted(plugins)) or "none",
+              note="results live only in details.report_md as a markdown table; "
+                   "there is no structured plugin key")
 
 
 # --- helpers ---------------------------------------------------------------
-
-
-def _upload_evidence(ctx, c, path, filename, payload, label):
-    try:
-        r = c.s.post(c.base + path,
-                     files={"file": (filename, payload, "application/json")},
-                     timeout=180)
-    except Exception as exc:                                  # noqa: BLE001
-        ctx.check(f"{label}: the fixture uploads", False, actual=str(exc)[:180])
-        return None
-    if r.status_code not in (200, 201, 202):
-        ctx.check(f"{label}: the fixture uploads", False,
-                  expected="200/201/202", actual=r.status_code)
-        return None
-    ctx.check(f"{label}: the fixture uploads", True, actual=r.status_code)
-    try:
-        return r.json()
-    except ValueError:
-        return {}
-
-
-def _poll_cloud(c, path, timeout_s, what):
-    """Cloud runs keep their state in a module-level dict, not the run table, so
-    they are polled on their own status route rather than through
-    /api/dashboard/automations."""
-    deadline = time.time() + timeout_s
-    # "complete", not "completed" — measured against a live box, where the AWS
-    # offline run reports exactly that. Waiting for a word the platform never
-    # says means polling until the timeout and then reporting a wedged run for
-    # something that finished in 0.13 seconds.
-    terminal = ("complete", "completed", "success", "succeeded", "finished",
-                "done", "failed", "error", "cancelled")
-    while time.time() < deadline:
-        try:
-            body = c.get(path, expect=(200,))
-        except Exception:                                     # noqa: BLE001
-            body = None
-        if isinstance(body, dict):
-            st = (body.get("status") or "").lower()
-            if st in terminal:
-                return body
-        time.sleep(10)
-    return None
-
-
-def _findings_count(c, path):
-    """How many findings a cloud run produced.
-
-    `findings` is a DICT keyed by rule name, each holding a list of matches --
-    not a list. Verified against a live box: a single StopLogging record comes
-    back as {"SIGMA.AWS_CloudTrail_Important_Change": [ ... ]}. Counting it as a
-    list returns 0, which would have failed the assertion on a pipeline that
-    worked perfectly. `total_findings` sits at the top level and is the
-    unambiguous answer, so prefer it and treat the rest as fallbacks.
-    """
-    try:
-        body = c.get(path, expect=(200,))
-    except Exception:                                         # noqa: BLE001
-        return 0
-    if isinstance(body, dict):
-        if isinstance(body.get("total_findings"), int):
-            return body["total_findings"]
-        f = body.get("findings")
-        if isinstance(f, dict):
-            return sum(len(v) for v in f.values() if isinstance(v, list))
-        if isinstance(f, list):
-            return len(f)
-        for key in ("items", "results"):
-            if isinstance(body.get(key), list):
-                return len(body[key])
-        if isinstance(body.get("count"), int):
-            return body["count"]
-    return len(body) if isinstance(body, list) else 0
 
 
 def _collected_rows(c, run_id):
@@ -468,6 +493,71 @@ def _download_size(c, path):
         return sum(len(chunk) for chunk in r.iter_content(chunk_size=2**20))
     except Exception:                                         # noqa: BLE001
         return 0
+
+
+def _wait_for_upload_run(c, upload_id, filename, timeout_s, tl):
+    """Find and await the run a tus upload started.
+
+    The upload API returns no run id -- `/api/uploads/status/<id>` reports only
+    size -- so the run has to be recognised in the automations list by its
+    upload id or filename. Matching on either, because which one lands in
+    details depends on the purpose.
+    """
+    deadline = time.time() + timeout_s
+    terminal = ("completed", "success", "succeeded", "failed", "error",
+                "cancelled")
+    run_id = None
+    while time.time() < deadline:
+        try:
+            body = c.get("/api/dashboard/automations", expect=(200,))
+        except Exception:                                     # noqa: BLE001
+            body = None
+        for run in ((body or {}).get("runs") or []):
+            det = run.get("details") or {}
+            if run_id and run.get("id") == run_id:
+                if (run.get("status") or "").lower() in terminal:
+                    return run
+            elif not run_id and (det.get("upload_id") == upload_id
+                                 or det.get("filename") == filename):
+                run_id = run.get("id")
+                if tl:
+                    tl.event("upload_run", detail={"run_id": run_id,
+                                                   "upload_id": upload_id})
+                if (run.get("status") or "").lower() in terminal:
+                    return run
+        time.sleep(15)
+    return None
+
+
+def _run_log_text(c, run_id):
+    """The run's log lines joined into one string.
+
+    Everything worth asserting on -- event counts, sketch and timeline ids --
+    exists only in this text. `details` carries no counts, which is documented
+    the hard way in more than one place in this repo.
+    """
+    if not run_id:
+        return ""
+    try:
+        run = c.run_status(run_id) or {}
+    except Exception:                                         # noqa: BLE001
+        return ""
+    logs = run.get("logs") or []
+    parts = []
+    for entry in logs:
+        if isinstance(entry, dict):
+            parts.append(str(entry.get("message") or ""))
+        else:
+            parts.append(str(entry))
+    return "\n".join(parts)
+
+
+def _plaso_events(text):
+    """Events plaso extracted, from the log text. None when it never said."""
+    m = re.search(r"Plaso extracted\s+([\d,]+)\s+events", text or "")
+    if not m:
+        m = re.search(r"Events extracted:\s*([\d,]+)", text or "")
+    return int(m.group(1).replace(",", "")) if m else None
 
 
 def _delete_quietly(c, path):

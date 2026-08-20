@@ -243,14 +243,28 @@ def _pipelines_section(lines, results):
         lines += ["| pipeline | blueprint | result |", "|---|---|---|"]
         for name, info in sorted(ran.items()):
             bits = []
-            if info.get("findings") is not None:
+            if info.get("events") is not None:
+                bits.append(f"{info['events']:,} plaso event(s)")
+            if info.get("sketch_id"):
+                bits.append(f"sketch {info['sketch_id']}")
+            if info.get("entities") is not None:
+                bits.append(f"{info['entities']} entities / "
+                            f"{info.get('relationships')} relationships")
+            if info.get("findings") is not None and "entities" not in info:
                 bits.append(f"{info['findings']} finding(s)")
             if info.get("rows") is not None:
                 bits.append(f"{info['rows']} row(s)")
+            if info.get("plugins_ok"):
+                bits.append("plugins: " + ", ".join(info["plugins_ok"][:5]))
             if info.get("bytes"):
                 bits.append(f"{info['bytes'] / 2**20:.1f} MB")
             if info.get("client_id"):
                 bits.append(f"client {info['client_id']}")
+            # Where the evidence came from is the single most important thing a
+            # reader needs: "real host logs" and "a canned sample" are very
+            # different claims, and only one of them is being made here.
+            if info.get("evidence"):
+                bits.append(f"from {info['evidence']}")
             lines.append(f"| {name} | `{info.get('blueprint', '-')}` | "
                          f"{', '.join(bits) or 'completed'} |")
         lines.append("")

@@ -71,6 +71,10 @@ on:
         description: "Minutes install.sh may run before the phase is failed"
         required: true
         default: '90'
+      windows_evidence:
+        description: "true to run the windows-latest evidence job (real .evtx, and memory if the driver loads)"
+        required: false
+        default: 'true'
 
 # Read-only. This workflow downloads release assets and reads the repo; it
 # publishes nothing and must never be able to.
@@ -85,7 +89,109 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ------------------------------------------------------------------------
+  # Real Windows evidence, from a machine that genuinely has some.
+  #
+  # This job CANNOT reach the appliance -- it is a separate VM with no shared
+  # network -- so it does not try. It harvests its own event logs and, if the
+  # kernel will let it, its own memory, and hands them over as an artifact.
+  # That covers exactly the two things a Linux host cannot provide: winevtx
+  # input for Timesketch, and an image Volatility can actually analyse.
+  #
+  # Free: standard runners are unmetered for public repositories.
+  windows-evidence:
+    if: ${{ (github.event.inputs.windows_evidence || 'true') == 'true' }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Harvest this runner's own Windows event logs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # KAPE layout: the pipeline's detector keys off a `C/` prefix, so the
+          # tree must start there. These are the runner's real logs, written by
+          # the real Windows it is running.
+          $dest = "$env:RUNNER_TEMP\evidence\C\Windows\System32\winevt\Logs"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          $src = "$env:SystemRoot\System32\winevt\Logs"
+          # The channels an investigator actually reads first, and the only ones
+          # with meaningful content on a fresh CI VM.
+          $want = @('Security.evtx','System.evtx','Application.evtx',
+                    'Microsoft-Windows-PowerShell%4Operational.evtx',
+                    'Microsoft-Windows-Windows Defender%4Operational.evtx',
+                    'Microsoft-Windows-TaskScheduler%4Operational.evtx')
+          $copied = 0
+          foreach ($n in $want) {
+            $p = Join-Path $src $n
+            if (Test-Path -LiteralPath $p) {
+              try {
+                Copy-Item -LiteralPath $p -Destination $dest -Force -ErrorAction Stop
+                $copied++
+              } catch {
+                # A channel held open by the service is normal; wevtutil can
+                # export a consistent copy where a plain read cannot.
+                $out = Join-Path $dest $n
+                & wevtutil epl ($n -replace '%4','/' -replace '\.evtx$','') $out 2>$null
+                if (Test-Path -LiteralPath $out) { $copied++ }
+              }
+            }
+          }
+          Write-Host "collected $copied event log(s)"
+          if ($copied -eq 0) { throw "no event logs could be collected" }
+          Compress-Archive -Path "$env:RUNNER_TEMP\evidence\C" `
+                           -DestinationPath "$env:RUNNER_TEMP\winevtx.zip" -Force
+          Get-Item "$env:RUNNER_TEMP\winevtx.zip" |
+            ForEach-Object { Write-Host ("zip: {0:N1} MB" -f ($_.Length/1MB)) }
+
+      - name: Try to acquire memory
+        shell: pwsh
+        continue-on-error: true          # a blocked driver is a result, not a failure
+        run: |
+          # winpmem needs to load a kernel driver, which a hosted VM may refuse.
+          # Per "try it then we choose": attempt it, and let the Linux job report
+          # an honest skip if nothing lands here.
+          $ErrorActionPreference = 'Continue'
+          $url = 'https://github.com/Velocidex/WinPmem/releases/download/v4.0.rc1/winpmem_mini_x64_rc2.exe'
+          $exe = "$env:RUNNER_TEMP\winpmem.exe"
+          try {
+            Invoke-WebRequest -Uri $url -OutFile $exe -UseBasicParsing -TimeoutSec 120
+          } catch { Write-Host "::warning::could not download winpmem: $_"; exit 0 }
+          $img = "$env:RUNNER_TEMP\evidence\memory.raw"
+          & $exe $img 2>&1 | Select-Object -Last 5
+          if (Test-Path -LiteralPath $img) {
+            $mb = (Get-Item -LiteralPath $img).Length / 1MB
+            Write-Host ("acquired {0:N0} MB" -f $mb)
+            # Below 16 MB the ingest rejects it as too small to be a dump.
+            if ($mb -lt 16) { Remove-Item -LiteralPath $img -Force
+                              Write-Host "::warning::image too small; discarding" }
+          } else {
+            Write-Host "::warning::memory acquisition produced no image (driver likely blocked)"
+          }
+
+      - name: Stage the evidence bundle
+        shell: pwsh
+        run: |
+          $out = "$env:RUNNER_TEMP\bundle"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item "$env:RUNNER_TEMP\winevtx.zip" $out -Force
+          $img = "$env:RUNNER_TEMP\evidence\memory.raw"
+          if (Test-Path -LiteralPath $img) { Move-Item $img $out -Force }
+          Get-ChildItem $out | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-evidence
+          path: ${{ runner.temp }}/bundle
+          retention-days: 1        # real host evidence; keep it briefly
+          compression-level: 0     # the zip is already compressed, the image is huge
+          if-no-files-found: warn
+
   e2e:
+    needs: [windows-evidence]
+    # Runs even if the Windows job failed entirely: the Linux pipelines are the
+    # bulk of the value and must not be held hostage to a runner that would not
+    # load a driver.
+    if: ${{ always() }}
     runs-on: ${{ github.event.inputs.runner || 'ubuntu-latest' }}
     # GitHub's hosted ceiling is 360; leave room for the summary and artifact
     # steps to run after a timed-out install rather than losing the evidence.
@@ -284,6 +390,24 @@ jobs:
           # The harness asserts on the log text as well; this is the other half.
           sudo rm -f /etc/intact-initialized
 
+      - name: Fetch the Windows evidence bundle
+        uses: actions/download-artifact@v4
+        continue-on-error: true      # absent bundle -> honest skip, not a failure
+        with:
+          name: windows-evidence
+          path: ${{ runner.temp }}/windows-evidence
+
+      - name: Report what Windows evidence arrived
+        run: |
+          set -euo pipefail
+          DIR="${RUNNER_TEMP}/windows-evidence"
+          if [ -d "$DIR" ] && [ -n "$(ls -A "$DIR" 2>/dev/null)" ]; then
+            ls -lh "$DIR"
+            echo "::notice::Windows evidence present — winevtx and memory pipelines will run"
+          else
+            echo "::warning::no Windows evidence — the winevtx and memory pipelines will report as skipped"
+          fi
+
       - name: Install the QA harness dependencies
         run: |
           set -euo pipefail
@@ -305,6 +429,7 @@ jobs:
           QA_LINUX_CLIENT: '1'
           QA_FEATURE_SWEEP: '1'
           QA_PIPELINES: '1'
+          QA_WINDOWS_EVIDENCE: ${{ runner.temp }}/windows-evidence
           QA_RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
           QA_REF: ${{ github.event.inputs.ref || github.ref_name }}
           QA_IMAGES_TAG: ${{ steps.images.outputs.tag }}

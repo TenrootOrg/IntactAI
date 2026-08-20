@@ -14,6 +14,7 @@ checks below read the source instead. Less precise, and it runs everywhere.
 
 import ast
 import os
+import re
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -233,6 +234,51 @@ class TestFeatureSweepSafety(unittest.TestCase):
             self.assertIn(needle, src,
                           f"{needle} must be listed as skipped with a reason, "
                           f"so a green report is not read as full coverage")
+
+
+class TestIngestTraps(unittest.TestCase):
+    """The three ways a green ingest can mean nothing.
+
+    Each of these was measured on a live appliance, and each produces a run the
+    dashboard reports as COMPLETED while having accomplished nothing.
+    """
+
+    def test_plaso_parser_is_always_explicit(self):
+        """The tus hook defaults plaso_parser to 'win7'.
+
+        win7 against Linux logs extracts zero events, the pipeline logs "No
+        events extracted", marks the run completed and returns WITHOUT creating
+        a sketch. Omitting the key is therefore not a neutral default — it is
+        the silent-failure path.
+        """
+        src = _read("phases", "pipelines.py")
+        # A fixed window after the marker rather than a brace match: the dict
+        # contains f-strings, and their braces close a naive regex early.
+        starts = [m.end() for m in
+                  re.finditer(r'"purpose":\s*"timesketch"', src)]
+        self.assertTrue(starts, "no timesketch tus upload found to check")
+        for pos in starts:
+            window = src[pos:pos + 400]
+            self.assertIn("plaso_parser", window,
+                          "every timesketch upload must set plaso_parser "
+                          "explicitly; the hook's default is win7")
+
+    def test_the_zero_events_assertion_exists(self):
+        src = _read("phases", "pipelines.py")
+        self.assertRegex(
+            src, r"events.*?\)?\s*>\s*0",
+            "the ingest must assert plaso extracted events; a completed run "
+            "with zero events creates no sketch and still reports success")
+
+    def test_memory_image_is_uploaded_bare(self):
+        """Inside a ZIP the floor is 200 MB and smaller members are discarded as
+        metadata; bare, it is 16 MB. Zipping the image is how a working
+        acquisition turns into 'no recognisable memory image'."""
+        src = _read("phases", "pipelines.py")
+        self.assertIn("/api/memory/upload", src)
+        self.assertNotRegex(
+            src, r"/api/memory/upload(?:.|\n){0,400}?\.zip",
+            "the memory image must be uploaded bare, never zipped")
 
 
 class TestNoHardCodedApplianceePath(unittest.TestCase):
