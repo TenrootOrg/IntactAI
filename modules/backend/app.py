@@ -249,6 +249,29 @@ def run_startup_initialization():
                 (_sp.run(["docker", "ps", "-a", "--format", "{{.Image}}"],
                          capture_output=True, text=True, timeout=15).stdout or ''
                  ).split())
+
+            # THE PLATFORM'S OWN IMAGES ARE NEVER A DISABLED MODULE'S TO
+            # RECLAIM. timesketch ships its own nginx, so
+            # module_image_repos('timesketch') names the bare `nginx` repo --
+            # and `docker images nginx` matches the reverse proxy the entire
+            # appliance is served through.
+            #
+            # The in-use check above is not enough on its own. It protects a
+            # RUNNING box; it cannot protect one that is still being built.
+            # During an install the backend is step 7 of 8 and nginx is step 8,
+            # so when this runs intact_nginx does not exist yet, nothing
+            # references the image, and it is deleted seconds before the
+            # installer tries to start it. Measured on a clean install with
+            # timesketch disabled: "No such image: nginx:1.31.3-alpine", one
+            # line after the installer logged that same image as loaded, and
+            # the install failed with Nginx unhealthy.
+            _vers = (cfg.get('versions') or {})
+            _platform = {
+                'nginx:%s' % _vers.get('nginx'),
+                'intact-backend:%s' % _vers.get('backend'),
+                'tusproject/tusd:%s' % _vers.get('backend_tusd'),
+            }
+            _inuse |= {_r for _r in _platform if not _r.endswith(':None')}
             _freed = 0
             for _mod in sorted(disabled):
                 for _repo in module_image_repos(_mod):
