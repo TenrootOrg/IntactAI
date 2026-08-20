@@ -320,6 +320,8 @@ jobs:
 
     steps:
       # ------------------------------------------------------------------ 1 --
+      - uses: actions/checkout@v4
+
       - name: Validate the inputs
         env:
           BUILD_IMAGES: ${{ github.event.inputs.build_images || 'backend' }}
@@ -329,8 +331,12 @@ jobs:
         run: |
           set -euo pipefail
           # Re-validated here rather than trusted, matching the release
-          # workflows: a typo must fail in ten seconds, not after a 40-minute
-          # install has already destroyed the runner's state.
+          # workflows: a typo must fail in seconds, not after a 40-minute
+          # install has already destroyed the runner's state. It sits just
+          # AFTER checkout, not first, because it reads the scenario catalogue
+          # out of the repo -- as the very first step there is no qa/ yet, and
+          # the import would fail under `set -e` for every scenario in the
+          # matrix rather than for the bad input it is meant to catch.
           case "$BUILD_IMAGES" in backend|none) ;; *)
             echo "::error::build_images must be 'backend' or 'none', got '$BUILD_IMAGES'"; exit 1 ;; esac
           # Validated against the catalogue itself, not a hand-kept list. The
@@ -352,8 +358,6 @@ jobs:
             case "$VERSION_OVERRIDE" in intact-*) ;; *)
               echo "::error::version_override must look like intact-YYYYMMDD, got '$VERSION_OVERRIDE'"; exit 1 ;; esac
           fi
-
-      - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.ref || github.ref_name }}
           fetch-depth: 1

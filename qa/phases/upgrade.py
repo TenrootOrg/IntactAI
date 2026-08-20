@@ -38,6 +38,14 @@ UPGRADE_ROUTES = {
 }
 
 
+# Scenarios whose upgrade is SUPPOSED to end badly, and which therefore assert
+# their own exit code in _post_upgrade rather than being held to "exited
+# cleanly". Keep this in step with the branches in _post_upgrade — a name here
+# with no branch there means the run asserts nothing at all about its outcome
+# and passes silently, which is worse than the crash this constant replaced.
+_SELF_ASSERTING = frozenset({"rollback"})
+
+
 def register(runner, cfg):
     route = _route_for(cfg.scenario)
     if not route:
@@ -72,7 +80,7 @@ def register(runner, cfg):
         if cfg.hop_via:
             detail["hop"] = _hop_via(ctx, cfg, root, cfg.hop_via)
 
-        _pre_upgrade(ctx, cfg, root, detail)
+        _pre_upgrade(ctx, cfg, root, detail, log_path)
 
         started = time.time()
         if route in ("bootstrap", "cli"):
@@ -252,7 +260,7 @@ def _route_for(scenario):
     import scenarios
     return scenarios.route_for(scenario)
 
-def _pre_upgrade(ctx, cfg, root, detail):
+def _pre_upgrade(ctx, cfg, root, detail, log_path):
     """Whatever this scenario needs to be true before the upgrade runs."""
     scenario = cfg.scenario
 
@@ -269,12 +277,38 @@ def _pre_upgrade(ctx, cfg, root, detail):
         # only way to reach the unwind: a missing image or a bad mount is
         # caught by the preflight and refuses before touching anything, which
         # tests refusal rather than rollback.
+        #
+        # The module has to be stopped FIRST. Its own docker-proxy is holding
+        # the published port, so binding it while the container runs is
+        # impossible by definition — the first version of this skipped that
+        # step, failed to take the port, and the upgrade sailed through
+        # cleanly. Stopping the container hands the port over for the seconds
+        # between here and the module's step, which is the window compose
+        # needs it in.
         port = _first_published_port(root, "portainer")
         detail["held_port"] = port
-        if port:
-            ctx.set(_port_holder=_hold_port(port))
-            ctx.check(f"port {port} was held to force a failure",
-                      ctx.get("_port_holder") is not None, actual=port)
+        names = appliance.container_names_of(root, "portainer")
+        if port and names:
+            shell.run(["docker", "stop"] + list(names), timeout=120)
+            detail["stopped_first"] = list(names)
+            holder = _hold_port(port)
+            ctx.set(_port_holder=holder)
+            # Non-negotiable: if the port was not taken, this scenario tests
+            # nothing. Better to fail here, naming the reason, than to report
+            # a green rollback test that never provoked a rollback.
+            ctx.check(f"port {port} was actually taken, so the module cannot bind",
+                      holder is not None,
+                      expected=f"{port} bound by the harness",
+                      actual="bound" if holder else "could NOT bind — "
+                             "something else still holds it",
+                      note="the module step can only fail if this succeeded")
+            if holder is not None:
+                _release_on_unwind(holder, log_path, detail)
+        else:
+            ctx.check("portainer publishes a port to contend for",
+                      False, actual=f"port={port} containers={names}",
+                      note="without a published port there is nothing to hold "
+                           "and the rollback cannot be provoked")
 
     elif scenario == "data-preservation":
         appliance.canary_write()
@@ -287,7 +321,7 @@ def _post_upgrade(ctx, cfg, root, detail, rc):
     if scenario == "rollback":
         holder = ctx.get("_port_holder")
         if holder is not None:
-            holder.terminate()
+            holder.close()          # a socket now, not a subprocess
         # rc 1 is the correct answer here: a module failed and was unwound.
         ctx.check("a failed module rolls the box back", rc == up.RC_ROLLED_BACK,
                   expected="1 (rolled back)",
@@ -390,17 +424,69 @@ def _first_published_port(root, module):
 
 
 def _hold_port(port):
-    """Bind a port so the module cannot, and hand back the holder to release."""
-    import subprocess
+    """Bind `port` in THIS process, or return None if it could not be taken.
+
+    Held in-process on purpose. The first version spawned a child to do the
+    bind, which cannot work: Popen returns a handle as soon as the fork
+    succeeds, so the caller got a live-looking holder while the child was
+    already dead of EADDRINUSE with its stderr on /dev/null. The scenario then
+    "held" a port it did not have, the upgrade succeeded, and the only symptom
+    was a rollback test that never rolled anything back.
+
+    A socket object reports its own failure, and stays bound for exactly as
+    long as the run holds a reference to it.
+    """
+    import socket
+    s = socket.socket()
+    # No SO_REUSEADDR: the whole point is to collide with anything already
+    # listening, and quietly succeeding next to another listener would put us
+    # straight back to a trap that does not trap.
     try:
-        return subprocess.Popen(
-            ["python3", "-c",
-             f"import socket,time;s=socket.socket();"
-             f"s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);"
-             f"s.bind(('0.0.0.0',{port}));s.listen(1);time.sleep(3600)"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:                                         # noqa: BLE001
+        s.bind(("0.0.0.0", port))
+        s.listen(1)
+        return s
+    except OSError:
+        s.close()
         return None
+
+
+def _release_on_unwind(holder, log_path, detail, deadline_s=2400):
+    """Give the port back the instant the engine starts unwinding.
+
+    The trap has to be released mid-run, and this is the part that is easy to
+    get wrong. Holding the port for the whole upgrade breaks the very thing
+    the scenario exists to observe: the undo restarts the module on its old
+    pin, needs the same port to do it, and would hit the same harness socket —
+    turning a clean unwind into "ROLLBACK FAILED — this module needs manual
+    repair". The test would then assert against a failure it caused itself.
+
+    lib/upgrade/core.sh logs `<module>: rolling back (...)` when it begins the
+    unwind, and registers the undo commands only after. Watching for that line
+    releases the port inside that window, so compose fails going forward and
+    succeeds going back — which is exactly the behaviour under test.
+    """
+    import threading
+
+    def watch():
+        end = time.time() + deadline_s
+        while time.time() < end:
+            try:
+                with open(log_path, encoding="utf-8", errors="replace") as fh:
+                    text = fh.read()
+            except OSError:
+                text = ""
+            if "rolling back" in text or "is DOWN" in text:
+                detail["port_released_on"] = "the engine began unwinding"
+                holder.close()
+                return
+            time.sleep(0.25)
+        # Never hold past the deadline: leaving a port bound would break the
+        # verification that follows, and a rollback that never came is a
+        # finding for the assertions, not a reason to wedge the box.
+        detail["port_released_on"] = "deadline — no unwind was ever logged"
+        holder.close()
+
+    threading.Thread(target=watch, daemon=True).start()
 
 
 def _hop_via(ctx, cfg, root, tag):

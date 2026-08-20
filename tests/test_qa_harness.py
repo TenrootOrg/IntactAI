@@ -15,6 +15,7 @@ checks below read the source instead. Less precise, and it runs everywhere.
 import ast
 import os
 import re
+import sys
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -329,6 +330,145 @@ class TestUpgradeRoutes(unittest.TestCase):
         self.assertFalse(unknown,
                          "scenario(s) map to a route that does not exist: "
                          + ", ".join(unknown))
+
+
+class _FakeCtx:
+    """The smallest thing Runner will accept: a timeline that swallows events,
+    a check buffer, and a run directory to persist into."""
+
+    class _Timeline:
+        def stage(self, *a, **k): pass
+        def ok(self, *a, **k): pass
+        def warn(self, *a, **k): pass
+        def fail(self, *a, **k): pass
+
+    def __init__(self, run_dir):
+        self.run_dir = run_dir
+        self.tl = self._Timeline()
+        self.results = {}
+        self.redact = lambda text: text
+
+    def take_checks(self):
+        return []
+
+
+class TestSelfAssertingScenarios(unittest.TestCase):
+    """A scenario excused from "exited cleanly" must assert something instead.
+
+    `rollback` is supposed to end with a non-zero exit code, so it is exempted
+    from the generic check and asserts its own outcome in `_post_upgrade`. The
+    hazard is an exemption with nothing behind it: a name added to the exempt
+    set but never given a branch would silently assert NOTHING about the one
+    outcome the scenario exists to observe, and would pass every time.
+    """
+
+    def setUp(self):
+        self.src = _read("phases", "upgrade.py")
+
+    def _exempt(self):
+        m = re.search(r"_SELF_ASSERTING\s*=\s*frozenset\(\{(.*?)\}\)",
+                      self.src, re.S)
+        self.assertTrue(m, "_SELF_ASSERTING is not defined as a frozenset")
+        return set(re.findall(r'"([^"]+)"', m.group(1)))
+
+    def test_the_exempt_set_is_defined_and_not_empty(self):
+        self.assertTrue(self._exempt(),
+                        "an empty exempt set means the branch is dead code")
+
+    def test_every_exempt_scenario_asserts_its_own_outcome(self):
+        post = self.src.split("def _post_upgrade", 1)
+        self.assertEqual(len(post), 2, "could not find _post_upgrade")
+        body = post[1]
+        for name in self._exempt():
+            self.assertIn(
+                f'"{name}"', body,
+                f"{name} is excused from the clean-exit check but has no "
+                f"branch in _post_upgrade, so its exit code is never asserted "
+                f"at all")
+
+    def test_every_exempt_scenario_exists_in_the_catalogue(self):
+        sys.path.insert(0, os.path.join(ROOT, "qa"))
+        import scenarios
+        known = {row["name"] for row in scenarios.SCENARIOS}
+        unknown = sorted(self._exempt() - known)
+        self.assertFalse(unknown,
+                         "exempted scenarios that do not exist: "
+                         + ", ".join(unknown))
+
+
+class TestReportSurvivesAnAbort(unittest.TestCase):
+    """A critical failure must still leave a report behind.
+
+    Measured, not theorised: in run 32353670435 every one of nine failing
+    scenarios reached CI as the same line -- "the harness produced no
+    results.json" -- because `report` is itself a phase and an abort skipped
+    it, along with `collect`. Four genuinely different faults were
+    indistinguishable, and the logs were discarded at the exact moment they
+    became worth having.
+    """
+
+    def test_the_runner_honours_an_always_flag(self):
+        """Driven for real rather than grepped: register a critical phase that
+        blows up, and prove an ordinary phase is skipped while an always-phase
+        still runs."""
+        import shutil
+        import tempfile
+
+        sys.path.insert(0, os.path.join(ROOT, "qa"))
+        from lib import runner as runner_lib
+
+        tmp = tempfile.mkdtemp(prefix="qa-runner-test-")
+        try:
+            os.makedirs(os.path.join(tmp, "phases"))
+            ctx = _FakeCtx(tmp)
+            r = runner_lib.Runner(ctx)
+
+            @r.phase("boom", "Fails, and is critical", critical=True)
+            def boom(ctx):
+                raise RuntimeError("name '_SELF_ASSERTING' is not defined")
+
+            @r.phase("ordinary", "Must not run after the abort")
+            def ordinary(ctx):
+                ran.append("ordinary")
+
+            @r.phase("report", "Must run anyway", always=True)
+            def report(ctx):
+                ran.append("report")
+
+            ran = []
+            results = r.run()
+
+            self.assertEqual(results["boom"].status, runner_lib.ERROR)
+            self.assertEqual(results["ordinary"].status, runner_lib.SKIP)
+            self.assertEqual(results["ordinary"].skipped_because,
+                             "run aborted earlier")
+            self.assertIn("report", ran,
+                          "the report phase did not run after a critical "
+                          "abort, so a failed run leaves no results.json")
+            self.assertNotIn("ordinary", ran)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_collect_and_report_are_marked_always(self):
+        src = _read("phases", "wrapup.py")
+        for name in ("collect", "report"):
+            m = re.search(r'@runner\.phase\("%s".*?\)\s*\n\s*def ' % name,
+                          src, re.S)
+            self.assertTrue(m, f"{name} phase not found")
+            self.assertIn("always=True", m.group(0),
+                          f"{name} does not run after an abort -- which is "
+                          f"precisely when it matters")
+
+    def test_results_json_is_written_by_an_always_phase(self):
+        """Whoever writes results.json must survive an abort, or the workflow's
+        verdict step can never report counts for a failed run."""
+        src = _read("phases", "wrapup.py")
+        head = src.split("results.json")[0]
+        owner = re.findall(r'@runner\.phase\("([a-z_]+)"', head)
+        self.assertTrue(owner, "nothing appears to write results.json")
+        self.assertEqual(owner[-1], "report",
+                         "results.json moved to another phase; that phase now "
+                         "needs always=True")
 
 
 class TestNoHardCodedApplianceePath(unittest.TestCase):

@@ -70,6 +70,21 @@ class TestScenarioCatalogue(unittest.TestCase):
                      - set(self.mod.MODULE_SETS))
         self.assertFalse(bad, "unhandled module set(s): " + ", ".join(bad))
 
+    def test_the_validator_runs_after_checkout(self):
+        """It reads scenarios.py, so the repo has to be on disk first.
+
+        As the job's first step -- where it originally sat -- `import
+        scenarios` raises ModuleNotFoundError, the command substitution fails
+        under `set -euo pipefail`, and EVERY scenario in the matrix dies at
+        step one. A validator that rejects all valid input is worse than the
+        hand-kept list it replaced."""
+        wf = open(WORKFLOW, encoding="utf-8").read()
+        job = wf.split("Validate the inputs")[0]
+        tail = job.rsplit("steps:", 1)[-1]
+        self.assertIn("actions/checkout", tail,
+                      "the input validator imports the scenario catalogue but "
+                      "runs before actions/checkout, so qa/ does not exist yet")
+
     def test_the_workflow_validator_accepts_every_module_set(self):
         """The guard that was missing.
 

@@ -120,7 +120,8 @@ class Runner:
         self.ctx = ctx
         self.phases = []
 
-    def phase(self, name, title, needs=(), critical=False, optional=False):
+    def phase(self, name, title, needs=(), critical=False, optional=False,
+              always=False):
         """Register a phase.
 
         critical — a failure here aborts the run. Reserved for the phases that
@@ -129,12 +130,20 @@ class Runner:
         optional — a failure is reported but does not mark the run failed. For
                    things that are nice to have (an LLM summary with no key
                    configured) rather than product behaviour under test.
+        always   — runs even after a critical phase aborted the run. For the
+                   phases whose whole value is realised on a BAD run: collect
+                   gathers the logs, report writes results.json. Without this
+                   an abort produced no report at all, so every distinct
+                   failure reached CI as the same opaque "no results.json"
+                   and the diagnostics were discarded at the moment they
+                   became interesting. Dependencies still apply, so an
+                   always-phase whose subject never happened is still skipped.
         """
         def register(fn):
             self.phases.append({
                 "name": name, "title": title, "fn": fn,
                 "needs": tuple(needs), "critical": critical,
-                "optional": optional})
+                "optional": optional, "always": always})
             return fn
         return register
 
@@ -173,7 +182,7 @@ class Runner:
                 res.status, res.skipped_because = SKIP, "explicitly skipped"
                 tl.warn("phase_skipped", stage=name, detail="requested by operator")
                 continue
-            if aborted:
+            if aborted and not spec["always"]:
                 res.status, res.skipped_because = SKIP, "run aborted earlier"
                 continue
 
