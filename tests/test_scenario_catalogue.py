@@ -105,6 +105,27 @@ class TestScenarioCatalogue(unittest.TestCase):
             wrong, "install-only scenario(s) mapped to an upgrade route: "
                    + ", ".join(wrong))
 
+    def test_the_push_fallback_matches_the_dispatch_default(self):
+        """A workflow_dispatch `default:` does not apply to a push.
+
+        The push trigger carries no inputs at all, so the `||` fallback is what
+        actually decides which scenarios run. When the two disagreed, a push ran
+        ONE scenario while the file said three -- and a matrix that quietly
+        shrinks reads as a pass.
+        """
+        src = open(WORKFLOW, encoding="utf-8").read()
+        default = re.search(
+            r"scenarios:(?:.|\n)*?default:\s*'([^']*)'", src)
+        fallback = re.search(
+            r"WANTED:\s*\$\{\{\s*github\.event\.inputs\.scenarios\s*\|\|\s*'([^']*)'",
+            src)
+        self.assertTrue(default, "could not find the scenarios input default")
+        self.assertTrue(fallback, "could not find the push fallback")
+        self.assertEqual(
+            default.group(1), fallback.group(1),
+            "the dispatch default and the push fallback disagree, so a push "
+            "runs a different set of scenarios than the file advertises")
+
     def test_every_route_named_is_implemented(self):
         unknown = sorted(set(self.routes.values()) - self.known)
         self.assertFalse(unknown,

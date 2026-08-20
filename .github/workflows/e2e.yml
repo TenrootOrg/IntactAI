@@ -247,7 +247,12 @@ jobs:
         with: { ref: '${{ github.event.inputs.ref || github.ref_name }}', fetch-depth: 1 }
       - id: pick
         env:
-          WANTED: ${{ github.event.inputs.scenarios || 'install-online' }}
+          # The fallback must match the input's `default:` above. A
+          # workflow_dispatch default applies ONLY to dispatch events -- on the
+          # push trigger the inputs are absent entirely, so this string is what
+          # actually runs. They disagreed once and the run silently tested one
+          # scenario instead of three, which looks exactly like a pass.
+          WANTED: ${{ github.event.inputs.scenarios || 'install-online,install-package,cli-upgrade' }}
         run: |
           set -euo pipefail
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
