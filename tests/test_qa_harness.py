@@ -265,12 +265,28 @@ class TestIngestTraps(unittest.TestCase):
                           "every timesketch upload must set plaso_parser "
                           "explicitly; the hook's default is win7")
 
-    def test_the_zero_events_assertion_exists(self):
+    def test_the_event_count_is_asserted_against_the_evidence(self):
+        """A completed run with zero events creates no sketch and still
+        reports success -- but ">0" is not enough either. Three events from
+        twenty megabytes of logs is a parser that stopped matching, and it
+        passes a bare non-zero check. Every ingest must compare the count to a
+        floor derived from what was actually uploaded."""
         src = _read("phases", "pipelines.py")
-        self.assertRegex(
-            src, r"events.*?\)?\s*>\s*0",
-            "the ingest must assert plaso extracted events; a completed run "
-            "with zero events creates no sketch and still reports success")
+        floors = re.findall(r"^\s*floor = .*$", src, re.M)
+        self.assertTrue(floors,
+                        "no proportional floor found; the ingest assertions "
+                        "have reverted to a bare >0")
+        for line in floors:
+            self.assertIn("//", line,
+                          f"a floor that is not derived from the evidence size "
+                          f"is just a magic number: {line.strip()}")
+        checks = re.findall(r"\(events or 0\)\s*(>=?)\s*(\w+)", src)
+        self.assertTrue(checks, "no event-count assertion found at all")
+        for op, rhs in checks:
+            self.assertEqual(
+                (op, rhs), (">=", "floor"),
+                "an event count must be compared against the proportional "
+                f"floor, not `{op} {rhs}`")
 
     def test_memory_image_is_uploaded_bare(self):
         """Inside a ZIP the floor is 200 MB and smaller members are discarded as
