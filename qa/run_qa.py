@@ -21,6 +21,7 @@ itself.
 """
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -177,6 +178,15 @@ def main():
     results = runner.run(only=only or None, skip=skip or None)
     counts = runner_lib.summarize(results)
 
+    # RE-WRITTEN HERE, after every phase has a verdict. The `report` phase
+    # writes results.json too, but it writes it from inside itself -- so its
+    # own result does not exist yet and is missing from the file. That is not
+    # cosmetic: the report phase is where the redaction canary and the
+    # credential scan run, so a run that found a real secret leak wrote
+    # "fail: 0", and CI passed the job. Anything that report itself catches
+    # could never fail a build.
+    _write_results_json(run_dir, tl.run_id, results, counts)
+
     tl.event("run_end", status="ok" if not counts.get("fail") and
              not counts.get("error") else "fail", detail=counts)
 
@@ -192,6 +202,15 @@ def main():
     print(f"  Timeline: {os.path.join(run_dir, 'timeline.md')}\n")
 
     return 1 if (counts.get("fail") or counts.get("error")) else 0
+
+
+def _write_results_json(run_dir, run_id, results, counts):
+    """The machine-readable verdict, written once every phase has finished."""
+    payload = {"run_id": run_id, "counts": counts,
+               "phases": [r.to_dict() for r in results.values()]}
+    with open(os.path.join(run_dir, "results.json"), "w",
+              encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2, default=str)
 
 
 def _reorder(runner, name, before):

@@ -191,16 +191,40 @@ def register(runner, cfg):
                   note="if this fails, treat every artifact in this run "
                        "directory as containing live credentials")
 
+        # Everything the harness writes goes through ctx.redact on the way in.
+        # The engine's own logs do not: run_bootstrap and run_cli pass `--log
+        # <path>` INTO the run directory, so the product writes there directly
+        # and the redactor never sees a byte of it. That is how a configured
+        # credential reached an uploaded artifact while every harness-written
+        # file was clean -- and this repo is public. So sweep the directory
+        # before scanning it, rather than reporting a leak that was ours to
+        # prevent.
+        detail_redacted = _redact_run_directory(ctx)
+
         # And the real thing: no configured secret may appear anywhere.
         offenders = _scan_for_secrets(ctx.run_dir, cfg.secrets())
+        # NAMED, not counted. This check fired for real and the timeline line
+        # carried no `actual` at all, because a list value rendered as nothing
+        # -- so the one check whose entire job is to say a credential leaked
+        # could not say where. A leak you cannot locate is a leak you cannot
+        # fix.
         ctx.check("no configured credential appears in the run directory",
-                  not offenders, actual=offenders[:5])
+                  not offenders,
+                  expected="no run artifact contains a configured secret",
+                  actual=(", ".join(offenders[:5])
+                          + (f" (+{len(offenders) - 5} more)"
+                             if len(offenders) > 5 else ""))
+                         if offenders else "clean",
+                  note="these files are uploaded as build artifacts; treat "
+                       "every credential named in qa-config.yaml as exposed "
+                       "until this passes")
 
         tl.render_markdown()
         path = _write_report(ctx, cfg)
         ctx.check("report written", os.path.exists(path), actual=path)
         return {"report": path, "canary_leaked": leaked,
-                "secret_offenders": len(offenders)}
+                "secret_offenders": len(offenders),
+                "files_redacted": detail_redacted}
 
 
 # --- report --------------------------------------------------------------
@@ -555,6 +579,45 @@ def _write_report(ctx, cfg):
                    "phases": [r.to_dict() for r in results.values()]},
                   fh, indent=2, default=str)
     return path
+
+
+def _redact_run_directory(ctx, max_bytes=8_000_000):
+    """Rewrite every text artifact in the run directory through the redactor.
+
+    Only files the harness did not already redact can change here, so this is
+    idempotent and cheap. Binaries and oversized files are left alone: a memory
+    image legitimately contains whatever was in RAM, and rewriting it would be
+    both meaningless and slow.
+
+    The credential file is skipped for the same reason the scanner skips it --
+    holding the credential is its entire purpose.
+    """
+    changed = 0
+    for root, _dirs, files in os.walk(ctx.run_dir):
+        for fn in files:
+            if fn in _DELIBERATE_CREDENTIAL_FILES:
+                continue
+            if fn.endswith((".zip", ".raw", ".mem", ".dmp", ".msi", ".exe",
+                            ".tar", ".gz", ".png", ".jpg")):
+                continue
+            path = os.path.join(root, fn)
+            try:
+                if os.path.getsize(path) > max_bytes:
+                    continue
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    body = fh.read()
+            except OSError:
+                continue
+            clean = ctx.redact(body)
+            if clean != body:
+                try:
+                    with open(path, "w", encoding="utf-8") as fh:
+                        fh.write(clean)
+                    os.chmod(path, 0o600)
+                    changed += 1
+                except OSError:
+                    continue
+    return changed
 
 
 # The one file whose entire purpose is to hold the credential. Scanning it and

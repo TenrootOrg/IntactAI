@@ -382,6 +382,94 @@ class _StubCfg:
         return None
 
 
+class TestRunDirectoryRedaction(unittest.TestCase):
+    """The product writes into the run directory, and those files are uploaded.
+
+    run_bootstrap and run_cli pass `--log <path>` pointing INTO the run
+    directory, so the engine writes there itself and ctx.redact never sees it.
+    That is how a configured credential reached an uploaded artifact while
+    every harness-written file was clean. The sweep exists to close that, and
+    it must not touch the one file whose job is to hold the credential.
+    """
+
+    def _run(self, tmp, secret):
+        sys.path.insert(0, os.path.join(ROOT, "qa"))
+        from phases import wrapup
+
+        class _Ctx:
+            run_dir = tmp
+            redact = staticmethod(
+                lambda text: text.replace(secret, "[REDACTED]"))
+
+        return wrapup._redact_run_directory(_Ctx())
+
+    def test_a_log_the_product_wrote_is_cleaned(self):
+        import shutil
+        import tempfile
+        tmp = tempfile.mkdtemp(prefix="qa-redact-")
+        try:
+            os.makedirs(os.path.join(tmp, "logs"))
+            engine_log = os.path.join(tmp, "logs", "upgrade-cli.log")
+            with open(engine_log, "w", encoding="utf-8") as fh:
+                fh.write("connecting as hunter2 to the appliance\n")
+            changed = self._run(tmp, "hunter2")
+            body = open(engine_log, encoding="utf-8").read()
+            self.assertEqual(changed, 1)
+            self.assertNotIn("hunter2", body)
+            self.assertIn("[REDACTED]", body)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_the_credential_file_is_left_alone(self):
+        """It exists to hold the credential; redacting it would make a run
+        undescribable and the leak check cry wolf."""
+        import shutil
+        import tempfile
+        tmp = tempfile.mkdtemp(prefix="qa-redact-")
+        try:
+            creds = os.path.join(tmp, "dashboard-credentials.txt")
+            with open(creds, "w", encoding="utf-8") as fh:
+                fh.write("password: hunter2\n")
+            self._run(tmp, "hunter2")
+            self.assertIn("hunter2", open(creds, encoding="utf-8").read())
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_binaries_are_not_rewritten(self):
+        import shutil
+        import tempfile
+        tmp = tempfile.mkdtemp(prefix="qa-redact-")
+        try:
+            blob = os.path.join(tmp, "memory.raw")
+            with open(blob, "wb") as fh:
+                fh.write(b"\x00\x01hunter2\xff")
+            self._run(tmp, "hunter2")
+            self.assertEqual(open(blob, "rb").read(), b"\x00\x01hunter2\xff")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+class TestResultsJsonIsFinal(unittest.TestCase):
+    """results.json must reflect every phase, including the last one.
+
+    It used to be written from inside the `report` phase, so report's own
+    result did not exist yet and never appeared in the counts. The redaction
+    canary and the credential scan both run in that phase -- so a run that
+    found a genuine secret leak wrote "fail: 0" and CI passed the job.
+    """
+
+    def test_main_rewrites_it_after_the_run(self):
+        src = _read("run_qa.py")
+        self.assertIn("_write_results_json(run_dir, tl.run_id, results, counts)",
+                      src,
+                      "results.json is only written from inside a phase, so "
+                      "that phase's own verdict can never reach CI")
+        run_pos = src.index("results = runner.run(")
+        write_pos = src.index("_write_results_json(run_dir")
+        self.assertLess(run_pos, write_pos,
+                        "results.json must be written AFTER runner.run()")
+
+
 class TestPhaseOrderPerScenario(unittest.TestCase):
     """Every phase's dependencies must run BEFORE it, in every scenario.
 
