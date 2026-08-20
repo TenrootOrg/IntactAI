@@ -53,6 +53,14 @@
      continuation rather than as the next entry. */
   .md li.sub{margin-left:20px;list-style:circle;color:var(--muted);font-size:12px}
   .md li.sub code{font-size:11px;overflow-wrap:anywhere}
+  /* Long evidence is clamped to three lines and opens on click. `clip` is added
+     by JS only where the text actually overflows, so a short line gets no
+     affordance it does not need. */
+  .md li.sub.clip{max-height:4.2em;overflow:hidden;cursor:pointer;position:relative}
+  .md li.sub.clip::after{content:'⌄ more';position:absolute;right:0;bottom:0;
+    padding:0 4px 0 14px;font-size:10px;color:var(--acc);background:var(--panel)}
+  .md li.sub.clip.open{max-height:none}
+  .md li.sub.clip.open::after{content:'⌃ less';position:static;padding-left:8px;background:none}
   /* Air between finding groups: the first bullet after an evidence block starts a
      new finding, and needs to look like one. */
   .md li.sub + li:not(.sub){margin-top:12px}
@@ -531,6 +539,7 @@ function renderReport(info){
     ${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}
     <span style="color:var(--muted);font-size:11px;margin-left:auto">auto-generated on first scan · regenerate to apply Timeline changes</span>
   </div>${advHtml}<div class="md">${mdToHtml(window._md||'')}</div>`;
+  clampEvidence($('#tabc'));
 }
 function regenReport(id){
   toast('regenerating report (LLM)…');
@@ -978,6 +987,22 @@ function ask(id){
    .catch(e=>done('⚠️ Could not reach the server: '+(e&&e.message||e)+
                   '. The question was not answered — try again.'));
 }
+
+// Evidence lines can run to ~1200 characters (a Defender message carries the
+// threat name, a path and a fwlink URL). Clamp the ones that actually overflow
+// and let a click open them, rather than truncating: the operator asked for the
+// end of the string, so it has to be present to be reachable.
+function clampEvidence(root){
+  (root||document).querySelectorAll('.md li.sub').forEach(li=>{
+    li.classList.remove('clip','open');
+    li.classList.add('clip');                     // apply the max-height first…
+    if(li.scrollHeight <= li.clientHeight + 1) li.classList.remove('clip');  // …then ask
+  });
+}
+document.addEventListener('click',e=>{
+  const li = e.target && e.target.closest && e.target.closest('.md li.sub.clip');
+  if(li) li.classList.toggle('open');
+});
 
 // minimal, air-gap-safe markdown renderer
 function escape(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}

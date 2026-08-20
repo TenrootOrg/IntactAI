@@ -95,7 +95,17 @@ def _phase(f) -> str:
 EXPLICIT_MAX_HOSTS = 12
 EXPLICIT_MAX_FINDINGS = 150
 EXPLICIT_EVENTS_PER_FINDING = 5            # evidence lines surfaced per finding
-EXPLICIT_EVIDENCE_CHARS = 200             # per evidence line
+EXPLICIT_EVIDENCE_CHARS = 200             # per evidence line, LLM payload
+# The SAME evidence, rendered for a human, gets far more room. 200 characters is
+# a budget number: it exists because every one of these lines is also sent to the
+# model, where five per finding across 150 findings is real money. The report is
+# not on that budget, and truncating there was costing the operator the end of
+# every Defender message -- the threat name, the URL, the path -- with an ellipsis
+# baked into the markdown, so the Markdown and PDF exports carried the cut too.
+#
+# Still capped, because a single base64 PowerShell blob can run to tens of
+# kilobytes and would swamp both the page and the PDF.
+REPORT_EVIDENCE_CHARS = 1200
 
 
 def _resolve_detail(graph, detail, *, window=None, min_severity="informational"):
@@ -1080,7 +1090,8 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
             mitre = f" `[{', '.join(f.mitre)}]`" if f.mitre else ""
             out.append(f"- `{fmt_ts(f.ts)}` · **[{f.severity}]** {f.title}{mitre}")
             if eff_detail == "explicit":           # real per-event evidence inline
-                for ev in _finding_evidence(graph, f):
+                for ev in _finding_evidence(graph, f,
+                                            cap_chars=REPORT_EVIDENCE_CHARS):
                     out.append(f"    - `{ev}`")
     out.append("")
 
