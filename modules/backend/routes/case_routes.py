@@ -461,21 +461,36 @@ def delete_case(case_id):
 
 def _bundle_thread(target, run_id, *args, **kwargs):
     """Run a bundle job on a daemon thread, owning the run's terminal state and
-    releasing `lock` no matter how it ends."""
+    releasing `lock` no matter how it ends.
+
+    The run is registered for cancellation before the thread starts, so the Stop
+    button in Settings → Actions reaches it — a Stop that renders but does nothing
+    is worse than no Stop at all.
+    """
     import threading
     import traceback
     from services import workflow_service as ws
     lock = kwargs.pop("lock", None)
+    cancel = ws.register_cancel_event(run_id)
 
     def _worker():
         try:
-            res = target(*args, run_id=run_id, **kwargs)
-            ws.update_run_status(run_id, "completed", progress=100, details=res, force=True)
+            res = target(*args, run_id=run_id, cancel=cancel, **kwargs)
+            # No force=: if anything logged at error level, the platform's safety
+            # net demotes this to 'failed', which is exactly right — a bundle with
+            # an error in its log is not one to hand an operator as finished.
+            ws.update_run_status(run_id, "completed", progress=100, details=res)
         except Exception as e:                            # noqa: BLE001
+            if cancel.is_set():
+                return          # request_stop() already marked it cancelled
             traceback.print_exc()
             ws.add_log_to_run(run_id, f"{e}", "error")
             ws.update_run_status(run_id, "failed", error=str(e))
         finally:
+            try:
+                ws.unregister_cancel(run_id)
+            except Exception:
+                pass
             if lock is not None:
                 try:
                     lock.release()
@@ -586,7 +601,7 @@ def import_case():
             details={"filename": f.filename or "bundle"})
         res = case_bundle.import_case_bundle(tmp, run_id=run_id,
                                              name=request.form.get("name") or None)
-        ws.update_run_status(run_id, "completed", progress=100, details=res, force=True)
+        ws.update_run_status(run_id, "completed", progress=100, details=res)
         return jsonify(res)
     except Exception as e:                                # noqa: BLE001
         if run_id:

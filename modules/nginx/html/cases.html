@@ -287,43 +287,24 @@ function activateWorkspace(id, ev){ if(ev) ev.stopPropagation();
 // through the resumable chunked uploader rather than a form POST (nginx caps
 // /api/ bodies at 500 MB, which one collection already exceeds).
 
-const exports_ = {};      // case_id -> {run_id, pct, ready, name, bytes, error}
-
-function fmtBytes(n){ n=Number(n||0); const u=['B','KB','MB','GB','TB']; let i=0;
-  while(n>=1024&&i<u.length-1){n/=1024;i++;} return (i?n.toFixed(1):n)+' '+u[i]; }
-
-// The Export control is a small state machine rendered inline in the case row:
-// idle → running (with %) → a download link. Kept in loadCases()'s template so a
-// list refresh (which happens on every case action) never loses it.
+// Export hands the job to a System action and takes the operator there. It is a
+// long, multi-GB job with a file at the end — the same shape as a support bundle
+// or a prepared upgrade package, which is exactly where Settings → Actions puts
+// progress, the full log and the download button. Duplicating that inside the
+// Cases page meant a second, worse copy of it, and one that lost its state on
+// every list refresh.
 function expBtn(id){
-  const e=exports_[id];
-  if(!e) return `<button class="ghost" style="font-size:11px;padding:3px 8px" onclick="exportWorkspace('${id}',event)" title="Export this case as a portable bundle for another Intact appliance">Export</button>`;
-  if(e.error) return `<button class="ghost" style="font-size:11px;padding:3px 8px" onclick="exportWorkspace('${id}',event)" title="${esc(e.error)}">Export — retry</button>`;
-  if(!e.ready) return `<span style="font-size:11px;color:var(--muted)">exporting… ${e.pct||0}%</span>`;
-  return `<a class="ghost" style="font-size:11px;padding:3px 8px;text-decoration:none"
-             href="/api/cases/export/${e.run_id}/download" download
-             onclick="event.stopPropagation()"
-             title="Download ${esc(e.name||'bundle')}">⬇ Download ${fmtBytes(e.bytes)}</a>`;
+  return `<button class="ghost" style="font-size:11px;padding:3px 8px" onclick="exportWorkspace('${id}',event)" title="Export this case as a portable bundle — runs as a System action, download it there when it finishes">Export</button>`;
 }
 
 function exportWorkspace(id, ev){ if(ev) ev.stopPropagation();
-  exports_[id]={pct:0}; loadCases();
+  toast('starting export…');
   fetch('/api/cases/'+id+'/export',{method:'POST'}).then(async r=>{
     const d=await r.json().catch(()=>({}));
-    if(!r.ok){ exports_[id]={error:d.error||('HTTP '+r.status)}; toast('export failed: '+(d.error||r.status)); loadCases(); return; }
-    exports_[id]={run_id:d.run_id,pct:0}; loadCases();
-    watchRun(d.run_id, run=>{
-      const det=run.details||{};
-      if(run.status==='completed'){
-        exports_[id]={run_id:d.run_id,ready:true,name:det.bundle_name,bytes:det.bundle_bytes};
-        toast('bundle ready — '+fmtBytes(det.bundle_bytes));
-        if((det.warnings||[]).length) toast(det.warnings.length+' warning(s) — see the run log', 5000);
-      } else if(run.status==='failed'||run.status==='cancelled'){
-        exports_[id]={error:run.error||run.status}; toast('export failed: '+(run.error||run.status));
-      } else { exports_[id]={run_id:d.run_id,pct:run.progress||0}; }
-      loadCases();
-    });
-  }).catch(e=>{ exports_[id]={error:e.message}; toast('export failed: '+e.message); loadCases(); });
+    if(!r.ok){ toast('export failed to start: '+(d.error||('HTTP '+r.status)), 5000); return; }
+    toast('export started — opening Settings → Actions', 3000);
+    setTimeout(()=>{ try{ window.ActiveCase.gotoSystemWorkflows(); }catch(e){} }, 600);
+  }).catch(e=>toast('export failed to start: '+e.message, 5000));
 }
 
 // Import: upload the bundle (chunked + resumable), then watch the run that reads

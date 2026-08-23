@@ -526,7 +526,7 @@ def handle_tus_hook():
                         from services.fusion import case_bundle
                         res = case_bundle.import_case_bundle(file_path, run_id=run_id)
                         update_run_status(run_id, "completed", progress=100,
-                                          details=res, force=True)
+                                          details=res)
                     except Exception as e:
                         print(f"[TUS HOOK] Case import error: {e}", flush=True)
                         traceback.print_exc()

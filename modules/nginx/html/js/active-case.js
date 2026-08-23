@@ -282,16 +282,26 @@
     // the old name + shape so the ~7 settings.js callers work unchanged.) The
     // settings panel listens for the 'show-system-actions' window event; fire it
     // twice to cover the case where the settings partial is still lazy-loading.
+    //
+    // Callers can be INSIDE an iframe: the Cases tab embeds cases.html, and its
+    // Export button ends here. Alpine and the settings panel live in the parent,
+    // so switching this window's tab would do nothing visible — walk up to the
+    // top window first. Same origin, so this is a plain property access; the
+    // try/catch is for a headless/detached frame, not for a security boundary.
+    let top = window;
     try {
-      if (window.Alpine && Alpine.store('app') && Alpine.store('app').switchTab) {
-        Alpine.store('app').switchTab('settings');
+      if (window.top && window.top !== window && window.top.document) top = window.top;
+    } catch (e) { top = window; }
+    try {
+      if (top.Alpine && top.Alpine.store('app') && top.Alpine.store('app').switchTab) {
+        top.Alpine.store('app').switchTab('settings');
       } else {
-        window.location.hash = 'settings';
+        top.location.hash = 'settings';
       }
     } catch (e) {
-      try { window.location.hash = 'settings'; } catch (_) { /* headless */ }
+      try { top.location.hash = 'settings'; } catch (_) { /* headless */ }
     }
-    const fire = () => { try { window.dispatchEvent(new CustomEvent('show-system-actions')); } catch (e) {} };
+    const fire = () => { try { top.dispatchEvent(new CustomEvent('show-system-actions')); } catch (e) {} };
     fire();
     setTimeout(fire, 400);
   }

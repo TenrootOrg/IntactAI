@@ -583,10 +583,11 @@ class TestIntegrity(BundleTestBase):
 
         cb.archive_guard.copy_bounded = boom
         try:
-            with self.assertRaises(OSError):
+            with self.assertRaises(cb.BundleError) as ctx:
                 cb.import_case_bundle(path)
         finally:
             cb.archive_guard.copy_bounded = real
+        self.assertIn("disk fell over", str(ctx.exception))
 
         self.assertEqual(set(self.ws.rows), before_rows, "a half-imported case survived")
         self.assertEqual(set(os.listdir(cb.DOWNLOAD_WRITE_DIR)), before_dirs)
@@ -632,7 +633,8 @@ class TestExportBehaviour(BundleTestBase):
         self.ws.create_automation_run("timesketch", "TS", case_id=case_id,
                                       details={"timeline_events": [{"ts": "x"}]})
         _, res = self.export(case_id)
-        self.assertEqual(res["warnings"], [])
+        self.assertFalse([w for w in res["warnings"] if "TS" in w or "timeline" in w],
+                         res["warnings"])
 
     def test_a_timesketch_run_with_nothing_on_the_row_is_warned(self):
         case_id = self.ws.create_automation_run("case", "Case — T2",
@@ -641,6 +643,127 @@ class TestExportBehaviour(BundleTestBase):
                                       case_id=case_id)
         _, res = self.export(case_id)
         self.assertTrue(any("Timesketch sketch" in w for w in res["warnings"]))
+
+    def test_a_never_fused_case_says_so_rather_than_exporting_silently(self):
+        """It exports fine — the collected data is what matters — but an operator
+        who imports it and sees an empty Analysis tab deserves to know why."""
+        case_id, _ = self.make_case(runs=1, graph=False)
+        _, res = self.export(case_id)
+        self.assertTrue(any("never been fused" in w for w in res["warnings"]))
+
+    def test_a_file_that_vanishes_mid_export_costs_a_warning_not_the_bundle(self):
+        """The Maintenance purge can delete collected data WHILE an export runs.
+        An operator exporting a case is usually about to lose the appliance that
+        holds it, so losing the whole bundle over one file is the wrong trade."""
+        case_id, members = self.make_case(runs=2)
+        victim = os.path.join(cb.DOWNLOAD_WRITE_DIR, members[0], "raw_results.json")
+        real_plan = cb.plan_export
+
+        def plan_then_purge(cid):
+            p = real_plan(cid)
+            os.remove(victim)                  # gone after planning, before writing
+            return p
+
+        cb.plan_export = plan_then_purge
+        try:
+            path, res = self.export(case_id)
+        finally:
+            cb.plan_export = real_plan
+        self.assertEqual(res["files_skipped"], 1)
+        self.assertTrue(any("disappeared" in w for w in res["warnings"]))
+        with zipfile.ZipFile(path) as zf:
+            self.assertNotIn(f"payloads/{members[0]}/raw_results.json", zf.namelist())
+            self.assertIn(f"payloads/{members[1]}/raw_results.json", zf.namelist())
+        # and the bundle is still a VALID bundle: it imports.
+        res2 = cb.import_case_bundle(path)
+        self.assertEqual(res2["runs_imported"], 2)
+
+    def test_stop_cancels_the_export_and_leaves_no_partial_archive(self):
+        """Settings → Actions renders a Stop button for a running action. It has
+        to actually stop it, and not leave a half-written .partial behind."""
+        import threading
+        case_id, _ = self.make_case(runs=2)
+        cancel = threading.Event()
+        real = cb._safe_zip_file
+
+        def cancel_after_first(zf, arc, src, prog, on_bytes, **kw):
+            cancel.set()
+            return real(zf, arc, src, prog, on_bytes)
+
+        cb._safe_zip_file = cancel_after_first
+        try:
+            with self.assertRaises(cb.BundleError) as ctx:
+                cb.export_case_bundle(case_id, cancel=cancel)
+        finally:
+            cb._safe_zip_file = real
+        self.assertIn("cancelled", str(ctx.exception))
+        self.assertEqual(os.listdir(os.path.join(cb.EXPORT_DIR, case_id)), [])
+
+    def test_stop_during_the_LAST_file_still_produces_no_bundle(self):
+        """Measured on the appliance: Stop pressed while the final 546 MB member
+        was streaming let the export run to completion. The run was already
+        marked cancelled, so the finished archive sat on disk with no way for the
+        UI to offer it — and it had swept away the previous good export."""
+        import threading
+        case_id, _ = self.make_case(runs=1)          # one payload = the last file
+        cancel = threading.Event()
+        real = cb._safe_zip_file
+
+        def cancel_midstream(zf, arc, src, prog, on_bytes, **kw):
+            if arc.startswith("payloads/"):
+                cancel.set()                          # set WHILE the last file runs
+            return real(zf, arc, src, prog, on_bytes, cancel=cancel)
+
+        cb._safe_zip_file = cancel_midstream
+        try:
+            with self.assertRaises(cb.BundleError):
+                cb.export_case_bundle(case_id, cancel=cancel)
+        finally:
+            cb._safe_zip_file = real
+        self.assertEqual(os.listdir(os.path.join(cb.EXPORT_DIR, case_id)), [],
+                         "a cancelled export left an archive the UI cannot offer")
+
+    def test_stop_cancels_an_import_and_unwinds_it(self):
+        import threading
+        case_id, _ = self.make_case(runs=2)
+        path, _ = self.export(case_id)
+        before = set(self.ws.rows)
+        cancel = threading.Event()
+        real = cb.archive_guard.copy_bounded
+
+        def cancel_after_first(src, dst, limit, **kw):
+            cancel.set()
+            return real(src, dst, limit, **kw)
+
+        cb.archive_guard.copy_bounded = cancel_after_first
+        try:
+            with self.assertRaises(cb.BundleError) as ctx:
+                cb.import_case_bundle(path, cancel=cancel)
+        finally:
+            cb.archive_guard.copy_bounded = real
+        self.assertIn("cancelled", str(ctx.exception))
+        self.assertEqual(set(self.ws.rows), before, "a cancelled import left rows behind")
+
+    def test_a_full_disk_says_so_in_words_an_operator_can_act_on(self):
+        case_id, _ = self.make_case(runs=1)
+        import errno
+        real = cb._safe_zip_file
+
+        def boom(zf, arc, src, prog, on_bytes, **kw):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        cb._safe_zip_file = boom
+        try:
+            with self.assertRaises(cb.BundleError) as ctx:
+                cb.export_case_bundle(case_id)
+        finally:
+            cb._safe_zip_file = real
+        msg = str(ctx.exception)
+        self.assertIn("ran out of disk space", msg)
+        self.assertIn("export again", msg)
+        # no half-written archive left behind
+        left = os.listdir(os.path.join(cb.EXPORT_DIR, case_id))
+        self.assertEqual(left, [], f"leftovers: {left}")
 
     def test_a_missing_memory_payload_says_the_yara_hits_are_unrecoverable(self):
         case_id = self.ws.create_automation_run("case", "Case — M",

@@ -46,6 +46,7 @@ import json
 import os
 import re
 import shutil
+import time
 import zipfile
 from datetime import datetime, timezone
 
@@ -179,6 +180,14 @@ class _Progress:
     def warn(self, msg):
         self.warnings.append(msg)
         self.log(msg, "warning")
+
+    def phase(self, name, seconds):
+        if not self.run_id:
+            return
+        try:
+            _ws().record_phase_timing(self.run_id, name, round(seconds, 1))
+        except Exception:
+            pass
 
     def pct(self, value, detail=None):
         if not self.run_id:
@@ -366,40 +375,72 @@ def export_case_bundle(case_id, *, run_id=None, cancel=None) -> dict:
 
     Runs on a background thread: a multi-GB archive cannot be built inside a
     request (nginx gives up waiting for the first byte after 300s, and the
-    response would be buffered). The route hands back a run id, the operator
-    watches progress, then downloads the finished file.
+    response would be buffered anyway). The route hands back a run id, the
+    operator watches it in Settings → Actions, and downloads it there when it
+    finishes.
+
+    The export is deliberately hard to fail. An operator exporting a case is
+    usually about to lose access to the appliance that holds it, so "we could
+    not include one file" must produce a bundle plus a warning, never no bundle
+    at all. Only three things stop it: the case does not exist, the disk fills,
+    or the operator cancels — and each says so in those words.
     """
     st = _store()
     prog = _Progress(run_id)
+    started = time.time()
+
+    prog.log("Reading the case…")
     plan = plan_export(case_id)
     for w in plan["warnings"]:
         prog.warn(w)
 
     name = plan["name"]
     out_dir = os.path.join(EXPORT_DIR, case_id)
-    archive_guard.require_free_space(out_dir, plan["estimate_bytes"])
+    prog.log(f"Case \"{name}\": {len(plan['member_ids'])} run(s), "
+             f"{len(plan['baseline_ids'])} baseline(s), "
+             f"{human_bytes(plan['payload_bytes'])} of collected data, "
+             f"{human_bytes(plan['graph_bytes'])} fused graph")
+    for kind, run in plan["rows"]:
+        prog.log(f"  · {kind}: {run.get('run_id')} "
+                 f"({run.get('automation_type')}) {run.get('name') or ''}".rstrip())
 
-    # Keep-latest: one archive per case. Exports are re-buildable and large, so
-    # holding every past one just fills the volume the payloads live on.
-    _sweep_export_dir(out_dir)
+    # Free space is checked against the UNCOMPRESSED total, which is pessimistic
+    # (JSON evidence compresses ~17x in practice) — deliberately so: running out
+    # of disk half way through leaves the operator with nothing.
+    free = None
+    try:
+        free = archive_guard.require_free_space(out_dir, plan["estimate_bytes"])
+    except archive_guard.ArchiveRejected as e:
+        prog.log(str(e), "error")
+        raise BundleError(str(e)) from e
+    if free is not None:
+        prog.log(f"Disk: {human_bytes(free)} free, "
+                 f"{human_bytes(plan['estimate_bytes'])} needed before compression")
+
+    # Keep-latest: one archive per case. Exports are rebuildable and large, so
+    # keeping every past one just fills the volume the payloads live on.
+    removed = _sweep_export_dir(out_dir)
+    if removed:
+        prog.log(f"Removed {removed} earlier export(s) of this case")
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     final = os.path.join(out_dir, f"{safe_name(name)}-{stamp}{BUNDLE_EXT}")
     partial = final + ".partial"
-
-    prog.log(f"Exporting case \"{name}\": {len(plan['member_ids'])} run(s), "
-             f"{len(plan['baseline_ids'])} baseline(s), "
-             f"{human_bytes(plan['payload_bytes'])} of collected data")
-    prog.pct(8)
+    prog.pct(8, f"Writing {os.path.basename(final)}")
 
     written = [0]
-    total = max(1, plan["estimate_bytes"])
+    total = max(1, plan["payload_bytes"] + plan["graph_bytes"])
 
     def _tick(n):
         written[0] += n
         prog.pct(min(95, 10 + int(85.0 * written[0] / total)))
 
+    def _check_cancel():
+        if cancel is not None and cancel.is_set():
+            raise _Cancelled()
+
     inventory = []
+    skipped = 0
     try:
         with zipfile.ZipFile(partial, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
             det = dict(plan["case_run"].get("details") or {})
@@ -407,24 +448,51 @@ def export_case_bundle(case_id, *, run_id=None, cancel=None) -> dict:
                 det.pop(k, None)
             inventory.append(_zip_doc(zf, "case.json",
                                       {**plan["case_run"], "details": det}))
+            prog.log(f"Added case.json — settings, report ({len(det.get('report_md') or '')} "
+                     f"chars), {len(det.get('chat_messages') or [])} chat message(s), "
+                     f"{len(det.get('dispositions') or [])} disposition(s), "
+                     f"{len(det.get('timeline_validations') or [])} timeline validation(s), "
+                     f"{len(det.get('manual_timeline_events') or [])} manual event(s)")
 
             for kind, run in plan["rows"]:
+                _check_cancel()
                 rid = run.get("run_id")
                 entry = _zip_doc(zf, f"runs/{rid}.json", run)
                 entry["role"] = kind
                 inventory.append(entry)
+            prog.log(f"Added {len(plan['rows'])} run row(s)")
 
+            _check_cancel()
             if plan["graph_src"]:
-                prog.log(f"Adding the fused graph ({human_bytes(plan['graph_bytes'])})")
-                inventory.append(_zip_file(zf, "graph.json", plan["graph_src"], on_bytes=_tick))
+                prog.log(f"Adding the fused graph ({human_bytes(plan['graph_bytes'])})…")
+                got = _safe_zip_file(zf, "graph.json", plan["graph_src"], prog, _tick,
+                                     cancel=cancel)
+                if got:
+                    inventory.append(got)
+                else:
+                    skipped += 1
+                    prog.warn("the fused graph could not be read — the imported case "
+                              "will be empty until it is re-fused (its collected data "
+                              "still travels, so a re-fuse rebuilds it)")
             elif plan["graph_inline"] is not None:
                 inventory.append(_zip_doc(zf, "graph.json", plan["graph_inline"]))
+                prog.log("Added the fused graph (from the legacy inline copy)")
+            else:
+                prog.warn("this case has never been fused — the bundle carries its "
+                          "collected data, so fuse it after importing")
 
-            for f in plan["files"]:
-                if cancel is not None and cancel.is_set():
-                    raise BundleError("export cancelled")
-                prog.log(f"Adding {f['arc']} ({human_bytes(f['bytes'])})")
-                inventory.append(_zip_file(zf, f["arc"], f["src"], on_bytes=_tick))
+            for i, f in enumerate(plan["files"], 1):
+                _check_cancel()
+                prog.log(f"Adding {f['arc']} ({human_bytes(f['bytes'])}) "
+                         f"[{i}/{len(plan['files'])}]…")
+                got = _safe_zip_file(zf, f["arc"], f["src"], prog, _tick, cancel=cancel)
+                if got:
+                    inventory.append(got)
+                else:
+                    skipped += 1
+                    prog.warn(f"{f['arc']} disappeared while the bundle was being "
+                              f"built (a Maintenance purge?) — exported without it; "
+                              f"that run will not contribute to a re-fuse")
 
             # Manifest last: the checksums are only known now.
             manifest = {
@@ -436,43 +504,129 @@ def export_case_bundle(case_id, *, run_id=None, cancel=None) -> dict:
                 "case_name": name,
                 "member_run_ids": plan["member_ids"],
                 "baseline_run_ids": plan["baseline_ids"],
-                "has_graph": bool(plan["graph_src"] or plan["graph_inline"] is not None),
+                "has_graph": any(e["path"] == "graph.json" for e in inventory),
                 "files": inventory,
                 "warnings": list(prog.warnings),
             }
             zf.writestr(MANIFEST_NAME, json.dumps(manifest, indent=2, default=str))
+            prog.log(f"Wrote the manifest: {len(inventory)} file(s), each with a "
+                     f"SHA-256 the import verifies before it writes anything")
 
+        _check_cancel()
         os.replace(partial, final)
-    except BaseException:
+    except _Cancelled:
         _rm(partial)
+        prog.log("Export cancelled — the partial archive was removed", "warning")
+        raise BundleError("export cancelled")
+    except OSError as e:
+        _rm(partial)
+        detail = _disk_hint(e, out_dir)
+        prog.log(f"Export failed while writing the archive: {detail}", "error")
+        raise BundleError(detail) from e
+    except BaseException as e:
+        _rm(partial)
+        prog.log(f"Export failed: {e}", "error")
         raise
 
     size = os.path.getsize(final)
+    elapsed = time.time() - started
+    ratio = (plan["payload_bytes"] + plan["graph_bytes"]) / size if size else 0
     prog.pct(100)
-    prog.log(f"Bundle ready: {os.path.basename(final)} ({human_bytes(size)})")
+    prog.log(f"Bundle ready: {os.path.basename(final)} — {human_bytes(size)} "
+             f"({ratio:.1f}x smaller than the data it carries) in {elapsed:.0f}s")
+    if skipped:
+        prog.log(f"{skipped} file(s) could not be included — see the warnings above",
+                 "warning")
+    prog.phase("export", elapsed)
     try:
-        st.log_case_event(case_id, "Export case", "ok",
+        st.log_case_event(case_id, "Export case", "warning" if prog.warnings else "ok",
                           f"exported {len(plan['member_ids'])} run(s), "
                           f"{human_bytes(plan['payload_bytes'])} of collected data "
-                          f"→ {os.path.basename(final)}")
+                          f"→ {os.path.basename(final)} ({human_bytes(size)})"
+                          + (f" — {len(prog.warnings)} warning(s)" if prog.warnings else ""))
     except Exception:
         pass
     return {"bundle_path": final, "bundle_name": os.path.basename(final),
-            "bundle_bytes": size, "case_id": case_id, "case_name": name,
+            "bundle_bytes": size, "bundle_size_mb": round(size / (1024 * 1024), 1),
+            "case_id": case_id, "case_name": name,
             "runs_exported": len(plan["member_ids"]),
             "baselines_exported": len(plan["baseline_ids"]),
+            "files_skipped": skipped,
             "warnings": list(prog.warnings)}
 
 
-def _sweep_export_dir(out_dir):
+def _safe_zip_file(zf, arc, src, prog, on_bytes, cancel=None):
+    """Add a file to the archive, or return None if it could not be read.
+
+    A file that vanished between planning and writing (the Maintenance purge is
+    the usual culprit) must cost the operator a warning, not the whole export.
+    The pre-open is what makes that safe: once bytes are flowing into the
+    archive member there is no way to un-write it, so a failure THERE has to
+    abort — but by then the only causes left are a full disk or failing storage,
+    which are worth aborting for.
+    """
+    try:
+        fh = open(src, "rb")
+    except OSError as e:
+        prog.log(f"  cannot read {src}: {e}", "warning")
+        return None
+    try:
+        h = hashlib.sha256()
+        total = 0
+        with fh, zf.open(arc, "w") as dst:
+            while True:
+                # Checked per chunk, not per file. A single member is routinely
+                # half a gigabyte, so a between-files check meant Stop appeared
+                # to do nothing for the ~4s that file took — and if it was the
+                # last one, the export finished anyway and left a bundle the UI
+                # could never offer (the run was already marked cancelled).
+                if cancel is not None and cancel.is_set():
+                    raise _Cancelled()
+                buf = fh.read(_CHUNK)
+                if not buf:
+                    break
+                h.update(buf)
+                dst.write(buf)
+                total += len(buf)
+                if on_bytes:
+                    on_bytes(len(buf))
+        return {"path": arc, "sha256": h.hexdigest(), "bytes": total}
+    except OSError:
+        raise                                  # disk/storage — the caller aborts
+
+
+def _disk_hint(e, path):
+    """Turn an OSError into something an operator can act on."""
+    import errno
+    if getattr(e, "errno", None) == errno.ENOSPC:
+        free = ""
+        try:
+            free = f" ({human_bytes(shutil.disk_usage(path).free)} free)"
+        except Exception:
+            pass
+        return (f"ran out of disk space while writing the bundle{free}. Free space "
+                f"under {path} — or purge old report downloads — and export again.")
+    if getattr(e, "errno", None) == errno.EACCES:
+        return f"permission denied writing to {path}."
+    return f"could not write the bundle: {e}"
+
+
+class _Cancelled(Exception):
+    """The operator pressed Stop."""
+
+
+def _sweep_export_dir(out_dir) -> int:
+    n = 0
     try:
         for fn in os.listdir(out_dir):
             if fn.endswith(BUNDLE_EXT) or fn.endswith(".partial"):
                 _rm(os.path.join(out_dir, fn))
+                n += 1
     except FileNotFoundError:
         pass
     except Exception:
         pass
+    return n
 
 
 def _rm(path):
@@ -582,7 +736,7 @@ def _unique_case_name(name) -> str:
     return cand
 
 
-def import_case_bundle(zip_path, *, run_id=None, name=None) -> dict:
+def import_case_bundle(zip_path, *, run_id=None, name=None, cancel=None) -> dict:
     """Recreate a case from a bundle. Always a NEW case; never a merge.
 
     Nothing is written until the whole archive has been verified, and everything
@@ -591,11 +745,25 @@ def import_case_bundle(zip_path, *, run_id=None, name=None) -> dict:
     """
     st, ws = _store(), _ws()
     prog = _Progress(run_id)
+    started = time.time()
 
-    stats = archive_guard.inspect_zip(zip_path)
+    prog.log("Inspecting the archive…")
+    try:
+        stats = archive_guard.inspect_zip(zip_path)
+    except archive_guard.ArchiveRejected as e:
+        prog.log(str(e), "error")
+        raise BundleError(str(e)) from e
     man = read_manifest(zip_path)
-    prog.log(f"Bundle: case \"{man.get('case_name')}\" from "
-             f"{man.get('product_version', 'unknown')}, exported {man.get('exported_at')}")
+    prog.log(f"Bundle: case \"{man.get('case_name')}\" exported {man.get('exported_at')} "
+             f"by {man.get('product_version', 'an unknown release')} "
+             f"(bundle schema {man.get('schema')}; this appliance reads up to "
+             f"{MAX_SUPPORTED_SCHEMA})")
+    prog.log(f"Contents: {len(man.get('member_run_ids') or [])} run(s), "
+             f"{len(man.get('baseline_run_ids') or [])} baseline(s), "
+             f"graph {'included' if man.get('has_graph') else 'absent'}, "
+             f"{human_bytes(stats['total_uncompressed'])} uncompressed")
+    for w in (man.get("warnings") or []):
+        prog.log(f"From the export: {w}", "warning")
 
     files = [f for f in (man.get("files") or []) if isinstance(f, dict)]
     for f in files:
@@ -612,8 +780,12 @@ def import_case_bundle(zip_path, *, run_id=None, name=None) -> dict:
                       if not f["path"].startswith(("payloads/", "aws_runs/")))
     # Two filesystems: payloads land on the downloads volume, the graph + rows on
     # the bind mount. Checking only one of them is checking the wrong disk.
-    archive_guard.require_free_space(DOWNLOAD_WRITE_DIR, payload_bytes)
-    archive_guard.require_free_space(_graph_dir(), other_bytes)
+    try:
+        archive_guard.require_free_space(DOWNLOAD_WRITE_DIR, payload_bytes)
+        archive_guard.require_free_space(_graph_dir(), other_bytes)
+    except archive_guard.ArchiveRejected as e:
+        prog.log(str(e), "error")
+        raise BundleError(str(e)) from e
 
     prog.pct(15, f"Verifying {len(files)} file(s), "
                  f"{human_bytes(stats['total_uncompressed'])} uncompressed")
@@ -653,8 +825,11 @@ def import_case_bundle(zip_path, *, run_id=None, name=None) -> dict:
                 id_map[old] = new
                 (new_baselines if role == "baseline" else new_members).append(new)
 
-            prog.pct(30, f"Rewriting {len(id_map)} identifier(s) — imported runs never "
-                         f"reuse the source appliance's ids")
+            prog.pct(30, f"Rewriting {len(id_map)} identifier(s) — an imported run "
+                         f"never reuses the source appliance's ids, so it can never "
+                         f"overwrite a run already on this box")
+            for _old, _new in id_map.items():
+                prog.log(f"  · {_old} → {_new}")
 
             # Rows first, then payloads, then the graph. The case row's details are
             # written LAST (below), so a crash leaves an empty case an operator can
@@ -672,6 +847,8 @@ def import_case_bundle(zip_path, *, run_id=None, name=None) -> dict:
                 row["case_id"] = new_case_id if role != "baseline" else None
                 _save_row(row)
                 created.append(("run", row["run_id"]))
+                prog.log(f"Wrote {role or 'run'} row {row['run_id']} "
+                         f"({row.get('automation_type')})")
 
             done = [0]
             total = max(1, payload_bytes)
@@ -679,6 +856,8 @@ def import_case_bundle(zip_path, *, run_id=None, name=None) -> dict:
                 p = f["path"]
                 if not p.startswith(("payloads/", "aws_runs/")):
                     continue
+                if cancel is not None and cancel.is_set():
+                    raise _Cancelled()
                 parts = p.split("/")
                 old_rid = parts[1] if p.startswith("payloads/") else parts[1][:-5]
                 new_rid = id_map.get(old_rid)
@@ -698,10 +877,13 @@ def import_case_bundle(zip_path, *, run_id=None, name=None) -> dict:
                     archive_guard.copy_bounded(src, out, int(f.get("bytes") or 0) + _CHUNK,
                                                what=p)
                 done[0] += int(f.get("bytes") or 0)
+                prog.log(f"Restored {os.path.basename(dest)} for {new_rid} "
+                         f"({human_bytes(f.get('bytes'))})")
                 prog.pct(min(85, 35 + int(50.0 * done[0] / total)))
 
             if "graph.json" in listed:
-                prog.pct(88, "Installing the fused graph")
+                prog.pct(88, "Installing the fused graph so the case opens without "
+                             "waiting for a fuse")
                 graph = json.loads(_remap(zf.read("graph.json").decode("utf-8"), id_map))
                 st._write_graph_sidecar(new_case_id, graph)
                 created.append(("graph", new_case_id))
@@ -721,8 +903,18 @@ def import_case_bundle(zip_path, *, run_id=None, name=None) -> dict:
             }
             ws.update_run_status(new_case_id, case_doc.get("status") or "completed",
                                  details=new_det)
-        except BaseException:
+        except _Cancelled:
             _unwind(created, prog)
+            prog.log("Import cancelled — nothing was left behind", "warning")
+            raise BundleError("import cancelled")
+        except OSError as e:
+            _unwind(created, prog)
+            detail = _disk_hint(e, DOWNLOAD_WRITE_DIR)
+            prog.log(f"Import failed: {detail}", "error")
+            raise BundleError(detail) from e
+        except BaseException as e:
+            _unwind(created, prog)
+            prog.log(f"Import failed: {e}", "error")
             raise
 
     st.log_case_event(new_case_id, "Import case", "ok",
@@ -735,9 +927,13 @@ def import_case_bundle(zip_path, *, run_id=None, name=None) -> dict:
     for w in prog.warnings[:20]:
         st.log_case_event(new_case_id, "Import case", "warning", str(w))
 
+    elapsed = time.time() - started
+    prog.phase("import", elapsed)
     prog.pct(100)
-    prog.log(f"Imported \"{disp}\" — {len(new_members)} run(s), "
-             f"{len(new_baselines)} baseline(s)")
+    prog.log(f"Imported \"{disp}\" in {elapsed:.0f}s — {len(new_members)} run(s), "
+             f"{len(new_baselines)} baseline(s), "
+             f"{human_bytes(payload_bytes)} of collected data restored. "
+             f"Open it from Cases; it is ready to view and to re-fuse.")
     return {"case_id": new_case_id, "name": disp, "runs_imported": len(new_members),
             "baselines_imported": len(new_baselines), "id_map": id_map,
             "source_version": man.get("product_version"),
