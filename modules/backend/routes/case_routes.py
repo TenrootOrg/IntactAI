@@ -511,7 +511,7 @@ def attach(case_id):
             threading.Thread(target=store.watch_and_fuse, args=(case_id, rid), daemon=True).start()
         resp["watching"] = rids
     elif d.get("fuse"):                                 # fuse now
-        g = store.fuse_case(case_id)
+        g = store.fuse_case(case_id, trigger=store.TRIGGER_API_FUSE)
         resp.update({"fused": True, "entities": len(g.entities), "findings": len(g.findings)})
     return jsonify(resp)
 
@@ -530,7 +530,8 @@ def quick_case():
         initial_access=d.get("initial_access_estimate") or d.get("initial_access"),
         min_severity=(d.get("min_severity") or "medium"), member_run_ids=rids)
     logs = []
-    g = store.fuse_case(cid, log=lambda m, l="info": logs.append((l, m)))
+    g = store.fuse_case(cid, log=lambda m, l="info": logs.append((l, m)),
+                        trigger=store.TRIGGER_CASE_CREATED)
     return jsonify({
         "case_id": cid, "status": "fused", "entities": len(g.entities),
         "relationships": len(g.relationships), "findings": len(g.findings),
@@ -542,7 +543,8 @@ def quick_case():
 @case_bp.route("/api/cases/<case_id>/fuse", methods=["POST"])
 def fuse(case_id):
     logs = []
-    g = store.fuse_case(case_id, log=lambda m, l="info": logs.append((l, m)))
+    g = store.fuse_case(case_id, log=lambda m, l="info": logs.append((l, m)),
+                        trigger=store.TRIGGER_API_FUSE)
     return jsonify({"case_id": case_id, "status": "fused",
                     "entities": len(g.entities), "relationships": len(g.relationships),
                     "findings": len(g.findings),
@@ -562,7 +564,11 @@ def rescan(case_id):
     # route rather than this one alone. Rescan is the benign case: set_analysis_config
     # runs before the fuse, so the config the operator just saved IS persisted and a
     # retry re-fuses with it.
-    res = store.rescan(case_id, cfg)
+    # The UI names the button it came from; anything else is an API caller.
+    _trigs = {"refusion": store.TRIGGER_MANUAL_REFUSION,
+              "rescan_llm": store.TRIGGER_MANUAL_RESCAN}
+    res = store.rescan(case_id, cfg,
+                       trigger=_trigs.get(cfg.get("trigger"), store.TRIGGER_API_FUSE))
     return jsonify({"case_id": case_id, "status": "rescanned", **res})
 
 
@@ -866,8 +872,15 @@ def graph(case_id):
     # Analysis isn't blank. A non-empty cached graph is returned as-is (fast).
     if not g.entities and store._members_for_case(case_id, d):
         try:
-            g = store.fuse_case(case_id)
+            g = store.fuse_case(case_id, trigger=store.TRIGGER_AUTOMATIC_FIRST_VIEW)
+        except store.FusionBusy:
+            pass          # already fusing — the caller re-reads once it finishes
         except Exception as e:
+            # stderr only used to hide this entirely from the operator; the case log
+            # is where they are actually looking when the view comes up empty.
+            store.log_case_event(case_id, "Refusion failed", "error",
+                                 f"first-view automatic fuse failed — "
+                                 f"{type(e).__name__}: {e}")
             print(f"[CASE] on-view fuse failed for {case_id}: {e}", flush=True)
     return jsonify({"case_id": case_id, "fusion_graph": g.to_dict(),
                     "import_in_progress": import_in_progress})

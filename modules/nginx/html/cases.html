@@ -721,6 +721,11 @@ async function doRefusion(id){
   // Read the config rail BEFORE switching tabs — setTab('log') replaces #tabc,
   // unmounting the #cf-* inputs _railCfg() reads.
   const cfg = await _railCfg();
+  // Name the button in the payload so the case log records WHAT caused the fuse.
+  // A Refusion costs ~33s; "Refusion · starting" with no attribution left the
+  // operator unable to tell their own click from a colleague's or from anything
+  // running on its own.
+  cfg.trigger = 'refusion';
   // Move to the Log so the operator watches the refusion progress live. The
   // rescan runs server-side while the Log tab's follower polls /log every few
   // seconds; fuse_case emits "<phase> · <pct>% · ~<eta>s remaining" rows, so
@@ -742,7 +747,9 @@ async function doRefusion(id){
 // Rescan (LLM) = SAVE config → re-fuse → regenerate report + chat narrative with the LLM.
 async function doRescanLLM(id){
   toast('saving + rescanning (LLM) — refusing + regenerating report…');
-  await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(await _railCfg())});
+  const cfg = await _railCfg(); cfg.trigger = 'rescan_llm';
+  const r = await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
+  if(r && r.busy){ toast('⏳ already re-fusing this case — retry in a moment'); return; }
   await api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({use_llm:true})});
   toast('✓ Rescan complete — report & chat regenerated'); tab='report'; openCase(id);
 }

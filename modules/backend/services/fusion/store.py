@@ -440,7 +440,7 @@ def set_disposition(case_id, target, *, verdict="benign", attribution="it_admin"
                    f"{target} → {verdict} ({attribution}, scope={scope}); re-fusing")
     if scope == "environment" and verdict == "benign":
         _promote_disposition_to_baseline(case_id, target)
-    fuse_case(case_id)
+    fuse_case(case_id, trigger=trigger or TRIGGER_DISPOSITION)
     return disp
 
 
@@ -474,7 +474,7 @@ def clear_disposition(case_id, target) -> dict:
     ws.mutate_run_details(case_id, _mutate)
     ws.update_run_status(case_id, "pending")
     log_case_event(case_id, "Risk · disposition cleared", "info", f"{target}; re-fusing")
-    fuse_case(case_id)
+    fuse_case(case_id, trigger=TRIGGER_DISPOSITION_CLEARED)
     return {"target": target, "cleared": True}
 
 
@@ -1113,6 +1113,24 @@ class FusionBusy(RuntimeError):
     """A fuse is already running for this case, in another thread."""
 
 
+# What caused a fuse. Recorded on every Refusion line in the case activity log so
+# the operator can tell their own click apart from a colleague's, from a triage
+# action that re-fuses as a side effect, and from anything running on its own.
+# Keep these short — they render inline in the Log tab.
+TRIGGER_MANUAL_REFUSION = "the Refusion button"
+TRIGGER_MANUAL_RESCAN = "the Rescan (LLM) button"
+TRIGGER_API_FUSE = "an API fuse request"
+TRIGGER_CASE_CREATED = "case creation"
+TRIGGER_DISPOSITION = "a triage disposition"
+TRIGGER_DISPOSITION_CLEARED = "a cleared triage disposition"
+TRIGGER_CHECKLIST = "a checklist decision"
+TRIGGER_TIMELINE = "a timeline validation"
+TRIGGER_IDENTITY = "an identity decision"
+TRIGGER_AUTOMATIC_RUN_LANDED = "AUTOMATIC — a member run finished"
+TRIGGER_AUTOMATIC_FIRST_VIEW = "AUTOMATIC — first view of a case with no graph yet"
+_TRIGGER_UNKNOWN = "an unlabelled caller"
+
+
 _FUSE_LOCKS: dict = {}
 _FUSE_LOCKS_GUARD = threading.Lock()
 
@@ -1127,7 +1145,7 @@ def _fuse_lock(case_id):
 
 
 def fuse_case(case_id, *, contributions_override=None, log=None, _record=True,
-              force_report=False) -> FusionGraph:
+              force_report=False, trigger=None) -> FusionGraph:
     """Fuse the case. Refuses to run concurrently with itself.
 
     `force_report` rebuilds the report/advisory even though one already exists --
@@ -1147,20 +1165,45 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True,
     """
     lock = _fuse_lock(case_id)
     if not lock.acquire(blocking=False):
+        # NOT logged as a fuse failure — nothing was attempted. The route's
+        # FusionBusy handler records it as "deferred" instead.
         raise FusionBusy(
             "a fuse is already running for this case — wait for it to finish "
             "(the report can take minutes while the model writes the narrative)")
+    trig = (trigger or _TRIGGER_UNKNOWN).strip()
+    phase = {"at": "starting", "pct": 0}
     try:
         return _fuse_case_locked(case_id, contributions_override=contributions_override,
-                                 log=log, _record=_record, force_report=force_report)
+                                 log=log, _record=_record, force_report=force_report,
+                                 trigger=trigger, _phase=phase)
+    except Exception as e:
+        # A fuse that dies used to leave the log ending mid-progress — the last row
+        # was whatever phase it reached, with no indication anything went wrong, so
+        # the Log tab read as a job still running. Say plainly that it failed, what
+        # asked for it, and how far it got, then re-raise so the caller still errors.
+        if _record:
+            log_case_event(case_id, "Refusion failed", "error",
+                           f"triggered by {trig} — failed during '{phase['at']}' "
+                           f"at {phase['pct']}% — {type(e).__name__}: {e}",
+                           pct=phase["pct"])
+        raise
     finally:
         lock.release()
 
 
 def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record=True,
-                      force_report=False) -> FusionGraph:
+                      force_report=False, trigger=None, _phase=None) -> FusionGraph:
     ws = _ws()
     d = get_case(case_id)
+    # WHY this fuse is running. A fuse costs ~33s on a real case (9 hosts / 18.7k
+    # entities) and the log used to open with a bare "Refusion · starting" — so an
+    # operator watching the box spend half a minute had no way to tell whether they
+    # had caused it, a colleague had, or something ran on its own. Every caller
+    # names its trigger; `_TRIGGER_UNKNOWN` marks the ones that have not been
+    # taught to, so an unlabelled fuse is visible rather than silently generic.
+    trig = (trigger or _TRIGGER_UNKNOWN).strip()
+    # Shared with fuse_case so a failure there can name the phase this reached.
+    _phase = _phase if _phase is not None else {"at": "starting", "pct": 0}
 
     def _plog(msg, status="info", detail="", pct=None):
         # progress -> case log (recorded fuses only). When a pct is given, append
@@ -1169,6 +1212,11 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         # from elapsed-so-far swings wildly as uneven phases complete (it read
         # "~0s" at the start and jumped around after), so percentage alone is
         # the honest, stable signal.
+        # Remember the furthest phase reached, so a failure below can say WHERE the
+        # fuse died instead of only that it did. Tracked even when _record is off.
+        _phase["at"] = msg.split("·", 1)[-1].strip() or msg
+        if pct is not None:
+            _phase["pct"] = int(pct)
         if not _record:
             return
         if pct is not None:
@@ -1178,7 +1226,8 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         else:
             log_case_event(case_id, msg, status, detail)
 
-    _plog("Refusion · starting", "info", "preparing to re-fuse the case graph", pct=1)
+    _plog("Refusion · starting", "info",
+          f"triggered by {trig} — preparing to re-fuse the case graph", pct=1)
     members = _members_for_case(case_id, d)
     # include/exclude: scope the fusion to a chosen subset of the case's runs (None = all)
     inc = d.get("included_run_ids")
@@ -1379,22 +1428,49 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         _mutate_list_field(case_id, "disposition_checklist",
                            lambda cur: cur or fresh_checklist)
     log_case_event(case_id, "Refusion complete", "success",
-                   f"saved to database — {len(g.entities):,} entities, "
+                   f"triggered by {trig} — saved to database — {len(g.entities):,} entities, "
                    f"{len(g.relationships):,} links, {len(g.findings):,} findings "
                    f"across {len(members)} run(s) · 100%",
                    pct=100)
     return g
 
 
+def _ever_fused(case_id, d) -> bool:
+    """Has a graph ever been built for this case?
+
+    Cheap by construction — this runs on every case GET, which the UI now polls,
+    so it must never deserialize the graph (they reach 39 MB). `graph_counts` is
+    precomputed at fuse time; `fusion_graph` covers cases fused before the sidecar
+    split; the sidecar file itself covers the rest. Any one of them means a fuse
+    has happened at least once.
+    """
+    if d.get("graph_counts") or d.get("fusion_graph"):
+        return True
+    try:
+        return os.path.exists(_graph_path(case_id))
+    except Exception:
+        return False
+
+
 def stale_member_runs(case_id, d=None) -> list:
     """Completed member runs NOT reflected in the persisted graph — i.e. data
     added since the last fuse. Returns their run_ids (empty when the graph is
-    current, or when it predates `fused_run_ids` tracking, so we never cry
-    'stale' on a legacy graph). Cheap: no graph build, just a member scan."""
+    current, or when a LEGACY graph predates `fused_run_ids` tracking, so we never
+    cry 'stale' on one). Cheap: no graph build, just a member scan."""
     d = d or get_case(case_id) or {}
     fused = d.get("fused_run_ids")
     if fused is None:
-        return []
+        # An absent key meant two very different things, and treating both as
+        # "nothing to report" silenced the case that needs the prompt MOST: a
+        # brand-new case has never been fused, so the key is absent, so importing
+        # an offline collector into it reported 0 new runs and raised no banner.
+        # Observed on case 'twe' — the operator had to know to click Refusion.
+        #   - never fused (no graph at all) -> EVERY completed member run is new;
+        #   - legacy (a graph exists, but we cannot know which runs built it)
+        #     -> stay silent, which is what the original guard was for.
+        if _ever_fused(case_id, d):
+            return []
+        fused = []
     fused = set(fused)
     # Only runs whose MODULE is enabled count as "new data to fold in" — a disabled
     # module's runs can never enter the graph via Refusion, so flagging them as
@@ -1420,7 +1496,12 @@ def report_stale_runs(case_id, d=None) -> list:
     d = d or get_case(case_id) or {}
     rep = d.get("report_run_ids")
     if rep is None:
-        return []
+        # Same distinction as stale_member_runs: no report written yet means every
+        # member run is unreflected, whereas a legacy case that HAS a report simply
+        # cannot say which runs it came from.
+        if d.get("report_md"):
+            return []
+        rep = []
     rep = set(rep)
     ws = _ws()
     out = []
@@ -1445,9 +1526,19 @@ def watch_and_fuse(case_id, run_id, *, poll=10, timeout=10800) -> None:
             break
         time.sleep(poll)
     try:
-        fuse_case(case_id)
-    except Exception:
-        pass
+        fuse_case(case_id, trigger=TRIGGER_AUTOMATIC_RUN_LANDED)
+    except FusionBusy:
+        # The case was already fusing, so this run's data will be picked up by the
+        # fuse in flight or by the next one. Recorded rather than swallowed: a bare
+        # `except: pass` here meant an automatic fuse could vanish with the graph
+        # left stale, no banner and nothing in the log to explain it.
+        log_case_event(case_id, "Refusion skipped", "warning",
+                       f"automatic re-fuse for run {run_id} skipped — the case was "
+                       f"already fusing; its data lands on the next Refusion")
+    except Exception as e:
+        log_case_event(case_id, "Refusion failed", "error",
+                       f"automatic re-fuse for run {run_id} failed — "
+                       f"{type(e).__name__}: {e}")
 
 
 # ── Fusion-graph sidecar storage ─────────────────────────────────────────────
@@ -1933,7 +2024,7 @@ def set_analysis_config(case_id, cfg) -> dict:
     return {k: ("<logo>" if k == "customer_logo_b64" else v) for k, v in patch.items()}
 
 
-def rescan(case_id, cfg=None) -> dict:
+def rescan(case_id, cfg=None, trigger=None) -> dict:
     """THE config-driven action: persist the rail's variables then re-correlate +
     regenerate. Replaces the bare re-fuse for the UI. Rescan is an explicit rebuild,
     so it DOES refresh the report (deterministically — reflecting the new masking /
@@ -1945,7 +2036,8 @@ def rescan(case_id, cfg=None) -> dict:
     # below left the report erased with nothing to regenerate it -- an operator
     # clicking Refusion while a fuse ran lost the narrative and got an error.
     # Reproduced on a live case: the report went from 75,402 chars to 0.
-    g = fuse_case(case_id, force_report=True)
+    g = fuse_case(case_id, force_report=True,
+                  trigger=trigger or TRIGGER_MANUAL_REFUSION)
     return {"entities": len(g.entities), "relationships": len(g.relationships),
             "findings": len(g.findings),
             "cross_host_findings": sum(1 for f in g.findings if f.kind == "cross_host")}
@@ -2306,7 +2398,7 @@ def decide_checklist_item(case_id, item_id, decision) -> dict:
         set_disposition(case_id, item["finding_id"], verdict="benign",
                         attribution="customer",
                         reason=f"customer-confirmed benign: {item.get('question', '')}",
-                        scope="case")
+                        scope="case", trigger=TRIGGER_CHECKLIST)
     return {"item_id": item_id, "status": item["status"]}
 
 

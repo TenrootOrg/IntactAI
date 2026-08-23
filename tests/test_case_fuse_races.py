@@ -430,18 +430,30 @@ class TestFusionBusyHandler(unittest.TestCase):
         self.assertEqual(owner("_case_busy", "FusionBusy"),
                          owner("_audit_case_exception", "Exception"))
 
-    def test_no_route_swallows_fusion_busy_locally(self):
-        """One shape for this response, so the front-end has one thing to handle."""
+    def test_no_route_builds_its_own_busy_response(self):
+        """One shape for this response, so the front-end has one thing to handle.
+
+        Catching FusionBusy locally is allowed -- the read-only /graph endpoint
+        opportunistically fuses a case that has none yet, and a READ should not
+        fail just because a write holds the lock; it recovers by returning what it
+        has. What must not come back is a route inventing its own status code and
+        body, which is how /rescan drifted apart from every other route in the
+        first place. So the rule is narrower than "never catch it": a local
+        handler must not RETURN a response.
+        """
         for node in ast.walk(self.tree):
             if not isinstance(node, ast.ExceptHandler):
                 continue
-            t = node.type
-            names = [t] if not isinstance(t, ast.Tuple) else list(t.elts)
-            for n in names:
-                self.assertNotEqual(
-                    getattr(n, "attr", None), "FusionBusy",
-                    "a local except store.FusionBusy is back -- let the blueprint "
-                    "handler shape this response instead")
+            names = ([node.type] if not isinstance(node.type, ast.Tuple)
+                     else list(node.type.elts))
+            if not any(getattr(n, "attr", None) == "FusionBusy" for n in names):
+                continue
+            for inner in ast.walk(node):
+                self.assertNotIsInstance(
+                    inner, ast.Return,
+                    "a route is shaping its own FusionBusy response again (line %d) "
+                    "-- let the blueprint handler do it so every route agrees"
+                    % node.lineno)
 
     def test_the_catch_all_still_returns_500_for_everything_else(self):
         """Guard against 'fixing' the 500 by making the catch-all lenient."""
