@@ -143,16 +143,33 @@ def _finding_evidence(graph, f, *, cap_events=EXPLICIT_EVENTS_PER_FINDING,
         parts = []
         if _v(a.get("ev_user")):
             parts.append(f"user={_v(a.get('ev_user'))}")
+        has_proc = False
         if _v(a.get("ev_cmdline")):
             parts.append(f"cmd: {_v(a.get('ev_cmdline'))}")
+            has_proc = True
         elif _v(a.get("ev_proc")):
             parts.append(f"proc: {_v(a.get('ev_proc'))}")
+            has_proc = True
         if _v(a.get("ev_tgtip")):
             parts.append(f"→ {_v(a.get('ev_tgtip'))}")
         if _v(a.get("ev_sha256")):
             parts.append(f"sha256={_v(a.get('ev_sha256'))}")
-        if not parts and _v(a.get("details")):
-            parts.append(_v(a.get("details")))
+        # THE DESCRIPTION, when nothing else says what happened.
+        #
+        # This used to be `if not parts` — a pure fallback — which meant an
+        # event that captured a user but no process rendered as the bare word
+        # `user=Administrator` and threw its description away. Having MORE
+        # information made the output strictly worse: the same class of event
+        # (a cleared event log) read "The Application log file was cleared."
+        # when no user was attached, and told the reader nothing when one was.
+        #
+        # Measured on a real case of 694 events: 27 lines looked like that.
+        # Gated on has_proc rather than on `not parts` so the 341 lines that DO
+        # name a command line or a process are untouched — whether those should
+        # also carry their description is a density judgement, not this bug.
+        detail_txt = _v(a.get("details"))
+        if detail_txt and not has_proc:
+            parts.append(detail_txt)
         if not parts:
             continue
         # Flatten to ONE clean line: raw details can carry newlines / tabs / backticks
