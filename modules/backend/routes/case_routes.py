@@ -447,64 +447,153 @@ def delete_case(case_id):
     return jsonify({"case_id": case_id, **res})
 
 
-@case_bp.route("/api/cases/<case_id>/export", methods=["GET"])
+# ---- portable case bundles (move a case between appliances) --------------------
+# Export builds a multi-GB archive, so it CANNOT happen inside the request: nginx
+# gives up waiting for a first byte after 300s and buffers the response besides.
+# The route starts a background run and hands back its id; the finished file is
+# fetched separately. Import is the mirror image, fed by the resumable tus upload
+# path (the /api/ route caps at 500 MB, which one member payload already exceeds).
+
+
+def _bundle_thread(target, run_id, *args, **kwargs):
+    """Run a bundle job on a daemon thread, owning the run's terminal state and
+    releasing `lock` no matter how it ends."""
+    import threading
+    import traceback
+    from services import workflow_service as ws
+    lock = kwargs.pop("lock", None)
+
+    def _worker():
+        try:
+            res = target(*args, run_id=run_id, **kwargs)
+            ws.update_run_status(run_id, "completed", progress=100, details=res, force=True)
+        except Exception as e:                            # noqa: BLE001
+            traceback.print_exc()
+            ws.add_log_to_run(run_id, f"{e}", "error")
+            ws.update_run_status(run_id, "failed", error=str(e))
+        finally:
+            if lock is not None:
+                try:
+                    lock.release()
+                except Exception:
+                    pass
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+@case_bp.route("/api/cases/<case_id>/export", methods=["POST"])
 def export_case(case_id):
-    """Download a self-contained bundle for one workspace (case record + member
-    runs) that `POST /api/cases/import` can recreate on this or another install."""
-    import json as _json
-    if not _export_lock.acquire(blocking=False):
-        return jsonify({"error": "an export is already in progress; try again shortly"}), 409
+    """Start building a portable bundle for this case. 202 + {run_id}."""
+    from services import workflow_service as ws
+    from services.fusion import case_bundle
+
     try:
-        bundle = store.export_case(case_id)
-        if bundle is None:
-            return jsonify({"error": "case not found"}), 404
-        safe = "".join(c if c.isalnum() or c in "-_" else "_"
-                       for c in (bundle.get("name") or "case"))[:60] or "case"
-        payload = _json.dumps(bundle, indent=2, default=str)
-    finally:
-        # The bundle is fully built in-memory; releasing here serialises the
-        # (heavy) build, not the subsequent byte-streaming to the client.
+        plan = case_bundle.plan_export(case_id)          # validates before we commit
+    except case_bundle.BundleError as e:
+        msg = str(e)
+        return jsonify({"error": msg}), (404 if "not found" in msg else 409)
+
+    if not _export_lock.acquire(blocking=False):
+        return jsonify({"error": "an export is already in progress; try again shortly",
+                        "busy": True}), 409
+    try:
+        run_id = ws.create_automation_run(
+            "case_export", f"Export case: {plan['name']}",
+            details={"case_id": case_id, "case_name": plan["name"],
+                     "runs_exported": len(plan["member_ids"]),
+                     "estimate_bytes": plan["estimate_bytes"]})
+    except Exception as e:                                # noqa: BLE001
         _export_lock.release()
-    return Response(payload, mimetype="application/json", headers={
-        "Content-Disposition": f'attachment; filename="{safe}.intactcase.json"'})
+        return jsonify({"error": str(e)}), 500
+
+    _bundle_thread(case_bundle.export_case_bundle, run_id, case_id, lock=_export_lock)
+    return jsonify({"run_id": run_id, "case_id": case_id,
+                    "estimate_bytes": plan["estimate_bytes"]}), 202
+
+
+@case_bp.route("/api/cases/export/<run_id>/download", methods=["GET"])
+def download_case_bundle(run_id):
+    """Stream the archive built by `run_id`. Streamed by send_file, so the first
+    byte leaves immediately however big the file is."""
+    import os
+    from flask import send_file
+    from services import workflow_service as ws
+    from services.fusion import case_bundle
+
+    run = ws.get_automation_run(run_id)
+    if not run or run.get("automation_type") != "case_export":
+        return jsonify({"error": "no such export"}), 404
+    det = run.get("details") or {}
+    path = det.get("bundle_path")
+    if not path:
+        return jsonify({"error": "the export has not finished yet"}), 404
+    # Containment: the path came out of a run row, and a run row is not a
+    # trustworthy source of filesystem paths.
+    real = os.path.realpath(path)
+    if not real.startswith(os.path.realpath(case_bundle.EXPORT_DIR) + os.sep):
+        return jsonify({"error": "that file is not an export bundle"}), 400
+    if not os.path.exists(real):
+        return jsonify({"error": "This bundle is no longer on disk (a Maintenance "
+                                 "purge removes old exports). Export the case again."}), 410
+    return send_file(real, as_attachment=True,
+                     download_name=det.get("bundle_name") or f"{run_id}{case_bundle.BUNDLE_EXT}",
+                     mimetype="application/zip")
+
+
+@case_bp.route("/api/cases/import/start", methods=["POST"])
+def start_case_import():
+    """Open the run row BEFORE the upload begins, so the operator sees the import
+    the moment they pick a file rather than when tusd finally calls the hook. The
+    browser passes the id back as tus metadata (`upload_run_id`)."""
+    from services import workflow_service as ws
+    b = request.get_json(silent=True) or {}
+    fn = (b.get("filename") or "case bundle").strip()[:120]
+    run_id = ws.create_automation_run("case_import", f"Import case: {fn}",
+                                      details={"filename": fn})
+    return jsonify({"run_id": run_id})
 
 
 @case_bp.route("/api/cases/import", methods=["POST"])
 def import_case():
-    """Recreate a workspace from an exported bundle (multipart `file`, or a raw
-    JSON body). Tracked as a System-workspace operation, not the active case."""
-    import json as _json
+    """Import a bundle sent directly as multipart `file`.
+
+    Kept for the API and the tests. The UI uses the tus path instead: nginx caps
+    /api/ bodies at 500 MB and one member payload is bigger than that on its own.
+    """
+    import os
+    from services import workflow_service as ws
+    from services.fusion import case_bundle
+
+    f = request.files.get("file")
+    if f is None:
+        return jsonify({"error": "no bundle provided — send the .intactcase.zip as "
+                                 "multipart 'file'"}), 400
     if not _import_lock.acquire(blocking=False):
-        return jsonify({"error": "an import is already in progress; try again shortly"}), 409
+        return jsonify({"error": "an import is already in progress; try again shortly",
+                        "busy": True}), 409
+    tmp_dir = os.path.join(case_bundle.EXPORT_DIR, "incoming")
+    tmp = os.path.join(tmp_dir, f"upload-{os.getpid()}-{id(f)}.zip")
+    run_id = None
     try:
-        bundle = None
-        f = request.files.get("file")
-        if f is not None:
-            try:
-                bundle = _json.loads(f.read().decode("utf-8"))
-            except Exception as e:
-                return jsonify({"error": f"could not parse file: {e}"}), 400
-        else:
-            bundle = request.get_json(silent=True)
-        if not isinstance(bundle, dict):
-            return jsonify({"error": "no case bundle provided"}), 400
-        name = request.form.get("name") or None
+        os.makedirs(tmp_dir, exist_ok=True)
+        f.save(tmp)
+        run_id = ws.create_automation_run(
+            "case_import", f"Import case: {f.filename or 'bundle'}",
+            details={"filename": f.filename or "bundle"})
+        res = case_bundle.import_case_bundle(tmp, run_id=run_id,
+                                             name=request.form.get("name") or None)
+        ws.update_run_status(run_id, "completed", progress=100, details=res, force=True)
+        return jsonify(res)
+    except Exception as e:                                # noqa: BLE001
+        if run_id:
+            ws.add_log_to_run(run_id, f"{e}", "error")
+            ws.update_run_status(run_id, "failed", error=str(e))
+        return jsonify({"error": str(e)}), 400
+    finally:
         try:
-            res = store.import_case(bundle, name=name)
-        except ValueError as e:
-            return jsonify({"error": str(e)}), 400
-        # Audit the import as a System-workspace op (case_import is a SYSTEM_TYPE).
-        try:
-            from services import workflow_service as ws
-            rid = ws.create_automation_run(
-                "case_import", f"Import workspace: {res['name']}",
-                details={"imported_case_id": res["case_id"],
-                         "runs_imported": res["runs_imported"]})
-            ws.update_run_status(rid, "completed", progress=100)
+            os.remove(tmp)
         except Exception:
             pass
-        return jsonify(res)
-    finally:
         _import_lock.release()
 
 

@@ -50,7 +50,12 @@ SYSTEM_TYPES = {"upgrade", "online_upgrade", "prepare_package", "maintenance",
                 # System). It rides in the SAME System workspace as the apply now.
                 # NB: only the UPGRADE-package upload — velociraptor_upload /
                 # timesketch_upload stay investigation-workspace runs.
-                "upgrade_package_upload"}
+                "upgrade_package_upload",
+                # A case-bundle upload is likewise a system op: it creates a NEW
+                # workspace rather than doing work inside the active one, so
+                # parking its row in whatever case happened to be open would file
+                # the import under a case it has nothing to do with.
+                "case_import_upload"}
 
 # Internal bookkeeping run-types (match services.fusion.store CASE_TYPE /
 # BASELINE_TYPE). The workspace row + fusion baseline marker are not case work

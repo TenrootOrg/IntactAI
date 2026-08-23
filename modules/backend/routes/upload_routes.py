@@ -253,13 +253,13 @@ def handle_tus_hook():
             purpose = metadata.get('purpose', '')
             filename = metadata.get('filename', '')
 
-            if purpose not in ['velociraptor', 'timesketch', 'upgrade_package', 'agentic_external']:
+            if purpose not in ['velociraptor', 'timesketch', 'upgrade_package', 'agentic_external', 'case_import']:
                 print(f"[TUS HOOK] Rejected: Invalid purpose '{purpose}'", flush=True)
                 return jsonify({
                     "RejectUpload": True,
                     "HTTPResponse": {
                         "StatusCode": 400,
-                        "Body": json.dumps({"error": "Invalid upload purpose. Must be 'velociraptor', 'timesketch', 'upgrade_package', or 'agentic_external'"})
+                        "Body": json.dumps({"error": "Invalid upload purpose. Must be 'velociraptor', 'timesketch', 'upgrade_package', 'agentic_external', or 'case_import'"})
                     }
                 }), 200  # Return 200 but with RejectUpload flag
 
@@ -510,6 +510,37 @@ def handle_tus_hook():
                             update_run_status(run_id, "failed", error=str(e))
 
                 thread = threading.Thread(target=run_velociraptor_import, daemon=True)
+                thread.start()
+
+            elif purpose == 'case_import':
+                # A portable case bundle from another appliance. The import owns
+                # this run's terminal state; the uploaded file is removed either
+                # way, since its contents have either been extracted or the
+                # bundle is unusable and the operator uploads again.
+                print(f"[TUS HOOK] Starting case bundle import...", flush=True)
+                if run_id:
+                    add_log_to_run(run_id, "Reading the case bundle...")
+
+                def run_case_import():
+                    try:
+                        from services.fusion import case_bundle
+                        res = case_bundle.import_case_bundle(file_path, run_id=run_id)
+                        update_run_status(run_id, "completed", progress=100,
+                                          details=res, force=True)
+                    except Exception as e:
+                        print(f"[TUS HOOK] Case import error: {e}", flush=True)
+                        traceback.print_exc()
+                        if run_id:
+                            add_log_to_run(run_id, f"Import failed: {e}", "error")
+                            update_run_status(run_id, "failed", error=str(e))
+                    finally:
+                        for stale in (file_path, file_path + ".info"):
+                            try:
+                                os.remove(stale)
+                            except Exception:
+                                pass
+
+                thread = threading.Thread(target=run_case_import, daemon=True)
                 thread.start()
 
             elif purpose == 'timesketch':

@@ -195,6 +195,9 @@
 <link rel="stylesheet" href="vendor/flatpickr/flatpickr.min.css">
 <link rel="stylesheet" href="vendor/flatpickr/dark.css">
 <script src="vendor/flatpickr/flatpickr.min.js"></script>
+<!-- resumable chunked upload, for importing a case bundle (multi-GB) -->
+<script src="vendor/tus/tus.min.js"></script>
+<script src="js/upload.js?v=3"></script>
 </head>
 <body>
 <header>
@@ -214,11 +217,10 @@
     </div>
     <p style="color:var(--muted);font-size:11px;margin-top:8px">Runs you launch (Agentic, Memory, cloud…) while this case is active are tagged to it automatically. Open it any time to fuse them.</p>
     <h2 style="display:flex;align-items:center;justify-content:space-between">Cases
-      <!-- Export/Import is built + backend-ready but HIDDEN pending more testing.
-           Re-enable by removing display:none here and on the per-row Export button. -->
-      <button class="ghost" style="font-size:11px;padding:4px 10px;display:none" onclick="document.getElementById('case-import-file').click()" title="Import a case from an exported .intactcase.json bundle">⬆ Import</button>
+      <button class="ghost" style="font-size:11px;padding:4px 10px" onclick="document.getElementById('case-import-file').click()" title="Import a case exported from another Intact appliance (.intactcase.zip)">⬆ Import</button>
     </h2>
-    <input id="case-import-file" type="file" accept=".json,application/json" style="display:none" onchange="importWorkspace(event)"/>
+    <input id="case-import-file" type="file" accept=".zip" style="display:none" onchange="importWorkspace(event)"/>
+    <div id="impbar" style="display:none;font-size:11px;color:var(--muted);margin:2px 0 8px"></div>
     <div id="caselist"></div>
   </div>
   <div class="main" id="main">
@@ -277,33 +279,102 @@ function delWorkspace(id, name, ev){
 function activateWorkspace(id, ev){ if(ev) ev.stopPropagation();
   window.ActiveCase.set(id); toast('switched active case'); loadCases(); refreshSelector(); }
 
-// Download a workspace as a self-contained bundle (case + member runs). The
-// <a download> + server Content-Disposition triggers a file download without
-// navigating the (iframed) page.
-function exportWorkspace(id, ev){ if(ev) ev.stopPropagation();
-  toast('exporting case…');
-  fetch('/api/cases/'+id+'/export').then(async r=>{
-    if(!r.ok){ const d=await r.json().catch(()=>({})); toast('export failed: '+(d.error||r.status)); return; }
-    const blob=await r.blob();
-    const cd=r.headers.get('Content-Disposition')||''; const m=cd.match(/filename="?([^"]+)"?/);
-    const url=URL.createObjectURL(blob), a=document.createElement('a');
-    a.href=url; a.download=(m&&m[1])||('case_'+id+'.intactcase.json');
-    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-  }).catch(e=>toast('export failed: '+e.message));
+// ── Portable case bundles ────────────────────────────────────────────────────
+// A bundle carries the case's collected data as well as its report and triage,
+// so it is routinely GIGABYTES. That single fact shapes both flows: the export
+// is built by a background run and then fetched as a file (a fetch().blob()
+// would materialise the whole archive in browser memory), and the import goes
+// through the resumable chunked uploader rather than a form POST (nginx caps
+// /api/ bodies at 500 MB, which one collection already exceeds).
+
+const exports_ = {};      // case_id -> {run_id, pct, ready, name, bytes, error}
+
+function fmtBytes(n){ n=Number(n||0); const u=['B','KB','MB','GB','TB']; let i=0;
+  while(n>=1024&&i<u.length-1){n/=1024;i++;} return (i?n.toFixed(1):n)+' '+u[i]; }
+
+// The Export control is a small state machine rendered inline in the case row:
+// idle → running (with %) → a download link. Kept in loadCases()'s template so a
+// list refresh (which happens on every case action) never loses it.
+function expBtn(id){
+  const e=exports_[id];
+  if(!e) return `<button class="ghost" style="font-size:11px;padding:3px 8px" onclick="exportWorkspace('${id}',event)" title="Export this case as a portable bundle for another Intact appliance">Export</button>`;
+  if(e.error) return `<button class="ghost" style="font-size:11px;padding:3px 8px" onclick="exportWorkspace('${id}',event)" title="${esc(e.error)}">Export — retry</button>`;
+  if(!e.ready) return `<span style="font-size:11px;color:var(--muted)">exporting… ${e.pct||0}%</span>`;
+  return `<a class="ghost" style="font-size:11px;padding:3px 8px;text-decoration:none"
+             href="/api/cases/export/${e.run_id}/download" download
+             onclick="event.stopPropagation()"
+             title="Download ${esc(e.name||'bundle')}">⬇ Download ${fmtBytes(e.bytes)}</a>`;
 }
 
-// Import a workspace from an exported bundle. Runs as a System-workspace op on
-// the backend (creates a fresh case container; doesn't touch the active case).
-function importWorkspace(ev){
-  const f=ev.target.files&&ev.target.files[0]; if(!f) return;
-  const fd=new FormData(); fd.append('file', f); toast('importing…');
-  fetch('/api/cases/import',{method:'POST',body:fd}).then(async r=>{
+function exportWorkspace(id, ev){ if(ev) ev.stopPropagation();
+  exports_[id]={pct:0}; loadCases();
+  fetch('/api/cases/'+id+'/export',{method:'POST'}).then(async r=>{
     const d=await r.json().catch(()=>({}));
-    if(!r.ok){ toast('import failed: '+(d.error||r.status)); return; }
-    toast('imported "'+(d.name||'case')+'" ('+(d.runs_imported||0)+' run(s))');
-    loadCases(); refreshSelector();
-  }).catch(e=>toast('import failed: '+e.message));
-  ev.target.value='';
+    if(!r.ok){ exports_[id]={error:d.error||('HTTP '+r.status)}; toast('export failed: '+(d.error||r.status)); loadCases(); return; }
+    exports_[id]={run_id:d.run_id,pct:0}; loadCases();
+    watchRun(d.run_id, run=>{
+      const det=run.details||{};
+      if(run.status==='completed'){
+        exports_[id]={run_id:d.run_id,ready:true,name:det.bundle_name,bytes:det.bundle_bytes};
+        toast('bundle ready — '+fmtBytes(det.bundle_bytes));
+        if((det.warnings||[]).length) toast(det.warnings.length+' warning(s) — see the run log', 5000);
+      } else if(run.status==='failed'||run.status==='cancelled'){
+        exports_[id]={error:run.error||run.status}; toast('export failed: '+(run.error||run.status));
+      } else { exports_[id]={run_id:d.run_id,pct:run.progress||0}; }
+      loadCases();
+    });
+  }).catch(e=>{ exports_[id]={error:e.message}; toast('export failed: '+e.message); loadCases(); });
+}
+
+// Import: upload the bundle (chunked + resumable), then watch the run that reads
+// it. Creating the run BEFORE the upload means the operator sees the import from
+// the moment they pick a file, not once the upload finally lands.
+function importWorkspace(ev){
+  const f=ev.target.files&&ev.target.files[0]; ev.target.value='';
+  if(!f) return;
+  const bar=$('#impbar'); const say=m=>{ if(bar){bar.style.display='block'; bar.innerHTML=m;} };
+  say('preparing…');
+  fetch('/api/cases/import/start',{method:'POST',headers:{'Content-Type':'application/json'},
+                                   body:JSON.stringify({filename:f.name})})
+   .then(r=>r.json()).then(d=>{
+     if(!d||!d.run_id){ say(''); toast('import failed to start'); return; }
+     new TusUploader({
+       purpose:'case_import',
+       // A case bundle creates its OWN new case, so it is not work inside the
+       // active workspace — importing while System is selected is legitimate.
+       systemGuard:false,
+       metadata:{upload_run_id:d.run_id},
+       onProgress:i=>say(`uploading <b>${esc(f.name)}</b> — ${i.percentage}% (${i.speedFormatted}, ${i.etaFormatted} left)`),
+       onError:e=>{ say(''); toast('upload failed: '+(e&&e.message||e)); },
+       onSuccess:()=>{
+         say('reading the bundle…');
+         watchRun(d.run_id, run=>{
+           const det=run.details||{};
+           if(run.status==='completed'){
+             say('');
+             toast('imported "'+(det.name||'case')+'" ('+(det.runs_imported||0)+' run(s))');
+             loadCases(); refreshSelector();
+           } else if(run.status==='failed'){
+             say(''); toast('import failed: '+(run.error||'see the run log'), 6000);
+           } else { say('reading the bundle… '+(run.progress||0)+'%'); }
+         });
+       }
+     }).upload(f);
+   }).catch(e=>{ say(''); toast('import failed: '+e.message); });
+}
+
+// Poll a background run until it reaches a terminal state. Fail-safe: a failed
+// poll is skipped, not surfaced — a blip in the status endpoint must not look
+// like a failed export.
+function watchRun(run_id, cb){
+  const tick=()=>{
+    fetch('/api/dashboard/automation/'+run_id).then(r=>r.json()).then(run=>{
+      if(!run||!run.status) return;
+      cb(run);
+      if(['completed','failed','cancelled'].includes(run.status)) clearInterval(h);
+    }).catch(()=>{});
+  };
+  const h=setInterval(tick,2000); tick();
 }
 
 function loadCases(cb){
@@ -313,7 +384,7 @@ function loadCases(cb){
       return `<div class="caseitem ${sel===c.case_id?'sel':''}" onclick="rowClick('${c.case_id}')">
       <div class="casehead"><span class="nm">${isAct?'● ':''}${esc(c.name||c.case_id)}</span>
         <div class="row" style="gap:6px">
-          <button class="ghost" style="font-size:11px;padding:3px 8px;display:none" onclick="exportWorkspace('${c.case_id}',event)" title="Download this case as a portable bundle">Export</button>
+          ${expBtn(c.case_id)}
           ${c.is_default?'<span class="defbadge">default</span>'
             :c.is_system?'<span class="defbadge">system</span>'
                        :`<button class="del" onclick="delWorkspace('${c.case_id}','${nm}',event)">delete</button>`}

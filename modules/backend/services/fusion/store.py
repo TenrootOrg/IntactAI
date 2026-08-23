@@ -609,78 +609,9 @@ def attach_runs(case_id, run_ids) -> tuple[list, list]:
     return members, rejected
 
 
-EXPORT_KIND = "intact_case_export"
-EXPORT_SCHEMA = 1
-
-
-def export_case(case_id) -> dict | None:
-    """Build a self-contained, importable bundle for one case (workspace):
-    the case record (its details cache the fused graph + report + config +
-    dispositions) plus every member run's full record (the fusion inputs). A
-    later import recreates the case verbatim and can re-fuse from the runs."""
-    ws = _ws()
-    case_run = ws.get_automation_run(case_id)
-    if not case_run or case_run.get("automation_type") != CASE_TYPE:
-        return None
-    member_ids = _members_for_case(case_id)
-    runs = [r for r in (ws.get_automation_run(rid) for rid in member_ids) if r]
-    det = dict(case_run.get("details") or {})
-    # The graph now lives in a sidecar — embed it back inline so the bundle stays
-    # self-contained (import reads it inline; a later re-fuse moves it to a sidecar).
-    fg = _read_graph_sidecar(case_id)
-    if fg is not None:
-        det["fusion_graph"] = fg
-        case_run = {**case_run, "details": det}
-    return {
-        "kind": EXPORT_KIND,
-        "schema": EXPORT_SCHEMA,
-        "name": det.get("name") or case_run.get("name") or "case",
-        "case": case_run,
-        "runs": runs,
-    }
-
-
-def import_case(bundle: dict, *, name: str | None = None) -> dict:
-    """Recreate a case from an export bundle. Creates a FRESH case container and
-    re-tags the bundled member runs into it (run ids are preserved so the cached
-    graph/findings, which reference run ids, stay consistent — intended for
-    moving a case to another install). Returns {case_id, name, runs_imported}."""
-    if not isinstance(bundle, dict) or bundle.get("kind") != EXPORT_KIND:
-        raise ValueError("not an Intact case export bundle")
-    src_case = bundle.get("case") or {}
-    src_runs = bundle.get("runs") or []
-    src_det = src_case.get("details") or {}
-    disp_name = (name or src_det.get("name") or src_case.get("name") or "Imported case").strip()
-
-    ws = _ws()
-    from services.file_storage_service import save_workflow
-
-    # Fresh case container (never inherits default/system status from the source).
-    new_case_id = ws.create_automation_run(
-        automation_type=CASE_TYPE, name=f"Case — {disp_name}", case_id=None, details={},
-    )
-
-    # Upsert each member run, preserving its id + payload, re-tagged to the new case.
-    member_ids = []
-    for r in src_runs:
-        rid = (r or {}).get("run_id")
-        if not rid:
-            continue
-        rec = dict(r)
-        rec["case_id"] = new_case_id
-        save_workflow(rec)
-        member_ids.append(rid)
-
-    # New case details = the source case's cached state, re-pointed + de-privileged.
-    new_det = dict(src_det)
-    new_det["name"] = disp_name
-    new_det["member_run_ids"] = member_ids
-    new_det.pop("is_default", None)
-    new_det.pop("is_system", None)
-    ws.update_run_status(new_case_id, src_case.get("status") or "completed", details=new_det)
-
-    return {"case_id": new_case_id, "name": disp_name, "runs_imported": len(member_ids)}
-
+# Portable case bundles (export/import between appliances) live in case_bundle.py:
+# a bundle is a streamed ZIP carrying the collected payloads, not a JSON document,
+# and importing one has to remap every run id — neither belongs in the graph store.
 
 def _unfail_stale_idle_workspace(run: dict) -> None:
     """A workspace ("case") row has no natural "completed" state — it's a
@@ -764,6 +695,7 @@ def delete_case(case_id) -> dict:
     run_ids = [r.get("run_id") for r in ws.get_automation_runs_by_case(case_id)]
     for rid in run_ids:
         delete_workflow(rid)
+        _delete_run_payloads(rid)
     # baselines this case captured (match by source_case only — never touch a
     # baseline another workspace may rely on)
     removed_baselines = 0
@@ -785,6 +717,33 @@ def delete_case(case_id) -> dict:
         pass
     return {"deleted": True, "runs_deleted": len(run_ids),
             "baselines_deleted": removed_baselines}
+
+
+def _delete_run_payloads(rid) -> None:
+    """Remove a deleted run's collected data from disk.
+
+    Deleting the row alone left /data/downloads/<run_id>/raw_results.json behind
+    — half a gigabyte per collection, unreachable (nothing can find it without
+    the row) and reclaimable only by the Maintenance purge, which is all-or-
+    nothing and takes every LIVE case's evidence with it. That was tolerable
+    while runs were only ever created by collecting; importing a case COPIES
+    those files, so a deleted import would strand its gigabytes permanently.
+
+    Best-effort: a case delete must never fail over a file that would not go."""
+    import re as _re
+    import shutil as _shutil
+    if not rid or not _re.match(r"^[A-Za-z0-9_]+$", str(rid)):
+        return                          # never let a crafted id escape the dir
+    for base in ("/app/data/downloads", "/data/downloads"):
+        try:
+            _shutil.rmtree(os.path.join(base, str(rid)), ignore_errors=True)
+        except Exception:
+            pass
+    for base in ("/app/data/aws_runs", "/data/aws_runs"):
+        try:
+            os.remove(os.path.join(base, f"{rid}.json"))
+        except Exception:
+            pass
 
 
 def _memory_contribution(rid, det):
