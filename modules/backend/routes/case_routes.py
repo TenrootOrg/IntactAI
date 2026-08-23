@@ -120,7 +120,11 @@ def _audit_detail(action, is_err, resp):
             return "report regenerated"
         if a in ("rescan", "config", "hosts", "masking"):
             return "configuration updated, case re-fused"
-        if a in ("export", "import"):
+        if a == "export":
+            # The background run logs the real outcome (size, run count, the
+            # file it produced); this line only marks when it was asked for.
+            return "export started — building the bundle in the background"
+        if a == "import":
             return action
         return ""
     except Exception:
