@@ -410,7 +410,8 @@ def _env_key_from_members(members) -> str | None:
 
 
 def set_disposition(case_id, target, *, verdict="benign", attribution="it_admin",
-                    reason="", scope="case", by="operator", watermark=None) -> dict:
+                    reason="", scope="case", by="operator", watermark=None,
+                    trigger=None) -> dict:
     """Record an operator triage on a finding/entity ('that PsExec was IT'), re-fuse so it
     takes effect, and — when scope='environment' — fold it into the env baseline so it
     suppresses across FUTURE cases too. Returns the disposition.
