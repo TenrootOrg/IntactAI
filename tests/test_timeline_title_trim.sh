@@ -74,3 +74,49 @@ check('ALClient01', '', '', 'empty title survives');
 
 process.exit(bad ? 1 : 0);
 JS
+
+# --- the Risk tab's "Why" column: the same duplication one level down --------
+python3 - "$SRC" "$tmp/rw.js" <<'EXTRACT'
+import re, sys
+s = open(sys.argv[1], encoding="utf-8").read()
+m = re.search(r"function _riskWhy\(r\)\{.*?\n\}", s, re.S)
+if not m:
+    sys.exit("could not find _riskWhy in cases.html — the Risk dedup is gone")
+open(sys.argv[2], "w", encoding="utf-8").write(m.group(0))
+EXTRACT
+
+node - "$tmp/rw.js" <<'RISKJS'
+const fs = require('fs');
+eval(fs.readFileSync(process.argv[2], 'utf8'));
+let bad = 0;
+const check = (host, why, want, msg) => {
+  const got = _riskWhy({ host, why });
+  if (got === want) console.log(`  ok   ${msg}`);
+  else { console.log(`  FAIL ${msg}`); console.log(`       want ${JSON.stringify(want)}`);
+         console.log(`       got  ${JSON.stringify(got)}`); bad++; }
+};
+
+check('ALClient01',
+      'SIGMA: Defender Alert (Severe) on ALClient01; Renamed binary: AdFind.exe on ALClient01',
+      'SIGMA: Defender Alert (Severe); Renamed binary: AdFind.exe',
+      'trims this host from every part');
+
+// Cross-host reasons name OTHER machines, and the host count is the point of
+// the finding — matching against this row's host only is what protects them.
+check('ALClient06',
+      "Account 'adatumlab\\kobia' used across 2 hosts (cross-host)",
+      "Account 'adatumlab\\kobia' used across 2 hosts (cross-host)",
+      'leaves a cross-host reason intact');
+
+check('ALClient09',
+      "SIGMA: Defender Alert (Severe) on ALClient09; Account 'x' used across 2 hosts (cross-host)",
+      "SIGMA: Defender Alert (Severe); Account 'x' used across 2 hosts (cross-host)",
+      'mixed row: trims one part, keeps the other');
+
+check('ALClient01', 'Something on ALClient012', 'Something on ALClient012',
+      'does not trim a longer host name');
+check('', 'Anything on ALClient01', 'Anything on ALClient01', 'no host, no change');
+check('ALClient01', '', '', 'empty why survives');
+
+process.exit(bad ? 1 : 0);
+RISKJS
