@@ -51,12 +51,21 @@
   /* Evidence lines belonging to the finding above them. Indented, toned down and
      allowed to wrap inside their own bullet, so a long Defender message reads as
      continuation rather than as the next entry. */
-  .md li.sub{margin-left:20px;list-style:circle;color:var(--muted);font-size:12px}
-  .md li.sub code{font-size:11px;overflow-wrap:anywhere}
-  /* Long evidence is clamped to three lines and opens on click. `clip` is added
-     by JS only where the text actually overflows, so a short line gets no
-     affordance it does not need. */
-  .md li.sub.clip{max-height:4.2em;overflow:hidden;cursor:pointer;position:relative}
+  .md li.sub{margin-left:20px;list-style:circle;color:var(--muted);font-size:12px;line-height:1.5}
+  /* No VERTICAL padding on the code box. `.md code` carries `padding:1px 5px`,
+     which makes the inline box taller than the line it sits on — so a line that
+     visually fits still measured as overflowing, and every item got a "more"
+     link that revealed nothing. */
+  .md li.sub code{font-size:11px;overflow-wrap:anywhere;padding:0 4px}
+  /* `clip` is added by JS only where the text ACTUALLY overflows, measured per
+     element, so a short line gets no affordance it does not need. */
+  /* ONE line closed, not three. A Defender message runs to several hundred
+     characters of CJK plus a fwlink URL; three wrapped lines of it per evidence
+     item turned the timeline into a wall and buried the finding headings that
+     give it structure. One line is a hint that something is there — the whole
+     string is a click away. line-height is pinned above so `1.5em` is exactly
+     one line whatever the script. */
+  .md li.sub.clip{max-height:1.7em;overflow:hidden;cursor:pointer;position:relative}
   .md li.sub.clip::after{content:'⌄ more';position:absolute;right:0;bottom:0;
     padding:0 4px 0 14px;font-size:10px;color:var(--acc);background:var(--panel)}
   .md li.sub.clip.open{max-height:none}
@@ -996,7 +1005,10 @@ function clampEvidence(root){
   (root||document).querySelectorAll('.md li.sub').forEach(li=>{
     li.classList.remove('clip','open');
     li.classList.add('clip');                     // apply the max-height first…
-    if(li.scrollHeight <= li.clientHeight + 1) li.classList.remove('clip');  // …then ask
+    // +4, not +1: line boxes round sub-pixel and an inline <code> can sit a
+    // shade taller than its line. Too tight a tolerance offers "more" on items
+    // that have nothing more to show, which is worse than never offering it.
+    if(li.scrollHeight <= li.clientHeight + 4) li.classList.remove('clip');  // …then ask
   });
 }
 document.addEventListener('click',e=>{
