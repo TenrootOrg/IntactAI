@@ -1126,8 +1126,17 @@ def _fuse_lock(case_id):
         return _FUSE_LOCKS.setdefault(case_id, threading.RLock())
 
 
-def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -> FusionGraph:
+def fuse_case(case_id, *, contributions_override=None, log=None, _record=True,
+              force_report=False) -> FusionGraph:
     """Fuse the case. Refuses to run concurrently with itself.
+
+    `force_report` rebuilds the report/advisory even though one already exists --
+    what Rescan means. It is a PARAMETER rather than the caller blanking
+    `report_md` first, because blanking happens outside this lock: rescan() used to
+    write `report_md = ""` and only then call fuse_case, so a FusionBusy raised
+    here left the case with its report destroyed and nothing to rebuild it. The
+    operator saw an error and lost the narrative. Nothing is cleared now until the
+    lock is held and a replacement is in hand.
 
     Saving the Configuration rail triggers a rescan, and nothing stopped a second
     one starting on top of a first still in progress. That was survivable while a
@@ -1143,12 +1152,13 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
             "(the report can take minutes while the model writes the narrative)")
     try:
         return _fuse_case_locked(case_id, contributions_override=contributions_override,
-                                 log=log, _record=_record)
+                                 log=log, _record=_record, force_report=force_report)
     finally:
         lock.release()
 
 
-def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record=True) -> FusionGraph:
+def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record=True,
+                      force_report=False) -> FusionGraph:
     ws = _ws()
     d = get_case(case_id)
 
@@ -1241,7 +1251,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     # Rescan (store.regenerate_report). This keeps the per-action re-fuses (timeline
     # validations, dispositions) fast + token-free, and matches the product rule
     # "first scan generates it; afterwards only on rescan".
-    if d.get("report_md"):
+    if d.get("report_md") and not force_report:
         report = d.get("report_md")
         analysis = d.get("analysis") or {}
         # Report reused verbatim → it still reflects whatever members it was last
@@ -1297,14 +1307,16 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                                    max_identities=llm_ident)
         report_members = list(members)   # report now reflects exactly these members
         report_dirty = False             # report freshly generated → up to date
-    # customer-confirmation checklist — generate once (preserve operator decisions on re-fuse)
-    checklist = d.get("disposition_checklist")
-    if not checklist:
+    # customer-confirmation checklist — generate once (preserve operator decisions on
+    # re-fuse). GENERATED here, but WRITTEN after the bulk patch below via
+    # _mutate_list_field — see the note there for why it may not ride along in the patch.
+    fresh_checklist = None
+    if not d.get("disposition_checklist"):
         try:
-            checklist = llm_sim.generate_disposition_checklist(
+            fresh_checklist = llm_sim.generate_disposition_checklist(
                 gv, window=window, min_severity=min_sev, run_id=case_id, mask=mask)
         except Exception:
-            checklist = []
+            fresh_checklist = None
 
     # Token A/B: raw rows a normal run would feed vs the distilled payload the LLM
     # actually sees. raw_approx is necessarily an estimate (we never send raw), so
@@ -1354,8 +1366,18 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                                   "report_run_ids": report_members,
                                   # True when this fuse left the report frozen (triage/
                                   # disposition re-fuse) → UI shows "report not up to date".
-                                  "report_dirty": report_dirty,
-                                  "disposition_checklist": checklist})
+                                  "report_dirty": report_dirty})
+    # Checklist: fill ONLY when the case still has none, and do it under the run lock.
+    # It used to ride along in the bulk patch above, computed from a snapshot read at
+    # the TOP of this function — ~33 s earlier on a real case (9 hosts / 18.7k
+    # entities). disposition_checklist is the one details field both the fuse and the
+    # operator write (decide_checklist_item), so a customer decision recorded while the
+    # fuse was running was silently overwritten by the stale pre-fuse copy. Reading and
+    # writing in one locked read-modify-write closes that window; `cur or ...` keeps the
+    # "generate once, never clobber operator decisions" rule that was always intended.
+    if fresh_checklist:
+        _mutate_list_field(case_id, "disposition_checklist",
+                           lambda cur: cur or fresh_checklist)
     log_case_event(case_id, "Refusion complete", "success",
                    f"saved to database — {len(g.entities):,} entities, "
                    f"{len(g.relationships):,} links, {len(g.findings):,} findings "
@@ -1854,6 +1876,14 @@ def set_analysis_config(case_id, cfg) -> dict:
             patch["max_entities"] = max(100, min(int(cfg["max_entities"]), MAX_GRAPH_ENTITIES))
         except (TypeError, ValueError):
             pass
+    if "auto_check_new_data" in cfg:       # poll for newly-landed runs and raise the
+                                           # existing "N new run(s)" banner by itself.
+                                           # NOTHING is fused automatically — the
+                                           # operator still clicks Refusion. Off = the
+                                           # pre-poll behaviour exactly (staleness is
+                                           # noticed on load), which is the escape
+                                           # hatch if the poll ever misbehaves.
+        patch["auto_check_new_data"] = bool(cfg.get("auto_check_new_data"))
     if "air_gap_analysis" in cfg:          # no route to a model provider: write the
                                            # deterministic report immediately rather
                                            # than spending a connection timeout
@@ -1910,8 +1940,12 @@ def rescan(case_id, cfg=None) -> dict:
     host-exclusion / severity); the premium LLM narrative is the Regenerate button."""
     if cfg:
         set_analysis_config(case_id, cfg)
-    _merge_case_details(case_id, {"report_md": ""})   # force fuse to rebuild the report
-    g = fuse_case(case_id)
+    # Rebuild via the flag, NOT by blanking report_md first. Blanking happened
+    # outside the fuse lock, so when the case was already fusing the FusionBusy
+    # below left the report erased with nothing to regenerate it -- an operator
+    # clicking Refusion while a fuse ran lost the narrative and got an error.
+    # Reproduced on a live case: the report went from 75,402 chars to 0.
+    g = fuse_case(case_id, force_report=True)
     return {"entities": len(g.entities), "relationships": len(g.relationships),
             "findings": len(g.findings),
             "cross_host_findings": sum(1 for f in g.findings if f.kind == "cross_host")}
@@ -2267,7 +2301,8 @@ def decide_checklist_item(case_id, item_id, decision) -> dict:
     if not item:
         return {"error": "checklist item not found"}
     if decision == "accept" and item.get("finding_id"):
-        # benign confirmation -> disposition + re-fuse (this re-persists the checklist too)
+        # benign confirmation -> disposition + re-fuse. The re-fuse no longer rewrites the
+        # checklist (it only fills an empty one), so this decision cannot be clobbered by it.
         set_disposition(case_id, item["finding_id"], verdict="benign",
                         attribution="customer",
                         reason=f"customer-confirmed benign: {item.get('question', '')}",

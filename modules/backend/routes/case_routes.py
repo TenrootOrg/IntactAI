@@ -144,6 +144,37 @@ def _audit_case_activity(resp):
     return resp
 
 
+@case_bp.errorhandler(store.FusionBusy)
+def _case_busy(e):
+    """A fuse is already running for this case → 409, never 500.
+
+    409 is the honest code: the request is well-formed, the case is simply busy,
+    and retrying will work. It used to fall through to the generic handler below,
+    which returned 500 AND wrote "crashed" into the case activity log — so a
+    perfectly normal collision (two operators triaging at once, or a triage action
+    landing while a Rescan is still running) read as a product fault.
+
+    Registered on the same blueprint as the catch-all: Flask walks the exception's
+    MRO and prefers the most specific registered class, so this wins.
+
+    Note several callers persist BEFORE they fuse — set_disposition and
+    decide_checklist_item both write their decision, then re-fuse. A 409 from
+    those means the decision IS saved and only the graph is behind, which is why
+    the message says "not lost" rather than implying the action failed.
+    """
+    try:
+        cid, action = _audit_case_id()
+        if cid and action:
+            store.log_case_event(cid, _audit_label(action), "warning",
+                                 f"{_audit_label(action).lower()} deferred — "
+                                 f"a fuse is already running for this case", code=409)
+    except Exception:
+        pass
+    return jsonify({"error": str(e), "busy": True,
+                    "hint": "the case is re-fusing — your change is saved, "
+                            "retry in a moment to see it applied"}), 409
+
+
 @case_bp.errorhandler(Exception)
 def _audit_case_exception(e):
     from werkzeug.exceptions import HTTPException
@@ -332,6 +363,12 @@ def get_case(case_id):
                     # No route to a model provider: write the deterministic report
                     # instead of waiting out a connection timeout on every fuse.
                     "air_gap_analysis": bool(d.get("air_gap_analysis", False)),
+                    # Poll the staleness fields below and raise the existing banner
+                    # by itself. Default ON, including for every case saved before
+                    # this key existed — absent must not read as "off", or the
+                    # feature would be silently disabled everywhere it matters most
+                    # (the long-running cases). Nothing is ever fused automatically.
+                    "auto_check_new_data": bool(d.get("auto_check_new_data", True)),
                     # LOCKED ON: the LLM payload is always sized from the selected
                     # model's REAL context window, never the static ~128k-model
                     # constant. Kept in the response for API compatibility.
@@ -521,13 +558,11 @@ def rescan(case_id):
     if not store.get_case(case_id):
         return jsonify({"error": "case not found"}), 404
     cfg = request.get_json(silent=True) or {}
-    try:
-        res = store.rescan(case_id, cfg)
-    except store.FusionBusy as e:
-        # 409, not 500: the request is well-formed, the case is simply busy. The
-        # config the operator just saved IS persisted (set_analysis_config runs
-        # before the fuse), so retrying re-fuses with it — nothing is lost.
-        return jsonify({"error": str(e), "busy": True}), 409
+    # FusionBusy -> 409 via the blueprint handler (_case_busy), which now covers every
+    # route rather than this one alone. Rescan is the benign case: set_analysis_config
+    # runs before the fuse, so the config the operator just saved IS persisted and a
+    # retry re-fuses with it.
+    res = store.rescan(case_id, cfg)
     return jsonify({"case_id": case_id, "status": "rescanned", **res})
 
 

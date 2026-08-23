@@ -377,6 +377,26 @@ function costBadge(ce){
   return `<span class="stat" title="Cost of one report generation (LLM) with ${esc(ce.model)} — report + advisory (2 passes), driven almost entirely by the INPUT context (raw vs distilled); output tokens are the same either way. ~${(ce.output_tokens||0).toLocaleString()} output tokens. BEFORE = feeding raw rows (${((ce.before&&ce.before.input_tokens)||0).toLocaleString()} in); AFTER = the distilled fusion payload (${((ce.after&&ce.after.input_tokens)||0).toLocaleString()} in). Tune 'LLM payload' + 'Output token cap'.">
     <span style="color:var(--muted)">${_usd(before)}</span> → <b style="color:var(--warn,#d29922)">${_usd(after)}</b> /report${sim} <span style="color:var(--muted)">(${esc(ce.model)})</span></span>`;
 }
+// The "new run(s) available" banner, lifted out of render() so it can be updated
+// on its own. render() rebuilds #main.innerHTML wholesale — calling it from a
+// timer would remount every tab, losing scroll position, expanded evidence rows,
+// a half-typed chat message and any open detail. The watcher below rewrites only
+// #stalebar, so the analyst's view is never disturbed by something they did not do.
+function staleBar(info){
+  if(!info || !info.is_stale) return '';
+  const msg = info.data_stale
+    ? `ℹ ${info.data_stale} new run(s) available — click <b>Refusion</b> to fold them into the data (fast, no LLM), or <b>Rescan (LLM)</b> to also refresh the report &amp; chat.`
+    : info.report_dirty
+      ? `⚠ You've made changes (triage / timeline validations) since the last report — the <b>report &amp; chat are not up to date</b>. Click <b>Rescan (LLM)</b> to refresh them.`
+      : `ℹ The data is current. The report &amp; chat reflect an earlier scan — <b>Rescan (LLM)</b> to refresh them.`;
+  return `<div style="margin:8px 0;padding:8px 12px;border:1px solid #d29922;border-radius:6px;background:#2b2400;color:#e3b341;font-size:13px;display:flex;align-items:center;gap:10px;justify-content:space-between">
+        <span>${msg}</span>
+        <span style="display:flex;gap:8px;white-space:nowrap">
+          ${info.data_stale ? `<button onclick="doRefusion('${info.case_id}')" style="cursor:pointer;background:var(--info);border-color:var(--info);color:#0d1117">🔄 Refusion</button>` : ''}
+          <button onclick="doRescanLLM('${info.case_id}')" style="cursor:pointer;background:var(--acc);border-color:var(--acc)">✨ Rescan (LLM)</button>
+        </span>
+      </div>`;
+}
 function render(info,md,g){
   curInfo=info; curGraph=g;
   $('#llmbadge').textContent='LLM: '+(info.llm_enabled?'real':'simulated (no key)');
@@ -389,17 +409,7 @@ function render(info,md,g){
         <div><h1 style="margin:0;font-size:19px">${esc(info.name||info.case_id)}</h1>
           <div style="color:var(--muted);font-size:12px">${tw.start?('since '+esc(tw.start)):'no start date'}</div></div>
       </div>
-      ${info.is_stale ? `<div style="margin:8px 0;padding:8px 12px;border:1px solid #d29922;border-radius:6px;background:#2b2400;color:#e3b341;font-size:13px;display:flex;align-items:center;gap:10px;justify-content:space-between">
-        <span>${info.data_stale
-          ? `ℹ ${info.data_stale} new run(s) available — click <b>Refusion</b> to fold them into the data (fast, no LLM), or <b>Rescan (LLM)</b> to also refresh the report &amp; chat.`
-          : info.report_dirty
-            ? `⚠ You've made changes (triage / timeline validations) since the last report — the <b>report &amp; chat are not up to date</b>. Click <b>Rescan (LLM)</b> to refresh them.`
-            : `ℹ The data is current. The report &amp; chat reflect an earlier scan — <b>Rescan (LLM)</b> to refresh them.`}</span>
-        <span style="display:flex;gap:8px;white-space:nowrap">
-          ${info.data_stale ? `<button onclick="doRefusion('${info.case_id}')" style="cursor:pointer;background:var(--info);border-color:var(--info);color:#0d1117">🔄 Refusion</button>` : ''}
-          <button onclick="doRescanLLM('${info.case_id}')" style="cursor:pointer;background:var(--acc);border-color:var(--acc)">✨ Rescan (LLM)</button>
-        </span>
-      </div>` : ''}
+      <div id="stalebar">${staleBar(info)}</div>
       <div style="margin:6px 0 14px">${statSpans(g)}</div>
       <div class="tabs">
         <div class="tab ${tab==='config'?'on':''}" data-tab="config" onclick="setTab('config')">⚙ Configuration</div>
@@ -413,7 +423,64 @@ function render(info,md,g){
       <div id="tabc"></div>
     </div>`;
   drawTab(md);
+  startStaleWatch(info.case_id);
 }
+
+// ── Watch for new data ──────────────────────────────────────────────────────
+// Staleness is already computed server-side on every GET /api/cases/<id>
+// (store.stale_member_runs -- a member scan, no graph build) and the banner above
+// already knows how to display it. The only missing piece was that nothing
+// re-checked, so an analyst sitting on a tab learned about new runs only by
+// reloading the page.
+//
+// Deliberately NOT an auto-fuse. A fuse rebuilds the entire case graph (measured:
+// 33s for 9 hosts / 18,749 entities) and re-ranks every finding; doing that under
+// an analyst mid-triage costs them their place, and no amount of locking prevents
+// that. This raises the banner and stops there -- the operator fuses when ready.
+const STALE_POLL_MS = 20000;
+let _staleInFlight = false;
+function stopStaleWatch(){
+  if(window._staleTimer){ clearInterval(window._staleTimer); window._staleTimer=null; }
+}
+function startStaleWatch(id){
+  stopStaleWatch();
+  // Absent reads as ON (see the backend default) -- only an explicit false opts out.
+  if(!curInfo || curInfo.auto_check_new_data===false) return;
+  window._staleTimer = setInterval(()=>staleTick(id), STALE_POLL_MS);
+}
+function staleTick(id){
+  // Fail safe, in this order:
+  //  - the case view is gone (back to the list, another page): stop, so the timer
+  //    cannot outlive what it was watching;
+  //  - the browser tab is backgrounded: skip, nobody is looking;
+  //  - a previous tick has not come back: skip, so a slow backend can never stack
+  //    requests -- that is what turns a poll into a load generator.
+  if(!$('#stalebar') || !curInfo || curInfo.case_id!==id){ stopStaleWatch(); return; }
+  if(document.hidden || _staleInFlight) return;
+  _staleInFlight = true;
+  fetch('/api/cases/'+id)
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {
+      // A failed or partial read leaves the last known banner untouched and retries
+      // on the next tick. Never clear a banner we could not verify: a transient
+      // error must not tell the analyst the data is current when it is not.
+      if(!d || d.case_id!==id || !curInfo || curInfo.case_id!==id) return;
+      if(curInfo.is_stale===d.is_stale && curInfo.data_stale===d.data_stale
+         && curInfo.report_dirty===d.report_dirty) return;
+      // Adopt ONLY the staleness fields. Copying the whole payload would swap
+      // config out from under the rail the operator may be editing right now.
+      curInfo.is_stale=d.is_stale; curInfo.data_stale=d.data_stale;
+      curInfo.report_stale=d.report_stale; curInfo.report_dirty=d.report_dirty;
+      const bar=$('#stalebar'); if(bar) bar.innerHTML=staleBar(curInfo);
+    })
+    .catch(()=>{})                      // a poll error is never surfaced into the view
+    .finally(()=>{ _staleInFlight=false; });
+}
+// Coming back to a backgrounded tab: check once immediately rather than waiting out
+// the rest of the interval, which is the moment the answer is most likely stale.
+document.addEventListener('visibilitychange',()=>{
+  if(!document.hidden && window._staleTimer && curInfo) staleTick(curInfo.case_id);
+});
 function setTab(t){
   tab=t;
   // Move the active underline to the clicked tab (the tab bar isn't re-rendered,
@@ -503,6 +570,10 @@ function renderConfig(info){
         <label style="margin-top:6px;display:flex;align-items:center;gap:6px;font-weight:normal" title="Tick only when this box has no route to the model provider. The report is then written deterministically from the correlated graph, immediately, and nothing is sent to a provider. Untick (default) for the written narrative: attack story in phases, cross-host correlation and identity attribution.">
           <input id="cf-airgap" type="checkbox" ${info.air_gap_analysis?'checked':''} style="width:auto"/>
           <span>Air-gap analysis <span style="color:var(--muted)">(no route to the model provider)</span></span>
+        </label>
+        <label style="margin-top:6px;display:flex;align-items:center;gap:6px;font-weight:normal" title="Check every 20s whether new runs have landed and raise the 'N new run(s)' banner on its own, instead of only noticing on page load. NOTHING is fused automatically and nothing on screen is redrawn — you still click Refusion when you are ready, so the data you are reading never changes underneath you. Untick to stop the checking entirely and go back to noticing new runs on load.">
+          <input id="cf-autocheck" type="checkbox" ${info.auto_check_new_data!==false?'checked':''} style="width:auto"/>
+          <span>Watch for new data <span style="color:var(--muted)">(raises the banner; never fuses on its own)</span></span>
         </label>
         <label style="margin-top:8px">Modules <span style="color:var(--muted)">— what fuses</span></label>
         <div class="modwarn">⚠ Enabling more modules can raise cost sharply — some artifacts (e.g. full hunts) produce huge output.</div>
@@ -605,8 +676,23 @@ function hostSelectAll(inc){
   renderHosts();
 }
 // Read the config rail into a cfg object (logo is read async).
+//
+// Returns {} when the rail is NOT MOUNTED. renderConfig() writes the #cf-* inputs
+// into #tabc, so they exist only while the Configuration tab is open — but the
+// stale banner sits above #tabc and its Refusion / Rescan buttons are visible on
+// every tab, and 'report' is the tab a case opens on. Reading the rail from any
+// other tab hit `$('#cf-logo').files` on null and threw before a request was ever
+// made; doRefusion's try/catch wraps only the api() call, so the rejection escaped
+// with no toast and no error — the buttons simply did nothing.
+//
+// {} is the correct fallback rather than a guessed cfg: set_analysis_config is
+// key-presence-based ("Only provided keys change"), so an empty body persists
+// nothing and /rescan just re-fuses with the stored config. Building a partial cfg
+// from absent inputs would be worse than crashing — every unread checkbox would
+// post `false` and silently reset saved settings (air-gap, masking, modules).
 async function _railCfg(){
-  const logo=await _fileToDataUrl($('#cf-logo').files[0]);
+  if(!$('#cf-sev')) return {};
+  const logo=await _fileToDataUrl($('#cf-logo')?.files?.[0]);
   const cfg={
     time_window:{start:$('#cf-start').value||null,end:$('#cf-end').value||null},
     min_severity:$('#cf-sev').value, audience:$('#cf-aud').value,
@@ -616,6 +702,7 @@ async function _railCfg(){
     // empty = tied to the Entity limit (backend treats null as "no separate ceiling")
     max_identities:($('#cf-maxident')?.value ?? '')===''?null:(parseInt($('#cf-maxident').value)||0),
     air_gap_analysis:!!$('#cf-airgap')?.checked,
+    auto_check_new_data:!!$('#cf-autocheck')?.checked,
     llm_max_output_tokens:null,    // LOCKED to model max (backend enforces regardless)
     llm_use_full_context:true,     // LOCKED on (backend enforces regardless)
     chat_send_full_context:true,   // LOCKED on (backend enforces regardless)
@@ -642,10 +729,15 @@ async function doRefusion(id){
   if(typeof logRefresh==='function') logRefresh();
   toast('refusing — follow the progress in the Log…');
   try{
-    await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
-    toast('✓ Refusion complete — data, risk & timeline updated');
+    const r = await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
+    // 409 from the backend's FusionBusy handler: a fuse is already running for this
+    // case. Not a failure — the config posted above IS persisted and a retry re-fuses
+    // with it — so say so instead of showing the red "failed" toast.
+    if(r && r.busy) toast('⏳ already re-fusing this case — retry in a moment');
+    else toast('✓ Refusion complete — data, risk & timeline updated');
   }catch(e){ toast('✗ Refusion failed — see the Log for details'); }
   if(typeof logRefresh==='function') logRefresh();   // pull the final rows at once
+  staleTick(id);          // the banner is stale about staleness — re-check it now
 }
 // Rescan (LLM) = SAVE config → re-fuse → regenerate report + chat narrative with the LLM.
 async function doRescanLLM(id){
