@@ -126,6 +126,50 @@ def classify_indicator(value) -> str | None:
 
 
 # -- asset-scoped entities ------------------------------------------------
+# Windows hands the same account back in two shapes depending on the artifact:
+# a parsed pair (domain="adatumlab", user="noda") or one qualified string
+# (user="adatumlab\\noda", no domain at all). The account key branches on whether
+# a domain is present, so the second shape never reached the domain branch and
+# minted a SECOND, host-scoped entity for an account that already existed
+# globally:
+#
+#   account:domain:adatumlab\noda                        (parsed pair)
+#   account:asset:endpoint:C.d1a336242178d27f:adatumlab\noda   (qualified string)
+#
+# Same person, same host, two rows in the Identities tab — reported from the
+# field, reproduced here on every user in a real case.
+#
+# Deliberately backslash only. `user@domain` is NOT split: an `@` also appears
+# in perfectly ordinary local account names and in cloud principals, and
+# mappers/cloud.py already has its own UPN handling that knows the provider
+# context this function does not.
+def split_domain_user(user, domain=None) -> tuple:
+    """(domain, user), pulling a `DOMAIN\\user` apart only when no domain was given.
+
+    Never raises: a fuse must not fail over a malformed account string, so any
+    surprise falls back to the input unchanged.
+    """
+    try:
+        d = (str(domain) if domain is not None else "").strip().lower()
+        u = (str(user) if user is not None else "").strip().lower()
+        if d or not u or "\\" not in u:
+            return d, u
+        head, _, tail = u.rpartition("\\")
+        head, tail = head.strip(), tail.strip()
+        # "\user", "domain\" and ".\user" (the Windows local form) carry no
+        # usable domain — leave the caller on its local-account path.
+        if not head or not tail or head == ".":
+            return d, u
+        return head, tail
+    except Exception:                                   # noqa: BLE001
+        # Empty, NOT the inputs re-stringified: whatever raised above will
+        # raise again on the way out, and this function's whole contract is
+        # that it cannot be the thing that breaks a fuse. An empty user makes
+        # the caller skip the account, which is the right answer for a value
+        # nothing can read.
+        return "", ""
+
+
 def account_id(asset: str, domain, user) -> str:
     d = (str(domain) if domain else "").strip().lower()
     u = (str(user) if user else "").strip().lower()
