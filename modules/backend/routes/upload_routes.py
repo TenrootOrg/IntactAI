@@ -317,8 +317,19 @@ def handle_tus_hook():
             upload_size = upload_info.get('Size', 0)
             size_mb = upload_size / (1024 * 1024) if upload_size else 0
 
-            workflow_type = f"{purpose}_upload"
-            workflow_name = f"Upload: {filename}"
+            # Most uploads FEED a job that runs separately, so an "<purpose>_upload"
+            # row of its own is right. A case bundle is not like that: the upload
+            # and the import it triggers are one operation with one outcome, and
+            # splitting them produced two rows in Settings → Actions — an "Upload"
+            # that said COMPLETED and an "Import case" that never moved off PENDING
+            # (with a Stop button that did nothing) whenever the browser's run id
+            # failed to reach this hook. One operation, one row.
+            if purpose == 'case_import':
+                workflow_type = 'case_import'
+                workflow_name = f"Import case: {filename}"
+            else:
+                workflow_type = f"{purpose}_upload"
+                workflow_name = f"Upload: {filename}"
 
             # If the browser PRE-CREATED the workflow row (so the operator sees
             # it the instant they click Apply, before this hook fires — the run

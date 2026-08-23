@@ -559,17 +559,26 @@ def download_case_bundle(run_id):
                      mimetype="application/zip")
 
 
-@case_bp.route("/api/cases/import/start", methods=["POST"])
-def start_case_import():
-    """Open the run row BEFORE the upload begins, so the operator sees the import
-    the moment they pick a file rather than when tusd finally calls the hook. The
-    browser passes the id back as tus metadata (`upload_run_id`)."""
+@case_bp.route("/api/cases/import/run/<upload_id>", methods=["GET"])
+def case_import_run(upload_id):
+    """The run that is handling the bundle uploaded as `upload_id`.
+
+    The browser deliberately does NOT open the run itself. Pre-creating it and
+    handing the id to tusd as metadata is what the upgrade-package upload does,
+    but there the cost of losing that metadata is invisible; here it produced TWO
+    rows in Settings → Actions — one stuck at PENDING forever with a Stop button
+    that did nothing. The upload hook is the single thing that knows an import is
+    happening, so it is the only thing that opens a row, and the browser looks it
+    up afterwards by the id tus already gave it."""
     from services import workflow_service as ws
-    b = request.get_json(silent=True) or {}
-    fn = (b.get("filename") or "case bundle").strip()[:120]
-    run_id = ws.create_automation_run("case_import", f"Import case: {fn}",
-                                      details={"filename": fn})
-    return jsonify({"run_id": run_id})
+    if not re.match(r"^[A-Za-z0-9_.+-]{1,128}$", upload_id or ""):
+        return jsonify({"error": "bad upload id"}), 400
+    for r in (ws.get_all_automation_runs() or []):
+        if r.get("automation_type") != "case_import":
+            continue
+        if (r.get("details") or {}).get("upload_id") == upload_id:
+            return jsonify({"run_id": r.get("run_id"), "status": r.get("status")})
+    return jsonify({"error": "no import is running for that upload yet"}), 404
 
 
 @case_bp.route("/api/cases/import", methods=["POST"])
