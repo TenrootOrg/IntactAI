@@ -136,9 +136,11 @@ SIMULATED = True   # default; per-call mode resolves from frontend_config (see _
 
 
 # ---------------------------------------------------------------------------
-# Real-LLM boundary — the ONLY place the model API is touched. Default OFF
-# (mode='simulated'); flip frontend_config agentic.fusion_llm_mode='real' with an
-# API key to enable. Any failure falls back to the deterministic narrator.
+# Real-LLM boundary — the ONLY place the model API is touched. Enabled by simply
+# CONFIGURING a model (see _use_real): the old extra `fusion_llm_mode='real'`
+# opt-in is gone, and that key now only does the opposite — set it to 'simulated'
+# to pin a box to the deterministic narrator. Any failure falls back to that
+# narrator with a note saying which failure it was (see _classify_llm_error).
 # ---------------------------------------------------------------------------
 def _agentic_cfg() -> dict:
     try:
@@ -385,8 +387,94 @@ ANALYST_SYSTEM_PROMPT = (
     '"hypotheses":[{"title","entity_ids","confidence","reason"}]}'
 )
 
-_SIM_TAG = ("\n\n---\n_Narrative by the in-graph narrator (simulated — deterministic). "
-            "Set agentic.fusion_llm_mode='real' to use a live model._\n")
+# WHY a report came out deterministic. The old tag said "Set
+# agentic.fusion_llm_mode='real' to use a live model", which stopped being true
+# when configuring a model became the opt-in — so an operator on a box with no
+# API key was told to flip a flag that would not have helped. Worse, the tag was
+# identical whether they had ticked Air-gap analysis, had no key, or had a key the
+# box could not reach: three different problems, one unhelpful sentence.
+#
+# Reason CODES and operator-facing MESSAGES are deliberately the same vocabulary
+# chat already uses — _classify_llm_error + _LLM_ERR_MESSAGES, further down this
+# file. Those were hardened against real incidents (a funded-out account arriving
+# as a 429 and being told to "wait a moment"; OpenRouter refusing to route a model
+# under a data policy and the operator being told to check their key). Writing a
+# second classifier here would have thrown all of that away — and did, briefly:
+# the duplicate was silently shadowed by the real one, so the codes it returned
+# never matched the ones it compared against.
+_SIM_TAG_PREFIX = "\n\n---\n_Deterministic report — "
+
+# Reasons a report cannot be narrated that are visible from CONFIG ALONE, i.e.
+# before any call is attempted. Anything only a failed call can tell us
+# (no_internet, invalid_key, no_credit …) comes back from _classify_llm_error.
+LLM_OK = "ok"
+LLM_AIR_GAP = "air_gap"
+LLM_PINNED = "pinned"
+LLM_NO_MODEL = "no_model"
+LLM_MISSING_KEY = "missing_key"          # same code chat uses
+
+_LLM_CONFIG_REASONS = {
+    LLM_AIR_GAP: ("Air-gap analysis is ticked for this case",
+                  "Untick it in Configuration to narrate with the model."),
+    LLM_PINNED: ("The deterministic narrator is pinned for this appliance",
+                 "Clear agentic.fusion_llm_mode to use a live model."),
+    LLM_NO_MODEL: ("No model is configured",
+                   "Choose one in Settings ▸ Agentic."),
+    LLM_MISSING_KEY: ("No API key is configured",
+                      "Add one in Settings ▸ Agentic, or tick Air-gap analysis "
+                      "to keep this report."),
+}
+
+
+def _llm_reason_text(code) -> tuple:
+    """(reason, fix) for a code from EITHER vocabulary.
+
+    Config-only reasons carry their own wording; everything else reuses the
+    message chat already shows for that code, so an operator never sees the same
+    condition described two different ways in two parts of the product.
+    """
+    if code in _LLM_CONFIG_REASONS:
+        return _LLM_CONFIG_REASONS[code]
+    msg = _LLM_ERR_MESSAGES.get(code) or _LLM_ERR_MESSAGES.get("llm_error", "")
+    return (msg.lstrip("⚠️ ").strip(), "")
+
+
+def llm_status(air_gap=False) -> dict:
+    """Can this case be narrated, and if not, WHY — in the operator's terms.
+
+    Deliberately does not probe the network: a pre-flight check costs a round trip
+    on every fuse and still races the real call. So this answers only what
+    configuration can answer; a dead route is reported by generate_report after a
+    call actually fails.
+    """
+    if air_gap:
+        code = LLM_AIR_GAP
+    else:
+        cfg = _agentic_cfg()
+        if str(cfg.get("fusion_llm_mode", "")).lower() == "simulated":
+            code = LLM_PINNED
+        elif str(cfg.get("llm_mode", "online")).lower() == "offline":
+            code = LLM_OK                     # self-hosted; nothing to key or reach
+        else:
+            online = cfg.get("online_llm") or {}
+            if not (online.get("model") or cfg.get("model")):
+                code = LLM_NO_MODEL
+            elif _subscription_ready(online.get("provider")) or online.get("api_key"):
+                code = LLM_OK
+            else:
+                code = LLM_MISSING_KEY
+    if code == LLM_OK:
+        return {"available": True, "code": code, "reason": "", "fix": ""}
+    reason, fix = _llm_reason_text(code)
+    return {"available": False, "code": code, "reason": reason, "fix": fix}
+
+
+def _sim_tag(air_gap=False) -> str:
+    st = llm_status(air_gap=air_gap)
+    if st["available"]:                        # narration was possible but not taken
+        return _SIM_TAG_PREFIX + "no live narration was requested._\n"
+    tail = f"{st['reason']}." + (f" {st['fix']}" if st["fix"] else "")
+    return _SIM_TAG_PREFIX + tail + "_\n"
 
 
 # Masking model: protect CUSTOMER-IDENTIFYING values in transit to the LLM
@@ -728,7 +816,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
                     audience="both", language="en", master_prompt=None, mask=None,
                     dispositions=None, validations=None, prefer_llm=True,
                     max_entities=None, budget_chars=None, max_output_tokens=None,
-                    detail="auto", max_identities=None) -> str:
+                    detail="auto", max_identities=None, air_gap=False) -> str:
     """Case report. Real path = LLM narrative over distilled() + deterministic
     fact tables appended verbatim. `audience` (exec/technical/both) + `language`
     tailor the narrative (reusing the engagement directive); `master_prompt` is the
@@ -790,14 +878,19 @@ def generate_report(graph, *, window=None, min_severity="informational",
                                initial_access=initial_access, case_name=case_name,
                                dispositions=dispositions, validations=validations,
                                detail=detail)
-            return md + (f"\n\n---\n_Live LLM unavailable "
-                         f"({type(e).__name__}); deterministic fallback._\n")
+            # Say WHICH problem: "no route to the provider", "the key was
+            # rejected" and "the account is out of credit" need completely
+            # different actions. Reuses chat's classifier + messages so the same
+            # condition is never described two ways in two places.
+            reason, fix = _llm_reason_text(_classify_llm_error(e))
+            tail = f"{reason}" + (f" {fix}" if fix else "")
+            return md + (f"\n\n---\n_Deterministic report — {tail}_\n")
     # Deterministic (no-LLM) path: nothing is sent to a provider, so no masking —
     # the operator gets the real report directly.
     md = render.report(graph, window=window, min_severity=min_severity,
                        initial_access=initial_access, case_name=case_name,
                        dispositions=dispositions, validations=validations,
-                       detail=detail) + _SIM_TAG
+                       detail=detail) + _sim_tag(air_gap=air_gap)
     return md
 
 

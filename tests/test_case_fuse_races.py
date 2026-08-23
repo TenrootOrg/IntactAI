@@ -279,6 +279,55 @@ class TestChecklistWiring(unittest.TestCase):
                          "an unlocked read is back inside the helper the fix relies on")
 
 
+class TestContributionsStayStreamed(unittest.TestCase):
+    """Member-run evidence is mapped ONE RUN AT A TIME, and must stay that way.
+
+    Building the list held every run's mapped entities at once while assemble()
+    filtered them down: one 547 MB capture maps to ~228,000 entity objects of
+    which ~18,700 survive the window/severity filter, so five member runs pinned
+    ~1.1M objects to produce an 18,749-entity graph. The backend was OOM-killed at
+    5.6 GB doing exactly that on a 15 GB box, which with an automatic fuse becomes
+    a loop: fuse dies, backend restarts, catch-up re-arms, fuse dies.
+
+    A generator can only be consumed once and has no length, so the two ways to
+    silently undo this are len() on it and indexing it — the first is how it broke
+    the first time, minutes after the change.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.src = _src(STORE)
+        cls.tree = ast.parse(cls.src)
+        cls.fn = _fn(cls.tree, "_fuse_case_locked")
+
+    def test_the_contributions_are_a_generator(self):
+        code = _code_only(self.src, self.fn)
+        self.assertIn("def _contributions():", code,
+                      "contributions must be produced lazily, not collected first")
+        self.assertNotIn("contributions.append(", code,
+                         "appending to a list is the shape that OOM-killed the box")
+
+    def test_nothing_takes_its_length(self):
+        for node in ast.walk(self.fn):
+            if (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "len"
+                    and node.args and getattr(node.args[0], "id", None) == "contributions"):
+                self.fail("len(contributions) at line %d — a generator has no length; "
+                          "count the membership pass instead" % node.lineno)
+
+    def test_it_is_never_indexed_or_sliced(self):
+        for node in ast.walk(self.fn):
+            if (isinstance(node, ast.Subscript)
+                    and getattr(node.value, "id", None) == "contributions"):
+                self.fail("contributions is subscripted at line %d — it is a generator"
+                          % node.lineno)
+
+    def test_membership_is_decided_before_the_evidence_is_read(self):
+        """`members` is used after assemble(), so it cannot depend on the lazy pass."""
+        code = _code_only(self.src, self.fn)
+        self.assertLess(code.index("members = kept"), code.index("def _contributions():"),
+                        "membership must be settled before the generator is built")
+
+
 # ---------------------------------------------------------------------------
 # 0c -- Rescan must not destroy the report it is about to rebuild.
 #

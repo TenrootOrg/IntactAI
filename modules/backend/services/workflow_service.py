@@ -30,6 +30,12 @@ AGENTIC_TYPES = {"velociraptor_collection", "memory", "timesketch",
                  # it shows in the workspace and is picked up by the fuse.
                  "velociraptor_upload"}
 
+# Statuses that mean "this run's data is final and fuseable". Deliberately the
+# SAME pair fusion.store.stale_member_runs counts as members, so the auto-fuse
+# arms exactly when there is something new for it to fold in — arming on 'failed'
+# or 'cancelled' would schedule a fuse that finds nothing stale and does nothing.
+_TERMINAL_STATUSES = ("completed", "success")
+
 # Settings-page / system-operation run types. These always run under the built-in
 # "System" workspace (regardless of the browser's active case) so they have a home
 # and never clutter an investigation workspace.
@@ -522,6 +528,22 @@ def update_run_status(run_id, status, progress=None, error=None, details=None, f
         workflow["updated_at"] = datetime.now().isoformat()
 
         save_workflow(workflow)
+
+        # A run that just reached a terminal state is new data for its case. Arm the
+        # debounced auto-fuse -- ARM only. This runs inside the per-run lock, so it
+        # must not fuse inline, read the case, or touch the database; schedule() does
+        # none of those, it starts a timer and returns. AGENTIC_TYPES only: infra and
+        # admin runs are not case data. Best-effort by design -- a scheduling problem
+        # must never fail the status write that carries the run's actual result.
+        if status in _TERMINAL_STATUSES and workflow.get("case_id"):
+            if workflow.get("automation_type") in AGENTIC_TYPES:
+                try:
+                    from services.fusion import autofuse
+                    autofuse.schedule(workflow["case_id"],
+                                      reason=f"run {run_id} finished")
+                except Exception as e:      # noqa: BLE001
+                    print(f"[AUTOFUSE] could not schedule for "
+                          f"{workflow.get('case_id')}: {e}", flush=True)
 
 
 def mutate_run_details(run_id, mutator):

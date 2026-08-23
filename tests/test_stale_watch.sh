@@ -31,6 +31,15 @@ grep -q 'function staleBar(info)' "$SRC" \
   || { echo "  FAIL staleBar() is gone — the banner is back inside render()"; fails=$((fails+1)); }
 grep -q 'id="cf-autocheck"' "$SRC" \
   || { echo "  FAIL the 'watch for new data' checkbox is missing from the config rail"; fails=$((fails+1)); }
+# The auto-fuse checkbox was REMOVED deliberately: folding new data into the graph
+# is what the product does, not a preference an operator can usefully decide. If it
+# comes back, the decision was reversed by accident.
+grep -q 'id="cf-autofuse"' "$SRC" \
+  && { echo "  FAIL the auto-fuse checkbox is back — automatic fusion is not a user setting"; fails=$((fails+1)); }
+grep -q '"auto_fuse" in cfg' "${ROOT}/modules/backend/services/fusion/store.py" \
+  || { echo "  FAIL set_analysis_config does not persist auto_fuse"; fails=$((fails+1)); }
+grep -q '"fused_run_ids": list(' "${ROOT}/modules/backend/routes/case_routes.py" \
+  || { echo "  FAIL the case payload does not carry fused_run_ids — the UI cannot detect a background fuse"; fails=$((fails+1)); }
 grep -q 'auto_check_new_data' "${ROOT}/modules/backend/routes/case_routes.py" \
   || { echo "  FAIL the backend does not serve auto_check_new_data"; fails=$((fails+1)); }
 grep -q '"auto_check_new_data" in cfg' "${ROOT}/modules/backend/services/fusion/store.py" \
@@ -51,6 +60,18 @@ code = "\n".join(l.split("//", 1)[0] for l in body.splitlines())
 for forbidden in ("/rescan", "doRefusion(", "doRescanLLM(", "render(", "drawTab("):
     if forbidden in code:
         sys.exit("  FAIL the watcher calls %s — it must only update the banner" % forbidden)
+
+# The bar above the tabs must not offer Refusion. New data is folded in
+# automatically, so there is nothing there for the operator to trigger; the only
+# deliberate action left is generating a fresh report. Manual Refusion still
+# exists, in Configuration.
+m = re.search(r"function staleBar\(info\)\{.*?\n\}", s, re.S)
+if not m:
+    sys.exit("  FAIL staleBar not found")
+if "doRefusion" in m.group(0):
+    sys.exit("  FAIL staleBar offers Refusion — that moved to Configuration")
+if "doRescanLLM" not in m.group(0):
+    sys.exit("  FAIL staleBar no longer offers a new report")
 PY
 
 if ! command -v node >/dev/null 2>&1; then
@@ -158,7 +179,7 @@ const respond = (env, body, okFlag) => {
     const e = harness({});
     e.api.staleTick('case_1');
     await respond(e, { case_id: 'case_1', is_stale: true, data_stale: 3, report_dirty: false });
-    if (!/3 new run\(s\)/.test(e.bar.innerHTML)) fail('new runs raise the banner', e.bar.innerHTML.slice(0,90));
+    if (!/3 new run\(s\) landed/.test(e.bar.innerHTML)) fail('new runs raise the banner', e.bar.innerHTML.slice(0,90));
     else if (e.renderCalls !== 0) fail('new runs raise the banner', 'it called render()');
     else if (e.curInfo.master_prompt !== 'KEEP ME') fail('new runs raise the banner', 'it clobbered rail config');
     else ok('new runs raise the banner without re-rendering or touching config');
@@ -238,7 +259,70 @@ const respond = (env, body, okFlag) => {
     else ok('no banner when the case is current');
   }
 
-  // 11. report_dirty alone still offers Rescan but not Refusion
+  // 11a. a background fuse changed the stored graph -> offer a reload, redraw nothing
+  {
+    const e = harness({});
+    e.ctx.window._renderedFused = 'runA';
+    e.api.staleTick('case_1');
+    await respond(e, { case_id: 'case_1', is_stale: false, data_stale: 0,
+                       fused_run_ids: ['runA', 'runB'] });
+    if (!/Show new data/.test(e.bar.innerHTML))
+      fail('a background fuse offers a reload', e.bar.innerHTML.slice(0, 100) || '(empty)');
+    else if (e.renderCalls !== 0)
+      fail('a background fuse offers a reload', 'it redrew the view itself');
+    else ok('a background fuse offers a reload instead of redrawing');
+  }
+
+  // 11b. the same fused set must NOT claim a background refresh
+  {
+    const e = harness({});
+    e.ctx.window._renderedFused = 'runA';
+    e.api.staleTick('case_1');
+    await respond(e, { case_id: 'case_1', is_stale: false, data_stale: 0,
+                       fused_run_ids: ['runA'] });
+    if (/Show new data/.test(e.bar.innerHTML))
+      fail('an unchanged graph does not claim a refresh', e.bar.innerHTML.slice(0, 90));
+    else ok('an unchanged graph does not claim a refresh');
+  }
+
+  // 11c. a case that has never been rendered must not false-positive
+  {
+    const e = harness({});
+    e.ctx.window._renderedFused = '';
+    e.api.staleTick('case_1');
+    await respond(e, { case_id: 'case_1', is_stale: true, data_stale: 1,
+                       fused_run_ids: ['runA'] });
+    if (/Show new data/.test(e.bar.innerHTML))
+      fail('a first render does not claim a background refresh', e.bar.innerHTML.slice(0, 90));
+    else if (!/1 new run\(s\) landed/.test(e.bar.innerHTML))
+      fail('a first render still shows the normal stale banner', e.bar.innerHTML.slice(0, 90));
+    else ok('a first render shows the stale banner, not a false refresh');
+  }
+
+  // 11d. the reload button reloads THIS case and nothing else fuses
+  {
+    const e = harness({});
+    const h = e.api.staleBar({ bg_refreshed: true, case_id: 'case_9' });
+    if (!/openCase\('case_9'\)/.test(h)) fail('the reload button reloads this case', h.slice(0, 120));
+    else if (/doRefusion/.test(h)) fail('the reload button must not re-fuse', 'it offers Refusion');
+    else ok('the reload button reloads the case and does not re-fuse');
+  }
+
+  // 11e. no banner state may offer Refusion
+  {
+    const e = harness({});
+    const states = [
+      { is_stale: true, data_stale: 3, case_id: 'c' },
+      { is_stale: true, data_stale: 0, report_dirty: true, case_id: 'c' },
+      { is_stale: true, data_stale: 0, report_dirty: false, case_id: 'c' },
+      { bg_refreshed: true, case_id: 'c' },
+    ];
+    const offending = states.filter(st => /doRefusion/.test(e.api.staleBar(st)));
+    if (offending.length) fail('no banner state offers Refusion', JSON.stringify(offending[0]));
+    else ok('no banner state offers Refusion (it lives in Configuration)');
+  }
+
+  // 12. report_dirty alone still offers Rescan but not Refusion
   {
     const e = harness({});
     const h = e.api.staleBar({ is_stale: true, data_stale: 0, report_dirty: true, case_id: 'c' });

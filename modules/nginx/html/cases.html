@@ -382,23 +382,43 @@ function costBadge(ce){
 // timer would remount every tab, losing scroll position, expanded evidence rows,
 // a half-typed chat message and any open detail. The watcher below rewrites only
 // #stalebar, so the analyst's view is never disturbed by something they did not do.
+// The bar above the tabs. It NEVER offers Refusion: new data is folded into the
+// graph automatically, so there is nothing for the operator to trigger. Its only
+// job is to say the data moved and that the written report is now behind — the
+// one thing that still needs a deliberate, billable click. (A manual Refusion
+// still exists for when it is genuinely wanted; it lives in Configuration.)
 function staleBar(info){
-  if(!info || !info.is_stale) return '';
+  if(!info) return '';
+  const bar=(colour,bg,body)=>`<div style="margin:8px 0;padding:8px 12px;border:1px solid ${colour};border-radius:6px;background:${bg};color:${colour};font-size:13px;display:flex;align-items:center;gap:10px;justify-content:space-between">${body}</div>`;
+  const newReport=`<button onclick="doRescanLLM('${info.case_id}')" style="cursor:pointer;background:var(--acc);border-color:var(--acc)">✨ New report</button>`;
+
+  // The graph moved on under this page. Deliberately not redrawn for them — an
+  // analyst mid-triage would lose their scroll, their open finding and their place
+  // in the risk order. Offer the reload; let them take it when ready.
+  if(info.bg_refreshed){
+    return bar('#3fb950','#0f2417',
+      `<span>✓ New data was folded in automatically. This view still shows the earlier scan — reload to see it, and generate a new report to bring the written analysis up to date.</span>
+       <span style="display:flex;gap:8px;white-space:nowrap">
+         <button onclick="openCase('${info.case_id}')" style="cursor:pointer;background:var(--ok,#3fb950);border-color:var(--ok,#3fb950);color:#0d1117">↻ Show new data</button>${newReport}
+       </span>`);
+  }
+  if(!info.is_stale) return '';
   const msg = info.data_stale
-    ? `ℹ ${info.data_stale} new run(s) available — click <b>Refusion</b> to fold them into the data (fast, no LLM), or <b>Rescan (LLM)</b> to also refresh the report &amp; chat.`
+    ? `ℹ ${info.data_stale} new run(s) landed and are being folded in automatically. The <b>report &amp; chat</b> still reflect the earlier scan — generate a new report when you want them refreshed.`
     : info.report_dirty
-      ? `⚠ You've made changes (triage / timeline validations) since the last report — the <b>report &amp; chat are not up to date</b>. Click <b>Rescan (LLM)</b> to refresh them.`
-      : `ℹ The data is current. The report &amp; chat reflect an earlier scan — <b>Rescan (LLM)</b> to refresh them.`;
-  return `<div style="margin:8px 0;padding:8px 12px;border:1px solid #d29922;border-radius:6px;background:#2b2400;color:#e3b341;font-size:13px;display:flex;align-items:center;gap:10px;justify-content:space-between">
-        <span>${msg}</span>
-        <span style="display:flex;gap:8px;white-space:nowrap">
-          ${info.data_stale ? `<button onclick="doRefusion('${info.case_id}')" style="cursor:pointer;background:var(--info);border-color:var(--info);color:#0d1117">🔄 Refusion</button>` : ''}
-          <button onclick="doRescanLLM('${info.case_id}')" style="cursor:pointer;background:var(--acc);border-color:var(--acc)">✨ Rescan (LLM)</button>
-        </span>
-      </div>`;
+      ? `⚠ You've made changes (triage / timeline validations) since the last report — the <b>report &amp; chat are not up to date</b>.`
+      : `ℹ The data is current. The report &amp; chat reflect an earlier scan.`;
+  return bar('#d29922','#2b2400',
+    `<span>${msg}</span><span style="display:flex;gap:8px;white-space:nowrap">${newReport}</span>`);
 }
 function render(info,md,g){
   curInfo=info; curGraph=g;
+  // Snapshot of what THIS render is showing. The watcher compares against it to
+  // tell "new runs have arrived" (banner: click Refusion) apart from "a
+  // background fuse already folded them in" (banner: reload to see it).
+  window._renderedFused = (info.fused_run_ids || []).join(',');
+  window._renderedEntities = (info.counts || {}).entities || 0;
+  info.bg_refreshed = false;
   $('#llmbadge').textContent='LLM: '+(info.llm_enabled?'real':'simulated (no key)');
   const aud=info.audience||'both', mk=info.masking||{};
   const opt=(v,l,cur)=>`<option value="${v}" ${cur===v?'selected':''}>${l}</option>`;
@@ -465,8 +485,14 @@ function staleTick(id){
       // on the next tick. Never clear a banner we could not verify: a transient
       // error must not tell the analyst the data is current when it is not.
       if(!d || d.case_id!==id || !curInfo || curInfo.case_id!==id) return;
+      // Did the stored graph move on under us? Compare the fused-run set this
+      // view was rendered from against what the server now reports.
+      const nowFused = (d.fused_run_ids || []).join(',');
+      const bg = !!window._renderedFused && nowFused !== window._renderedFused;
       if(curInfo.is_stale===d.is_stale && curInfo.data_stale===d.data_stale
-         && curInfo.report_dirty===d.report_dirty) return;
+         && curInfo.report_dirty===d.report_dirty
+         && curInfo.bg_refreshed===bg) return;
+      curInfo.bg_refreshed = bg;
       // Adopt ONLY the staleness fields. Copying the whole payload would swap
       // config out from under the rail the operator may be editing right now.
       curInfo.is_stale=d.is_stale; curInfo.data_stale=d.data_stale;
@@ -571,9 +597,9 @@ function renderConfig(info){
           <input id="cf-airgap" type="checkbox" ${info.air_gap_analysis?'checked':''} style="width:auto"/>
           <span>Air-gap analysis <span style="color:var(--muted)">(no route to the model provider)</span></span>
         </label>
-        <label style="margin-top:6px;display:flex;align-items:center;gap:6px;font-weight:normal" title="Check every 20s whether new runs have landed and raise the 'N new run(s)' banner on its own, instead of only noticing on page load. NOTHING is fused automatically and nothing on screen is redrawn — you still click Refusion when you are ready, so the data you are reading never changes underneath you. Untick to stop the checking entirely and go back to noticing new runs on load.">
+        <label style="margin-top:6px;display:flex;align-items:center;gap:6px;font-weight:normal" title="Check every 20s whether the case has moved on — new runs landing, or the automatic fusion folding them in — and say so in a bar above the tabs, instead of only noticing on page load. Nothing on screen is redrawn while you work: the bar tells you the written report is behind and offers to generate a new one, and you reload when you are ready. Untick to stop the checking entirely and go back to noticing on load.">
           <input id="cf-autocheck" type="checkbox" ${info.auto_check_new_data!==false?'checked':''} style="width:auto"/>
-          <span>Watch for new data <span style="color:var(--muted)">(raises the banner; never fuses on its own)</span></span>
+          <span>Watch for new data <span style="color:var(--muted)">(tells you when the report is behind)</span></span>
         </label>
         <label style="margin-top:8px">Modules <span style="color:var(--muted)">— what fuses</span></label>
         <div class="modwarn">⚠ Enabling more modules can raise cost sharply — some artifacts (e.g. full hunts) produce huge output.</div>
@@ -629,11 +655,21 @@ function renderReport(info){
   let advHtml='';
   if(ig.length){advHtml=`<details style="margin:10px 0"><summary style="cursor:pointer;color:var(--med)">⚠ Advisory — ${ig.length} incident group(s) (analyst-verify, not a determination)</summary>`+
     ig.map(x=>`<div class="caseitem"><div class="nm">${escape(x.name||'group')}</div><div class="meta">${(x.finding_ids||[]).length} findings — ${escape(x.rationale||'')}</div></div>`).join('')+`</details>`;}
+  // Say plainly why this report is deterministic. It used to look identical
+  // whether the operator had ticked Air-gap analysis, had no model configured,
+  // had no API key, or had a key the box could not reach — four different
+  // problems, one silent template, and the only hint was a line at the very
+  // bottom telling them to set a flag that no longer does anything.
+  const ls = info.llm_status || {};
+  const note = ls.available ? '' :
+    `<div style="margin:0 0 10px;padding:8px 12px;border:1px solid var(--muted,#6e7681);border-radius:6px;background:#161b22;color:var(--muted);font-size:12px">
+       <b style="color:var(--tx,#e6edf3)">Written without a model — ${esc(ls.reason||'no model available')}.</b> ${esc(ls.fix||'')}
+     </div>`;
   $('#tabc').innerHTML=`<div class="row" style="gap:8px;margin-bottom:10px;align-items:center">
     <button class="dlbtn" onclick="regenReport('${id}')" title="Rebuild the report from the current case state (applies your Timeline confirmations). Generated automatically on first scan; after that only when you click here.">↻ Regenerate report</button>
     ${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}
     <span style="color:var(--muted);font-size:11px;margin-left:auto">auto-generated on first scan · regenerate to apply Timeline changes</span>
-  </div>${advHtml}<div class="md">${mdToHtml(window._md||'')}</div>`;
+  </div>${note}${advHtml}<div class="md">${mdToHtml(window._md||'')}</div>`;
   clampEvidence($('#tabc'));
 }
 function regenReport(id){

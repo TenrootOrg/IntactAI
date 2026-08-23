@@ -226,6 +226,13 @@ def _bind_active_case():
             system_id = store.ensure_system_case()
             n = reassign_null_case(default_id, list(ws.AGENTIC_TYPES))
             m = reassign_null_case(system_id, list(ws.SYSTEM_TYPES))
+            try:
+                # Timers are in memory: data that landed just before a restart would
+                # otherwise wait for the NEXT run to arrive before fusing.
+                from services.fusion import autofuse
+                autofuse.catch_up()
+            except Exception as _e:      # noqa: BLE001 — never break request one
+                print(f"[AUTOFUSE] catch-up failed: {_e}", flush=True)
             if n or m:
                 print(f"[CASES] backfilled {n} run(s) into Default, {m} into System",
                       flush=True)
@@ -369,6 +376,16 @@ def get_case(case_id):
                     # feature would be silently disabled everywhere it matters most
                     # (the long-running cases). Nothing is ever fused automatically.
                     "auto_check_new_data": bool(d.get("auto_check_new_data", True)),
+                    # Fold newly-landed runs into the graph automatically, after the
+                    # case goes quiet. Default ON, absent included — same reasoning as
+                    # above. It never calls the model and never redraws the view; the
+                    # narrative still waits for an explicit Rescan.
+                    "auto_fuse": bool(d.get("auto_fuse", True)),
+                    # Exactly which runs the STORED graph was built from. The case
+                    # view snapshots this at render time and the staleness poll
+                    # compares against it, which is how "new runs arrived" is told
+                    # apart from "a background fuse already folded them in".
+                    "fused_run_ids": list(d.get("fused_run_ids") or []),
                     # LOCKED ON: the LLM payload is always sized from the selected
                     # model's REAL context window, never the static ~128k-model
                     # constant. Kept in the response for API compatibility.
@@ -392,7 +409,22 @@ def get_case(case_id):
                     # the report frozen — so the report may not reflect recent changes.
                     "report_dirty": bool(d.get("report_dirty")),
                     "is_stale": bool(data_stale or report_stale or d.get("report_dirty")),
+                    # WHY the report is (or is not) narrated, in the operator's
+                    # terms. The Analysis tab shows this instead of leaving them to
+                    # guess: "air-gap is ticked", "no model", "no API key" and "no
+                    # route to the provider" all produce the same deterministic
+                    # report but need completely different actions.
+                    "llm_status": _llm_status_for(d),
                     "llm_enabled": _llm_enabled()})
+
+
+def _llm_status_for(d):
+    """Never let a status probe break the case view — it is a hint, not the data."""
+    try:
+        from services.fusion import llm_sim
+        return llm_sim.llm_status(air_gap=bool((d or {}).get("air_gap_analysis")))
+    except Exception:                       # noqa: BLE001
+        return {"available": True, "code": "ok", "reason": "", "fix": ""}
 
 
 @case_bp.route("/api/cases/<case_id>/risk", methods=["GET"])

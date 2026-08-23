@@ -756,6 +756,11 @@ def delete_case(case_id) -> dict:
         return {"deleted": False, "error": "default workspace cannot be deleted"}
     if d.get("is_system") or d.get("name") == SYSTEM_CASE_NAME:
         return {"deleted": False, "error": "system workspace cannot be deleted"}
+    try:                                   # a pending auto-fuse would fire into a
+        from . import autofuse              # case that no longer exists
+        autofuse.cancel(case_id)
+    except Exception:
+        pass
     run_ids = [r.get("run_id") for r in ws.get_automation_runs_by_case(case_id)]
     for rid in run_ids:
         delete_workflow(rid)
@@ -1146,8 +1151,14 @@ def _fuse_lock(case_id):
 
 
 def fuse_case(case_id, *, contributions_override=None, log=None, _record=True,
-              force_report=False, trigger=None) -> FusionGraph:
+              force_report=False, trigger=None, allow_llm=True) -> FusionGraph:
     """Fuse the case. Refuses to run concurrently with itself.
+
+    `allow_llm=False` forbids this fuse from calling the model even when one is
+    configured and the case has no report yet. Automatic fuses pass it: the
+    narrative is the expensive part and the thing an analyst is actually reading,
+    so a background rebuild produces the deterministic report and leaves the
+    narrative for a deliberate Rescan. Nothing is ever billed without a click.
 
     `force_report` rebuilds the report/advisory even though one already exists --
     what Rescan means. It is a PARAMETER rather than the caller blanking
@@ -1176,7 +1187,7 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True,
     try:
         return _fuse_case_locked(case_id, contributions_override=contributions_override,
                                  log=log, _record=_record, force_report=force_report,
-                                 trigger=trigger, _phase=phase)
+                                 trigger=trigger, allow_llm=allow_llm, _phase=phase)
     except Exception as e:
         # A fuse that dies used to leave the log ending mid-progress — the last row
         # was whatever phase it reached, with no indication anything went wrong, so
@@ -1193,7 +1204,8 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True,
 
 
 def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record=True,
-                      force_report=False, trigger=None, _phase=None) -> FusionGraph:
+                      force_report=False, trigger=None, allow_llm=True,
+                      _phase=None) -> FusionGraph:
     ws = _ws()
     d = get_case(case_id)
     # WHY this fuse is running. A fuse costs ~33s on a real case (9 hosts / 18.7k
@@ -1236,6 +1248,9 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         members = [m for m in members if m in set(inc)]
     if contributions_override is not None:
         contributions = contributions_override
+        # Counted off the override itself, so the name `contributions` is never
+        # measured — below it is a generator, and len() on one raises.
+        _n_contrib = len(contributions_override)
     else:
         # Module gating: only fuse runs whose module is enabled for this case
         # (default = velociraptor only). Disabled modules' runs stay tagged
@@ -1243,26 +1258,53 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         # from `members` too so run_ids/baseline reflect what was actually fused.
         _plog("Refusion · reading + mapping run data", "info",
               f"{len(members)} member run(s)", pct=5)
-        contributions, kept = [], []
-        _nmem = max(1, len(members))
-        for _i, rid in enumerate(members):
+        # PASS 1 — decide membership. Module gating only: a run row is ~1 KB, so
+        # this is cheap and touches none of the evidence.
+        # (Disabled modules' runs stay tagged members but contribute nothing; they
+        # are dropped from `members` too so run_ids/baseline reflect what was fused.)
+        kept, kept_runs = [], []
+        for rid in members:
             run = ws.get_automation_run(rid)
             if not run:
                 continue
             if not _run_passes_gate(run, d):
                 continue
             kept.append(rid)
-            contributions.append(_contribution_for_run(run, log=log))
-            # 5% → 40% spread across the member runs (the per-run read + map is the
-            # bulk of I/O for a multi-host hunt import).
-            _plog(f"Refusion · mapped {len(kept)}/{_nmem} run(s)", "info",
-                  (run.get("name") or rid)[:60], pct=5 + int(35 * (_i + 1) / _nmem))
+            kept_runs.append((rid, run))
         members = kept
+
+        # PASS 2 — map the evidence, ONE RUN AT A TIME.
+        #
+        # This is a generator, not a list, and that is the whole point. Building
+        # the list held every run's mapped entities in memory at once while
+        # assemble() filtered them down: a single 547 MB capture maps to ~228,000
+        # entity objects, of which ~18,700 survive the window/severity filter. Five
+        # member runs therefore pinned ~1.1M objects to produce a 18,749-entity
+        # graph, and the backend was OOM-killed at 5.6 GB doing exactly that on a
+        # 15 GB box. Yielding lets each run's objects be collected as soon as
+        # assemble has upserted them, so peak memory is one run plus the graph
+        # instead of every run plus the graph.
+        _nmem = max(1, len(kept_runs))
+
+        def _contributions():
+            for _i, (rid, run) in enumerate(kept_runs):
+                yield _contribution_for_run(run, log=log)
+                # 5% → 40% spread across the member runs (the per-run read + map is
+                # the bulk of I/O for a multi-host hunt import).
+                _plog(f"Refusion · mapped {_i + 1}/{_nmem} run(s)", "info",
+                      (run.get("name") or rid)[:60],
+                      pct=5 + int(35 * (_i + 1) / _nmem))
+
+        contributions = _contributions()
+        # Counted from the membership pass, NOT from `contributions` — that is now a
+        # generator and len() on it raises. The count is the same either way, and it
+        # is known before a single byte of evidence is read.
+        _n_contrib = len(kept_runs)
     window = d.get("time_window") or None
     min_sev = d.get("min_severity", "informational")
     _plog("Refusion · building case graph", "info",
           f"window {(window or {}).get('start') or 'open'}…{(window or {}).get('end') or 'now'}, "
-          f"severity {min_sev}+ · {len(contributions)} contributing run(s)", pct=45)
+          f"severity {min_sev}+ · {_n_contrib} contributing run(s)", pct=45)
     # subtract the environment baseline (if one was captured) so provisioning /
     # automation noise doesn't read as attack signal.
     baseline = None if d.get("is_baseline") else load_baseline(_env_key_from_members(members))
@@ -1321,7 +1363,8 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         # every case, which was true while the narrative was opt-in and became a
         # lie the moment it became the default -- the operator watched 88% for
         # minutes while the box sat on an LLM call the log said it was not making.
-        _narrate = (not d.get("air_gap_analysis")) and llm_sim._use_real()
+        _narrate = (allow_llm and not d.get("air_gap_analysis")
+                    and llm_sim._use_real())
         _plog("Refusion · generating report", "info",
               ("narrated report (this waits on the model), advisory & checklist"
                if _narrate else
@@ -1347,14 +1390,24 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
             # behaviour on a box with no route to a provider.
             prefer_llm=_narrate,
             max_entities=llm_ent, budget_chars=llm_chars, max_output_tokens=llm_out,
-            detail="explicit", max_identities=llm_ident)
+            detail="explicit", max_identities=llm_ident,
+            # so the report can say WHY it is deterministic: a ticked Air-gap
+            # analysis reads very differently from a missing key.
+            air_gap=bool(d.get("air_gap_analysis")))
         # ADVISORY analyst pass — incident-grouping + grounded hypotheses. Stored
         # SEPARATELY from the deterministic findings; fed prior operator dispositions.
-        analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
-                                   dispositions=d.get("dispositions") or None,
-                                   max_entities=llm_ent, budget_chars=llm_chars,
-                                   max_output_tokens=llm_out, mask=mask,
-                                   max_identities=llm_ident)
+        # The advisory is the SECOND model call in this branch. An automatic fuse
+        # must skip it for the same reason it skips the narrative — and skipping
+        # it keeps any advisory the operator already had, rather than replacing
+        # a real one with an empty deterministic stand-in.
+        if allow_llm:
+            analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
+                                       dispositions=d.get("dispositions") or None,
+                                       max_entities=llm_ent, budget_chars=llm_chars,
+                                       max_output_tokens=llm_out, mask=mask,
+                                       max_identities=llm_ident)
+        else:
+            analysis = d.get("analysis") or {}
         report_members = list(members)   # report now reflects exactly these members
         report_dirty = False             # report freshly generated → up to date
     # customer-confirmation checklist — generate once (preserve operator decisions on
@@ -1968,6 +2021,17 @@ def set_analysis_config(case_id, cfg) -> dict:
             patch["max_entities"] = max(100, min(int(cfg["max_entities"]), MAX_GRAPH_ENTITIES))
         except (TypeError, ValueError):
             pass
+    if "auto_fuse" in cfg:                 # fold newly-landed runs into the graph by
+                                           # itself, after a quiet period. NEVER calls
+                                           # the model and never redraws anyone's view —
+                                           # the narrative still waits for a Rescan.
+        patch["auto_fuse"] = bool(cfg.get("auto_fuse"))
+        if not patch["auto_fuse"]:
+            try:                           # drop any armed timer immediately, so
+                from . import autofuse     # unticking takes effect now, not in a minute
+                autofuse.cancel(case_id)
+            except Exception:
+                pass
     if "auto_check_new_data" in cfg:       # poll for newly-landed runs and raise the
                                            # existing "N new run(s)" banner by itself.
                                            # NOTHING is fused automatically — the
@@ -2039,6 +2103,10 @@ def rescan(case_id, cfg=None, trigger=None) -> dict:
     # Reproduced on a live case: the report went from 75,402 chars to 0.
     g = fuse_case(case_id, force_report=True,
                   trigger=trigger or TRIGGER_MANUAL_REFUSION)
+    # A manual Refusion is the operator's way back in after an automatic one was
+    # killed mid-flight (see autofuse's crash-loop breaker). It got here, so the
+    # case is fuseable — let the automatic path resume.
+    _merge_case_details(case_id, {"auto_fuse_incomplete": False})
     return {"entities": len(g.entities), "relationships": len(g.relationships),
             "findings": len(g.findings),
             "cross_host_findings": sum(1 for f in g.findings if f.kind == "cross_host")}
