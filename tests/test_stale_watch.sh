@@ -29,21 +29,23 @@ grep -q 'id="stalebar"' "$SRC" \
   || { echo "  FAIL no #stalebar container — the watcher has nothing to update in place"; fails=$((fails+1)); }
 grep -q 'function staleBar(info)' "$SRC" \
   || { echo "  FAIL staleBar() is gone — the banner is back inside render()"; fails=$((fails+1)); }
-grep -q 'id="cf-autocheck"' "$SRC" \
-  || { echo "  FAIL the 'watch for new data' checkbox is missing from the config rail"; fails=$((fails+1)); }
-# The auto-fuse checkbox was REMOVED deliberately: folding new data into the graph
-# is what the product does, not a preference an operator can usefully decide. If it
-# comes back, the decision was reversed by accident.
-grep -q 'id="cf-autofuse"' "$SRC" \
-  && { echo "  FAIL the auto-fuse checkbox is back — automatic fusion is not a user setting"; fails=$((fails+1)); }
+# Three checkboxes were REMOVED from the Configuration rail on purpose. Each was a
+# decision an operator had no basis to make, and each read as broken when it did
+# nothing visible:
+#   cf-autofuse  folding new data in is what the product does
+#   cf-autocheck one cheap read every 20s that redraws nothing
+#   cf-airgap    on a box with no model the report was deterministic either way,
+#                so ticking or unticking it changed nothing the operator could see
+for box in cf-autofuse cf-autocheck cf-airgap; do
+    grep -q "id=\"$box\"" "$SRC" \
+      && { echo "  FAIL the $box checkbox is back — that decision was reversed"; fails=$((fails+1)); }
+done
 grep -q '"auto_fuse" in cfg' "${ROOT}/modules/backend/services/fusion/store.py" \
-  || { echo "  FAIL set_analysis_config does not persist auto_fuse"; fails=$((fails+1)); }
+  || { echo "  FAIL set_analysis_config no longer honours auto_fuse (the support escape hatch)"; fails=$((fails+1)); }
 grep -q '"fused_run_ids": list(' "${ROOT}/modules/backend/routes/case_routes.py" \
   || { echo "  FAIL the case payload does not carry fused_run_ids — the UI cannot detect a background fuse"; fails=$((fails+1)); }
-grep -q 'auto_check_new_data' "${ROOT}/modules/backend/routes/case_routes.py" \
-  || { echo "  FAIL the backend does not serve auto_check_new_data"; fails=$((fails+1)); }
-grep -q '"auto_check_new_data" in cfg' "${ROOT}/modules/backend/services/fusion/store.py" \
-  || { echo "  FAIL set_analysis_config does not persist auto_check_new_data"; fails=$((fails+1)); }
+grep -q 'air_gap_analysis' "${ROOT}/modules/backend/services/fusion/store.py" \
+  && { echo "  FAIL air_gap_analysis is back in store.py — it is no longer a case setting"; fails=$((fails+1)); }
 
 # The watcher must never reach for a fuse. Checked on the function bodies only,
 # with comments stripped -- prose about fusing is fine, a call is not.
@@ -119,7 +121,7 @@ function harness(opts){
     timer: null,
     curInfo: Object.assign({
       case_id: 'case_1', is_stale: false, data_stale: 0, report_dirty: false,
-      auto_check_new_data: true, min_severity: 'medium', master_prompt: 'KEEP ME'
+      min_severity: 'medium', master_prompt: 'KEEP ME'
     }, opts.info || {})
   };
   const ctx = {
@@ -157,21 +159,20 @@ const respond = (env, body, okFlag) => {
 
 (async () => {
 
-  // 1. opted out -> no timer at all
+  // 1. the poll is unconditional — there is no setting to switch it off
+  {
+    const e = harness({});
+    e.api.startStaleWatch('case_1');
+    if (e.ctx.window._staleTimer) ok('the poll runs without needing a setting');
+    else fail('the poll runs without needing a setting');
+  }
+
+  // 2. and a legacy case carrying the removed key is still polled
   {
     const e = harness({ info: { auto_check_new_data: false } });
     e.api.startStaleWatch('case_1');
-    if (e.ctx.window._staleTimer) fail('unticking the setting stops the polling');
-    else ok('unticking the setting stops the polling');
-  }
-
-  // 2. default (absent) reads as ON
-  {
-    const e = harness({});
-    delete e.curInfo.auto_check_new_data;
-    e.api.startStaleWatch('case_1');
-    if (e.ctx.window._staleTimer) ok('an absent setting polls (legacy cases stay covered)');
-    else fail('an absent setting polls (legacy cases stay covered)');
+    if (e.ctx.window._staleTimer) ok('a stored, now-removed opt-out no longer suppresses it');
+    else fail('a stored, now-removed opt-out no longer suppresses it', 'the dead key still gates the poll');
   }
 
   // 3. 0 -> non-zero raises the banner, and touches nothing else
@@ -381,16 +382,16 @@ const build = (lookup, all) => {
   const vals = {'#cf-logo':{files:[]},'#cf-start':{value:'2026-08-01'},'#cf-end':{value:''},
     '#cf-sev':{value:'high'},'#cf-aud':{value:'both'},'#cf-cust':{value:'Acme'},
     '#cf-tlp':{value:'AMBER'},'#cf-mp':{value:'steer'},'#cf-maxent':{value:'500000'},
-    '#cf-maxident':{value:''},'#cf-airgap':{checked:true},'#cf-autocheck':{checked:false},
+    '#cf-maxident':{value:''},
     '#cf-mask':{checked:false},'#cf-maskpat':{value:''}};
   try {
     const cfg = await build(s => vals[s] || null,
                             () => [{dataset:{mod:'memory'}}])();
     if (cfg.min_severity !== 'high') fail('a mounted rail is read in full', 'min_severity=' + cfg.min_severity);
-    else if (cfg.air_gap_analysis !== true) fail('a mounted rail is read in full', 'air_gap lost');
-    else if (cfg.auto_check_new_data !== false) fail('the checkbox round-trips', 'auto_check=' + cfg.auto_check_new_data);
     else if (cfg.master_prompt !== 'steer') fail('a mounted rail is read in full', 'master_prompt lost');
-    else ok('a mounted rail is still read in full, checkbox included');
+    else if ('air_gap_analysis' in cfg) fail('the rail no longer posts removed settings', 'air_gap_analysis is back');
+    else if ('auto_check_new_data' in cfg) fail('the rail no longer posts removed settings', 'auto_check_new_data is back');
+    else ok('a mounted rail is still read in full, and posts no removed settings');
   } catch (e) {
     fail('a mounted rail is still read in full', 'threw ' + e.message);
   }

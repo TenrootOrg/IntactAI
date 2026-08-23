@@ -367,15 +367,6 @@ def get_case(case_id):
                     # LOCKED to the model max: no per-case output cap any more.
                     # Kept in the response for API compatibility (None = model max).
                     "llm_max_output_tokens": None,
-                    # No route to a model provider: write the deterministic report
-                    # instead of waiting out a connection timeout on every fuse.
-                    "air_gap_analysis": bool(d.get("air_gap_analysis", False)),
-                    # Poll the staleness fields below and raise the existing banner
-                    # by itself. Default ON, including for every case saved before
-                    # this key existed — absent must not read as "off", or the
-                    # feature would be silently disabled everywhere it matters most
-                    # (the long-running cases). Nothing is ever fused automatically.
-                    "auto_check_new_data": bool(d.get("auto_check_new_data", True)),
                     # Fold newly-landed runs into the graph automatically, after the
                     # case goes quiet. Default ON, absent included — same reasoning as
                     # above. It never calls the model and never redraws the view; the
@@ -422,7 +413,7 @@ def _llm_status_for(d):
     """Never let a status probe break the case view — it is a hint, not the data."""
     try:
         from services.fusion import llm_sim
-        return llm_sim.llm_status(air_gap=bool((d or {}).get("air_gap_analysis")))
+        return llm_sim.llm_status()
     except Exception:                       # noqa: BLE001
         return {"available": True, "code": "ok", "reason": "", "fix": ""}
 

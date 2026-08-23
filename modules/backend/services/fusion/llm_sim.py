@@ -408,21 +408,18 @@ _SIM_TAG_PREFIX = "\n\n---\n_Deterministic report — "
 # before any call is attempted. Anything only a failed call can tell us
 # (no_internet, invalid_key, no_credit …) comes back from _classify_llm_error.
 LLM_OK = "ok"
-LLM_AIR_GAP = "air_gap"
 LLM_PINNED = "pinned"
 LLM_NO_MODEL = "no_model"
 LLM_MISSING_KEY = "missing_key"          # same code chat uses
 
 _LLM_CONFIG_REASONS = {
-    LLM_AIR_GAP: ("Air-gap analysis is ticked for this case",
-                  "Untick it in Configuration to narrate with the model."),
     LLM_PINNED: ("The deterministic narrator is pinned for this appliance",
                  "Clear agentic.fusion_llm_mode to use a live model."),
     LLM_NO_MODEL: ("No model is configured",
                    "Choose one in Settings ▸ Agentic."),
     LLM_MISSING_KEY: ("No API key is configured",
-                      "Add one in Settings ▸ Agentic, or tick Air-gap analysis "
-                      "to keep this report."),
+                      "Add one in Settings ▸ Agentic. Until then this report is "
+                      "written from the correlated graph, which needs no network."),
 }
 
 
@@ -439,38 +436,41 @@ def _llm_reason_text(code) -> tuple:
     return (msg.lstrip("⚠️ ").strip(), "")
 
 
-def llm_status(air_gap=False) -> dict:
-    """Can this case be narrated, and if not, WHY — in the operator's terms.
+def llm_status() -> dict:
+    """Can a report be narrated, and if not, WHY — in the operator's terms.
+
+    There is no per-case "air-gap" tick any more. It was a setting nobody could
+    usefully decide: on an appliance with no model configured the report came out
+    deterministic whether it was ticked or not, so it read as broken. An appliance
+    with no route to a provider now simply gets the deterministic report and is
+    told why — which is what the tick was for.
 
     Deliberately does not probe the network: a pre-flight check costs a round trip
     on every fuse and still races the real call. So this answers only what
     configuration can answer; a dead route is reported by generate_report after a
     call actually fails.
     """
-    if air_gap:
-        code = LLM_AIR_GAP
+    cfg = _agentic_cfg()
+    if str(cfg.get("fusion_llm_mode", "")).lower() == "simulated":
+        code = LLM_PINNED
+    elif str(cfg.get("llm_mode", "online")).lower() == "offline":
+        code = LLM_OK                         # self-hosted; nothing to key or reach
     else:
-        cfg = _agentic_cfg()
-        if str(cfg.get("fusion_llm_mode", "")).lower() == "simulated":
-            code = LLM_PINNED
-        elif str(cfg.get("llm_mode", "online")).lower() == "offline":
-            code = LLM_OK                     # self-hosted; nothing to key or reach
+        online = cfg.get("online_llm") or {}
+        if not (online.get("model") or cfg.get("model")):
+            code = LLM_NO_MODEL
+        elif _subscription_ready(online.get("provider")) or online.get("api_key"):
+            code = LLM_OK
         else:
-            online = cfg.get("online_llm") or {}
-            if not (online.get("model") or cfg.get("model")):
-                code = LLM_NO_MODEL
-            elif _subscription_ready(online.get("provider")) or online.get("api_key"):
-                code = LLM_OK
-            else:
-                code = LLM_MISSING_KEY
+            code = LLM_MISSING_KEY
     if code == LLM_OK:
         return {"available": True, "code": code, "reason": "", "fix": ""}
     reason, fix = _llm_reason_text(code)
     return {"available": False, "code": code, "reason": reason, "fix": fix}
 
 
-def _sim_tag(air_gap=False) -> str:
-    st = llm_status(air_gap=air_gap)
+def _sim_tag() -> str:
+    st = llm_status()
     if st["available"]:                        # narration was possible but not taken
         return _SIM_TAG_PREFIX + "no live narration was requested._\n"
     tail = f"{st['reason']}." + (f" {st['fix']}" if st["fix"] else "")
@@ -816,7 +816,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
                     audience="both", language="en", master_prompt=None, mask=None,
                     dispositions=None, validations=None, prefer_llm=True,
                     max_entities=None, budget_chars=None, max_output_tokens=None,
-                    detail="auto", max_identities=None, air_gap=False) -> str:
+                    detail="auto", max_identities=None) -> str:
     """Case report. Real path = LLM narrative over distilled() + deterministic
     fact tables appended verbatim. `audience` (exec/technical/both) + `language`
     tailor the narrative (reusing the engagement directive); `master_prompt` is the
@@ -890,7 +890,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
     md = render.report(graph, window=window, min_severity=min_severity,
                        initial_access=initial_access, case_name=case_name,
                        dispositions=dispositions, validations=validations,
-                       detail=detail) + _sim_tag(air_gap=air_gap)
+                       detail=detail) + _sim_tag()
     return md
 
 

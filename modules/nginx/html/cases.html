@@ -464,8 +464,11 @@ function stopStaleWatch(){
 }
 function startStaleWatch(id){
   stopStaleWatch();
-  // Absent reads as ON (see the backend default) -- only an explicit false opts out.
-  if(!curInfo || curInfo.auto_check_new_data===false) return;
+  // Unconditional: watching for new data was briefly a checkbox and that was the
+  // wrong call. One read of a cheap endpoint every 20s, which redraws nothing, is
+  // not a decision an operator has any basis to make -- and switching it off only
+  // ever produced a stale screen with no hint that it was stale.
+  if(!curInfo) return;
   window._staleTimer = setInterval(()=>staleTick(id), STALE_POLL_MS);
 }
 function staleTick(id){
@@ -593,14 +596,6 @@ function renderConfig(info){
         <input id="cf-maxident" type="number" min="0" max="1000000" step="10" value="${info.max_identities??''}" placeholder="all (up to 500)" title="Max identity rows (people, clustered across hosts) included in the LLM payload for the report &amp; chat. Identities are sent regardless of anomaly score, so a real person is never invisible to the model just because no finding is attached to their account. Independent of the Entity limit above (identities cost ~27 tokens each, far cheaper than an entity row). Empty = up to 500 people, which covers any realistic engagement — recommended. If the payload still overflows the model context, the lowest-risk people are dropped first. Set it lower only to send fewer people (e.g. privacy)."/>
         ${(info.cost_estimate&&info.cost_estimate.model)?`<div style="font-size:11px;color:var(--muted);margin:8px 0 3px">Model <b style="color:var(--tx,#e6edf3)">${esc(info.cost_estimate.model)}</b> — full context in, up to <b style="color:var(--tx,#e6edf3)">${(info.cost_estimate.model_max_output_tokens||0).toLocaleString()}</b> tokens out</div>`:`<div style="font-size:11px;color:var(--muted);margin:8px 0 3px">no model set — configure Settings ▸ Agentic</div>`}
         <div class="cfgstats" style="margin:6px 0 3px">${tokenBadge(info.token_ab)}${costBadge(info.cost_estimate)}</div>
-        <label style="margin-top:6px;display:flex;align-items:center;gap:6px;font-weight:normal" title="Tick only when this box has no route to the model provider. The report is then written deterministically from the correlated graph, immediately, and nothing is sent to a provider. Untick (default) for the written narrative: attack story in phases, cross-host correlation and identity attribution.">
-          <input id="cf-airgap" type="checkbox" ${info.air_gap_analysis?'checked':''} style="width:auto"/>
-          <span>Air-gap analysis <span style="color:var(--muted)">(no route to the model provider)</span></span>
-        </label>
-        <label style="margin-top:6px;display:flex;align-items:center;gap:6px;font-weight:normal" title="Check every 20s whether the case has moved on — new runs landing, or the automatic fusion folding them in — and say so in a bar above the tabs, instead of only noticing on page load. Nothing on screen is redrawn while you work: the bar tells you the written report is behind and offers to generate a new one, and you reload when you are ready. Untick to stop the checking entirely and go back to noticing on load.">
-          <input id="cf-autocheck" type="checkbox" ${info.auto_check_new_data!==false?'checked':''} style="width:auto"/>
-          <span>Watch for new data <span style="color:var(--muted)">(tells you when the report is behind)</span></span>
-        </label>
         <label style="margin-top:8px">Modules <span style="color:var(--muted)">— what fuses</span></label>
         <div class="modwarn">⚠ Enabling more modules can raise cost sharply — some artifacts (e.g. full hunts) produce huge output.</div>
         <div id="cf-modules">
@@ -725,7 +720,7 @@ function hostSelectAll(inc){
 // key-presence-based ("Only provided keys change"), so an empty body persists
 // nothing and /rescan just re-fuses with the stored config. Building a partial cfg
 // from absent inputs would be worse than crashing — every unread checkbox would
-// post `false` and silently reset saved settings (air-gap, masking, modules).
+// post `false` and silently reset saved settings (masking, modules, hosts).
 async function _railCfg(){
   if(!$('#cf-sev')) return {};
   const logo=await _fileToDataUrl($('#cf-logo')?.files?.[0]);
@@ -737,8 +732,6 @@ async function _railCfg(){
     max_entities:parseInt($('#cf-maxent')?.value)||500000,
     // empty = tied to the Entity limit (backend treats null as "no separate ceiling")
     max_identities:($('#cf-maxident')?.value ?? '')===''?null:(parseInt($('#cf-maxident').value)||0),
-    air_gap_analysis:!!$('#cf-airgap')?.checked,
-    auto_check_new_data:!!$('#cf-autocheck')?.checked,
     llm_max_output_tokens:null,    // LOCKED to model max (backend enforces regardless)
     llm_use_full_context:true,     // LOCKED on (backend enforces regardless)
     chat_send_full_context:true,   // LOCKED on (backend enforces regardless)

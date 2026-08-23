@@ -1363,8 +1363,13 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         # every case, which was true while the narrative was opt-in and became a
         # lie the moment it became the default -- the operator watched 88% for
         # minutes while the box sat on an LLM call the log said it was not making.
-        _narrate = (allow_llm and not d.get("air_gap_analysis")
-                    and llm_sim._use_real())
+        # Narrate iff a model is actually usable. "Air-gap analysis" used to be a
+        # per-case tick that forced the deterministic template — and it confused
+        # more than it helped: on an appliance with no model configured the report
+        # was deterministic whether the box was ticked or not, so the setting
+        # looked broken. There is nothing left to decide. No model, no key, or no
+        # route means the deterministic report, and the Analysis tab says which.
+        _narrate = allow_llm and llm_sim._use_real()
         _plog("Refusion · generating report", "info",
               ("narrated report (this waits on the model), advisory & checklist"
                if _narrate else
@@ -1380,20 +1385,17 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
             master_prompt=d.get("master_prompt"), mask=mask,
             dispositions=d.get("dispositions") or None,
             validations=d.get("timeline_validations") or None,
-            # First scan narrates with the model whenever one is configured and the
-            # case is not marked air-gap. It used to be hardcoded False -- "fast,
-            # free, deterministic; LLM on Rescan" -- which meant the report an
-            # operator actually READ was the string-interpolated template, and the
-            # real narrative only existed if they knew to press Regenerate. Almost
-            # nobody did, so the product was judged on the template. Tick
-            # "Air-gap analysis" in Case Analysis -> Configuration for the old
-            # behaviour on a box with no route to a provider.
+            # First scan narrates with the model whenever one is configured. It
+            # used to be hardcoded False -- "fast, free, deterministic; LLM on
+            # Rescan" -- which meant the report an operator actually READ was the
+            # string-interpolated template, and the real narrative only existed if
+            # they knew to press Regenerate. Almost nobody did, so the product was
+            # judged on the template. A box with no model, no key or no route gets
+            # the deterministic report automatically and is told which it is; there
+            # is no longer a tick for that.
             prefer_llm=_narrate,
             max_entities=llm_ent, budget_chars=llm_chars, max_output_tokens=llm_out,
-            detail="explicit", max_identities=llm_ident,
-            # so the report can say WHY it is deterministic: a ticked Air-gap
-            # analysis reads very differently from a missing key.
-            air_gap=bool(d.get("air_gap_analysis")))
+            detail="explicit", max_identities=llm_ident)
         # ADVISORY analyst pass — incident-grouping + grounded hypotheses. Stored
         # SEPARATELY from the deterministic findings; fed prior operator dispositions.
         # The advisory is the SECOND model call in this branch. An automatic fuse
@@ -1843,18 +1845,16 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
     default (free); pass use_llm=True (the 'Regenerate report' button) for the premium
     LLM narrative — the only place report generation spends tokens.
 
-    "Air-gap analysis" overrides use_llm. The Analysis tab's Regenerate button
-    always sends use_llm=True, so without this an air-gapped box would still try
-    to reach a provider and sit out the connection timeout on the one action the
-    flag exists to make instant. Toggling the flag and pressing Regenerate is
-    therefore enough to switch between the narrated and deterministic report —
-    no re-fuse needed, since the graph is unchanged.
+    There is no longer an "Air-gap analysis" tick overriding use_llm. On a box
+    with no model, no key or no route the call fails and falls back to the
+    deterministic report with a line saying which of those it was — so pressing
+    Regenerate on an air-gapped appliance costs one connection timeout and then
+    tells the operator the truth, rather than silently producing the same template
+    a tick would have produced while looking like it did nothing.
     """
     if audience:
         set_branding(case_id, audience=audience)
     d = get_case(case_id)
-    if d.get("air_gap_analysis"):
-        use_llm = False
     g = load_graph(case_id)
     window = d.get("time_window") or None
     min_sev = d.get("min_severity", "informational")
@@ -2032,19 +2032,6 @@ def set_analysis_config(case_id, cfg) -> dict:
                 autofuse.cancel(case_id)
             except Exception:
                 pass
-    if "auto_check_new_data" in cfg:       # poll for newly-landed runs and raise the
-                                           # existing "N new run(s)" banner by itself.
-                                           # NOTHING is fused automatically — the
-                                           # operator still clicks Refusion. Off = the
-                                           # pre-poll behaviour exactly (staleness is
-                                           # noticed on load), which is the escape
-                                           # hatch if the poll ever misbehaves.
-        patch["auto_check_new_data"] = bool(cfg.get("auto_check_new_data"))
-    if "air_gap_analysis" in cfg:          # no route to a model provider: write the
-                                           # deterministic report immediately rather
-                                           # than spending a connection timeout
-                                           # discovering there is no network.
-        patch["air_gap_analysis"] = bool(cfg.get("air_gap_analysis"))
     if "max_identities" in cfg:            # identity rows in the LLM payload — a
                                            # ceiling INSIDE max_entities, not a separate
                                            # budget (see _llm_identity_budget); empty/0

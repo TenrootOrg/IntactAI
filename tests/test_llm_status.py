@@ -31,7 +31,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LLM_SIM = os.path.join(ROOT, "modules/backend/services/fusion/llm_sim.py")
 
 WANTED = ("llm_status", "_classify_llm_error", "_sim_tag", "_llm_reason_text")
-CONSTS = ("LLM_OK", "LLM_AIR_GAP", "LLM_PINNED", "LLM_NO_MODEL", "LLM_MISSING_KEY",
+CONSTS = ("LLM_OK", "LLM_PINNED", "LLM_NO_MODEL", "LLM_MISSING_KEY",
           "_LLM_CONFIG_REASONS", "_LLM_ERR_MESSAGES", "_SIM_TAG_PREFIX")
 
 
@@ -96,18 +96,15 @@ class TestAvailable(_Base):
 
 class TestEachReasonIsNamed(_Base):
 
-    def test_air_gap_is_reported_as_a_choice_not_a_fault(self):
-        st = status(air_gap=True)
-        self.assertFalse(st["available"])
-        self.assertEqual(st["code"], NS["LLM_AIR_GAP"])
-        self.assertIn("Air-gap", st["reason"])
-        self.assertIn("Untick", st["fix"], "the operator must be told how to undo it")
-
-    def test_air_gap_wins_over_everything_else(self):
-        """It is a deliberate per-case decision; do not second-guess it with a
-        configuration complaint the operator did not ask about."""
-        STATE["cfg"] = {"llm_mode": "online", "online_llm": {}}
-        self.assertEqual(status(air_gap=True)["code"], NS["LLM_AIR_GAP"])
+    def test_there_is_no_air_gap_setting_left(self):
+        """It was removed: on a box with no model the report came out
+        deterministic whether it was ticked or not, so the tick read as broken.
+        An appliance with no route now simply gets the deterministic report and
+        is told why — which is all the tick ever did."""
+        import inspect
+        self.assertEqual(list(inspect.signature(status).parameters), [],
+                         "llm_status must not take an air_gap argument any more")
+        self.assertNotIn("air_gap", NS["_LLM_CONFIG_REASONS"])
 
     def test_no_model_is_reported(self):
         STATE["cfg"]["online_llm"] = {"provider": "openai", "api_key": "sk-test"}
@@ -126,10 +123,10 @@ class TestEachReasonIsNamed(_Base):
         called `no_api_key` here and `missing_key` in chat."""
         self.assertIn(NS["LLM_MISSING_KEY"], NS["_LLM_ERR_MESSAGES"])
 
-    def test_no_api_key_offers_air_gap_as_the_alternative(self):
-        """On an appliance with no route out, ticking air-gap IS the right answer."""
+    def test_no_api_key_explains_what_happens_meanwhile(self):
+        """The operator should not be left wondering what they are looking at."""
         STATE["cfg"]["online_llm"] = {"provider": "openai", "model": "gpt-4o"}
-        self.assertIn("Air-gap", status()["fix"])
+        self.assertIn("no network", status()["fix"])
 
     def test_a_pinned_deterministic_box_is_reported(self):
         STATE["cfg"]["fusion_llm_mode"] = "simulated"
@@ -213,9 +210,6 @@ class TestTheReportTag(_Base):
                 continue
             self.assertNotIn("fusion_llm_mode", reason + fix,
                              "%s names an internal key at the operator" % code)
-
-    def test_air_gap_produces_its_own_wording(self):
-        self.assertIn("Air-gap", sim_tag(air_gap=True))
 
     def test_an_available_model_still_tags_the_deterministic_path(self):
         """Explains a report written deterministically while a model WAS available
