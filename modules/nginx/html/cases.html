@@ -659,6 +659,24 @@ function renderAdvisory(info){
 const TL_SEV_RANK={informational:0,info:0,low:1,medium:2,high:3,critical:4};
 const TL_STATES=[['pending','Pending'],['real','True Positive'],['not_real','False Positive'],['known_it','Known']];
 window._tlf={status:{pending:1,real:1,not_real:1,known_it:1},artifact:'',host:'',sev:'informational'};
+// The host is already the first thing on the row, and finding titles end with
+// "on <host>" — so almost every line named the same machine twice:
+//   ALClient022 [Execution / Injection] SIGMA: ... Detection on ALClient022
+//
+// Trimmed HERE and not at the source: the report's markdown timeline prints the
+// title with no host prefix, so "on <host>" is load-bearing there. Only this
+// view has the duplication.
+//
+// Exact match against the row's own host only. "Shared binary seen on 2 hosts"
+// and a multi-host row like "ALClient04, ALClient06" keep their wording,
+// because the suffix is not repeating the prefix in those cases.
+function _tlTitle(r){
+  const t = r.title || '', h = (r.host || '').trim();
+  if(!t || !h || h.includes(',')) return t;
+  const suffix = ' on ' + h;
+  return t.endsWith(suffix) ? t.slice(0, -suffix.length) : t;
+}
+
 function renderTimeline(id){
   window._tlCase=id;
   $('#tabc').innerHTML='<i style="color:var(--muted)">loading timeline…</i>';
@@ -714,7 +732,7 @@ function tlPaint(){
     return `<div class="tlrow ${supp(v)?'suppressed':''} ${r.manual?'manual':''}">
       <code style="white-space:nowrap">${esc(r.ts||'—')}</code>
       <div class="tlmeta" style="cursor:pointer" title="Click for full event detail" onclick="openFindingDetail('${r.finding_id}')">
-        <span><strong>${esc(r.host||'-')}</strong> ${r.phase?`<span style="color:var(--muted)">[${esc(r.phase)}]</span>`:''} ${esc(r.title||'')} <span style="color:var(--muted);font-size:10px">▸ detail</span></span>
+        <span><strong>${esc(r.host||'-')}</strong> ${r.phase?`<span style="color:var(--muted)">[${esc(r.phase)}]</span>`:''} ${esc(_tlTitle(r))} <span style="color:var(--muted);font-size:10px">▸ detail</span></span>
         <span class="l2">${arts}${r.reopened?'<span class="sg-hint" style="border-color:#d29922;color:#e3b341" title="A new occurrence arrived after your last verdict — re-validate this one.">⟳ re-opened: new activity since you validated</span>':''}${r.manual?'<span class="sg-hint" style="border-style:solid">manual</span>':''}${r.notes?`<span style="color:var(--muted);font-size:11px">— ${esc(r.notes)}</span>`:''}</span>
       </div>
       <span class="chip c-${r.severity}">${esc(r.severity)}</span>
