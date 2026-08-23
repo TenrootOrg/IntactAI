@@ -432,12 +432,20 @@ function render(info,md,g){
       <div id="stalebar">${staleBar(info)}</div>
       <div style="margin:6px 0 14px">${statSpans(g)}</div>
       <div class="tabs">
-        <div class="tab ${tab==='config'?'on':''}" data-tab="config" onclick="setTab('config')">⚙ Configuration</div>
+        <!-- Tab ORDER is the investigative order, not the order these were built.
+             Analysis + Chat lead: the narrative and the way you interrogate it.
+             Then the always-current graph views (Timeline, Identities, Risk), then
+             the two you touch rarely. Configuration used to sit first, which never
+             matched anything — it was never the landing tab, and since a case
+             fuses itself on import there is nothing you must set before starting.
+             Purely presentational: setTab/drawTab dispatch on data-tab, never on
+             position, so this list can be reordered freely. -->
         <div class="tab ${tab==='report'?'on':''}" data-tab="report" onclick="setTab('report')">Analysis</div>
-        <div class="tab ${tab==='risk'?'on':''}" data-tab="risk" onclick="setTab('risk')">🎯 Risk</div>
-        <div class="tab ${tab==='timeline'?'on':''}" data-tab="timeline" onclick="setTab('timeline')">Timeline</div>
         <div class="tab ${tab==='chat'?'on':''}" data-tab="chat" onclick="setTab('chat')">Chat</div>
+        <div class="tab ${tab==='timeline'?'on':''}" data-tab="timeline" onclick="setTab('timeline')">Timeline</div>
         <div class="tab ${tab==='identities'?'on':''}" data-tab="identities" onclick="setTab('identities')">Identities</div>
+        <div class="tab ${tab==='risk'?'on':''}" data-tab="risk" onclick="setTab('risk')">🎯 Risk</div>
+        <div class="tab ${tab==='config'?'on':''}" data-tab="config" onclick="setTab('config')">⚙ Configuration</div>
         <div class="tab ${tab==='log'?'on':''}" data-tab="log" onclick="setTab('log')">Log</div>
       </div>
       <div id="tabc"></div>

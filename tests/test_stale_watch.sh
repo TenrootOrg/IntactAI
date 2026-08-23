@@ -42,6 +42,32 @@ for box in cf-autofuse cf-autocheck cf-airgap; do
 done
 grep -q '"auto_fuse" in cfg' "${ROOT}/modules/backend/services/fusion/store.py" \
   || { echo "  FAIL set_analysis_config no longer honours auto_fuse (the support escape hatch)"; fails=$((fails+1)); }
+# Tab ORDER is a deliberate decision (investigative order, not build order) and is
+# invisible to every test that only checks a tab renders — so it is pinned here.
+# The landing tab must also be the FIRST tab: it was 'report' while Configuration
+# sat leftmost, so the tab you land on was not the tab that looked selected.
+python3 - "$SRC" <<'PY' || fails=$((fails+1))
+import re, sys
+s = open(sys.argv[1], encoding="utf-8").read()
+order = re.findall(r'data-tab="([a-z]+)"', s)
+want = ["report", "chat", "timeline", "identities", "risk", "config", "log"]
+if order != want:
+    sys.exit("  FAIL tab order is %s, expected %s" % (order, want))
+m = re.search(r"let sel=null, tab='([a-z]+)'", s)
+if not m:
+    sys.exit("  FAIL could not find the landing tab")
+if m.group(1) != order[0]:
+    sys.exit("  FAIL landing tab is %r but the first tab is %r — they must agree"
+             % (m.group(1), order[0]))
+# every tab must have somewhere to dispatch to
+d = re.search(r"function drawTab\(md\)\{.*?\n\}", s, re.S)
+if not d:
+    sys.exit("  FAIL drawTab not found")
+for t in order:
+    if t not in d.group(0) and t != "report":     # report is drawTab's else branch
+        sys.exit("  FAIL tab %r has no renderer in drawTab" % t)
+PY
+
 grep -q '"fused_run_ids": list(' "${ROOT}/modules/backend/routes/case_routes.py" \
   || { echo "  FAIL the case payload does not carry fused_run_ids — the UI cannot detect a background fuse"; fails=$((fails+1)); }
 grep -q 'air_gap_analysis' "${ROOT}/modules/backend/services/fusion/store.py" \
