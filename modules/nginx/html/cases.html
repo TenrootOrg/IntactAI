@@ -403,11 +403,33 @@ function staleBar(info){
        </span>`);
   }
   if(!info.is_stale) return '';
-  const msg = info.data_stale
-    ? `ℹ ${info.data_stale} new run(s) landed and are being folded in automatically. The <b>report &amp; chat</b> still reflect the earlier scan — generate a new report when you want them refreshed.`
-    : info.report_dirty
-      ? `⚠ You've made changes (triage / timeline validations) since the last report — the <b>report &amp; chat are not up to date</b>.`
-      : `ℹ The data is current. The report &amp; chat reflect an earlier scan.`;
+  let msg;
+  if(info.data_stale){
+    const d = info.data_stale;
+    msg = `ℹ <b>${d === 1 ? '1 new run' : d + ' new runs'}</b> landed and ${d === 1 ? 'is' : 'are'} being folded in automatically. The <b>report &amp; chat</b> still reflect the earlier scan — generate a new report when you want them refreshed.`;
+  }else{
+    // The graph is current and the report is behind. Say WHICH of the two causes
+    // it was rather than guessing: this used to read "You've made changes (triage /
+    // timeline validations)" unconditionally, which became wrong more often than
+    // right once fusion went automatic — the usual reason the report is behind is
+    // now new data folded in while nobody touched triage at all.
+    //
+    // report_stale is the count of completed member runs the report does not
+    // reflect, so it separates the two cleanly: any count means new data; no count
+    // with the dirty flag set means nothing landed, so the change was triage.
+    // report_dirty is NOT evidence that anyone triaged: it is set by ANY re-fuse
+    // that leaves the report frozen, and an automatic data fuse is exactly that.
+    // So new data is asserted (report_stale counts it) while triage is only
+    // hedged — claiming "you've made changes" when the operator had not touched
+    // the case is the bug this message already had, in the other direction.
+    const n = info.report_stale || 0;
+    const runs = n === 1 ? '1 run' : `${n} runs`;
+    msg = n
+      ? `⚠ The <b>report &amp; chat are not up to date</b> — <b>${runs} of new data</b> ${n === 1 ? 'has' : 'have'} been fused into the case since they were written, along with any triage / timeline changes you've made.`
+      : info.report_dirty
+        ? `⚠ The <b>report &amp; chat are not up to date</b> — your <b>triage / timeline validations</b> have changed since they were written.`
+        : `ℹ The data is current. The report &amp; chat reflect an earlier scan.`;
+  }
   return bar('#d29922','#2b2400',
     `<span>${msg}</span><span style="display:flex;gap:8px;white-space:nowrap">${newReport}</span>`);
 }
@@ -501,6 +523,7 @@ function staleTick(id){
       const nowFused = (d.fused_run_ids || []).join(',');
       const bg = !!window._renderedFused && nowFused !== window._renderedFused;
       if(curInfo.is_stale===d.is_stale && curInfo.data_stale===d.data_stale
+         && curInfo.report_stale===d.report_stale
          && curInfo.report_dirty===d.report_dirty
          && curInfo.bg_refreshed===bg) return;
       curInfo.bg_refreshed = bg;

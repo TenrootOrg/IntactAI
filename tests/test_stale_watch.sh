@@ -206,7 +206,7 @@ const respond = (env, body, okFlag) => {
     const e = harness({});
     e.api.staleTick('case_1');
     await respond(e, { case_id: 'case_1', is_stale: true, data_stale: 3, report_dirty: false });
-    if (!/3 new run\(s\) landed/.test(e.bar.innerHTML)) fail('new runs raise the banner', e.bar.innerHTML.slice(0,90));
+    if (!/3 new runs<\/b> landed/.test(e.bar.innerHTML)) fail('new runs raise the banner', e.bar.innerHTML.slice(0,90));
     else if (e.renderCalls !== 0) fail('new runs raise the banner', 'it called render()');
     else if (e.curInfo.master_prompt !== 'KEEP ME') fail('new runs raise the banner', 'it clobbered rail config');
     else ok('new runs raise the banner without re-rendering or touching config');
@@ -321,7 +321,7 @@ const respond = (env, body, okFlag) => {
                        fused_run_ids: ['runA'] });
     if (/Show new data/.test(e.bar.innerHTML))
       fail('a first render does not claim a background refresh', e.bar.innerHTML.slice(0, 90));
-    else if (!/1 new run\(s\) landed/.test(e.bar.innerHTML))
+    else if (!/1 new run<\/b> landed/.test(e.bar.innerHTML))
       fail('a first render still shows the normal stale banner', e.bar.innerHTML.slice(0, 90));
     else ok('a first render shows the stale banner, not a false refresh');
   }
@@ -333,6 +333,44 @@ const respond = (env, body, okFlag) => {
     if (!/openCase\('case_9'\)/.test(h)) fail('the reload button reloads this case', h.slice(0, 120));
     else if (/doRefusion/.test(h)) fail('the reload button must not re-fuse', 'it offers Refusion');
     else ok('the reload button reloads the case and does not re-fuse');
+  }
+
+  // 11d2. the bar must name the RIGHT cause. It read "You've made changes (triage
+  // / timeline validations)" unconditionally, which became wrong more often than
+  // right once fusion went automatic: the usual reason the report is behind is now
+  // new data folded in while nobody touched triage at all.
+  {
+    const e = harness({});
+    const txt = st => e.api.staleBar(st).replace(/<[^>]+>/g, '').replace(/&amp;/g, '&');
+
+    // new data fused, nobody triaged -> must NOT assert that they made changes
+    const auto = txt({ is_stale: 1, data_stale: 0, report_stale: 2, report_dirty: true, case_id: 'c' });
+    if (!/2 runs of new data/.test(auto)) fail('new data is named as the cause', auto.slice(0, 110));
+    else if (/your triage \/ timeline validations have changed/.test(auto))
+      fail('new data is named as the cause', 'it asserts triage that may not have happened');
+    else if (!/any triage \/ timeline changes/.test(auto))
+      fail('new data is named as the cause', 'triage is not even hedged');
+    else ok('new data is named, and triage only hedged (report_dirty is not proof)');
+
+    // no new runs -> the only thing that can have re-fused is triage
+    const tri = txt({ is_stale: 1, data_stale: 0, report_stale: 0, report_dirty: true, case_id: 'c' });
+    if (!/triage \/ timeline validations have changed/.test(tri))
+      fail('triage-only is named as such', tri.slice(0, 110));
+    else if (/new data/.test(tri))
+      fail('triage-only is named as such', 'it claims new data with report_stale=0');
+    else ok('triage-only says triage, and does not invent new data');
+
+    // pluralisation, since these strings are read by customers
+    const one = txt({ is_stale: 1, data_stale: 0, report_stale: 1, report_dirty: true, case_id: 'c' });
+    if (/1 runs|1 run\(s\)/.test(one)) fail('it says "1 run", not "1 runs"', one.slice(0, 90));
+    else if (!/1 run of new data has been fused/.test(one))
+      fail('it says "1 run", not "1 runs"', one.slice(0, 90));
+    else ok('singular and plural both read correctly');
+
+    const landing = txt({ is_stale: 1, data_stale: 1, report_stale: 1, case_id: 'c' });
+    if (!/1 new run landed and is being folded in/.test(landing))
+      fail('the landing message agrees in number', landing.slice(0, 90));
+    else ok('the landing message agrees in number');
   }
 
   // 11e. no banner state may offer Refusion
