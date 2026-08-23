@@ -201,13 +201,20 @@ def _wait_import_flow_finished(config, creds, max_message_size, flow_id, run_id,
     return last_state or "TIMEOUT"
 
 
-def import_results(zip_file_path, original_filename="import.zip", run_id=None, password=None):
+def import_results(zip_file_path, original_filename="import.zip", run_id=None, password=None,
+                   finalize=True):
     """Import offline collection results to Velociraptor using Server.Utils.ImportCollection
 
     Args:
         zip_file_path: Path to the uploaded ZIP file (must be from official Velociraptor collector)
         original_filename: Original filename of the upload
         run_id: Optional workflow run_id (created in pre-create hook)
+        finalize: mark the run completed when the import succeeds. FALSE when the
+            caller still has work to do on the SAME run — the tus hook fuses the
+            imported rows into the case afterwards, and marking it completed here
+            meant the run read COMPLETED, 100%, for the whole of that fusion,
+            while rows were visibly still arriving. Reported from the field
+            against velociraptor_upload_1787469653610.
 
     Returns:
         dict with import status
@@ -636,7 +643,8 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None, p
             # is an explicit ingest action and always fuses; the artifact allowlist
             # is what keeps the graph clean. Without these, fusion can't locate the
             # imported data and the case fuses to 0 entities.
-            update_run_status(run_id, "completed", progress=100, details={
+            update_run_status(run_id, "completed" if finalize else "running",
+                              progress=100 if finalize else 90, details={
                 "hunt_id": imported_hunt_id,
                 "client_id": client_id,
                 "flow_id": flow_id,
@@ -661,7 +669,8 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None, p
         else:
             # Import may have worked but we couldn't get the IDs
             add_log_to_run(run_id, "Import completed but could not retrieve client/flow IDs")
-            update_run_status(run_id, "completed", progress=100)
+            update_run_status(run_id, "completed" if finalize else "running",
+                              progress=100 if finalize else 90)
 
             return {
                 "success": True,

@@ -483,12 +483,25 @@ def handle_tus_hook():
                 def run_velociraptor_import():
                     try:
                         from services.offline_collector.importer import import_results
-                        result = import_results(file_path, original_filename, run_id=run_id, password=import_password)
+                        # finalize=False: _fuse_offline_import below is part of
+                        # THIS run and completes it. Without this the run showed
+                        # COMPLETED, 100%, while the fusion was still inserting.
+                        result = import_results(file_path, original_filename, run_id=run_id,
+                                                password=import_password, finalize=False)
                         print(f"[TUS HOOK] Velociraptor import result: {result}", flush=True)
                         # Fuse the imported flow into the Case as a final step of THIS
                         # upload run — read the rows back and persist them for the
                         # fusion graph. No agent, no LLM (see _fuse_offline_import).
                         _fuse_offline_import(result, run_id)
+                        # THE CALLER OWNS THE TERMINAL STATE. _fuse_offline_import
+                        # returns early on several perfectly legitimate paths —
+                        # nothing imported, no hunt or flow id, zero rows — and
+                        # none of them set a status. That was harmless while
+                        # import_results marked the run completed before it ran;
+                        # with finalize=False it would strand the run at
+                        # "running" forever. Skipped entirely if the fusion
+                        # raises: the handler below marks it failed instead.
+                        update_run_status(run_id, "completed", progress=100)
                     except Exception as e:
                         print(f"[TUS HOOK] Velociraptor import error: {e}", flush=True)
                         traceback.print_exc()
