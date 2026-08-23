@@ -80,6 +80,20 @@ SCENARIOS = [
      "modules": "all", "route": "bootstrap",
      "proves": "a box too old to have an engine can still be moved"},
 
+    # KNOWN RED, and deliberately not worked around.
+    #
+    # intact-20260811 has no partial-fetch branch in lib/upgrade/package.sh:
+    # `INTACT_RELEASE_ONLY_MODULES` appears there zero times. The dashboard
+    # route downloads only the modules the plan names, then 0811 verifies the
+    # merged manifest for ALL of them, finds the ones it never fetched missing,
+    # and refuses its own package. The box runs 0811's upkg_acquire before it
+    # can hand over to the target's code, so nothing in this tree can reach it.
+    #
+    # It is already fixed here — that branch exists in the current engine — so
+    # this scenario turns green on its own the day the matrix hops through a
+    # release that carries the fix. Nobody should spend an afternoon
+    # rediagnosing it before then, and nothing should be special-cased to make
+    # a dead release pass.
     {"name": "ui-online-full", "install_from": "OLDEST_NO_ENGINE",
      "install_mode": "online", "modules": "shipped", "route": "ui_online",
      "hop_via": "FIRST_ENGINE",
