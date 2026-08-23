@@ -301,7 +301,15 @@
     } catch (e) {
       try { top.location.hash = 'settings'; } catch (_) { /* headless */ }
     }
-    const fire = () => { try { top.dispatchEvent(new CustomEvent('show-system-actions')); } catch (e) {} };
+    // Build the event with the TARGET window's constructor. Dispatching an event
+    // created in this frame's realm onto another realm's window is the kind of
+    // thing that works until it doesn't; `top.CustomEvent` removes the question.
+    const fire = () => {
+      try {
+        const C = (top && top.CustomEvent) || CustomEvent;
+        top.dispatchEvent(new C('show-system-actions'));
+      } catch (e) { /* headless / detached frame */ }
+    };
     fire();
     setTimeout(fire, 400);
   }

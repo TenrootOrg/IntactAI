@@ -182,26 +182,11 @@
   .lact{font-family:var(--mono,monospace);color:var(--tx);white-space:nowrap}
   .lcode{font-size:10px;color:var(--muted);border:1px solid var(--bd);border-radius:4px;padding:0 4px}
   .ldetail{color:var(--muted);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
-  /* Import panel: a case bundle is gigabytes, so this shows a real upload with
-     speed and ETA rather than a spinner, and stays put until the case exists. */
-  .imp{display:none;margin:2px 0 10px;padding:10px 11px;border:1px solid var(--bd);
-       border-radius:8px;background:var(--panel2)}
-  .imp.on{display:block}
-  .imp .nm{font-size:12px;color:var(--tx);font-weight:600;word-break:break-all}
-  .imp .st{font-size:11px;color:var(--muted);margin-top:3px}
-  .imp .bar{height:5px;border-radius:3px;background:#0d1117;overflow:hidden;margin-top:7px}
-  .imp .bar i{display:block;height:100%;width:0;background:var(--acc);
-              transition:width .25s ease}
-  .imp.done .bar i{background:var(--ok)}
-  .imp.err .bar i{background:var(--crit)}
-  .imp .x{float:right;cursor:pointer;color:var(--muted);font-size:14px;line-height:1;
-          padding:0 2px}
-  .imp .x:hover{color:var(--tx)}
   .info{cursor:help;color:var(--info);border:1px solid var(--bd);border-radius:50%;width:15px;height:15px;
         display:inline-flex;align-items:center;justify-content:center;font-size:10px}
 </style>
 <!-- MUST be first: installs the X-Case-Id fetch hook before any /api call -->
-<script src="js/active-case.js?v=7"></script>
+<script src="js/active-case.js?v=8"></script>
 <!-- set embed + view mode before body renders (no flash) -->
 <script>(function(){var q=new URLSearchParams(location.search);
   if(q.get('embed')==='1')document.documentElement.classList.add('embed');
@@ -232,10 +217,9 @@
     </div>
     <p style="color:var(--muted);font-size:11px;margin-top:8px">Runs you launch (Agentic, Memory, cloud…) while this case is active are tagged to it automatically. Open it any time to fuse them.</p>
     <h2 style="display:flex;align-items:center;justify-content:space-between">Cases
-      <button class="ghost" id="impbtn" style="font-size:11px;padding:4px 10px" onclick="document.getElementById('case-import-file').click()" title="Import a case exported from another Intact appliance (.intactcase.zip)">⬆ Import</button>
+      <button class="ghost" style="font-size:11px;padding:4px 10px" onclick="document.getElementById('case-import-file').click()" title="Import a case exported from another Intact appliance — runs as a System action, watch it in Settings → Actions">⬆ Import</button>
     </h2>
     <input id="case-import-file" type="file" accept=".zip" style="display:none" onchange="importWorkspace(event)"/>
-    <div class="imp" id="impbar"></div>
     <div id="caselist"></div>
   </div>
   <div class="main" id="main">
@@ -322,83 +306,32 @@ function exportWorkspace(id, ev){ if(ev) ev.stopPropagation();
   }).catch(e=>toast('export failed to start: '+e.message, 5000));
 }
 
-// Import lives HERE, in Case Management, because what it produces is a case —
-// the operator should end up looking at the case list with the new case in it,
-// not at a system log. (Export is the opposite: it produces a file, so it hands
-// off to Settings → Actions where downloads live.)
+// Import works exactly like Export: the button lives here in Case Management,
+// the job runs as a System action, and the operator watches it in Settings →
+// Actions — progress, the full log, and (for export) the download all in one
+// place. The difference is only where the bytes come from: an export reads them
+// off this appliance, an import sends them from the operator's machine, so the
+// upload itself has to run in the browser.
 //
-// The bundle is gigabytes, so this is a real chunked, resumable upload with
-// speed and ETA, not a spinner.
-function impPanel(state, title, sub, pct){
-  const el=$('#impbar'); if(!el) return;
-  el.className='imp on'+(state?(' '+state):'');
-  el.innerHTML=`${state==='done'||state==='err'?'<span class="x" onclick="impClose()" title="dismiss">×</span>':''}
-    <div class="nm">${esc(title)}</div>
-    <div class="st">${sub}</div>
-    <div class="bar"><i style="width:${Math.max(0,Math.min(100,pct||0))}%"></i></div>`;
-}
-function impClose(){ const el=$('#impbar'); if(el){ el.className='imp'; el.innerHTML=''; } }
-
+// That upload keeps going after the hand-off: the tab panels are shown/hidden,
+// never torn down, so this frame stays alive and tus keeps sending while the
+// operator watches the run row fill in. The row reports the upload (0-10%) and
+// then the import itself (10-100%), so it is the whole operation in one place.
 function importWorkspace(ev){
   const f=ev.target.files&&ev.target.files[0]; ev.target.value='';
   if(!f) return;
-  const btn=$('#impbtn'); if(btn) btn.disabled=true;
-  const done=()=>{ if(btn) btn.disabled=false; };
-  impPanel('', f.name, 'starting…', 0);
-
+  toast('uploading "'+f.name+'"…');
   new TusUploader({
     purpose:'case_import',
     // A bundle creates its OWN new case, so it is not work inside the active
     // workspace — importing while System is selected is legitimate.
     systemGuard:false,
-    onProgress:i=>impPanel('', f.name,
-      `uploading — ${i.percentage}% of ${fmtBytes(i.bytesTotal)} · ${i.speedFormatted} · ${i.etaFormatted} left`,
-      i.percentage*0.5),          // the upload is the first half of the job
-    onError:e=>{ done(); impPanel('err', f.name, 'upload failed — '+esc((e&&e.message)||String(e)), 100);
-                 toast('upload failed', 5000); },
-    onSuccess:up=>{
-      impPanel('', f.name, 'upload complete — reading the bundle…', 50);
-      // The import's run row is opened by the upload hook, not by this page, so
-      // there can only ever be ONE row for an import. Look it up by the id tus
-      // just gave us.
-      resolveImportRun(up, 0, f, done);
-    }
+    onError:e=>toast('upload failed: '+((e&&e.message)||e), 6000),
+    onSuccess:()=>{ loadCases(); refreshSelector(); }
   }).upload(f);
-}
-
-function fmtBytes(n){ n=Number(n||0); const u=['B','KB','MB','GB','TB']; let i=0;
-  while(n>=1024&&i<u.length-1){n/=1024;i++;} return (i?n.toFixed(1):n)+' '+u[i]; }
-
-// The hook that opens the run fires server-side; give it a few seconds to appear.
-function resolveImportRun(up, tries, f, done){
-  const id=String((up&&up.url)||'').replace(/\/+$/,'').split('/').pop();
-  if(!id){ done(); impPanel('err', f.name, 'could not identify the upload', 100); return; }
-  fetch('/api/cases/import/run/'+encodeURIComponent(id)).then(r=>r.json()).then(d=>{
-    if(d&&d.run_id){ watchImport(d.run_id, f, done); return; }
-    if(tries<15){ setTimeout(()=>resolveImportRun(up,tries+1,f,done), 1000); return; }
-    done(); impPanel('err', f.name, 'the import did not start — check Settings → Actions', 100);
-  }).catch(()=>{ if(tries<15){ setTimeout(()=>resolveImportRun(up,tries+1,f,done), 1000); }
-                 else { done(); impPanel('err', f.name, 'lost contact with the import', 100); } });
-}
-
-function watchImport(run_id, f, done){
-  watchRun(run_id, run=>{
-    const det=run.details||{};
-    if(run.status==='completed'){
-      done();
-      impPanel('done', det.name||f.name,
-        `imported — ${det.runs_imported||0} run(s), ${det.baselines_imported||0} baseline(s). It is in the list below.`, 100);
-      toast('imported "'+(det.name||'case')+'"');
-      loadCases(); refreshSelector();
-    } else if(run.status==='failed'||run.status==='cancelled'){
-      done();
-      impPanel('err', f.name, esc(run.error||('import '+run.status))+' — see Settings → Actions for the full log', 100);
-      toast('import '+run.status, 6000);
-    } else {
-      // reading the bundle is the second half
-      impPanel('', f.name, 'reading the bundle — '+(run.progress||0)+'%', 50+(run.progress||0)*0.5);
-    }
-  });
+  // Same hand-off as Export. Long enough for the upload hook to have opened the
+  // run row, so the operator lands on a list that already shows it.
+  setTimeout(()=>{ try{ window.ActiveCase.gotoSystemWorkflows(); }catch(e){} }, 900);
 }
 
 function loadCases(cb){
