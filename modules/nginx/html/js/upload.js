@@ -62,8 +62,8 @@ class TusUploader {
         // BEFORE wasting time uploading a (possibly large) collection ZIP.
         if (window.ActiveCase && window.ActiveCase.blockIfSystem) {
             window.ActiveCase.blockIfSystem(
-                'This import runs against an investigation workspace, not System. ' +
-                'Switch to or create an investigation workspace first, then re-import.'
+                'This import runs against an investigation case, not System. ' +
+                'Switch to or create an investigation case first, then re-import.'
             ).then((blocked) => { if (!blocked) this._beginUpload(file); });
             return null;
         }

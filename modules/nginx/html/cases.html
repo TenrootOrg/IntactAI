@@ -107,11 +107,11 @@
   #wsbar{display:flex;align-items:center;gap:8px}
   #wsbar select{width:auto}
   /* embed mode: hosted inside the main app as a tab — drop our own header
-     (the app's top bar already shows the active workspace) and fill the frame */
+     (the app's top bar already shows the active case) and fill the frame */
   html.embed header{display:none}
   html.embed .wrap{height:100vh}
   /* view=manage  -> only the left management panel (create / switch / delete)   */
-  /* view=analysis-> only the right fusion view for the active workspace          */
+  /* view=analysis-> only the right fusion view for the active case               */
   html.v-manage .main{display:none}
   html.v-manage .wrap{grid-template-columns:1fr}
   html.v-analysis .side{display:none}
@@ -189,31 +189,31 @@
 </head>
 <body>
 <header>
-  <span class="logo">◭</span><h1>IntactAI — Workspaces</h1>
+  <span class="logo">◭</span><h1>IntactAI — Cases</h1>
   <span class="badge">Entity Fusion · cross-module + cross-host</span>
   <span class="badge" id="llmbadge">LLM: simulated</span>
   <div id="wsbar" style="margin-left:auto"></div>
 </header>
 <div class="wrap">
   <div class="side">
-    <h2>New Workspace</h2>
+    <h2>New Case</h2>
     <label>Name</label><input id="cname" placeholder="GOOGLE IR 05-03-2026"/>
     <label>Start date <span style="color:var(--muted)">(optional)</span></label>
     <input id="wstart" placeholder="2026-06-14"/>
     <div class="row" style="margin-top:10px">
-      <button onclick="createWorkspace()">Create workspace</button>
+      <button onclick="createWorkspace()">Create case</button>
     </div>
-    <p style="color:var(--muted);font-size:11px;margin-top:8px">Runs you launch (Agentic, Memory, cloud…) while this workspace is active are tagged to it automatically. Open it any time to fuse them.</p>
-    <h2 style="display:flex;align-items:center;justify-content:space-between">Workspaces
+    <p style="color:var(--muted);font-size:11px;margin-top:8px">Runs you launch (Agentic, Memory, cloud…) while this case is active are tagged to it automatically. Open it any time to fuse them.</p>
+    <h2 style="display:flex;align-items:center;justify-content:space-between">Cases
       <!-- Export/Import is built + backend-ready but HIDDEN pending more testing.
            Re-enable by removing display:none here and on the per-row Export button. -->
-      <button class="ghost" style="font-size:11px;padding:4px 10px;display:none" onclick="document.getElementById('case-import-file').click()" title="Import a workspace from an exported .intactcase.json bundle">⬆ Import</button>
+      <button class="ghost" style="font-size:11px;padding:4px 10px;display:none" onclick="document.getElementById('case-import-file').click()" title="Import a case from an exported .intactcase.json bundle">⬆ Import</button>
     </h2>
     <input id="case-import-file" type="file" accept=".json,application/json" style="display:none" onchange="importWorkspace(event)"/>
     <div id="caselist"></div>
   </div>
   <div class="main" id="main">
-    <div class="empty">Pick a workspace (left) to fuse the runs tagged to it into one<br/>cross-module, cross-host graph — report, advisory, timeline + chat.</div>
+    <div class="empty">Pick a case (left) to fuse the runs tagged to it into one<br/>cross-module, cross-host graph — report, advisory, timeline + chat.</div>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -223,8 +223,8 @@
 const $=s=>document.querySelector(s), api=(p,o)=>fetch(p,o).then(r=>r.json());
 let sel=null, tab='report';
 const VIEW=new URLSearchParams(location.search).get('view')||'';
-// In manage mode a row click switches the active workspace (no fusion panel here);
-// otherwise it opens the workspace's fusion view.
+// In manage mode a row click switches the active case (no fusion panel here);
+// otherwise it opens the case's fusion view.
 function rowClick(id){ if(VIEW==='manage') activateWorkspace(id); else openCase(id); }
 function toast(m,ms){const t=$('#toast');if(!t)return;t.textContent=m;t.style.display='block';
   requestAnimationFrame(()=>t.classList.add('show'));            // fade in
@@ -247,32 +247,32 @@ function createWorkspace(){
   api('/api/cases',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
    .then(d=>{ if(!d||!d.case_id){toast('create failed');return;}
      $('#cname').value=''; $('#wstart').value='';
-     window.ActiveCase.set(d.case_id); toast('workspace created + activated');
+     window.ActiveCase.set(d.case_id); toast('case created + activated');
      loadCases(()=>{ if(VIEW!=='manage') openCase(d.case_id); }); refreshSelector(); });
 }
 
 function delWorkspace(id, name, ev){
   if(ev) ev.stopPropagation();
-  if(!confirm(`Delete workspace "${name}" and ALL of its runs, fusion + baseline? This cannot be undone.`)) return;
+  if(!confirm(`Delete case "${name}" and ALL of its runs, fusion + baseline? This cannot be undone.`)) return;
   fetch('/api/cases/'+id,{method:'DELETE'}).then(async r=>{
     const d=await r.json().catch(()=>({}));
-    if(r.status===409){toast('the Default workspace cannot be deleted');return;}
+    if(r.status===409){toast('the Default case cannot be deleted');return;}
     if(!r.ok){toast('delete failed: '+(d.error||r.status));return;}
     toast(`deleted (${d.runs_deleted||0} run(s))`);
     if(window.ActiveCase.get()===id){ await window.ActiveCase.ensureActiveCase(); }
-    if(sel===id){ sel=null; $('#main').innerHTML='<div class="empty">Workspace deleted. Pick another on the left.</div>'; }
+    if(sel===id){ sel=null; $('#main').innerHTML='<div class="empty">Case deleted. Pick another on the left.</div>'; }
     loadCases(); refreshSelector();
   });
 }
 
 function activateWorkspace(id, ev){ if(ev) ev.stopPropagation();
-  window.ActiveCase.set(id); toast('switched active workspace'); loadCases(); refreshSelector(); }
+  window.ActiveCase.set(id); toast('switched active case'); loadCases(); refreshSelector(); }
 
 // Download a workspace as a self-contained bundle (case + member runs). The
 // <a download> + server Content-Disposition triggers a file download without
 // navigating the (iframed) page.
 function exportWorkspace(id, ev){ if(ev) ev.stopPropagation();
-  toast('exporting workspace…');
+  toast('exporting case…');
   fetch('/api/cases/'+id+'/export').then(async r=>{
     if(!r.ok){ const d=await r.json().catch(()=>({})); toast('export failed: '+(d.error||r.status)); return; }
     const blob=await r.blob();
@@ -291,7 +291,7 @@ function importWorkspace(ev){
   fetch('/api/cases/import',{method:'POST',body:fd}).then(async r=>{
     const d=await r.json().catch(()=>({}));
     if(!r.ok){ toast('import failed: '+(d.error||r.status)); return; }
-    toast('imported "'+(d.name||'workspace')+'" ('+(d.runs_imported||0)+' run(s))');
+    toast('imported "'+(d.name||'case')+'" ('+(d.runs_imported||0)+' run(s))');
     loadCases(); refreshSelector();
   }).catch(e=>toast('import failed: '+e.message));
   ev.target.value='';
@@ -304,12 +304,12 @@ function loadCases(cb){
       return `<div class="caseitem ${sel===c.case_id?'sel':''}" onclick="rowClick('${c.case_id}')">
       <div class="casehead"><span class="nm">${isAct?'● ':''}${esc(c.name||c.case_id)}</span>
         <div class="row" style="gap:6px">
-          <button class="ghost" style="font-size:11px;padding:3px 8px;display:none" onclick="exportWorkspace('${c.case_id}',event)" title="Download this workspace as a portable bundle">Export</button>
+          <button class="ghost" style="font-size:11px;padding:3px 8px;display:none" onclick="exportWorkspace('${c.case_id}',event)" title="Download this case as a portable bundle">Export</button>
           ${c.is_default?'<span class="defbadge">default</span>'
             :c.is_system?'<span class="defbadge">system</span>'
                        :`<button class="del" onclick="delWorkspace('${c.case_id}','${nm}',event)">delete</button>`}
         </div></div>
-      <div class="meta">${c.members} run(s)</div></div>`;}).join('')||'<i style="color:var(--muted)">no workspaces yet</i>';
+      <div class="meta">${c.members} run(s)</div></div>`;}).join('')||'<i style="color:var(--muted)">no cases yet</i>';
     if(cb)cb();
   });
 }

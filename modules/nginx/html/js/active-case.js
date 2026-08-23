@@ -110,7 +110,7 @@
         if (!d || d.code !== 'workspace_system_blocked') return resp;
         return _ensureDefaultCaseId().then(function (def) {
           if (def && get() !== def) {
-            set(def);   // move active workspace -> Default
+            set(def);   // move active case -> Default
             // Retry once with X-Case-Id FORCED to Default. The first attempt
             // already stamped the stale System id onto init.headers, so we must
             // overwrite it (the hook only sets the header when absent). Use the
@@ -123,8 +123,8 @@
           }
           // Couldn't resolve Default (or already there) — surface the message.
           _showWorkspaceBlocked(d.error ||
-            'This action runs against an investigation workspace, not System. ' +
-            'Switch to or create an investigation workspace first.');
+            'This action runs against an investigation case, not System. ' +
+            'Switch to or create an investigation case first.');
           return resp;
         });
       }).catch(function () { return resp; });   // non-JSON 409 — pass through
@@ -192,8 +192,8 @@
         if (def) { set(def); return false; }   // redirect to Default, then proceed
         // No Default to fall back to — block with the alert rather than run it in System.
         _showWorkspaceBlocked(msg ||
-          'This action runs against an investigation workspace, not System. ' +
-          'Switch to or create an investigation workspace first.');
+          'This action runs against an investigation case, not System. ' +
+          'Switch to or create an investigation case first.');
         return true;
       }
     } catch (e) { /* on any error, don't block — fall through to the backend 409 */ }
@@ -239,15 +239,15 @@
       `<option value="${c.case_id}" ${c.case_id === id ? 'selected' : ''}>` +
       `${c.is_default ? '★ ' : c.is_system ? '⚙ ' : ''}${escapeHtml(c.name || c.case_id)}</option>`).join('');
     el.innerHTML =
-      `<span style="font-size:12px;color:var(--muted,#8b949e)">Workspace</span>
+      `<span style="font-size:12px;color:var(--muted,#8b949e)">Case</span>
        <select class="ac-select" style="width:auto;min-width:160px">${options}
-         <option value="__new__">＋ New workspace…</option></select>
+         <option value="__new__">＋ New case…</option></select>
        ${opts.manageLink === false ? '' :
-        '<a href="/cases.html" title="Manage workspaces" style="font-size:12px">Manage</a>'}`;
+        '<a href="/cases.html" title="Manage cases" style="font-size:12px">Manage</a>'}`;
     const sel = el.querySelector('.ac-select');
     sel.addEventListener('change', async () => {
       if (sel.value === '__new__') {
-        const name = (prompt('New workspace name (e.g. GOOGLE IR 05-03-2026):') || '').trim();
+        const name = (prompt('New case name (e.g. GOOGLE IR 05-03-2026):') || '').trim();
         if (!name) { sel.value = id; return; }
         const res = await createCase(name);
         if (res && res.case_id) { set(res.case_id); location.reload(); }
