@@ -765,8 +765,16 @@ function reportAirGap(md, ls){
   else { airgap=false; tailDetail=''; }
   if(!airgap) return {airgap:false, detail:''};
   if(ls && ls.available===false && (ls.reason||ls.fix)){
+    // live check currently failing — the freshest, most actionable reason
     const reason=(ls.reason||'').replace(/[.\s]*$/,'')+'.';
     return {airgap:true, detail:reason+(ls.fix?(' '+ls.fix):'')};
+  }
+  if(ls && ls.available===true){
+    // Config AND a live probe both say narration would work RIGHT NOW —
+    // whatever this report's own tail says failed (a dead key, no credit…)
+    // may no longer be true, e.g. the operator just fixed it. Repeating that
+    // stale reason here would read as "still broken" when it plainly isn't.
+    return {airgap:true, detail:'A model is reachable now — click Regenerate report below for an AI-narrated version.'};
   }
   return {airgap:true, detail:tailDetail||'No live narration was requested for this report.'};
 }
