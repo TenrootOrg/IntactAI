@@ -73,7 +73,6 @@ SCENARIOS = [
 
     {"name": "cli-upgrade", "install_from": "OLDEST", "install_mode": "online",
      "modules": "all", "route": "cli",
-     "extra": "--only portainer --reinstall portainer",
      "proves": "the upgrade path the README documents to operators, run from "
                "the oldest installable box — safe to test from here because "
                "the box's own engine is never invoked (see _shell_route's "
