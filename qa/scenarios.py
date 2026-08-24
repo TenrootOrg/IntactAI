@@ -36,7 +36,38 @@ OLDEST_WITHOUT_ENGINE = "intact-20260726"
 # The first release that carries an on-disk engine. A dashboard upgrade runs ON
 # the box, so reaching it is what lets the UI routes be tested from a version
 # that has one.
+#
+# NOT used as ui-online-full's hop target (see FIRST_WITH_SCOPED_FETCH below)
+# even though it sounds like the obvious choice. intact-20260811 predates BOTH
+# the scoped-verification fix (fba50cb6, 2026-08-15) and
+# scripts/bootstrap_upgrade.sh itself (2026-08-16) -- its own
+# lib/upgrade/package.sh runs before any hop reaches the target release's
+# code, downloads exactly the --only subset the dashboard asked for, then
+# verifies that subset against the FULL release manifest and refuses
+# everything it never fetched. Reported live (an operator's box, and
+# independently this e2e matrix) and root-caused 2026-08-24
+# (upgrade_routes.py's _installed_engine_needs_full_fetch commit).
+#
+# This is NOT fixable by any code change: the box that answers
+# /api/upgrade/online when it is genuinely at intact-20260811 is running
+# intact-20260811's OWN already-published backend image, which can never be
+# patched retroactively. A box already stuck there has two paths that work
+# TODAY without needing any fix -- the CLI route (downloads and runs the
+# target's own tree directly, never touching the old engine) or Import
+# Package with no module ticked (applies the whole package as one unit, so
+# there is no partial fetch to mismatch) -- either one moves it past 0811
+# once, after which Online Upgrade works normally forever. Not re-tested
+# here because there is nothing left to discover by re-running it: the
+# mechanism is understood, confirmed, and permanent.
 FIRST_WITH_ENGINE = "intact-20260811"
+
+# The first release where a genuinely-online dashboard upgrade can work end to
+# end: it carries both the engine (bootstrap_upgrade.sh) and the scoped-
+# verification fix FIRST_WITH_ENGINE (2026-08-13) predates. This is what
+# ui-online-full and ui-import-full actually hop through -- proving the
+# dashboard route works from the oldest release it CAN work from, rather than
+# re-proving the permanent 0811 gap documented above on every run.
+FIRST_WITH_SCOPED_FETCH = "intact-20260818"
 
 # Roles a scenario may name instead of a tag. The workflow resolves these at
 # dispatch time; PREVIOUS comes from the release list, the rest are the pins
@@ -45,6 +76,7 @@ ROLES = {
     "OLDEST": OLDEST_INSTALLABLE,
     "OLDEST_NO_ENGINE": OLDEST_WITHOUT_ENGINE,
     "FIRST_ENGINE": FIRST_WITH_ENGINE,
+    "FIRST_SCOPED_FETCH": FIRST_WITH_SCOPED_FETCH,
     "PREVIOUS": None,          # resolved from the releases list at run time
 }
 
@@ -84,24 +116,18 @@ SCENARIOS = [
      "modules": "all", "route": "bootstrap",
      "proves": "a box too old to have an engine can still be moved"},
 
-    # KNOWN RED, and deliberately not worked around.
-    #
-    # intact-20260811 has no partial-fetch branch in lib/upgrade/package.sh:
-    # `INTACT_RELEASE_ONLY_MODULES` appears there zero times. The dashboard
-    # route downloads only the modules the plan names, then 0811 verifies the
-    # merged manifest for ALL of them, finds the ones it never fetched missing,
-    # and refuses its own package. The box runs 0811's upkg_acquire before it
-    # can hand over to the target's code, so nothing in this tree can reach it.
-    #
-    # It is already fixed here — that branch exists in the current engine — so
-    # this scenario turns green on its own the day the matrix hops through a
-    # release that carries the fix. Nobody should spend an afternoon
-    # rediagnosing it before then, and nothing should be special-cased to make
-    # a dead release pass.
+    # Hops via FIRST_SCOPED_FETCH (intact-20260818), not FIRST_ENGINE
+    # (intact-20260811) — see FIRST_WITH_ENGINE's own comment above for why
+    # 0811 specifically can never pass this route, permanently, by design of
+    # what a frozen release is. This scenario proves the dashboard route
+    # works from the oldest release it CAN work from, not the oldest release
+    # that merely has some form of engine.
     {"name": "ui-online-full", "install_from": "OLDEST_NO_ENGINE",
      "install_mode": "online", "modules": "shipped", "route": "ui_online",
-     "hop_via": "FIRST_ENGINE",
-     "proves": "the dashboard upgrade, from a box that genuinely has an engine"},
+     "hop_via": "FIRST_SCOPED_FETCH",
+     "proves": "the dashboard upgrade works end to end from the oldest "
+               "release that can actually run it (intact-20260818 forward) "
+               "to the latest — every currently-supported box is covered"},
 
     {"name": "ui-import-full", "install_from": "OLDEST_NO_ENGINE",
      "install_mode": "online", "modules": "shipped", "route": "ui_import",
