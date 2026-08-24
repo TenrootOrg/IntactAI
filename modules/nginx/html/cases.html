@@ -147,9 +147,14 @@
   .agbanner .agdetail{color:var(--tx);font-size:12px;margin-top:5px}
   .agbanner .agaction{color:var(--muted);font-size:11.5px;margin-top:6px;line-height:1.5}
   /* Same block, blue instead of amber — a state to notice, not a warning. Used
-     while a report is actively generating in the background. */
-  .agbanner.info{border-color:rgba(88,166,255,.45);background:rgba(88,166,255,.08)}
-  .agbanner.info .agtitle{color:var(--info)}
+     while a report is actively generating in the background. ONE compound
+     class name, not "agbanner info" as two classes — .info already exists on
+     this page (a 15x15px circular tooltip-icon badge) and, unqualified,
+     silently won the cascade for width/height/border-radius/display on
+     anything else carrying it, squashing this banner into a 15px circle with
+     its text overflowing everywhere. */
+  .agbanner-live{border-color:rgba(88,166,255,.45);background:rgba(88,166,255,.08)}
+  .agbanner-live .agtitle{color:var(--info)}
   #cf-modules{display:flex;flex-direction:column;gap:5px}
   .modrow{display:flex;align-items:center;gap:9px;padding:8px 10px;border:1px solid var(--bd);border-radius:7px;background:var(--panel2);cursor:pointer;font-size:13px;transition:border-color .12s,background .12s}
   .modrow input{width:auto;margin:0;flex:none}
@@ -827,7 +832,7 @@ function genStatusHtml(startedAt){
   const started = startedAt ? new Date(startedAt+'Z') : null;
   const mins = started ? Math.max(0, Math.round((Date.now()-started.getTime())/60000)) : 0;
   const since = started ? (mins<1 ? 'just started' : `running ${mins} min`) : 'starting…';
-  return `<div class="agbanner info">
+  return `<div class="agbanner agbanner-live">
       <div class="agtitle">⏳ Sending case data to the model — ${esc(since)}</div>
       <div class="agdetail">A full case is a large payload and often two sequential model calls (narrative, then advisory) — this commonly takes several minutes, longer for a large case.</div>
       <div class="agaction">No need to wait here — the report refreshes on its own the moment it's ready. Feel free to switch tabs or cases.</div>
@@ -859,14 +864,17 @@ function pollReportGen(id){
         }
         return;
       }
-      // Merge the fresh flags into curInfo and redraw the WHOLE tab each tick
-      // (not just patch the status text) — that's what keeps the Regenerate
-      // button disabled/labelled "Generating…" for the entire wait, not just
-      // at the instant the click happened.
+      // Patch ONLY the status banner, never the whole tab. drawTab() rebuilds
+      // the entire #tabc — including the full markdown report body, which can
+      // be 100K+ characters — from scratch. Doing that every 5 seconds while
+      // the operator might be reading, scrolling or selecting text in THAT
+      // SAME report is destructive for no reason: nothing else on the tab
+      // changes while generating, only this banner's elapsed-time text does.
       if(curInfo && curInfo.case_id===id){
         curInfo.report_generating=true;
         curInfo.report_generating_started_at=info.report_generating_started_at;
-        if(tab==='report') drawTab();
+        const gs=$('#genstatus');
+        if(tab==='report' && gs) gs.outerHTML=`<div id="genstatus">${genStatusHtml(info.report_generating_started_at)}</div>`;
       }
     }).catch(()=>{});   // a blip in the poll is not a failure — just try again
   };
@@ -883,7 +891,11 @@ function regenReport(id){
      if(curInfo && curInfo.case_id===id){
        curInfo.report_generating=true;
        curInfo.report_generating_started_at=(r&&r.started_at)||null;
-       if(tab==='report') drawTab();      // show the status bar immediately, don't wait for the first poll tick
+       // Full redraw ONCE here — this is the transition into the generating
+       // state (the button needs to flip to disabled/"Generating…", which
+       // only happens at draw time), unlike the poll ticks above which must
+       // never repeat it.
+       if(tab==='report') drawTab();
      }
      pollReportGen(id);
    })
