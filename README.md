@@ -54,7 +54,7 @@ sudo bash install.sh
 
 ### Air-gapped installation
 
-> Supported from `intact-20260825` onward.
+> Supported from `intact-20260818` onward.
 
 `--package` makes the installer take every image and dependency from the file
 you carry in, never from a registry.
