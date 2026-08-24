@@ -93,6 +93,33 @@ LOCK_PATH = f"{WORKDIR}/data/tmp/upgrade.lock"
 # change.
 BOOTSTRAP_SH = f"{WORKDIR}/scripts/bootstrap_upgrade.sh"
 
+
+def _installed_engine_needs_full_fetch():
+    """True when THIS box's own pre-hop code cannot verify a partial fetch.
+
+    A box installed before 2026-08-15 (fba50cb6, "Scope package-file
+    verification to what --only actually downloaded") has no
+    INTACT_RELEASE_ONLY_MODULES branch in its own lib/upgrade/package.sh.
+    Some of those boxes -- anything older than 2026-08-16's
+    scripts/bootstrap_upgrade.sh -- run that code themselves before the hop
+    ever reaches the target release's engine: given a --only subset, they
+    download exactly that subset, then verify it against the FULL release
+    manifest and refuse everything the subset never fetched --
+    "Package file verification FAILED" on a perfectly healthy release.
+    Confirmed against the actual intact-20260811 tag: the string appears
+    zero times.
+
+    Content-checked, not version-checked, matching every other "does this
+    box support X" question this codebase asks (e.g. lib/upgrade/package.sh's
+    own wrapper-shape detection). A missing file is the oldest case there is.
+    """
+    try:
+        with open(os.path.join(WORKDIR, "lib", "upgrade", "package.sh"), encoding="utf-8") as fh:
+            return "INTACT_RELEASE_ONLY_MODULES" not in fh.read()
+    except OSError:
+        return True
+
+
 # Single-writer gate + run acquisition under one mutex closes the
 # check-then-create TOCTOU on a double-click: two simultaneous requests
 # could both see the lock free before either creates its run.
@@ -634,7 +661,18 @@ def start_online_upgrade():
     if not modules:
         return jsonify({"success": False, "error": "Nothing selected to upgrade"}), 400
 
-    cli_args = [tag, "--only", ",".join(modules)]
+    # Download-side workaround for a box whose own pre-hop code cannot verify
+    # a partial fetch (see _installed_engine_needs_full_fetch). Fetching every
+    # module the release has is the only thing that satisfies its check --
+    # the TARGET engine's plan.sh still applies only what actually differs;
+    # anything already at target skips as a noop exactly as it always did, so
+    # this changes what gets DOWNLOADED, never what gets APPLIED.
+    fetch_modules = modules
+    if _installed_engine_needs_full_fetch():
+        fetch_modules = sorted({row["module"] for row in plan["forced"] + plan["optional"]}
+                               | set(modules))
+
+    cli_args = [tag, "--only", ",".join(fetch_modules)]
     # --only alone is not enough to express "re-apply this one". It selects
     # which modules the run considers; plan.sh then still classifies an
     # already-at-target module as noop and skips it. So a reinstall tick used

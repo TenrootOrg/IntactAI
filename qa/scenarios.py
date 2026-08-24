@@ -71,10 +71,15 @@ SCENARIOS = [
      "modules": "all", "route": None,
      "proves": "the air-gap install; --package diverges from online in ~15 places"},
 
-    {"name": "cli-upgrade", "install_from": None, "install_mode": "online",
+    {"name": "cli-upgrade", "install_from": "OLDEST", "install_mode": "online",
      "modules": "all", "route": "cli",
      "extra": "--only portainer --reinstall portainer",
-     "proves": "the upgrade path the README documents to operators"},
+     "proves": "the upgrade path the README documents to operators, run from "
+               "the oldest installable box — safe to test from here because "
+               "the box's own engine is never invoked (see _shell_route's "
+               "'cli' branch): the operator downloads the TARGET release's "
+               "own tree and runs that, so an old or broken local engine "
+               "plays no part"},
 
     {"name": "bootstrap", "install_from": "OLDEST", "install_mode": "online",
      "modules": "all", "route": "bootstrap",

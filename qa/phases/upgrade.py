@@ -214,12 +214,30 @@ def _shell_route(ctx, cfg, root, route, log_path, detail):
                              package=pkg, extra=cfg.upgrade_extra,
                              tl=ctx.tl, log_path=log_path, script=script)
     else:
-        # pin_engine so this genuinely tests THIS checkout's engine rather than
-        # hopping to the bootstrap. It also disables the flock, which is safe
-        # here only because a scenario owns its whole machine.
+        # The README's documented shape: download the TARGET release's own
+        # tree into its own folder, then run THAT folder's scripts/upgrade.sh
+        # against --root <appliance> -- the appliance's own, possibly very
+        # old, engine is never invoked. Not pinned: a real operator never
+        # sets INTACT_UPGRADE_REEXEC, so the early hop into
+        # scripts/bootstrap_upgrade.sh fires exactly as it would for them
+        # (self-referential and harmless here — it fetches this same
+        # release's own engine asset).
+        script = None
+        if tag:
+            workdir = os.path.join(ctx.run_dir, "artifacts", tag)
+            tree = _download_release_source(workdir, tag)
+            script = os.path.join(tree, "scripts/upgrade.sh")
+            detail["script_from"] = script
+            ctx.check("the release's own tree is on disk",
+                      os.path.isfile(script),
+                      actual=script if os.path.isfile(script) else "no scripts/upgrade.sh",
+                      note="the target release's code is what performs the "
+                           "upgrade, exactly as it does for an operator")
+            if not os.path.isfile(script):
+                return None
         r = up.run_cli(shell, cfg, root, tag=None if pkg else tag, package=pkg,
                        extra=cfg.upgrade_extra, tl=ctx.tl, log_path=log_path,
-                       pin_engine=True)
+                       script=script)
 
     detail["argv"] = " ".join(r.argv[:6]) + " …"
     # Two refusals happen before the log file exists and can only reach stderr,
@@ -758,17 +776,9 @@ def _hop_via(ctx, cfg, root, tag):
     """
     detail = {"tag": tag}
     workdir = os.path.join(ctx.run_dir, "artifacts", tag)
-    os.makedirs(workdir, exist_ok=True)
 
     # 1. the release's own tree — this is what will drive the upgrade
-    src_tgz = os.path.join(workdir, f"{tag}-source.tar.gz")
-    tree = os.path.join(workdir, tag)
-    os.makedirs(tree, exist_ok=True)
-    r = shell.run(["curl", "-fLsS", "--retry", "3", "-o", src_tgz,
-                   _release_source_url(tag)], timeout=900)
-    if r.ok:
-        r = shell.run(["tar", "-xzf", src_tgz, "--strip-components=1",
-                       "-C", tree], timeout=300)
+    tree = _download_release_source(workdir, tag)
     engine = os.path.join(tree, "scripts/upgrade.sh")
     ctx.check(f"hop: {tag}'s own tree is on disk", os.path.isfile(engine),
               actual=engine if os.path.isfile(engine) else "no scripts/upgrade.sh",
@@ -810,6 +820,26 @@ def _hop_via(ctx, cfg, root, tag):
               note="a 0726 box has none, and the dashboard upgrade this "
                    "scenario tests runs from the box itself")
     return detail
+
+
+def _download_release_source(workdir, tag):
+    """Download and unpack a release's own source tree into workdir/<tag>.
+
+    The README's own first step for both Online and Air-gapped upgrades:
+    `curl ... | tar -xzf --strip-components=1 -C <tag>`. Shared by the hop
+    (an old box borrowing a newer tree to get an engine) and the cli route
+    (the documented operator flow itself) — both want the exact same shape.
+    """
+    os.makedirs(workdir, exist_ok=True)
+    src_tgz = os.path.join(workdir, f"{tag}-source.tar.gz")
+    tree = os.path.join(workdir, tag)
+    os.makedirs(tree, exist_ok=True)
+    r = shell.run(["curl", "-fLsS", "--retry", "3", "-o", src_tgz,
+                   _release_source_url(tag)], timeout=900)
+    if r.ok:
+        shell.run(["tar", "-xzf", src_tgz, "--strip-components=1", "-C", tree],
+                  timeout=300)
+    return tree
 
 
 def _release_source_url(tag):
