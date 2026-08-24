@@ -122,6 +122,45 @@ jobs:
           ref: ${{ github.event.release.tag_name || github.event.inputs.tag }}
           fetch-depth: 0
 
+      # THE TAGGED TREE MUST ALREADY NAME ITSELF.
+      #
+      # "Stamp VERSION on the source branch" runs in `publish`, i.e. AFTER the
+      # release exists -- so it stamps the branch for the NEXT release and can
+      # never fix its own tag. If VERSION was not committed before tagging, the
+      # tag (and the source tarball GitHub generates from it) carries the
+      # PREVIOUS release's version.
+      #
+      # That is not cosmetic. install.sh reads this exact file to decide which
+      # release package to download on an online install, and the appliance
+      # reports it as its installed version to both the dashboard
+      # (/api/version) and the upgrade planner. Measured on intact-20260824,
+      # whose tag shipped VERSION=intact-20260818: a clean install of 0824 came
+      # up running 0824's images while telling the operator it was 0818, and
+      # the planner offered an "upgrade" to the release already installed.
+      #
+      # Failing here is loud and early -- before a single asset is built --
+      # instead of silently producing a release that misidentifies itself. The
+      # fix is always the same: commit the VERSION bump, then tag that commit.
+      - name: The tagged tree must name this release
+        env:
+          TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+        run: |
+          TREE_VERSION="$(cat VERSION 2>/dev/null || true)"
+          if [ "$TREE_VERSION" != "$TAG" ]; then
+            echo "::error title=VERSION does not match the tag::The tree at $TAG has VERSION='${TREE_VERSION:-<missing>}'."
+            echo ""
+            echo "  The tag must be cut from a commit whose VERSION already names it."
+            echo "  Stamping happens after publish, so it cannot correct its own tag."
+            echo ""
+            echo "  Fix: on the release branch —"
+            echo "      echo '$TAG' > VERSION"
+            echo "      (and set versions.backend: $TAG in config.yaml)"
+            echo "      git commit -am 'chore: stamp VERSION as $TAG' && git push"
+            echo "  then delete and re-create the $TAG release from that commit."
+            exit 1
+          fi
+          echo "VERSION matches the tag: $TREE_VERSION"
+
       - name: Pin the tag to a commit, once
         id: r
         env:

@@ -229,15 +229,54 @@ remove_images() {
 }
 
 # Remove data directory
+#
+# EVERYTHING under data/, not just *.json. This used to be
+# `rm -rf data/*.json` while logging "Data files removed", which left a
+# measured 7.3G behind on a box that had just been told it was fully
+# uninstalled (2026-08-24):
+#
+#   data/tmp             5.8G   upgrade scratch, extracted packages
+#   data/tools           490M   Velociraptor tool cache
+#   data/cve_cache       358M   CVE feed cache
+#   data/velociraptor    324M   the Velociraptor CA + client installers
+#   data/agentic_cli     309M   vendored LLM CLI
+#   data/fusion_graphs    75M   every case's fused incident graph, by case_id
+#   data/intact.db       944K   secrets (dashboard login, LLM auth), workflows
+#
+# On a DFIR appliance that has held a customer's evidence, "full uninstall"
+# leaving the fused graphs and the stored credentials on disk is the wrong
+# answer -- and the next install silently inherited all of it, so a box
+# believed to be fresh started with the previous one's login and case data.
+#
+# The CONTENTS are removed, not the directory: data/ is a bind-mount source
+# for several containers, and replacing the inode out from under a mount is
+# how you get a container writing into a deleted directory.
 remove_data() {
     log_info "Removing data directory..."
 
-    if [[ -d "${SCRIPT_DIR}/data" ]]; then
-        rm -rf "${SCRIPT_DIR}/data"/*.json 2>/dev/null || true
-        log_success "Data files removed"
-    else
+    if [[ ! -d "${SCRIPT_DIR}/data" ]]; then
         log_info "  Data directory not found"
+        return 0
     fi
+
+    local before
+    before="$(du -sh "${SCRIPT_DIR}/data" 2>/dev/null | cut -f1)"
+
+    # Dotfiles included -- `*` alone misses them, and data/ has had dot-named
+    # scratch in it. Deliberately NOT `rm -rf data` itself; see above.
+    shopt -s dotglob nullglob
+    local entries=("${SCRIPT_DIR}/data"/*)
+    shopt -u dotglob nullglob
+    if (( ${#entries[@]} )); then
+        rm -rf "${entries[@]}" 2>/dev/null || true
+    fi
+
+    # Say what was actually destroyed, and name the irreversible parts rather
+    # than hiding them behind a cheerful one-liner.
+    log_success "Data directory emptied${before:+ (was ${before})}"
+    log_warn "  This included the Velociraptor CA, every fused case graph, and"
+    log_warn "  the backend secrets DB (dashboard login, provider auth)."
+    log_warn "  Enrolled endpoints will not reconnect to a reinstalled server."
 }
 
 # Remove client installers
@@ -277,6 +316,10 @@ clean_all() {
     echo "  - Client installers"
     echo "  - Log files"
     echo "  - /etc/intact-initialized and /opt/sigma-rules"
+    echo "  - EVERYTHING under data/, which is IRREVERSIBLE and includes:"
+    echo "      · every case's fused incident graph (the investigative product)"
+    echo "      · the backend secrets DB — dashboard login and provider auth"
+    echo "      · the Velociraptor CA — enrolled endpoints will NOT reconnect"
     echo "  (Note: .env files and config.yaml are preserved)"
     echo ""
 
