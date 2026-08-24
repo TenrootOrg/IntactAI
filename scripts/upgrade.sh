@@ -136,26 +136,6 @@ for _need in install.sh config.yaml modules; do
             echo "Running the code at ${_CODE_DIR} against --root ${SCRIPT_DIR}," >&2
             echo "and that path is not an Intact.AI appliance -- it needs its own" >&2
             echo "config.yaml and modules/, not this release's." >&2
-            # A COMMON typo, not a hypothetical one: the release and the real
-            # appliance are downloaded as SIBLING folders (this file's own
-            # README section says so), but an operator who `cd`s into the
-            # release first -- the natural thing to do with a folder you just
-            # extracted -- has every reason to type the sibling as "./name"
-            # from there instead of "../name". Check for exactly that one
-            # level up, with the same name, and hand back the fix instead of
-            # leaving them to `ls ..` and work it out by hand.
-            _sib_parent="$(cd -P "$(dirname -- "$SCRIPT_DIR")" 2>/dev/null && pwd || true)"
-            if [ -n "$_sib_parent" ]; then
-                _sib="$(cd -P "${_sib_parent}/../$(basename -- "$SCRIPT_DIR")" 2>/dev/null && pwd || true)"
-                if [ -n "$_sib" ] && [ "$_sib" != "$SCRIPT_DIR" ] \
-                   && [ -e "${_sib}/install.sh" ] && [ -e "${_sib}/config.yaml" ] && [ -e "${_sib}/modules" ]; then
-                    echo >&2
-                    echo "Found a real appliance one level up instead:" >&2
-                    echo "  ${_sib}" >&2
-                    echo "Try:  --root ${_sib}" >&2
-                fi
-            fi
-            unset _sib_parent _sib
         fi
         exit 2
     fi

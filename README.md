@@ -124,44 +124,35 @@ you install and upgrade from packages.
 ## Upgrades
 
 An upgrade runs the **target release's own code** against your live `intact`
-folder. You download the release NEXT TO it (into a folder named for it), `cd`
-into that folder, then run its own `scripts/upgrade.sh` against `--root
-../intact` — the SAME two folders every step below, one level apart. It
-upgrades only the modules whose version differs, so you can jump straight to
-any newer release in one hop. Every command below is copy-paste; **to target a
-different release, replace `intact-20260813` with its tag.**
+folder. You download the release next to it (into a folder named for it), then
+run that release's `scripts/upgrade.sh --root ./intact` — it upgrades only the
+modules whose version differs, so you can jump straight to any newer release in
+one hop. Every command below is copy-paste; **to target a different release,
+replace `intact-20260813` with its tag.**
 
 ```bash
-# download the release NEXT TO ./intact, into a folder named for it, then cd in
+# download the release next to ./intact, into a folder named for it
 curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20260813.tar.gz" -o intact-20260813.tar.gz
 mkdir -p intact-20260813 && tar -xzf intact-20260813.tar.gz --strip-components=1 -C intact-20260813
-cd intact-20260813
 ```
 
 **Online** (the box reaches GitHub):
 
 ```bash
-sudo bash scripts/upgrade.sh --root ../intact
+sudo bash intact-20260813/scripts/upgrade.sh intact-20260813 --root ./intact
 ```
 
-No release tag on that line on purpose: this folder only ever IS the one
-release, so `upgrade.sh` reads it from its own `VERSION` file when none is
-given. (Same thing spelled out: `scripts/upgrade.sh intact-20260813 --root
-../intact`.)
-
-**Air-gapped** — build the carry-in file on any online machine, apply it
-offline. `cd` into the release again on the air-gapped side — same two
-sibling folders there too:
+**Air-gapped** — build the carry-in file on any online machine, apply it offline.
+Each machine is a fresh shell, so the tag is written out in full on both:
 
 ```bash
-# on the ONLINE machine, still inside intact-20260813/: one file with the
-# engine + every image (add module names for a subset, e.g. add  portainer
-# as a last argument)
-bash scripts/prepare_package.sh intact-20260813 .   # -> intact-20260813-package.tar
+# on the ONLINE machine: one file with the engine + every image
+# (add module names for a subset, e.g. add  portainer  as a last argument)
+bash intact-20260813/scripts/prepare_package.sh intact-20260813 .   # -> intact-20260813-package.tar
 
-# carry the  intact-20260813  folder and  intact-20260813-package.tar  to the
-# box. On the AIR-GAPPED box, cd into intact-20260813 the same way, then:
-sudo bash scripts/upgrade.sh --package ../intact-20260813-package.tar --root ../intact
+# carry the  intact-20260813  folder and  intact-20260813-package.tar  to the box,
+# then on the AIR-GAPPED box:
+sudo bash intact-20260813/scripts/upgrade.sh --package intact-20260813-package.tar --root ./intact
 ```
 
 **Pick modules / preview** — add any of these to a run above:
