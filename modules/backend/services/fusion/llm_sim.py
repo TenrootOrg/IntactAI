@@ -1170,6 +1170,17 @@ def llm_error_message(reason: str) -> str:
     return _LLM_ERR_MESSAGES.get(reason, _LLM_ERR_MESSAGES["llm_error"])
 
 
+def classify_llm_failure(exc) -> dict:
+    """Public wrapper: a transport exception -> {code, reason, fix}, the same
+    triple llm_status()/llm_reachability() use — the one place outside this
+    module that needs to classify a LIVE call failure (Settings' Test
+    Connection button) should not reach past the underscore into
+    _classify_llm_error/_llm_reason_text directly."""
+    code = _classify_llm_error(exc)
+    reason, fix = _llm_reason_text(code)
+    return {"code": code, "reason": reason, "fix": fix}
+
+
 def _llm_unavailable_reason():
     """Why no LLM transport is usable (config-time), or None if one is configured.
     Distinguishes an empty key from an unset offline URL so the chat can say which."""

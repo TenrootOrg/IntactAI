@@ -921,11 +921,21 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                 <span x-text="$store.settings.llmTesting ? 'Testing…' : 'Test connection'"></span>
                             </button>
                             <template x-if="$store.settings.llmTestResult">
-                                <span class="text-sm mr-3"
-                                      :class="$store.settings.llmTestResult.success ? 'text-green-400' : 'text-red-400'"
-                                      x-text="$store.settings.llmTestResult.success
-                                        ? ('OK — replied in ' + $store.settings.llmTestResult.elapsed_ms + 'ms')
-                                        : ('Failed: ' + ($store.settings.llmTestResult.error || 'unknown'))"></span>
+                                <span class="text-sm mr-3 inline-flex flex-col align-top">
+                                    <span :class="$store.settings.llmTestResult.success ? 'text-green-400' : 'text-red-400'"
+                                          x-text="$store.settings.llmTestResult.success
+                                            ? ('OK — replied in ' + $store.settings.llmTestResult.elapsed_ms + 'ms')
+                                            : ('Failed: ' + ($store.settings.llmTestResult.error || 'unknown'))"></span>
+                                    <!-- The friendly line above is what's actionable; the raw
+                                         exception (provider, status code, response body) is one
+                                         click away for support/debugging, not shown by default. -->
+                                    <template x-if="!$store.settings.llmTestResult.success && $store.settings.llmTestResult.detail">
+                                        <details class="text-xs text-gray-500 mt-0.5">
+                                            <summary class="cursor-pointer hover:text-gray-400">raw error</summary>
+                                            <span x-text="$store.settings.llmTestResult.detail"></span>
+                                        </details>
+                                    </template>
+                                </span>
                             </template>
                             <!-- The model list, prices and context windows come from the
                                  provider's catalog on disk. Saving refreshes it for the
