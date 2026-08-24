@@ -261,13 +261,25 @@ bootstrap_iris_api_key() {
     # the check via the backend container guarantees we use the same
     # storage layer the runtime uses. If intact_backend isn't up yet we
     # fall through to the bootstrap (the secret simply doesn't exist).
+    #
+    # SENTINEL, not a bare capture. Importing services.storage prints three
+    # banner lines to STDOUT ("[STORAGE] Initializing SQLite storage...",
+    # "[STORAGE] SQLite storage initialized: ...", "[WORKFLOW] Using SQLite +
+    # Elasticsearch storage for workflows"), and a plain $(...) swallows all
+    # of it. With `sys.stdout.write(v or '')` writing NOTHING when there is no
+    # key, `existing` was therefore the banner text -- always non-empty -- so
+    # this guard fired on every box and bootstrap_iris_api_key never ran at
+    # all. Measured on a clean 2026-08-24 install: zero iris rows in the
+    # secrets table and "IRIS API key already in backend secrets DB" in the
+    # same log. Same hazard, same fix, as lib/modules/shared.sh's has_cred
+    # probe, which documents it and already uses this pattern.
     local existing
     existing=$(docker exec intact_backend python3 -c "
 import sys; sys.path.insert(0, '/app')
 from services.storage.secret_store import get_secret
-v = get_secret('iris.administrator.api_key')
-sys.stdout.write(v or '')
-" 2>/dev/null || true)
+print('INTACT_IRISKEY:' + (get_secret('iris.administrator.api_key') or ''))
+" 2>/dev/null | grep -o 'INTACT_IRISKEY:.*' | tail -1 || true)
+    existing="${existing#INTACT_IRISKEY:}"
     if [[ -n "$existing" ]]; then
         log_info "  IRIS API key already in backend secrets DB — skipping bootstrap"
         return 0
@@ -327,13 +339,18 @@ sys.exit(0 if ok else 1)
     # via get_secret to confirm the value actually persisted, so a
     # silent failure here doesn't surface as a runtime IRIS-API error
     # weeks later.
+    # Same sentinel as the guard above, and for the same reason: a bare
+    # capture returns the storage banner glued to the key, so this comparison
+    # could never match even on a perfectly successful write. It was masked
+    # only because the (also unprotected) guard above returned early on every
+    # box, so this line had never once been reached with a real key.
     local persisted
     persisted=$(docker exec intact_backend python3 -c "
 import sys; sys.path.insert(0, '/app')
 from services.storage.secret_store import get_secret
-v = get_secret('iris.administrator.api_key')
-sys.stdout.write(v if v else '')
-" 2>/dev/null)
+print('INTACT_IRISKEY:' + (get_secret('iris.administrator.api_key') or ''))
+" 2>/dev/null | grep -o 'INTACT_IRISKEY:.*' | tail -1)
+    persisted="${persisted#INTACT_IRISKEY:}"
 
     if [[ "$persisted" == "$api_key" ]]; then
         log_success "  IRIS API key persisted to backend secrets table (iris.administrator.api_key) — verified"

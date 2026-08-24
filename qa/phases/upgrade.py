@@ -459,22 +459,17 @@ def _post_upgrade(ctx, cfg, root, detail, rc):
 def _assert_adopted(ctx, root, detail):
     """Prove the newly enabled modules are genuinely installed, not just present.
 
-    IRIS's own API-key bootstrap is recorded, not asserted. lib/upgrade/modules/
-    iris.sh DOES call bootstrap_iris_api_key after IRIS starts (added
-    2026-08-20, c3c01e30) -- the "no counterpart in lib/upgrade" gap this used
-    to name is closed. What is left is a real but different problem:
-    bootstrap_iris_api_key polls up to 5 minutes for IRIS's own Postgres to
-    finish its Alembic migration and seed the administrator row, and on a
-    shared CI runner doing 8 other modules' worth of bootstrapping at the same
-    moment, that budget is not always enough -- while a real box, with more
-    headroom or modules not all landing in the same instant, comfortably
-    clears it. Not reproduced against a real box; only ever seen on the
-    runner. A non-blocking observation until that is confirmed and the
-    timeout is fixed properly, not a "known gap" to keep re-asserting as
-    failed every run.
-
-    VolWeb's equivalent (seed_volweb_admin, seed_yara_rulesets) is asserted
-    normally below -- it has been reliably green, not exempted.
+    The IRIS api-key check is ASSERTED, and it was right to be. It briefly got
+    softened to a non-blocking note on the theory that it only ever failed
+    through CI resource contention -- 8 other modules bootstrapping at once
+    starving bootstrap_iris_api_key's 5-minute poll. That theory was wrong,
+    and a manual install on a real, idle box disproved it: zero iris rows in
+    the secrets table, with "IRIS API key already in backend secrets DB --
+    skipping bootstrap" in the same install log. The cause was deterministic
+    and had nothing to do with timing (a bare $(docker exec ... python3) in
+    lib/modules/iris.sh capturing the storage layer's import banner, so the
+    idempotency guard saw non-empty output and skipped on EVERY box, forever).
+    Fixed 2026-08-24; this assertion is what catches it coming back.
     """
     running = set(shell.run(["docker", "ps", "--format", "{{.Names}}"]).out.splitlines())
     for module in detail.get("enabled_for_adoption") or []:
@@ -485,19 +480,17 @@ def _assert_adopted(ctx, root, detail):
                   any(n in running for n in names),
                   actual=", ".join(n for n in names if n in running) or "none")
 
-    # Recorded, not asserted -- see the docstring above. A future run reading
-    # detail["iris_api_key_rows"] == "0" is the signal to go measure this for
-    # real rather than trust the CI-contention theory forever.
     iris_key = shell.run(["docker", "exec", "intact_backend", "python3", "-c",
                           "import sqlite3;c=sqlite3.connect('/app/data/intact.db');"
                           "print(c.execute(\"select count(*) from secrets where key like '%iris%'\").fetchone()[0])"])
     detail["iris_api_key_rows"] = (iris_key.out or "").strip()
-    if (iris_key.out or "").strip() in ("", "0"):
-        ctx.tl.event("note", detail={
-            "note": "adopt: the backend does not yet hold an IRIS api key "
-                    "(non-blocking, see _assert_adopted's docstring — likely "
-                    "CI resource contention during a 9-module bootstrap, not "
-                    "a product gap)"})
+    ctx.check("adopt: the backend holds an IRIS api key",
+              (iris_key.out or "").strip() not in ("", "0"),
+              actual=(iris_key.out or "").strip() or "no answer",
+              note="bootstrap_iris_api_key's idempotency guard must not be "
+                   "fooled by the storage layer's stdout banner — see "
+                   "lib/modules/iris.sh's sentinel, and lib/modules/shared.sh "
+                   "which documents the same hazard")
 
     # VOLWEB, both halves. These were fixed on the strength of matching the
     # IRIS pattern -- same installer-only caller, same shape -- and NOT on the
