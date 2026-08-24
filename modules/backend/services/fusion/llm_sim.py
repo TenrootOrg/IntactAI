@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+import time
 
 from . import render, budget, severity as sev
 from .correlate import _assets_of, _host_label
@@ -467,6 +469,72 @@ def llm_status() -> dict:
         return {"available": True, "code": code, "reason": "", "fix": ""}
     reason, fix = _llm_reason_text(code)
     return {"available": False, "code": code, "reason": reason, "fix": fix}
+
+
+# ---------------------------------------------------------------------------
+# Live reachability — a THIN, cached layer over llm_status() for the Analysis
+# tab. llm_status() answers "is a model/key configured" for free, from config
+# alone; it deliberately never makes a network call, so a configured key that
+# is dead (revoked, no credit, no route to the provider) still reads as
+# "available". The Case Analysis page calls this on every navigation into the
+# case and every tab switch — cheap when there is nothing to check (no
+# model/key: the answer is already known), and cached per config fingerprint
+# when there is, so clicking through several tabs in a few seconds does not
+# turn into a stream of real provider calls.
+# ---------------------------------------------------------------------------
+_REACH_CACHE: dict = {}
+_REACH_LOCK = threading.Lock()
+_REACH_TTL = 25.0     # feels "live" on normal navigation; bounds provider cost
+
+
+def _reach_fingerprint(cfg) -> str:
+    """Identity of what WOULD be called. A saved-config change (new key, new
+    model, switched provider) must bust the cache immediately — an operator
+    who just fixed their key should see it on the very next tab click, not
+    wait out the TTL."""
+    mode = str(cfg.get("llm_mode", "online")).lower()
+    on = (cfg.get("offline_llm") if mode == "offline" else cfg.get("online_llm")) or {}
+    return "|".join([mode, str(on.get("provider")),
+                     str(on.get("model") or cfg.get("model")),
+                     str(bool(on.get("api_key")))])
+
+
+def llm_reachability() -> dict:
+    """llm_status(), plus a live probe when config says a model/key ARE set.
+
+    Returns the same {available, code, reason, fix} shape with one added key,
+    `checked_live` — False when the answer came from config alone (nothing to
+    probe, or a cached probe), True when a real call was just made.
+    """
+    status = llm_status()
+    if not status["available"]:
+        return {**status, "checked_live": False}          # already known, for free
+
+    cfg = _agentic_cfg()
+    fp = _reach_fingerprint(cfg)
+    now = time.time()
+    with _REACH_LOCK:
+        cached = _REACH_CACHE.get(fp)
+        if cached and (now - cached[0]) < _REACH_TTL:
+            return cached[1]
+
+    try:
+        from services.agentic.analyzers._llm import call_llm
+        probe_cfg = dict(cfg)
+        probe_cfg["max_response_tokens"] = 1        # one token: auth + routing, ~free
+        call_llm("Reply with exactly: OK", "You are a connectivity probe.",
+                {"agentic": probe_cfg})
+        result = {"available": True, "code": LLM_OK, "reason": "", "fix": "",
+                 "checked_live": True}
+    except Exception as e:                            # noqa: BLE001 — every failure is reportable
+        code = _classify_llm_error(e)
+        reason, fix = _llm_reason_text(code)
+        result = {"available": False, "code": code, "reason": reason, "fix": fix,
+                 "checked_live": True}
+
+    with _REACH_LOCK:
+        _REACH_CACHE[fp] = (now, result)
+    return result
 
 
 def _sim_tag() -> str:

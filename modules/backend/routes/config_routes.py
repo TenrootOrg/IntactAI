@@ -577,6 +577,22 @@ def test_llm_connection():
     })
 
 
+@config_bp.route('/api/config/llm/reachability', methods=['GET'])
+def llm_reachability():
+    """Cheap, cached "can the configured model actually be reached RIGHT NOW".
+
+    Unlike /api/config/llm/test (operator-triggered, always live, accepts an
+    unsaved overlay to test before Save), this is polled passively by the Case
+    Analysis page on every navigation into a case and every tab switch, so it
+    must default to near-free: when no model/key is configured it costs nothing
+    (llm_status() already knows that for free), and when one is configured the
+    live probe result is cached briefly — see llm_reachability()'s docstring in
+    llm_sim.py for the caching contract.
+    """
+    from services.fusion import llm_sim
+    return jsonify(llm_sim.llm_reachability())
+
+
 # =============================================================================
 # Frontend Configuration Endpoints
 # =============================================================================

@@ -365,6 +365,21 @@ async function refreshSelector(){
   const bar=$('#wsbar'); if(bar&&window.ActiveCase) await window.ActiveCase.renderCaseSelector(bar,{manageLink:false});
 }
 
+// A configured key can still be dead (revoked, no credit, no route to the
+// provider) — llm_status() (part of the /api/cases/<id> payload) never makes a
+// network call, so it cannot see that. This asks the ONE question it can't:
+// fire-and-forget, never blocks the case from opening, and folds its answer
+// over info.llm_status only if it lands — a slow/offline probe must never make
+// the whole case view wait, and must never turn a known "no live narration was
+// requested" into a scarier "checked, and it's broken" for a page nobody is
+// looking at yet.
+function refreshLlmReachability(){
+  return api('/api/config/llm/reachability').then(r=>{
+    if(curInfo) curInfo.llm_status=r;
+    return r;
+  }).catch(()=>null);
+}
+
 function openCase(id){
   sel=id; loadCases();
   // NOTE: we deliberately do NOT fetch /graph here — it's multi-MB and the tabs
@@ -375,7 +390,12 @@ function openCase(id){
      // fold the report meta (audience/branding/master-prompt) into info for the controls
      info.audience=rep.audience||'both'; info.customer_name=rep.customer_name||'';
      info.tlp=rep.tlp||'AMBER'; info.has_logo=!!rep.has_logo; info.master_prompt=rep.master_prompt||'';
-     render(info,rep.report_md||'',info.counts||{});});
+     render(info,rep.report_md||'',info.counts||{});
+     // Live-check AFTER the case is already on screen, then redraw only the
+     // Analysis tab if it's still the one showing — never re-render a tab the
+     // operator has since navigated away from with a slow probe's late answer.
+     refreshLlmReachability().then(()=>{ if(curInfo && curInfo.case_id===id && tab==='report') drawTab(); });
+   });
 }
 
 // `c` is the lightweight counts object {hosts,entities,links,findings,cross_host}
@@ -585,6 +605,12 @@ function setTab(t){
   // only the #tabc content is — so update the .on class here).
   document.querySelectorAll('.tabs .tab').forEach(el=>el.classList.toggle('on', el.dataset.tab===t));
   drawTab(window._md||'');
+  // Re-check reachability on every section switch (cheap — see llm_sim.py's
+  // 25s cache), then redraw ONLY if the operator is still on Analysis by the
+  // time it answers. Never re-fetch/redraw the tab body itself here — this
+  // must only ever refresh the banner at the top of it.
+  const t0=t;
+  refreshLlmReachability().then(()=>{ if(tab===t0 && t0==='report') drawTab(); });
 }
 function drawTab(md){
   if(md)window._md=md;
@@ -721,13 +747,27 @@ function renderConfig(info){
 // right now. Falls back to llm_status only for a report with no tag at all
 // (empty report, or one written before this existed).
 function reportAirGap(md, ls){
+  // Two different questions, two different sources of truth:
+  //  1. Was THIS report (the markdown on screen) narrated? Only the report's
+  //     OWN trailing tag can answer that — llm_status/reachability describe
+  //     config as of right now, not what was true when this report was built.
+  //  2. Why is that, and what's the current fix? The freshest answer is the
+  //     live reachability check (`ls`), refetched on every navigation — it
+  //     catches a key that's since been added-but-broken, which the report's
+  //     own tag (written before that key existed) cannot know about.
   const det = /\n\n---\n_Deterministic report — ([\s\S]*?)_\n\s*$/.exec(md||'');
-  if(det) return {airgap:true, detail:det[1]};
-  if(/\n\n---\n_Narrative by live LLM/.test(md||'')) return {airgap:false, detail:''};
-  if(ls && ls.available===false){
-    return {airgap:true, detail:(ls.reason||'no model available')+'.'+(ls.fix?(' '+ls.fix):'')};
+  const narrated = /\n\n---\n_Narrative by live LLM/.test(md||'');
+  let airgap, tailDetail;
+  if(det){ airgap=true; tailDetail=det[1]; }
+  else if(narrated){ airgap=false; tailDetail=''; }
+  else if(ls && ls.available===false){ airgap=true; tailDetail=''; }
+  else { airgap=false; tailDetail=''; }
+  if(!airgap) return {airgap:false, detail:''};
+  if(ls && ls.available===false && (ls.reason||ls.fix)){
+    const reason=(ls.reason||'').replace(/[.\s]*$/,'')+'.';
+    return {airgap:true, detail:reason+(ls.fix?(' '+ls.fix):'')};
   }
-  return {airgap:false, detail:''};
+  return {airgap:true, detail:tailDetail||'No live narration was requested for this report.'};
 }
 function renderReport(info){
   const id=info.case_id;
