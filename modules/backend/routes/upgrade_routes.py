@@ -94,6 +94,35 @@ LOCK_PATH = f"{WORKDIR}/data/tmp/upgrade.lock"
 BOOTSTRAP_SH = f"{WORKDIR}/scripts/bootstrap_upgrade.sh"
 
 
+def _plan_bootstrap_sh():
+    """Where a READ-ONLY question (--plan, a package preview) reads the
+    bootstrap from, with the same fallback upgrade_launcher._engine_for_helper
+    already gives the actual apply: a box that predates scripts/
+    bootstrap_upgrade.sh entirely (2026-08-16 -- anything on or before
+    intact-20260811) has none on its own appliance tree, and BOOTSTRAP_SH's
+    hardcoded path has no fallback at all. Confirmed live: --plan against a
+    genuinely bootstrap-less box returns "No such file or directory", 200,
+    no run_id -- which is silent, since a 200 never raises, and looks
+    identical to "nothing to upgrade" everywhere that reads it.
+
+    Resolved to a WORKDIR-relative path (this process's OWN filesystem,
+    for run_command's local subprocess), not HOST_PATH -- the helper
+    container's bundled copy at /app/host-engine is already visible here
+    unchanged, no docker-run path translation needed.
+
+    NOT used by --prepare (see its own refusal below): building a package
+    with the wrong release's packager is a correctness circularity a
+    read-only preview does not have. The bundled bootstrap still only ever
+    fetches and execs the TARGET's own code either way -- the same frozen
+    fetch-verify-exec protocol every bootstrap_upgrade.sh ships, appliance's
+    own or bundled -- so a read-only question gets the same answer from
+    either copy.
+    """
+    if os.path.isfile(BOOTSTRAP_SH):
+        return BOOTSTRAP_SH
+    return upgrade_launcher._BUNDLED_BOOTSTRAP
+
+
 def _installed_engine_needs_full_fetch():
     """True when THIS box's own pre-hop code cannot verify a partial fetch.
 
@@ -342,7 +371,16 @@ def _fetch_plan(tag):
         # --plan, which its args.sh refuses ("give it a tag, not a release
         # tag or --package too") -- found the first time this endpoint ran
         # against a real engine.
-        f"bash {shlex.quote(BOOTSTRAP_SH)} "
+        #
+        # --root explicit, always: the appliance's own bootstrap defaults it
+        # to "wherever this script lives", which happens to BE the appliance
+        # when it is the appliance's own copy -- but the bundled fallback
+        # (_plan_bootstrap_sh) lives at /app/host-engine, and that default
+        # would resolve there instead, refusing with "not an Intact.AI
+        # appliance" the moment the fallback is actually used. Confirmed
+        # live.
+        f"bash {shlex.quote(_plan_bootstrap_sh())} "
+        f"--root {shlex.quote(WORKDIR)} "
         f"--plan {shlex.quote(tag)} --json",
         timeout=120)
 
