@@ -218,7 +218,7 @@ versions:
   # current regex also fails fast on a missing key —
   # services/upgrade/base.set_module_version_in_config — but this protects
   # the OLD code we can't change in an already-deployed release.)
-  backend: 'intact-20260818'
+  backend: 'intact-20260824'
 
   # ── External sidecar pins (postgres / opensearch / redis / nginx / rabbitmq) ──
   # 2026-06-14 refactor: these used to be scraped live from each
