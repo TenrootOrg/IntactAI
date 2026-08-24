@@ -94,12 +94,23 @@ def run_bootstrap(shell, cfg, root, tag=None, package=None, engine=None,
 
 
 def run_cli(shell, cfg, root, tag=None, package=None, extra=(), tl=None,
-            log_path=None, pin_engine=False):
+            log_path=None, pin_engine=False, script=None):
     """scripts/upgrade.sh.
 
     `pin_engine` sets INTACT_UPGRADE_REEXEC=1 so the run uses THIS checkout's
     engine instead of hopping to the bootstrap. It also disables the flock, so
     nothing else may be upgrading at the same time.
+
+    `script` overrides where scripts/upgrade.sh is READ from, exactly like
+    run_bootstrap's own `script` — `--root` still names the appliance either
+    way. Defaults to `root` (the appliance runs its own copy), which is what
+    a pinned-engine caller deliberately wants. The README's documented
+    operator flow is the other shape: download the release into its own
+    folder and run THAT folder's upgrade.sh against --root <appliance>, never
+    pinning the engine — a real operator does not set INTACT_UPGRADE_REEXEC,
+    so the early hop into scripts/bootstrap_upgrade.sh fires exactly as it
+    would for them (self-referential and harmless: it fetches this same
+    release's own engine asset).
     """
     # `sudo env VAR=1 bash ...`, not an env= dict: sudo resets the environment,
     # so a variable set only in the parent never reaches the script. Measured --
@@ -107,7 +118,7 @@ def run_cli(shell, cfg, root, tag=None, package=None, extra=(), tl=None,
     # it filters on os.environ and this variable is not there. The release
     # workflow already uses the `sudo env` form for exactly this variable.
     argv = ["env", "INTACT_UPGRADE_REEXEC=1"] if pin_engine else []
-    argv += ["bash", os.path.join(root, "scripts/upgrade.sh")]
+    argv += ["bash", script or os.path.join(root, "scripts/upgrade.sh")]
     if tag:
         argv.append(tag)
     if package:
