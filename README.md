@@ -131,6 +131,9 @@ one hop. Every command below is copy-paste; **to target a different release,
 replace `intact-20260813` with its tag.**
 
 ```bash
+# from your home directory, so the release lands next to ./intact rather
+# than wherever you happened to be standing
+cd ~
 # download the release next to ./intact, into a folder named for it
 curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20260813.tar.gz" -o intact-20260813.tar.gz
 mkdir -p intact-20260813 && tar -xzf intact-20260813.tar.gz --strip-components=1 -C intact-20260813
