@@ -238,7 +238,7 @@ def main():
 
         # ---- 4. Repack ----------------------------------------------------
         out_path = os.path.abspath(
-            os.path.join(args.out, f"intact-upgrade-{tag}.tar.gz"))
+            os.path.join(args.out, f"{tag}-package.tar.gz"))
         _log(f"Repacking into {out_path} (this takes a few minutes)...")
         # Via the tar CLI, not tarfile: it streams through gzip in a separate
         # process and is markedly faster on a multi-GB tree.

@@ -66,7 +66,7 @@ _note_system_bundle_candidate() {
 # ---------------------------------------------------------------------------
 # Air-gap: install from release assets instead of the internet.
 #
-#   sudo bash install.sh --package /path/to/intact-upgrade-<tag>.tar
+#   sudo bash install.sh --package /path/to/<tag>-package.tar
 #   sudo bash install.sh --package /path/to/dir-of-module-assets/
 #   sudo bash install.sh --package a.tar --package b.tar           (repeatable)
 #
@@ -122,7 +122,7 @@ parse_install_args() {
                 echo ""
                 echo "  --package  install offline from release assets; no registry"
                 echo "             access is attempted. Accepts the single bundle"
-                echo "             (intact-upgrade-<tag>.tar), a directory of"
+                echo "             (<tag>-package.tar), a directory of"
                 echo "             per-module assets, or the flag repeated."
                 echo ""
                 echo "  With no arguments the release assets are downloaded from"

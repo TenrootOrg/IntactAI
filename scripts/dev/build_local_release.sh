@@ -2,7 +2,7 @@
 # DEV-ONLY TOOL. Not part of the shipped product, not run by CI, not run by
 # install.sh/upgrade — this exists purely so changes to the backend/frontend
 # can be exercised through the REAL package + apply pipeline (a genuine
-# intact-upgrade-<tag>.tar, applied through the real offline-upgrade code
+# <tag>-package.tar, applied through the real offline-upgrade code
 # path) without cutting an actual GitHub release for every iteration, and
 # without re-downloading the ~5.5G of module assets that never change
 # between backend-only edits.
@@ -21,7 +21,7 @@
 #      building. Docker's layer cache means this is fast unless
 #      requirements*.txt actually changed.
 #   3. The fresh `intact` asset + the cached 8 are combined into one real
-#      intact-upgrade-<tag>.tar, ready for the normal offline-upgrade apply
+#      <tag>-package.tar, ready for the normal offline-upgrade apply
 #      path (or Import Upgrade Package in the dashboard).
 #
 # Usage: scripts/dev/build_local_release.sh <tag> [out_dir]
@@ -57,7 +57,7 @@ if [ ! -f "$CACHE_TAR" ]; then
     tmp="$CACHE_DIR/.download"
     rm -rf "$tmp"; mkdir -p "$tmp"
     "$REPO_DIR/scripts/prepare_package.sh" "$TAG" "$tmp" "$CACHED_MODULES"
-    found="$(find "$tmp" -maxdepth 1 -name "intact-upgrade-$TAG.tar*" | head -1)"
+    found="$(find "$tmp" -maxdepth 1 -name "$TAG-package.tar*" | head -1)"
     if [ -z "$found" ]; then
         err "prepare_package.sh did not produce the expected output in $tmp"
         exit 1
@@ -169,7 +169,7 @@ done < <(find "$WORK" -maxdepth 1 \( -name "$TAG-*.tar.gz" -o -name "$TAG-*.tar"
 WRAP_EXTRA=()
 [ -f "$WORK/$TAG.manifest.json" ] && WRAP_EXTRA+=("$TAG.manifest.json")
 
-FINAL="$OUT_DIR/intact-upgrade-$TAG-local.tar"
+FINAL="$OUT_DIR/$TAG-package-local.tar"
 log "wrapping final package -> $FINAL"
 tar -cf "$FINAL" -C "$WORK" "$TAG.index.json" "${WRAP_EXTRA[@]}" "${ASSETS[@]}"
 

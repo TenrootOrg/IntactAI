@@ -105,7 +105,7 @@ The air-gapped round trip, both halves running the target's code:
   bash bootstrap_upgrade.sh intact-20260813 --prepare /media/usb
 
   # on the air-gapped box
-  sudo bash bootstrap_upgrade.sh --package /media/usb/intact-upgrade-intact-20260813.tar
+  sudo bash bootstrap_upgrade.sh --package /media/usb/intact-20260813-package.tar
 EOF
 }
 
