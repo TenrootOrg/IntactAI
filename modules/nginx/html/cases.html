@@ -136,6 +136,16 @@
   .cfgcol h4{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin:2px 0 6px}
   .cfgactions{display:flex;gap:10px;padding:0 14px 14px;align-items:center;border-top:1px solid var(--bd);padding-top:12px}
   .modwarn{font-size:11px;color:var(--med);line-height:1.35;margin:0 0 6px;padding:6px 8px;border:1px solid rgba(210,153,34,.35);background:rgba(210,153,34,.08);border-radius:6px}
+  /* Air-Gap Template banner: the report was written from the correlated graph
+     alone, no model call made. Deliberately the loudest thing on the tab —
+     the operator needs to know BEFORE reading a report why it has no narrative,
+     not discover it in a footnote after finishing it. */
+  .agbanner{margin:0 0 14px;padding:12px 14px;border:1px solid rgba(210,153,34,.45);
+            background:rgba(210,153,34,.10);border-radius:8px}
+  .agbanner .agtitle{font-weight:700;color:var(--med);font-size:13px;display:flex;
+                      align-items:center;gap:7px}
+  .agbanner .agdetail{color:var(--tx);font-size:12px;margin-top:5px}
+  .agbanner .agaction{color:var(--muted);font-size:11.5px;margin-top:6px;line-height:1.5}
   #cf-modules{display:flex;flex-direction:column;gap:5px}
   .modrow{display:flex;align-items:center;gap:9px;padding:8px 10px;border:1px solid var(--bd);border-radius:7px;background:var(--panel2);cursor:pointer;font-size:13px;transition:border-color .12s,background .12s}
   .modrow input{width:auto;margin:0;flex:none}
@@ -702,24 +712,46 @@ function renderConfig(info){
     flatpickr('#cf-start',fp); flatpickr('#cf-end',fp);
   }
 }
+// Was this REPORT actually LLM-narrated, and if not, why? Read from the report's
+// own trailing tag (generate_report always appends one — see llm_sim.py's
+// _sim_tag / the except-branch tail) rather than trusting `llm_status` alone:
+// config can say a model+key are set while the report on screen was written
+// BEFORE that was true (or after a call failed mid-flight), and the operator
+// needs the banner to match what they are about to read, not what config says
+// right now. Falls back to llm_status only for a report with no tag at all
+// (empty report, or one written before this existed).
+function reportAirGap(md, ls){
+  const det = /\n\n---\n_Deterministic report — ([\s\S]*?)_\n\s*$/.exec(md||'');
+  if(det) return {airgap:true, detail:det[1]};
+  if(/\n\n---\n_Narrative by live LLM/.test(md||'')) return {airgap:false, detail:''};
+  if(ls && ls.available===false){
+    return {airgap:true, detail:(ls.reason||'no model available')+'.'+(ls.fix?(' '+ls.fix):'')};
+  }
+  return {airgap:false, detail:''};
+}
 function renderReport(info){
   const id=info.case_id;
   const dl=(p,l)=>`<a class="dlbtn" href="/api/cases/${id}${p}" target="_blank">${l}</a>`;
-  // Say plainly why this report is deterministic. It used to look identical
-  // whether the operator had ticked Air-gap analysis, had no model configured,
-  // had no API key, or had a key the box could not reach — four different
-  // problems, one silent template, and the only hint was a line at the very
-  // bottom telling them to set a flag that no longer does anything.
-  const ls = info.llm_status || {};
-  const note = ls.available ? '' :
-    `<div style="margin:0 0 10px;padding:8px 12px;border:1px solid var(--muted,#6e7681);border-radius:6px;background:#161b22;color:var(--muted);font-size:12px">
-       <b style="color:var(--tx,#e6edf3)">Written without a model — ${esc(ls.reason||'no model available')}.</b> ${esc(ls.fix||'')}
-     </div>`;
-  $('#tabc').innerHTML=`<div class="row" style="gap:8px;margin-bottom:10px;align-items:center">
+  const md=window._md||'';
+  const ag=reportAirGap(md, info.llm_status);
+  // The loudest thing on the tab, and the FIRST thing rendered: an operator
+  // reading a report with no narrative needs to know before they start reading
+  // it, not stumble on a footnote after they finish. Framed as the automatic
+  // default it is — there is no per-case switch to flip; a model + API key in
+  // Settings ▸ Agentic is what turns narration on.
+  const banner = ag.airgap ? `<div class="agbanner">
+      <div class="agtitle">🔒 Air-Gap Template — deterministic report, no model call made</div>
+      <div class="agdetail">${esc(ag.detail)}</div>
+      <div class="agaction">This is the automatic report when no model is reachable — nothing to switch on here. To get an AI-narrated report instead: add a model and API key in <b>Settings ▸ Agentic</b> (this appliance needs an internet connection), then click <b>Regenerate report</b> below.</div>
+    </div>` : '';
+  // The report's own tail already told the story above; showing it again as a
+  // raw markdown footnote would just repeat it in a smaller, unstyled font.
+  const mdBody = md.replace(/\n\n---\n_(?:Deterministic report — [\s\S]*?|Narrative by live LLM[\s\S]*?)_\n\s*$/, '');
+  $('#tabc').innerHTML=`${banner}<div class="row" style="gap:8px;margin-bottom:10px;align-items:center">
     <button class="dlbtn" onclick="regenReport('${id}')" title="Rebuild the report from the current case state (applies your Timeline confirmations). Generated automatically on first scan; after that only when you click here.">↻ Regenerate report</button>
     ${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}
     <span style="color:var(--muted);font-size:11px;margin-left:auto">auto-generated on first scan · regenerate to apply Timeline changes</span>
-  </div>${note}<div class="md">${mdToHtml(window._md||'')}</div>`;
+  </div><div class="md">${mdToHtml(mdBody)}</div>`;
   clampEvidence($('#tabc'));
 }
 function regenReport(id){
