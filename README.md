@@ -126,10 +126,12 @@ you install and upgrade from packages.
 An upgrade runs the **target release's own code** against your live `intact`
 folder. You download the release NEXT TO it (into a folder named for it), `cd`
 into that folder, then run its own `scripts/upgrade.sh` against `--root
-../intact` — the SAME two folders every step below, one level apart. It
-upgrades only the modules whose version differs, so you can jump straight to
-any newer release in one hop. Every command below is copy-paste; **to target a
-different release, replace `intact-20260813` with its tag.**
+$APPLIANCE` — the SAME two folders every step below, one level apart, with
+`$APPLIANCE` resolved to an absolute path so it stays correct regardless of
+where you are when you run the next command. It upgrades only the modules
+whose version differs, so you can jump straight to any newer release in one
+hop. Every command below is copy-paste; **to target a different release,
+replace `intact-20260813` with its tag.**
 
 ```bash
 # download the release NEXT TO ./intact, into a folder named for it, then cd in
@@ -141,13 +143,18 @@ cd intact-20260813
 **Online** (the box reaches GitHub):
 
 ```bash
-sudo bash scripts/upgrade.sh --root ../intact
+APPLIANCE="$(cd ../intact && pwd)" && sudo bash scripts/upgrade.sh --root "$APPLIANCE"
 ```
 
-No release tag on that line on purpose: this folder only ever IS the one
-release, so `upgrade.sh` reads it from its own `VERSION` file when none is
-given. (Same thing spelled out: `scripts/upgrade.sh intact-20260813 --root
-../intact`.)
+`intact` is the only name that never changes, so `$APPLIANCE` doesn't need a
+variable for anything BUT resolving it to an absolute path — `cd`ing there
+and taking `pwd` means it is correct even if you `cd` elsewhere before
+running the second half, and if `../intact` is not there, the `cd` fails and
+the `&&` stops before `upgrade.sh` ever runs, instead of quietly upgrading
+the wrong folder. No release tag on that line on purpose either: this folder
+only ever IS the one release, so `upgrade.sh` reads it from its own
+`VERSION` file when none is given. (Same thing spelled out:
+`scripts/upgrade.sh intact-20260813 --root "$APPLIANCE"`.)
 
 **Air-gapped** — build the carry-in file on any online machine, apply it
 offline. `cd` into the release again on the air-gapped side — same two
@@ -161,7 +168,7 @@ bash scripts/prepare_package.sh intact-20260813 .   # -> intact-20260813-package
 
 # carry the  intact-20260813  folder and  intact-20260813-package.tar  to the
 # box. On the AIR-GAPPED box, cd into intact-20260813 the same way, then:
-sudo bash scripts/upgrade.sh --package ../intact-20260813-package.tar --root ../intact
+APPLIANCE="$(cd ../intact && pwd)" && sudo bash scripts/upgrade.sh --package ../intact-20260813-package.tar --root "$APPLIANCE"
 ```
 
 **Pick modules / preview** — add any of these to a run above:
