@@ -705,10 +705,6 @@ function renderConfig(info){
 function renderReport(info){
   const id=info.case_id;
   const dl=(p,l)=>`<a class="dlbtn" href="/api/cases/${id}${p}" target="_blank">${l}</a>`;
-  const adv=info.analysis||{}; const ig=(adv.incident_groups||[]);
-  let advHtml='';
-  if(ig.length){advHtml=`<details style="margin:10px 0"><summary style="cursor:pointer;color:var(--med)">⚠ Advisory — ${ig.length} incident group(s) (analyst-verify, not a determination)</summary>`+
-    ig.map(x=>`<div class="caseitem"><div class="nm">${escape(x.name||'group')}</div><div class="meta">${(x.finding_ids||[]).length} findings — ${escape(x.rationale||'')}</div></div>`).join('')+`</details>`;}
   // Say plainly why this report is deterministic. It used to look identical
   // whether the operator had ticked Air-gap analysis, had no model configured,
   // had no API key, or had a key the box could not reach — four different
@@ -723,7 +719,7 @@ function renderReport(info){
     <button class="dlbtn" onclick="regenReport('${id}')" title="Rebuild the report from the current case state (applies your Timeline confirmations). Generated automatically on first scan; after that only when you click here.">↻ Regenerate report</button>
     ${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}
     <span style="color:var(--muted);font-size:11px;margin-left:auto">auto-generated on first scan · regenerate to apply Timeline changes</span>
-  </div>${note}${advHtml}<div class="md">${mdToHtml(window._md||'')}</div>`;
+  </div>${note}<div class="md">${mdToHtml(window._md||'')}</div>`;
   clampEvidence($('#tabc'));
 }
 function regenReport(id){
