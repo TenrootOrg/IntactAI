@@ -67,12 +67,15 @@ On a machine with internet:
 curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20260813.tar.gz" -o intact-20260813.tar.gz
 mkdir -p intact && tar -xzf intact-20260813.tar.gz --strip-components=1 -C intact
 bash intact/scripts/prepare_package.sh intact-20260813 .   # writes intact-upgrade-intact-20260813.tar
+tar -czf intact.tar.gz intact                               # one file to carry across
 ```
 
-Carry **both** the `intact` folder and `intact-upgrade-intact-20260813.tar` across
-(`install.sh` lives in the folder). Then on the air-gapped box:
+Carry **both** `intact.tar.gz` and `intact-upgrade-intact-20260813.tar` across —
+two files, whatever the transfer medium (USB, DVD, ...). Then on the air-gapped
+box:
 
 ```bash
+tar -xzf intact.tar.gz
 cd intact
 nano config.yaml                                    # IP/domain and passwords
 sudo bash install.sh --package ../intact-upgrade-intact-20260813.tar
