@@ -565,16 +565,43 @@ def test_llm_connection():
         reply = call_llm("Reply with exactly: OK", "You are a connectivity probe.",
                          {'agentic': agentic})
     except Exception as e:      # noqa: BLE001 — every failure is a REPORTABLE result
+        # Classify through the SAME vocabulary chat, report generation and the
+        # Analysis-tab reachability banner already use, so an operator sees one
+        # consistent, actionable sentence wherever a call fails — not the raw
+        # exception here and a friendly reason everywhere else. This is exactly
+        # where "no_credit" was found missing: OpenRouter's 402 landed as a bare
+        # APIStatusError dump ("Insufficient credits...") instead of "the key is
+        # fine, top up or switch provider" — see _classify_llm_error's docstring.
+        from services.fusion import llm_sim
+        cls = llm_sim.classify_llm_failure(e)
+        friendly = cls["reason"] + (f" {cls['fix']}" if cls["fix"] else "")
         return jsonify({
             "success": False, "stage": "prompt", "provider": provider, "mode": mode,
             "elapsed_ms": int((_time.time() - started) * 1000),
-            "error": f"{type(e).__name__}: {e}"[:400],
+            "error": friendly, "code": cls["code"],
+            "detail": f"{type(e).__name__}: {e}"[:400],
         })
     return jsonify({
         "success": True, "stage": "prompt", "provider": provider, "mode": mode,
         "elapsed_ms": int((_time.time() - started) * 1000),
         "reply": (reply or "")[:200],
     })
+
+
+@config_bp.route('/api/config/llm/reachability', methods=['GET'])
+def llm_reachability():
+    """Cheap, cached "can the configured model actually be reached RIGHT NOW".
+
+    Unlike /api/config/llm/test (operator-triggered, always live, accepts an
+    unsaved overlay to test before Save), this is polled passively by the Case
+    Analysis page on every navigation into a case and every tab switch, so it
+    must default to near-free: when no model/key is configured it costs nothing
+    (llm_status() already knows that for free), and when one is configured the
+    live probe result is cached briefly — see llm_reachability()'s docstring in
+    llm_sim.py for the caching contract.
+    """
+    from services.fusion import llm_sim
+    return jsonify(llm_sim.llm_reachability())
 
 
 # =============================================================================

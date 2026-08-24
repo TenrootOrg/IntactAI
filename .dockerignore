@@ -1,25 +1,15 @@
-# Build-context hygiene for the backend image (built with the repo tree as the
-# docker context). The backend Dockerfile only COPYs `config.yaml` and
-# `modules/backend/{requirements*,install_deps.py,config.py,app.py,services,
-# routes,scripts,config}` — nothing below is ever needed in the context, so
-# keeping it out shrinks the context and (for .env) keeps secrets out of it.
-# NOTE: must never exclude config.yaml or anything under modules/backend/.
-
-.git
-.github
-**/__pycache__
-**/*.py[cod]
-**/.env
-**/.env.*
-*.log
+# The backend image's build context is the repo root (see modules/backend/
+# Dockerfile's COPY list: config.yaml, modules/backend, lib/, scripts/).
+#
+# data/ is none of that — it is the appliance's live state: intact.db, the fused
+# graph sidecars, and the upgrade engine's temp dirs. On a box that has run an
+# upgrade it is over a gigabyte, some of it root-owned, so `docker build` on the
+# appliance failed outright ("error from sender: permission denied") and every
+# successful build before that had been shipping the live case database to the
+# docker daemon for no reason.
 data/
-backups/
-docs/
-node_modules/
-.venv/
-venv/
-client_installers/
-modules/nginx/html/downloads/
-modules/velociraptor/bundled_artifacts/
-*.tar
-*.tar.gz
+
+# Never ship local operator state or build spoil into a context either.
+*.upgrade-bak-*
+__pycache__/
+*.pyc

@@ -247,9 +247,17 @@ def _linux_susp(text):
 
 
 def _account_eid(asset, domain, user):
-    """Domain accounts -> global node (cross-host); local -> asset-scoped."""
+    """Domain accounts -> global node (cross-host); local -> asset-scoped.
+
+    A qualified `DOMAIN\\user` arriving in `user` with no separate `domain` is
+    pulled apart first (keys.split_domain_user). Without that it never reached
+    the domain branch below and got a second, host-scoped entity for an account
+    that already existed globally — the same person twice in the Identities tab.
+    """
     d = _scalar(domain).lower()
     u = _scalar(user).lower()
+    if not d:
+        d, u = keys.split_domain_user(u)
     if not u or u in ("-", "n/a"):
         return None, d, u
     if d and d not in _LOCAL_DOMAINS and not d.endswith("$"):

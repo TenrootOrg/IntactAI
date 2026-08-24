@@ -39,7 +39,7 @@
                         <div class="flex items-center justify-between mb-4">
                             <div>
                                 <h3 class="text-lg font-semibold text-white">System Actions</h3>
-                                <p class="text-sm text-gray-400">History of system operations — maintenance, upgrades, package prepare/import, support bundle, purge, and settings saves.</p>
+                                <p class="text-sm text-gray-400">History of system operations — maintenance, upgrades, package prepare/import, support bundle, case export/import, purge, and settings saves.</p>
                             </div>
                             <button @click="$store.settings.loadActions()" class="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-gray-200 rounded">↻ Refresh</button>
                         </div>
@@ -98,6 +98,12 @@
                                                         <a :href="'/api/support-bundle/' + a.id + '/download'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" :title="'Download support bundle (' + (a.details?.bundle_size_mb || '?') + ' MB)'">
                                                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                                                             Bundle (<span x-text="a.details?.bundle_size_mb || '?'"></span> MB)
+                                                        </a>
+                                                    </template>
+                                                    <template x-if="a.type === 'case_export' && a.status === 'completed' && a.details?.bundle_path">
+                                                        <a :href="'/api/cases/export/' + a.id + '/download'" download class="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1 text-white" :title="'Download the case bundle for ' + (a.details?.case_name || 'this case') + ' — import it on another Intact appliance'">
+                                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                                            Case bundle (<span x-text="a.details?.bundle_size_mb || '?'"></span> MB)
                                                         </a>
                                                     </template>
                                                     <template x-if="a.status === 'running' || a.status === 'pending'">
@@ -915,11 +921,21 @@ docker exec -it intact_backend env CODEX_HOME=/app/data/agentic_cli/manual /app/
                                 <span x-text="$store.settings.llmTesting ? 'Testing…' : 'Test connection'"></span>
                             </button>
                             <template x-if="$store.settings.llmTestResult">
-                                <span class="text-sm mr-3"
-                                      :class="$store.settings.llmTestResult.success ? 'text-green-400' : 'text-red-400'"
-                                      x-text="$store.settings.llmTestResult.success
-                                        ? ('OK — replied in ' + $store.settings.llmTestResult.elapsed_ms + 'ms')
-                                        : ('Failed: ' + ($store.settings.llmTestResult.error || 'unknown'))"></span>
+                                <span class="text-sm mr-3 inline-flex flex-col align-top">
+                                    <span :class="$store.settings.llmTestResult.success ? 'text-green-400' : 'text-red-400'"
+                                          x-text="$store.settings.llmTestResult.success
+                                            ? ('OK — replied in ' + $store.settings.llmTestResult.elapsed_ms + 'ms')
+                                            : ('Failed: ' + ($store.settings.llmTestResult.error || 'unknown'))"></span>
+                                    <!-- The friendly line above is what's actionable; the raw
+                                         exception (provider, status code, response body) is one
+                                         click away for support/debugging, not shown by default. -->
+                                    <template x-if="!$store.settings.llmTestResult.success && $store.settings.llmTestResult.detail">
+                                        <details class="text-xs text-gray-500 mt-0.5">
+                                            <summary class="cursor-pointer hover:text-gray-400">raw error</summary>
+                                            <span x-text="$store.settings.llmTestResult.detail"></span>
+                                        </details>
+                                    </template>
+                                </span>
                             </template>
                             <!-- The model list, prices and context windows come from the
                                  provider's catalog on disk. Saving refreshes it for the

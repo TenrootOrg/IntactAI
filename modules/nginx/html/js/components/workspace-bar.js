@@ -12,7 +12,7 @@ async function renderTopWorkspace(bar) {
     const active = (cases || []).find(c => c.case_id === id);
     const name = active ? (active.name || active.case_id) : '—';
     bar.innerHTML =
-        `<span style="font-size:12px;color:#8b949e">Workspace:</span>
+        `<span style="font-size:12px;color:#8b949e">Case:</span>
          <a href="#cases" id="ws-link" style="color:#58a6ff;font-weight:600">${escWs(name)}</a>`;
     bar.querySelector('#ws-link').addEventListener('click', function (e) {
         e.preventDefault();

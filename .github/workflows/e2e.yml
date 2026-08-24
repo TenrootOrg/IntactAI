@@ -1,0 +1,1018 @@
+name: e2e (manual)
+
+# Install a whole appliance on a runner, enrol a Velociraptor client on it, drive
+# the backend over real HTTP, and report. Nothing else in this repo does this:
+# the other workflows build and publish releases, and the test suite is static.
+# Every bug found in the 20260818 release was found by a hand-run install like
+# this one, which is the argument for automating it.
+#
+# MANUAL ONLY, and deliberately so. A run costs a whole VM for up to three hours
+# and destroys everything on it. It must never fire from a push, a PR or a
+# release.
+#
+# BEFORE IT CAN BE RUN AT ALL: GitHub only exposes workflow_dispatch for files
+# that exist on the DEFAULT branch. While this file lives only on a side branch
+# the API answers 404 and the "Run workflow" button never appears -- verified,
+# not assumed. Once it is on main you may still dispatch it against any ref, and
+# the definition used is the one on the ref you pick.
+#
+# THE SCENARIOS. One job each, on its own VM, all running concurrently. A
+# scenario failing cannot stop the others -- container names, volumes and
+# published ports are global, so a fresh machine per scenario is what makes them
+# independent rather than something to engineer.
+#
+#   scenario            installs      then                       proves
+#   ------------------  ------------  -------------------------  ----------------------
+#   install-online      branch        -                          the ordinary install
+#   install-package     branch        -                          the air-gap install;
+#                                                                --package diverges from
+#                                                                online in ~15 places
+#   cli-upgrade         branch        scripts/upgrade.sh         the path the README
+#                                     --only/--reinstall         documents to operators
+#   bootstrap           0615          bootstrap_upgrade.sh       a box too old to have a
+#                                                                usable engine can move
+#   ui-online-full      0726          POST /api/upgrade/online   the dashboard upgrade
+#   ui-import-full      0726          prepare -> offline         the air-gap dashboard
+#                                                                upgrade
+#   ui-online-adopt     backend-only  enable all, then online    a customer ADOPTS a
+#   ui-import-adopt     backend-only  enable all, then import    feature they never had
+#   rollback            branch        upgrade with a held port   a failed module unwinds
+#                                                                instead of stranding
+#   data-preservation   branch        upgrade with evidence      an upgrade does not lose
+#                                                                what the box was holding
+#   refuse-and-repeat   branch        downgrade, then repeat     refusal touches nothing;
+#                                                                a re-run is a no-op
+#
+# EVERY scenario ends by exercising the modules -- enrol a client, sweep the API,
+# run the Velociraptor / Timesketch / fusion pipelines -- against the box it
+# finished with, not the one it started from.
+#
+# The adopt pair installs from a PACKAGE rather than online, and that is
+# load-bearing. A backend-only box disables timesketch; timesketch ships its own
+# nginx; and the backend's disabled-module prune reclaims the bare `nginx` repo,
+# which is where the platform's own reverse proxy lives -- deleting it between
+# the backend starting and nginx being deployed. The fix is in this tree, but
+# the prune runs inside the backend CONTAINER, and on an online install that is
+# the release's image. Package mode is what lets this ref's build be the one on
+# the box. install-online still covers the online route.
+#
+# intact-20260811 is deliberately absent as a starting point: its VERSION names a
+# release that was never published and its only asset is intact-only, so it
+# cannot be installed at all. The 0726 scenarios are how an 0811-era box is
+# reached.
+#
+# WHAT A GREEN RUN DOES AND DOES NOT PROVE. install.sh takes its service images
+# from a published RELEASE and refuses to build them (lib/modules/backend.sh),
+# so this exercises the chosen ref's installer, libraries, compose files, nginx
+# config and version pins against the release's containers -- unless
+# `build_images` rebuilds them. Only two images in the product are first-party
+# (backend, velociraptor); everything else is upstream software at versions the
+# ref itself pins. The report's Provenance section says which was which, and the
+# summary repeats it, because "green on this branch" is a stronger claim than
+# the default configuration supports.
+
+on:
+  # Pushing to this one branch is the RUN button while e2e.yml is not on main.
+  # The default-branch rule above applies only to workflow_dispatch; a push
+  # event runs the workflow file from the branch that was pushed, so a dedicated
+  # trigger branch gives manual-feeling runs with main untouched.
+  #
+  # To start a run:   git push --force origin development:e2e-trigger
+  # Every input then takes its default (see the `|| ` fallbacks below), because
+  # a push event carries no inputs.
+  #
+  # TEMPORARY. Delete this trigger once the file reaches main and
+  # workflow_dispatch works properly, or every push to the branch spends a VM.
+  push:
+    branches: [e2e-trigger]
+
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or SHA to install and test (e.g. development, main)"
+        required: true
+        default: development
+      runner:
+        description: "Runner label (e.g. ubuntu-latest). Swap for a larger or self-hosted label without editing this file."
+        required: true
+        default: ubuntu-latest
+      build_images:
+        description: "Which first-party images to rebuild from this ref: backend | none. (velociraptor needs binaries install.sh stages, so it is not offered yet.)"
+        required: true
+        default: backend
+      backend_image:
+        description: "Which backend is under test: branch | release. branch = the image built from this ref actually runs (the pin the installer corrects away is put back); release = the published artifact runs."
+        required: true
+        default: branch
+      version_override:
+        description: "Release tag supplying the upstream images (e.g. intact-20260818). Empty = the ref's own VERSION file."
+        required: false
+        default: ''
+      module_set:
+        description: "all | lean   — all enables every module including o365rc; lean drops elk and iris for a 16 GB runner"
+        required: true
+        default: all
+      phases:
+        description: "Comma-separated qa phase list to run (--only). Empty = the whole Linux profile."
+        required: false
+        default: ''
+      install_timeout_min:
+        description: "Minutes install.sh may run before the phase is failed"
+        required: true
+        default: '90'
+      windows_evidence:
+        description: "true to run the windows-latest evidence job (real .evtx, and memory if the driver loads)"
+        required: false
+        default: 'true'
+      scenarios:
+        # Restored to 'all' 2026-08-20, once the matrix, the per-scenario jobs
+        # and the aggregate had been proven end to end on a real run.
+        description: "Comma-separated scenarios, or 'all'. See the table at the top of this file."
+        required: false
+        default: 'all'
+
+# Read-only. This workflow downloads release assets and reads the repo; it
+# publishes nothing and must never be able to.
+permissions:
+  contents: read
+
+concurrency:
+  # Per ref, and queued rather than cancelled: killing a run halfway leaves a
+  # half-installed appliance and a half-written report, which is worse than
+  # waiting.
+  group: e2e-${{ github.event.inputs.ref || github.ref_name }}
+  # Per REF, not per scenario: the matrix jobs are on separate VMs and
+  # must run concurrently. Two dispatches of the same ref still queue.
+  cancel-in-progress: false
+
+jobs:
+  # ------------------------------------------------------------------------
+  # Real Windows evidence, from a machine that genuinely has some.
+  #
+  # This job CANNOT reach the appliance -- it is a separate VM with no shared
+  # network -- so it does not try. It harvests its own event logs and, if the
+  # kernel will let it, its own memory, and hands them over as an artifact.
+  # That covers exactly the two things a Linux host cannot provide: winevtx
+  # input for Timesketch, and an image Volatility can actually analyse.
+  #
+  # Free: standard runners are unmetered for public repositories.
+  windows-evidence:
+    if: ${{ (github.event.inputs.windows_evidence || 'true') == 'true' }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Harvest this runner's own Windows event logs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # KAPE layout: the pipeline's detector keys off a `C/` prefix, so the
+          # tree must start there. These are the runner's real logs, written by
+          # the real Windows it is running.
+          $dest = "$env:RUNNER_TEMP\evidence\C\Windows\System32\winevt\Logs"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          $src = "$env:SystemRoot\System32\winevt\Logs"
+          # The channels an investigator actually reads first, and the only ones
+          # with meaningful content on a fresh CI VM.
+          $want = @('Security.evtx','System.evtx','Application.evtx',
+                    'Microsoft-Windows-PowerShell%4Operational.evtx',
+                    'Microsoft-Windows-Windows Defender%4Operational.evtx',
+                    'Microsoft-Windows-TaskScheduler%4Operational.evtx')
+          $copied = 0
+          foreach ($n in $want) {
+            $p = Join-Path $src $n
+            if (Test-Path -LiteralPath $p) {
+              try {
+                Copy-Item -LiteralPath $p -Destination $dest -Force -ErrorAction Stop
+                $copied++
+              } catch {
+                # A channel held open by the service is normal; wevtutil can
+                # export a consistent copy where a plain read cannot.
+                $out = Join-Path $dest $n
+                & wevtutil epl ($n -replace '%4','/' -replace '\.evtx$','') $out 2>$null
+                if (Test-Path -LiteralPath $out) { $copied++ }
+              }
+            }
+          }
+          Write-Host "collected $copied event log(s)"
+          if ($copied -eq 0) { throw "no event logs could be collected" }
+          Compress-Archive -Path "$env:RUNNER_TEMP\evidence\C" `
+                           -DestinationPath "$env:RUNNER_TEMP\winevtx.zip" -Force
+          Get-Item "$env:RUNNER_TEMP\winevtx.zip" |
+            ForEach-Object { Write-Host ("zip: {0:N1} MB" -f ($_.Length/1MB)) }
+
+      - name: Try to acquire memory
+        shell: pwsh
+        continue-on-error: true          # a blocked driver is a result, not a failure
+        run: |
+          # winpmem needs to load a kernel driver, which a hosted VM may refuse.
+          # Per "try it then we choose": attempt it, and let the Linux job report
+          # an honest skip if nothing lands here.
+          $ErrorActionPreference = 'Continue'
+          $url = 'https://github.com/Velocidex/WinPmem/releases/download/v4.0.rc1/winpmem_mini_x64_rc2.exe'
+          $exe = "$env:RUNNER_TEMP\winpmem.exe"
+          try {
+            Invoke-WebRequest -Uri $url -OutFile $exe -UseBasicParsing -TimeoutSec 120
+          } catch { Write-Host "::warning::could not download winpmem: $_"; exit 0 }
+          $img = "$env:RUNNER_TEMP\evidence\memory.raw"
+          & $exe $img 2>&1 | Select-Object -Last 5
+          if (Test-Path -LiteralPath $img) {
+            $mb = (Get-Item -LiteralPath $img).Length / 1MB
+            Write-Host ("acquired {0:N0} MB" -f $mb)
+            # Below 16 MB the ingest rejects it as too small to be a dump.
+            if ($mb -lt 16) { Remove-Item -LiteralPath $img -Force
+                              Write-Host "::warning::image too small; discarding" }
+          } else {
+            Write-Host "::warning::memory acquisition produced no image (driver likely blocked)"
+          }
+
+      - name: Stage the evidence bundle
+        shell: pwsh
+        run: |
+          $out = "$env:RUNNER_TEMP\bundle"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item "$env:RUNNER_TEMP\winevtx.zip" $out -Force
+          $img = "$env:RUNNER_TEMP\evidence\memory.raw"
+          if (Test-Path -LiteralPath $img) { Move-Item $img $out -Force }
+          Get-ChildItem $out | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-evidence
+          path: ${{ runner.temp }}/bundle
+          retention-days: 1        # real host evidence; keep it briefly
+          compression-level: 0     # the zip is already compressed, the image is huge
+          if-no-files-found: warn
+
+  # ------------------------------------------------------------------------
+  # Which scenarios to run. Emitted as a matrix so each one gets its OWN VM:
+  # container names, volumes and published ports are global, so two appliances
+  # cannot share a machine. That isolation is also what makes "keep checking the
+  # rest when one fails" free -- the jobs are independent by construction.
+  resolve-scenarios:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+      count:  ${{ steps.pick.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: '${{ github.event.inputs.ref || github.ref_name }}', fetch-depth: 1 }
+      - id: pick
+        env:
+          # The fallback must match the input's `default:` above. A
+          # workflow_dispatch default applies ONLY to dispatch events -- on the
+          # push trigger the inputs are absent entirely, so this string is what
+          # actually runs. They disagreed once and the run silently tested one
+          # scenario instead of three, which looks exactly like a pass.
+          WANTED: ${{ github.event.inputs.scenarios || 'all' }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os, subprocess, sys
+          sys.path.insert(0, "qa")
+          import scenarios as S
+          
+          # PREVIOUS is resolved from the live release list, so nothing here needs an
+          # edit when a release is cut. The other roles are pins about code history --
+          # which release still installs from registries, which first carried an
+          # on-disk engine -- and those are facts, not dates.
+          target = os.environ.get("IMAGES_TAG") or ""
+          previous = ""
+          try:
+              out = subprocess.run(["gh", "release", "list", "--limit", "30",
+                                    "--json", "tagName"], capture_output=True,
+                                   text=True, timeout=60).stdout
+              tags = [t["tagName"] for t in json.loads(out or "[]")
+                      if t["tagName"].startswith("intact-")]
+              tags.sort(reverse=True)
+              older = [t for t in tags if not target or t < target]
+              previous = older[0] if older else ""
+          except Exception as exc:
+              print(f"::warning::could not resolve PREVIOUS: {exc}", file=sys.stderr)
+          
+          wanted = (os.environ.get("WANTED") or "").strip()
+          if wanted in ("", "all"):
+              names = [x["name"] for x in S.SCENARIOS]
+          else:
+              names = [w.strip() for w in wanted.split(",") if w.strip()]
+              unknown = [n for n in names if n not in S.BY_NAME]
+              if unknown:
+                  # Fail rather than silently run fewer scenarios than asked for -- a
+                  # matrix that quietly shrinks reads exactly like one that passed.
+                  raise SystemExit(
+                      f"::error::unknown scenario(s): {', '.join(unknown)}. "
+                      f"Known: {', '.join(sorted(S.BY_NAME))}")
+          
+          rows = S.resolve(names, previous_tag=previous)
+          print("matrix=" + json.dumps({"include": rows}))
+          print("count=%d" % len(rows))
+          print(f"::notice::PREVIOUS resolved to {previous or '(none)'}", file=sys.stderr)
+          PY
+          echo "::notice::running $(grep -oP 'count=\K\d+' "$GITHUB_OUTPUT" | tail -1) scenario(s)"
+
+  e2e:
+    needs: [windows-evidence, resolve-scenarios]
+    strategy:
+      # The requirement, in one line: a scenario failing must not stop the rest.
+      fail-fast: false
+      matrix: ${{ fromJson(needs.resolve-scenarios.outputs.matrix) }}
+    # Runs even if the Windows job failed entirely: the Linux pipelines are the
+    # bulk of the value and must not be held hostage to a runner that would not
+    # load a driver.
+    if: ${{ always() }}
+    runs-on: ${{ github.event.inputs.runner || 'ubuntu-latest' }}
+    # GitHub's hosted ceiling is 360; leave room for the summary and artifact
+    # steps to run after a timed-out install rather than losing the evidence.
+    name: ${{ matrix.scenario }}
+    timeout-minutes: 330
+
+    env:
+      APPLIANCE: /mnt/intact
+      SCENARIO: ${{ matrix.scenario }}
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+
+    steps:
+      # ------------------------------------------------------------------ 1 --
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref_name }}
+          fetch-depth: 1
+
+      - name: Validate the inputs
+        env:
+          BUILD_IMAGES: ${{ github.event.inputs.build_images || 'backend' }}
+          # `|| 'branch'` is the PUSH fallback and is not decoration: a
+          # workflow_dispatch `default:` does not apply to a push event, so
+          # without it every push-triggered run would see an empty string.
+          BACKEND_IMAGE: ${{ github.event.inputs.backend_image || 'branch' }}
+          MODULE_SET: ${{ matrix.modules || github.event.inputs.module_set || 'all' }}
+          VERSION_OVERRIDE: ${{ github.event.inputs.version_override || '' }}
+          TIMEOUT_MIN: ${{ github.event.inputs.install_timeout_min || '90' }}
+        run: |
+          set -euo pipefail
+          # Re-validated here rather than trusted, matching the release
+          # workflows: a typo must fail in seconds, not after a 40-minute
+          # install has already destroyed the runner's state. It sits just
+          # AFTER checkout, not first, because it reads the scenario catalogue
+          # out of the repo -- as the very first step there is no qa/ yet, and
+          # the import would fail under `set -e` for every scenario in the
+          # matrix rather than for the bad input it is meant to catch.
+          case "$BUILD_IMAGES" in backend|none) ;; *)
+            echo "::error::build_images must be 'backend' or 'none', got '$BUILD_IMAGES'"; exit 1 ;; esac
+          case "$BACKEND_IMAGE" in branch|release) ;; *)
+            echo "::error::backend_image must be 'branch' or 'release', got '$BACKEND_IMAGE'"; exit 1 ;; esac
+          if [ "$BACKEND_IMAGE" = branch ] && [ "$BUILD_IMAGES" != backend ]; then
+            echo "::error::backend_image=branch needs build_images=backend — there is no image from this ref to run"
+            exit 1
+          fi
+          # Validated against the catalogue itself, not a hand-kept list. The
+          # two drifted the moment scenarios.py grew `shipped` and
+          # `backend-only`, and this step refused three scenarios that were
+          # perfectly well defined -- loudly, which is the one good thing about
+          # it, but for no reason.
+          # A membership test, not `case ... in $VAR)`: a `|` inside a variable
+          # is NOT re-parsed as case alternation, so that form refuses
+          # everything including the values it was meant to accept.
+          KNOWN=$(python3 -c "import sys;sys.path.insert(0,'qa');import scenarios;print('\n'.join(scenarios.MODULE_SETS))")
+          if ! printf '%s\n' "$KNOWN" | grep -qxF "$MODULE_SET"; then
+            echo "::error::module_set must be one of: $(echo $KNOWN | tr '\n' ' '), got '$MODULE_SET'"
+            exit 1
+          fi
+          case "$TIMEOUT_MIN" in ''|*[!0-9]*)
+            echo "::error::install_timeout_min must be a number, got '$TIMEOUT_MIN'"; exit 1 ;; esac
+          if [ -n "$VERSION_OVERRIDE" ]; then
+            case "$VERSION_OVERRIDE" in intact-*) ;; *)
+              echo "::error::version_override must look like intact-YYYYMMDD, got '$VERSION_OVERRIDE'"; exit 1 ;; esac
+          fi
+
+      # ------------------------------------------------------------------ 2 --
+      - name: "Capacity: measure, reclaim, measure"
+        run: |
+          set -euo pipefail
+          snap() { echo "$1"; free -g | sed -n '1,3p'; df -h / /mnt 2>/dev/null || df -h /; echo "cpus=$(nproc)"; }
+          snap "== BEFORE ==" | tee /tmp/cap-before.txt
+
+          # The standard hosted-runner reclaim, as used by the release
+          # workflows. ~30 GB of preinstalled toolchains this job never touches.
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+
+          # /mnt is the runner's large ephemeral disk. BOTH the docker store and
+          # the appliance tree go there: a measured full install is ~39 GB under
+          # /var/lib/docker plus ~7 GB of appliance data, and the root
+          # filesystem has nothing like that free.
+          sudo systemctl stop docker docker.socket 2>/dev/null || true
+          sudo mkdir -p /mnt/docker "${APPLIANCE}"
+          # The `features` key is not decoration -- it is what stops install.sh
+          # from throwing this file away. lib/deps.sh:install_docker rewrites
+          # daemon.json WHOLESALE whenever it does not already mention
+          # containerd-snapshotter, and then restarts the daemon. Written with
+          # data-root alone, this file was replaced mid-install, docker came
+          # back on /var/lib/docker, and every image loaded up to that point
+          # vanished -- surfacing much later as `No such image:
+          # nginx:1.31.3-alpine` one line after the installer logged that same
+          # image as successfully loaded. Matching the shape the installer
+          # wants means it leaves the file, and the data-root, alone.
+          printf '{"data-root":"/mnt/docker","features":{"containerd-snapshotter":false}}' \
+            | sudo tee /etc/docker/daemon.json >/dev/null
+          sudo systemctl start docker
+          docker info --format 'docker root: {{.DockerRootDir}}'
+
+          # 16 GB of RAM against a documented 16 GB minimum, across ~30
+          # containers including BOTH Elasticsearch and OpenSearch. Swap is what
+          # turns "OOM-killed at minute 50" into "slow but finished" -- and a
+          # finished run produces a report, which is the entire point.
+          sudo fallocate -l 24G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile >/dev/null
+          sudo swapon /mnt/swapfile
+          sudo sysctl -w vm.max_map_count=262144        # Elasticsearch/OpenSearch refuse to start below this
+
+          snap "== AFTER ==" | tee /tmp/cap-after.txt
+          {
+            echo "## Runner capacity"
+            echo '```'
+            cat /tmp/cap-before.txt /tmp/cap-after.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          FREE=$(df -BG --output=avail /mnt | tail -1 | tr -dc 0-9)
+          if [ "${FREE:-0}" -lt 60 ]; then
+            echo "::error title=Runner too small::/mnt has ${FREE} GB free after reclaim. A measured full install needs ~46 GB (39 GB docker + 7 GB data) and the release package adds ~6 GB. Re-dispatch with a larger 'runner' label."
+            exit 1
+          fi
+          echo "::notice::/mnt has ${FREE} GB free after reclaim"
+
+      - name: "Capacity: sample every 30s"
+        run: |
+          set -euo pipefail
+          # Peak usage MEASURED, not guessed. This is what answers "does a
+          # hosted runner actually fit?" after the first run.
+          nohup bash -c 'while true; do
+            printf "%s avail_mb=%s used_mem_mb=%s swap_mb=%s\n" \
+              "$(date -Is)" \
+              "$(df -BM --output=avail /mnt | tail -1 | tr -dc 0-9)" \
+              "$(free -m | awk "/^Mem:/{print \$3}")" \
+              "$(free -m | awk "/^Swap:/{print \$3}")"
+            sleep 30
+          done' > /tmp/capacity.log 2>&1 &
+          echo "sampler started"
+
+      # ------------------------------------------------------------------ 3 --
+      - name: Resolve the release that supplies the images
+        id: images
+        env:
+          VERSION_OVERRIDE: ${{ github.event.inputs.version_override || '' }}
+        run: |
+          set -euo pipefail
+          TAG="${VERSION_OVERRIDE:-$(cat VERSION)}"
+          case "$TAG" in intact-*) ;; *)
+            echo "::error::VERSION says '$TAG', which is not an intact-* release tag. Set version_override."; exit 1 ;; esac
+
+          # install.sh takes images ONLY from release assets -- there is
+          # deliberately no registry fallback -- so a tag without assets dies
+          # about two minutes in with a message that does not say why.
+          COUNT=$(gh release view "$TAG" --json assets --jq '.assets | length' 2>/dev/null || echo 0)
+          if [ "${COUNT:-0}" -lt 1 ]; then
+            echo "::error title=No installable images::$TAG has no published release assets. Pick a tag that does, via the version_override input."
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "::notice::upstream images come from $TAG ($COUNT assets)"
+
+      - name: Build the backend image from this ref
+        id: build
+        if: ${{ (github.event.inputs.build_images || 'backend') == 'backend' }}
+        run: |
+          set -euo pipefail
+          # WHY. main's engine advances continuously while versions.backend
+          # still names the last release's image, so engine-from-this-ref paired
+          # with backend-from-the-release is a combination no customer ever
+          # runs: an install or an upgrade always brings both from the same
+          # release. Building here makes the pair coherent.
+          #
+          # HOW, with no code change. deploy_backend looks for
+          # intact-backend:${BACKEND_VERSION} in the local image store and logs
+          # "not building" when it is already there. BACKEND_VERSION comes from
+          # modules/backend/.env, which update_env_files writes from
+          # config.yaml versions.backend -- so tagging our build and pointing
+          # that pin at it is enough.
+          TAG="ref-$(git rev-parse --short HEAD)"
+          docker build -f modules/backend/Dockerfile -t "intact-backend:${TAG}" .
+          echo "backend_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "::notice::built intact-backend:${TAG} from $(git rev-parse --short HEAD)"
+
+      # ------------------------------------------------------------------ 4 --
+      - name: Download the release package
+        id: pkg
+        if: ${{ matrix.install_mode == 'package' }}
+        env:
+          TAG: ${{ steps.images.outputs.tag }}
+          BACKEND_IMAGE: ${{ github.event.inputs.backend_image || 'branch' }}
+          BACKEND_TAG: ${{ steps.build.outputs.backend_tag }}
+        run: |
+          set -euo pipefail
+          DIR="${RUNNER_TEMP}/pkg"
+          mkdir -p "$DIR"
+          # Per-module assets, not the wrapper: install.sh --package takes a
+          # DIRECTORY of them, and the system bundle must stay out of it --
+          # _is_system_bundle_tar_name routes that one to the host-deps path,
+          # and letting it into the package set would have the installer try to
+          # apt-install a Docker over the runner's.
+          gh release download "$TAG" -D "$DIR" \
+             --pattern '*.tar.gz' --pattern '*.tar' \
+             --pattern '*.index.json' --pattern '*.manifest.json' || true
+          rm -f "$DIR"/*system-bundle* || true
+          ls -lh "$DIR" | head -20
+          COUNT=$(find "$DIR" -maxdepth 1 -name '*.tar*' | wc -l)
+          if [ "$COUNT" -lt 2 ]; then
+            echo "::error title=No package to install from::$TAG yielded $COUNT asset(s). An air-gapped install needs the per-module assets."
+            exit 1
+          fi
+          # PUT THIS REF'S BACKEND IN THE PACKAGE'S PLACE.
+          #
+          # lib/config.sh corrects config.yaml's backend pin to whatever tag
+          # the package shipped ("THE PACKAGE WINS OVER THE PIN", so a stale
+          # pin cannot trigger a source rebuild). That is right, and it means
+          # the only way the image built here can be the one deployed is for
+          # the package to stop carrying a backend of its own. Then
+          # INTACT_PKG_BACKEND_TAG falls back to the manifest's
+          # versions.intact, the pin resolves to that tag, and the only image
+          # wearing it is ours.
+          #
+          # Safe to repack: nothing on the --package path verifies asset
+          # digests. lib/args.sh has no sha256 handling at all, and
+          # load_images_from_package reads index.json/manifest.json only to
+          # recognise an OCI tar, never to check one.
+          if [ "$BACKEND_IMAGE" = branch ] && [ -n "${BACKEND_TAG:-}" ]; then
+            ASSET="$(find "$DIR" -maxdepth 1 -name '*-intact.tar.gz' | head -1)"
+            if [ -z "$ASSET" ]; then
+              echo "::error::no intact asset to repack; the package layout changed"
+              exit 1
+            fi
+            WORK="${RUNNER_TEMP}/repack"; rm -rf "$WORK"; mkdir -p "$WORK"
+            tar -xf "$ASSET" -C "$WORK"
+            REMOVED=$(find "$WORK" -path '*/images/intact-backend-*.tar' -print -delete | wc -l)
+            if [ "$REMOVED" -eq 0 ]; then
+              echo "::error::no backend image found inside $(basename "$ASSET") — the release's backend would still win"
+              exit 1
+            fi
+            # `*/` rather than `.`, so the archive keeps the original's
+            # shape: a `./` prefix still extracts to one top-level dir, but
+            # load_images_from_package counts those to decide the assets
+            # merged, and matching the layout it was written for is cheaper
+            # than reasoning about whether the count still holds.
+            #
+            # gzip -1: repacked on every job, and the default level costs
+            # minutes for a ratio nothing downstream cares about.
+            ( cd "$WORK" && tar -I 'gzip -1' -cf "$ASSET.new" */ )
+            mv "$ASSET.new" "$ASSET"
+            rm -rf "$WORK"
+            docker tag "intact-backend:${BACKEND_TAG}" "intact-backend:${TAG}"
+            echo "::notice::removed $REMOVED backend image(s) from $(basename "$ASSET"); intact-backend:${TAG} is now this ref's build"
+          fi
+
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          echo "::notice::air-gap install from $COUNT asset(s)"
+
+      - name: Stage and configure the appliance
+        id: host
+        env:
+          MODULE_SET: ${{ matrix.modules || github.event.inputs.module_set || 'all' }}
+          BACKEND_TAG: ${{ steps.build.outputs.backend_tag }}
+          INSTALL_FROM: ${{ matrix.install_from || '' }}
+        run: |
+          set -euo pipefail
+          # TWO TREES when a scenario installs an OLD release.
+          #
+          # The appliance must BE that old version -- its install.sh, its
+          # libraries, its config.yaml -- while the branch under test supplies
+          # the upgrade ENGINE from the workspace. Staging the branch as the
+          # appliance would test upgrading today's code with today's code,
+          # which is not an upgrade.
+          if [ -n "${INSTALL_FROM:-}" ]; then
+            echo "::notice::staging ${INSTALL_FROM} as the appliance; the engine comes from the workspace"
+            git -C "${GITHUB_WORKSPACE}" fetch --depth 1 origin "refs/tags/${INSTALL_FROM}:refs/tags/${INSTALL_FROM}" \
+              || git -C "${GITHUB_WORKSPACE}" fetch --depth 1 origin "${INSTALL_FROM}"
+            rm -rf "${RUNNER_TEMP}/old" && mkdir -p "${RUNNER_TEMP}/old"
+            git -C "${GITHUB_WORKSPACE}" archive "${INSTALL_FROM}" 2>/dev/null \
+              | tar -x -C "${RUNNER_TEMP}/old" \
+              || git -C "${GITHUB_WORKSPACE}" archive FETCH_HEAD | tar -x -C "${RUNNER_TEMP}/old"
+            sudo rsync -a "${RUNNER_TEMP}/old/" "${APPLIANCE}/"
+
+            # ICMP IS BLOCKED ON HOSTED RUNNERS, and releases up to
+            # intact-20260726 gate the whole install on `ping 8.8.8.8`.
+            # The runner has perfectly good internet; it just cannot send
+            # an echo request, so install.sh aborts in three seconds
+            # having done nothing. That took out every old-release
+            # scenario at once, three seconds into a 90-minute job.
+            #
+            # The product itself already fixed this -- current
+            # lib/common.sh uses _tcp_reachable, a TCP connect carrying
+            # the same meaning -- so this backports one ENVIRONMENT probe
+            # into the staged tree and changes no product behaviour under
+            # test. It refuses to act silently: if the shape is not what
+            # it expects it says so and fails, rather than no-opping and
+            # letting the install die of the same thing a second time.
+            #
+            # Body and terminator sit at the BLOCK BASE, not this `if`'s
+            # indent: YAML strips the block indent, and a heredoc
+            # terminator that ends up indented is never matched.
+            sudo python3 - "${APPLIANCE}/lib/common.sh" <<'PY'
+          import re, sys
+          path = sys.argv[1]
+          src = open(path).read()
+          if "_tcp_reachable" in src:
+              print("connectivity check already uses TCP; nothing to do")
+              sys.exit(0)
+          PORTS = {"8.8.8.8": 53}
+          def swap(m):
+              host = m.group("host")
+              return ("timeout 3 bash -c 'exec 3<>/dev/tcp/%s/%d' &> /dev/null"
+                      % (host, PORTS.get(host, 443)))
+          src, n = re.subn(r"ping -c 1 -W 3 (?P<host>[^\s]+) &> /dev/null", swap, src)
+          if not n:
+              sys.exit("no ping-based connectivity probe found in %s, and no "
+                       "_tcp_reachable either — the shape changed and this patch "
+                       "would have silently done nothing" % path)
+          open(path, "w").write(src)
+          print("replaced %d ping probe(s) with TCP connects" % n)
+          PY
+            echo "::notice::staged tree patched: ping -> TCP probe (ICMP is blocked on hosted runners)"
+          else
+            sudo rsync -a --exclude .git ./ "${APPLIANCE}/"
+          fi
+          cd "${APPLIANCE}"
+
+          # A routable address, never 127.0.0.1. It becomes the TLS CN and the
+          # address the Velociraptor client calls back to -- and loopback would
+          # additionally collapse the suite's unauthenticated-caller checks,
+          # because the backend's auth gate exempts loopback by design.
+          IP="$(hostname -I | awk '{print $1}')"
+          echo "ip=$IP" >> "$GITHUB_OUTPUT"
+
+          sudo sed -i "s|^domain:.*|domain: ${IP}|" config.yaml
+          sudo sed -i "s|^first_login:.*|first_login: true|" config.yaml
+
+          # o365rc is the only module disabled in the shipped config, so "all
+          # modules" means turning exactly this one on. The heredoc body is
+          # indented to this block's base: YAML strips that indent, so the shell
+          # still sees the body and the PY terminator at column 0 — a terminator
+          # that ends up indented is never matched and the script runs off the end.
+          sudo python3 - config.yaml "$MODULE_SET" <<'PY'
+          import re, sys
+          path, module_set = sys.argv[1], sys.argv[2]
+          # backend-only uses EXPLICIT enabled:false, never an absent key:
+          # install.sh reads absent as disabled, but the upgrade planner
+          # reads absent as ENABLED -- so omitting keys would install
+          # backend-only and then plan an install of everything.
+          s = open(path).read()
+          if module_set == "backend-only":
+              s, n = re.subn(r"^(    enabled: )true$", r"\1false", s, flags=re.M)
+              if not n:
+                  sys.exit("nothing was enabled to turn off — shape changed")
+              open(path, "w").write(s)
+              print("disabled %d module(s); backend and nginx are unconditional" % n)
+          elif module_set == "all":
+              s, n = re.subn(r"(\n  o365rc:\n(?:.*\n)*?    enabled: )false",
+                             r"\1true", s, count=1)
+              if not n:
+                  sys.exit("could not enable o365rc — the config.yaml shape changed")
+              open(path, "w").write(s)
+          PY
+
+          if [ -n "${BACKEND_TAG:-}" ] && [ -z "${INSTALL_FROM:-}" ]; then
+            # Point the pin at the image just built. deploy_backend then finds
+            # it locally and skips both the build and the asset load.
+            sudo sed -i "s|^  backend:.*|  backend: '${BACKEND_TAG}'|" config.yaml
+          fi
+
+          echo "--- config.yaml, as this run will use it ---"
+          grep -nE "^(schema_version|domain|first_login)|^  (backend|o365rc):" config.yaml || true
+
+          # THE SILENT FALSE PASS. If this marker exists, check_initialization_marker
+          # prompts, `read` sees closed stdin, and install.sh prints
+          # "Installation cancelled by user" and exits ZERO having done nothing.
+          # The harness asserts on the log text as well; this is the other half.
+          sudo rm -f /etc/intact-initialized
+
+      - name: Fetch the Windows evidence bundle
+        uses: actions/download-artifact@v4
+        continue-on-error: true      # absent bundle -> honest skip, not a failure
+        with:
+          name: windows-evidence
+          path: ${{ runner.temp }}/windows-evidence
+
+      - name: Report what Windows evidence arrived
+        run: |
+          set -euo pipefail
+          DIR="${RUNNER_TEMP}/windows-evidence"
+          if [ -d "$DIR" ] && [ -n "$(ls -A "$DIR" 2>/dev/null)" ]; then
+            ls -lh "$DIR"
+            echo "::notice::Windows evidence present — winevtx and memory pipelines will run"
+          else
+            echo "::warning::no Windows evidence — the winevtx and memory pipelines will report as skipped"
+          fi
+
+      - name: Install the QA harness dependencies
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --upgrade pyyaml requests
+          # paramiko is NOT installed: it exists to drive a Windows target over
+          # SSH, and this profile has none. The preflight check for it is gated
+          # on the same condition.
+
+      # ------------------------------------------------------------------ 5 --
+      - name: Run the QA harness
+        id: qa
+        continue-on-error: true       # the report and artifacts must survive a failure
+        env:
+          QA_PLATFORM_HOST: ${{ steps.host.outputs.ip }}
+          QA_SUDO_USER: runner
+          # Hosted runners are NOPASSWD; `sudo -S` reads this and ignores it.
+          QA_SUDO_PASS: ci-runner-passwordless-sudo
+          QA_REPO_DIR: /mnt/intact
+          # Which backend the run intends to exercise. The harness asserts the
+          # outcome rather than assuming it, so a run can never report on this
+          # ref while running the release's image.
+          QA_BACKEND_IMAGE: ${{ github.event.inputs.backend_image || 'branch' }}
+          QA_LINUX_CLIENT: '1'
+          QA_FEATURE_SWEEP: '1'
+          QA_PIPELINES: '1'
+          # Safe here and nowhere else: this runner is destroyed
+          # minutes from now, and without planted evidence the
+          # fusion check cannot tell a working detection engine
+          # from a broken one.
+          QA_PLANT_EVIDENCE: '1'
+          QA_WINDOWS_EVIDENCE: ${{ runner.temp }}/windows-evidence
+          QA_SCENARIO: ${{ matrix.scenario }}
+          QA_INSTALL_PACKAGE_DIR: ${{ steps.pkg.outputs.dir || '' }}
+          QA_UPGRADE_EXTRA: ${{ matrix.upgrade_extra || '' }}
+          QA_DOWNGRADE_TAG: ${{ matrix.downgrade_tag || '' }}
+          QA_HOP_VIA: ${{ matrix.hop_via || '' }}
+          QA_UPGRADE_TO: ${{ matrix.upgrade_route && steps.images.outputs.tag || '' }}
+          QA_RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
+          QA_REF: ${{ github.event.inputs.ref || github.ref_name }}
+          QA_IMAGES_TAG: ${{ steps.images.outputs.tag }}
+          QA_BUILT_IMAGES: ${{ steps.build.outputs.backend_tag && format('intact-backend:{0}', steps.build.outputs.backend_tag) || '' }}
+          PHASES: ${{ github.event.inputs.phases || '' }}
+        run: |
+          set -uo pipefail
+          # Run the harness from the WORKSPACE, not the appliance.
+          #
+          # Under the two-tree model the appliance is an OLD release's tree, and
+          # qa/ did not exist back then -- intact-20260615 carries no harness at
+          # all, so `cd /mnt/intact && python3 qa/run_qa.py` dies with ENOENT
+          # before a single phase runs. The harness belongs to the branch under
+          # test and only POINTS at the appliance, via QA_REPO_DIR.
+          cd "${GITHUB_WORKSPACE}"
+          # From the WORKSPACE, not the appliance tree: the staging step
+          # rsyncs with --exclude .git, so /mnt/intact is not a git repo at all
+          # and this reported "unknown" — leaving the report unable to name the
+          # commit it had just tested, which is most of the point of Provenance.
+          export QA_COMMIT="$(git -C "${GITHUB_WORKSPACE}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+
+          # --skip wipe: a fresh runner has nothing to tear down, and skipping
+          # it also avoids run_qa.py relocating itself to ~/.qa-runner (which it
+          # only does because wipe deletes the tree it lives in).
+          python3 qa/run_qa.py --skip wipe --no-relocate ${PHASES:+--only "$PHASES"}
+          echo "rc=$?" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------ 6 --
+      - name: Stage the artifacts
+        if: always()
+        id: stage
+        run: |
+          set -euo pipefail
+          RUN_DIR="$(ls -dt "$HOME"/qa-runs/* 2>/dev/null | head -1 || true)"
+          if [ -z "$RUN_DIR" ]; then
+            echo "::warning::no run directory was produced"
+            echo "dir=" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          mkdir -p _artifacts
+          # An ALLOWLIST. The exclusions are deliberate and this repo is public:
+          #   support-bundle.zip      not redacted; a real password was once found in one
+          #   dashboard-credentials   exists to hold a credential
+          #   client binaries         27 MB, embed the appliance's client CA, no diagnostic value
+          #   memory images           same reasoning, much larger
+          for item in REPORT.md results.json timeline.jsonl timeline.md; do
+            [ -f "$RUN_DIR/$item" ] && cp "$RUN_DIR/$item" _artifacts/ || true
+          done
+          [ -d "$RUN_DIR/phases" ] && cp -r "$RUN_DIR/phases" _artifacts/ || true
+          if [ -d "$RUN_DIR/logs" ]; then
+            mkdir -p _artifacts/logs
+            # *.txt too: collect writes docker images / ps -a / info / df
+            # there, and those are exactly what an install failure needs. They
+            # were being written and then silently dropped at staging, so a
+            # missing-image failure had no evidence to diagnose it with. The
+            # credential file is not in logs/, so widening this stays safe.
+            find "$RUN_DIR/logs" -maxdepth 1 -type f \
+                 \( -name '*.log' -o -name '*.json' -o -name '*.txt' \) \
+                 -exec cp {} _artifacts/logs/ \; || true
+          fi
+          cp /tmp/capacity.log _artifacts/ 2>/dev/null || true
+          cp /tmp/cap-before.txt /tmp/cap-after.txt _artifacts/ 2>/dev/null || true
+          sudo chown -R "$(id -u):$(id -g)" _artifacts
+          chmod -R u+rw _artifacts
+          echo "dir=$RUN_DIR" >> "$GITHUB_OUTPUT"
+          du -sh _artifacts
+
+      - name: Scan the staged artifacts for secrets
+        if: always()
+        run: |
+          set -euo pipefail
+          [ -d _artifacts ] || exit 0
+          # A third independent layer. The harness already redacts at write time
+          # and self-tests with a canary at report time; this repo is public, so
+          # the cost of a miss is permanent and the cost of the check is seconds.
+          VER=8.21.2
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" \
+            | tar -xz -C /tmp gitleaks
+          if ! /tmp/gitleaks detect --no-git --source _artifacts \
+                 --config .gitleaks.toml --redact --no-banner; then
+            echo "::error title=Artifact upload restricted::gitleaks matched something in the staged run directory. Keeping REPORT.md only."
+            find _artifacts -type f ! -name REPORT.md -delete
+          fi
+
+      - name: Upload the run directory
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-${{ matrix.scenario }}-${{ github.run_id }}
+          path: _artifacts
+          retention-days: 7
+          if-no-files-found: warn
+
+      # ------------------------------------------------------------------ 7 --
+      - name: Render the summary
+        if: always()
+        env:
+          RUN_DIR: ${{ steps.stage.outputs.dir }}
+          IMAGES_TAG: ${{ steps.images.outputs.tag }}
+          BACKEND_TAG: ${{ steps.build.outputs.backend_tag }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Provenance"
+            echo ""
+            echo "| what | value |"
+            echo "|---|---|"
+            echo "| ref | \`${{ github.event.inputs.ref || github.ref_name }}\` |"
+            echo "| upstream images from | \`${IMAGES_TAG:-unknown}\` |"
+            echo "| built from this ref | \`${BACKEND_TAG:+intact-backend:$BACKEND_TAG}\`${BACKEND_TAG:+ }${BACKEND_TAG:-none} |"
+            echo ""
+            if [ -z "${BACKEND_TAG:-}" ]; then
+              echo "> No image was rebuilt from this ref, so this run pairs this ref's engine with the release's containers — a combination no customer runs."
+              echo ""
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -n "${RUN_DIR:-}" ] && [ -f "$RUN_DIR/REPORT.md" ]; then
+            # REPORT.md is redacted at write time and is already ordered
+            # bugs-first. The summary has a 1 MiB cap.
+            head -c 900000 "$RUN_DIR/REPORT.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No REPORT.md was produced — see the job log." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Annotate every failed and skipped check
+        if: always()
+        env:
+          RUN_DIR: ${{ steps.stage.outputs.dir }}
+        run: |
+          set -euo pipefail
+          [ -n "${RUN_DIR:-}" ] && [ -f "$RUN_DIR/results.json" ] || exit 0
+          python3 - "$RUN_DIR/results.json" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1]))
+          for ph in data.get("phases", []):
+              for chk in ph.get("checks", []):
+                  if chk.get("ok"):
+                      continue
+                  # "phase", not "name": PhaseResult.to_dict() spells the phase's own
+          # key "phase" while each check inside it uses "name". Reading the
+          # wrong one annotates every failure with a literal None.
+          print(f"::error title={ph.get('phase')}::{chk.get('name')} "
+                        f"expected={chk.get('expected')} actual={chk.get('actual')}")
+          c = data.get("counts", {})
+          print(f"::notice title=e2e verdict::{c.get('pass',0)} passed, "
+                f"{c.get('fail',0)} failed, {c.get('error',0)} errored, "
+                f"{c.get('skip',0)} skipped")
+          PY
+
+      # ------------------------------------------------------------------ 8 --
+      - name: Tear the appliance down
+        if: always()
+        run: |
+          set -uo pipefail
+          # Free, and one more real assertion: clean.sh is the documented
+          # uninstall and a failure here is a product bug worth seeing.
+          cd "${APPLIANCE}" 2>/dev/null || exit 0
+          sudo bash scripts/clean.sh --all --force || \
+            echo "::warning::scripts/clean.sh --all --force did not exit 0"
+
+      - name: Verdict
+        if: always()
+        env:
+          RUN_DIR: ${{ steps.stage.outputs.dir }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RUN_DIR:-}" ] || [ ! -f "$RUN_DIR/results.json" ]; then
+            echo "::error::the harness produced no results.json — it did not complete"
+            exit 1
+          fi
+          python3 - "$RUN_DIR/results.json" <<'PY'
+          import json, sys
+          c = json.load(open(sys.argv[1])).get("counts", {})
+          bad = int(c.get("fail", 0)) + int(c.get("error", 0))
+          print(f"counts: {c}")
+          sys.exit(1 if bad else 0)
+          PY
+
+  # --------------------------------------------------------------------------
+  # One place that shows every scenario's verdict.
+  #
+  # `always()` because this job exists precisely for the runs where scenarios
+  # failed -- a summary that only appears when everything passed is a summary
+  # nobody needs. It reads each scenario's results.json rather than its exit
+  # status, so "3 of 11 checks failed" is visible without opening a job.
+  aggregate:
+    needs: [e2e]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: e2e-*
+          path: reports
+
+      - name: Render the scenario table
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import glob, json, os
+
+          rows, missing = [], []
+          for path in sorted(glob.glob("reports/*/results.json")):
+              scenario = os.path.basename(os.path.dirname(path)).replace("e2e-", "", 1)
+              scenario = scenario.rsplit("-", 1)[0]      # strip the run id
+              try:
+                  data = json.load(open(path))
+              except Exception as exc:
+                  missing.append((scenario, f"unreadable results.json: {exc}"))
+                  continue
+              c = data.get("counts") or {}
+              failed = [p.get("phase") for p in data.get("phases", [])
+                        if p.get("status") in ("fail", "error")]
+              rows.append((scenario, c, failed))
+
+          # A scenario whose artifact never arrived is NOT a pass. Say so.
+          for d in sorted(glob.glob("reports/*")):
+              scenario = os.path.basename(d).replace("e2e-", "", 1).rsplit("-", 1)[0]
+              if not os.path.exists(os.path.join(d, "results.json")) and \
+                 scenario not in [r[0] for r in rows]:
+                  missing.append((scenario, "no results.json — the run did not reach its report"))
+
+          print("## Scenario results\n")
+          if not rows and not missing:
+              print("No scenario reports were produced at all.\n")
+          else:
+              print("| scenario | verdict | passed | failed | errored | skipped | failing phases |")
+              print("|---|---|---|---|---|---|---|")
+              for scenario, c, failed in rows:
+                  bad = int(c.get("fail", 0)) + int(c.get("error", 0))
+                  verdict = "**PASS**" if not bad else "**FAIL**"
+                  print(f"| `{scenario}` | {verdict} | {c.get('pass',0)} | "
+                        f"{c.get('fail',0)} | {c.get('error',0)} | {c.get('skip',0)} | "
+                        f"{', '.join(failed) or '—'} |")
+              for scenario, why in missing:
+                  print(f"| `{scenario}` | **NO REPORT** | — | — | — | — | {why} |")
+              print()
+
+          total_bad = sum(int(c.get("fail",0)) + int(c.get("error",0)) for _, c, _ in rows)
+          print(f"{len(rows)} scenario(s) reported, {len(missing)} without a report, "
+                f"{total_bad} failing phase(s) in total.\n")
+          PY
+
+      - name: Verdict across all scenarios
+        run: |
+          set -euo pipefail
+          # Deliberately independent of the matrix jobs' own conclusions: a
+          # scenario can exit non-zero for an infrastructure reason, and a
+          # scenario can exit zero having produced no report at all. The reports
+          # are the evidence.
+          python3 - <<'PY'
+          import glob, json, sys
+          bad = 0
+          seen = 0
+          for path in glob.glob("reports/*/results.json"):
+              seen += 1
+              c = (json.load(open(path)).get("counts") or {})
+              bad += int(c.get("fail", 0)) + int(c.get("error", 0))
+          if seen == 0:
+              print("::error::no scenario produced a results.json")
+              sys.exit(1)
+          print(f"{seen} scenario report(s), {bad} failing phase(s)")
+          sys.exit(1 if bad else 0)
+          PY

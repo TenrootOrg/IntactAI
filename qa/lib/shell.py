@@ -42,15 +42,28 @@ def run(argv, timeout=300, cwd=None, env=None, check=False, input_text=None):
 
 
 def sudo(argv, password, timeout=300, cwd=None, log_path=None, tl=None,
-         env=None, stage=None):
+         env=None, stage=None, preserve_env=()):
     """Run argv as root.
 
     `sudo -S -k -p ''` reads the password from stdin. -k forces a prompt even
     if a sudo timestamp is cached, so behaviour does not silently depend on
     whether the operator ran sudo five minutes ago — a run that works on a warm
     box and fails on a cold one is the worst kind of flake.
-    """
-    full = ["sudo", "-S", "-k", "-p", ""] + list(argv)
+
+    `preserve_env` names variables to carry across the sudo boundary, which
+    otherwise resets the environment. GITHUB_TOKEN is the one that matters:
+    lib/release.sh uses it when present, and install.sh says outright that an
+    exported one wins "so CI can override" — but a bare sudo strips it, and the
+    install then makes ANONYMOUS GitHub API calls against a 60/hour per-IP cap
+    shared with every other job on that runner.
+
+    Only the variable NAME reaches argv, never its value, which is the whole
+    point of the stdin rule in this module's docstring."""
+    full = ["sudo", "-S", "-k", "-p", ""]
+    keep = [k for k in preserve_env if os.environ.get(k)]
+    if keep:
+        full.append("--preserve-env=" + ",".join(keep))
+    full += list(argv)
     return stream(full, timeout=timeout, cwd=cwd, log_path=log_path, tl=tl,
                   env=env, stdin_text=password + "\n", stage=stage,
                   argv_for_log=["sudo", "…"] + list(argv))

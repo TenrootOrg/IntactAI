@@ -1154,7 +1154,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
     # doesn't produce a tar.gz at all).
     _packages_dir_overridden = bool(packages_dir)
     packages_dir = packages_dir or "/data/upgrade_packages"
-    output_file = f"{packages_dir}/intact-upgrade-latest.tar.gz"
+    output_file = f"{packages_dir}/intact-latest-package.tar.gz"
     output_file_tmp = f"{output_file}.new"
     if compress:
         # Store final package in persistent location with an atomic-swap

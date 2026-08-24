@@ -11,8 +11,10 @@
 #                  force-added -- a package without the platform itself
 #                  cannot drive any other module's upgrade.
 #
-# Writes <output_dir>/intact-upgrade-<tag>.tar and prints its path as the
-# LAST line of stdout on success.
+# Writes <output_dir>/<tag>-package.tar and prints its path as the
+# LAST line of stdout on success. (A release fetched via the legacy
+# build-release-package.yml shape keeps ITS OWN historical name, whatever
+# that release was actually published as -- see _fetch_legacy_single_file.)
 #
 # Deliberately standalone: no import of this repo's Python backend. This is
 # meant to run on any machine with curl + python3 + tar and internet access
@@ -62,8 +64,11 @@ _elapsed() {
 #
 # LEGACY, same bridge as refs.sh's upgrade_fetch_release and package.sh's
 # manifest-precedence handling: every release before intact-20260811 is this
-# shape, and build-release-package.yml stays dispatchable on demand for a box
-# that still needs one. Remove once no box in the fleet is old enough to.
+# shape, ALREADY PUBLISHED on GitHub, permanently, under this exact name --
+# this branch only ever needs to find one that already exists. The CI that
+# BUILT them (build-release-package.yml) is removed; no new release will ever
+# be this shape again. Remove this fetch once no box in the fleet is old
+# enough to need one of the releases that already are.
 #
 # Prints nothing on success except the final path (matching this script's
 # contract of the last stdout line being the result); returns 1 if no such
@@ -330,7 +335,7 @@ cd "$WORK"
 # reads the same way and a wrong tag or output path is obvious at a glance.
 printf '[prepare] %-9s %s\n' "release:" "$TAG"
 printf '[prepare] %-9s %s\n' "repo:"    "$REPO"
-printf '[prepare] %-9s %s\n' "output:"  "$OUT_DIR/intact-upgrade-$TAG.tar"
+printf '[prepare] %-9s %s\n' "output:"  "$OUT_DIR/$TAG-package.tar"
 printf '[prepare] %-9s %s\n' "modules:" "${MODULES_CSV:-all in this release}"
 
 AUTH=(-H "X-GitHub-Api-Version: 2022-11-28")
@@ -949,7 +954,7 @@ print("[prepare]   %-9s %d file checksum(s), %d module pin(s) (dropped %d)"
 PY
 fi
 
-OUT="$OUT_DIR/intact-upgrade-$TAG.tar"
+OUT="$OUT_DIR/$TAG-package.tar"
 log "wrapping into a single file"
 # index.json FIRST, deliberately. The Import UI peeks at only the first few MB
 # of the uploaded file to show the operator what they are about to apply; with

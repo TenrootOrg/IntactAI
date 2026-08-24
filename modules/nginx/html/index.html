@@ -15,7 +15,7 @@
     <link rel="stylesheet" href="vendor/flatpickr/dark.css">
     <script src="vendor/flatpickr/flatpickr.min.js"></script>
     <!-- MUST be first: installs the X-Case-Id fetch hook before any /api call -->
-    <script src="js/active-case.js?v=6"></script>
+    <script src="js/active-case.js?v=8"></script>
 </head>
 <body class="bg-gray-900 text-white" x-data x-cloak>
     <!-- Load splash — covers the brief window while partials inject + Alpine
@@ -83,7 +83,7 @@
                 <div class="flex items-start justify-between" x-show="!$store.app.sidebarCollapsed">
                     <div>
                         <img src="img/tenroot-logo.png" alt="TenRoot" class="sidebar-logo">
-                        <p class="text-xs text-gray-400 mt-2">Security Operations Center</p>
+                        <p class="text-xs text-gray-400 mt-2">Digital Forensic Operations Center</p>
                     </div>
                     <button @click="$store.app.toggleSidebar()"
                             class="w-8 h-8 bg-gray-700 hover:bg-red-600 border border-gray-600 hover:border-red-500 rounded flex items-center justify-center transition-colors flex-shrink-0"
@@ -333,15 +333,15 @@
         <!-- Main Content Area -->
         <main class="main-content flex-1 p-6 min-h-screen transition-all duration-300"
               :class="{ 'main-content-collapsed': $store.app.sidebarCollapsed }">
-            <!-- Active workspace (case) selector — visible on every tab. Changing it
-                 re-scopes every run list/launch to that workspace. -->
+            <!-- Active case selector — visible on every tab. Changing it
+                 re-scopes every run list/launch to that case. -->
             <div id="workspace-bar"
                  class="flex items-center gap-3 mb-5 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700"></div>
 
-            <!-- Case Management Tab — create / switch / delete workspaces only. -->
+            <!-- Case Management Tab — create / switch / delete cases only. -->
             <div data-partial="cases"></div>
 
-            <!-- Case Analysis Tab — the fused report/advisory/timeline/chat for the active workspace. -->
+            <!-- Case Analysis Tab — the fused report/advisory/timeline/chat for the active case. -->
             <div data-partial="case-analysis"></div>
 
             <!-- Dashboard Tab -->
@@ -647,7 +647,7 @@
     <script src="js/stores/app.js?v=1"></script>
     <script src="js/stores/services.js?v=1"></script>
     <script src="js/stores/workflows.js?v=3"></script>
-    <script src="js/stores/settings.js?v=15"></script>
+    <script src="js/stores/settings.js?v=17"></script>
     <script src="js/legacy/handlers.js?v=1"></script>
     <script src="js/velociraptor.js?v=6"></script>
     <script src="js/blueprints.js?v=4"></script>
@@ -664,12 +664,12 @@
     <script src="js/memory.js?v=11"></script>
     <script src="js/scheduler.js?v=2"></script>
     <!-- Extracted inline helpers (Phase C): downloads copy/availability,
-         active-workspace bar, AWS/Azure flatpickr pickers. -->
+         active-case bar, AWS/Azure flatpickr pickers. -->
     <script src="js/components/downloads.js?v=1"></script>
     <script src="js/components/workspace-bar.js?v=3"></script>
     <script src="js/components/cloud-datepickers.js?v=2"></script>
     <!-- MUST be last: injects partials/*.html then starts Alpine over the full DOM. -->
-    <script src="js/bootstrap/partial-loader.js?v=8"></script>
+    <script src="js/bootstrap/partial-loader.js?v=9"></script>
 
     <!-- ======================================================================
          Workflow Log Viewer Modal (body-level placement).

@@ -248,6 +248,14 @@ seed_default_blueprints()
 # Unified Forensics Blueprint API Route (combines velociraptor + agentic)
 # ============================================================================
 
+# Which blueprints lead the list, and in what order. Everything else follows
+# alphabetically. Keyed by id so a rename cannot reshuffle the defaults.
+PREFERRED_FIRST_BLUEPRINTS = {
+    'agentic_quick_wins': 0,     # Velociraptor Agentic QuickWins Windows
+    'agentic_linux_triage': 1,   # …then the Linux twin
+}
+
+
 @blueprint_bp.route('/api/blueprints/forensics', methods=['GET'])
 def list_forensics_blueprints():
     """Get all forensics blueprints (velociraptor table contains both types)
@@ -269,7 +277,25 @@ def list_forensics_blueprints():
                 bp['blueprint_type'] = 'velociraptor'
 
         # Sort: Velociraptor first, then Agentic, alphabetically within each group
-        all_blueprints.sort(key=lambda x: (0 if x.get('blueprint_type') == 'velociraptor' else 1, x.get('name', '')))
+        # Velociraptor first, then the PREFERRED default, then by name.
+        #
+        # The middle term is the whole point. Every one of these dropdowns —
+        # Collection, Hunt and the offline collector — reads this one endpoint
+        # and shows entry [0] as the pre-selected option, so whatever sorts
+        # first IS the default an operator gets. Sorting on the name alone made
+        # that an accident of the alphabet: "…QuickWins Linux" beats
+        # "…QuickWins Windows" on the L, and a Windows-first estate opened on a
+        # Linux triage every time.
+        #
+        # Ordered by id, not by name, so renaming a blueprint cannot silently
+        # move it. Reordering default_blueprints.yaml would NOT have worked:
+        # nothing preserves file order — the store has a fixed column set, and
+        # this sort is what the UI actually sees.
+        all_blueprints.sort(key=lambda x: (
+            0 if x.get('blueprint_type') == 'velociraptor' else 1,
+            0 if x.get('id') in PREFERRED_FIRST_BLUEPRINTS else 1,
+            PREFERRED_FIRST_BLUEPRINTS.get(x.get('id'), 0),
+            x.get('name', '')))
 
         return jsonify({"blueprints": all_blueprints})
     except Exception as e:

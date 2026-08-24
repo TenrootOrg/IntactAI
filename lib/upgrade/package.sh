@@ -851,7 +851,7 @@ upkg_cleanup() {
 # media, so it is default-deny: anything it cannot positively account for is
 # left alone.
 #
-# `sudo bash scripts/upgrade.sh --package /media/usb/intact-upgrade-<tag>`
+# `sudo bash scripts/upgrade.sh --package /media/usb/<tag>-package.tar`
 # against an already-extracted tree makes UPKG_DIR the operator's own
 # directory. Those files are frequently the only copy -- an air-gapped site
 # carried them in physically -- so a wrong answer here is unrecoverable.

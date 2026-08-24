@@ -95,7 +95,17 @@ def _phase(f) -> str:
 EXPLICIT_MAX_HOSTS = 12
 EXPLICIT_MAX_FINDINGS = 150
 EXPLICIT_EVENTS_PER_FINDING = 5            # evidence lines surfaced per finding
-EXPLICIT_EVIDENCE_CHARS = 200             # per evidence line
+EXPLICIT_EVIDENCE_CHARS = 200             # per evidence line, LLM payload
+# The SAME evidence, rendered for a human, gets far more room. 200 characters is
+# a budget number: it exists because every one of these lines is also sent to the
+# model, where five per finding across 150 findings is real money. The report is
+# not on that budget, and truncating there was costing the operator the end of
+# every Defender message -- the threat name, the URL, the path -- with an ellipsis
+# baked into the markdown, so the Markdown and PDF exports carried the cut too.
+#
+# Still capped, because a single base64 PowerShell blob can run to tens of
+# kilobytes and would swamp both the page and the PDF.
+REPORT_EVIDENCE_CHARS = 1200
 
 
 def _resolve_detail(graph, detail, *, window=None, min_severity="informational"):
@@ -133,16 +143,33 @@ def _finding_evidence(graph, f, *, cap_events=EXPLICIT_EVENTS_PER_FINDING,
         parts = []
         if _v(a.get("ev_user")):
             parts.append(f"user={_v(a.get('ev_user'))}")
+        has_proc = False
         if _v(a.get("ev_cmdline")):
             parts.append(f"cmd: {_v(a.get('ev_cmdline'))}")
+            has_proc = True
         elif _v(a.get("ev_proc")):
             parts.append(f"proc: {_v(a.get('ev_proc'))}")
+            has_proc = True
         if _v(a.get("ev_tgtip")):
             parts.append(f"→ {_v(a.get('ev_tgtip'))}")
         if _v(a.get("ev_sha256")):
             parts.append(f"sha256={_v(a.get('ev_sha256'))}")
-        if not parts and _v(a.get("details")):
-            parts.append(_v(a.get("details")))
+        # THE DESCRIPTION, when nothing else says what happened.
+        #
+        # This used to be `if not parts` — a pure fallback — which meant an
+        # event that captured a user but no process rendered as the bare word
+        # `user=Administrator` and threw its description away. Having MORE
+        # information made the output strictly worse: the same class of event
+        # (a cleared event log) read "The Application log file was cleared."
+        # when no user was attached, and told the reader nothing when one was.
+        #
+        # Measured on a real case of 694 events: 27 lines looked like that.
+        # Gated on has_proc rather than on `not parts` so the 341 lines that DO
+        # name a command line or a process are untouched — whether those should
+        # also carry their description is a density judgement, not this bug.
+        detail_txt = _v(a.get("details"))
+        if detail_txt and not has_proc:
+            parts.append(detail_txt)
         if not parts:
             continue
         # Flatten to ONE clean line: raw details can carry newlines / tabs / backticks
@@ -1080,7 +1107,8 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
             mitre = f" `[{', '.join(f.mitre)}]`" if f.mitre else ""
             out.append(f"- `{fmt_ts(f.ts)}` · **[{f.severity}]** {f.title}{mitre}")
             if eff_detail == "explicit":           # real per-event evidence inline
-                for ev in _finding_evidence(graph, f):
+                for ev in _finding_evidence(graph, f,
+                                            cap_chars=REPORT_EVIDENCE_CHARS):
                     out.append(f"    - `{ev}`")
     out.append("")
 

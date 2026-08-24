@@ -214,7 +214,7 @@ velociraptor:
   # against the shipped velociraptor binary) and avoid the filesystem-wide scanners.
   - id: agentic_linux_triage
     name: "Velociraptor Agentic QuickWins Linux"
-    description: "Linux endpoint triage — processes, persistence, accounts, logs (17 artifacts)"
+    description: "Linux endpoint triage — processes, persistence, accounts, logs (24 artifacts)"
     is_default: true
     os: linux
     settings:
@@ -250,6 +250,28 @@ velociraptor:
       - Linux.Forensics.Journal
       # Packages
       - Linux.Debian.Packages
+      # ----------------------------------------------------------------
+      # Artefacts the FUSION engine already knows how to map, which nothing
+      # was collecting.
+      #
+      # services/fusion/mappers/agentic.py carries a scoring branch for each
+      # of these -- LD_PRELOAD persistence and memfd execution score 70 and 80,
+      # a uid-0 account that is not root scores 60 -- but SUPPORTED_ARTIFACTS
+      # and this blueprint had drifted apart, so the mappers were dead code and
+      # the case never saw the highest-signal Linux evidence the product can
+      # detect. (The mapper's own comment still refers to a blueprint id,
+      # agentic_quick_wins_linux, that does not exist -- which is roughly when
+      # the two stopped agreeing.)
+      #
+      # All seven are in the server's artefact catalogue; six ship as bundled
+      # artefacts in modules/velociraptor/bundled_artifacts/.
+      - Linux.Persistence.LdPreload
+      - Linux.Detection.MemFD
+      - Linux.Detection.SSHKeyFileCmd
+      - Linux.Detection.IncorrectPermissions
+      - Linux.Forensics.EnvironmentVariables
+      - Linux.Sys.Getcap
+      - Linux.Users.RootUsers
 
 # ============================================================================
 # Timesketch Blueprints

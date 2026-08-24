@@ -67,7 +67,24 @@ upgrade_module_volweb() {
     # rollback would be testing two things at once.
     u_end volweb report 180
     local rc=$?
-    (( rc == 0 )) && discard_backup "$bak"
+    if (( rc == 0 )); then
+        # The two integrations only the INSTALLER used to perform. Both were
+        # reachable from lib/modules/orchestrator.sh (seed_yara_rulesets) and
+        # from deploy_volweb (seed_volweb_admin), and from nowhere under
+        # lib/upgrade/ -- so VolWeb installed BY AN UPGRADE came up healthy
+        # with no admin to log in as and no YARA rules to scan with.
+        #
+        # Both are idempotent and self-guarded on volweb being enabled and
+        # running, so this is a no-op on a normal upgrade where they already
+        # ran at install time. Mirrors what iris.sh does for its api key.
+        if declare -F seed_volweb_admin >/dev/null; then
+            seed_volweb_admin || log_warn "  could not seed the VolWeb admin account"
+        fi
+        if declare -F seed_yara_rulesets >/dev/null; then
+            seed_yara_rulesets || log_warn "  YARA ruleset seeding had issues — refresh via Maintenance later"
+        fi
+        discard_backup "$bak"
+    fi
     return $rc
 }
 

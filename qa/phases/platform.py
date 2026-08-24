@@ -11,6 +11,7 @@ import glob
 import os
 import re
 import shutil
+import time
 
 from lib import api as api_lib
 from lib import shell
@@ -68,6 +69,47 @@ ISOLATED = [
 ]
 
 
+def _scenario_upgrades():
+    """Whether this run's scenario performs an upgrade, per the catalogue."""
+    try:
+        import scenarios
+        return bool(scenarios.route_for(os.environ.get("QA_SCENARIO") or ""))
+    except Exception:                                         # noqa: BLE001
+        return False
+
+
+def _running_backend_image():
+    """The image reference intact_backend is actually running, or ""."""
+    r = shell.run(["docker", "inspect", "--format", "{{.Config.Image}}",
+                   "intact_backend"], timeout=30)
+    out = (r.out or "").strip().splitlines()
+    return out[0].strip() if out else ""
+
+
+def _image_id(ref):
+    """The content id behind an image reference, or "".
+
+    IDENTITY, not name. When the package's own backend image is kept out of
+    the way, this ref's build is deployed wearing the RELEASE's tag -- so
+    comparing tag strings would report a mismatch and recreate the container
+    onto the very image it is already running. Two names for one id is not a
+    mismatch.
+    """
+    if not ref:
+        return ""
+    r = shell.run(["docker", "image", "inspect", "--format", "{{.Id}}", ref],
+                  timeout=30)
+    out = (r.out or "").strip().splitlines()
+    return out[0].strip() if out and out[0].startswith("sha256:") else ""
+
+
+def _running_backend_id():
+    r = shell.run(["docker", "inspect", "--format", "{{.Image}}",
+                   "intact_backend"], timeout=30)
+    out = (r.out or "").strip().splitlines()
+    return out[0].strip() if out and out[0].startswith("sha256:") else ""
+
+
 def register(runner, cfg):
     tl = runner.ctx.tl
 
@@ -92,27 +134,60 @@ def register(runner, cfg):
         r = shell.run(["docker", "compose", "version"])
         ctx.check("docker compose v2 is available", r.ok, actual=r.out.strip()[:80])
 
-        try:
-            import paramiko                                   # noqa: F401
-            ctx.check("paramiko is installed", True)
-        except ImportError:
-            ctx.check("paramiko is installed", False,
-                      note="sudo apt-get install -y python3-paramiko — needed to "
-                           "bootstrap and tear down the Windows client")
+        # paramiko exists to drive the WINDOWS target over SSH. On a Linux-only
+        # profile there is no Windows target, so demanding it would fail a
+        # critical phase over a dependency the run has no use for.
+        if cfg.windows_enabled:
+            try:
+                import paramiko                               # noqa: F401
+                ctx.check("paramiko is installed", True)
+            except ImportError:
+                ctx.check("paramiko is installed", False,
+                          note="sudo apt-get install -y python3-paramiko — needed "
+                               "to bootstrap and tear down the Windows client")
 
         # A run adds roughly: a 4 GB memory image, a 1-3 GB KAPE upload, a ~1 GB
         # support bundle, plus index growth. Docker images are already on disk
         # and are not re-pulled. 12 GB is the floor at which the run cannot
         # finish; 20 GB is where it stops being comfortable.
+        # The floor is configurable because CI needs a much higher one: a run
+        # that also INSTALLS from scratch pulls ~16 GB of images and ~5 GB of
+        # release assets before it writes its first artifact, so 12 GB is right
+        # for a run against an existing box and useless as a gate for a fresh one.
+        min_free = int(cfg.get("run", "min_free_disk_gb", default=12))
         free_gb = shutil.disk_usage("/").free / 2**30
         detail["free_disk_gb"] = round(free_gb, 1)
-        ctx.check("at least 12 GB free", free_gb >= 12,
-                  expected=">=12 GB", actual=f"{free_gb:.1f} GB",
+        ctx.check(f"at least {min_free} GB free", free_gb >= min_free,
+                  expected=f">={min_free} GB", actual=f"{free_gb:.1f} GB",
                   note="a memory image, a KAPE upload and a support bundle")
         if free_gb < 20:
             tl.warn("disk_tight", detail={
                 "free_gb": round(free_gb, 1),
                 "note": "run should fit, but there is little headroom"})
+
+        # RAM is recorded, not asserted. The README asks for 16 GB and a full
+        # install runs ~30 containers including BOTH Elasticsearch and
+        # OpenSearch, so a box at exactly the minimum can complete and can also
+        # OOM-kill rabbitmq halfway. Refusing to start would block the very runs
+        # that tell us where the real floor is; a number in the report lets a
+        # later failure be read against the memory it actually had.
+        try:
+            meminfo = {}
+            with open("/proc/meminfo", encoding="utf-8") as fh:
+                for line in fh:
+                    k, _, v = line.partition(":")
+                    meminfo[k] = v.strip()
+            ram_gb = int(meminfo.get("MemTotal", "0 kB").split()[0]) / 2**20
+            swap_gb = int(meminfo.get("SwapTotal", "0 kB").split()[0]) / 2**20
+            detail["ram_gb"] = round(ram_gb, 1)
+            detail["swap_gb"] = round(swap_gb, 1)
+            if ram_gb + swap_gb < 16:
+                tl.warn("memory_below_documented_minimum", detail={
+                    "ram_gb": round(ram_gb, 1), "swap_gb": round(swap_gb, 1),
+                    "note": "README asks for 16 GB; rabbitmq is the first thing "
+                            "the OOM killer takes"})
+        except OSError:
+            pass
 
         # sudo, tested for real. A wrong password discovered at the install
         # phase means the wipe already happened.
@@ -123,6 +198,19 @@ def register(runner, cfg):
 
         # Windows target reachable and admin — checked before anything is
         # destroyed, for the same reason.
+        #
+        # Skipped entirely on a Linux-only profile. This block used to run
+        # unconditionally and ended in ctx.check(..., False) on ANY exception,
+        # so a run with no Windows box failed a CRITICAL phase and nothing else
+        # executed at all. A machine that was never part of the run must not be
+        # able to fail it — it is recorded as absent, not as broken.
+        if not cfg.windows_enabled:
+            detail["windows"] = "not configured — Linux-only run"
+            tl.warn("windows_not_configured", detail={
+                "note": "enrol/activity/teardown and the workflow phases that "
+                        "need them will report as not reached"})
+            return detail
+
         from lib import winssh
         try:
             with winssh.WindowsTarget(cfg.windows_host, cfg.windows_user,
@@ -197,12 +285,59 @@ def register(runner, cfg):
         log_path = os.path.join(ctx.run_dir, "logs", "install.log")
         ctx.set(install_log=log_path)
 
-        r = shell.sudo(["bash", "install.sh"], cfg.sudo_password,
+        # An air-gap install when a package directory is supplied. Not the
+        # default: INTACT_AIRGAP changes behaviour in roughly fifteen places
+        # (the SigmaHQ clone, tool downloads, Timesketch package fetches all
+        # take different branches), so making it the default would quietly test
+        # a different product from the one a customer installs online.
+        argv = ["bash", "install.sh"]
+        pkg = (os.environ.get("QA_INSTALL_PACKAGE_DIR") or "").strip()
+        if pkg:
+            argv += ["--package", pkg]
+
+        r = shell.sudo(argv, cfg.sudo_password,
                        timeout=cfg.timeout("install", 90) * 60,
-                       cwd=REPO_DIR, log_path=log_path, tl=tl, stage="install")
+                       cwd=REPO_DIR, log_path=log_path, tl=tl, stage="install",
+                       preserve_env=("GITHUB_TOKEN",))
 
         ctx.check("install.sh exited 0", r.ok, actual=r.rc)
         ctx.check("install marker written", os.path.exists(INSTALL_MARKER))
+
+        # The install that exits 0 having done NOTHING.
+        #
+        # check_initialization_marker (lib/common.sh:587) prompts when
+        # /etc/intact-initialized already exists. Under a harness stdin is
+        # closed, `read` gets EOF, the answer is empty, and install.sh prints
+        # "Installation cancelled by user" and exits ZERO.
+        #
+        # The marker check above CANNOT catch this: the file it looks for is
+        # the very one that caused the short-circuit, so it passes. Only the log
+        # text distinguishes "installed successfully" from "declined to install".
+        # AN IMAGE THAT WAS LOADED AND THEN WASN'T THERE. Docker's "No such
+        # image" is a generic message and reads as a packaging gap -- a missing
+        # asset, a bad tag. It is a very different fault when the installer
+        # logged that exact image as successfully loaded minutes earlier:
+        # something on the box deleted it mid-install. That happened for real
+        # (app.py's disabled-module prune reclaiming the platform's own nginx,
+        # because timesketch ships an nginx too) and cost an hour to identify
+        # from logs that never put the two lines side by side.
+        loaded = set(re.findall(r"—\s+(\S+:\S+)\s+\(\d", r.out or ""))
+        missing = set(re.findall(r"No such image:\s+(\S+)", r.out or ""))
+        vanished = sorted(loaded & missing)
+        detail_vanished = vanished
+        ctx.check("every image the installer loaded was still there when used",
+                  not vanished,
+                  expected="nothing deletes an image mid-install",
+                  actual=", ".join(vanished) or "none missing",
+                  note="these were logged as loaded and were gone by the time "
+                       "a module needed them — a deletion on the box, not a "
+                       "packaging gap")
+
+        ctx.check("install did not short-circuit on the initialization marker",
+                  "Installation cancelled by user" not in (r.out or ""),
+                  note="/etc/intact-initialized existed and the confirm prompt "
+                       "read EOF; install.sh exits 0 having changed nothing. "
+                       "Remove the marker before installing.")
 
         # Copy install.sh's own log too — it carries the pre-container phase
         # that our capture starts too late to see on a resumed run.
@@ -230,9 +365,132 @@ def register(runner, cfg):
                   actual=", ".join(unhealthy[:8]) or "all healthy")
 
         return {"containers": len(names), "unhealthy": unhealthy,
-                "install_rc": r.rc}
+                "install_rc": r.rc, "images_vanished": detail_vanished}
 
     # ---------------------------------------------------------------- 0b --
+    # ------------------------------------------------------------------ C.5 --
+    # NOT critical. A failure here is already loud -- the check says plainly
+    # that the run is exercising the release's backend while reporting on this
+    # ref -- and aborting would trade every later result for that one line. The
+    # phase is new code; the first runs of it are worth more with the feature
+    # sweep and the pipelines still attached.
+    @runner.phase("backend_under_test",
+                  "Make this ref's backend image the one that runs",
+                  needs=("install",))
+    def backend_under_test(ctx):
+        """Put back the pin the installer deliberately corrects away.
+
+        The workflow builds intact-backend:ref-<sha> and points
+        config.yaml versions.backend at it, on the reasoning that
+        deploy_backend uses whatever BACKEND_VERSION names. That reasoning was
+        sound and the result was still wrong: when a release package ships a
+        backend image, lib/config.sh overrides the pin with the package's tag
+        -- "THE PACKAGE WINS OVER THE PIN", which exists to stop a stale pin
+        triggering a source rebuild. So the built image was pinned, corrected
+        away, and never deployed, while the report claimed engine and
+        container matched. Every run to date tested the RELEASE's backend.
+
+        The correction is right for a real install and must not be weakened.
+        What this does instead is what an operator would do afterwards: point
+        the pin at the image they want and recreate the container.
+
+        Both files, because they have different jobs. modules/backend/.env is
+        what compose actually reads -- the service is
+        `image: intact-backend:${BACKEND_VERSION:?...}` -- so nothing changes
+        without it. config.yaml is the source update_env_files rewrites .env
+        FROM, so leaving it stale would have the next install or upgrade undo
+        this silently.
+
+        (An earlier draft of this said the box converges by itself because
+        app.py calls self_heal_backend_swap() on every boot. That claim comes
+        from a comment in lib/config.sh and is not true of this codebase: no
+        such function exists anywhere in it. The recreate below is explicit
+        for that reason.)
+
+        Skips cleanly when the run is deliberately testing the published
+        artifact (backend_image=release), and is a no-op when the built image
+        is already the one running.
+        """
+        mode = (os.environ.get("QA_BACKEND_IMAGE") or "release").strip()
+        built = (os.environ.get("QA_BUILT_IMAGES") or "").strip()
+        running = _running_backend_image()
+        detail = {"mode": mode, "built": built, "running_before": running}
+
+        # NOT on an upgrade scenario, and the reason is principled rather than
+        # cautious. What those scenarios put under test is the ENGINE, which
+        # comes from the workspace and therefore from this ref; the backend
+        # image is legitimately the target RELEASE's, because that is what
+        # upgrading to a release means. Re-pinning to ref-<sha> beforehand
+        # would also hand the upgrade planner a backend pin that names no
+        # release, which is not a thing any operator's box would present.
+        if _scenario_upgrades():
+            ctx.check("the backend under test is the one this run intends",
+                      True, actual=f"{running} (upgrade scenario)",
+                      note="an upgrade scenario ends on the target release's "
+                           "backend by design; this ref supplies the engine")
+            return detail
+
+        if mode != "branch" or not built:
+            ctx.check("the backend under test is the one this run intends",
+                      True,
+                      actual=f"{running} (mode={mode or 'release'})",
+                      note="testing the published artifact; the image built "
+                           "from this ref, if any, is not deployed")
+            return detail
+
+        want = built.split(",")[0].strip()
+        detail["want"] = want
+        want_id, running_id = _image_id(want), _running_backend_id()
+        detail["want_id"], detail["running_id"] = want_id, running_id
+        if want_id and running_id == want_id:
+            ctx.check("the backend under test is the image built from this ref",
+                      True, expected=want, actual=f"{running} ({want_id[:19]})",
+                      note="already deployed — possibly under the release's "
+                           "own tag, which is the same image either way")
+            return detail
+
+        tag = want.split(":", 1)[1] if ":" in want else want
+        root = cfg.repo_dir or REPO_DIR
+
+        # Both surfaces, or they disagree and the box oscillates: .env drives
+        # compose, config.yaml drives the backend's own self-heal on boot.
+        shell.sudo(["sed", "-i",
+                    f"s|^  backend:.*|  backend: '{tag}'|",
+                    os.path.join(root, "config.yaml")],
+                   cfg.sudo_password, tl=tl, stage="backend_under_test")
+        shell.sudo(["sed", "-i",
+                    f"s|^BACKEND_VERSION=.*|BACKEND_VERSION={tag}|",
+                    os.path.join(root, "modules/backend/.env")],
+                   cfg.sudo_password, tl=tl, stage="backend_under_test")
+
+        # --no-build so a missing image fails loudly here rather than being
+        # quietly rebuilt from source into something nobody tested.
+        r = shell.sudo(["docker", "compose", "up", "-d", "--no-build"],
+                       cfg.sudo_password, timeout=600,
+                       cwd=os.path.join(root, "modules/backend"),
+                       tl=tl, stage="backend_under_test")
+        ctx.check("the backend was recreated onto this ref's image", r.ok,
+                  actual=(r.out or "")[-200:] if not r.ok else "recreated")
+
+        deadline = time.time() + 300
+        healthy = False
+        while time.time() < deadline:
+            ok, _why = shell.container_is_ok("intact_backend")
+            if ok and _running_backend_id() == want_id:
+                healthy = True
+                break
+            time.sleep(5)
+
+        running = _running_backend_image()
+        detail["running_after"] = running
+        ctx.check("the backend under test is the image built from this ref",
+                  bool(want_id) and _running_backend_id() == want_id and healthy,
+                  expected=want, actual=running,
+                  note="if this fails the run is exercising the release's "
+                       "backend while reporting on this ref -- the exact "
+                       "mismatch this phase exists to prevent")
+        return detail
+
     @runner.phase("security", "Re-check the hardening on a freshly installed box",
                   needs=("install",))
     def security(ctx):
@@ -329,7 +587,7 @@ def register(runner, cfg):
 
     # ---------------------------------------------------------------- 0c --
     @runner.phase("cloud", "Cloud detection content (AWS SIGMA / Azure o365rc)",
-                  needs=("install",), optional=True)
+                  needs=("install",))
     def cloud(ctx):
         """WRITTEN BUT NOT RUN by default -- see cfg.cloud_tests.
 

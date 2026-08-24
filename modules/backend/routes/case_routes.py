@@ -117,10 +117,21 @@ def _audit_detail(action, is_err, resp):
             outcome = "answered" if ans else "no answer produced"
             return f'{outcome} — "{q[:140]}"'
         if a == "report" and request.method == "POST":
+            # 202 = the LLM path just STARTED on a background thread — logging
+            # "report regenerated" here would claim it finished before the
+            # first token was sent. The real completion (or failure) logs its
+            # own line from inside regenerate_report(), seconds to minutes
+            # later; this one only needs to mark that the click was received.
+            if resp.status_code == 202:
+                return "generation started — narrating in the background, no need to wait here"
             return "report regenerated"
         if a in ("rescan", "config", "hosts", "masking"):
             return "configuration updated, case re-fused"
-        if a in ("export", "import"):
+        if a == "export":
+            # The background run logs the real outcome (size, run count, the
+            # file it produced); this line only marks when it was asked for.
+            return "export started — building the bundle in the background"
+        if a == "import":
             return action
         return ""
     except Exception:
@@ -134,6 +145,14 @@ def _audit_case_activity(resp):
         # skip the log's own reads/clears so polling doesn't self-fill the log
         if cid and action and action.split("/")[0] != "log":
             is_err = resp.status_code >= 400
+            # A "busy" 409 (FusionBusy, ReportGenerationBusy, ...) is not a
+            # failure — it means the case is already doing this, which is a
+            # NORMAL collision (a double-click, two operators at once). Its own
+            # handler already logs a friendly "deferred" line; recording it a
+            # second time here as "X failed (409)" is what told an operator
+            # this had broken when it was just still working.
+            if resp.status_code == 409 and _safe_json(resp).get("busy"):
+                return resp
             if request.method in ("POST", "PUT", "DELETE", "PATCH") or is_err:
                 store.log_case_event(cid, _audit_label(action),
                                      "error" if is_err else "ok",
@@ -142,6 +161,37 @@ def _audit_case_activity(resp):
     except Exception:
         pass
     return resp
+
+
+@case_bp.errorhandler(store.FusionBusy)
+def _case_busy(e):
+    """A fuse is already running for this case → 409, never 500.
+
+    409 is the honest code: the request is well-formed, the case is simply busy,
+    and retrying will work. It used to fall through to the generic handler below,
+    which returned 500 AND wrote "crashed" into the case activity log — so a
+    perfectly normal collision (two operators triaging at once, or a triage action
+    landing while a Rescan is still running) read as a product fault.
+
+    Registered on the same blueprint as the catch-all: Flask walks the exception's
+    MRO and prefers the most specific registered class, so this wins.
+
+    Note several callers persist BEFORE they fuse — set_disposition and
+    decide_checklist_item both write their decision, then re-fuse. A 409 from
+    those means the decision IS saved and only the graph is behind, which is why
+    the message says "not lost" rather than implying the action failed.
+    """
+    try:
+        cid, action = _audit_case_id()
+        if cid and action:
+            store.log_case_event(cid, _audit_label(action), "warning",
+                                 f"{_audit_label(action).lower()} deferred — "
+                                 f"a fuse is already running for this case", code=409)
+    except Exception:
+        pass
+    return jsonify({"error": str(e), "busy": True,
+                    "hint": "the case is re-fusing — your change is saved, "
+                            "retry in a moment to see it applied"}), 409
 
 
 @case_bp.errorhandler(Exception)
@@ -195,6 +245,32 @@ def _bind_active_case():
             system_id = store.ensure_system_case()
             n = reassign_null_case(default_id, list(ws.AGENTIC_TYPES))
             m = reassign_null_case(system_id, list(ws.SYSTEM_TYPES))
+            try:
+                # Timers are in memory: data that landed just before a restart would
+                # otherwise wait for the NEXT run to arrive before fusing.
+                from services.fusion import autofuse
+                autofuse.catch_up()
+            except Exception as _e:      # noqa: BLE001 — never break request one
+                print(f"[AUTOFUSE] catch-up failed: {_e}", flush=True)
+            try:
+                # report_generating is a flag on the CASE, tracking a thread that
+                # lived only in the previous process's memory — a restart mid-
+                # generation (crash, deploy) leaves it stuck True forever with
+                # nothing left running to ever clear it, which would permanently
+                # block Regenerate on that case. Nothing can genuinely still be
+                # "generating" the instant this process starts.
+                for _r in (ws.get_all_automation_runs() or []):
+                    if _r.get("automation_type") != store.CASE_TYPE:
+                        continue
+                    if (_r.get("details") or {}).get("report_generating"):
+                        store._merge_case_details(_r["run_id"], {
+                            "report_generating": False,
+                            "report_generating_started_at": None})
+                        store.log_case_event(
+                            _r["run_id"], "Report generation", "warning",
+                            "interrupted by a backend restart — click Regenerate report to try again")
+            except Exception as _e:      # noqa: BLE001 — never break request one
+                print(f"[REPORT-GEN] stale-flag cleanup failed: {_e}", flush=True)
             if n or m:
                 print(f"[CASES] backfilled {n} run(s) into Default, {m} into System",
                       flush=True)
@@ -329,9 +405,16 @@ def get_case(case_id):
                     # LOCKED to the model max: no per-case output cap any more.
                     # Kept in the response for API compatibility (None = model max).
                     "llm_max_output_tokens": None,
-                    # No route to a model provider: write the deterministic report
-                    # instead of waiting out a connection timeout on every fuse.
-                    "air_gap_analysis": bool(d.get("air_gap_analysis", False)),
+                    # Fold newly-landed runs into the graph automatically, after the
+                    # case goes quiet. Default ON, absent included — same reasoning as
+                    # above. It never calls the model and never redraws the view; the
+                    # narrative still waits for an explicit Rescan.
+                    "auto_fuse": bool(d.get("auto_fuse", True)),
+                    # Exactly which runs the STORED graph was built from. The case
+                    # view snapshots this at render time and the staleness poll
+                    # compares against it, which is how "new runs arrived" is told
+                    # apart from "a background fuse already folded them in".
+                    "fused_run_ids": list(d.get("fused_run_ids") or []),
                     # LOCKED ON: the LLM payload is always sized from the selected
                     # model's REAL context window, never the static ~128k-model
                     # constant. Kept in the response for API compatibility.
@@ -355,7 +438,27 @@ def get_case(case_id):
                     # the report frozen — so the report may not reflect recent changes.
                     "report_dirty": bool(d.get("report_dirty")),
                     "is_stale": bool(data_stale or report_stale or d.get("report_dirty")),
-                    "llm_enabled": _llm_enabled()})
+                    # WHY the report is (or is not) narrated, in the operator's
+                    # terms. The Analysis tab shows this instead of leaving them to
+                    # guess: "air-gap is ticked", "no model", "no API key" and "no
+                    # route to the provider" all produce the same deterministic
+                    # report but need completely different actions.
+                    "llm_status": _llm_status_for(d),
+                    "llm_enabled": _llm_enabled(),
+                    # An LLM-narrated report can run for several minutes across
+                    # two sequential calls — the frontend polls this to know
+                    # when to stop showing "generating…" and refresh on its own.
+                    "report_generating": bool(d.get("report_generating")),
+                    "report_generating_started_at": d.get("report_generating_started_at")})
+
+
+def _llm_status_for(d):
+    """Never let a status probe break the case view — it is a hint, not the data."""
+    try:
+        from services.fusion import llm_sim
+        return llm_sim.llm_status()
+    except Exception:                       # noqa: BLE001
+        return {"available": True, "code": "ok", "reason": "", "fix": ""}
 
 
 @case_bp.route("/api/cases/<case_id>/risk", methods=["GET"])
@@ -387,64 +490,155 @@ def delete_case(case_id):
     return jsonify({"case_id": case_id, **res})
 
 
-@case_bp.route("/api/cases/<case_id>/export", methods=["GET"])
+# ---- portable case bundles (move a case between appliances) --------------------
+# Export builds a multi-GB archive, so it CANNOT happen inside the request: nginx
+# gives up waiting for a first byte after 300s and buffers the response besides.
+# The route starts a background run and hands back its id; the finished file is
+# fetched separately. Import is the mirror image, fed by the resumable tus upload
+# path (the /api/ route caps at 500 MB, which one member payload already exceeds).
+
+
+def _bundle_thread(target, run_id, *args, **kwargs):
+    """Run a bundle job on a daemon thread, owning the run's terminal state and
+    releasing `lock` no matter how it ends.
+
+    The run is registered for cancellation before the thread starts, so the Stop
+    button in Settings → Actions reaches it — a Stop that renders but does nothing
+    is worse than no Stop at all.
+    """
+    import threading
+    import traceback
+    from services import workflow_service as ws
+    lock = kwargs.pop("lock", None)
+    cancel = ws.register_cancel_event(run_id)
+
+    def _worker():
+        try:
+            res = target(*args, run_id=run_id, cancel=cancel, **kwargs)
+            # No force=: if anything logged at error level, the platform's safety
+            # net demotes this to 'failed', which is exactly right — a bundle with
+            # an error in its log is not one to hand an operator as finished.
+            ws.update_run_status(run_id, "completed", progress=100, details=res)
+        except Exception as e:                            # noqa: BLE001
+            if cancel.is_set():
+                return          # request_stop() already marked it cancelled
+            traceback.print_exc()
+            ws.add_log_to_run(run_id, f"{e}", "error")
+            ws.update_run_status(run_id, "failed", error=str(e))
+        finally:
+            try:
+                ws.unregister_cancel(run_id)
+            except Exception:
+                pass
+            if lock is not None:
+                try:
+                    lock.release()
+                except Exception:
+                    pass
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+@case_bp.route("/api/cases/<case_id>/export", methods=["POST"])
 def export_case(case_id):
-    """Download a self-contained bundle for one workspace (case record + member
-    runs) that `POST /api/cases/import` can recreate on this or another install."""
-    import json as _json
-    if not _export_lock.acquire(blocking=False):
-        return jsonify({"error": "an export is already in progress; try again shortly"}), 409
+    """Start building a portable bundle for this case. 202 + {run_id}."""
+    from services import workflow_service as ws
+    from services.fusion import case_bundle
+
     try:
-        bundle = store.export_case(case_id)
-        if bundle is None:
-            return jsonify({"error": "case not found"}), 404
-        safe = "".join(c if c.isalnum() or c in "-_" else "_"
-                       for c in (bundle.get("name") or "case"))[:60] or "case"
-        payload = _json.dumps(bundle, indent=2, default=str)
-    finally:
-        # The bundle is fully built in-memory; releasing here serialises the
-        # (heavy) build, not the subsequent byte-streaming to the client.
+        plan = case_bundle.plan_export(case_id)          # validates before we commit
+    except case_bundle.BundleError as e:
+        msg = str(e)
+        return jsonify({"error": msg}), (404 if "not found" in msg else 409)
+
+    if not _export_lock.acquire(blocking=False):
+        return jsonify({"error": "an export is already in progress; try again shortly",
+                        "busy": True}), 409
+    try:
+        run_id = ws.create_automation_run(
+            "case_export", f"Export case: {plan['name']}",
+            details={"case_id": case_id, "case_name": plan["name"],
+                     "runs_exported": len(plan["member_ids"]),
+                     "estimate_bytes": plan["estimate_bytes"]})
+    except Exception as e:                                # noqa: BLE001
         _export_lock.release()
-    return Response(payload, mimetype="application/json", headers={
-        "Content-Disposition": f'attachment; filename="{safe}.intactcase.json"'})
+        return jsonify({"error": str(e)}), 500
+
+    _bundle_thread(case_bundle.export_case_bundle, run_id, case_id, lock=_export_lock)
+    return jsonify({"run_id": run_id, "case_id": case_id,
+                    "estimate_bytes": plan["estimate_bytes"]}), 202
+
+
+@case_bp.route("/api/cases/export/<run_id>/download", methods=["GET"])
+def download_case_bundle(run_id):
+    """Stream the archive built by `run_id`. Streamed by send_file, so the first
+    byte leaves immediately however big the file is."""
+    import os
+    from flask import send_file
+    from services import workflow_service as ws
+    from services.fusion import case_bundle
+
+    run = ws.get_automation_run(run_id)
+    if not run or run.get("automation_type") != "case_export":
+        return jsonify({"error": "no such export"}), 404
+    det = run.get("details") or {}
+    path = det.get("bundle_path")
+    if not path:
+        return jsonify({"error": "the export has not finished yet"}), 404
+    # Containment: the path came out of a run row, and a run row is not a
+    # trustworthy source of filesystem paths.
+    real = os.path.realpath(path)
+    if not real.startswith(os.path.realpath(case_bundle.EXPORT_DIR) + os.sep):
+        return jsonify({"error": "that file is not an export bundle"}), 400
+    if not os.path.exists(real):
+        return jsonify({"error": "This bundle is no longer on disk (a Maintenance "
+                                 "purge removes old exports). Export the case again."}), 410
+    return send_file(real, as_attachment=True,
+                     download_name=det.get("bundle_name") or f"{run_id}{case_bundle.BUNDLE_EXT}",
+                     mimetype="application/zip")
 
 
 @case_bp.route("/api/cases/import", methods=["POST"])
 def import_case():
-    """Recreate a workspace from an exported bundle (multipart `file`, or a raw
-    JSON body). Tracked as a System-workspace operation, not the active case."""
-    import json as _json
+    """Import a bundle sent directly as multipart `file`.
+
+    Kept for the API and the tests. The UI uses the tus path instead: nginx caps
+    /api/ bodies at 500 MB and one member payload is bigger than that on its own.
+    """
+    import os
+    from services import workflow_service as ws
+    from services.fusion import case_bundle
+
+    f = request.files.get("file")
+    if f is None:
+        return jsonify({"error": "no bundle provided — send the .intactcase.zip as "
+                                 "multipart 'file'"}), 400
     if not _import_lock.acquire(blocking=False):
-        return jsonify({"error": "an import is already in progress; try again shortly"}), 409
+        return jsonify({"error": "an import is already in progress; try again shortly",
+                        "busy": True}), 409
+    tmp_dir = os.path.join(case_bundle.EXPORT_DIR, "incoming")
+    tmp = os.path.join(tmp_dir, f"upload-{os.getpid()}-{id(f)}.zip")
+    run_id = None
     try:
-        bundle = None
-        f = request.files.get("file")
-        if f is not None:
-            try:
-                bundle = _json.loads(f.read().decode("utf-8"))
-            except Exception as e:
-                return jsonify({"error": f"could not parse file: {e}"}), 400
-        else:
-            bundle = request.get_json(silent=True)
-        if not isinstance(bundle, dict):
-            return jsonify({"error": "no case bundle provided"}), 400
-        name = request.form.get("name") or None
+        os.makedirs(tmp_dir, exist_ok=True)
+        f.save(tmp)
+        run_id = ws.create_automation_run(
+            "case_import", f"Import case: {f.filename or 'bundle'}",
+            details={"filename": f.filename or "bundle"})
+        res = case_bundle.import_case_bundle(tmp, run_id=run_id,
+                                             name=request.form.get("name") or None)
+        ws.update_run_status(run_id, "completed", progress=100, details=res)
+        return jsonify(res)
+    except Exception as e:                                # noqa: BLE001
+        if run_id:
+            ws.add_log_to_run(run_id, f"{e}", "error")
+            ws.update_run_status(run_id, "failed", error=str(e))
+        return jsonify({"error": str(e)}), 400
+    finally:
         try:
-            res = store.import_case(bundle, name=name)
-        except ValueError as e:
-            return jsonify({"error": str(e)}), 400
-        # Audit the import as a System-workspace op (case_import is a SYSTEM_TYPE).
-        try:
-            from services import workflow_service as ws
-            rid = ws.create_automation_run(
-                "case_import", f"Import workspace: {res['name']}",
-                details={"imported_case_id": res["case_id"],
-                         "runs_imported": res["runs_imported"]})
-            ws.update_run_status(rid, "completed", progress=100)
+            os.remove(tmp)
         except Exception:
             pass
-        return jsonify(res)
-    finally:
         _import_lock.release()
 
 
@@ -474,7 +668,7 @@ def attach(case_id):
             threading.Thread(target=store.watch_and_fuse, args=(case_id, rid), daemon=True).start()
         resp["watching"] = rids
     elif d.get("fuse"):                                 # fuse now
-        g = store.fuse_case(case_id)
+        g = store.fuse_case(case_id, trigger=store.TRIGGER_API_FUSE)
         resp.update({"fused": True, "entities": len(g.entities), "findings": len(g.findings)})
     return jsonify(resp)
 
@@ -493,7 +687,8 @@ def quick_case():
         initial_access=d.get("initial_access_estimate") or d.get("initial_access"),
         min_severity=(d.get("min_severity") or "medium"), member_run_ids=rids)
     logs = []
-    g = store.fuse_case(cid, log=lambda m, l="info": logs.append((l, m)))
+    g = store.fuse_case(cid, log=lambda m, l="info": logs.append((l, m)),
+                        trigger=store.TRIGGER_CASE_CREATED)
     return jsonify({
         "case_id": cid, "status": "fused", "entities": len(g.entities),
         "relationships": len(g.relationships), "findings": len(g.findings),
@@ -505,7 +700,8 @@ def quick_case():
 @case_bp.route("/api/cases/<case_id>/fuse", methods=["POST"])
 def fuse(case_id):
     logs = []
-    g = store.fuse_case(case_id, log=lambda m, l="info": logs.append((l, m)))
+    g = store.fuse_case(case_id, log=lambda m, l="info": logs.append((l, m)),
+                        trigger=store.TRIGGER_API_FUSE)
     return jsonify({"case_id": case_id, "status": "fused",
                     "entities": len(g.entities), "relationships": len(g.relationships),
                     "findings": len(g.findings),
@@ -521,13 +717,15 @@ def rescan(case_id):
     if not store.get_case(case_id):
         return jsonify({"error": "case not found"}), 404
     cfg = request.get_json(silent=True) or {}
-    try:
-        res = store.rescan(case_id, cfg)
-    except store.FusionBusy as e:
-        # 409, not 500: the request is well-formed, the case is simply busy. The
-        # config the operator just saved IS persisted (set_analysis_config runs
-        # before the fuse), so retrying re-fuses with it — nothing is lost.
-        return jsonify({"error": str(e), "busy": True}), 409
+    # FusionBusy -> 409 via the blueprint handler (_case_busy), which now covers every
+    # route rather than this one alone. Rescan is the benign case: set_analysis_config
+    # runs before the fuse, so the config the operator just saved IS persisted and a
+    # retry re-fuses with it.
+    # The UI names the button it came from; anything else is an API caller.
+    _trigs = {"refusion": store.TRIGGER_MANUAL_REFUSION,
+              "rescan_llm": store.TRIGGER_MANUAL_RESCAN}
+    res = store.rescan(case_id, cfg,
+                       trigger=_trigs.get(cfg.get("trigger"), store.TRIGGER_API_FUSE))
     return jsonify({"case_id": case_id, "status": "rescanned", **res})
 
 
@@ -751,14 +949,41 @@ def set_branding(case_id):
 
 @case_bp.route("/api/cases/<case_id>/report", methods=["POST"])
 def regenerate_report(case_id):
-    """Re-narrate the report (+ advisory) at the chosen audience, applying the operator
-    master-prompt — cheap, from the stored graph (no re-collect)."""
+    """Re-narrate the report (+ advisory) at the chosen audience, applying the
+    operator master-prompt.
+
+    The deterministic path (no LLM) is fast and answers synchronously, same as
+    always. The LLM path (`use_llm: true`, the Regenerate report button) starts
+    a BACKGROUND generation and returns immediately (202) — measured live at
+    5:29 for a real case across two sequential LLM calls, well past nginx's
+    300s /api/ read timeout, which was killing the operator's connection while
+    the backend kept working underneath unseen. The frontend polls
+    GET /api/cases/<id> (info.report_generating) and refreshes on its own when
+    it flips back to false; the Analysis-tab banner already explains a failure
+    if that's what happened, so this route doesn't need a separate error path
+    for it."""
     if not store.get_case(case_id):
         return jsonify({"error": "case not found"}), 404
     b = request.get_json(silent=True) or {}
-    res = store.regenerate_report(case_id, audience=b.get("audience"),
-                                  use_llm=bool(b.get("use_llm")))
-    return jsonify({"case_id": case_id, **res})
+    use_llm = bool(b.get("use_llm"))
+    if not use_llm:
+        res = store.regenerate_report(case_id, audience=b.get("audience"), use_llm=False)
+        return jsonify({"case_id": case_id, **res})
+    try:
+        res = store.regenerate_report_async(case_id, audience=b.get("audience"), use_llm=True)
+    except store.ReportGenerationBusy as e:
+        # A NORMAL collision (a double-click, or the operator switching tabs and
+        # clicking again) — not a failure, so it's logged as one, matching
+        # _case_busy's framing below. The generic after_request hook steps aside
+        # for any "busy": true 409 so this doesn't ALSO get logged as "failed".
+        store.log_case_event(case_id, "Regenerate report", "warning",
+                             "deferred — a report is already being generated for "
+                             "this case; it will refresh on its own when ready",
+                             code=409)
+        return jsonify({"error": str(e), "busy": True}), 409
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    return jsonify({"case_id": case_id, **res}), 202
 
 
 @case_bp.route("/api/cases/<case_id>/synthesize", methods=["POST"])
@@ -831,8 +1056,15 @@ def graph(case_id):
     # Analysis isn't blank. A non-empty cached graph is returned as-is (fast).
     if not g.entities and store._members_for_case(case_id, d):
         try:
-            g = store.fuse_case(case_id)
+            g = store.fuse_case(case_id, trigger=store.TRIGGER_AUTOMATIC_FIRST_VIEW)
+        except store.FusionBusy:
+            pass          # already fusing — the caller re-reads once it finishes
         except Exception as e:
+            # stderr only used to hide this entirely from the operator; the case log
+            # is where they are actually looking when the view comes up empty.
+            store.log_case_event(case_id, "Refusion failed", "error",
+                                 f"first-view automatic fuse failed — "
+                                 f"{type(e).__name__}: {e}")
             print(f"[CASE] on-view fuse failed for {case_id}: {e}", flush=True)
     return jsonify({"case_id": case_id, "fusion_graph": g.to_dict(),
                     "import_in_progress": import_in_progress})

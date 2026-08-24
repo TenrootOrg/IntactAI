@@ -95,25 +95,15 @@ for flag in --bootstrap --system-bundle --all-assets; do
         fail "builder accepts ${flag}"
     fi
 done
-# Faithfulness to the two CI jobs, in the details that are easy to get wrong.
-if grep -q "tar -C \"\$_bs_parent\" -cf" "$B"; then
-    ok "bootstrap is a PLAIN tar (CI uses tar -cf, not -czf)"
-else
-    fail "bootstrap is a plain tar"
-fi
-if grep -q "rm -rf \"\$_bs_parent/\$TAG/scripts/ci\" \"\$_bs_parent/\$TAG/scripts/dev\"" "$B"; then
-    ok "bootstrap drops scripts/ci and scripts/dev"
-else
-    fail "bootstrap drops scripts/ci and scripts/dev" "scripts/dev fabricates packages from a live tree — it must not ship"
-fi
-# The two sidecars genuinely disagree in CI: bootstrap is the bare hash,
-# system-bundle is the full sha256sum line. Copying that disagreement is
-# deliberate, so assert both rather than "normalising" them.
-if grep -q "awk '{print \$1}' \\\\" "$B"; then
-    ok "bootstrap .sha256 is the bare hash"
-else
-    fail "bootstrap .sha256 is the bare hash"
-fi
+# Faithfulness to the CI job, in the details that are easy to get wrong.
+#
+# The <tag>-bootstrap.tar twin was RETIRED on 2026-08-17 -- the frozen
+# <tag>-engine.tar.gz supersedes it, and the builder no longer emits it. The
+# three assertions that used to live here (plain tar, dropping scripts/ci +
+# scripts/dev, and the bare-hash sidecar) all asserted the PRESENCE of that
+# removed code, so they failed on every run from the day it was retired. A
+# suite that is permanently red is a suite nobody reads, which is the real
+# cost; they are gone rather than skipped.
 if grep -q 'sha256sum "${TAG}-system-bundle.tar" > "${TAG}-system-bundle.tar.sha256"' "$B"; then
     ok "system-bundle .sha256 is the full sha256sum line"
 else

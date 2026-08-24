@@ -48,6 +48,31 @@
   .md th,.md td{border:1px solid var(--bd);padding:5px 9px;text-align:left}
   .md th{background:var(--panel2)}
   .md li{margin:2px 0}
+  /* Evidence lines belonging to the finding above them. Indented, toned down and
+     allowed to wrap inside their own bullet, so a long Defender message reads as
+     continuation rather than as the next entry. */
+  .md li.sub{margin-left:20px;list-style:circle;color:var(--muted);font-size:12px;line-height:1.5}
+  /* No VERTICAL padding on the code box. `.md code` carries `padding:1px 5px`,
+     which makes the inline box taller than the line it sits on — so a line that
+     visually fits still measured as overflowing, and every item got a "more"
+     link that revealed nothing. */
+  .md li.sub code{font-size:11px;overflow-wrap:anywhere;padding:0 4px}
+  /* `clip` is added by JS only where the text ACTUALLY overflows, measured per
+     element, so a short line gets no affordance it does not need. */
+  /* ONE line closed, not three. A Defender message runs to several hundred
+     characters of CJK plus a fwlink URL; three wrapped lines of it per evidence
+     item turned the timeline into a wall and buried the finding headings that
+     give it structure. One line is a hint that something is there — the whole
+     string is a click away. line-height is pinned above so `1.5em` is exactly
+     one line whatever the script. */
+  .md li.sub.clip{max-height:1.7em;overflow:hidden;cursor:pointer;position:relative}
+  .md li.sub.clip::after{content:'⌄ more';position:absolute;right:0;bottom:0;
+    padding:0 4px 0 14px;font-size:10px;color:var(--acc);background:var(--panel)}
+  .md li.sub.clip.open{max-height:none}
+  .md li.sub.clip.open::after{content:'⌃ less';position:static;padding-left:8px;background:none}
+  /* Air between finding groups: the first bullet after an evidence block starts a
+     new finding, and needs to look like one. */
+  .md li.sub + li:not(.sub){margin-top:12px}
   .md strong{color:#fff}
   .chip{display:inline-block;font-size:11px;padding:1px 7px;border-radius:9px;margin-right:5px}
   .c-critical{background:rgba(248,81,73,.18);color:var(--crit)} .c-high{background:rgba(219,109,40,.18);color:var(--high)}
@@ -69,6 +94,12 @@
   .chatbar{display:flex;gap:8px;margin-top:8px}
   .empty{color:var(--muted);text-align:center;margin-top:60px}
   .stat{display:inline-block;margin-right:16px;font-size:13px} .stat b{color:#fff;font-size:18px}
+  /* The same badges inside a config column. 18px is right in the header strip,
+     where it is the headline; beside 11px muted labels it shouts. Size only --
+     the accent colours are inline on each <b> and are deliberately kept, so the
+     green token cut and the amber cost still read as themselves. */
+  .cfgstats .stat{display:block;margin:0 0 3px;font-size:11px}
+  .cfgstats .stat b{font-size:12px}
   .toast{position:fixed;bottom:18px;right:18px;background:var(--panel2);border:1px solid var(--acc);padding:10px 14px;border-radius:8px;display:none;opacity:0;transition:opacity .35s ease;z-index:9999;box-shadow:0 8px 28px rgba(0,0,0,.45);max-width:420px}
   .toast.show{opacity:1}
   .fdetail{position:fixed;top:0;right:0;width:540px;max-width:94vw;height:100vh;background:var(--panel,#161b22);border-left:1px solid var(--bd);box-shadow:-10px 0 30px rgba(0,0,0,.5);transform:translateX(100%);transition:transform .22s ease;z-index:9998;overflow:auto;padding:16px 18px}
@@ -85,11 +116,11 @@
   #wsbar{display:flex;align-items:center;gap:8px}
   #wsbar select{width:auto}
   /* embed mode: hosted inside the main app as a tab — drop our own header
-     (the app's top bar already shows the active workspace) and fill the frame */
+     (the app's top bar already shows the active case) and fill the frame */
   html.embed header{display:none}
   html.embed .wrap{height:100vh}
   /* view=manage  -> only the left management panel (create / switch / delete)   */
-  /* view=analysis-> only the right fusion view for the active workspace          */
+  /* view=analysis-> only the right fusion view for the active case               */
   html.v-manage .main{display:none}
   html.v-manage .wrap{grid-template-columns:1fr}
   html.v-analysis .side{display:none}
@@ -105,6 +136,25 @@
   .cfgcol h4{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin:2px 0 6px}
   .cfgactions{display:flex;gap:10px;padding:0 14px 14px;align-items:center;border-top:1px solid var(--bd);padding-top:12px}
   .modwarn{font-size:11px;color:var(--med);line-height:1.35;margin:0 0 6px;padding:6px 8px;border:1px solid rgba(210,153,34,.35);background:rgba(210,153,34,.08);border-radius:6px}
+  /* Air-Gap Template banner: the report was written from the correlated graph
+     alone, no model call made. Deliberately the loudest thing on the tab —
+     the operator needs to know BEFORE reading a report why it has no narrative,
+     not discover it in a footnote after finishing it. */
+  .agbanner{margin:0 0 14px;padding:12px 14px;border:1px solid rgba(210,153,34,.45);
+            background:rgba(210,153,34,.10);border-radius:8px}
+  .agbanner .agtitle{font-weight:700;color:var(--med);font-size:13px;display:flex;
+                      align-items:center;gap:7px}
+  .agbanner .agdetail{color:var(--tx);font-size:12px;margin-top:5px}
+  .agbanner .agaction{color:var(--muted);font-size:11.5px;margin-top:6px;line-height:1.5}
+  /* Same block, blue instead of amber — a state to notice, not a warning. Used
+     while a report is actively generating in the background. ONE compound
+     class name, not "agbanner info" as two classes — .info already exists on
+     this page (a 15x15px circular tooltip-icon badge) and, unqualified,
+     silently won the cascade for width/height/border-radius/display on
+     anything else carrying it, squashing this banner into a 15px circle with
+     its text overflowing everywhere. */
+  .agbanner-live{border-color:rgba(88,166,255,.45);background:rgba(88,166,255,.08)}
+  .agbanner-live .agtitle{color:var(--info)}
   #cf-modules{display:flex;flex-direction:column;gap:5px}
   .modrow{display:flex;align-items:center;gap:9px;padding:8px 10px;border:1px solid var(--bd);border-radius:7px;background:var(--panel2);cursor:pointer;font-size:13px;transition:border-color .12s,background .12s}
   .modrow input{width:auto;margin:0;flex:none}
@@ -155,7 +205,7 @@
         display:inline-flex;align-items:center;justify-content:center;font-size:10px}
 </style>
 <!-- MUST be first: installs the X-Case-Id fetch hook before any /api call -->
-<script src="js/active-case.js?v=6"></script>
+<script src="js/active-case.js?v=8"></script>
 <!-- set embed + view mode before body renders (no flash) -->
 <script>(function(){var q=new URLSearchParams(location.search);
   if(q.get('embed')==='1')document.documentElement.classList.add('embed');
@@ -164,34 +214,35 @@
 <link rel="stylesheet" href="vendor/flatpickr/flatpickr.min.css">
 <link rel="stylesheet" href="vendor/flatpickr/dark.css">
 <script src="vendor/flatpickr/flatpickr.min.js"></script>
+<!-- resumable chunked upload, for importing a case bundle (multi-GB) -->
+<script src="vendor/tus/tus.min.js"></script>
+<script src="js/upload.js?v=3"></script>
 </head>
 <body>
 <header>
-  <span class="logo">◭</span><h1>IntactAI — Workspaces</h1>
+  <span class="logo">◭</span><h1>IntactAI — Cases</h1>
   <span class="badge">Entity Fusion · cross-module + cross-host</span>
   <span class="badge" id="llmbadge">LLM: simulated</span>
   <div id="wsbar" style="margin-left:auto"></div>
 </header>
 <div class="wrap">
   <div class="side">
-    <h2>New Workspace</h2>
+    <h2>New Case</h2>
     <label>Name</label><input id="cname" placeholder="GOOGLE IR 05-03-2026"/>
     <label>Start date <span style="color:var(--muted)">(optional)</span></label>
     <input id="wstart" placeholder="2026-06-14"/>
     <div class="row" style="margin-top:10px">
-      <button onclick="createWorkspace()">Create workspace</button>
+      <button onclick="createWorkspace()">Create case</button>
     </div>
-    <p style="color:var(--muted);font-size:11px;margin-top:8px">Runs you launch (Agentic, Memory, cloud…) while this workspace is active are tagged to it automatically. Open it any time to fuse them.</p>
-    <h2 style="display:flex;align-items:center;justify-content:space-between">Workspaces
-      <!-- Export/Import is built + backend-ready but HIDDEN pending more testing.
-           Re-enable by removing display:none here and on the per-row Export button. -->
-      <button class="ghost" style="font-size:11px;padding:4px 10px;display:none" onclick="document.getElementById('case-import-file').click()" title="Import a workspace from an exported .intactcase.json bundle">⬆ Import</button>
+    <p style="color:var(--muted);font-size:11px;margin-top:8px">Runs you launch (Agentic, Memory, cloud…) while this case is active are tagged to it automatically. Open it any time to fuse them.</p>
+    <h2 style="display:flex;align-items:center;justify-content:space-between">Cases
+      <button class="ghost" style="font-size:11px;padding:4px 10px" onclick="document.getElementById('case-import-file').click()" title="Import a case exported from another Intact appliance — runs as a System action, watch it in Settings → Actions">⬆ Import</button>
     </h2>
-    <input id="case-import-file" type="file" accept=".json,application/json" style="display:none" onchange="importWorkspace(event)"/>
+    <input id="case-import-file" type="file" accept=".zip" style="display:none" onchange="importWorkspace(event)"/>
     <div id="caselist"></div>
   </div>
   <div class="main" id="main">
-    <div class="empty">Pick a workspace (left) to fuse the runs tagged to it into one<br/>cross-module, cross-host graph — report, advisory, timeline + chat.</div>
+    <div class="empty">Pick a case (left) to fuse the runs tagged to it into one<br/>cross-module, cross-host graph — report, advisory, timeline + chat.</div>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -201,8 +252,8 @@
 const $=s=>document.querySelector(s), api=(p,o)=>fetch(p,o).then(r=>r.json());
 let sel=null, tab='report';
 const VIEW=new URLSearchParams(location.search).get('view')||'';
-// In manage mode a row click switches the active workspace (no fusion panel here);
-// otherwise it opens the workspace's fusion view.
+// In manage mode a row click switches the active case (no fusion panel here);
+// otherwise it opens the case's fusion view.
 function rowClick(id){ if(VIEW==='manage') activateWorkspace(id); else openCase(id); }
 function toast(m,ms){const t=$('#toast');if(!t)return;t.textContent=m;t.style.display='block';
   requestAnimationFrame(()=>t.classList.add('show'));            // fade in
@@ -225,54 +276,81 @@ function createWorkspace(){
   api('/api/cases',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
    .then(d=>{ if(!d||!d.case_id){toast('create failed');return;}
      $('#cname').value=''; $('#wstart').value='';
-     window.ActiveCase.set(d.case_id); toast('workspace created + activated');
+     window.ActiveCase.set(d.case_id); toast('case created + activated');
      loadCases(()=>{ if(VIEW!=='manage') openCase(d.case_id); }); refreshSelector(); });
 }
 
 function delWorkspace(id, name, ev){
   if(ev) ev.stopPropagation();
-  if(!confirm(`Delete workspace "${name}" and ALL of its runs, fusion + baseline? This cannot be undone.`)) return;
+  if(!confirm(`Delete case "${name}" and ALL of its runs, fusion + baseline? This cannot be undone.`)) return;
   fetch('/api/cases/'+id,{method:'DELETE'}).then(async r=>{
     const d=await r.json().catch(()=>({}));
-    if(r.status===409){toast('the Default workspace cannot be deleted');return;}
+    if(r.status===409){toast('the Default case cannot be deleted');return;}
     if(!r.ok){toast('delete failed: '+(d.error||r.status));return;}
     toast(`deleted (${d.runs_deleted||0} run(s))`);
     if(window.ActiveCase.get()===id){ await window.ActiveCase.ensureActiveCase(); }
-    if(sel===id){ sel=null; $('#main').innerHTML='<div class="empty">Workspace deleted. Pick another on the left.</div>'; }
+    if(sel===id){ sel=null; $('#main').innerHTML='<div class="empty">Case deleted. Pick another on the left.</div>'; }
     loadCases(); refreshSelector();
   });
 }
 
 function activateWorkspace(id, ev){ if(ev) ev.stopPropagation();
-  window.ActiveCase.set(id); toast('switched active workspace'); loadCases(); refreshSelector(); }
+  window.ActiveCase.set(id); toast('switched active case'); loadCases(); refreshSelector(); }
 
-// Download a workspace as a self-contained bundle (case + member runs). The
-// <a download> + server Content-Disposition triggers a file download without
-// navigating the (iframed) page.
-function exportWorkspace(id, ev){ if(ev) ev.stopPropagation();
-  toast('exporting workspace…');
-  fetch('/api/cases/'+id+'/export').then(async r=>{
-    if(!r.ok){ const d=await r.json().catch(()=>({})); toast('export failed: '+(d.error||r.status)); return; }
-    const blob=await r.blob();
-    const cd=r.headers.get('Content-Disposition')||''; const m=cd.match(/filename="?([^"]+)"?/);
-    const url=URL.createObjectURL(blob), a=document.createElement('a');
-    a.href=url; a.download=(m&&m[1])||('case_'+id+'.intactcase.json');
-    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-  }).catch(e=>toast('export failed: '+e.message));
+// ── Portable case bundles ────────────────────────────────────────────────────
+// A bundle carries the case's collected data as well as its report and triage,
+// so it is routinely GIGABYTES. That single fact shapes both flows: the export
+// is built by a background run and then fetched as a file (a fetch().blob()
+// would materialise the whole archive in browser memory), and the import goes
+// through the resumable chunked uploader rather than a form POST (nginx caps
+// /api/ bodies at 500 MB, which one collection already exceeds).
+
+// Export hands the job to a System action and takes the operator there. It is a
+// long, multi-GB job with a file at the end — the same shape as a support bundle
+// or a prepared upgrade package, which is exactly where Settings → Actions puts
+// progress, the full log and the download button. Duplicating that inside the
+// Cases page meant a second, worse copy of it, and one that lost its state on
+// every list refresh.
+function expBtn(id){
+  return `<button class="ghost" style="font-size:11px;padding:3px 8px" onclick="exportWorkspace('${id}',event)" title="Export this case as a portable bundle — runs as a System action, download it there when it finishes">Export</button>`;
 }
 
-// Import a workspace from an exported bundle. Runs as a System-workspace op on
-// the backend (creates a fresh case container; doesn't touch the active case).
-function importWorkspace(ev){
-  const f=ev.target.files&&ev.target.files[0]; if(!f) return;
-  const fd=new FormData(); fd.append('file', f); toast('importing…');
-  fetch('/api/cases/import',{method:'POST',body:fd}).then(async r=>{
+function exportWorkspace(id, ev){ if(ev) ev.stopPropagation();
+  toast('starting export…');
+  fetch('/api/cases/'+id+'/export',{method:'POST'}).then(async r=>{
     const d=await r.json().catch(()=>({}));
-    if(!r.ok){ toast('import failed: '+(d.error||r.status)); return; }
-    toast('imported "'+(d.name||'workspace')+'" ('+(d.runs_imported||0)+' run(s))');
-    loadCases(); refreshSelector();
-  }).catch(e=>toast('import failed: '+e.message));
-  ev.target.value='';
+    if(!r.ok){ toast('export failed to start: '+(d.error||('HTTP '+r.status)), 5000); return; }
+    toast('export started — opening Settings → Actions', 3000);
+    setTimeout(()=>{ try{ window.ActiveCase.gotoSystemWorkflows(); }catch(e){} }, 600);
+  }).catch(e=>toast('export failed to start: '+e.message, 5000));
+}
+
+// Import works exactly like Export: the button lives here in Case Management,
+// the job runs as a System action, and the operator watches it in Settings →
+// Actions — progress, the full log, and (for export) the download all in one
+// place. The difference is only where the bytes come from: an export reads them
+// off this appliance, an import sends them from the operator's machine, so the
+// upload itself has to run in the browser.
+//
+// That upload keeps going after the hand-off: the tab panels are shown/hidden,
+// never torn down, so this frame stays alive and tus keeps sending while the
+// operator watches the run row fill in. The row reports the upload (0-10%) and
+// then the import itself (10-100%), so it is the whole operation in one place.
+function importWorkspace(ev){
+  const f=ev.target.files&&ev.target.files[0]; ev.target.value='';
+  if(!f) return;
+  toast('uploading "'+f.name+'"…');
+  new TusUploader({
+    purpose:'case_import',
+    // A bundle creates its OWN new case, so it is not work inside the active
+    // workspace — importing while System is selected is legitimate.
+    systemGuard:false,
+    onError:e=>toast('upload failed: '+((e&&e.message)||e), 6000),
+    onSuccess:()=>{ loadCases(); refreshSelector(); }
+  }).upload(f);
+  // Same hand-off as Export. Long enough for the upload hook to have opened the
+  // run row, so the operator lands on a list that already shows it.
+  setTimeout(()=>{ try{ window.ActiveCase.gotoSystemWorkflows(); }catch(e){} }, 900);
 }
 
 function loadCases(cb){
@@ -282,18 +360,33 @@ function loadCases(cb){
       return `<div class="caseitem ${sel===c.case_id?'sel':''}" onclick="rowClick('${c.case_id}')">
       <div class="casehead"><span class="nm">${isAct?'● ':''}${esc(c.name||c.case_id)}</span>
         <div class="row" style="gap:6px">
-          <button class="ghost" style="font-size:11px;padding:3px 8px;display:none" onclick="exportWorkspace('${c.case_id}',event)" title="Download this workspace as a portable bundle">Export</button>
+          ${expBtn(c.case_id)}
           ${c.is_default?'<span class="defbadge">default</span>'
             :c.is_system?'<span class="defbadge">system</span>'
                        :`<button class="del" onclick="delWorkspace('${c.case_id}','${nm}',event)">delete</button>`}
         </div></div>
-      <div class="meta">${c.members} run(s)</div></div>`;}).join('')||'<i style="color:var(--muted)">no workspaces yet</i>';
+      <div class="meta">${c.members} run(s)</div></div>`;}).join('')||'<i style="color:var(--muted)">no cases yet</i>';
     if(cb)cb();
   });
 }
 
 async function refreshSelector(){
   const bar=$('#wsbar'); if(bar&&window.ActiveCase) await window.ActiveCase.renderCaseSelector(bar,{manageLink:false});
+}
+
+// A configured key can still be dead (revoked, no credit, no route to the
+// provider) — llm_status() (part of the /api/cases/<id> payload) never makes a
+// network call, so it cannot see that. This asks the ONE question it can't:
+// fire-and-forget, never blocks the case from opening, and folds its answer
+// over info.llm_status only if it lands — a slow/offline probe must never make
+// the whole case view wait, and must never turn a known "no live narration was
+// requested" into a scarier "checked, and it's broken" for a page nobody is
+// looking at yet.
+function refreshLlmReachability(){
+  return api('/api/config/llm/reachability').then(r=>{
+    if(curInfo) curInfo.llm_status=r;
+    return r;
+  }).catch(()=>null);
 }
 
 function openCase(id){
@@ -306,7 +399,14 @@ function openCase(id){
      // fold the report meta (audience/branding/master-prompt) into info for the controls
      info.audience=rep.audience||'both'; info.customer_name=rep.customer_name||'';
      info.tlp=rep.tlp||'AMBER'; info.has_logo=!!rep.has_logo; info.master_prompt=rep.master_prompt||'';
-     render(info,rep.report_md||'',info.counts||{});});
+     render(info,rep.report_md||'',info.counts||{});
+     // Only the Analysis tab shows this banner, and `tab` can carry over from
+     // whatever the operator was last on (switching cases doesn't reset it) —
+     // so skip the check entirely unless Analysis is what's about to be drawn.
+     if(tab==='report'){
+       refreshLlmReachability().then(()=>{ if(curInfo && curInfo.case_id===id && tab==='report') drawTab(); });
+     }
+   });
 }
 
 // `c` is the lightweight counts object {hosts,entities,links,findings,cross_host}
@@ -346,8 +446,70 @@ function costBadge(ce){
   return `<span class="stat" title="Cost of one report generation (LLM) with ${esc(ce.model)} — report + advisory (2 passes), driven almost entirely by the INPUT context (raw vs distilled); output tokens are the same either way. ~${(ce.output_tokens||0).toLocaleString()} output tokens. BEFORE = feeding raw rows (${((ce.before&&ce.before.input_tokens)||0).toLocaleString()} in); AFTER = the distilled fusion payload (${((ce.after&&ce.after.input_tokens)||0).toLocaleString()} in). Tune 'LLM payload' + 'Output token cap'.">
     <span style="color:var(--muted)">${_usd(before)}</span> → <b style="color:var(--warn,#d29922)">${_usd(after)}</b> /report${sim} <span style="color:var(--muted)">(${esc(ce.model)})</span></span>`;
 }
+// The "new run(s) available" banner, lifted out of render() so it can be updated
+// on its own. render() rebuilds #main.innerHTML wholesale — calling it from a
+// timer would remount every tab, losing scroll position, expanded evidence rows,
+// a half-typed chat message and any open detail. The watcher below rewrites only
+// #stalebar, so the analyst's view is never disturbed by something they did not do.
+// The bar above the tabs. It NEVER offers Refusion: new data is folded into the
+// graph automatically, so there is nothing for the operator to trigger. Its only
+// job is to say the data moved and that the written report is now behind — the
+// one thing that still needs a deliberate, billable click. (A manual Refusion
+// still exists for when it is genuinely wanted; it lives in Configuration.)
+function staleBar(info){
+  if(!info) return '';
+  const bar=(colour,bg,body)=>`<div style="margin:8px 0;padding:8px 12px;border:1px solid ${colour};border-radius:6px;background:${bg};color:${colour};font-size:13px;display:flex;align-items:center;gap:10px;justify-content:space-between">${body}</div>`;
+  const newReport=`<button onclick="doRescanLLM('${info.case_id}')" style="cursor:pointer;background:var(--acc);border-color:var(--acc)">✨ New report</button>`;
+
+  // The graph moved on under this page. Deliberately not redrawn for them — an
+  // analyst mid-triage would lose their scroll, their open finding and their place
+  // in the risk order. Offer the reload; let them take it when ready.
+  if(info.bg_refreshed){
+    return bar('#3fb950','#0f2417',
+      `<span>✓ New data was folded in automatically. This view still shows the earlier scan — reload to see it, and generate a new report to bring the written analysis up to date.</span>
+       <span style="display:flex;gap:8px;white-space:nowrap">
+         <button onclick="openCase('${info.case_id}')" style="cursor:pointer;background:var(--ok,#3fb950);border-color:var(--ok,#3fb950);color:#0d1117">↻ Show new data</button>${newReport}
+       </span>`);
+  }
+  if(!info.is_stale) return '';
+  let msg;
+  if(info.data_stale){
+    const d = info.data_stale;
+    msg = `ℹ <b>${d === 1 ? '1 new run' : d + ' new runs'}</b> landed and ${d === 1 ? 'is' : 'are'} being folded in automatically. The <b>report &amp; chat</b> still reflect the earlier scan — generate a new report when you want them refreshed.`;
+  }else{
+    // The graph is current and the report is behind. Say WHICH of the two causes
+    // it was rather than guessing: this used to read "You've made changes (triage /
+    // timeline validations)" unconditionally, which became wrong more often than
+    // right once fusion went automatic — the usual reason the report is behind is
+    // now new data folded in while nobody touched triage at all.
+    //
+    // report_stale is the count of completed member runs the report does not
+    // reflect, so it separates the two cleanly: any count means new data; no count
+    // with the dirty flag set means nothing landed, so the change was triage.
+    // report_dirty is NOT evidence that anyone triaged: it is set by ANY re-fuse
+    // that leaves the report frozen, and an automatic data fuse is exactly that.
+    // So new data is asserted (report_stale counts it) while triage is only
+    // hedged — claiming "you've made changes" when the operator had not touched
+    // the case is the bug this message already had, in the other direction.
+    const n = info.report_stale || 0;
+    const runs = n === 1 ? '1 run' : `${n} runs`;
+    msg = n
+      ? `⚠ The <b>report &amp; chat are not up to date</b> — <b>${runs} of new data</b> ${n === 1 ? 'has' : 'have'} been fused into the case since they were written, along with any triage / timeline changes you've made.`
+      : info.report_dirty
+        ? `⚠ The <b>report &amp; chat are not up to date</b> — your <b>triage / timeline validations</b> have changed since they were written.`
+        : `ℹ The data is current. The report &amp; chat reflect an earlier scan.`;
+  }
+  return bar('#d29922','#2b2400',
+    `<span>${msg}</span><span style="display:flex;gap:8px;white-space:nowrap">${newReport}</span>`);
+}
 function render(info,md,g){
   curInfo=info; curGraph=g;
+  // Snapshot of what THIS render is showing. The watcher compares against it to
+  // tell "new runs have arrived" (banner: click Refusion) apart from "a
+  // background fuse already folded them in" (banner: reload to see it).
+  window._renderedFused = (info.fused_run_ids || []).join(',');
+  window._renderedEntities = (info.counts || {}).entities || 0;
+  info.bg_refreshed = false;
   $('#llmbadge').textContent='LLM: '+(info.llm_enabled?'real':'simulated (no key)');
   const aud=info.audience||'both', mk=info.masking||{};
   const opt=(v,l,cur)=>`<option value="${v}" ${cur===v?'selected':''}>${l}</option>`;
@@ -358,37 +520,107 @@ function render(info,md,g){
         <div><h1 style="margin:0;font-size:19px">${esc(info.name||info.case_id)}</h1>
           <div style="color:var(--muted);font-size:12px">${tw.start?('since '+esc(tw.start)):'no start date'}</div></div>
       </div>
-      ${info.is_stale ? `<div style="margin:8px 0;padding:8px 12px;border:1px solid #d29922;border-radius:6px;background:#2b2400;color:#e3b341;font-size:13px;display:flex;align-items:center;gap:10px;justify-content:space-between">
-        <span>${info.data_stale
-          ? `ℹ ${info.data_stale} new run(s) available — click <b>Refusion</b> to fold them into the data (fast, no LLM), or <b>Rescan (LLM)</b> to also refresh the report &amp; chat.`
-          : info.report_dirty
-            ? `⚠ You've made changes (triage / timeline validations) since the last report — the <b>report &amp; chat are not up to date</b>. Click <b>Rescan (LLM)</b> to refresh them.`
-            : `ℹ The data is current. The report &amp; chat reflect an earlier scan — <b>Rescan (LLM)</b> to refresh them.`}</span>
-        <span style="display:flex;gap:8px;white-space:nowrap">
-          ${info.data_stale ? `<button onclick="doRefusion('${info.case_id}')" style="cursor:pointer;background:var(--info);border-color:var(--info);color:#0d1117">🔄 Refusion</button>` : ''}
-          <button onclick="doRescanLLM('${info.case_id}')" style="cursor:pointer;background:var(--acc);border-color:var(--acc)">✨ Rescan (LLM)</button>
-        </span>
-      </div>` : ''}
-      <div style="margin:6px 0 14px">${statSpans(g)}${tokenBadge(info.token_ab)}${costBadge(info.cost_estimate)}</div>
+      <div id="stalebar">${staleBar(info)}</div>
+      <div style="margin:6px 0 14px">${statSpans(g)}</div>
       <div class="tabs">
-        <div class="tab ${tab==='config'?'on':''}" data-tab="config" onclick="setTab('config')">⚙ Configuration</div>
+        <!-- Tab ORDER is the investigative order, not the order these were built.
+             Analysis + Chat lead: the narrative and the way you interrogate it.
+             Then the always-current graph views (Timeline, Identities, Risk), then
+             the two you touch rarely. Configuration used to sit first, which never
+             matched anything — it was never the landing tab, and since a case
+             fuses itself on import there is nothing you must set before starting.
+             Purely presentational: setTab/drawTab dispatch on data-tab, never on
+             position, so this list can be reordered freely. -->
         <div class="tab ${tab==='report'?'on':''}" data-tab="report" onclick="setTab('report')">Analysis</div>
-        <div class="tab ${tab==='risk'?'on':''}" data-tab="risk" onclick="setTab('risk')">🎯 Risk</div>
-        <div class="tab ${tab==='timeline'?'on':''}" data-tab="timeline" onclick="setTab('timeline')">Timeline</div>
         <div class="tab ${tab==='chat'?'on':''}" data-tab="chat" onclick="setTab('chat')">Chat</div>
+        <div class="tab ${tab==='timeline'?'on':''}" data-tab="timeline" onclick="setTab('timeline')">Timeline</div>
         <div class="tab ${tab==='identities'?'on':''}" data-tab="identities" onclick="setTab('identities')">Identities</div>
+        <div class="tab ${tab==='risk'?'on':''}" data-tab="risk" onclick="setTab('risk')">🎯 Risk</div>
+        <div class="tab ${tab==='config'?'on':''}" data-tab="config" onclick="setTab('config')">⚙ Configuration</div>
         <div class="tab ${tab==='log'?'on':''}" data-tab="log" onclick="setTab('log')">Log</div>
       </div>
       <div id="tabc"></div>
     </div>`;
   drawTab(md);
+  startStaleWatch(info.case_id);
 }
+
+// ── Watch for new data ──────────────────────────────────────────────────────
+// Staleness is already computed server-side on every GET /api/cases/<id>
+// (store.stale_member_runs -- a member scan, no graph build) and the banner above
+// already knows how to display it. The only missing piece was that nothing
+// re-checked, so an analyst sitting on a tab learned about new runs only by
+// reloading the page.
+//
+// Deliberately NOT an auto-fuse. A fuse rebuilds the entire case graph (measured:
+// 33s for 9 hosts / 18,749 entities) and re-ranks every finding; doing that under
+// an analyst mid-triage costs them their place, and no amount of locking prevents
+// that. This raises the banner and stops there -- the operator fuses when ready.
+const STALE_POLL_MS = 20000;
+let _staleInFlight = false;
+function stopStaleWatch(){
+  if(window._staleTimer){ clearInterval(window._staleTimer); window._staleTimer=null; }
+}
+function startStaleWatch(id){
+  stopStaleWatch();
+  // Unconditional: watching for new data was briefly a checkbox and that was the
+  // wrong call. One read of a cheap endpoint every 20s, which redraws nothing, is
+  // not a decision an operator has any basis to make -- and switching it off only
+  // ever produced a stale screen with no hint that it was stale.
+  if(!curInfo) return;
+  window._staleTimer = setInterval(()=>staleTick(id), STALE_POLL_MS);
+}
+function staleTick(id){
+  // Fail safe, in this order:
+  //  - the case view is gone (back to the list, another page): stop, so the timer
+  //    cannot outlive what it was watching;
+  //  - the browser tab is backgrounded: skip, nobody is looking;
+  //  - a previous tick has not come back: skip, so a slow backend can never stack
+  //    requests -- that is what turns a poll into a load generator.
+  if(!$('#stalebar') || !curInfo || curInfo.case_id!==id){ stopStaleWatch(); return; }
+  if(document.hidden || _staleInFlight) return;
+  _staleInFlight = true;
+  fetch('/api/cases/'+id)
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {
+      // A failed or partial read leaves the last known banner untouched and retries
+      // on the next tick. Never clear a banner we could not verify: a transient
+      // error must not tell the analyst the data is current when it is not.
+      if(!d || d.case_id!==id || !curInfo || curInfo.case_id!==id) return;
+      // Did the stored graph move on under us? Compare the fused-run set this
+      // view was rendered from against what the server now reports.
+      const nowFused = (d.fused_run_ids || []).join(',');
+      const bg = !!window._renderedFused && nowFused !== window._renderedFused;
+      if(curInfo.is_stale===d.is_stale && curInfo.data_stale===d.data_stale
+         && curInfo.report_stale===d.report_stale
+         && curInfo.report_dirty===d.report_dirty
+         && curInfo.bg_refreshed===bg) return;
+      curInfo.bg_refreshed = bg;
+      // Adopt ONLY the staleness fields. Copying the whole payload would swap
+      // config out from under the rail the operator may be editing right now.
+      curInfo.is_stale=d.is_stale; curInfo.data_stale=d.data_stale;
+      curInfo.report_stale=d.report_stale; curInfo.report_dirty=d.report_dirty;
+      const bar=$('#stalebar'); if(bar) bar.innerHTML=staleBar(curInfo);
+    })
+    .catch(()=>{})                      // a poll error is never surfaced into the view
+    .finally(()=>{ _staleInFlight=false; });
+}
+// Coming back to a backgrounded tab: check once immediately rather than waiting out
+// the rest of the interval, which is the moment the answer is most likely stale.
+document.addEventListener('visibilitychange',()=>{
+  if(!document.hidden && window._staleTimer && curInfo) staleTick(curInfo.case_id);
+});
 function setTab(t){
   tab=t;
   // Move the active underline to the clicked tab (the tab bar isn't re-rendered,
   // only the #tabc content is — so update the .on class here).
   document.querySelectorAll('.tabs .tab').forEach(el=>el.classList.toggle('on', el.dataset.tab===t));
   drawTab(window._md||'');
+  // Only Analysis shows the reachability banner — Chat/Timeline/Identities/
+  // Risk/Configuration/Log have no use for it, so don't spend a check on them.
+  if(t==='report'){
+    refreshLlmReachability().then(()=>{ if(tab===t) drawTab(); });
+  }
 }
 function drawTab(md){
   if(md)window._md=md;
@@ -402,6 +634,23 @@ function drawTab(md){
   else if(tab==='risk') renderRisk(info);
   else renderReport(info);
 }
+// Same duplication as the timeline, one level down: the host is already the
+// row's second column, and every finding title inside `why` ends with "on
+// <host>", so one cell repeated the machine name three times.
+//
+// Per `; `-separated part, and only an exact suffix match against THIS row's
+// host — so the cross-host reasons keep their wording ("used across 2 hosts
+// (cross-host)" names other machines, not this one, and must not be touched).
+function _riskWhy(r){
+  const h = (r.host || '').trim(), why = r.why || '';
+  if(!h || !why) return why;
+  const suffix = ' on ' + h;
+  return why.split('; ').map(p=>{
+    const t = p.trim();
+    return t.endsWith(suffix) ? t.slice(0, -suffix.length) : t;
+  }).join('; ');
+}
+
 function renderRisk(info){
   $('#tabc').innerHTML='<div class="md">loading risk…</div>';
   api('/api/cases/'+info.case_id+'/risk').then(d=>{
@@ -417,9 +666,8 @@ function renderRisk(info){
         <td style="text-align:right;font-weight:700;padding:6px 8px">${r.risk_score}</td>
         <td style="padding:6px 8px"><span style="color:${c};font-weight:600">${esc(r.severity)}</span></td>
         <td style="text-align:center;padding:6px 8px;font-variant-numeric:tabular-nums">${t.critical||0}/${t.high||0}/${t.medium||0}</td>
-        <td style="padding:6px 8px;font-size:12px">${esc(r.why)}</td>
-        <td style="padding:6px 8px;font-size:12px;color:var(--muted)">${esc(cov)}</td>
-        <td style="padding:6px 8px;font-size:12px">${esc(r.next_action)}</td></tr>`;}).join('');
+        <td style="padding:6px 8px;font-size:12px">${esc(_riskWhy(r))}</td>
+        <td style="padding:6px 8px;font-size:12px;color:var(--muted)">${esc(cov)}</td></tr>`;}).join('');
     $('#tabc').innerHTML=`
       <div style="margin-bottom:8px;color:var(--muted);font-size:13px">Endpoints ranked by risk (Σ finding severity; cross-host findings ×2). Work top-down — these are the clients to focus on first. <span style="color:var(--muted)">Always reflects the latest data.</span></div>
       <table style="width:100%;border-collapse:collapse;font-size:13px">
@@ -428,10 +676,14 @@ function renderRisk(info){
           <th style="padding:6px 8px;text-align:right">Risk</th><th style="padding:6px 8px">Severity</th>
           <th style="padding:6px 8px;text-align:center" title="critical / high / medium">C/H/M</th>
           <th style="padding:6px 8px">Why (top findings)</th><th style="padding:6px 8px">Coverage</th>
-          <th style="padding:6px 8px">Next action</th>
         </tr></thead><tbody>${body}</tbody></table>`;
   }).catch(e=>{$('#tabc').innerHTML='<div class="empty">risk load failed: '+esc(e.message||e)+'</div>';});
 }
+// The token-cut and cost/report badges render HERE, under the model line,
+// rather than in the header strip beside hosts/entities/links. Those counts are
+// facts about the case; these two are facts about how it is PRICED and what the
+// fusion ontology saves -- the same subject as the model line they now sit
+// under, and configuration rather than a headline.
 function renderConfig(info){
   const aud=info.audience||'both', mk=info.masking||{}, tw=info.time_window||{};
   const opt=(v,l,cur)=>`<option value="${v}" ${cur===v?'selected':''}>${l}</option>`;
@@ -448,10 +700,7 @@ function renderConfig(info){
         <label style="margin-top:8px">Identity limit <span style="color:var(--muted)">(people in the LLM payload)</span></label>
         <input id="cf-maxident" type="number" min="0" max="1000000" step="10" value="${info.max_identities??''}" placeholder="all (up to 500)" title="Max identity rows (people, clustered across hosts) included in the LLM payload for the report &amp; chat. Identities are sent regardless of anomaly score, so a real person is never invisible to the model just because no finding is attached to their account. Independent of the Entity limit above (identities cost ~27 tokens each, far cheaper than an entity row). Empty = up to 500 people, which covers any realistic engagement — recommended. If the payload still overflows the model context, the lowest-risk people are dropped first. Set it lower only to send fewer people (e.g. privacy)."/>
         ${(info.cost_estimate&&info.cost_estimate.model)?`<div style="font-size:11px;color:var(--muted);margin:8px 0 3px">Model <b style="color:var(--tx,#e6edf3)">${esc(info.cost_estimate.model)}</b> — full context in, up to <b style="color:var(--tx,#e6edf3)">${(info.cost_estimate.model_max_output_tokens||0).toLocaleString()}</b> tokens out</div>`:`<div style="font-size:11px;color:var(--muted);margin:8px 0 3px">no model set — configure Settings ▸ Agentic</div>`}
-        <label style="margin-top:6px;display:flex;align-items:center;gap:6px;font-weight:normal" title="Tick only when this box has no route to the model provider. The report is then written deterministically from the correlated graph, immediately, and nothing is sent to a provider. Untick (default) for the written narrative: attack story in phases, cross-host correlation and identity attribution.">
-          <input id="cf-airgap" type="checkbox" ${info.air_gap_analysis?'checked':''} style="width:auto"/>
-          <span>Air-gap analysis <span style="color:var(--muted)">(no route to the model provider)</span></span>
-        </label>
+        <div class="cfgstats" style="margin:6px 0 3px">${tokenBadge(info.token_ab)}${costBadge(info.cost_estimate)}</div>
         <label style="margin-top:8px">Modules <span style="color:var(--muted)">— what fuses</span></label>
         <div class="modwarn">⚠ Enabling more modules can raise cost sharply — some artifacts (e.g. full hunts) produce huge output.</div>
         <div id="cf-modules">
@@ -499,25 +748,158 @@ function renderConfig(info){
     flatpickr('#cf-start',fp); flatpickr('#cf-end',fp);
   }
 }
+// Was this REPORT actually LLM-narrated, and if not, why? Read from the report's
+// own trailing tag (generate_report always appends one — see llm_sim.py's
+// _sim_tag / the except-branch tail) rather than trusting `llm_status` alone:
+// config can say a model+key are set while the report on screen was written
+// BEFORE that was true (or after a call failed mid-flight), and the operator
+// needs the banner to match what they are about to read, not what config says
+// right now. Falls back to llm_status only for a report with no tag at all
+// (empty report, or one written before this existed).
+function reportAirGap(md, ls){
+  // Two different questions, two different sources of truth:
+  //  1. Was THIS report (the markdown on screen) narrated? Only the report's
+  //     OWN trailing tag can answer that — llm_status/reachability describe
+  //     config as of right now, not what was true when this report was built.
+  //  2. Why is that, and what's the current fix? The freshest answer is the
+  //     live reachability check (`ls`), refetched on every navigation — it
+  //     catches a key that's since been added-but-broken, which the report's
+  //     own tag (written before that key existed) cannot know about.
+  const det = /\n\n---\n_Deterministic report — ([\s\S]*?)_\n\s*$/.exec(md||'');
+  const narrated = /\n\n---\n_Narrative by live LLM/.test(md||'');
+  let airgap, tailDetail;
+  if(det){ airgap=true; tailDetail=det[1]; }
+  else if(narrated){ airgap=false; tailDetail=''; }
+  else if(ls && ls.available===false){ airgap=true; tailDetail=''; }
+  else { airgap=false; tailDetail=''; }
+  if(!airgap) return {airgap:false, detail:''};
+  if(ls && ls.available===false && (ls.reason||ls.fix)){
+    // live check currently failing — the freshest, most actionable reason
+    const reason=(ls.reason||'').replace(/[.\s]*$/,'')+'.';
+    return {airgap:true, detail:reason+(ls.fix?(' '+ls.fix):'')};
+  }
+  if(ls && ls.available===true){
+    // Config AND a live probe both say narration would work RIGHT NOW —
+    // whatever this report's own tail says failed (a dead key, no credit…)
+    // may no longer be true, e.g. the operator just fixed it. Repeating that
+    // stale reason here would read as "still broken" when it plainly isn't.
+    return {airgap:true, detail:'A model is reachable now — click Regenerate report below for an AI-narrated version.'};
+  }
+  return {airgap:true, detail:tailDetail||'No live narration was requested for this report.'};
+}
 function renderReport(info){
   const id=info.case_id;
   const dl=(p,l)=>`<a class="dlbtn" href="/api/cases/${id}${p}" target="_blank">${l}</a>`;
-  const adv=info.analysis||{}; const ig=(adv.incident_groups||[]);
-  let advHtml='';
-  if(ig.length){advHtml=`<details style="margin:10px 0"><summary style="cursor:pointer;color:var(--med)">⚠ Advisory — ${ig.length} incident group(s) (analyst-verify, not a determination)</summary>`+
-    ig.map(x=>`<div class="caseitem"><div class="nm">${escape(x.name||'group')}</div><div class="meta">${(x.finding_ids||[]).length} findings — ${escape(x.rationale||'')}</div></div>`).join('')+`</details>`;}
-  $('#tabc').innerHTML=`<div class="row" style="gap:8px;margin-bottom:10px;align-items:center">
-    <button class="dlbtn" onclick="regenReport('${id}')" title="Rebuild the report from the current case state (applies your Timeline confirmations). Generated automatically on first scan; after that only when you click here.">↻ Regenerate report</button>
+  const md=window._md||'';
+  const generating=!!info.report_generating;
+  // While a generation is in flight, that IS the story for this tab — showing
+  // the Air-Gap banner alongside it would read as "no model reachable" right
+  // next to "sending data to the model", which is actively confusing. It
+  // reappears on its own once generation ends, correctly, from whatever the
+  // result actually was.
+  const ag=generating ? {airgap:false,detail:''} : reportAirGap(md, info.llm_status);
+  // The loudest thing on the tab, and the FIRST thing rendered: an operator
+  // reading a report with no narrative needs to know before they start reading
+  // it, not stumble on a footnote after they finish. Framed as the automatic
+  // default it is — there is no per-case switch to flip; a model + API key in
+  // Settings ▸ Agentic is what turns narration on.
+  const banner = ag.airgap ? `<div class="agbanner">
+      <div class="agtitle">🔒 Air-Gap Template — deterministic report, no model call made</div>
+      <div class="agdetail">${esc(ag.detail)}</div>
+      <div class="agaction">This is the automatic report when no model is reachable — nothing to switch on here. To get an AI-narrated report instead: add a model and API key in <b>Settings ▸ Agentic</b> (this appliance needs an internet connection), then click <b>Regenerate report</b> below.</div>
+    </div>` : '';
+  // The report's own tail already told the story above; showing it again as a
+  // raw markdown footnote would just repeat it in a smaller, unstyled font.
+  const mdBody = md.replace(/\n\n---\n_(?:Deterministic report — [\s\S]*?|Narrative by live LLM[\s\S]*?)_\n\s*$/, '');
+  $('#tabc').innerHTML=`${banner}<div id="genstatus">${generating?genStatusHtml(info.report_generating_started_at):''}</div><div class="row" style="gap:8px;margin-bottom:10px;align-items:center">
+    <button class="dlbtn" ${generating?'disabled title="A report is already being generated"':`onclick="regenReport('${id}')" title="Rebuild the report from the current case state (applies your Timeline confirmations). Generated automatically on first scan; after that only when you click here."`}>${generating?'⏳ Generating…':'↻ Regenerate report'}</button>
     ${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}
     <span style="color:var(--muted);font-size:11px;margin-left:auto">auto-generated on first scan · regenerate to apply Timeline changes</span>
-  </div>${advHtml}<div class="md">${mdToHtml(window._md||'')}</div>`;
+  </div><div class="md">${mdToHtml(mdBody)}</div>`;
+  clampEvidence($('#tabc'));
+  // A page reload (or a tab switch back to Analysis) while a generation is
+  // already running elsewhere must resume watching it, not just show a static
+  // "generating" label that never updates or refreshes.
+  if(generating) pollReportGen(id); else if(_genPollCase===id) stopReportGenPoll();
 }
+// A real case is TWO sequential LLM calls (narrative, then advisory) over the
+// full distilled graph — measured live at 5m29s for one case. The backend now
+// runs this on a background thread and answers the POST immediately; this is
+// the polling side that waits for it and refreshes the page on its own.
+let _genPoll=null, _genPollCase=null;
+
+function genStatusHtml(startedAt){
+  const started = startedAt ? new Date(startedAt+'Z') : null;
+  const mins = started ? Math.max(0, Math.round((Date.now()-started.getTime())/60000)) : 0;
+  const since = started ? (mins<1 ? 'just started' : `running ${mins} min`) : 'starting…';
+  return `<div class="agbanner agbanner-live">
+      <div class="agtitle">⏳ Sending case data to the model — ${esc(since)}</div>
+      <div class="agdetail">A full case is a large payload and often two sequential model calls (narrative, then advisory) — this commonly takes several minutes, longer for a large case.</div>
+      <div class="agaction">No need to wait here — the report refreshes on its own the moment it's ready. Feel free to switch tabs or cases.</div>
+    </div>`;
+}
+
+function stopReportGenPoll(){
+  if(_genPoll){ clearInterval(_genPoll); _genPoll=null; _genPollCase=null; }
+}
+
+// Called on click AND on opening/redrawing a case that's already generating
+// (e.g. the operator reloaded the page mid-run) — either way we land here.
+function pollReportGen(id){
+  if(_genPoll && _genPollCase===id) return;     // already polling this case
+  stopReportGenPoll();
+  _genPollCase=id;
+  const tick=()=>{
+    api('/api/cases/'+id).then(info=>{
+      if(_genPollCase!==id) return;              // superseded by a newer poll
+      if(!info.report_generating){
+        stopReportGenPoll();
+        // Only touch the screen if the operator is still looking at THIS case —
+        // a background report finishing must not yank them off whatever they
+        // switched to. If they are, this IS the auto-refresh: re-fetch the
+        // report and redraw Analysis with no click needed.
+        if(curInfo && curInfo.case_id===id){
+          openCase(id);
+          toast('report updated');
+        }
+        return;
+      }
+      // Patch ONLY the status banner, never the whole tab. drawTab() rebuilds
+      // the entire #tabc — including the full markdown report body, which can
+      // be 100K+ characters — from scratch. Doing that every 5 seconds while
+      // the operator might be reading, scrolling or selecting text in THAT
+      // SAME report is destructive for no reason: nothing else on the tab
+      // changes while generating, only this banner's elapsed-time text does.
+      if(curInfo && curInfo.case_id===id){
+        curInfo.report_generating=true;
+        curInfo.report_generating_started_at=info.report_generating_started_at;
+        const gs=$('#genstatus');
+        if(tab==='report' && gs) gs.outerHTML=`<div id="genstatus">${genStatusHtml(info.report_generating_started_at)}</div>`;
+      }
+    }).catch(()=>{});   // a blip in the poll is not a failure — just try again
+  };
+  _genPoll=setInterval(tick, 5000);
+  tick();
+}
+
 function regenReport(id){
-  toast('regenerating report (LLM)…');
+  toast('sending case data to the model…');
   // use_llm:true -> premium LLM narrative (the only report path that spends tokens)
   api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({use_llm:true})})
-   .then(_=>{openCase(id);toast('report updated');})
-   .catch(_=>toast('could not regenerate the report'));
+   .then(r=>{
+     if(r && r.busy){ toast('already generating — refreshing when it\'s ready'); }
+     if(curInfo && curInfo.case_id===id){
+       curInfo.report_generating=true;
+       curInfo.report_generating_started_at=(r&&r.started_at)||null;
+       // Full redraw ONCE here — this is the transition into the generating
+       // state (the button needs to flip to disabled/"Generating…", which
+       // only happens at draw time), unlike the poll ticks above which must
+       // never repeat it.
+       if(tab==='report') drawTab();
+     }
+     pollReportGen(id);
+   })
+   .catch(_=>toast('could not start report generation'));
 }
 function _fileToDataUrl(f){return new Promise(res=>{if(!f)return res(null);const r=new FileReader();r.onload=()=>res(r.result);r.readAsDataURL(f);});}
 // Host identities come from the fused graph (deduped endpoints + cloud accounts).
@@ -552,8 +934,23 @@ function hostSelectAll(inc){
   renderHosts();
 }
 // Read the config rail into a cfg object (logo is read async).
+//
+// Returns {} when the rail is NOT MOUNTED. renderConfig() writes the #cf-* inputs
+// into #tabc, so they exist only while the Configuration tab is open — but the
+// stale banner sits above #tabc and its Refusion / Rescan buttons are visible on
+// every tab, and 'report' is the tab a case opens on. Reading the rail from any
+// other tab hit `$('#cf-logo').files` on null and threw before a request was ever
+// made; doRefusion's try/catch wraps only the api() call, so the rejection escaped
+// with no toast and no error — the buttons simply did nothing.
+//
+// {} is the correct fallback rather than a guessed cfg: set_analysis_config is
+// key-presence-based ("Only provided keys change"), so an empty body persists
+// nothing and /rescan just re-fuses with the stored config. Building a partial cfg
+// from absent inputs would be worse than crashing — every unread checkbox would
+// post `false` and silently reset saved settings (masking, modules, hosts).
 async function _railCfg(){
-  const logo=await _fileToDataUrl($('#cf-logo').files[0]);
+  if(!$('#cf-sev')) return {};
+  const logo=await _fileToDataUrl($('#cf-logo')?.files?.[0]);
   const cfg={
     time_window:{start:$('#cf-start').value||null,end:$('#cf-end').value||null},
     min_severity:$('#cf-sev').value, audience:$('#cf-aud').value,
@@ -562,7 +959,6 @@ async function _railCfg(){
     max_entities:parseInt($('#cf-maxent')?.value)||500000,
     // empty = tied to the Entity limit (backend treats null as "no separate ceiling")
     max_identities:($('#cf-maxident')?.value ?? '')===''?null:(parseInt($('#cf-maxident').value)||0),
-    air_gap_analysis:!!$('#cf-airgap')?.checked,
     llm_max_output_tokens:null,    // LOCKED to model max (backend enforces regardless)
     llm_use_full_context:true,     // LOCKED on (backend enforces regardless)
     chat_send_full_context:true,   // LOCKED on (backend enforces regardless)
@@ -581,6 +977,11 @@ async function doRefusion(id){
   // Read the config rail BEFORE switching tabs — setTab('log') replaces #tabc,
   // unmounting the #cf-* inputs _railCfg() reads.
   const cfg = await _railCfg();
+  // Name the button in the payload so the case log records WHAT caused the fuse.
+  // A Refusion costs ~33s; "Refusion · starting" with no attribution left the
+  // operator unable to tell their own click from a colleague's or from anything
+  // running on its own.
+  cfg.trigger = 'refusion';
   // Move to the Log so the operator watches the refusion progress live. The
   // rescan runs server-side while the Log tab's follower polls /log every few
   // seconds; fuse_case emits "<phase> · <pct>% · ~<eta>s remaining" rows, so
@@ -589,15 +990,22 @@ async function doRefusion(id){
   if(typeof logRefresh==='function') logRefresh();
   toast('refusing — follow the progress in the Log…');
   try{
-    await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
-    toast('✓ Refusion complete — data, risk & timeline updated');
+    const r = await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
+    // 409 from the backend's FusionBusy handler: a fuse is already running for this
+    // case. Not a failure — the config posted above IS persisted and a retry re-fuses
+    // with it — so say so instead of showing the red "failed" toast.
+    if(r && r.busy) toast('⏳ already re-fusing this case — retry in a moment');
+    else toast('✓ Refusion complete — data, risk & timeline updated');
   }catch(e){ toast('✗ Refusion failed — see the Log for details'); }
   if(typeof logRefresh==='function') logRefresh();   // pull the final rows at once
+  staleTick(id);          // the banner is stale about staleness — re-check it now
 }
 // Rescan (LLM) = SAVE config → re-fuse → regenerate report + chat narrative with the LLM.
 async function doRescanLLM(id){
   toast('saving + rescanning (LLM) — refusing + regenerating report…');
-  await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(await _railCfg())});
+  const cfg = await _railCfg(); cfg.trigger = 'rescan_llm';
+  const r = await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
+  if(r && r.busy){ toast('⏳ already re-fusing this case — retry in a moment'); return; }
   await api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({use_llm:true})});
   toast('✓ Rescan complete — report & chat regenerated'); tab='report'; openCase(id);
 }
@@ -621,6 +1029,24 @@ function renderAdvisory(info){
 const TL_SEV_RANK={informational:0,info:0,low:1,medium:2,high:3,critical:4};
 const TL_STATES=[['pending','Pending'],['real','True Positive'],['not_real','False Positive'],['known_it','Known']];
 window._tlf={status:{pending:1,real:1,not_real:1,known_it:1},artifact:'',host:'',sev:'informational'};
+// The host is already the first thing on the row, and finding titles end with
+// "on <host>" — so almost every line named the same machine twice:
+//   ALClient022 [Execution / Injection] SIGMA: ... Detection on ALClient022
+//
+// Trimmed HERE and not at the source: the report's markdown timeline prints the
+// title with no host prefix, so "on <host>" is load-bearing there. Only this
+// view has the duplication.
+//
+// Exact match against the row's own host only. "Shared binary seen on 2 hosts"
+// and a multi-host row like "ALClient04, ALClient06" keep their wording,
+// because the suffix is not repeating the prefix in those cases.
+function _tlTitle(r){
+  const t = r.title || '', h = (r.host || '').trim();
+  if(!t || !h || h.includes(',')) return t;
+  const suffix = ' on ' + h;
+  return t.endsWith(suffix) ? t.slice(0, -suffix.length) : t;
+}
+
 function renderTimeline(id){
   window._tlCase=id;
   $('#tabc').innerHTML='<i style="color:var(--muted)">loading timeline…</i>';
@@ -676,8 +1102,8 @@ function tlPaint(){
     return `<div class="tlrow ${supp(v)?'suppressed':''} ${r.manual?'manual':''}">
       <code style="white-space:nowrap">${esc(r.ts||'—')}</code>
       <div class="tlmeta" style="cursor:pointer" title="Click for full event detail" onclick="openFindingDetail('${r.finding_id}')">
-        <span><strong>${esc(r.host||'-')}</strong> ${r.phase?`<span style="color:var(--muted)">[${esc(r.phase)}]</span>`:''} ${esc(r.title||'')} <span style="color:var(--muted);font-size:10px">▸ detail</span></span>
-        <span class="l2">${arts}${r.reopened?'<span class="sg-hint" style="border-color:#d29922;color:#e3b341" title="A new occurrence arrived after your last verdict — re-validate this one.">⟳ re-opened: new activity since you validated</span>':''}${r.suggested_benign?'<span class="sg-hint">analyst: looks expected</span>':''}${r.manual?'<span class="sg-hint" style="border-style:solid">manual</span>':''}${r.notes?`<span style="color:var(--muted);font-size:11px">— ${esc(r.notes)}</span>`:''}</span>
+        <span><strong>${esc(r.host||'-')}</strong> ${r.phase?`<span style="color:var(--muted)">[${esc(r.phase)}]</span>`:''} ${esc(_tlTitle(r))} <span style="color:var(--muted);font-size:10px">▸ detail</span></span>
+        <span class="l2">${arts}${r.reopened?'<span class="sg-hint" style="border-color:#d29922;color:#e3b341" title="A new occurrence arrived after your last verdict — re-validate this one.">⟳ re-opened: new activity since you validated</span>':''}${r.manual?'<span class="sg-hint" style="border-style:solid">manual</span>':''}${r.notes?`<span style="color:var(--muted);font-size:11px">— ${esc(r.notes)}</span>`:''}</span>
       </div>
       <span class="chip c-${r.severity}">${esc(r.severity)}</span>
       <span class="seg">${seg}</span>
@@ -959,6 +1385,25 @@ function ask(id){
                   '. The question was not answered — try again.'));
 }
 
+// Evidence lines can run to ~1200 characters (a Defender message carries the
+// threat name, a path and a fwlink URL). Clamp the ones that actually overflow
+// and let a click open them, rather than truncating: the operator asked for the
+// end of the string, so it has to be present to be reachable.
+function clampEvidence(root){
+  (root||document).querySelectorAll('.md li.sub').forEach(li=>{
+    li.classList.remove('clip','open');
+    li.classList.add('clip');                     // apply the max-height first…
+    // +4, not +1: line boxes round sub-pixel and an inline <code> can sit a
+    // shade taller than its line. Too tight a tolerance offers "more" on items
+    // that have nothing more to show, which is worse than never offering it.
+    if(li.scrollHeight <= li.clientHeight + 4) li.classList.remove('clip');  // …then ask
+  });
+}
+document.addEventListener('click',e=>{
+  const li = e.target && e.target.closest && e.target.closest('.md li.sub.clip');
+  if(li) li.classList.toggle('open');
+});
+
 // minimal, air-gap-safe markdown renderer
 function escape(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function inline(s){return escape(s).replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>').replace(/_([^_]+)_/g,'<em>$1</em>');}
@@ -978,9 +1423,20 @@ function mdToHtml(md){
     if(m=line.match(/^### (.*)/)){closeUL();out.push('<h3>'+inline(m[1])+'</h3>');}
     else if(m=line.match(/^## (.*)/)){closeUL();out.push('<h2>'+inline(m[1])+'</h2>');}
     else if(m=line.match(/^# (.*)/)){closeUL();out.push('<h1>'+inline(m[1])+'</h1>');}
-    else if(m=line.match(/^\s*[-*] (.*)/)){if(!inUL){out.push('<ul>');inUL=true;}
-      let t=inline(m[1]).replace(/\[(critical|high|medium|low|informational)\]/i,(_,s)=>`<span class="chip c-${s.toLowerCase()}">${s}</span>`);
-      out.push('<li>'+t+'</li>');}
+    else if(m=line.match(/^([ \t]*)[-*] (.*)/)){if(!inUL){out.push('<ul>');inUL=true;}
+      // The INDENT was being thrown away. facts_md nests per-event evidence
+      // four spaces under the finding it belongs to, and `^\s*[-*] ` matched
+      // that leading run and dropped it -- so every evidence line rendered as
+      // a sibling of its own finding. In the air-gap report, where each
+      // finding carries up to five long Defender strings that wrap over
+      // several visual lines, one flat list of look-alike bullets is unreadable:
+      // there is nothing to say where one finding ends and the next begins.
+      const ind=m[1].replace(/\t/g,'    ').length;
+      let t=inline(m[2]).replace(/\[(critical|high|medium|low|informational)\]/i,(_,s)=>`<span class="chip c-${s.toLowerCase()}">${s}</span>`);
+      // A class rather than a nested <ul>: `<ul>` as a direct child of `<ul>`
+      // is invalid, and this renderer is deliberately minimal. Indent, tone
+      // and spacing carry the hierarchy instead.
+      out.push('<li'+(ind>=2?' class="sub"':'')+'>'+t+'</li>');}
     else if(/^\s*$/.test(line)){closeUL();out.push('<br/>');}
     else {closeUL();out.push('<p>'+inline(line)+'</p>');}
   });

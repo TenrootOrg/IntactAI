@@ -11,7 +11,7 @@ import os
 import posixpath
 import time
 
-from lib import winssh
+from lib import clients as clients_lib, winssh
 
 # Where the QA stages its own files on the target. One directory, so teardown
 # is a single recursive delete and there is no doubt about what to remove.
@@ -28,6 +28,17 @@ YARA_CANARY = "INTACT-QA-MEMORY-CANARY-7f3a91"
 
 
 def register(runner, cfg):
+    # enrol / activity / teardown drive a Windows box over SSH and cannot mean
+    # anything without one. Not registering them at all is better than
+    # registering and failing: runner._unmet then reports every dependant as
+    # "enrol did not run" in the report's "Not reached" table, which is the
+    # truth, instead of a cascade of red for a machine nobody asked for.
+    #
+    # The Linux profile enrols the appliance itself instead — see
+    # qa/phases/endpoint_linux.py.
+    if not cfg.windows_enabled:
+        return
+
     tl = runner.ctx.tl
 
     def target():
@@ -41,7 +52,7 @@ def register(runner, cfg):
         c = ctx.get("client")
         detail = {}
 
-        before = _client_ids(c)
+        before = clients_lib._client_ids(c)
         detail["clients_before"] = len(before)
 
         # The platform generates the installer; the QA must use that one rather
@@ -110,7 +121,7 @@ def register(runner, cfg):
         new_client, _ = tl.wait(
             "the new client to appear in Velociraptor",
             timeout_s=600, poll_s=10,
-            probe=lambda: _first_new_client(c, before),
+            probe=lambda: clients_lib._first_new_client(c, before),
             describe=lambda cid: cid)
 
         ctx.check("client enrolled and visible to the platform", bool(new_client),
@@ -118,7 +129,7 @@ def register(runner, cfg):
         if new_client:
             ctx.set(client_id=new_client)
             detail["client_id"] = new_client
-            detail["hostname"] = _client_hostname(c, new_client)
+            detail["hostname"] = clients_lib._client_hostname(c, new_client)
         return detail
 
     # ----------------------------------------------------------------- 3 --
@@ -172,7 +183,7 @@ def register(runner, cfg):
 
     # ----------------------------------------------------------------- F --
     @runner.phase("teardown", "Remove the client and everything the QA left",
-                  needs=("enrol",), optional=True)
+                  needs=("enrol",))
     def teardown(ctx):
         """Runs after log collection so nothing needed for the report is
         destroyed first, and before the report so teardown problems appear in
@@ -229,7 +240,7 @@ def register(runner, cfg):
         # as a clean teardown.
         client_id = ctx.get("client_id")
         if client_id and c:
-            still_there = client_id in _client_ids(c, include_offline=True)
+            still_there = client_id in clients_lib._client_ids(c, include_offline=True)
             detail["server_record"] = "present" if still_there else "gone"
             # NOT a check. There is no delete-client API — /api/client/<id> is
             # a 501 stub — so the record surviving is a platform limitation the
@@ -357,47 +368,6 @@ def _uninstall_client(win, msi_path_win=None):
     # reinstalled client re-adopt the old identity instead of enrolling fresh.
     win.remove("C:/Program Files/Velociraptor", recursive=True)
     return True
-
-
-def _clients(c, include_offline=False):
-    """The client list, as {client_id: item}.
-
-    The response key is `items`, not `clients` — verified against the live box,
-    where the earlier guess would have silently produced an empty set and made
-    enrolment look like it never happened.
-
-    `include_offline` matters for teardown: the default is online-only, so a
-    client that has merely gone quiet disappears from the list. Verifying that
-    an agent was actually REMOVED must ask for offline clients too, or a
-    half-finished uninstall reads as a clean one.
-    """
-    try:
-        body = c.get("/api/clients" +
-                     ("?include_offline=true" if include_offline else ""))
-    except Exception:                                         # noqa: BLE001
-        return {}
-    items = body.get("items", []) if isinstance(body, dict) else (body or [])
-    return {it["client_id"]: it for it in items
-            if isinstance(it, dict) and it.get("client_id")}
-
-
-def _client_ids(c, include_offline=False):
-    return set(_clients(c, include_offline))
-
-
-def _first_new_client(c, before):
-    fresh = sorted(_client_ids(c) - before)
-    return fresh[0] if fresh else None
-
-
-def _client_hostname(c, client_id):
-    """From the client LIST.
-
-    /api/client/<client_id> exists as a route but returns 501 "Not implemented
-    yet" — it is a stub. The list already carries `hostname`, so there is
-    nothing to be gained by calling it.
-    """
-    return (_clients(c, include_offline=True).get(client_id) or {}).get("hostname")
 
 
 def _download_installer(c, run_dir, tl, platform="windows-msi"):

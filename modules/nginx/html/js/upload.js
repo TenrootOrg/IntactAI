@@ -26,6 +26,11 @@ class TusUploader {
         this.endpoint = '/api/uploads/';
         this.purpose = options.purpose || 'velociraptor';
         this.metadata = options.metadata || {};
+        // Module uploads do work INSIDE the active workspace, so uploading from
+        // System is a mistake worth blocking (see the guard in upload()). A case
+        // bundle is the exception: it creates its own new workspace, so which one
+        // happens to be selected is irrelevant — such callers pass false.
+        this.systemGuard = options.systemGuard !== false;
         this.onProgress = options.onProgress || (() => {});
         this.onSuccess = options.onSuccess || (() => {});
         this.onError = options.onError || (() => {});
@@ -60,10 +65,10 @@ class TusUploader {
         // is System it rejects the run with a 409 the browser never sees — the
         // import just silently does nothing. Block up front with a clear alert,
         // BEFORE wasting time uploading a (possibly large) collection ZIP.
-        if (window.ActiveCase && window.ActiveCase.blockIfSystem) {
+        if (this.systemGuard && window.ActiveCase && window.ActiveCase.blockIfSystem) {
             window.ActiveCase.blockIfSystem(
-                'This import runs against an investigation workspace, not System. ' +
-                'Switch to or create an investigation workspace first, then re-import.'
+                'This import runs against an investigation case, not System. ' +
+                'Switch to or create an investigation case first, then re-import.'
             ).then((blocked) => { if (!blocked) this._beginUpload(file); });
             return null;
         }

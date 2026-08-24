@@ -161,7 +161,36 @@ for i in range(start + 1, end):
     lines[i] = "%s%s%s%s\n" % (indent, name, sep, new)
     break
 else:
-    # Key absent: append at the end of the block, matching sibling indentation.
+    # Key absent. Two different situations wear the same clothes here:
+    #
+    #   * a genuinely NEW pin (a sidecar seeded for the first time, a module
+    #     this config.yaml has never carried) -> the end of the block is the
+    #     right home, and it is where every such key has always landed;
+    #
+    #   * a pin being PUT BACK after _unpin_module_version removed it -- the
+    #     rollback path. Appending there moves the operator's key out of its
+    #     slot, so an undo that is supposed to restore the file reformats it
+    #     instead, and repeated rollbacks keep shuffling the block.
+    #
+    # Nothing in the file records where a removed key used to sit, but its
+    # ORDERING does: the block opens with a run of plain, alphabetically
+    # ordered module pins (elk, iris, plaso, portainer, timesketch,
+    # velociraptor) before the commented, semantically grouped tail. If that
+    # leading run is still sorted and the key belongs strictly inside its
+    # range, sorted position IS the original position, and re-inserting there
+    # restores the file byte-for-byte.
+    #
+    # Deliberately narrow -- STRICTLY inside the range, so a key outside it
+    # (backend_tusd, dfiq, anything in the commented tail) still appends
+    # exactly as before and first-time seeding is untouched. The cost of that
+    # narrowness is the run's two endpoints: remove `elk` and the run now
+    # starts at `iris`, so putting elk back is indistinguishable from adding a
+    # brand-new key that happens to sort before iris, and it appends. Nothing
+    # in the file separates those two cases, and appending a new key is the
+    # behaviour that must not change, so the tie is broken that way on purpose.
+    # No production path reaches it regardless: u_undo_pin re-pins only keys
+    # that still EXIST (the in-place branch above, which never moves a line),
+    # and unpins only keys that were absent before the run.
     indent = "  "
     for i in range(start + 1, end):
         m2 = re.match(r"^(\s+)\S", lines[i])
@@ -169,9 +198,33 @@ else:
             indent = m2.group(1)
             break
     new = value if re.match(r"^[A-Za-z][A-Za-z0-9._+-]*$", value) else "'%s'" % value
+
     insert_at = end
     while insert_at > start + 1 and not lines[insert_at - 1].strip():
         insert_at -= 1
+
+    # The leading run: plain "  name: value" lines, stopping at the first
+    # comment (a comment introduces the annotated tail, and a key that follows
+    # one belongs to it -- inserting there would orphan somebody's comment).
+    run = []                                    # (line index, key name)
+    for i in range(start + 1, end):
+        stripped = lines[i].strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            break
+        m3 = re.match(r"^\s+([A-Za-z_][A-Za-z0-9_]*)\s*:", lines[i])
+        if not m3:
+            break
+        run.append((i, m3.group(1)))
+
+    names = [n for _, n in run]
+    if len(names) >= 2 and names == sorted(names) and names[0] < key < names[-1]:
+        for i, n in run:
+            if n > key:
+                insert_at = i
+                break
+
     lines.insert(insert_at, "%s%s: %s\n" % (indent, key, new))
 
 payload = "".join(lines)

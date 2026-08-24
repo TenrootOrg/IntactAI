@@ -49,24 +49,62 @@ ENV_OVERRIDES = {
     ("platform", "host"): "QA_PLATFORM_HOST",
     ("platform", "sudo_user"): "QA_SUDO_USER",
     ("platform", "sudo_password"): "QA_SUDO_PASS",
+    ("platform", "repo_dir"): "QA_REPO_DIR",
     ("windows", "host"): "QA_WIN_HOST",
     ("windows", "username"): "QA_WIN_USER",
     ("windows", "password"): "QA_WIN_PASS",
+    ("run", "linux_client"): "QA_LINUX_CLIENT",
+    ("run", "feature_sweep"): "QA_FEATURE_SWEEP",
+    ("run", "pipelines"): "QA_PIPELINES",
+    ("run", "scenario"): "QA_SCENARIO",
+    ("run", "upgrade_to"): "QA_UPGRADE_TO",
+    ("run", "upgrade_package"): "QA_UPGRADE_PACKAGE",
+    ("run", "upgrade_extra"): "QA_UPGRADE_EXTRA",
+    ("run", "downgrade_tag"): "QA_DOWNGRADE_TAG",
+    ("run", "hop_via"): "QA_HOP_VIA",
+    ("run", "plant_evidence"): "QA_PLANT_EVIDENCE",
 }
 
-REQUIRED = (
+# Split in two because a Windows endpoint is a property of the PROFILE, not of
+# the harness. A CI runner has no Windows box and never will: it enrols the
+# Velociraptor Linux client on the appliance itself instead. Demanding all six
+# meant the harness could not start at all without credentials for a machine
+# that is not part of the run.
+PLATFORM_REQUIRED = (
     ("platform", "host"),
     ("platform", "sudo_user"),
     ("platform", "sudo_password"),
+)
+
+WINDOWS_REQUIRED = (
     ("windows", "host"),
     ("windows", "username"),
     ("windows", "password"),
 )
 
+REQUIRED = PLATFORM_REQUIRED + WINDOWS_REQUIRED
+
 # Which fields are credentials, for redaction. `host` is topology rather than a
 # secret, but it is in the sanitizer's blank list and a report is a shareable
 # artifact, so it is redacted too.
+#
+# DELIBERATELY the union, not PLATFORM_REQUIRED. Redaction must not narrow when
+# validation does: a Windows password that is set but not *required* is still a
+# password, and this repo is public. Tying this to whichever half a given run
+# happens to demand would silently stop stripping the other half.
 SECRET_FIELDS = REQUIRED
+
+
+def _as_bool(value):
+    """YAML booleans and env-var strings, resolved the same way.
+
+    ENV_OVERRIDES injects raw strings, and `bool("false")` is True — so a
+    QA_FEATURE_SWEEP=false meant to turn the sweep OFF would turn it on. Anything
+    not recognisably false is false only if it is empty; the usual suspects are
+    spelled out so "0", "no" and "off" behave the way whoever typed them meant."""
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "0", "false", "no", "off")
+    return bool(value)
 
 
 class ConfigError(Exception):
@@ -119,6 +157,20 @@ class QAConfig:
         return int(self.get("windows", "ssh_port", default=22))
 
     @property
+    def windows_enabled(self):
+        """Is there a Windows endpoint in this run at all?
+
+        All three values present means yes. All three blank means a Linux-only
+        profile (CI, or an operator without a lab box) — the Windows phases
+        simply do not register, and their dependants report as "not reached"
+        rather than failing for a machine that was never part of the run.
+
+        A PARTLY filled block is neither, and is treated as an error by load():
+        two of three set is a typo or a half-finished edit, and silently running
+        without Windows would hide it."""
+        return all(str(self.get(s, k) or "").strip() for s, k in WINDOWS_REQUIRED)
+
+    @property
     def output_dir(self):
         return os.path.expanduser(
             self.get("run", "output_dir", default="~/qa-runs"))
@@ -152,6 +204,87 @@ class QAConfig:
         matter. Written now so the coverage exists the moment a cloud-enabled
         box is available to point it at."""
         return bool(self.get("run", "cloud_tests", default=False))
+
+    @property
+    def linux_client(self):
+        """Enrol the Velociraptor LINUX client on the appliance host itself.
+
+        The appliance becomes its own endpoint. That is the only way a run with
+        no lab machine gets a real `C.<hex>` client, and therefore the only way
+        the collection paths get exercised at all."""
+        return _as_bool(self.get("run", "linux_client", default=False))
+
+    @property
+    def feature_sweep(self):
+        """Drive the backend's HTTP surface and assert on the answers."""
+        return _as_bool(self.get("run", "feature_sweep", default=False))
+
+    @property
+    def pipelines(self):
+        """Run each feature's LIGHTWEIGHT blueprint end to end.
+
+        Separate from feature_sweep because it is a different kind of test and a
+        different cost: the sweep is seconds of HTTP, this dispatches real
+        collections and real detection runs and takes minutes."""
+        return _as_bool(self.get("run", "pipelines", default=False))
+
+    @property
+    def scenario(self):
+        """Which install/upgrade path this run is testing.
+
+        One scenario per job, because container names, volumes and host ports
+        are global — two appliances cannot share a machine. The scenario also
+        decides which phases register at all, so a run only ever contains the
+        phases it can actually satisfy."""
+        return (self.get("run", "scenario", default="") or "").strip()
+
+    @property
+    def upgrade_to(self):
+        """The release tag this scenario upgrades to. Empty = install only."""
+        return (self.get("run", "upgrade_to", default="") or "").strip()
+
+    @property
+    def upgrade_package(self):
+        """A package on disk to upgrade FROM, for the air-gapped routes."""
+        return (self.get("run", "upgrade_package", default="") or "").strip()
+
+    @property
+    def upgrade_extra(self):
+        """Extra CLI flags for the upgrade, as a shell-ish string.
+
+        Split on whitespace, not through a shell: these reach the engine as
+        argv, and a scenario table is not a place to allow shell injection into
+        a command that runs as root."""
+        raw = (self.get("run", "upgrade_extra", default="") or "").strip()
+        return raw.split() if raw else []
+
+    @property
+    def downgrade_tag(self):
+        """A published release older than the target, for the refusal check.
+
+        Real rather than synthetic: the engine compares actual pins, so a made-up
+        tag would be refused for the wrong reason."""
+        return (self.get("run", "downgrade_tag", default="") or "").strip()
+
+    @property
+    def hop_via(self):
+        """An intermediate release to pass through before the real upgrade.
+
+        0726 -> 0811 -> 0818 exists because the ENGINE changes: a 0726 box has
+        no scripts/upgrade.sh and no bootstrap at all, so its own in-backend
+        engine must first pull itself onto the new one. The 0811 asset is
+        intact-only (432 MB), which is why the hop is quick — it moves the
+        engine and nothing else."""
+        return (self.get("run", "hop_via", default="") or "").strip()
+
+    @property
+    def plant_evidence(self):
+        """Put detectable evidence on the box before collecting.
+
+        OFF by default and deliberately: it writes to /etc/passwd, /etc/cron.d
+        and a home directory. Fine on an ephemeral runner destroyed minutes
+        later, unacceptable on anyone's real machine."""
+        return _as_bool(self.get("run", "plant_evidence", default=False))
 
     def timeout(self, stage, default=30):
         """Minutes to wait for a slow stage before calling it failed."""
@@ -226,13 +359,34 @@ def load(path=None, require=True):
     cfg.permissions_tightened = tightened
 
     if require:
-        missing = [(s, k) for s, k in REQUIRED
+        # Platform values are always required — there is no run without an
+        # appliance. Windows values are required only if the block is PARTLY
+        # filled: all-blank means "Linux-only profile", which is a legitimate
+        # and now-common way to run, while two-of-three is a typo that would
+        # otherwise silently downgrade the run to Linux-only and hide it.
+        need = list(PLATFORM_REQUIRED)
+        win_set = [(s, k) for s, k in WINDOWS_REQUIRED
+                   if str(cfg.get(s, k) or "").strip()]
+        if win_set:
+            need += list(WINDOWS_REQUIRED)
+
+        missing = [(s, k) for s, k in need
                    if not str(cfg.get(s, k) or "").strip()]
         if missing:
             lines = [f"{path} is missing required values:", ""]
             for section, key in missing:
                 lines.append(f"    {section}.{key}"
                              f"   (or set ${ENV_OVERRIDES[(section, key)]})")
+            if any(s == "windows" for s, _ in missing):
+                lines += [
+                    "",
+                    "The windows block is PARTLY filled, so it is being treated "
+                    "as a Windows run.",
+                    "Leave all three blank for a Linux-only run — the Windows "
+                    "phases then do not",
+                    "register, and their dependants report as not reached "
+                    "instead of failing.",
+                ]
             lines += [
                 "",
                 "Fill them in and re-run. Your working copy is never committed:",

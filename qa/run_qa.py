@@ -21,6 +21,7 @@ itself.
 """
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -57,6 +58,89 @@ def _self_copy_and_exec(argv, run_id):
         [sys.executable, os.path.join(dest, "run_qa.py")] + argv, env=env))
 
 
+def build_runner(ctx, cfg):
+    """Register every phase and put them in the order they must run in.
+
+    Extracted from main() so a test can build the same phase list for a
+    given scenario and check it, without a live appliance. The ordering
+    here is not cosmetic: a phase whose dependency ends up LATER in the
+    list is silently skipped, and a skip is not a failure -- so getting
+    it wrong produces a green run that did nothing.
+    """
+    runner = runner_lib.Runner(ctx)
+
+    from phases import (endpoint, endpoint_linux, features, pipelines,
+                        platform, upgrade, workflows, wrapup)
+    platform.register(runner, cfg)
+    endpoint.register(runner, cfg)
+    # The Linux profile: enrol the appliance itself as an endpoint, then drive
+    # the backend's HTTP surface directly. Both self-register only when their
+    # config flag is on, so an operator's existing Windows run is unchanged.
+    endpoint_linux.register(runner, cfg)
+    features.register(runner, cfg)
+    # After the sweep: pipelines dispatch real collections and detection runs,
+    # so they need the client enrolled and the API already proven to answer.
+    pipelines.register(runner, cfg)
+    # Scenario-driven: registers nothing at all unless this run is testing an
+    # upgrade route, so an install-only scenario carries no upgrade phases.
+    upgrade.register(runner, cfg)
+    workflows.register(runner, cfg)
+    # Collection and teardown are registered last so they run after the
+    # workflows: collect BEFORE teardown so nothing needed for the report is
+    # destroyed, teardown BEFORE the report so its problems appear in it.
+    wrapup.register(runner, cfg)
+    # Re-register teardown after collect by reordering: endpoint registered it
+    # early (it needs `enrol`), so move it to just before the report.
+    _reorder(runner, "teardown", before="report")
+    _reorder(runner, "teardown_linux", before="report")
+
+    # On an upgrade scenario the module checks must run against the box the
+    # upgrade LEFT BEHIND, not the one it started from. Registration order puts
+    # them before the upgrade, which would prove the old box worked and say
+    # nothing about the new one — so they move after the verification.
+    #
+    # enrol_linux moves with them: the client is what the collection pipelines
+    # drive, and enrolling before an upgrade that recreates Velociraptor proves
+    # the wrong thing.
+    if any(p["name"] == "upgrade" for p in runner.phases):
+        # `security` goes with them. It asserts TODAY's hardening -- 0600 on
+        # every secret, no unauthenticated /api/cases, Elasticsearch closed to
+        # the LAN -- and intact-20260726 predates all of it, so running it
+        # against the box an upgrade STARTS from reported nine failures that
+        # are simply what that release was. The hardening that matters is the
+        # box you end up with.
+        moving = ["security", "enrol_linux", "features", "pipelines"]
+
+        # `auth` moves ONLY for the shell routes. intact-20260615 has no auth
+        # system at all, so on those the dashboard can only be claimed once the
+        # upgrade has put one there.
+        #
+        # A dashboard upgrade is the opposite case and moving `auth` broke it
+        # outright: the ui_online and ui_import routes are DRIVEN through the
+        # authenticated API, so the upgrade phase declares needs=("auth",). With
+        # auth reordered after it, that dependency was unmet, the upgrade phase
+        # was SKIPPED -- and a skip is not a failure, so all four UI scenarios
+        # could report green having never performed an upgrade at all. Exactly
+        # the silent false pass this suite exists to prevent.
+        import scenarios
+        route = scenarios.route_for(cfg.scenario) or ""
+        if not route.startswith("ui_"):
+            moving.insert(0, "auth")
+
+        for name in moving:
+            _reorder(runner, name, before="collect")
+
+        # A dashboard upgrade is driven through the API, so `auth` stays early
+        # -- and the hop has to come before it, because the box being claimed
+        # only has an auth system once the hop has put one there. The shell
+        # routes need no such move: auth is already late for them, and the hop
+        # sits before the upgrade by registration order.
+        if route.startswith("ui_") and any(p["name"] == "hop"
+                                           for p in runner.phases):
+            _reorder(runner, "hop", before="auth")
+    return runner
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -90,24 +174,12 @@ def main():
     redactor = qa_redact.Redactor(cfg.secrets())
     tl = timeline_lib.Timeline(run_dir, run_id, redactor=redactor)
     ctx = runner_lib.PhaseContext(cfg, tl, run_dir, {}, redactor)
-    runner = runner_lib.Runner(ctx)
-
-    from phases import endpoint, platform, workflows, wrapup
-    platform.register(runner, cfg)
-    endpoint.register(runner, cfg)
-    workflows.register(runner, cfg)
-    # Collection and teardown are registered last so they run after the
-    # workflows: collect BEFORE teardown so nothing needed for the report is
-    # destroyed, teardown BEFORE the report so its problems appear in it.
-    wrapup.register(runner, cfg)
-    # Re-register teardown after collect by reordering: endpoint registered it
-    # early (it needs `enrol`), so move it to just before the report.
-    _reorder(runner, "teardown", before="report")
+    runner = build_runner(ctx, cfg)
 
     print("=" * 78)
     print(f"Intact.AI QA — {run_id}")
     print(f"  platform : {cfg.platform_host}")
-    print(f"  windows  : {cfg.windows_host}")
+    print(f"  windows  : {cfg.windows_host or 'none — Linux-only run'}")
     print(f"  results  : {run_dir}")
     print(f"  phases   : {', '.join(p['name'] for p in runner.phases)}")
     if skip:
@@ -116,10 +188,19 @@ def main():
 
     tl.event("run_begin", detail={
         "platform": cfg.platform_host, "windows": cfg.windows_host,
-        "commit": _git_head(), "relocated": relocated})
+        "commit": _git_head(cfg.repo_dir), "relocated": relocated})
 
     results = runner.run(only=only or None, skip=skip or None)
     counts = runner_lib.summarize(results)
+
+    # RE-WRITTEN HERE, after every phase has a verdict. The `report` phase
+    # writes results.json too, but it writes it from inside itself -- so its
+    # own result does not exist yet and is missing from the file. That is not
+    # cosmetic: the report phase is where the redaction canary and the
+    # credential scan run, so a run that found a real secret leak wrote
+    # "fail: 0", and CI passed the job. Anything that report itself catches
+    # could never fail a build.
+    _write_results_json(run_dir, tl.run_id, results, counts)
 
     tl.event("run_end", status="ok" if not counts.get("fail") and
              not counts.get("error") else "fail", detail=counts)
@@ -138,6 +219,15 @@ def main():
     return 1 if (counts.get("fail") or counts.get("error")) else 0
 
 
+def _write_results_json(run_dir, run_id, results, counts):
+    """The machine-readable verdict, written once every phase has finished."""
+    payload = {"run_id": run_id, "counts": counts,
+               "phases": [r.to_dict() for r in results.values()]}
+    with open(os.path.join(run_dir, "results.json"), "w",
+              encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2, default=str)
+
+
 def _reorder(runner, name, before):
     """Move a registered phase so it runs just before another."""
     phases = runner.phases
@@ -150,11 +240,17 @@ def _reorder(runner, name, before):
     phases.insert(anchor, moving)
 
 
-def _git_head():
+def _git_head(repo_dir=None):
+    """The commit under test.
+
+    Takes the repo from the config rather than a hard-coded /home/tenroot/intact:
+    CI installs to /mnt/intact, and a wrong path here silently reported the
+    commit of whatever tree happened to be at the old location — or None, which
+    is worse, because the report then names no commit at all."""
     try:
-        r = subprocess.run(["git", "-C", "/home/tenroot/intact", "rev-parse",
-                            "--short", "HEAD"], capture_output=True, text=True,
-                           timeout=15)
+        r = subprocess.run(["git", "-C", repo_dir or "/home/tenroot/intact",
+                            "rev-parse", "--short", "HEAD"],
+                           capture_output=True, text=True, timeout=15)
         return r.stdout.strip() or None
     except Exception:                                         # noqa: BLE001
         return None

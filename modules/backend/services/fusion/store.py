@@ -410,7 +410,8 @@ def _env_key_from_members(members) -> str | None:
 
 
 def set_disposition(case_id, target, *, verdict="benign", attribution="it_admin",
-                    reason="", scope="case", by="operator", watermark=None) -> dict:
+                    reason="", scope="case", by="operator", watermark=None,
+                    trigger=None) -> dict:
     """Record an operator triage on a finding/entity ('that PsExec was IT'), re-fuse so it
     takes effect, and — when scope='environment' — fold it into the env baseline so it
     suppresses across FUTURE cases too. Returns the disposition.
@@ -440,7 +441,7 @@ def set_disposition(case_id, target, *, verdict="benign", attribution="it_admin"
                    f"{target} → {verdict} ({attribution}, scope={scope}); re-fusing")
     if scope == "environment" and verdict == "benign":
         _promote_disposition_to_baseline(case_id, target)
-    fuse_case(case_id)
+    fuse_case(case_id, trigger=trigger or TRIGGER_DISPOSITION)
     return disp
 
 
@@ -474,7 +475,7 @@ def clear_disposition(case_id, target) -> dict:
     ws.mutate_run_details(case_id, _mutate)
     ws.update_run_status(case_id, "pending")
     log_case_event(case_id, "Risk · disposition cleared", "info", f"{target}; re-fusing")
-    fuse_case(case_id)
+    fuse_case(case_id, trigger=TRIGGER_DISPOSITION_CLEARED)
     return {"target": target, "cleared": True}
 
 
@@ -608,78 +609,9 @@ def attach_runs(case_id, run_ids) -> tuple[list, list]:
     return members, rejected
 
 
-EXPORT_KIND = "intact_case_export"
-EXPORT_SCHEMA = 1
-
-
-def export_case(case_id) -> dict | None:
-    """Build a self-contained, importable bundle for one case (workspace):
-    the case record (its details cache the fused graph + report + config +
-    dispositions) plus every member run's full record (the fusion inputs). A
-    later import recreates the case verbatim and can re-fuse from the runs."""
-    ws = _ws()
-    case_run = ws.get_automation_run(case_id)
-    if not case_run or case_run.get("automation_type") != CASE_TYPE:
-        return None
-    member_ids = _members_for_case(case_id)
-    runs = [r for r in (ws.get_automation_run(rid) for rid in member_ids) if r]
-    det = dict(case_run.get("details") or {})
-    # The graph now lives in a sidecar — embed it back inline so the bundle stays
-    # self-contained (import reads it inline; a later re-fuse moves it to a sidecar).
-    fg = _read_graph_sidecar(case_id)
-    if fg is not None:
-        det["fusion_graph"] = fg
-        case_run = {**case_run, "details": det}
-    return {
-        "kind": EXPORT_KIND,
-        "schema": EXPORT_SCHEMA,
-        "name": det.get("name") or case_run.get("name") or "case",
-        "case": case_run,
-        "runs": runs,
-    }
-
-
-def import_case(bundle: dict, *, name: str | None = None) -> dict:
-    """Recreate a case from an export bundle. Creates a FRESH case container and
-    re-tags the bundled member runs into it (run ids are preserved so the cached
-    graph/findings, which reference run ids, stay consistent — intended for
-    moving a case to another install). Returns {case_id, name, runs_imported}."""
-    if not isinstance(bundle, dict) or bundle.get("kind") != EXPORT_KIND:
-        raise ValueError("not an Intact case export bundle")
-    src_case = bundle.get("case") or {}
-    src_runs = bundle.get("runs") or []
-    src_det = src_case.get("details") or {}
-    disp_name = (name or src_det.get("name") or src_case.get("name") or "Imported case").strip()
-
-    ws = _ws()
-    from services.file_storage_service import save_workflow
-
-    # Fresh case container (never inherits default/system status from the source).
-    new_case_id = ws.create_automation_run(
-        automation_type=CASE_TYPE, name=f"Case — {disp_name}", case_id=None, details={},
-    )
-
-    # Upsert each member run, preserving its id + payload, re-tagged to the new case.
-    member_ids = []
-    for r in src_runs:
-        rid = (r or {}).get("run_id")
-        if not rid:
-            continue
-        rec = dict(r)
-        rec["case_id"] = new_case_id
-        save_workflow(rec)
-        member_ids.append(rid)
-
-    # New case details = the source case's cached state, re-pointed + de-privileged.
-    new_det = dict(src_det)
-    new_det["name"] = disp_name
-    new_det["member_run_ids"] = member_ids
-    new_det.pop("is_default", None)
-    new_det.pop("is_system", None)
-    ws.update_run_status(new_case_id, src_case.get("status") or "completed", details=new_det)
-
-    return {"case_id": new_case_id, "name": disp_name, "runs_imported": len(member_ids)}
-
+# Portable case bundles (export/import between appliances) live in case_bundle.py:
+# a bundle is a streamed ZIP carrying the collected payloads, not a JSON document,
+# and importing one has to remap every run id — neither belongs in the graph store.
 
 def _unfail_stale_idle_workspace(run: dict) -> None:
     """A workspace ("case") row has no natural "completed" state — it's a
@@ -755,9 +687,15 @@ def delete_case(case_id) -> dict:
         return {"deleted": False, "error": "default workspace cannot be deleted"}
     if d.get("is_system") or d.get("name") == SYSTEM_CASE_NAME:
         return {"deleted": False, "error": "system workspace cannot be deleted"}
+    try:                                   # a pending auto-fuse would fire into a
+        from . import autofuse              # case that no longer exists
+        autofuse.cancel(case_id)
+    except Exception:
+        pass
     run_ids = [r.get("run_id") for r in ws.get_automation_runs_by_case(case_id)]
     for rid in run_ids:
         delete_workflow(rid)
+        _delete_run_payloads(rid)
     # baselines this case captured (match by source_case only — never touch a
     # baseline another workspace may rely on)
     removed_baselines = 0
@@ -779,6 +717,33 @@ def delete_case(case_id) -> dict:
         pass
     return {"deleted": True, "runs_deleted": len(run_ids),
             "baselines_deleted": removed_baselines}
+
+
+def _delete_run_payloads(rid) -> None:
+    """Remove a deleted run's collected data from disk.
+
+    Deleting the row alone left /data/downloads/<run_id>/raw_results.json behind
+    — half a gigabyte per collection, unreachable (nothing can find it without
+    the row) and reclaimable only by the Maintenance purge, which is all-or-
+    nothing and takes every LIVE case's evidence with it. That was tolerable
+    while runs were only ever created by collecting; importing a case COPIES
+    those files, so a deleted import would strand its gigabytes permanently.
+
+    Best-effort: a case delete must never fail over a file that would not go."""
+    import re as _re
+    import shutil as _shutil
+    if not rid or not _re.match(r"^[A-Za-z0-9_]+$", str(rid)):
+        return                          # never let a crafted id escape the dir
+    for base in ("/app/data/downloads", "/data/downloads"):
+        try:
+            _shutil.rmtree(os.path.join(base, str(rid)), ignore_errors=True)
+        except Exception:
+            pass
+    for base in ("/app/data/aws_runs", "/data/aws_runs"):
+        try:
+            os.remove(os.path.join(base, f"{rid}.json"))
+        except Exception:
+            pass
 
 
 def _memory_contribution(rid, det):
@@ -1113,6 +1078,24 @@ class FusionBusy(RuntimeError):
     """A fuse is already running for this case, in another thread."""
 
 
+# What caused a fuse. Recorded on every Refusion line in the case activity log so
+# the operator can tell their own click apart from a colleague's, from a triage
+# action that re-fuses as a side effect, and from anything running on its own.
+# Keep these short — they render inline in the Log tab.
+TRIGGER_MANUAL_REFUSION = "the Refusion button"
+TRIGGER_MANUAL_RESCAN = "the Rescan (LLM) button"
+TRIGGER_API_FUSE = "an API fuse request"
+TRIGGER_CASE_CREATED = "case creation"
+TRIGGER_DISPOSITION = "a triage disposition"
+TRIGGER_DISPOSITION_CLEARED = "a cleared triage disposition"
+TRIGGER_CHECKLIST = "a checklist decision"
+TRIGGER_TIMELINE = "a timeline validation"
+TRIGGER_IDENTITY = "an identity decision"
+TRIGGER_AUTOMATIC_RUN_LANDED = "AUTOMATIC — a member run finished"
+TRIGGER_AUTOMATIC_FIRST_VIEW = "AUTOMATIC — first view of a case with no graph yet"
+_TRIGGER_UNKNOWN = "an unlabelled caller"
+
+
 _FUSE_LOCKS: dict = {}
 _FUSE_LOCKS_GUARD = threading.Lock()
 
@@ -1126,8 +1109,23 @@ def _fuse_lock(case_id):
         return _FUSE_LOCKS.setdefault(case_id, threading.RLock())
 
 
-def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -> FusionGraph:
+def fuse_case(case_id, *, contributions_override=None, log=None, _record=True,
+              force_report=False, trigger=None, allow_llm=True) -> FusionGraph:
     """Fuse the case. Refuses to run concurrently with itself.
+
+    `allow_llm=False` forbids this fuse from calling the model even when one is
+    configured and the case has no report yet. Automatic fuses pass it: the
+    narrative is the expensive part and the thing an analyst is actually reading,
+    so a background rebuild produces the deterministic report and leaves the
+    narrative for a deliberate Rescan. Nothing is ever billed without a click.
+
+    `force_report` rebuilds the report/advisory even though one already exists --
+    what Rescan means. It is a PARAMETER rather than the caller blanking
+    `report_md` first, because blanking happens outside this lock: rescan() used to
+    write `report_md = ""` and only then call fuse_case, so a FusionBusy raised
+    here left the case with its report destroyed and nothing to rebuild it. The
+    operator saw an error and lost the narrative. Nothing is cleared now until the
+    lock is held and a replacement is in hand.
 
     Saving the Configuration rail triggers a rescan, and nothing stopped a second
     one starting on top of a first still in progress. That was survivable while a
@@ -1138,19 +1136,46 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True) -
     """
     lock = _fuse_lock(case_id)
     if not lock.acquire(blocking=False):
+        # NOT logged as a fuse failure — nothing was attempted. The route's
+        # FusionBusy handler records it as "deferred" instead.
         raise FusionBusy(
             "a fuse is already running for this case — wait for it to finish "
             "(the report can take minutes while the model writes the narrative)")
+    trig = (trigger or _TRIGGER_UNKNOWN).strip()
+    phase = {"at": "starting", "pct": 0}
     try:
         return _fuse_case_locked(case_id, contributions_override=contributions_override,
-                                 log=log, _record=_record)
+                                 log=log, _record=_record, force_report=force_report,
+                                 trigger=trigger, allow_llm=allow_llm, _phase=phase)
+    except Exception as e:
+        # A fuse that dies used to leave the log ending mid-progress — the last row
+        # was whatever phase it reached, with no indication anything went wrong, so
+        # the Log tab read as a job still running. Say plainly that it failed, what
+        # asked for it, and how far it got, then re-raise so the caller still errors.
+        if _record:
+            log_case_event(case_id, "Refusion failed", "error",
+                           f"triggered by {trig} — failed during '{phase['at']}' "
+                           f"at {phase['pct']}% — {type(e).__name__}: {e}",
+                           pct=phase["pct"])
+        raise
     finally:
         lock.release()
 
 
-def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record=True) -> FusionGraph:
+def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record=True,
+                      force_report=False, trigger=None, allow_llm=True,
+                      _phase=None) -> FusionGraph:
     ws = _ws()
     d = get_case(case_id)
+    # WHY this fuse is running. A fuse costs ~33s on a real case (9 hosts / 18.7k
+    # entities) and the log used to open with a bare "Refusion · starting" — so an
+    # operator watching the box spend half a minute had no way to tell whether they
+    # had caused it, a colleague had, or something ran on its own. Every caller
+    # names its trigger; `_TRIGGER_UNKNOWN` marks the ones that have not been
+    # taught to, so an unlabelled fuse is visible rather than silently generic.
+    trig = (trigger or _TRIGGER_UNKNOWN).strip()
+    # Shared with fuse_case so a failure there can name the phase this reached.
+    _phase = _phase if _phase is not None else {"at": "starting", "pct": 0}
 
     def _plog(msg, status="info", detail="", pct=None):
         # progress -> case log (recorded fuses only). When a pct is given, append
@@ -1159,6 +1184,11 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         # from elapsed-so-far swings wildly as uneven phases complete (it read
         # "~0s" at the start and jumped around after), so percentage alone is
         # the honest, stable signal.
+        # Remember the furthest phase reached, so a failure below can say WHERE the
+        # fuse died instead of only that it did. Tracked even when _record is off.
+        _phase["at"] = msg.split("·", 1)[-1].strip() or msg
+        if pct is not None:
+            _phase["pct"] = int(pct)
         if not _record:
             return
         if pct is not None:
@@ -1168,7 +1198,8 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         else:
             log_case_event(case_id, msg, status, detail)
 
-    _plog("Refusion · starting", "info", "preparing to re-fuse the case graph", pct=1)
+    _plog("Refusion · starting", "info",
+          f"triggered by {trig} — preparing to re-fuse the case graph", pct=1)
     members = _members_for_case(case_id, d)
     # include/exclude: scope the fusion to a chosen subset of the case's runs (None = all)
     inc = d.get("included_run_ids")
@@ -1176,6 +1207,9 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         members = [m for m in members if m in set(inc)]
     if contributions_override is not None:
         contributions = contributions_override
+        # Counted off the override itself, so the name `contributions` is never
+        # measured — below it is a generator, and len() on one raises.
+        _n_contrib = len(contributions_override)
     else:
         # Module gating: only fuse runs whose module is enabled for this case
         # (default = velociraptor only). Disabled modules' runs stay tagged
@@ -1183,26 +1217,53 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         # from `members` too so run_ids/baseline reflect what was actually fused.
         _plog("Refusion · reading + mapping run data", "info",
               f"{len(members)} member run(s)", pct=5)
-        contributions, kept = [], []
-        _nmem = max(1, len(members))
-        for _i, rid in enumerate(members):
+        # PASS 1 — decide membership. Module gating only: a run row is ~1 KB, so
+        # this is cheap and touches none of the evidence.
+        # (Disabled modules' runs stay tagged members but contribute nothing; they
+        # are dropped from `members` too so run_ids/baseline reflect what was fused.)
+        kept, kept_runs = [], []
+        for rid in members:
             run = ws.get_automation_run(rid)
             if not run:
                 continue
             if not _run_passes_gate(run, d):
                 continue
             kept.append(rid)
-            contributions.append(_contribution_for_run(run, log=log))
-            # 5% → 40% spread across the member runs (the per-run read + map is the
-            # bulk of I/O for a multi-host hunt import).
-            _plog(f"Refusion · mapped {len(kept)}/{_nmem} run(s)", "info",
-                  (run.get("name") or rid)[:60], pct=5 + int(35 * (_i + 1) / _nmem))
+            kept_runs.append((rid, run))
         members = kept
+
+        # PASS 2 — map the evidence, ONE RUN AT A TIME.
+        #
+        # This is a generator, not a list, and that is the whole point. Building
+        # the list held every run's mapped entities in memory at once while
+        # assemble() filtered them down: a single 547 MB capture maps to ~228,000
+        # entity objects, of which ~18,700 survive the window/severity filter. Five
+        # member runs therefore pinned ~1.1M objects to produce a 18,749-entity
+        # graph, and the backend was OOM-killed at 5.6 GB doing exactly that on a
+        # 15 GB box. Yielding lets each run's objects be collected as soon as
+        # assemble has upserted them, so peak memory is one run plus the graph
+        # instead of every run plus the graph.
+        _nmem = max(1, len(kept_runs))
+
+        def _contributions():
+            for _i, (rid, run) in enumerate(kept_runs):
+                yield _contribution_for_run(run, log=log)
+                # 5% → 40% spread across the member runs (the per-run read + map is
+                # the bulk of I/O for a multi-host hunt import).
+                _plog(f"Refusion · mapped {_i + 1}/{_nmem} run(s)", "info",
+                      (run.get("name") or rid)[:60],
+                      pct=5 + int(35 * (_i + 1) / _nmem))
+
+        contributions = _contributions()
+        # Counted from the membership pass, NOT from `contributions` — that is now a
+        # generator and len() on it raises. The count is the same either way, and it
+        # is known before a single byte of evidence is read.
+        _n_contrib = len(kept_runs)
     window = d.get("time_window") or None
     min_sev = d.get("min_severity", "informational")
     _plog("Refusion · building case graph", "info",
           f"window {(window or {}).get('start') or 'open'}…{(window or {}).get('end') or 'now'}, "
-          f"severity {min_sev}+ · {len(contributions)} contributing run(s)", pct=45)
+          f"severity {min_sev}+ · {_n_contrib} contributing run(s)", pct=45)
     # subtract the environment baseline (if one was captured) so provisioning /
     # automation noise doesn't read as attack signal.
     baseline = None if d.get("is_baseline") else load_baseline(_env_key_from_members(members))
@@ -1241,7 +1302,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     # Rescan (store.regenerate_report). This keeps the per-action re-fuses (timeline
     # validations, dispositions) fast + token-free, and matches the product rule
     # "first scan generates it; afterwards only on rescan".
-    if d.get("report_md"):
+    if d.get("report_md") and not force_report:
         report = d.get("report_md")
         analysis = d.get("analysis") or {}
         # Report reused verbatim → it still reflects whatever members it was last
@@ -1261,7 +1322,13 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         # every case, which was true while the narrative was opt-in and became a
         # lie the moment it became the default -- the operator watched 88% for
         # minutes while the box sat on an LLM call the log said it was not making.
-        _narrate = (not d.get("air_gap_analysis")) and llm_sim._use_real()
+        # Narrate iff a model is actually usable. "Air-gap analysis" used to be a
+        # per-case tick that forced the deterministic template — and it confused
+        # more than it helped: on an appliance with no model configured the report
+        # was deterministic whether the box was ticked or not, so the setting
+        # looked broken. There is nothing left to decide. No model, no key, or no
+        # route means the deterministic report, and the Analysis tab says which.
+        _narrate = allow_llm and llm_sim._use_real()
         _plog("Refusion · generating report", "info",
               ("narrated report (this waits on the model), advisory & checklist"
                if _narrate else
@@ -1277,34 +1344,43 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
             master_prompt=d.get("master_prompt"), mask=mask,
             dispositions=d.get("dispositions") or None,
             validations=d.get("timeline_validations") or None,
-            # First scan narrates with the model whenever one is configured and the
-            # case is not marked air-gap. It used to be hardcoded False -- "fast,
-            # free, deterministic; LLM on Rescan" -- which meant the report an
-            # operator actually READ was the string-interpolated template, and the
-            # real narrative only existed if they knew to press Regenerate. Almost
-            # nobody did, so the product was judged on the template. Tick
-            # "Air-gap analysis" in Case Analysis -> Configuration for the old
-            # behaviour on a box with no route to a provider.
+            # First scan narrates with the model whenever one is configured. It
+            # used to be hardcoded False -- "fast, free, deterministic; LLM on
+            # Rescan" -- which meant the report an operator actually READ was the
+            # string-interpolated template, and the real narrative only existed if
+            # they knew to press Regenerate. Almost nobody did, so the product was
+            # judged on the template. A box with no model, no key or no route gets
+            # the deterministic report automatically and is told which it is; there
+            # is no longer a tick for that.
             prefer_llm=_narrate,
             max_entities=llm_ent, budget_chars=llm_chars, max_output_tokens=llm_out,
             detail="explicit", max_identities=llm_ident)
         # ADVISORY analyst pass — incident-grouping + grounded hypotheses. Stored
         # SEPARATELY from the deterministic findings; fed prior operator dispositions.
-        analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
-                                   dispositions=d.get("dispositions") or None,
-                                   max_entities=llm_ent, budget_chars=llm_chars,
-                                   max_output_tokens=llm_out, mask=mask,
-                                   max_identities=llm_ident)
+        # The advisory is the SECOND model call in this branch. An automatic fuse
+        # must skip it for the same reason it skips the narrative — and skipping
+        # it keeps any advisory the operator already had, rather than replacing
+        # a real one with an empty deterministic stand-in.
+        if allow_llm:
+            analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
+                                       dispositions=d.get("dispositions") or None,
+                                       max_entities=llm_ent, budget_chars=llm_chars,
+                                       max_output_tokens=llm_out, mask=mask,
+                                       max_identities=llm_ident)
+        else:
+            analysis = d.get("analysis") or {}
         report_members = list(members)   # report now reflects exactly these members
         report_dirty = False             # report freshly generated → up to date
-    # customer-confirmation checklist — generate once (preserve operator decisions on re-fuse)
-    checklist = d.get("disposition_checklist")
-    if not checklist:
+    # customer-confirmation checklist — generate once (preserve operator decisions on
+    # re-fuse). GENERATED here, but WRITTEN after the bulk patch below via
+    # _mutate_list_field — see the note there for why it may not ride along in the patch.
+    fresh_checklist = None
+    if not d.get("disposition_checklist"):
         try:
-            checklist = llm_sim.generate_disposition_checklist(
+            fresh_checklist = llm_sim.generate_disposition_checklist(
                 gv, window=window, min_severity=min_sev, run_id=case_id, mask=mask)
         except Exception:
-            checklist = []
+            fresh_checklist = None
 
     # Token A/B: raw rows a normal run would feed vs the distilled payload the LLM
     # actually sees. raw_approx is necessarily an estimate (we never send raw), so
@@ -1354,25 +1430,62 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                                   "report_run_ids": report_members,
                                   # True when this fuse left the report frozen (triage/
                                   # disposition re-fuse) → UI shows "report not up to date".
-                                  "report_dirty": report_dirty,
-                                  "disposition_checklist": checklist})
+                                  "report_dirty": report_dirty})
+    # Checklist: fill ONLY when the case still has none, and do it under the run lock.
+    # It used to ride along in the bulk patch above, computed from a snapshot read at
+    # the TOP of this function — ~33 s earlier on a real case (9 hosts / 18.7k
+    # entities). disposition_checklist is the one details field both the fuse and the
+    # operator write (decide_checklist_item), so a customer decision recorded while the
+    # fuse was running was silently overwritten by the stale pre-fuse copy. Reading and
+    # writing in one locked read-modify-write closes that window; `cur or ...` keeps the
+    # "generate once, never clobber operator decisions" rule that was always intended.
+    if fresh_checklist:
+        _mutate_list_field(case_id, "disposition_checklist",
+                           lambda cur: cur or fresh_checklist)
     log_case_event(case_id, "Refusion complete", "success",
-                   f"saved to database — {len(g.entities):,} entities, "
+                   f"triggered by {trig} — saved to database — {len(g.entities):,} entities, "
                    f"{len(g.relationships):,} links, {len(g.findings):,} findings "
                    f"across {len(members)} run(s) · 100%",
                    pct=100)
     return g
 
 
+def _ever_fused(case_id, d) -> bool:
+    """Has a graph ever been built for this case?
+
+    Cheap by construction — this runs on every case GET, which the UI now polls,
+    so it must never deserialize the graph (they reach 39 MB). `graph_counts` is
+    precomputed at fuse time; `fusion_graph` covers cases fused before the sidecar
+    split; the sidecar file itself covers the rest. Any one of them means a fuse
+    has happened at least once.
+    """
+    if d.get("graph_counts") or d.get("fusion_graph"):
+        return True
+    try:
+        return os.path.exists(_graph_path(case_id))
+    except Exception:
+        return False
+
+
 def stale_member_runs(case_id, d=None) -> list:
     """Completed member runs NOT reflected in the persisted graph — i.e. data
     added since the last fuse. Returns their run_ids (empty when the graph is
-    current, or when it predates `fused_run_ids` tracking, so we never cry
-    'stale' on a legacy graph). Cheap: no graph build, just a member scan."""
+    current, or when a LEGACY graph predates `fused_run_ids` tracking, so we never
+    cry 'stale' on one). Cheap: no graph build, just a member scan."""
     d = d or get_case(case_id) or {}
     fused = d.get("fused_run_ids")
     if fused is None:
-        return []
+        # An absent key meant two very different things, and treating both as
+        # "nothing to report" silenced the case that needs the prompt MOST: a
+        # brand-new case has never been fused, so the key is absent, so importing
+        # an offline collector into it reported 0 new runs and raised no banner.
+        # Observed on case 'twe' — the operator had to know to click Refusion.
+        #   - never fused (no graph at all) -> EVERY completed member run is new;
+        #   - legacy (a graph exists, but we cannot know which runs built it)
+        #     -> stay silent, which is what the original guard was for.
+        if _ever_fused(case_id, d):
+            return []
+        fused = []
     fused = set(fused)
     # Only runs whose MODULE is enabled count as "new data to fold in" — a disabled
     # module's runs can never enter the graph via Refusion, so flagging them as
@@ -1398,7 +1511,12 @@ def report_stale_runs(case_id, d=None) -> list:
     d = d or get_case(case_id) or {}
     rep = d.get("report_run_ids")
     if rep is None:
-        return []
+        # Same distinction as stale_member_runs: no report written yet means every
+        # member run is unreflected, whereas a legacy case that HAS a report simply
+        # cannot say which runs it came from.
+        if d.get("report_md"):
+            return []
+        rep = []
     rep = set(rep)
     ws = _ws()
     out = []
@@ -1423,9 +1541,19 @@ def watch_and_fuse(case_id, run_id, *, poll=10, timeout=10800) -> None:
             break
         time.sleep(poll)
     try:
-        fuse_case(case_id)
-    except Exception:
-        pass
+        fuse_case(case_id, trigger=TRIGGER_AUTOMATIC_RUN_LANDED)
+    except FusionBusy:
+        # The case was already fusing, so this run's data will be picked up by the
+        # fuse in flight or by the next one. Recorded rather than swallowed: a bare
+        # `except: pass` here meant an automatic fuse could vanish with the graph
+        # left stale, no banner and nothing in the log to explain it.
+        log_case_event(case_id, "Refusion skipped", "warning",
+                       f"automatic re-fuse for run {run_id} skipped — the case was "
+                       f"already fusing; its data lands on the next Refusion")
+    except Exception as e:
+        log_case_event(case_id, "Refusion failed", "error",
+                       f"automatic re-fuse for run {run_id} failed — "
+                       f"{type(e).__name__}: {e}")
 
 
 # ── Fusion-graph sidecar storage ─────────────────────────────────────────────
@@ -1670,24 +1798,90 @@ def synthesize_master_prompt(case_id) -> str:
     return master
 
 
+_REPORT_GEN_LOCKS: dict = {}
+_REPORT_GEN_LOCKS_GUARD = threading.Lock()
+
+
+def _report_gen_lock(case_id):
+    with _REPORT_GEN_LOCKS_GUARD:
+        return _REPORT_GEN_LOCKS.setdefault(case_id, threading.Lock())
+
+
+class ReportGenerationBusy(Exception):
+    """A report is already being generated for this case."""
+
+
+def regenerate_report_async(case_id, *, audience=None, use_llm=False) -> dict:
+    """Kick off regenerate_report() on a background thread and return immediately.
+
+    An LLM-narrated report used to be one synchronous request start to finish.
+    A real case is TWO sequential LLM calls (narrative, then advisory) over the
+    full distilled graph — measured live at 227K combined tokens through a
+    subscription-CLI provider, 5 minutes 29 seconds end to end. nginx's /api/
+    proxy_read_timeout is 300 seconds: the browser's connection dies right as
+    the FIRST call was finishing, while the backend keeps working underneath,
+    invisible to the operator. That run finished and saved correctly — the
+    operator just had no way to know it, and was staring at a page that looked
+    stuck for the back half of it.
+
+    The deterministic path (use_llm=False) is fast — no LLM call — and stays
+    synchronous; only the path that can genuinely run for minutes is
+    backgrounded. Raises ReportGenerationBusy if one is already running for
+    this case (the operator clicking Regenerate twice must not start two
+    concurrent LLM calls against the same report).
+    """
+    if not use_llm:
+        return regenerate_report(case_id, audience=audience, use_llm=False)
+
+    if not get_case(case_id):
+        raise ValueError("case not found")
+
+    lock = _report_gen_lock(case_id)
+    if not lock.acquire(blocking=False):
+        raise ReportGenerationBusy("a report is already being generated for this case")
+
+    started = _now_iso()
+    try:
+        _merge_case_details(case_id, {"report_generating": True,
+                                      "report_generating_started_at": started})
+    except Exception:
+        lock.release()
+        raise
+
+    def _worker():
+        try:
+            regenerate_report(case_id, audience=audience, use_llm=True)
+        except Exception:
+            pass                     # already logged to the case activity log
+        finally:
+            try:
+                _merge_case_details(case_id, {"report_generating": False,
+                                              "report_generating_started_at": None})
+            except Exception:
+                pass
+            lock.release()
+
+    threading.Thread(target=_worker, daemon=True,
+                     name=f"report-gen-{case_id}").start()
+    return {"status": "started", "case_id": case_id, "started_at": started}
+
+
 def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
     """Re-narrate report + advisory from the STORED graph (no re-collect/re-fuse),
     applying the case's audience + master_prompt + Timeline triage. Deterministic by
     default (free); pass use_llm=True (the 'Regenerate report' button) for the premium
     LLM narrative — the only place report generation spends tokens.
 
-    "Air-gap analysis" overrides use_llm. The Analysis tab's Regenerate button
-    always sends use_llm=True, so without this an air-gapped box would still try
-    to reach a provider and sit out the connection timeout on the one action the
-    flag exists to make instant. Toggling the flag and pressing Regenerate is
-    therefore enough to switch between the narrated and deterministic report —
-    no re-fuse needed, since the graph is unchanged.
+    There is no longer an "Air-gap analysis" tick overriding use_llm. On a box
+    with no model, no key or no route the call fails and falls back to the
+    deterministic report with a line saying which of those it was — so pressing
+    Regenerate on an air-gapped appliance costs one connection timeout and then
+    tells the operator the truth, rather than silently producing the same template
+    a tick would have produced while looking like it did nothing.
     """
     if audience:
         set_branding(case_id, audience=audience)
     d = get_case(case_id)
-    if d.get("air_gap_analysis"):
-        use_llm = False
     g = load_graph(case_id)
     window = d.get("time_window") or None
     min_sev = d.get("min_severity", "informational")
@@ -1854,11 +2048,17 @@ def set_analysis_config(case_id, cfg) -> dict:
             patch["max_entities"] = max(100, min(int(cfg["max_entities"]), MAX_GRAPH_ENTITIES))
         except (TypeError, ValueError):
             pass
-    if "air_gap_analysis" in cfg:          # no route to a model provider: write the
-                                           # deterministic report immediately rather
-                                           # than spending a connection timeout
-                                           # discovering there is no network.
-        patch["air_gap_analysis"] = bool(cfg.get("air_gap_analysis"))
+    if "auto_fuse" in cfg:                 # fold newly-landed runs into the graph by
+                                           # itself, after a quiet period. NEVER calls
+                                           # the model and never redraws anyone's view —
+                                           # the narrative still waits for a Rescan.
+        patch["auto_fuse"] = bool(cfg.get("auto_fuse"))
+        if not patch["auto_fuse"]:
+            try:                           # drop any armed timer immediately, so
+                from . import autofuse     # unticking takes effect now, not in a minute
+                autofuse.cancel(case_id)
+            except Exception:
+                pass
     if "max_identities" in cfg:            # identity rows in the LLM payload — a
                                            # ceiling INSIDE max_entities, not a separate
                                            # budget (see _llm_identity_budget); empty/0
@@ -1903,15 +2103,24 @@ def set_analysis_config(case_id, cfg) -> dict:
     return {k: ("<logo>" if k == "customer_logo_b64" else v) for k, v in patch.items()}
 
 
-def rescan(case_id, cfg=None) -> dict:
+def rescan(case_id, cfg=None, trigger=None) -> dict:
     """THE config-driven action: persist the rail's variables then re-correlate +
     regenerate. Replaces the bare re-fuse for the UI. Rescan is an explicit rebuild,
     so it DOES refresh the report (deterministically — reflecting the new masking /
     host-exclusion / severity); the premium LLM narrative is the Regenerate button."""
     if cfg:
         set_analysis_config(case_id, cfg)
-    _merge_case_details(case_id, {"report_md": ""})   # force fuse to rebuild the report
-    g = fuse_case(case_id)
+    # Rebuild via the flag, NOT by blanking report_md first. Blanking happened
+    # outside the fuse lock, so when the case was already fusing the FusionBusy
+    # below left the report erased with nothing to regenerate it -- an operator
+    # clicking Refusion while a fuse ran lost the narrative and got an error.
+    # Reproduced on a live case: the report went from 75,402 chars to 0.
+    g = fuse_case(case_id, force_report=True,
+                  trigger=trigger or TRIGGER_MANUAL_REFUSION)
+    # A manual Refusion is the operator's way back in after an automatic one was
+    # killed mid-flight (see autofuse's crash-loop breaker). It got here, so the
+    # case is fuseable — let the automatic path resume.
+    _merge_case_details(case_id, {"auto_fuse_incomplete": False})
     return {"entities": len(g.entities), "relationships": len(g.relationships),
             "findings": len(g.findings),
             "cross_host_findings": sum(1 for f in g.findings if f.kind == "cross_host")}
@@ -2267,11 +2476,12 @@ def decide_checklist_item(case_id, item_id, decision) -> dict:
     if not item:
         return {"error": "checklist item not found"}
     if decision == "accept" and item.get("finding_id"):
-        # benign confirmation -> disposition + re-fuse (this re-persists the checklist too)
+        # benign confirmation -> disposition + re-fuse. The re-fuse no longer rewrites the
+        # checklist (it only fills an empty one), so this decision cannot be clobbered by it.
         set_disposition(case_id, item["finding_id"], verdict="benign",
                         attribution="customer",
                         reason=f"customer-confirmed benign: {item.get('question', '')}",
-                        scope="case")
+                        scope="case", trigger=TRIGGER_CHECKLIST)
     return {"item_id": item_id, "status": item["status"]}
 
 

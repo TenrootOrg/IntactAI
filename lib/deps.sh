@@ -272,8 +272,8 @@ EOF
 # Install Docker + host dependencies from a bundled package
 # ============================================================================
 # A staged system-bundle directory (a real local apt repo: .deb files plus a
-# CI-built Packages/Packages.gz -- see build-release-assets.yml's/
-# build-release-package.yml's "system-bundle" step for how it's built) means
+# CI-built Packages/Packages.gz -- see build-release-assets.yml's
+# "system-bundle" step for how it's built) means
 # this release never needs download.docker.com or a live apt mirror, online
 # or air-gapped. THE PACKAGE IS THE ONLY SOURCE for anything in it -- no
 # online fallback if something here fails. A release too old to carry a
