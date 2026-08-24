@@ -124,37 +124,46 @@ you install and upgrade from packages.
 ## Upgrades
 
 An upgrade runs the **target release's own code** against your live `intact`
-folder. You download the release next to it (into a folder named for it), then
-run that release's `scripts/upgrade.sh --root ./intact` — it upgrades only the
-modules whose version differs, so you can jump straight to any newer release in
-one hop. Every command below is copy-paste; **to target a different release,
-replace `intact-20260813` with its tag.**
+folder — download the release, then run its own `scripts/upgrade.sh` against
+`--root ./intact`. It upgrades only the modules whose version differs, so you
+can jump straight to any newer release in one hop. Every command below is
+copy-paste; **to target a different release, replace `intact-20260813` with
+its tag.** Pick the ONE section below that matches your box — each is
+complete on its own, start to finish.
+
+### Online (the box reaches GitHub)
+
+Run this on the box itself:
 
 ```bash
-# from your home directory, so the release lands next to ./intact rather
-# than wherever you happened to be standing
 cd ~
-# download the release next to ./intact, into a folder named for it
 curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20260813.tar.gz" -o intact-20260813.tar.gz
 mkdir -p intact-20260813 && tar -xzf intact-20260813.tar.gz --strip-components=1 -C intact-20260813
-```
-
-**Online** (the box reaches GitHub):
-
-```bash
 cd ~ && sudo bash intact-20260813/scripts/upgrade.sh intact-20260813 --root ./intact
 ```
 
-**Air-gapped** — build the carry-in file on any online machine, apply it offline.
-Each machine is a fresh shell, so the tag is written out in full on both:
+### Air-gapped
+
+**Step 1 — on any machine WITH internet** (not the box):
 
 ```bash
-# on the ONLINE machine: one file with the engine + every image
-# (add module names for a subset, e.g. add  portainer  as a last argument)
-cd ~ && bash intact-20260813/scripts/prepare_package.sh intact-20260813 .   # -> intact-20260813-package.tar
+cd ~
+curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20260813.tar.gz" -o intact-20260813.tar.gz
+mkdir -p intact-20260813 && tar -xzf intact-20260813.tar.gz --strip-components=1 -C intact-20260813
+# one file with the engine + every image (add module names for a subset,
+# e.g. add  portainer  as a last argument)
+bash intact-20260813/scripts/prepare_package.sh intact-20260813 .   # -> intact-20260813-package.tar
+tar -czf intact-20260813-checkout.tar.gz intact-20260813            # the release folder, as one file
+```
 
-# carry the  intact-20260813  folder and  intact-20260813-package.tar  to the box,
-# then on the AIR-GAPPED box:
+Carry **both** `intact-20260813-checkout.tar.gz` and `intact-20260813-package.tar`
+to the box — two files, whatever the transfer medium (USB, DVD, ...).
+
+**Step 2 — on the AIR-GAPPED box** (a different machine, a fresh shell):
+
+```bash
+cd ~
+tar -xzf intact-20260813-checkout.tar.gz
 cd ~ && sudo bash intact-20260813/scripts/upgrade.sh --package intact-20260813-package.tar --root ./intact
 ```
 
