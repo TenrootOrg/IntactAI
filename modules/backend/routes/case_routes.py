@@ -117,6 +117,13 @@ def _audit_detail(action, is_err, resp):
             outcome = "answered" if ans else "no answer produced"
             return f'{outcome} — "{q[:140]}"'
         if a == "report" and request.method == "POST":
+            # 202 = the LLM path just STARTED on a background thread — logging
+            # "report regenerated" here would claim it finished before the
+            # first token was sent. The real completion (or failure) logs its
+            # own line from inside regenerate_report(), seconds to minutes
+            # later; this one only needs to mark that the click was received.
+            if resp.status_code == 202:
+                return "generation started — narrating in the background, no need to wait here"
             return "report regenerated"
         if a in ("rescan", "config", "hosts", "masking"):
             return "configuration updated, case re-fused"
@@ -138,6 +145,14 @@ def _audit_case_activity(resp):
         # skip the log's own reads/clears so polling doesn't self-fill the log
         if cid and action and action.split("/")[0] != "log":
             is_err = resp.status_code >= 400
+            # A "busy" 409 (FusionBusy, ReportGenerationBusy, ...) is not a
+            # failure — it means the case is already doing this, which is a
+            # NORMAL collision (a double-click, two operators at once). Its own
+            # handler already logs a friendly "deferred" line; recording it a
+            # second time here as "X failed (409)" is what told an operator
+            # this had broken when it was just still working.
+            if resp.status_code == 409 and _safe_json(resp).get("busy"):
+                return resp
             if request.method in ("POST", "PUT", "DELETE", "PATCH") or is_err:
                 store.log_case_event(cid, _audit_label(action),
                                      "error" if is_err else "ok",
@@ -237,6 +252,25 @@ def _bind_active_case():
                 autofuse.catch_up()
             except Exception as _e:      # noqa: BLE001 — never break request one
                 print(f"[AUTOFUSE] catch-up failed: {_e}", flush=True)
+            try:
+                # report_generating is a flag on the CASE, tracking a thread that
+                # lived only in the previous process's memory — a restart mid-
+                # generation (crash, deploy) leaves it stuck True forever with
+                # nothing left running to ever clear it, which would permanently
+                # block Regenerate on that case. Nothing can genuinely still be
+                # "generating" the instant this process starts.
+                for _r in (ws.get_all_automation_runs() or []):
+                    if _r.get("automation_type") != store.CASE_TYPE:
+                        continue
+                    if (_r.get("details") or {}).get("report_generating"):
+                        store._merge_case_details(_r["run_id"], {
+                            "report_generating": False,
+                            "report_generating_started_at": None})
+                        store.log_case_event(
+                            _r["run_id"], "Report generation", "warning",
+                            "interrupted by a backend restart — click Regenerate report to try again")
+            except Exception as _e:      # noqa: BLE001 — never break request one
+                print(f"[REPORT-GEN] stale-flag cleanup failed: {_e}", flush=True)
             if n or m:
                 print(f"[CASES] backfilled {n} run(s) into Default, {m} into System",
                       flush=True)
@@ -410,7 +444,12 @@ def get_case(case_id):
                     # route to the provider" all produce the same deterministic
                     # report but need completely different actions.
                     "llm_status": _llm_status_for(d),
-                    "llm_enabled": _llm_enabled()})
+                    "llm_enabled": _llm_enabled(),
+                    # An LLM-narrated report can run for several minutes across
+                    # two sequential calls — the frontend polls this to know
+                    # when to stop showing "generating…" and refresh on its own.
+                    "report_generating": bool(d.get("report_generating")),
+                    "report_generating_started_at": d.get("report_generating_started_at")})
 
 
 def _llm_status_for(d):
@@ -910,14 +949,41 @@ def set_branding(case_id):
 
 @case_bp.route("/api/cases/<case_id>/report", methods=["POST"])
 def regenerate_report(case_id):
-    """Re-narrate the report (+ advisory) at the chosen audience, applying the operator
-    master-prompt — cheap, from the stored graph (no re-collect)."""
+    """Re-narrate the report (+ advisory) at the chosen audience, applying the
+    operator master-prompt.
+
+    The deterministic path (no LLM) is fast and answers synchronously, same as
+    always. The LLM path (`use_llm: true`, the Regenerate report button) starts
+    a BACKGROUND generation and returns immediately (202) — measured live at
+    5:29 for a real case across two sequential LLM calls, well past nginx's
+    300s /api/ read timeout, which was killing the operator's connection while
+    the backend kept working underneath unseen. The frontend polls
+    GET /api/cases/<id> (info.report_generating) and refreshes on its own when
+    it flips back to false; the Analysis-tab banner already explains a failure
+    if that's what happened, so this route doesn't need a separate error path
+    for it."""
     if not store.get_case(case_id):
         return jsonify({"error": "case not found"}), 404
     b = request.get_json(silent=True) or {}
-    res = store.regenerate_report(case_id, audience=b.get("audience"),
-                                  use_llm=bool(b.get("use_llm")))
-    return jsonify({"case_id": case_id, **res})
+    use_llm = bool(b.get("use_llm"))
+    if not use_llm:
+        res = store.regenerate_report(case_id, audience=b.get("audience"), use_llm=False)
+        return jsonify({"case_id": case_id, **res})
+    try:
+        res = store.regenerate_report_async(case_id, audience=b.get("audience"), use_llm=True)
+    except store.ReportGenerationBusy as e:
+        # A NORMAL collision (a double-click, or the operator switching tabs and
+        # clicking again) — not a failure, so it's logged as one, matching
+        # _case_busy's framing below. The generic after_request hook steps aside
+        # for any "busy": true 409 so this doesn't ALSO get logged as "failed".
+        store.log_case_event(case_id, "Regenerate report", "warning",
+                             "deferred — a report is already being generated for "
+                             "this case; it will refresh on its own when ready",
+                             code=409)
+        return jsonify({"error": str(e), "busy": True}), 409
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    return jsonify({"case_id": case_id, **res}), 202
 
 
 @case_bp.route("/api/cases/<case_id>/synthesize", methods=["POST"])

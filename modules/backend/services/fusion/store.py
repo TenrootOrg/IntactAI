@@ -1798,6 +1798,74 @@ def synthesize_master_prompt(case_id) -> str:
     return master
 
 
+_REPORT_GEN_LOCKS: dict = {}
+_REPORT_GEN_LOCKS_GUARD = threading.Lock()
+
+
+def _report_gen_lock(case_id):
+    with _REPORT_GEN_LOCKS_GUARD:
+        return _REPORT_GEN_LOCKS.setdefault(case_id, threading.Lock())
+
+
+class ReportGenerationBusy(Exception):
+    """A report is already being generated for this case."""
+
+
+def regenerate_report_async(case_id, *, audience=None, use_llm=False) -> dict:
+    """Kick off regenerate_report() on a background thread and return immediately.
+
+    An LLM-narrated report used to be one synchronous request start to finish.
+    A real case is TWO sequential LLM calls (narrative, then advisory) over the
+    full distilled graph — measured live at 227K combined tokens through a
+    subscription-CLI provider, 5 minutes 29 seconds end to end. nginx's /api/
+    proxy_read_timeout is 300 seconds: the browser's connection dies right as
+    the FIRST call was finishing, while the backend keeps working underneath,
+    invisible to the operator. That run finished and saved correctly — the
+    operator just had no way to know it, and was staring at a page that looked
+    stuck for the back half of it.
+
+    The deterministic path (use_llm=False) is fast — no LLM call — and stays
+    synchronous; only the path that can genuinely run for minutes is
+    backgrounded. Raises ReportGenerationBusy if one is already running for
+    this case (the operator clicking Regenerate twice must not start two
+    concurrent LLM calls against the same report).
+    """
+    if not use_llm:
+        return regenerate_report(case_id, audience=audience, use_llm=False)
+
+    if not get_case(case_id):
+        raise ValueError("case not found")
+
+    lock = _report_gen_lock(case_id)
+    if not lock.acquire(blocking=False):
+        raise ReportGenerationBusy("a report is already being generated for this case")
+
+    started = _now_iso()
+    try:
+        _merge_case_details(case_id, {"report_generating": True,
+                                      "report_generating_started_at": started})
+    except Exception:
+        lock.release()
+        raise
+
+    def _worker():
+        try:
+            regenerate_report(case_id, audience=audience, use_llm=True)
+        except Exception:
+            pass                     # already logged to the case activity log
+        finally:
+            try:
+                _merge_case_details(case_id, {"report_generating": False,
+                                              "report_generating_started_at": None})
+            except Exception:
+                pass
+            lock.release()
+
+    threading.Thread(target=_worker, daemon=True,
+                     name=f"report-gen-{case_id}").start()
+    return {"status": "started", "case_id": case_id, "started_at": started}
+
+
 def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
     """Re-narrate report + advisory from the STORED graph (no re-collect/re-fuse),
     applying the case's audience + master_prompt + Timeline triage. Deterministic by

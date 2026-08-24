@@ -146,6 +146,10 @@
                       align-items:center;gap:7px}
   .agbanner .agdetail{color:var(--tx);font-size:12px;margin-top:5px}
   .agbanner .agaction{color:var(--muted);font-size:11.5px;margin-top:6px;line-height:1.5}
+  /* Same block, blue instead of amber — a state to notice, not a warning. Used
+     while a report is actively generating in the background. */
+  .agbanner.info{border-color:rgba(88,166,255,.45);background:rgba(88,166,255,.08)}
+  .agbanner.info .agtitle{color:var(--info)}
   #cf-modules{display:flex;flex-direction:column;gap:5px}
   .modrow{display:flex;align-items:center;gap:9px;padding:8px 10px;border:1px solid var(--bd);border-radius:7px;background:var(--panel2);cursor:pointer;font-size:13px;transition:border-color .12s,background .12s}
   .modrow input{width:auto;margin:0;flex:none}
@@ -782,7 +786,13 @@ function renderReport(info){
   const id=info.case_id;
   const dl=(p,l)=>`<a class="dlbtn" href="/api/cases/${id}${p}" target="_blank">${l}</a>`;
   const md=window._md||'';
-  const ag=reportAirGap(md, info.llm_status);
+  const generating=!!info.report_generating;
+  // While a generation is in flight, that IS the story for this tab — showing
+  // the Air-Gap banner alongside it would read as "no model reachable" right
+  // next to "sending data to the model", which is actively confusing. It
+  // reappears on its own once generation ends, correctly, from whatever the
+  // result actually was.
+  const ag=generating ? {airgap:false,detail:''} : reportAirGap(md, info.llm_status);
   // The loudest thing on the tab, and the FIRST thing rendered: an operator
   // reading a report with no narrative needs to know before they start reading
   // it, not stumble on a footnote after they finish. Framed as the automatic
@@ -796,19 +806,88 @@ function renderReport(info){
   // The report's own tail already told the story above; showing it again as a
   // raw markdown footnote would just repeat it in a smaller, unstyled font.
   const mdBody = md.replace(/\n\n---\n_(?:Deterministic report — [\s\S]*?|Narrative by live LLM[\s\S]*?)_\n\s*$/, '');
-  $('#tabc').innerHTML=`${banner}<div class="row" style="gap:8px;margin-bottom:10px;align-items:center">
-    <button class="dlbtn" onclick="regenReport('${id}')" title="Rebuild the report from the current case state (applies your Timeline confirmations). Generated automatically on first scan; after that only when you click here.">↻ Regenerate report</button>
+  $('#tabc').innerHTML=`${banner}<div id="genstatus">${generating?genStatusHtml(info.report_generating_started_at):''}</div><div class="row" style="gap:8px;margin-bottom:10px;align-items:center">
+    <button class="dlbtn" ${generating?'disabled title="A report is already being generated"':`onclick="regenReport('${id}')" title="Rebuild the report from the current case state (applies your Timeline confirmations). Generated automatically on first scan; after that only when you click here."`}>${generating?'⏳ Generating…':'↻ Regenerate report'}</button>
     ${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}
     <span style="color:var(--muted);font-size:11px;margin-left:auto">auto-generated on first scan · regenerate to apply Timeline changes</span>
   </div><div class="md">${mdToHtml(mdBody)}</div>`;
   clampEvidence($('#tabc'));
+  // A page reload (or a tab switch back to Analysis) while a generation is
+  // already running elsewhere must resume watching it, not just show a static
+  // "generating" label that never updates or refreshes.
+  if(generating) pollReportGen(id); else if(_genPollCase===id) stopReportGenPoll();
 }
+// A real case is TWO sequential LLM calls (narrative, then advisory) over the
+// full distilled graph — measured live at 5m29s for one case. The backend now
+// runs this on a background thread and answers the POST immediately; this is
+// the polling side that waits for it and refreshes the page on its own.
+let _genPoll=null, _genPollCase=null;
+
+function genStatusHtml(startedAt){
+  const started = startedAt ? new Date(startedAt+'Z') : null;
+  const mins = started ? Math.max(0, Math.round((Date.now()-started.getTime())/60000)) : 0;
+  const since = started ? (mins<1 ? 'just started' : `running ${mins} min`) : 'starting…';
+  return `<div class="agbanner info">
+      <div class="agtitle">⏳ Sending case data to the model — ${esc(since)}</div>
+      <div class="agdetail">A full case is a large payload and often two sequential model calls (narrative, then advisory) — this commonly takes several minutes, longer for a large case.</div>
+      <div class="agaction">No need to wait here — the report refreshes on its own the moment it's ready. Feel free to switch tabs or cases.</div>
+    </div>`;
+}
+
+function stopReportGenPoll(){
+  if(_genPoll){ clearInterval(_genPoll); _genPoll=null; _genPollCase=null; }
+}
+
+// Called on click AND on opening/redrawing a case that's already generating
+// (e.g. the operator reloaded the page mid-run) — either way we land here.
+function pollReportGen(id){
+  if(_genPoll && _genPollCase===id) return;     // already polling this case
+  stopReportGenPoll();
+  _genPollCase=id;
+  const tick=()=>{
+    api('/api/cases/'+id).then(info=>{
+      if(_genPollCase!==id) return;              // superseded by a newer poll
+      if(!info.report_generating){
+        stopReportGenPoll();
+        // Only touch the screen if the operator is still looking at THIS case —
+        // a background report finishing must not yank them off whatever they
+        // switched to. If they are, this IS the auto-refresh: re-fetch the
+        // report and redraw Analysis with no click needed.
+        if(curInfo && curInfo.case_id===id){
+          openCase(id);
+          toast('report updated');
+        }
+        return;
+      }
+      // Merge the fresh flags into curInfo and redraw the WHOLE tab each tick
+      // (not just patch the status text) — that's what keeps the Regenerate
+      // button disabled/labelled "Generating…" for the entire wait, not just
+      // at the instant the click happened.
+      if(curInfo && curInfo.case_id===id){
+        curInfo.report_generating=true;
+        curInfo.report_generating_started_at=info.report_generating_started_at;
+        if(tab==='report') drawTab();
+      }
+    }).catch(()=>{});   // a blip in the poll is not a failure — just try again
+  };
+  _genPoll=setInterval(tick, 5000);
+  tick();
+}
+
 function regenReport(id){
-  toast('regenerating report (LLM)…');
+  toast('sending case data to the model…');
   // use_llm:true -> premium LLM narrative (the only report path that spends tokens)
   api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({use_llm:true})})
-   .then(_=>{openCase(id);toast('report updated');})
-   .catch(_=>toast('could not regenerate the report'));
+   .then(r=>{
+     if(r && r.busy){ toast('already generating — refreshing when it\'s ready'); }
+     if(curInfo && curInfo.case_id===id){
+       curInfo.report_generating=true;
+       curInfo.report_generating_started_at=(r&&r.started_at)||null;
+       if(tab==='report') drawTab();      // show the status bar immediately, don't wait for the first poll tick
+     }
+     pollReportGen(id);
+   })
+   .catch(_=>toast('could not start report generation'));
 }
 function _fileToDataUrl(f){return new Promise(res=>{if(!f)return res(null);const r=new FileReader();r.onload=()=>res(r.result);r.readAsDataURL(f);});}
 // Host identities come from the fused graph (deduped endpoints + cloud accounts).
