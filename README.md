@@ -35,10 +35,7 @@ original.
 ## Quick Start
 
 ```bash
-# 1. Clone the repo (gets the latest `main`) — from your home directory, so
-# it lands at a known, fixed path ($HOME/intact) that every later upgrade
-# command below can rely on without guessing where you put it.
-cd ~
+# 1. Clone the repo (gets the latest `main`)
 git clone https://github.com/TenrootOrg/IntactAI.git intact
 # To install a specific release instead, add `--branch <tag>`,
 # e.g.:
@@ -65,9 +62,6 @@ you carry in, never from a registry.
 On a machine with internet:
 
 ```bash
-# from home, so the folder lands at a known, fixed path ($HOME/intact) —
-# same convention Quick Start uses, and what the air-gapped box below expects
-cd ~
 # download and unpack the release into the project folder "intact"
 # (to install a different release, replace intact-20260813 with its tag)
 curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20260813.tar.gz" -o intact-20260813.tar.gz
@@ -78,10 +72,9 @@ tar -czf intact.tar.gz intact                               # one file to carry 
 
 Carry **both** `intact.tar.gz` and `intact-20260813-package.tar` across —
 two files, whatever the transfer medium (USB, DVD, ...). Then on the air-gapped
-box (a different machine, a fresh shell — `cd ~` again there too):
+box:
 
 ```bash
-cd ~
 tar -xzf intact.tar.gz
 cd intact
 nano config.yaml                                    # IP/domain and passwords
@@ -131,45 +124,51 @@ you install and upgrade from packages.
 ## Upgrades
 
 An upgrade runs the **target release's own code** against your live `intact`
-folder, which lives at the fixed path `~/intact` — the same convention Quick
-Start installs it at. Every command below is fully-qualified against that
-convention: none of them need you to `cd` anywhere first, or depend on which
-directory you happen to be standing in — only the download step does, and
-that's `cd ~` on its own first line. Every command is copy-paste; **to target
-a different release, replace `intact-20260813` with its tag.**
+folder. You download the release NEXT TO it (into a folder named for it), `cd`
+into that folder, then run its own `scripts/upgrade.sh` against `--root
+$APPLIANCE` — the SAME two folders every step below, one level apart, with
+`$APPLIANCE` resolved to an absolute path so it stays correct regardless of
+where you are when you run the next command. It upgrades only the modules
+whose version differs, so you can jump straight to any newer release in one
+hop. Every command below is copy-paste; **to target a different release,
+replace `intact-20260813` with its tag.**
 
 ```bash
-# from home, so it lands at a known, fixed path every command below can name directly
-cd ~
+# download the release NEXT TO ./intact, into a folder named for it, then cd in
 curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20260813.tar.gz" -o intact-20260813.tar.gz
 mkdir -p intact-20260813 && tar -xzf intact-20260813.tar.gz --strip-components=1 -C intact-20260813
+cd intact-20260813
 ```
 
 **Online** (the box reaches GitHub):
 
 ```bash
-sudo bash ~/intact-20260813/scripts/upgrade.sh --root ~/intact
+APPLIANCE="$(cd ../intact && pwd)" && sudo bash scripts/upgrade.sh --root "$APPLIANCE"
 ```
 
-No release tag on that line on purpose: this folder only ever IS the one
-release, so `upgrade.sh` reads it from its own `VERSION` file when none is
-given. (Same thing spelled out: `~/intact-20260813/scripts/upgrade.sh
-intact-20260813 --root ~/intact`.) If your appliance lives somewhere other
-than `~/intact`, replace `--root ~/intact` with the real path — everything
-else here is unaffected.
+`intact` is the only name that never changes, so `$APPLIANCE` doesn't need a
+variable for anything BUT resolving it to an absolute path — `cd`ing there
+and taking `pwd` means it is correct even if you `cd` elsewhere before
+running the second half, and if `../intact` is not there, the `cd` fails and
+the `&&` stops before `upgrade.sh` ever runs, instead of quietly upgrading
+the wrong folder. No release tag on that line on purpose either: this folder
+only ever IS the one release, so `upgrade.sh` reads it from its own
+`VERSION` file when none is given. (Same thing spelled out:
+`scripts/upgrade.sh intact-20260813 --root "$APPLIANCE"`.)
 
 **Air-gapped** — build the carry-in file on any online machine, apply it
-offline. Different machine, fresh shell — `cd ~` and download the release
-there too, same convention:
+offline. `cd` into the release again on the air-gapped side — same two
+sibling folders there too:
 
 ```bash
-# on the ONLINE machine: one file with the engine + every image
-# (add module names for a subset, e.g. add  portainer  as a last argument)
-bash ~/intact-20260813/scripts/prepare_package.sh intact-20260813 ~   # -> ~/intact-20260813-package.tar
+# on the ONLINE machine, still inside intact-20260813/: one file with the
+# engine + every image (add module names for a subset, e.g. add  portainer
+# as a last argument)
+bash scripts/prepare_package.sh intact-20260813 .   # -> intact-20260813-package.tar
 
-# carry ~/intact-20260813/ and ~/intact-20260813-package.tar to the box
-# (same ~/intact-20260813 convention there), then:
-sudo bash ~/intact-20260813/scripts/upgrade.sh --package ~/intact-20260813-package.tar --root ~/intact
+# carry the  intact-20260813  folder and  intact-20260813-package.tar  to the
+# box. On the AIR-GAPPED box, cd into intact-20260813 the same way, then:
+APPLIANCE="$(cd ../intact && pwd)" && sudo bash scripts/upgrade.sh --package ../intact-20260813-package.tar --root "$APPLIANCE"
 ```
 
 **Pick modules / preview** — add any of these to a run above:
