@@ -206,7 +206,7 @@ test_bad_bundle_checksum_aborts_the_run() {
     assert_ne "$rc" "0" "a bundle that fails its checksum must abort the run, not ship anyway"
     assert_contains "$(cat "${WORK}/stderr2.log")" "checksum" \
         "the failure must be attributed to the checksum, not a generic error"
-    assert_true test ! -f "${out_dir}/${TAG}-upgrade.tar"
+    assert_true test ! -f "${out_dir}/${TAG}-package.tar"
     # restore the good checksum for any test that runs after this one
     sha256sum "${FIX}/${TAG}-system-bundle.tar" | awk '{print $1}' \
         > "${FIX}/${TAG}-system-bundle.tar.sha256"
@@ -235,7 +235,7 @@ test_a_release_without_the_merged_manifest_is_refused() {
     assert_ne "$rc" "0" "a release with no merged manifest must be refused, not packaged"
     assert_contains "$(cat "${WORK}/stderr3.log")" "manifest.json" \
         "the failure must name the missing manifest"
-    assert_true test ! -f "${out_dir}/${TAG}-upgrade.tar"
+    assert_true test ! -f "${out_dir}/${TAG}-package.tar"
 }
 
 test_the_sidecar_fetch_asks_for_bytes_not_metadata() {

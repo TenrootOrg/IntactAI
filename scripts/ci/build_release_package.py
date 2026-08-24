@@ -576,7 +576,7 @@ def main() -> int:
     # MOVE, not copy. prepare wrote into args.out (see packages_dir above), so
     # this is a same-filesystem rename: instant, and no second copy of a
     # multi-GB asset. It also has to happen -- prepare names its output
-    # intact-upgrade-latest.<ext>, and leaving that behind in the output dir
+    # intact-latest-package.<ext>, and leaving that behind in the output dir
     # would give CI's asset glob two files to choose between.
     #
     # The extension is taken from what prepare ACTUALLY wrote rather than
@@ -591,7 +591,7 @@ def main() -> int:
     src = result["package_path"]
     _ext = ".tar.gz" if src.endswith(".tar.gz") else ".tar"
     name = (f"{args.tag}-{args.module}{_ext}" if args.module
-            else f"{args.tag}-upgrade{_ext}")
+            else f"{args.tag}-package{_ext}")
     dest = os.path.join(args.out, name)
     shutil.move(src, dest)
     man = src + ".manifest.json"

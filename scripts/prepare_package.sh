@@ -11,7 +11,7 @@
 #                  force-added -- a package without the platform itself
 #                  cannot drive any other module's upgrade.
 #
-# Writes <output_dir>/<tag>-upgrade.tar and prints its path as the
+# Writes <output_dir>/<tag>-package.tar and prints its path as the
 # LAST line of stdout on success. (A release fetched via the legacy
 # build-release-package.yml shape keeps ITS OWN historical name, whatever
 # that release was actually published as -- see _fetch_legacy_single_file.)
@@ -332,7 +332,7 @@ cd "$WORK"
 # reads the same way and a wrong tag or output path is obvious at a glance.
 printf '[prepare] %-9s %s\n' "release:" "$TAG"
 printf '[prepare] %-9s %s\n' "repo:"    "$REPO"
-printf '[prepare] %-9s %s\n' "output:"  "$OUT_DIR/$TAG-upgrade.tar"
+printf '[prepare] %-9s %s\n' "output:"  "$OUT_DIR/$TAG-package.tar"
 printf '[prepare] %-9s %s\n' "modules:" "${MODULES_CSV:-all in this release}"
 
 AUTH=(-H "X-GitHub-Api-Version: 2022-11-28")
@@ -951,7 +951,7 @@ print("[prepare]   %-9s %d file checksum(s), %d module pin(s) (dropped %d)"
 PY
 fi
 
-OUT="$OUT_DIR/$TAG-upgrade.tar"
+OUT="$OUT_DIR/$TAG-package.tar"
 log "wrapping into a single file"
 # index.json FIRST, deliberately. The Import UI peeks at only the first few MB
 # of the uploaded file to show the operator what they are about to apply; with
