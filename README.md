@@ -142,7 +142,7 @@ mkdir -p intact-20260813 && tar -xzf intact-20260813.tar.gz --strip-components=1
 **Online** (the box reaches GitHub):
 
 ```bash
-sudo bash intact-20260813/scripts/upgrade.sh intact-20260813 --root ./intact
+cd ~ && sudo bash intact-20260813/scripts/upgrade.sh intact-20260813 --root ./intact
 ```
 
 **Air-gapped** — build the carry-in file on any online machine, apply it offline.
@@ -151,11 +151,11 @@ Each machine is a fresh shell, so the tag is written out in full on both:
 ```bash
 # on the ONLINE machine: one file with the engine + every image
 # (add module names for a subset, e.g. add  portainer  as a last argument)
-bash intact-20260813/scripts/prepare_package.sh intact-20260813 .   # -> intact-20260813-package.tar
+cd ~ && bash intact-20260813/scripts/prepare_package.sh intact-20260813 .   # -> intact-20260813-package.tar
 
 # carry the  intact-20260813  folder and  intact-20260813-package.tar  to the box,
 # then on the AIR-GAPPED box:
-sudo bash intact-20260813/scripts/upgrade.sh --package intact-20260813-package.tar --root ./intact
+cd ~ && sudo bash intact-20260813/scripts/upgrade.sh --package intact-20260813-package.tar --root ./intact
 ```
 
 **Pick modules / preview** — add any of these to a run above:
