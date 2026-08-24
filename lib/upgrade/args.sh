@@ -213,9 +213,27 @@ parse_upgrade_args() {
         exit 2
     fi
     if [[ -z "$UPGRADE_TAG" && ${#UPGRADE_PACKAGE_ARGS[@]} -eq 0 && -z "$UPGRADE_PACKAGE_DIR" ]]; then
-        echo "Nothing to upgrade to: give a release tag or --package." >&2
-        echo "Try: sudo bash scripts/upgrade.sh --list" >&2
-        exit 2
+        # No tag typed. This checkout IS a specific release -- it has its own
+        # VERSION file sitting right next to this script -- and the only
+        # reason to run ITS upgrade.sh at all is to bring --root up to THAT
+        # release (see the file header: "runs the target release's own
+        # code"). There is no real scenario where the tag you would type here
+        # differs from what this checkout already is, so asking for it again
+        # only exists to be forgotten -- which is exactly what happened: an
+        # operator who `cd`ed into the downloaded release and typed
+        # `scripts/upgrade.sh --root ../intact` (a fully reasonable command
+        # that omits nothing they'd think to include) hit this as a hard
+        # error instead of the upgrade running.
+        local _own_tag=""
+        _own_tag="$(tr -d '[:space:]' < "${_CODE_DIR}/VERSION" 2>/dev/null || true)"
+        if [[ -n "$_own_tag" ]]; then
+            UPGRADE_TAG="$_own_tag"
+            echo "No release tag given -- using ${UPGRADE_TAG}, the release this checkout is (${_CODE_DIR}/VERSION)." >&2
+        else
+            echo "Nothing to upgrade to: give a release tag or --package." >&2
+            echo "Try: sudo bash scripts/upgrade.sh --list" >&2
+            exit 2
+        fi
     fi
     return 0
 }
