@@ -179,7 +179,7 @@ bash scripts/prepare_package.sh intact-20260810 /media/usb
 Carry it across and point `--package` at the file or the directory:
 
 ```bash
-sudo bash scripts/upgrade.sh --package /media/usb/intact-upgrade-intact-20260810.tar
+sudo bash scripts/upgrade.sh --package /media/usb/intact-20260810-upgrade.tar
 ```
 
 Everything comes from the package; nothing is fetched. If the package is

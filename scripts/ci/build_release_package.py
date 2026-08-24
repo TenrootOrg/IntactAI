@@ -591,7 +591,7 @@ def main() -> int:
     src = result["package_path"]
     _ext = ".tar.gz" if src.endswith(".tar.gz") else ".tar"
     name = (f"{args.tag}-{args.module}{_ext}" if args.module
-            else f"intact-upgrade-{args.tag}{_ext}")
+            else f"{args.tag}-upgrade{_ext}")
     dest = os.path.join(args.out, name)
     shutil.move(src, dest)
     man = src + ".manifest.json"

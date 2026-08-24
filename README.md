@@ -66,11 +66,11 @@ On a machine with internet:
 # (to install a different release, replace intact-20260813 with its tag)
 curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20260813.tar.gz" -o intact-20260813.tar.gz
 mkdir -p intact && tar -xzf intact-20260813.tar.gz --strip-components=1 -C intact
-bash intact/scripts/prepare_package.sh intact-20260813 .   # writes intact-upgrade-intact-20260813.tar
+bash intact/scripts/prepare_package.sh intact-20260813 .   # writes intact-20260813-upgrade.tar
 tar -czf intact.tar.gz intact                               # one file to carry across
 ```
 
-Carry **both** `intact.tar.gz` and `intact-upgrade-intact-20260813.tar` across —
+Carry **both** `intact.tar.gz` and `intact-20260813-upgrade.tar` across —
 two files, whatever the transfer medium (USB, DVD, ...). Then on the air-gapped
 box:
 
@@ -78,7 +78,7 @@ box:
 tar -xzf intact.tar.gz
 cd intact
 nano config.yaml                                    # IP/domain and passwords
-sudo bash install.sh --package ../intact-upgrade-intact-20260813.tar
+sudo bash install.sh --package ../intact-20260813-upgrade.tar
 ```
 
 `--package` is repeatable and also takes a directory of per-module assets. If
@@ -148,11 +148,11 @@ Each machine is a fresh shell, so the tag is written out in full on both:
 ```bash
 # on the ONLINE machine: one file with the engine + every image
 # (add module names for a subset, e.g. add  portainer  as a last argument)
-bash intact-20260813/scripts/prepare_package.sh intact-20260813 .   # -> intact-upgrade-intact-20260813.tar
+bash intact-20260813/scripts/prepare_package.sh intact-20260813 .   # -> intact-20260813-upgrade.tar
 
-# carry the  intact-20260813  folder and  intact-upgrade-intact-20260813.tar  to the box,
+# carry the  intact-20260813  folder and  intact-20260813-upgrade.tar  to the box,
 # then on the AIR-GAPPED box:
-sudo bash intact-20260813/scripts/upgrade.sh --package intact-upgrade-intact-20260813.tar --root ./intact
+sudo bash intact-20260813/scripts/upgrade.sh --package intact-20260813-upgrade.tar --root ./intact
 ```
 
 **Pick modules / preview** — add any of these to a run above:
