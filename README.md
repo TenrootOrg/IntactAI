@@ -54,7 +54,7 @@ sudo bash install.sh
 
 ### Air-gapped installation
 
-> Supported from `intact-20260813` onward.
+> Supported from `intact-20260824` onward.
 
 `--package` makes the installer take every image and dependency from the file
 you carry in, never from a registry.
@@ -63,14 +63,14 @@ On a machine with internet:
 
 ```bash
 # download and unpack the release into the project folder "intact"
-# (to install a different release, replace intact-20260813 with its tag)
-curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20260813.tar.gz" -o intact-20260813.tar.gz
-mkdir -p intact && tar -xzf intact-20260813.tar.gz --strip-components=1 -C intact
-bash intact/scripts/prepare_package.sh intact-20260813 .   # writes intact-20260813-package.tar
+# (to install a different release, replace intact-20260824 with its tag)
+curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20260824.tar.gz" -o intact-20260824.tar.gz
+mkdir -p intact && tar -xzf intact-20260824.tar.gz --strip-components=1 -C intact
+bash intact/scripts/prepare_package.sh intact-20260824 .   # writes intact-20260824-package.tar
 tar -czf intact.tar.gz intact                               # one file to carry across
 ```
 
-Carry **both** `intact.tar.gz` and `intact-20260813-package.tar` across —
+Carry **both** `intact.tar.gz` and `intact-20260824-package.tar` across —
 two files, whatever the transfer medium (USB, DVD, ...). Then on the air-gapped
 box:
 
@@ -78,11 +78,11 @@ box:
 tar -xzf intact.tar.gz
 cd intact
 nano config.yaml                                    # IP/domain and passwords
-sudo bash install.sh --package ../intact-20260813-package.tar
+sudo bash install.sh --package ../intact-20260824-package.tar
 ```
 
 `--package` is repeatable and also takes a directory of per-module assets. If
-Docker is not already installed, carry the release's `intact-20260813-system-bundle.tar`
+Docker is not already installed, carry the release's `intact-20260824-system-bundle.tar`
 too and put it beside the package — it provides the engine and host packages
 offline.
 
@@ -127,7 +127,7 @@ An upgrade runs the **target release's own code** against your live `intact`
 folder — download the release, then run its own `scripts/upgrade.sh` against
 `--root ./intact`. It upgrades only the modules whose version differs, so you
 can jump straight to any newer release in one hop. Every command below is
-copy-paste; **to target a different release, replace `intact-20260813` with
+copy-paste; **to target a different release, replace `intact-20260824` with
 its tag.** Pick the ONE section below that matches your box — each is
 complete on its own, start to finish.
 
@@ -137,9 +137,9 @@ Run this on the box itself:
 
 ```bash
 cd ~
-curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20260813.tar.gz" -o intact-20260813.tar.gz
-mkdir -p intact-20260813 && tar -xzf intact-20260813.tar.gz --strip-components=1 -C intact-20260813
-cd ~ && sudo bash intact-20260813/scripts/upgrade.sh intact-20260813 --root ./intact
+curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20260824.tar.gz" -o intact-20260824.tar.gz
+mkdir -p intact-20260824 && tar -xzf intact-20260824.tar.gz --strip-components=1 -C intact-20260824
+cd ~ && sudo bash intact-20260824/scripts/upgrade.sh intact-20260824 --root ./intact
 ```
 
 ### Air-gapped
@@ -148,32 +148,23 @@ cd ~ && sudo bash intact-20260813/scripts/upgrade.sh intact-20260813 --root ./in
 
 ```bash
 cd ~
-curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20260813.tar.gz" -o intact-20260813.tar.gz
-mkdir -p intact-20260813 && tar -xzf intact-20260813.tar.gz --strip-components=1 -C intact-20260813
+curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20260824.tar.gz" -o intact-20260824.tar.gz
+mkdir -p intact-20260824 && tar -xzf intact-20260824.tar.gz --strip-components=1 -C intact-20260824
 # one file with the engine + every image (add module names for a subset,
 # e.g. add  portainer  as a last argument)
-bash intact-20260813/scripts/prepare_package.sh intact-20260813 .   # -> intact-20260813-package.tar
-tar -czf intact-20260813-checkout.tar.gz intact-20260813            # the release folder, as one file
+bash intact-20260824/scripts/prepare_package.sh intact-20260824 .   # -> intact-20260824-package.tar
+tar -czf intact-20260824-checkout.tar.gz intact-20260824            # the release folder, as one file
 ```
 
-Carry **both** `intact-20260813-checkout.tar.gz` and `intact-20260813-package.tar`
+Carry **both** `intact-20260824-checkout.tar.gz` and `intact-20260824-package.tar`
 to the box — two files, whatever the transfer medium (USB, DVD, ...).
 
 **Step 2 — on the AIR-GAPPED box** (a different machine, a fresh shell):
 
 ```bash
 cd ~
-tar -xzf intact-20260813-checkout.tar.gz
-cd ~ && sudo bash intact-20260813/scripts/upgrade.sh --package intact-20260813-package.tar --root ./intact
-```
-
-**Pick modules / preview** — add any of these to a run above:
-
-```bash
---only portainer         # only these modules
---skip iris              # every module except these
---reinstall portainer    # re-apply one already at target (repair a half-landed upgrade)
---dry-run                # print the plan, change nothing
+tar -xzf intact-20260824-checkout.tar.gz
+cd ~ && sudo bash intact-20260824/scripts/upgrade.sh --package intact-20260824-package.tar --root ./intact
 ```
 
 Or push-button in the dashboard: **Settings → Online Upgrade / Prepare Package /
