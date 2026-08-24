@@ -391,10 +391,12 @@ function openCase(id){
      info.audience=rep.audience||'both'; info.customer_name=rep.customer_name||'';
      info.tlp=rep.tlp||'AMBER'; info.has_logo=!!rep.has_logo; info.master_prompt=rep.master_prompt||'';
      render(info,rep.report_md||'',info.counts||{});
-     // Live-check AFTER the case is already on screen, then redraw only the
-     // Analysis tab if it's still the one showing — never re-render a tab the
-     // operator has since navigated away from with a slow probe's late answer.
-     refreshLlmReachability().then(()=>{ if(curInfo && curInfo.case_id===id && tab==='report') drawTab(); });
+     // Only the Analysis tab shows this banner, and `tab` can carry over from
+     // whatever the operator was last on (switching cases doesn't reset it) —
+     // so skip the check entirely unless Analysis is what's about to be drawn.
+     if(tab==='report'){
+       refreshLlmReachability().then(()=>{ if(curInfo && curInfo.case_id===id && tab==='report') drawTab(); });
+     }
    });
 }
 
@@ -605,12 +607,11 @@ function setTab(t){
   // only the #tabc content is — so update the .on class here).
   document.querySelectorAll('.tabs .tab').forEach(el=>el.classList.toggle('on', el.dataset.tab===t));
   drawTab(window._md||'');
-  // Re-check reachability on every section switch (cheap — see llm_sim.py's
-  // 25s cache), then redraw ONLY if the operator is still on Analysis by the
-  // time it answers. Never re-fetch/redraw the tab body itself here — this
-  // must only ever refresh the banner at the top of it.
-  const t0=t;
-  refreshLlmReachability().then(()=>{ if(tab===t0 && t0==='report') drawTab(); });
+  // Only Analysis shows the reachability banner — Chat/Timeline/Identities/
+  // Risk/Configuration/Log have no use for it, so don't spend a check on them.
+  if(t==='report'){
+    refreshLlmReachability().then(()=>{ if(tab===t) drawTab(); });
+  }
 }
 function drawTab(md){
   if(md)window._md=md;
