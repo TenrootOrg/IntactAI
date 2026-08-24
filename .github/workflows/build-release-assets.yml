@@ -81,57 +81,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Reads .github/release-ci.conf so the choice is one line in one file
-  # rather than a YAML edit in two. See that file for the rule.
-  gate:
-    runs-on: ubuntu-latest
-    outputs:
-      run: ${{ steps.c.outputs.run }}
-    steps:
-      # The DEFAULT BRANCH, explicitly -- NOT the release tag. On a
-      # `release: published` event checkout's default ref is the tag, so this
-      # gate was reading release-ci.conf out of the TAG's tree. Every tag cut
-      # before that file existed carries no conf at all, so both gates fell
-      # through to the default whatever main said: editing the switch,
-      # committing and pushing changed nothing -- which is exactly what the
-      # file instructs you to do. Sparse: the conf is all this job reads.
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          sparse-checkout: .github/release-ci.conf
-          sparse-checkout-cone-mode: false
-      - id: c
-        run: |
-          set -euo pipefail
-          # Default TRUE when the file or the key is missing: per-module is the
-          # shape releases are moving to, and forgetting to add the key must not
-          # keep the legacy build alive forever.
-          NEW=true
-          if [ -f .github/release-ci.conf ] \
-             && grep -qiE '^[[:space:]]*is_new_CI[[:space:]]*=[[:space:]]*(false|no|0)[[:space:]]*$' \
-                  .github/release-ci.conf; then
-            NEW=false
-          fi
-          echo "is_new_CI = ${NEW}  (read from ${GITHUB_REF_NAME}'s default branch, not the tag)"
-          # Both workflows are release-triggered, so BOTH always show up in the
-          # Actions list -- GitHub cannot consult a file before starting a run.
-          # Only one BUILDS. Say which, loudly, so the other one does not look
-          # like something that needs cancelling.
-          if [ "$NEW" = "true" ]; then
-            echo "### BUILDING -- per-module assets (NEW)" >> "$GITHUB_STEP_SUMMARY"
-            echo "\`is_new_CI = ${NEW}\`, so this workflow owns the release." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "### STOOD DOWN -- nothing to cancel" >> "$GITHUB_STEP_SUMMARY"
-            echo "\`is_new_CI = ${NEW}\`, so **legacy single-bundle** builds this release." >> "$GITHUB_STEP_SUMMARY"
-            echo "This run is a no-op by design; let it finish." >> "$GITHUB_STEP_SUMMARY"
-            echo "::notice title=Stood down::legacy single-bundle is building this release. Nothing to cancel."
-          fi
-          [ "$NEW" = "true" ] && echo "run=yes" >> "$GITHUB_OUTPUT" || echo "run=no" >> "$GITHUB_OUTPUT"
-
   # ---------------------------------------------------------------- resolve
+  #
+  # No gate ahead of this any more. There used to be one, reading
+  # .github/release-ci.conf to arbitrate between this workflow and the legacy
+  # single-bundle one (build-release-package.yml) -- exactly one of the two
+  # was meant to build a given release, the other stood down. That workflow
+  # is removed (single job it existed for -- hopping a pre-bash 20260726 box
+  # onto the new engine -- is done via manual local tooling now, not CI), so
+  # there is nothing left to arbitrate: this is the only release workflow,
+  # and it always builds.
   resolve:
-    needs: gate
-    if: github.event_name == 'workflow_dispatch' || needs.gate.outputs.run == 'yes'
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.r.outputs.tag }}

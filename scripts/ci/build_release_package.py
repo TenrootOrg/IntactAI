@@ -49,7 +49,6 @@ genuine collision is the root manifest, so each asset ALSO carries
 manifest.json at apply time.
 
 Usage:
-  build_release_package.py --tag intact-20260722 --out /output            # bundle
   build_release_package.py --tag intact-20260722 --module elk --out /out  # one module
   build_release_package.py --tag intact-20260722 --emit-matrix            # CI matrix
 """
@@ -177,7 +176,7 @@ def platform_config_path(must_exist: bool = True):
     return None
 
 
-def release_module_set(tag: str, only: str = None, subset: str = None) -> dict:
+def release_module_set(tag: str, only: str = None) -> dict:
     """{module: version} this release ships.
 
     `only` narrows it to a single module for a per-module asset build. The
@@ -194,8 +193,6 @@ def release_module_set(tag: str, only: str = None, subset: str = None) -> dict:
     `--emit-matrix` treat it as fatal (see below and in main()), because both
     are release-planning operations and a forgotten pin would otherwise ship a
     release that is quietly one module short while every job reports success.
-    A manual bundle build only warns, since a partial bundle is sometimes
-    exactly what you asked for.
     """
     import yaml
     UPGRADE_ORDER = _upgrade_order()
@@ -208,20 +205,6 @@ def release_module_set(tag: str, only: str = None, subset: str = None) -> dict:
         cfg = yaml.safe_load(handle) or {}
     versions = cfg.get("versions") or {}
     selected = set(RELEASE_MODULES)
-    if subset:
-        # Scope this ONE build. Deliberately intersects rather than replaces:
-        # a name that is not in RELEASE_MODULES is a typo or a module that was
-        # never releasable, and silently honouring it would ship a package
-        # missing something the caller believed was in it.
-        wanted = {m.strip() for m in subset.split(",") if m.strip()}
-        unknown = wanted - selected
-        if unknown:
-            raise SystemExit(
-                f"[ci-package] --only-modules names {sorted(unknown)}, which "
-                f"are not in RELEASE_MODULES")
-        selected &= wanted
-        if not selected:
-            raise SystemExit("[ci-package] --only-modules selected nothing")
     if only:
         if only in EXCLUDED_FROM_RELEASE:
             raise SystemExit(
@@ -404,12 +387,6 @@ def main() -> int:
                                      "ONCE by CI. Asserted rather than "
                                      "re-resolved, so a tag re-cut mid-matrix "
                                      "cannot produce divergent assets.")
-    ap.add_argument("--only-modules",
-                    help="comma-separated subset of RELEASE_MODULES to put in "
-                         "this build. Scopes ONE invocation; RELEASE_MODULES "
-                         "itself is untouched, so the per-module matrix still "
-                         "sees the full set. Exists for the legacy single-bundle "
-                         "shape -- see the legacy workflow for why.")
     ap.add_argument("--print-modules", action="store_true",
                     help="print the resolved module set and exit (no build)")
     ap.add_argument("--emit-matrix", action="store_true",
@@ -439,8 +416,7 @@ def main() -> int:
         print(_json.dumps(sorted(resolved)))
         return 0
 
-    modules = release_module_set(args.tag, only=args.module,
-                                 subset=args.only_modules)
+    modules = release_module_set(args.tag, only=args.module)
 
     # Say it loudly when RELEASE_MODULES has been trimmed.
     #
@@ -477,6 +453,20 @@ def main() -> int:
     if not args.out:
         ap.error("--out is required unless --print-modules/--emit-matrix")
 
+    if not args.module:
+        # Retired: building a single all-modules bundle (the pre-intact-20260811
+        # shape) is no longer supported. It existed for one job -- hopping a
+        # pre-bash box (intact-20260726) onto the new engine -- and that CI
+        # path (build-release-package.yml) is removed. Fetching and applying an
+        # OLD RELEASE ALREADY PUBLISHED in that shape still works (that is a
+        # read-compatibility guarantee for boxes already in the field, a
+        # separate concern from whether this tool can BUILD a new one) --
+        # see prepare_package.sh's _fetch_legacy_single_file and
+        # lib/release.sh's no-index branch, both untouched by this.
+        ap.error("--module is required — building an all-modules bundle "
+                 "(no --module) is retired; build one module's asset at a "
+                 "time instead, as build-release-assets.yml does")
+
     # Pin the backend image tag to the release BEFORE building. The checkout is
     # ephemeral in CI and the tag is authoritative here, so this is the natural
     # place to resolve it — `development` (or any stale value) carried in from
@@ -485,15 +475,6 @@ def main() -> int:
     # package does not contain. Doing it on the checkout means the packaged
     # source inherits it too, since prepare copies the tree.
     _stamp_backend_pin(args.tag)
-
-    if not args.module:
-        # Bundle build: a module in RELEASE_MODULES whose pin is missing from
-        # config.yaml silently does not ship, so say so.
-        missing = sorted(set(RELEASE_MODULES) - set(modules))
-        if missing:
-            print(f"[ci-package] WARNING: {', '.join(missing)} in RELEASE_MODULES "
-                  f"but absent from config.yaml versions: — NOT shipped",
-                  flush=True)
 
     # A TAG IS NOT AN IDENTITY. intact-20260803 was re-cut and moved
     # 6316e05 -> 25effd5, and the two packages were indistinguishable from
@@ -511,7 +492,7 @@ def main() -> int:
         return 1
 
     from packager.package import prepare_upgrade_package
-    scope = f"module {args.module}" if args.module else "bundle"
+    scope = f"module {args.module}"
     print(f"[ci-package] release {args.tag} ({scope}) @ {commit[:12] or '?'}: "
           f"building {', '.join(modules)}", flush=True)
 
@@ -520,13 +501,12 @@ def main() -> int:
     # claims to describe, and the apply side reads the manifest out of the
     # archive it is about to install.
     manifest_extra = {
-        "package_kind": "module" if args.module else "bundle",
+        "package_kind": "module",
         "release_tag": args.tag,
         "source_commit": commit,
         "backend_pin": args.tag,      # what _stamp_backend_pin just wrote
+        "module": args.module,
     }
-    if args.module:
-        manifest_extra["module"] = args.module
 
     os.makedirs(args.out, exist_ok=True)
 
@@ -537,8 +517,7 @@ def main() -> int:
         compress=True,
         work_dir=args.work_dir,
         manifest_extra=manifest_extra,
-        manifest_sidecar_name=(f"manifests/{args.module}.json"
-                               if args.module else None),
+        manifest_sidecar_name=f"manifests/{args.module}.json",
         # Package the source we are already standing in. Prepare's default is
         # to fetch it from GitHub by ref, which on a box is the only option and
         # in CI is a hole: every other asset is built from the commit `resolve`
@@ -567,7 +546,7 @@ def main() -> int:
     # Only meaningful for the asset that CARRIES the backend. On an `elk` asset
     # both assertions are false by construction and would fail the build for the
     # wrong reason.
-    if args.module in (None, "intact"):
+    if args.module == "intact":
         err = _verify_package_usable(result, args.tag)
         if err:
             print(f"[ci-package] SELF-CHECK FAILED: {err}", flush=True)
@@ -590,8 +569,7 @@ def main() -> int:
     # goes, including if the outer gzip is ever restored.
     src = result["package_path"]
     _ext = ".tar.gz" if src.endswith(".tar.gz") else ".tar"
-    name = (f"{args.tag}-{args.module}{_ext}" if args.module
-            else f"{args.tag}-package{_ext}")
+    name = f"{args.tag}-{args.module}{_ext}"
     dest = os.path.join(args.out, name)
     shutil.move(src, dest)
     man = src + ".manifest.json"

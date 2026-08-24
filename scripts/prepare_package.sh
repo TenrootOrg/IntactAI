@@ -64,8 +64,11 @@ _elapsed() {
 #
 # LEGACY, same bridge as refs.sh's upgrade_fetch_release and package.sh's
 # manifest-precedence handling: every release before intact-20260811 is this
-# shape, and build-release-package.yml stays dispatchable on demand for a box
-# that still needs one. Remove once no box in the fleet is old enough to.
+# shape, ALREADY PUBLISHED on GitHub, permanently, under this exact name --
+# this branch only ever needs to find one that already exists. The CI that
+# BUILT them (build-release-package.yml) is removed; no new release will ever
+# be this shape again. Remove this fetch once no box in the fleet is old
+# enough to need one of the releases that already are.
 #
 # Prints nothing on success except the final path (matching this script's
 # contract of the last stdout line being the result); returns 1 if no such

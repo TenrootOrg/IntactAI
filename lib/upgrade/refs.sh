@@ -93,10 +93,11 @@ upgrade_list_releases() {
 
     # ONE parse of the release list, feeding either the human table below or
     # --json's structured output -- both shapes are listed as installable
-    # (build-release-package.yml stays dispatchable, so a legacy release is
-    # exactly as installable today as a per-module one), and "shape" tells the
-    # caller which: an asset ending in index.json is the per-module marker,
-    # same test upgrade_fetch_release already makes for real.
+    # (an already-published legacy release is exactly as fetchable today as a
+    # per-module one, even though the CI that built it is retired -- see
+    # download_release_assets), and "shape" tells the caller which: an asset
+    # ending in index.json is the per-module marker, same test
+    # upgrade_fetch_release already makes for real.
     python3 - "$current" "$tmp" "$json_mode" <<'PY'
 import json, re, sys
 current, path, json_mode = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
@@ -282,13 +283,14 @@ for a in d.get("assets",[]):
     fi
 
     # LEGACY -- every release published before per-module assets existed
-    # (intact-20260615 through intact-20260810) is this shape, and
-    # build-release-package.yml can still be dispatched on demand to produce
-    # one for a box old enough to need it (see that workflow's header). Keep
-    # this branch until no box in the fleet is old enough to lack the
-    # per-module index -- there is no fixed date for that, unlike the
-    # intact-20260807 bridge in lib/release.sh, because this fetch has to
-    # work for whatever release tag an operator on an old box actually types.
+    # (intact-20260615 through intact-20260810) is this shape, ALREADY
+    # PUBLISHED on GitHub permanently under it. The CI that built them
+    # (build-release-package.yml) is retired; this only ever needs to find
+    # one that already exists. Keep this branch until no box in the fleet is
+    # old enough to lack the per-module index -- there is no fixed date for
+    # that, unlike the intact-20260807 bridge in lib/release.sh, because this
+    # fetch has to work for whatever release tag an operator on an old box
+    # actually types.
     log_info "Release ${tag} is a single-bundle release; fetching its parts"
     local base="${INTACT_GH_DL_BASE}/${INTACT_REPO}/releases/download/${tag}"
     local n

@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # DEV-ONLY TOOL. Not shipped, not run by CI, not run by install.sh or upgrade.
 #
-# Builds a COMPLETE release locally, in both published shapes, with no GitHub
-# and no CI:
+# Builds a COMPLETE release locally, per-module, with no GitHub and no CI:
 #
-#   shape 2 (per-module)  <tag>-<module>.tar  x N
-#                         <tag>.index.json
-#                         <tag>.manifest.json
-#   shape 1 (legacy)      intact-upgrade-<tag>.tar[.gz]   (with --bundle)
+#   <tag>-<module>.tar  x N
+#   <tag>.index.json
+#   <tag>.manifest.json
+#
+# The legacy single-bundle shape (shape 1) is retired -- build_release_package.py
+# no longer builds one at all, and --bundle/--bundle-only here are accepted only
+# as a no-op for old invocations.
 #
 # WHY. .github/workflows/build-release-assets.yml is the only thing that has
 # ever produced a shape-2 release, it needs a GitHub runner, and the repo is
@@ -26,26 +28,24 @@
 # Usage:
 #   scripts/dev/build_local_release_assets.sh <tag> [out_dir] [modules_csv]
 #
-#   --bundle   additionally build the legacy single-bundle asset (slow: it
-#              re-saves every image a second time)
-#
 # Output lands in <out_dir>/<tag>/, which is exactly the layout
 # scripts/dev/serve_local_release.sh expects.
 set -euo pipefail
 
+# Retired, permanently 0: building the legacy single-bundle asset (shape 1)
+# locally is no longer supported, matching build_release_package.py, which
+# now refuses to build one at all (--module is required). Left declared (never
+# set to 1 by anything below) so the several `if (( BUNDLE... ))` guards
+# further down stay permanently false rather than needing to be excised one at
+# a time from code with its own early-exit branches.
 BUNDLE=0
 BUNDLE_ONLY=0
 SYSBUNDLE=0
 ARGS=()
 for a in "$@"; do
     case "$a" in
-        --bundle) BUNDLE=1 ;;
-        # Shape 1 alone. What a 0726-era box needs: those appliances have no
-        # scripts/upgrade.sh and no lib/upgrade/, so the engine has to arrive
-        # inside the package for the stage-0 hop to fire, and they predate the
-        # per-module index entirely. There is no point spending an hour on nine
-        # module assets to get it.
-        --bundle-only) BUNDLE=1; BUNDLE_ONLY=1 ;;
+        --bundle)         printf '[local-build] note: --bundle is retired (the legacy single-bundle shape is no longer built); ignoring\n' ;;
+        --bundle-only)    printf '[local-build] note: --bundle-only is retired (the legacy single-bundle shape is no longer built); ignoring\n' ;;
         # --system-bundle: the one NEW-shape asset that is not a module asset.
         # Off by default -- no upgrade reads it (the engine skips it), so the
         # common case (building a package to test an upgrade) should not pay for
