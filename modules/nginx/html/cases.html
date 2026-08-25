@@ -228,9 +228,7 @@
 <div class="wrap">
   <div class="side">
     <h2>New Case</h2>
-    <label>Name</label><input id="cname" placeholder="GOOGLE IR 05-03-2026"/>
-    <label>Start date <span style="color:var(--muted)">(optional)</span></label>
-    <input id="wstart" placeholder="2026-06-14"/>
+    <label>Name</label><input id="cname"/>
     <div class="row" style="margin-top:10px">
       <button onclick="createWorkspace()">Create case</button>
     </div>
@@ -271,11 +269,14 @@ function jsa(s){return String(s==null?'':s)
 function createWorkspace(){
   const name=$('#cname').value.trim();
   if(!name){toast('name required');return;}
-  // start only — an incident has no known end; severity defaults server-side
-  const body={name,time_window:{start:$('#wstart').value||null}};
+  // No time window at creation. It was an optional field nobody filled in, and
+  // a case that needs one can set it later in the case's own Settings tab
+  // (#cf-start) — where end date and severity live too. Omitting the key is
+  // the same thing the route already did with an empty one.
+  const body={name};
   api('/api/cases',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
    .then(d=>{ if(!d||!d.case_id){toast('create failed');return;}
-     $('#cname').value=''; $('#wstart').value='';
+     $('#cname').value='';
      window.ActiveCase.set(d.case_id); toast('case created + activated');
      loadCases(()=>{ if(VIEW!=='manage') openCase(d.case_id); }); refreshSelector(); });
 }
@@ -1443,7 +1444,16 @@ function mdToHtml(md){
   closeUL();closeTbl();return out.join('\n');
 }
 
+// The name example carries TODAY's date. A hardcoded one ("GOOGLE IR
+// 05-03-2026") reads as a real case someone left behind the moment the date is
+// in the past, and it was.
+function caseNamePlaceholder(){
+  const d=new Date(), p=n=>String(n).padStart(2,'0');
+  return `Example: TenRoot ${p(d.getDate())}-${p(d.getMonth()+1)}-${d.getFullYear()}`;
+}
+
 (async function init(){
+  const cn=$('#cname'); if(cn) cn.placeholder=caseNamePlaceholder();
   await window.ActiveCase.ensureActiveCase();
   await refreshSelector();
   loadCases();
