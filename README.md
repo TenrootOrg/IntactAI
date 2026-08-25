@@ -40,8 +40,6 @@ git clone https://github.com/TenrootOrg/IntactAI.git intact
 # To install a specific release instead, add `--branch <tag>`,
 # e.g.:
 # git clone --branch intact-20260609 https://github.com/TenrootOrg/IntactAI.git intact
-# Or to track the development branch (latest, unreleased changes):
-# git clone --branch development https://github.com/TenrootOrg/IntactAI.git intact
 
 cd intact
 

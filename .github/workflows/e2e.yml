@@ -72,20 +72,13 @@ name: e2e (manual)
 # the default configuration supports.
 
 on:
-  # Pushing to this one branch is the RUN button while e2e.yml is not on main.
-  # The default-branch rule above applies only to workflow_dispatch; a push
-  # event runs the workflow file from the branch that was pushed, so a dedicated
-  # trigger branch gives manual-feeling runs with main untouched.
-  #
-  # To start a run:   git push --force origin development:e2e-trigger
-  # Every input then takes its default (see the `|| ` fallbacks below), because
-  # a push event carries no inputs.
-  #
-  # TEMPORARY. Delete this trigger once the file reaches main and
-  # workflow_dispatch works properly, or every push to the branch spends a VM.
-  push:
-    branches: [e2e-trigger]
-
+  # workflow_dispatch ONLY. There used to be a `push: branches: [e2e-trigger]`
+  # trigger here, because workflow_dispatch resolves against the DEFAULT branch
+  # and this file did not live there yet -- pushing to a dedicated branch was
+  # the only run button available. That trigger was marked temporary from the
+  # day it was added ("delete once the file reaches main ... or every push to
+  # the branch spends a VM"), and the condition is met: e2e.yml is on main and
+  # dispatch works. Removed 2026-08-25 along with the e2e-trigger branch.
   workflow_dispatch:
     inputs:
       ref:
