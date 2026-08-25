@@ -96,94 +96,38 @@ def cli_status():
     if err:
         return err
     try:
-        d = sub.detect(provider)
-        # surface a pending device login so the panel can show the URL/code
-        # even after a page reload
-        d["login"] = sub.pending_login(provider)
-        return jsonify(d)
+        # Everything the panel needs, and nothing it can act on: installed,
+        # version, signed-in, which binary, whose credential. There is no
+        # pending-login to report any more — signing in happens on the host.
+        return jsonify(sub.detect(provider))
     except Exception as e:  # noqa: BLE001
         return jsonify({"provider": provider, "installed": False,
                         "authenticated": False, "detail": f"status failed: {e}"}), 200
 
 
-@agentic_cli_bp.route('/api/agentic/cli/install', methods=['POST'])
-def cli_install():
-    """Install the vendor CLI as an Actions workflow. Needs internet."""
-    provider, err = _provider_from_request()
-    if err:
-        return err
-    return _start_action(provider, "install", sub.run_install_workflow)
 
-
-@agentic_cli_bp.route('/api/agentic/cli/login', methods=['POST'])
-def cli_login_start():
-    """Sign in with the subscription, as an Actions workflow.
-
-    The device URL + one-time code appear both in the run log and in
-    /status.login so the panel can render clickable/copyable buttons.
-    """
-    provider, err = _provider_from_request()
-    if err:
-        return err
-    # A device code stays valid for ~15 minutes, so a second click while one is
-    # already awaiting approval must NOT kill it — that would invalidate the code
-    # the operator is part-way through entering. Hand back the run that is
-    # already waiting instead, along with its still-valid URL and code.
-    # `force` is the "Generate new code" button: deliberately discard the
-    # in-flight sign-in and issue a fresh code (the old one has expired, or the
-    # operator lost it).
-    force = bool((request.get_json(silent=True) or {}).get("force"))
-    if force:
-        sub.login_cancel(provider)
-
-    live = sub.pending_login(provider)
-    if not force and live.get("url"):
-        return jsonify({
-            "success": True, "run_id": live.get("run_id"),
-            "name": sub.WORKFLOW_NAMES["configure"],
-            "url": live.get("url"), "code": live.get("code"),
-            "message": "A sign-in is already waiting for approval — use the "
-                       "code already shown, or Cancel it first to start over.",
-        })
-    return _start_action(provider, "configure", sub.run_configure_workflow)
-
-
-@agentic_cli_bp.route('/api/agentic/cli/login', methods=['GET'])
-def cli_login_poll():
-    """Poll the pending login; persists the token once approved."""
-    provider, err = _provider_from_request()
-    if err:
-        return err
-    return jsonify(sub.login_poll(provider))
-
-
-@agentic_cli_bp.route('/api/agentic/cli/login/cancel', methods=['POST'])
-def cli_login_cancel():
-    provider, err = _provider_from_request()
-    if err:
-        return err
-    return jsonify({"cancelled": sub.login_cancel(provider)})
-
-
-@agentic_cli_bp.route('/api/agentic/cli/disconnect', methods=['POST'])
-def cli_disconnect():
-    """Forget the stored credential. Leaves the binary installed."""
-    provider, err = _provider_from_request()
-    if err:
-        return err
-    sub.login_cancel(provider)
-    return jsonify({"success": sub.forget_credentials(provider)})
-
-
-@agentic_cli_bp.route('/api/agentic/cli/import-credential', methods=['POST'])
-def cli_import_credential():
-    """Adopt a login the operator created manually on the host."""
-    provider, err = _provider_from_request()
-    if err:
-        return err
-    result = sub.import_manual_credential(provider)
-    return jsonify(result), (200 if result.get('success') else 400)
-
+# INSTALL AND SIGN-IN WERE REMOVED, deliberately.
+#
+# This blueprint used to carry /install, /login (start, poll, cancel),
+# /disconnect and /import-credential: the appliance ran the vendor's installer
+# into a directory of its own, drove a device-code sign-in, and kept the
+# resulting credential in its database.
+#
+# None of that was the appliance's business. Installing third-party software on
+# the host behind a button in a web panel, and holding somebody's ChatGPT
+# credential, are both things an operator can do better and more visibly
+# themselves — and the "install" half only ever worked when the box had
+# outbound internet, which a DFIR appliance frequently does not.
+#
+# So codex is now the operator's: they install it on the host and run
+# `codex login`, and the backend finds and uses it (services/agentic/
+# subscription_cli.py resolves the binary, and reads their ~/.codex credential
+# through a read-only bind mount). What is left here is a read (/status) and a
+# proof (/test).
+#
+# Appliances that signed in through the old flow keep working untouched — the
+# credential in the secret store is still checked first, and is still refreshed
+# on use. Nobody has to re-do anything.
 
 @agentic_cli_bp.route('/api/agentic/cli/test', methods=['POST'])
 def cli_test():

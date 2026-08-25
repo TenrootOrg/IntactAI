@@ -1573,16 +1573,24 @@ document.addEventListener('alpine:init', () => {
         },
 
         // ---- Subscription (CLI) providers -------------------------------
-        // These spend an existing Codex/ChatGPT subscription through the
-        // vendor CLI instead of a metered API key, so they have no key field.
-        // The panel polls /status every 3s while it is on screen: the CLI can
-        // be installed, signed in, or expire outside this page's control.
+        // These spend an existing Codex/ChatGPT subscription through the vendor
+        // CLI instead of a metered API key, so they have no key field.
+        //
+        // THE APPLIANCE NO LONGER INSTALLS OR SIGNS IN. It used to do both — an
+        // Install CLI button that ran the vendor installer into a directory of
+        // ours, and a device-code sign-in whose credential we stored. That is
+        // gone. The operator installs codex on the host and runs `codex login`
+        // the ordinary way; the backend finds it (mounted read-only into the
+        // container) and uses their credential where it already is.
+        //
+        // Which leaves this panel with exactly one job: say whether the box can
+        // see it, whether somebody is signed in, and whether it actually works.
+        // Everything below is a read.
         SUBSCRIPTION_PROVIDERS: ['codex-subscription'],
-        cli: { installed: false, authenticated: false, detail: '', label: '', version: null },
+        cli: { installed: false, authenticated: false, detail: '', label: '',
+               version: null, path: null, source: null },
         cliBusy: false,
         cliTesting: false,
-        cliLogin: { url: '', code: '' },
-        cliManualOpen: false,
         _cliTimer: null,
 
         isSubscription() {
@@ -1591,11 +1599,20 @@ document.addEventListener('alpine:init', () => {
         },
 
         cliStatusText() {
-            if (!this.cli.installed) return 'CLI not installed';
-            if (this.cli.authenticated) return 'Connected' + (this.cli.version ? ' · ' + this.cli.version : '');
-            if (this.cliLogin.url) return 'Waiting for approval…';
-            return 'Installed — not connected';
+            if (!this.cli.installed) return 'Not found on this system';
+            if (this.cli.authenticated) return 'Ready' + (this.cli.version ? ' · ' + this.cli.version : '');
+            return 'Found — not signed in';
         },
+
+        // The one-liners an operator runs on the host. Kept here rather than in
+        // the markup so the copy button has a single source for the text.
+        cliInstallCommands() {
+            return 'npm install -g @openai/codex\n' +
+                   '# or, without node:\n' +
+                   'curl -fsSL https://raw.githubusercontent.com/openai/codex/main/install.sh | sh';
+        },
+        cliLoginCommand() { return 'codex login'; },
+        cliDocsUrl() { return 'https://github.com/openai/codex'; },
 
         async cliRefresh() {
             if (!this.isSubscription()) return;
@@ -1604,23 +1621,20 @@ document.addEventListener('alpine:init', () => {
                 const r = await fetch('/api/agentic/cli/status?provider=' + encodeURIComponent(provider));
                 if (!r.ok) return;
                 const d = await r.json();
+                const wasAuthed = this.cli.authenticated;
                 this.cli = {
                     installed: !!d.installed, authenticated: !!d.authenticated,
-                    detail: d.detail || '', label: d.label || '', version: d.version || null
+                    detail: d.detail || '', label: d.label || '',
+                    version: d.version || null, path: d.path || null,
+                    source: d.credential_source || null
                 };
-                // a device login in flight → keep the URL/code buttons on screen
-                if (d.login && d.login.url) {
-                    this.cliLogin = { url: d.login.url, code: d.login.code || '' };
-                } else if (!this.cli.authenticated) {
-                    this.cliLogin = { url: '', code: '' };
-                }
-                // login finished out-of-band (or expired) → drop the code panel
-                if (this.cli.authenticated && this.cliLogin.url) {
-                    this._cliStopLogin();
-                    // the CLI can only list models once it is signed in
+                // Signed in since the last poll → the catalog can finally be
+                // listed (the CLI only knows the account's models once it is
+                // authenticated). Fired on the TRANSITION, not on every poll.
+                if (this.cli.authenticated && !wasAuthed) {
                     fetch('/api/maintenance/refresh-codex-models', { method: 'POST' })
                         .then(() => window.dispatchEvent(new CustomEvent('llm-catalog-refreshed',
-                              { detail: { provider: this.config.agentic.online_llm.provider } })))
+                              { detail: { provider } })))
                         .catch(() => {});
                 }
             } catch (e) { /* transient — the poll will retry */ }
@@ -1638,10 +1652,29 @@ document.addEventListener('alpine:init', () => {
             if (this._cliTimer) { clearInterval(this._cliTimer); this._cliTimer = null; }
         },
 
-        // Install / Connect / Test all run as `settings` workflows so their full
-        // log (including the exact failure — no internet, blocked proxy, expired
-        // code) is inspectable in Settings → Actions like every other system
-        // operation. Starting one jumps straight to that tab.
+        // Re-check is just cliRefresh with a message, so an operator who has
+        // finished installing on the host gets an answer immediately instead of
+        // waiting out the poll interval and wondering whether it is looking.
+        async cliRecheck() {
+            this.cliBusy = true;
+            try {
+                await this.cliRefresh();
+                this.showMessage(this.cli.installed
+                    ? (this.cli.authenticated ? 'codex is ready' : 'codex found — not signed in')
+                    : 'codex still not visible to the appliance', 
+                    this.cli.authenticated ? 'success' : 'info');
+            } finally { this.cliBusy = false; }
+        },
+
+        cliCopy(text, what) {
+            navigator.clipboard.writeText(text)
+                .then(() => this.showMessage((what || 'Copied') + ' copied', 'success'))
+                .catch(() => this.showMessage('Could not copy — select it manually', 'error'));
+        },
+
+        // Test runs as a `settings` workflow so its full log — the exact failure,
+        // no internet, blocked proxy, expired login — is inspectable in
+        // Settings → Actions like every other system operation.
         async _cliStartAction(path, label) {
             const provider = this.config.agentic.online_llm.provider;
             this.cliBusy = true;
@@ -1653,12 +1686,6 @@ document.addEventListener('alpine:init', () => {
                 const d = await r.json();
                 if (r.ok && d.success) {
                     this.showMessage(label + ' started — follow it in Actions', 'success');
-                    // gotoSystemWorkflows() rather than a bare
-                    // 'show-system-actions' dispatch: it also switches to the
-                    // settings tab and re-fires after 400ms, so it still lands
-                    // when the settings partial is mid-lazy-load. A single
-                    // dispatch only worked because the operator happened to
-                    // already be on this tab.
                     window.ActiveCase.gotoSystemWorkflows();
                 } else {
                     this.showMessage(label + ' could not start: ' + (d.error || 'unknown error'), 'error');
@@ -1673,79 +1700,6 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
-        async cliInstall() {
-            await this._cliStartAction('/api/agentic/cli/install', 'Install Codex CLI');
-        },
-
-        // "Generate new code": discard the in-flight sign-in and issue a fresh
-        // one. Needed when the ~15-minute code expires or the operator loses it —
-        // otherwise a plain Connect would just hand back the same dead code.
-        async cliNewCode() {
-            this.cliLogin = { url: '', code: '' };
-            const provider = this.config.agentic.online_llm.provider;
-            this.cliBusy = true;
-            try {
-                const r = await fetch('/api/agentic/cli/login', {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ provider, force: true })
-                });
-                const d = await r.json();
-                if (r.ok && d.success) {
-                    // Starts a `settings` workflow exactly like Connect does, so
-                    // it jumps to Actions the same way. The device URL + new code
-                    // are logged into that run, so the operator lands on the page
-                    // that shows them rather than on a panel that has just been
-                    // blanked by the cliLogin reset above.
-                    this.showMessage('New code requested — follow it in Actions', 'success');
-                    window.ActiveCase.gotoSystemWorkflows();
-                } else {
-                    this.showMessage('Could not get a new code: ' + (d.error || 'unknown error'), 'error');
-                }
-            } catch (e) {
-                this.showMessage('Could not get a new code: ' + e.message, 'error');
-            } finally {
-                this.cliBusy = false;
-                this.cliRefresh();
-            }
-        },
-
-        async cliConnect() {
-            // The device URL + one-time code are logged into the workflow AND
-            // returned by /status, so the panel can show clickable/copyable
-            // buttons while the operator watches the run in Actions.
-            await this._cliStartAction('/api/agentic/cli/login', 'Configure Codex CLI');
-        },
-
-        _cliStopLogin() {
-            this.cliLogin = { url: '', code: '' };
-        },
-
-        async cliCancelLogin() {
-            const provider = this.config.agentic.online_llm.provider;
-            this._cliStopLogin();
-            try {
-                await fetch('/api/agentic/cli/login/cancel', {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ provider })
-                });
-            } catch (e) { /* nothing to do */ }
-            this.cliRefresh();
-        },
-
-        async cliDisconnect() {
-            const provider = this.config.agentic.online_llm.provider;
-            try {
-                await fetch('/api/agentic/cli/disconnect', {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ provider })
-                });
-                this.showMessage('Subscription disconnected', 'success');
-            } catch (e) {
-                this.showMessage('Disconnect failed: ' + e.message, 'error');
-            }
-            this.cliRefresh();
-        },
-
         async cliTest() {
             this.cliTesting = true;
             try {
@@ -1753,30 +1707,6 @@ document.addEventListener('alpine:init', () => {
             } finally {
                 this.cliTesting = false;
             }
-        },
-
-        // Escape hatch for sites whose egress rules block the in-app device flow:
-        // the operator runs the login in a shell and we adopt the credential it
-        // wrote, storing it in the DB and deleting the file.
-        async cliImportManual() {
-            const provider = this.config.agentic.online_llm.provider;
-            try {
-                const r = await fetch('/api/agentic/cli/import-credential', {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ provider })
-                });
-                const d = await r.json();
-                if (r.ok && d.success) {
-                    this.showMessage('Login imported — subscription connected', 'success');
-                    this.cliManualOpen = false;
-                    this._cliStopLogin();
-                } else {
-                    this.showMessage('Import failed: ' + (d.error || 'unknown error'), 'error');
-                }
-            } catch (e) {
-                this.showMessage('Import failed: ' + e.message, 'error');
-            }
-            this.cliRefresh();
         },
 
         // Bash equivalent of Prepare Package, for an operator to run on a

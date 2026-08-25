@@ -76,6 +76,58 @@ read_config() {
     python3 -c "import yaml; print(yaml.safe_load(open('${CONFIG_FILE}'))${key})" 2>/dev/null || echo ""
 }
 
+# Point the backend container at the operator's OWN codex install.
+#
+# The appliance stopped installing and signing in to codex: the operator does
+# that on the host, the ordinary way, and the backend just uses it. It runs in a
+# container, so the two things it needs have to be bind-mounted in, and this
+# works out WHERE they are on this particular box.
+#
+# Two facts make it less obvious than it sounds, both measured rather than
+# assumed (see tests/test_agentic_cli_discovery.py):
+#   * `command -v codex` finds a JavaScript shim, not a program. The runnable
+#     binary is buried in the package tree beside it, and the backend image
+#     ships no node — so the PACKAGE ROOT is what has to be mounted, not the bin.
+#   * the credential lives in the INVOKING operator's home, not root's. This runs
+#     under sudo, so $HOME is /root and the answer would be wrong every time.
+#
+# Both keys are always written, empty-string-safe: compose falls back to the two
+# empty directories install.sh creates, and an absent mount and an empty one are
+# the same answer to "is codex here".
+_stamp_host_codex_paths() {
+    local backend_env="$1" bin pkg home user
+
+    mkdir -p "${SCRIPT_DIR}/data/agentic_cli/host-pkg" \
+             "${SCRIPT_DIR}/data/agentic_cli/host-home" 2>/dev/null || true
+
+    pkg="${SCRIPT_DIR}/data/agentic_cli/host-pkg"
+    bin="$(command -v codex 2>/dev/null || true)"
+    if [[ -n "$bin" ]]; then
+        bin="$(readlink -f "$bin" 2>/dev/null || echo "$bin")"
+        # .../node_modules/@openai/codex/bin/codex.js -> .../node_modules
+        local root
+        root="$(cd "$(dirname "$bin")/../../.." 2>/dev/null && pwd || true)"
+        [[ -d "${root}/@openai" ]] && pkg="$root"
+    fi
+
+    # The operator, not root. SUDO_USER is who typed the command; fall back to
+    # the owner of the appliance directory, which is the same person on every
+    # install we have seen and is right when the caller is already root.
+    user="${SUDO_USER:-}"
+    [[ -z "$user" ]] && user="$(stat -c '%U' "$SCRIPT_DIR" 2>/dev/null || true)"
+    home="$(getent passwd "$user" 2>/dev/null | cut -d: -f6)"
+    [[ -z "$home" ]] && home="${HOME:-/root}"
+    if [[ -d "${home}/.codex" ]]; then
+        home="${home}/.codex"
+    else
+        home="${SCRIPT_DIR}/data/agentic_cli/host-home"
+    fi
+
+    update_env_var "$backend_env" "INTACT_HOST_CODEX_PKG" "$pkg"
+    update_env_var "$backend_env" "INTACT_HOST_CODEX_HOME" "$home"
+    log_info "  codex (operator-installed): package=${pkg}, home=${home}"
+}
+
 # Write a single pin into config.yaml's `versions:` block.
 # Usage: _pin_module_version backend intact-20260810
 #
@@ -648,6 +700,7 @@ update_env_files() {
         # compose `:-` default, breaking non-default install paths silently.
         # Stamp it into .env so it survives every recreate, on every surface.
         update_env_var "$backend_env" "INTACT_HOST_PATH" "$SCRIPT_DIR"
+        _stamp_host_codex_paths "$backend_env"
         # AWS (CloudTrail SIGMA rule-pack) + Azure (DFIR-O365RC) versions — consumed
         # by the AWS/Azure detection pipelines + the module upgraders.
         [[ -n "$cloudtrail_version" ]] && update_env_var "$backend_env" "CLOUDTRAIL_VERSION" "$cloudtrail_version"

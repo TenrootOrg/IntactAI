@@ -75,10 +75,6 @@ PROVIDERS = {
     },
 }
 
-# A login can take minutes (the operator has to go and approve it), so the
-# process outlives the HTTP request that started it.
-_login_procs = {}
-_login_lock = threading.Lock()
 
 _INSTALL_TIMEOUT = 300
 _LOGIN_URL_TIMEOUT = 60
@@ -175,7 +171,18 @@ def _spec(provider) -> dict:
 # Search roots for a CLI somebody else installed. Module-level so they read as
 # data, and so a test can point them at a sandbox instead of finding whatever is
 # really on the build machine.
+# THE HOST BRIDGE. The appliance no longer installs or signs in to codex — the
+# operator does that themselves, on the host, the ordinary way. This process is
+# in a container, so compose bind-mounts the two things it then needs, read-only
+# and at neutral paths (mounting over /usr/local/bin would shadow the image's
+# own python). Both resolve to an empty directory when the operator has no codex
+# — an absent mount and an empty one are the same answer here, which is why
+# nothing below has to care which it got.
+_HOST_PKG_DIR = os.environ.get("INTACT_HOST_CODEX_PKG", "/host/node_modules")
+_HOST_CODEX_HOME = os.environ.get("INTACT_HOST_CODEX_HOME", "/host/codex")
+
 _NPM_ROOTS = (
+    _HOST_PKG_DIR,                      # the operator's own install, mounted in
     "/usr/local/lib/node_modules",
     "/usr/lib/node_modules",
     os.path.expanduser("~/.npm-global/lib/node_modules"),
@@ -281,8 +288,38 @@ def is_installed(provider) -> bool:
 # credential handling — the DB is the source of truth, tmpfs is scratch
 # ---------------------------------------------------------------------------
 
+# Which credential a materialised scratch home was filled from, keyed by its
+# path. Read by _release_home, which must not copy a host credential into our
+# database. Popped there, so it cannot grow.
+_HOME_SOURCE: dict = {}
+
+
+def host_credential_path(provider) -> str:
+    """The operator's own auth.json, as mounted from their ~/.codex."""
+    return os.path.join(_HOST_CODEX_HOME, _spec(provider)["auth_file"])
+
+
+def _read_host_credential(provider):
+    """Their credential, or None. Never raises: an unreadable or absent file is
+    the ordinary state of a box whose operator has not signed in yet."""
+    try:
+        with open(host_credential_path(provider), encoding="utf-8") as fh:
+            blob = fh.read().strip()
+        return blob or None
+    except OSError:
+        return None
+
+
 def has_credentials(provider) -> bool:
-    return bool(get_secret(_spec(provider)["secret_key"]))
+    """Either credential counts.
+
+    The stored one is checked FIRST and deliberately. Appliances that signed in
+    through the old in-app device-code flow have a working credential in the
+    secret store and no ~/.codex on the host at all; preferring the host copy
+    would sign them out on upgrade for no reason. New boxes have only the host
+    copy. Both work, neither is migrated, and nothing has to be re-done.
+    """
+    return bool(get_secret(_spec(provider)["secret_key"])) or bool(_read_host_credential(provider))
 
 
 def _materialize_home(provider):
@@ -299,6 +336,9 @@ def _materialize_home(provider):
     home = tempfile.mkdtemp(prefix="intact-cli-home-", dir=parent)
     os.chmod(home, 0o700)
     blob = get_secret(spec["secret_key"])
+    _HOME_SOURCE[home] = "store" if blob else "host"
+    if not blob:
+        blob = _read_host_credential(provider)
     if blob:
         auth = os.path.join(home, spec["auth_file"])
         with open(auth, "w") as f:
@@ -311,11 +351,20 @@ def _release_home(provider, home, persist=True):
     """Persist a refreshed token back to the DB, then remove the scratch dir.
 
     The CLI rotates its access token in place, so skipping the write-back would
-    silently expire the operator's login after a few hours.
+    silently expire a login held in our own store after a few hours.
+
+    IT MUST NOT WRITE BACK A CREDENTIAL THAT CAME FROM THE HOST. Doing so copies
+    the operator's login into our database, where has_credentials then prefers it
+    forever — so the appliance quietly forks off its own snapshot of their
+    identity. If they later sign out, or sign in as somebody else, the box keeps
+    using the old one and nothing on any screen says why. The host copy is theirs
+    and stays the source of truth; ours is only written back when it was ours to
+    begin with.
     """
     spec = _spec(provider)
+    source = _HOME_SOURCE.pop(home, "store")
     try:
-        if persist:
+        if persist and source == "store":
             auth = os.path.join(home, spec["auth_file"])
             if os.path.isfile(auth):
                 with open(auth) as f:
@@ -422,22 +471,16 @@ def detect(provider) -> dict:
         "authenticated": False,
         "auth_mode": None,
         "detail": "",
-        "login_pending": _login_pending(provider),
     }
     if not is_installed(provider):
         # Name the paths. An operator who has just installed the CLI reads a bare
         # "not installed" as the product being broken — and from where they are
         # standing they are right, because their copy is usually on the HOST and
         # this runs in a container that cannot see or execute it.
-        looked = _candidate_paths(provider)
-        out["searched"] = looked
+        out["searched"] = _candidate_paths(provider)
         out["detail"] = (
-            f"{spec['binary']} CLI is not installed on the appliance. "
-            f"Searched: {', '.join(looked)}. "
-            f"A copy installed on the host does not count — this runs inside the "
-            f"backend container and cannot reach or run it. Use Install CLI, which "
-            f"puts a self-contained copy in {install_target_path(provider)} where "
-            f"upgrades keep it.")
+            f"{spec['binary']} is not installed, or this appliance cannot see it. "
+            f"Install it on the host, then sign in with `{spec['binary']} login`.")
         return out
     out["installed"] = True
     out["path"] = binary_path(provider)
@@ -451,8 +494,13 @@ def detect(provider) -> dict:
             pass
 
         if not has_credentials(provider):
-            out["detail"] = "CLI installed — not connected yet"
+            out["detail"] = (
+                f"{spec['binary']} {out['version'] or ''} found, but nobody is signed in. "
+                f"Run `{spec['binary']} login` on the host as the user who owns this "
+                f"appliance, then press Re-check.").replace("  ", " ")
             return out
+        out["credential_source"] = (
+            "store" if get_secret(spec["secret_key"]) else "host")
 
         # `codex login status` is a pure local credential check: exit 0 when
         # logged in, 1 when not. No tokens spent.
@@ -638,161 +686,6 @@ _CODE_RE = re.compile(r"\b([A-Z0-9]{4}-[A-Z0-9]{4,8})\b")
 def _plain(text) -> str:
     return _ANSI_RE.sub("", text or "")
 
-
-def _login_pending(provider) -> bool:
-    with _login_lock:
-        st = _login_procs.get(provider)
-        return bool(st and st["proc"].poll() is None)
-
-
-def pending_login(provider) -> dict:
-    """URL + code of an in-flight device login, so the panel can re-render the
-    clickable/copyable buttons after a page reload."""
-    with _login_lock:
-        st = _login_procs.get(provider)
-        if not st or st["proc"].poll() is not None:
-            return {}
-        return {"url": st.get("url") or "", "code": st.get("code") or "",
-                "run_id": st.get("run_id")}
-
-
-def login_start(provider, run_id=None) -> dict:
-    """Begin a device-code login. Returns {url, code} for the operator to use.
-
-    The CLI process stays alive in the background waiting for approval; poll
-    login_poll() until it reports done.
-    """
-    spec = _spec(provider)
-    _progress(run_id, 5)
-    _log(provider, f"Signing in to {spec['label']}...", run_id=run_id)
-    if not is_installed(provider):
-        _log(provider, f"{spec['binary']} CLI is not installed — run the "
-                       f"Install action first.", "error", run_id)
-        return {"success": False, "error": f"{spec['binary']} CLI is not installed yet"}
-
-    _progress(run_id, 10)
-    if not _check_internet(provider, "signing in", run_id):
-        return {"success": False,
-                "error": "No internet connectivity — signing in needs to reach the vendor."}
-
-    login_cancel(provider)
-
-    _progress(run_id, 20)
-    _log(provider, "Requesting a device code "
-                   "(the browser can be on any machine)...", run_id=run_id)
-    home = _materialize_home(provider)
-    try:
-        proc = subprocess.Popen(
-            [binary_path(provider), "login", "--device-auth"],
-            env=_env_for(provider, home),
-            cwd=tempfile.gettempdir(),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-    except Exception as e:  # noqa: BLE001
-        _release_home(provider, home, persist=False)
-        _log(provider, f"Could not start the login process: {e}", "error", run_id)
-        return {"success": False, "error": f"could not start login: {e}"}
-
-    buf = []
-    url = code = None
-    deadline = time.time() + _LOGIN_URL_TIMEOUT
-
-    # Read until the CLI has printed both the verification URL and the code.
-    def _reader():
-        for line in iter(proc.stdout.readline, ""):
-            buf.append(line)
-
-    t = threading.Thread(target=_reader, daemon=True)
-    t.start()
-    while time.time() < deadline:
-        text = _plain("".join(buf))
-        if url is None:
-            m = _URL_RE.search(text)
-            if m:
-                url = m.group(0).rstrip(".,)")
-        if code is None:
-            m = _CODE_RE.search(text)
-            if m:
-                code = m.group(1)
-        if url and code:
-            break
-        if proc.poll() is not None:
-            break
-        time.sleep(0.4)
-
-    text = _plain("".join(buf)).strip()
-    if not url:
-        proc.kill()
-        _release_home(provider, home, persist=False)
-        _log(provider, f"The CLI did not print a login URL within "
-                       f"{_LOGIN_URL_TIMEOUT}s. Output: {text[-500:] or '(none)'}",
-             "error", run_id)
-        return {"success": False,
-                "error": "the CLI did not print a login URL. "
-                         f"Output: {text[-500:] or '(none)'}"}
-
-    _progress(run_id, 40)
-    _log(provider, f"Open this URL to authorise: {url}", "success", run_id)
-    if code:
-        _log(provider, f"One-time code: {code}  (expires in ~15 minutes)",
-             "success", run_id)
-    _log(provider, "Waiting for you to approve the sign-in…", run_id=run_id)
-
-    with _login_lock:
-        _login_procs[provider] = {"proc": proc, "home": home, "buf": buf,
-                                  "url": url, "code": code, "started": time.time(),
-                                  "run_id": run_id}
-    return {"success": True, "url": url, "code": code,
-            "message": "Open the URL, approve the request, then this page will "
-                       "pick it up automatically."}
-
-
-def login_poll(provider) -> dict:
-    """Has the pending login finished? Persists the token when it succeeds."""
-    with _login_lock:
-        st = _login_procs.get(provider)
-    if not st:
-        d = detect(provider)
-        return {"pending": False, "authenticated": d.get("authenticated", False),
-                "detail": d.get("detail", "no login in progress")}
-
-    rc = st["proc"].poll()
-    if rc is None:
-        return {"pending": True, "url": st["url"], "code": st["code"],
-                "detail": "waiting for you to approve the login"}
-
-    out = _plain("".join(st["buf"])).strip()
-    # process finished — persist whatever credential it wrote
-    _release_home(provider, st["home"], persist=True)
-    with _login_lock:
-        _login_procs.pop(provider, None)
-
-    d = detect(provider)
-    ok = bool(d.get("authenticated"))
-    return {"pending": False, "authenticated": ok, "exit_code": rc,
-            "detail": (d.get("detail") or out[-300:]) if ok else (out[-500:] or d.get("detail", "")),
-            "output": out[-800:]}
-
-
-def login_cancel(provider) -> bool:
-    with _login_lock:
-        st = _login_procs.pop(provider, None)
-    if not st:
-        return False
-    try:
-        st["proc"].kill()
-    except Exception:
-        pass
-    _release_home(provider, st["home"], persist=True)
-    return True
-
-
-# ---------------------------------------------------------------------------
-# prompt execution — what the LLM layer calls
-# ---------------------------------------------------------------------------
 
 class SubscriptionCLIError(RuntimeError):
     """CLI invocation failed. ``reason`` mirrors llm_sim's reason codes."""
@@ -1125,52 +1018,27 @@ def sweep_orphaned_runs() -> int:
     return n
 
 
-def run_install_workflow(run_id, provider):
-    """Background body for the Install action."""
-    _mark_active(run_id)
-    try:
-        _progress(run_id, 1)
-        res = install(provider, run_id=run_id)
-        _finish(run_id, bool(res.get("success")), res.get("error", ""))
-    except Exception as e:  # noqa: BLE001
-        _log(provider, f"Install workflow crashed: {e}", "error", run_id)
-        _finish(run_id, False, str(e))
-
-
-def run_configure_workflow(run_id, provider, wait_seconds=900):
-    """Background body for the Configure action: start the device login, then
-    wait for the operator to approve it (default 15 min, matching the code's
-    lifetime) so the run's status reflects the real outcome."""
-    _mark_active(run_id)
-    try:
-        _progress(run_id, 1)
-        started = login_start(provider, run_id=run_id)
-        if not started.get("success"):
-            _finish(run_id, False, started.get("error", "sign-in could not be started"))
-            return
-        deadline = time.time() + wait_seconds
-        while time.time() < deadline:
-            st = login_poll(provider)
-            if not st.get("pending"):
-                if st.get("authenticated"):
-                    _progress(run_id, 95)
-                    _log(provider, "✓ Subscription connected — the Agentic tab will "
-                                   "show it as Connected.", "success", run_id)
-                    _finish(run_id, True, "")
-                else:
-                    _log(provider, f"Sign-in did not complete: "
-                                   f"{st.get('detail') or 'unknown reason'}", "error", run_id)
-                    _finish(run_id, False, st.get("detail", "sign-in failed"))
-                return
-            time.sleep(3)
-        _log(provider, f"Gave up waiting after {wait_seconds}s — the one-time code "
-                       f"has expired. Start the Configure action again.", "error", run_id)
-        login_cancel(provider)
-        _finish(run_id, False, "timed out waiting for approval")
-    except Exception as e:  # noqa: BLE001
-        _log(provider, f"Configure workflow crashed: {e}", "error", run_id)
-        _finish(run_id, False, str(e))
-
+# INSTALL AND SIGN-IN LIVED HERE, and were removed.
+#
+# run_install_workflow fetched the vendor installer over the internet and ran it
+# into a directory of ours; run_configure_workflow drove a device-code sign-in
+# and stored the credential in our database. Both are gone, along with
+# login_start / login_poll / login_cancel / disconnect / import_credential and
+# the install/login HTTP routes.
+#
+# Neither was the appliance's business. Installing third-party software on the
+# host behind a button in a web panel, and holding somebody's ChatGPT
+# credential, are things an operator does better and more visibly themselves —
+# and the install half only ever worked on a box with outbound internet, which a
+# DFIR appliance frequently is not. What replaced them is discovery: find the
+# codex the operator installed (_candidate_paths) and read the credential they
+# already have (_read_host_credential), both mounted read-only into this
+# container by modules/backend/docker-compose.yaml.
+#
+# WORKFLOW_NAMES still carries "install" and "configure". That is not a leftover:
+# sweep_orphaned_runs matches on those names to close rows left behind by the old
+# flow on an appliance that is upgrading. Dropping them would strand those rows
+# "running" forever.
 
 def run_test_workflow(run_id, provider):
     """Background body for the Test action."""

@@ -199,31 +199,139 @@ class TestTheInstallerStillChecksItsOwnWork(_Base):
 
 
 class TestItExplainsItselfWhenNothingIsFound(_Base):
-    """A bare "not installed" is what made this a bug report instead of a
-    two-minute fix. The operator's copy is usually on the HOST, which this
-    container cannot see or execute -- no path list changes that, so the message
-    has to carry it."""
+    """A bare "not installed" is what turned this into a bug report.
 
-    def test_the_detail_lists_where_it_looked(self):
+    The appliance no longer installs codex — the operator does, on the host —
+    so the only useful thing this state can say is what to run. Pinned as a
+    CONTRACT (host, and the login command), not as a sentence, so the wording
+    can be improved without a test failing over it.
+    """
+
+    def test_the_detail_says_what_to_do_and_where(self):
         d = self.sub.detect(self.P)
         self.assertFalse(d["installed"])
-        self.assertIn("Searched:", d["detail"])
-        self.assertIn(self.sub.install_target_path(self.P), d["detail"])
-
-    def test_the_detail_names_the_container_boundary(self):
-        d = self.sub.detect(self.P)
         self.assertIn("host", d["detail"].lower())
-        self.assertIn("container", d["detail"].lower())
+        self.assertIn("codex login", d["detail"])
 
-    def test_the_searched_paths_are_returned_for_the_ui(self):
+    def test_the_searched_paths_are_still_returned(self):
+        # Not shown in the panel, but it is what a support bundle needs when an
+        # operator swears it is installed and the box disagrees.
         d = self.sub.detect(self.P)
         self.assertTrue(d.get("searched"))
+        self.assertIn(self.sub.install_target_path(self.P), d["searched"])
 
     def test_a_found_cli_reports_where_it_came_from(self):
         self.plant("cli/bin/codex")
         d = self.sub.detect(self.P)
         self.assertTrue(d["installed"])
         self.assertEqual(d.get("path"), self.sub.install_target_path(self.P))
+
+
+class TestTheHostCredential(_Base):
+    """The operator's own login is the source of truth, and stays theirs."""
+
+    def _host_auth(self, blob='{"tokens": {"x": 1}}'):
+        home = os.path.join(self.tmp, "hostcodex")
+        os.makedirs(home, exist_ok=True)
+        self.sub._HOST_CODEX_HOME = home
+        with open(os.path.join(home, "auth.json"), "w") as fh:
+            fh.write(blob)
+        return home
+
+    def test_a_host_credential_counts_as_connected(self):
+        self.sub._HOST_CODEX_HOME = os.path.join(self.tmp, "nothing")
+        self.assertFalse(self.sub.has_credentials(self.P))
+        self._host_auth()
+        self.assertTrue(self.sub.has_credentials(self.P),
+                        "the operator signed in on the host; that is signed in")
+
+    def test_an_absent_host_home_is_not_an_error(self):
+        self.sub._HOST_CODEX_HOME = "/definitely/not/here"
+        self.assertIsNone(self.sub._read_host_credential(self.P))
+        self.assertFalse(self.sub.has_credentials(self.P))
+
+    def test_an_empty_file_is_not_a_credential(self):
+        self._host_auth(blob="   \n")
+        self.assertFalse(self.sub.has_credentials(self.P))
+
+    def test_a_host_credential_is_never_written_into_our_database(self):
+        """THE PRIVACY/DRIFT RULE.
+
+        Writing their token back into our secret store would make has_credentials
+        prefer our copy forever — so the appliance quietly forks its own snapshot
+        of their identity, and keeps using it after they sign out or sign in as
+        somebody else, with nothing on any screen saying why.
+        """
+        self._host_auth()
+        written = []
+        self.sub.set_secret = lambda k, v: written.append((k, v))
+        home = self.sub._materialize_home(self.P)
+        # the CLI rotates the token in place; simulate that
+        with open(os.path.join(home, "auth.json"), "w") as fh:
+            fh.write('{"tokens": {"x": 2}}')
+        self.sub._release_home(self.P, home)
+        self.assertEqual(written, [], "a host credential was copied into our DB")
+
+    def test_a_stored_credential_is_still_refreshed(self):
+        # Boxes that signed in through the old in-app flow must keep working:
+        # their token rotates on use, and dropping the write-back would expire
+        # them within hours.
+        self.sub.get_secret = lambda *a, **k: '{"tokens": {"x": 1}}'
+        written = []
+        self.sub.set_secret = lambda k, v: written.append((k, v))
+        home = self.sub._materialize_home(self.P)
+        with open(os.path.join(home, "auth.json"), "w") as fh:
+            fh.write('{"tokens": {"x": 2}}')
+        self.sub._release_home(self.P, home)
+        self.assertEqual(len(written), 1, "a stored credential stopped refreshing")
+
+    def test_the_stored_credential_wins_over_the_host_one(self):
+        # Same reason: an appliance that already had one must not be signed out
+        # by an unrelated host login appearing.
+        self._host_auth()
+        self.sub.get_secret = lambda *a, **k: '{"tokens": {"stored": 1}}'
+        home = self.sub._materialize_home(self.P)
+        with open(os.path.join(home, "auth.json")) as fh:
+            self.assertIn("stored", fh.read())
+        self.sub._release_home(self.P, home, persist=False)
+
+
+class TestThereIsNoInstallOrSignInAnyMore(_Base):
+    """The appliance stopped installing software on the host and holding
+    somebody's ChatGPT credential. Pinned so neither comes back by accident."""
+
+    ROUTES = os.path.join(ROOT, "modules/backend/routes/agentic_cli_routes.py")
+
+    def test_the_install_and_login_routes_are_gone(self):
+        with open(self.ROUTES, encoding="utf-8") as fh:
+            src = fh.read()
+        code = "\n".join(l.split("#", 1)[0] for l in src.splitlines())
+        for gone in ("/api/agentic/cli/install", "/api/agentic/cli/login",
+                     "/api/agentic/cli/disconnect",
+                     "/api/agentic/cli/import-credential"):
+            self.assertNotIn(gone, code, f"{gone} is back")
+
+    def test_status_and_test_survive(self):
+        with open(self.ROUTES, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn("/api/agentic/cli/status", src)
+        self.assertIn("/api/agentic/cli/test", src)
+
+    def test_no_installer_workflow_remains(self):
+        with open(SRC, encoding="utf-8") as fh:
+            code = "\n".join(l.split("#", 1)[0] for l in fh.read().splitlines())
+        for gone in ("def run_install_workflow", "def run_configure_workflow",
+                     "def login_start", "def import_credential"):
+            self.assertNotIn(gone, code, f"{gone} is back")
+
+    def test_the_old_workflow_names_are_kept_for_orphan_sweeping(self):
+        # NOT a leftover: sweep_orphaned_runs matches on these to close rows an
+        # upgrading appliance still has from the old flow. Dropping them strands
+        # those rows "running" forever.
+        with open(SRC, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn('"install":', src)
+        self.assertIn('"configure":', src)
 
 
 if __name__ == "__main__":

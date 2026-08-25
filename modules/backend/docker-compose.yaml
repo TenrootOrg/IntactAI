@@ -41,6 +41,21 @@ services:
       - ../../client_installers:/app/client_installers:rw  # Client installers (writable for MSI generation)
       - ../../data:/app/data  # SQLite database (intact.db) for workflows, configs, and reports
       - ../nginx/html/downloads:/app/downloads:rw  # Velociraptor binaries for offline collectors
+      # THE OPERATOR'S OWN codex CLI, read-only. The appliance does not install
+      # or sign in to codex — they do, on the host, the ordinary way — and this
+      # container cannot otherwise see any of it.
+      #
+      # Mounted at NEUTRAL paths on purpose. The obvious move is to mount
+      # /usr/local/bin and /usr/local/lib/node_modules over themselves, and that
+      # breaks the container: this image keeps its python under /usr/local/bin,
+      # so the host's copy would shadow the interpreter the backend runs on.
+      #
+      # Both default to directories inside the appliance tree that install.sh
+      # creates empty, so a box with no codex mounts two empty dirs rather than
+      # having docker invent /root/.codex on the host. update_env_files points
+      # them at the real thing when it finds one (lib/config.sh).
+      - ${INTACT_HOST_CODEX_PKG:-../../data/agentic_cli/host-pkg}:/host/node_modules:ro
+      - ${INTACT_HOST_CODEX_HOME:-../../data/agentic_cli/host-home}:/host/codex:ro
       # Wave F "the flip": code (app.py, config.py, services/, routes/,
       # config/default_blueprints.yaml) and /app/logs used to be bind-mounted
       # here for live-reload during upgrades. As of this release the image is
