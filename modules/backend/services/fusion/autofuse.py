@@ -8,14 +8,35 @@ not O(the run that just landed). Fusing on every terminal run would make a
 useful result. So a landing run only ARMS a timer; each new landing re-arms it,
 and the fuse happens once the case has been quiet for QUIET_SECONDS.
 
-WHAT IT DELIBERATELY WILL NOT DO
-  - It never narrates. The LLM report/advisory is the expensive part and it is
-    what an analyst is actually reading; an automatic fuse builds the graph and
-    leaves the narrative exactly where it was. Refreshing that stays a click
-    (Rescan), so nothing is ever spent or rewritten without one.
-  - It never redraws anyone's screen. This module only updates the stored graph;
-    the case view notices via the staleness poll and offers to reload.
-  - It never runs on a case whose operator turned it off.
+WHAT HAPPENS AFTER THE GRAPH IS REBUILT
+The report is re-narrated too. This used to be the opposite — the automatic path
+built the graph and deliberately left the narrative frozen, because narrating is
+the billed half and rewriting it under a reading analyst is rude. What that
+actually produced was a case whose numbers moved while its Executive Summary
+still described the previous collection, and a banner asking the operator to
+press a button to fix it. Nobody pressed it, so the report an analyst read was
+routinely behind its own data.
+
+So: new data lands -> quiet period -> graph rebuilt -> report + advisory
+regenerated, WITH the model when one is configured and with the deterministic
+air-gap narrator when one is not. The report step is separate from the fuse (the
+fuse is still `allow_llm=False`), for two reasons: the graph must land quickly
+and unconditionally even if narration fails, and the LLM narration is the same
+background, lock-guarded, progress-reporting path the Regenerate button uses, so
+the case view's existing `report_generating` poll shows it happening.
+
+WHAT IT STILL WILL NOT DO
+  - It never fires for a triage, timeline, identity or chat edit. Only a MEMBER
+    RUN reaching a terminal state arms it (workflow_service.update_run_status,
+    AGENTIC_TYPES) — those edits re-fuse through their own paths and never come
+    through here, so an operator working the case never triggers a billed call.
+  - It never fires per artifact. One collection is one run row, and the quiet
+    period collapses a whole multi-host hunt into a single rebuild.
+  - It never redraws anyone's screen. It updates the stored graph and report; the
+    case view picks the new report up on its own.
+  - It never runs on a case whose operator turned it off, and the narration half
+    has its own switch (`auto_report: false`) for a customer who wants the graph
+    kept current without spending tokens.
 
 WHAT IT MUST NOT DROP
 The previous background path wrapped its fuse in `except: pass`, so a fuse that
@@ -41,8 +62,14 @@ QUIET_SECONDS = 60.0
 # this data on the floor until someone clicks Refusion.
 BUSY_RETRY_SECONDS = 30.0
 MAX_BUSY_RETRIES = 10
+# A report was already being generated when the fuse finished — an LLM narrative
+# runs for minutes, so a second burst of data can easily land inside one. Retry
+# rather than leave the report describing the data from two collections ago.
+REPORT_RETRY_SECONDS = 60.0
+MAX_REPORT_RETRIES = 5
 
 _TIMERS: dict = {}
+_REPORT_TIMERS: dict = {}
 _GUARD = threading.Lock()
 
 
@@ -67,14 +94,32 @@ def _enabled(store, case_id, d):
     return d.get("auto_fuse") is not False
 
 
+def _report_enabled(d):
+    """Should the automatic fuse also re-narrate the report?
+
+    Yes, and there is no UI for it either — a report that does not describe the
+    case's current data is not a preference, it is a wrong report.
+
+    But this half SPENDS MONEY when a model is configured, which the graph half
+    never does, so it gets its own stored key. `auto_report: false` on the case
+    row keeps the graph current and freezes the narrative — the old behaviour,
+    available per case for a customer who is watching their token bill, without a
+    downgrade. Absent — which is every case — reads as ON.
+    """
+    return d.get("auto_report") is not False
+
+
 def cancel(case_id) -> bool:
     """Stop a pending auto-fuse (case deleted, or the operator opted out)."""
+    cancelled = False
     with _GUARD:
         t = _TIMERS.pop(case_id, None)
-    if t is not None:
-        t.cancel()
-        return True
-    return False
+        rt = _REPORT_TIMERS.pop(case_id, None)
+    for timer in (t, rt):
+        if timer is not None:
+            timer.cancel()
+            cancelled = True
+    return cancelled
 
 
 def pending(case_id) -> bool:
@@ -176,6 +221,10 @@ def _fire(case_id, reason="new data", attempt=0) -> None:
                             trigger=store.TRIGGER_AUTOMATIC_RUN_LANDED,
                             allow_llm=False)
             store._merge_case_details(case_id, {"auto_fuse_incomplete": False})
+            # The graph is current. Bring the words that describe it up to date
+            # too — SEPARATELY, so a narration that fails or is refused never
+            # rolls back or re-marks the fuse that just succeeded.
+            _regenerate_report(case_id, d)
         except store.FusionBusy:
             # Nothing was attempted, so this is not an incomplete fuse.
             store._merge_case_details(case_id, {"auto_fuse_incomplete": False})
@@ -201,3 +250,89 @@ def _fire(case_id, reason="new data", attempt=0) -> None:
                 f"automatic re-fuse failed — {type(e).__name__}: {e}")
         except Exception:
             pass
+
+
+def _regenerate_report(case_id, d=None, attempt=0) -> None:
+    """Re-narrate a case whose graph just changed under it.
+
+    Narrates with the model when one is configured and with the deterministic
+    air-gap narrator when one is not — the operator gets a current report either
+    way, which is the whole point. `llm_sim._use_real()` is the SAME question the
+    manual path asks, so an appliance with no model, no key or no route takes the
+    free path here rather than spending a connection timeout on every collection.
+
+    Both paths go through `regenerate_report_async`, which holds the per-case
+    report lock either way — that lock is why. With a model the work is two
+    sequential calls (measured at 5m29s on a real case), so it moves to a thread,
+    sets `report_generating` for the case view's poll, and returns at once rather
+    than parking this timer. Without one it is a string render and answers inline.
+    What matters is that a deterministic automatic report and an operator's LLM
+    report can now be in flight together, and whichever finished last used to
+    overwrite the other.
+
+    Every failure here is contained. The graph is already saved and correct; a
+    report that could not be written is worth a line in the activity log and
+    nothing more, because the alternative — letting it escape — lands in _fire's
+    handler, which would blame the fuse and clear a flag it did not set.
+    """
+    store = _store()
+    try:
+        if d is None:
+            d = store.get_case(case_id) or {}
+        if not d:
+            return                             # case deleted while we waited
+        if not _report_enabled(d):
+            return                             # narration turned off for this case
+        use_llm = False
+        try:
+            from services.fusion import llm_sim
+            use_llm = bool(llm_sim._use_real())
+        except Exception:                      # noqa: BLE001 — no model is not an error
+            use_llm = False
+        try:
+            store.regenerate_report_async(case_id, use_llm=use_llm)
+        except store.ReportGenerationBusy:
+            # A report is mid-flight — an LLM one runs for minutes, so a second
+            # collection landing inside that window is ordinary, not exceptional.
+            # Retrying matters: the in-flight report was started from the PREVIOUS
+            # graph and will finish describing data the case has already moved past.
+            if attempt + 1 >= MAX_REPORT_RETRIES:
+                store.log_case_event(
+                    case_id, "Report not refreshed", "warning",
+                    f"the automatic report gave up after {MAX_REPORT_RETRIES} attempts — "
+                    f"a report has been generating throughout; click Regenerate report "
+                    f"once it settles")
+                return
+            store.log_case_event(
+                case_id, "Report refresh deferred", "info",
+                f"a report is already being generated — retrying "
+                f"(attempt {attempt + 1}/{MAX_REPORT_RETRIES})")
+            _schedule_report(case_id, attempt + 1)
+    except Exception as e:                     # noqa: BLE001 — never escape into _fire
+        try:
+            _store().log_case_event(
+                case_id, "Report refresh failed", "error",
+                f"the graph was rebuilt, but the report could not be regenerated — "
+                f"{type(e).__name__}: {e}")
+        except Exception:
+            pass
+
+
+def _schedule_report(case_id, attempt) -> None:
+    """Arm a retry of the report step alone. Its own timer registry: re-arming the
+    FUSE would be wrong — the graph is already current, so _fire would find nothing
+    stale and return before ever reaching the report."""
+    with _GUARD:
+        old = _REPORT_TIMERS.pop(case_id, None)
+        if old is not None:
+            old.cancel()
+        t = threading.Timer(REPORT_RETRY_SECONDS, _fire_report, args=(case_id, attempt))
+        t.daemon = True
+        _REPORT_TIMERS[case_id] = t
+        t.start()
+
+
+def _fire_report(case_id, attempt) -> None:
+    with _GUARD:
+        _REPORT_TIMERS.pop(case_id, None)
+    _regenerate_report(case_id, None, attempt)

@@ -1830,15 +1830,27 @@ def regenerate_report_async(case_id, *, audience=None, use_llm=False) -> dict:
     this case (the operator clicking Regenerate twice must not start two
     concurrent LLM calls against the same report).
     """
-    if not use_llm:
-        return regenerate_report(case_id, audience=audience, use_llm=False)
-
     if not get_case(case_id):
         raise ValueError("case not found")
 
+    # The lock is taken for BOTH paths, not just the slow one. It used to guard
+    # only the LLM branch, on the reasoning that a deterministic render is fast
+    # enough not to collide with anything. That held while every regeneration was
+    # a click; it stopped holding when the automatic fuse started regenerating on
+    # its own, because a deterministic auto-report and an operator's LLM report
+    # can now be in flight at the same moment — and the loser of that race
+    # overwrites a real narrative with a template, or the reverse.
     lock = _report_gen_lock(case_id)
     if not lock.acquire(blocking=False):
         raise ReportGenerationBusy("a report is already being generated for this case")
+
+    if not use_llm:
+        # Fast (no model call) — answer from this thread rather than paying for a
+        # thread and a poll cycle to deliver a render that has already finished.
+        try:
+            return regenerate_report(case_id, audience=audience, use_llm=False)
+        finally:
+            lock.release()
 
     started = _now_iso()
     try:
@@ -1947,8 +1959,18 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
         log_case_event(case_id, "Report generation", "error", f"LLM/render failed: {e}")
         raise
     try:
-        _merge_case_details(case_id, {"report_md": report, "analysis": analysis,
-                                      "report_dirty": False})
+        patch = {"report_md": report, "analysis": analysis, "report_dirty": False}
+        # Stamp WHICH runs this narrative describes. It was clearing report_dirty
+        # and leaving report_run_ids alone, so report_stale_runs went on counting
+        # every member as unreflected forever — a report regenerated one second ago
+        # still read as behind its own data. The graph this was rendered from is the
+        # one load_graph returned at the top of this function, so its fused member
+        # set is exactly what the report reflects. Absent on a legacy case (no
+        # tracking) — leave it absent rather than inventing one.
+        _fused = d.get("fused_run_ids")
+        if _fused is not None:
+            patch["report_run_ids"] = list(_fused)
+        _merge_case_details(case_id, patch)
         log_case_event(case_id, "Report saved", "success", "report + advisory written to the database")
     except Exception as e:
         log_case_event(case_id, "Report save", "error", f"database write failed: {e}")

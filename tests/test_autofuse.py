@@ -6,8 +6,9 @@ Anything that fuses per landing run would turn a 20-host hunt into twenty full
 rebuilds. So the whole design is a debounce, and almost every rule below exists
 to stop the automatic path doing damage the manual one cannot:
 
-  - it must never call the model (that is billed, and it rewrites the narrative
-    an analyst is reading);
+  - the FUSE itself must never call the model — narration is a separate step
+    afterwards, so a graph rebuild stays fast and lands even if narration does
+    not (the report half is TestItRenarratesAfterTheFuse below);
   - it must never drop data on a collision — the previous background path used
     `except: pass` and a fuse could vanish, leaving the graph stale with nothing
     in the log;
@@ -36,11 +37,16 @@ class FusionBusy(RuntimeError):
     pass
 
 
+class ReportGenerationBusy(RuntimeError):
+    pass
+
+
 class FakeStore:
     """Stands in for services.fusion.store. Records everything, so a test can
     assert on what was NOT done as easily as what was."""
 
     FusionBusy = FusionBusy
+    ReportGenerationBusy = ReportGenerationBusy
     TRIGGER_AUTOMATIC_RUN_LANDED = "AUTOMATIC — a member run finished"
     CASE_TYPE = "case"
 
@@ -57,6 +63,9 @@ class FakeStore:
         self.events = []         # (action, status, detail)
         self.busy_times = 0      # raise FusionBusy this many times, then succeed
         self.raise_always = None
+        self.reports = []        # (kind, kwargs) of every report regeneration
+        self.report_busy_times = 0   # raise ReportGenerationBusy this often, then succeed
+        self.report_raises = None
         self.lock = threading.Lock()
 
     def get_case(self, cid):
@@ -88,6 +97,33 @@ class FakeStore:
             self._per_case[cid] = []          # a real fuse clears THIS case
         return object()
 
+    # --- the narration half -----------------------------------------------
+    def _record_report(self, kind, cid, kw):
+        with self.lock:
+            self.reports.append((kind, dict(kw)))
+            if self.report_raises:
+                raise self.report_raises
+            if self.report_busy_times > 0:
+                self.report_busy_times -= 1
+                raise ReportGenerationBusy("a report is already being generated")
+
+    def regenerate_report(self, cid, **kw):
+        # Present so a test can prove the automatic path does NOT call it: the
+        # unlocked entry point is the operator's click, and an automatic report
+        # racing a manual one is exactly what the lock exists to stop.
+        self._record_report("unlocked", cid, kw)
+        return {"report_md": "..."}
+
+    def regenerate_report_async(self, cid, **kw):
+        self._record_report("locked", cid, kw)
+        return {"status": "started"}
+
+    def report_kinds(self):
+        return [k for k, _kw in self.reports]
+
+    def report_llm_flags(self):
+        return [kw.get("use_llm") for _k, kw in self.reports]
+
     def _merge_case_details(self, cid, patch):
         with self.lock:
             self.case.update(patch)
@@ -101,10 +137,35 @@ class FakeStore:
         return [a for a, _s, _d in self.events]
 
 
+class _FakeLlmSim:
+    """`_regenerate_report` asks the SAME question the manual Regenerate asks —
+    llm_sim._use_real() — to choose between the model and the deterministic
+    narrator. Injected as a real module so both branches are reachable here;
+    without it the import fails, which the code treats as "no model", and every
+    test would silently only ever exercise the free path."""
+    use_real = False
+
+    @classmethod
+    def _use_real(cls):
+        return cls.use_real
+
+
+def _install_fake_llm_sim():
+    import types
+    services = sys.modules.setdefault("services", types.ModuleType("services"))
+    fusion = sys.modules.setdefault("services.fusion", types.ModuleType("services.fusion"))
+    services.fusion = fusion
+    fusion.llm_sim = _FakeLlmSim
+    sys.modules["services.fusion.llm_sim"] = _FakeLlmSim
+
+
 class _Base(unittest.TestCase):
     def setUp(self):
         self.store = FakeStore()
         autofuse._store = lambda: self.store
+        _install_fake_llm_sim()
+        _FakeLlmSim.use_real = False
+        autofuse.REPORT_RETRY_SECONDS = 0.02
         # real timers, just fast ones
         self._orig = (autofuse.QUIET_SECONDS, autofuse.BUSY_RETRY_SECONDS,
                       autofuse.MAX_BUSY_RETRIES)
@@ -114,7 +175,7 @@ class _Base(unittest.TestCase):
             autofuse.cancel(cid)
 
     def tearDown(self):
-        for cid in list(autofuse._TIMERS):
+        for cid in list(autofuse._TIMERS) + list(autofuse._REPORT_TIMERS):
             autofuse.cancel(cid)
         (autofuse.QUIET_SECONDS, autofuse.BUSY_RETRY_SECONDS,
          autofuse.MAX_BUSY_RETRIES) = self._orig
@@ -129,8 +190,10 @@ class _Base(unittest.TestCase):
         stable = 0
         last = None
         while time.time() < deadline:
-            now = (len(autofuse._TIMERS), len(self.store.fuses), len(self.store.events))
-            if now == last and not autofuse._TIMERS:
+            now = (len(autofuse._TIMERS), len(autofuse._REPORT_TIMERS),
+                   len(self.store.fuses), len(self.store.reports),
+                   len(self.store.events))
+            if now == last and not autofuse._TIMERS and not autofuse._REPORT_TIMERS:
                 stable += 1
                 if stable >= 5:
                     return
@@ -182,7 +245,14 @@ class TestItFusesOnce(_Base):
         self.assertFalse(autofuse.schedule(""))
 
 
-class TestItNeverCallsTheModel(_Base):
+class TestTheFuseItselfNeverCallsTheModel(_Base):
+    """The fuse call, specifically. The report step that follows it may.
+
+    Keeping the model out of fuse_case is what makes the graph rebuild
+    predictable: it lands in ~30s and cannot be held up, retried or failed by a
+    provider. Narration is billed and slow, so it is a separate call that can
+    fail on its own without taking the graph with it.
+    """
 
     def test_the_fuse_forbids_the_llm(self):
         autofuse.schedule("case_1")
@@ -199,6 +269,168 @@ class TestItNeverCallsTheModel(_Base):
         autofuse.schedule("case_1")
         self.settle()
         self.assertIn("AUTOMATIC", self.store.fuses[0].get("trigger", ""))
+
+
+class TestItRenarratesAfterTheFuse(_Base):
+    """New data must update the WORDS, not just the numbers.
+
+    The old behaviour rebuilt the graph and left the report frozen behind a
+    banner asking the operator to press Regenerate. The counts moved, the
+    Executive Summary did not, and nobody pressed the button — so the report an
+    analyst read routinely described the previous collection.
+    """
+
+    def test_a_fuse_is_followed_by_a_report(self):
+        autofuse.schedule("case_1")
+        self.settle()
+        self.assertEqual(len(self.store.reports), 1,
+                         "the graph moved; the narrative describing it must move too")
+
+    def test_without_a_model_it_still_writes_a_report(self):
+        _FakeLlmSim.use_real = False
+        autofuse.schedule("case_1")
+        self.settle()
+        self.assertEqual(self.store.report_llm_flags(), [False],
+                         "an air-gapped box gets the deterministic narrator, not a "
+                         "connection timeout on every collection")
+
+    def test_with_a_model_it_narrates(self):
+        _FakeLlmSim.use_real = True
+        autofuse.schedule("case_1")
+        self.settle()
+        self.assertEqual(self.store.report_llm_flags(), [True])
+
+    def test_it_always_takes_the_report_lock(self):
+        # Both the deterministic and the LLM report go through the guarded entry
+        # point. An automatic deterministic render finishing while an operator's
+        # LLM narrative is in flight would otherwise replace a real report with a
+        # template — silently, and in the operator's favour exactly never.
+        for real in (False, True):
+            with self.subTest(model_configured=real):
+                self.setUp()
+                _FakeLlmSim.use_real = real
+                autofuse.schedule("case_1")
+                self.settle()
+                self.assertEqual(self.store.report_kinds(), ["locked"])
+
+    def test_a_missing_llm_sim_is_not_an_error(self):
+        # An import failure means "no model configured", which is the ordinary
+        # state of an air-gapped appliance — never a reason to log a failure.
+        sys.modules.pop("services.fusion.llm_sim", None)
+        import services.fusion as _f
+        del _f.llm_sim
+        autofuse.schedule("case_1")
+        self.settle()
+        self.assertEqual(self.store.report_llm_flags(), [False])
+        self.assertNotIn("Report refresh failed", self.store.actions())
+
+    def test_nothing_new_means_no_report_either(self):
+        self.store._stale = []; self.store._per_case.clear()
+        autofuse.schedule("case_1")
+        self.settle()
+        self.assertEqual(self.store.reports, [],
+                         "no new data, no rebuild, and above all no billed call")
+
+    def test_a_failed_fuse_does_not_narrate(self):
+        # Narrating a graph that was not rebuilt would write a report describing
+        # data the case does not have.
+        self.store.raise_always = RuntimeError("boom")
+        autofuse.schedule("case_1")
+        self.settle()
+        self.assertEqual(self.store.reports, [])
+
+    def test_an_opted_out_case_narrates_nothing(self):
+        self.store.case = {"name": "QA case", "auto_fuse": False}
+        autofuse.schedule("case_1")
+        self.settle()
+        self.assertEqual(self.store.reports, [])
+
+    def test_narration_can_be_turned_off_on_its_own(self):
+        # The support escape hatch: keep the graph current, stop spending tokens.
+        self.store.case = {"name": "QA case", "auto_report": False}
+        autofuse.schedule("case_1")
+        self.settle()
+        self.assertEqual(len(self.store.fuses), 1, "the graph half must still run")
+        self.assertEqual(self.store.reports, [])
+
+    def test_absent_auto_report_reads_as_on(self):
+        self.assertTrue(autofuse._report_enabled({}))
+        self.assertTrue(autofuse._report_enabled({"auto_report": True}))
+        self.assertFalse(autofuse._report_enabled({"auto_report": False}))
+
+    def test_a_report_failure_does_not_undo_the_fuse(self):
+        # The crash-loop flag is the fuse's, and it was cleared before this step.
+        # A narration failure must not set it again, or the NEXT automatic fuse
+        # stands down over a report problem.
+        self.store.report_raises = RuntimeError("provider exploded")
+        autofuse.schedule("case_1")
+        self.settle()
+        self.assertEqual(len(self.store.fuses), 1)
+        self.assertIs(self.store.case.get("auto_fuse_incomplete"), False)
+        self.assertIn("Report refresh failed", self.store.actions())
+
+    def test_a_report_failure_is_named_as_a_report_failure(self):
+        # It used to be possible for this to escape into _fire's handler and be
+        # logged as "Refusion failed" — blaming the fuse, which had succeeded.
+        self.store.report_raises = RuntimeError("provider exploded")
+        autofuse.schedule("case_1")
+        self.settle()
+        self.assertNotIn("Refusion failed", self.store.actions())
+
+
+class TestABusyReportIsRetried(_Base):
+    """An LLM report runs for minutes; a second collection can land inside one.
+
+    The in-flight report was started from the PREVIOUS graph, so it will finish
+    describing data the case has already moved past. Dropping the second request
+    leaves exactly the stale report this feature exists to prevent.
+    """
+
+    def test_a_busy_report_is_retried(self):
+        self.store.report_busy_times = 1
+        autofuse.schedule("case_1")
+        self.settle()
+        self.assertEqual(len(self.store.reports), 2)
+
+    def test_the_deferral_is_recorded(self):
+        self.store.report_busy_times = 1
+        autofuse.schedule("case_1")
+        self.settle()
+        self.assertIn("Report refresh deferred", self.store.actions())
+
+    def test_it_gives_up_after_a_bounded_number_of_tries(self):
+        self.store.report_busy_times = 99
+        autofuse.schedule("case_1")
+        self.settle(seconds=4.0)
+        self.assertEqual(len(self.store.reports), autofuse.MAX_REPORT_RETRIES)
+        self.assertIn("Report not refreshed", self.store.actions())
+
+    def test_the_retry_does_not_re_fuse(self):
+        # Re-arming the FUSE timer would be useless: the graph is already current,
+        # so _fire finds nothing stale and returns before reaching the report.
+        self.store.report_busy_times = 2
+        autofuse.schedule("case_1")
+        self.settle()
+        self.assertEqual(len(self.store.fuses), 1)
+        self.assertEqual(len(self.store.reports), 3)
+
+    def test_cancel_stops_a_pending_report_retry(self):
+        self.store.report_busy_times = 99
+        autofuse.schedule("case_1")
+        deadline = time.time() + 2.0
+        while time.time() < deadline and not autofuse._REPORT_TIMERS:
+            time.sleep(0.005)
+        self.assertTrue(autofuse.cancel("case_1"))
+        self.assertEqual(autofuse._REPORT_TIMERS, {})
+
+    def test_report_timers_are_daemon_threads(self):
+        self.store.report_busy_times = 99
+        autofuse.schedule("case_1")
+        deadline = time.time() + 2.0
+        while time.time() < deadline and not autofuse._REPORT_TIMERS:
+            time.sleep(0.005)
+        for t in autofuse._REPORT_TIMERS.values():
+            self.assertTrue(t.daemon, "a retry timer must never hold up a shutdown")
 
 
 class TestItIsANoOpWhenNothingIsNew(_Base):

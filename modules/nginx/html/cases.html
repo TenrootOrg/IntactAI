@@ -447,70 +447,8 @@ function costBadge(ce){
   return `<span class="stat" title="Cost of one report generation (LLM) with ${esc(ce.model)} — report + advisory (2 passes), driven almost entirely by the INPUT context (raw vs distilled); output tokens are the same either way. ~${(ce.output_tokens||0).toLocaleString()} output tokens. BEFORE = feeding raw rows (${((ce.before&&ce.before.input_tokens)||0).toLocaleString()} in); AFTER = the distilled fusion payload (${((ce.after&&ce.after.input_tokens)||0).toLocaleString()} in). Tune 'LLM payload' + 'Output token cap'.">
     <span style="color:var(--muted)">${_usd(before)}</span> → <b style="color:var(--warn,#d29922)">${_usd(after)}</b> /report${sim} <span style="color:var(--muted)">(${esc(ce.model)})</span></span>`;
 }
-// The "new run(s) available" banner, lifted out of render() so it can be updated
-// on its own. render() rebuilds #main.innerHTML wholesale — calling it from a
-// timer would remount every tab, losing scroll position, expanded evidence rows,
-// a half-typed chat message and any open detail. The watcher below rewrites only
-// #stalebar, so the analyst's view is never disturbed by something they did not do.
-// The bar above the tabs. It NEVER offers Refusion: new data is folded into the
-// graph automatically, so there is nothing for the operator to trigger. Its only
-// job is to say the data moved and that the written report is now behind — the
-// one thing that still needs a deliberate, billable click. (A manual Refusion
-// still exists for when it is genuinely wanted; it lives in Configuration.)
-function staleBar(info){
-  if(!info) return '';
-  const bar=(colour,bg,body)=>`<div style="margin:8px 0;padding:8px 12px;border:1px solid ${colour};border-radius:6px;background:${bg};color:${colour};font-size:13px;display:flex;align-items:center;gap:10px;justify-content:space-between">${body}</div>`;
-  const newReport=`<button onclick="doRescanLLM('${info.case_id}')" style="cursor:pointer;background:var(--acc);border-color:var(--acc)">✨ New report</button>`;
-
-  // The graph moved on under this page. Deliberately not redrawn for them — an
-  // analyst mid-triage would lose their scroll, their open finding and their place
-  // in the risk order. Offer the reload; let them take it when ready.
-  if(info.bg_refreshed){
-    return bar('#3fb950','#0f2417',
-      `<span>✓ New data was folded in automatically. This view still shows the earlier scan — reload to see it, and generate a new report to bring the written analysis up to date.</span>
-       <span style="display:flex;gap:8px;white-space:nowrap">
-         <button onclick="openCase('${info.case_id}')" style="cursor:pointer;background:var(--ok,#3fb950);border-color:var(--ok,#3fb950);color:#0d1117">↻ Show new data</button>${newReport}
-       </span>`);
-  }
-  if(!info.is_stale) return '';
-  let msg;
-  if(info.data_stale){
-    const d = info.data_stale;
-    msg = `ℹ <b>${d === 1 ? '1 new run' : d + ' new runs'}</b> landed and ${d === 1 ? 'is' : 'are'} being folded in automatically. The <b>report &amp; chat</b> still reflect the earlier scan — generate a new report when you want them refreshed.`;
-  }else{
-    // The graph is current and the report is behind. Say WHICH of the two causes
-    // it was rather than guessing: this used to read "You've made changes (triage /
-    // timeline validations)" unconditionally, which became wrong more often than
-    // right once fusion went automatic — the usual reason the report is behind is
-    // now new data folded in while nobody touched triage at all.
-    //
-    // report_stale is the count of completed member runs the report does not
-    // reflect, so it separates the two cleanly: any count means new data; no count
-    // with the dirty flag set means nothing landed, so the change was triage.
-    // report_dirty is NOT evidence that anyone triaged: it is set by ANY re-fuse
-    // that leaves the report frozen, and an automatic data fuse is exactly that.
-    // So new data is asserted (report_stale counts it) while triage is only
-    // hedged — claiming "you've made changes" when the operator had not touched
-    // the case is the bug this message already had, in the other direction.
-    const n = info.report_stale || 0;
-    const runs = n === 1 ? '1 run' : `${n} runs`;
-    msg = n
-      ? `⚠ The <b>report &amp; chat are not up to date</b> — <b>${runs} of new data</b> ${n === 1 ? 'has' : 'have'} been fused into the case since they were written, along with any triage / timeline changes you've made.`
-      : info.report_dirty
-        ? `⚠ The <b>report &amp; chat are not up to date</b> — your <b>triage / timeline validations</b> have changed since they were written.`
-        : `ℹ The data is current. The report &amp; chat reflect an earlier scan.`;
-  }
-  return bar('#d29922','#2b2400',
-    `<span>${msg}</span><span style="display:flex;gap:8px;white-space:nowrap">${newReport}</span>`);
-}
 function render(info,md,g){
   curInfo=info; curGraph=g;
-  // Snapshot of what THIS render is showing. The watcher compares against it to
-  // tell "new runs have arrived" (banner: click Refusion) apart from "a
-  // background fuse already folded them in" (banner: reload to see it).
-  window._renderedFused = (info.fused_run_ids || []).join(',');
-  window._renderedEntities = (info.counts || {}).entities || 0;
-  info.bg_refreshed = false;
   $('#llmbadge').textContent='LLM: '+(info.llm_enabled?'real':'simulated (no key)');
   const aud=info.audience||'both', mk=info.masking||{};
   const opt=(v,l,cur)=>`<option value="${v}" ${cur===v?'selected':''}>${l}</option>`;
@@ -521,7 +459,6 @@ function render(info,md,g){
         <div><h1 style="margin:0;font-size:19px">${esc(info.name||info.case_id)}</h1>
           <div style="color:var(--muted);font-size:12px">${tw.start?('since '+esc(tw.start)):'no start date'}</div></div>
       </div>
-      <div id="stalebar">${staleBar(info)}</div>
       <div style="margin:6px 0 14px">${statSpans(g)}</div>
       <div class="tabs">
         <!-- Tab ORDER is the investigative order, not the order these were built.
@@ -543,74 +480,23 @@ function render(info,md,g){
       <div id="tabc"></div>
     </div>`;
   drawTab(md);
-  startStaleWatch(info.case_id);
 }
 
-// ── Watch for new data ──────────────────────────────────────────────────────
-// Staleness is already computed server-side on every GET /api/cases/<id>
-// (store.stale_member_runs -- a member scan, no graph build) and the banner above
-// already knows how to display it. The only missing piece was that nothing
-// re-checked, so an analyst sitting on a tab learned about new runs only by
-// reloading the page.
+// The case view no longer watches for staleness.
 //
-// Deliberately NOT an auto-fuse. A fuse rebuilds the entire case graph (measured:
-// 33s for 9 hosts / 18,749 entities) and re-ranks every finding; doing that under
-// an analyst mid-triage costs them their place, and no amount of locking prevents
-// that. This raises the banner and stops there -- the operator fuses when ready.
-const STALE_POLL_MS = 20000;
-let _staleInFlight = false;
-function stopStaleWatch(){
-  if(window._staleTimer){ clearInterval(window._staleTimer); window._staleTimer=null; }
-}
-function startStaleWatch(id){
-  stopStaleWatch();
-  // Unconditional: watching for new data was briefly a checkbox and that was the
-  // wrong call. One read of a cheap endpoint every 20s, which redraws nothing, is
-  // not a decision an operator has any basis to make -- and switching it off only
-  // ever produced a stale screen with no hint that it was stale.
-  if(!curInfo) return;
-  window._staleTimer = setInterval(()=>staleTick(id), STALE_POLL_MS);
-}
-function staleTick(id){
-  // Fail safe, in this order:
-  //  - the case view is gone (back to the list, another page): stop, so the timer
-  //    cannot outlive what it was watching;
-  //  - the browser tab is backgrounded: skip, nobody is looking;
-  //  - a previous tick has not come back: skip, so a slow backend can never stack
-  //    requests -- that is what turns a poll into a load generator.
-  if(!$('#stalebar') || !curInfo || curInfo.case_id!==id){ stopStaleWatch(); return; }
-  if(document.hidden || _staleInFlight) return;
-  _staleInFlight = true;
-  fetch('/api/cases/'+id)
-    .then(r => r.ok ? r.json() : null)
-    .then(d => {
-      // A failed or partial read leaves the last known banner untouched and retries
-      // on the next tick. Never clear a banner we could not verify: a transient
-      // error must not tell the analyst the data is current when it is not.
-      if(!d || d.case_id!==id || !curInfo || curInfo.case_id!==id) return;
-      // Did the stored graph move on under us? Compare the fused-run set this
-      // view was rendered from against what the server now reports.
-      const nowFused = (d.fused_run_ids || []).join(',');
-      const bg = !!window._renderedFused && nowFused !== window._renderedFused;
-      if(curInfo.is_stale===d.is_stale && curInfo.data_stale===d.data_stale
-         && curInfo.report_stale===d.report_stale
-         && curInfo.report_dirty===d.report_dirty
-         && curInfo.bg_refreshed===bg) return;
-      curInfo.bg_refreshed = bg;
-      // Adopt ONLY the staleness fields. Copying the whole payload would swap
-      // config out from under the rail the operator may be editing right now.
-      curInfo.is_stale=d.is_stale; curInfo.data_stale=d.data_stale;
-      curInfo.report_stale=d.report_stale; curInfo.report_dirty=d.report_dirty;
-      const bar=$('#stalebar'); if(bar) bar.innerHTML=staleBar(curInfo);
-    })
-    .catch(()=>{})                      // a poll error is never surfaced into the view
-    .finally(()=>{ _staleInFlight=false; });
-}
-// Coming back to a backgrounded tab: check once immediately rather than waiting out
-// the rest of the interval, which is the moment the answer is most likely stale.
-document.addEventListener('visibilitychange',()=>{
-  if(!document.hidden && window._staleTimer && curInfo) staleTick(curInfo.case_id);
-});
+// It used to poll GET /api/cases/<id> every 20s and raise a banner: "N new runs
+// landed", "the report & chat are not up to date", "new data was folded in --
+// reload". Every one of those messages existed because something in the case
+// could silently fall behind, and none of them can any more: a member run
+// landing rebuilds the graph AND regenerates the report on its own
+// (services/fusion/autofuse.py), and a triage, timeline or identity edit re-fuses
+// the graph in the same request the operator made it in. There is nothing left
+// for a banner to announce and nothing for the operator to press.
+//
+// The server still computes data_stale / report_stale / is_stale on the case
+// payload -- they are the autofuse scheduler's own input, and cheap -- but no
+// screen reads them.
+
 function setTab(t){
   tab=t;
   // Move the active underline to the clicked tab (the tab bar isn't re-rendered,
@@ -999,7 +885,6 @@ async function doRefusion(id){
     else toast('✓ Refusion complete — data, risk & timeline updated');
   }catch(e){ toast('✗ Refusion failed — see the Log for details'); }
   if(typeof logRefresh==='function') logRefresh();   // pull the final rows at once
-  staleTick(id);          // the banner is stale about staleness — re-check it now
 }
 // Rescan (LLM) = SAVE config → re-fuse → regenerate report + chat narrative with the LLM.
 async function doRescanLLM(id){
