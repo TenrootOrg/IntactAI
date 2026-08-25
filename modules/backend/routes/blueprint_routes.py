@@ -162,6 +162,16 @@ def seed_default_blueprints():
                 # services/timesketch_service.py wait_timeout flow.
                 settings['timesketch_processing_timeout'] = 259200
                 changed = True
+            # CPU cap dropped 80 → 50: a KAPE collection runs on a CUSTOMER'S
+            # production endpoint and 80% of it is not ours to take. Unlike the
+            # velociraptor and memory branches this one does NOT replace the whole
+            # settings block, so without this line an upgraded appliance kept 80
+            # while a fresh install shipped 50 — the same product answering
+            # differently depending on how the box got here. Only rows still on the
+            # old default move; anything else is the operator's choice.
+            if settings.get('cpu_limit') == 80:
+                settings['cpu_limit'] = 50
+                changed = True
             if changed:
                 existing['settings'] = settings
                 save_timesketch_blueprint(existing)

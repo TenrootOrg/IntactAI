@@ -73,20 +73,44 @@ except Exception:
         u_undo_pin timesketch
     ' 2>/dev/null
 }
-OUT="$(run_helper "versions:
+# Asserted on the ARGUMENTS the undo would run with, not on the literal quoting
+# of the command string. The string is built with printf %q now (the undo stack
+# is eval'd, and a version value carrying a single quote used to close the
+# quoting and hand the rest to the shell) -- so `'timesketch' '20260630'` became
+# `timesketch 20260630`, which is the same command and a different string. A
+# test that pins the quoting fails on a fix that changes nothing it cares about.
+# `eval set --` re-parses exactly as the unwind will.
+undo_args() {    # $1 = config body -> "<fn>|<arg1>|<arg2>"
+    local line; line="$(run_helper "$1")"
+    line="${line#UNDO: }"
+    eval "set -- $line" 2>/dev/null || { echo "UNPARSEABLE: $line"; return; }
+    local IFS='|'; echo "$*"
+}
+OUT="$(undo_args "versions:
   timesketch: '20260630'
   elk: '9.4.4'")"
-if [[ "$OUT" == *"_pin_module_version 'timesketch' '20260630'"* ]]; then
+if [[ "$OUT" == "_pin_module_version|timesketch|20260630" ]]; then
     ok "an existing pin is undone by restoring the previous value"
 else
     fail "an existing pin is undone by restoring the previous value" "got: ${OUT:-<nothing>}"
 fi
-OUT="$(run_helper "versions:
+OUT="$(undo_args "versions:
   elk: '9.4.4'")"
-if [[ "$OUT" == *"_unpin_module_version 'timesketch'"* ]]; then
+if [[ "$OUT" == "_unpin_module_version|timesketch" ]]; then
     ok "an absent pin is undone by removing the key"
 else
     fail "an absent pin is undone by removing the key" "got: ${OUT:-<nothing>}"
+fi
+# The quoting itself, stated as the property that matters: a value carrying a
+# single quote must survive the eval as ONE argument and execute nothing.
+OUT="$(undo_args "versions:
+  timesketch: \"2026'; touch ${TMP}/PWNED; echo '0630\"")"
+if [[ -e "${TMP}/PWNED" ]]; then
+    fail "a quote in a pin value cannot reach the shell" "the undo eval ran injected code"
+elif [[ "$OUT" == "_pin_module_version|timesketch|"* && "$OUT" != "UNPARSEABLE"* ]]; then
+    ok "a quote in a pin value cannot reach the shell"
+else
+    fail "a quote in a pin value cannot reach the shell" "got: ${OUT:-<nothing>}"
 fi
 
 echo

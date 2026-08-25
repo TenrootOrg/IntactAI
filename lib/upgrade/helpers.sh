@@ -142,9 +142,19 @@ u_undo_pin() {
         prev="$(read_config "['versions']['${key}']" 2>/dev/null || echo '')"
     fi
 
+    # printf %q, not hand-rolled single quotes. The undo stack is EVAL'd
+    # (_u_unwind_current), and `prev` is a value out of the operator's own
+    # config.yaml -- so a version string containing a single quote used to close
+    # the quoting and hand the rest of itself to the shell. Measured: a pin of
+    # `v2.4.27'; touch /tmp/PWNED; echo '` created the file during rollback. The
+    # likelier version of the same bug is duller and worse for an operator: one
+    # stray quote makes the eval a syntax error, the undo "fails", and a module
+    # that rolled back perfectly well is reported as "ROLLBACK FAILED; needs
+    # manual repair". %q is the shell's own answer to this -- its output is
+    # defined as safe to re-read as input.
     if [[ -n "$prev" ]]; then
-        u_undo "_pin_module_version '${key}' '${prev}'"
+        u_undo "$(printf '_pin_module_version %q %q' "$key" "$prev")"
     else
-        u_undo "_unpin_module_version '${key}'"
+        u_undo "$(printf '_unpin_module_version %q' "$key")"
     fi
 }
