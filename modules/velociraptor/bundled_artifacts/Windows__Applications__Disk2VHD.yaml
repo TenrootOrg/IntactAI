@@ -17,7 +17,7 @@ precondition: SELECT OS From info() where OS = 'windows'
 
 parameters:
   - name: OutputPath
-    default: "\\\\192.168.10.136:5000\\Share\\comp.vhd"
+    default: "\\\\SERVER\\Share\\image.vhd"
     description: "(Enter full path with output filename with extention, can be UNC)"
 
 
