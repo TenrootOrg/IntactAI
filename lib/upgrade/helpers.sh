@@ -74,10 +74,74 @@ read_env_var() {
 # refusal makes every subsequent attempt fail identically. Observed 2026-08-14:
 # three consecutive runs only reached the install path because the pin was
 # cleared by hand between them.
+# The config.yaml `versions:` block as it stood BEFORE any module ran.
+#
+# Populated once by u_snapshot_pins (scripts/upgrade.sh, right after
+# plan_build) and read by u_undo_pin. Declared -gA so it survives into the
+# module functions, which run in this same shell for every non---timeout step.
+declare -gA U_PIN_BEFORE=()
+U_PIN_SNAPSHOT_TAKEN=0
+
+# Record every versions.<key> before the package merge overwrites them.
+#
+# Deliberately NOT reused from ${CONFIG_FILE}.pre-upgrade-backup: that file is
+# written by _intact_merge_versions AFTER its own early-return, is never
+# restored by anything, and on an `--only <module>` run intact never executes
+# -- so on disk it is a stale copy from some previous run, and restoring from
+# it would pin last week's version.
+u_snapshot_pins() {
+    local m v
+    U_PIN_BEFORE=()
+    for m in "${UPGRADE_ORDER[@]}"; do
+        v="$(read_config "['versions']['${m}']" 2>/dev/null || echo '')"
+        [[ -n "$v" ]] && U_PIN_BEFORE["$m"]="$v"
+    done
+    # The pre-rename spelling, so a box old enough to pin `cloudtrail` still
+    # has something to restore for aws_sigma.
+    v="$(read_config "['versions']['cloudtrail']" 2>/dev/null || echo '')"
+    [[ -n "$v" && -z "${U_PIN_BEFORE[aws_sigma]:-}" ]] && U_PIN_BEFORE[aws_sigma]="$v"
+    U_PIN_SNAPSHOT_TAKEN=1
+    log_info "  recorded ${#U_PIN_BEFORE[@]} config.yaml version pin(s) for rollback"
+}
+
 u_undo_pin() {
     local module="$1" key="${2:-$1}" prev
 
-    prev="$(read_config "['versions']['${key}']" 2>/dev/null || echo '')"
+    # ELK IS DELIBERATELY EXEMPT, and this is not an oversight.
+    #
+    # _u_elk_restore_env holds ELASTIC_VERSION/KIBANA_VERSION FORWARD on
+    # rollback when Elasticsearch has already started on the new image, because
+    # ES refuses to open a data directory written by a newer version. Restoring
+    # versions.elk to the older pin would put config.yaml BELOW the running
+    # node -- and update_env_files re-derives .env from config.yaml, so the
+    # next repair would push .env back down and the node would refuse to start.
+    # That is the ELK-rollback-bricks-ES failure, reintroduced through a
+    # different door. Leave elk's pin where the upgrade put it.
+    if [[ "$key" == "elk" ]]; then
+        log_info "  elk: version pin deliberately not rolled back (ES cannot open a newer data dir)"
+        return 0
+    fi
+
+    # The snapshot is the whole point: reading config.yaml HERE returns the
+    # value the package merge already wrote, which is what made this a no-op.
+    # Fall back to the old behaviour only when no snapshot exists (an
+    # install.sh-driven path, or a caller that never went through main()), so
+    # this is never a behaviour change where there is nothing better to use.
+    if (( U_PIN_SNAPSHOT_TAKEN )); then
+        prev="${U_PIN_BEFORE[$key]:-}"
+        if [[ -z "$prev" ]]; then
+            # The key was absent before the upgrade -- e.g. intact-20260615 has
+            # no versions.aws_sigma at all. Unpinning would delete a key that
+            # _intact_validate_config_pins then requires for an enabled module,
+            # and nothing re-adds it on an `--only <module>` repair. Leaving it
+            # alone is the conservative half of the trade.
+            log_info "  ${key}: no pre-upgrade pin recorded; leaving config.yaml untouched on rollback"
+            return 0
+        fi
+    else
+        prev="$(read_config "['versions']['${key}']" 2>/dev/null || echo '')"
+    fi
+
     if [[ -n "$prev" ]]; then
         u_undo "_pin_module_version '${key}' '${prev}'"
     else

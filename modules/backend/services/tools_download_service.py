@@ -900,7 +900,11 @@ def configure_inventory(tools_dir: str, config: Dict, logger: Callable = None,
     # Query and log final inventory table
     inventory_table = []
     try:
-        vql = "SELECT name, serve_locally, serve_url FROM inventory()"
+        # `hash` too: it is the only field that distinguishes "an artifact
+        # ASKED for this tool to be served locally" from "the server actually
+        # holds the binary". Without it the banner below counted the former
+        # and reported it as the latter.
+        vql = "SELECT name, serve_locally, serve_url, hash FROM inventory()"
         request = api_pb2.VQLCollectorArgs(
             max_wait=30, max_row=500,
             Query=[api_pb2.VQLRequest(VQL=vql)]
@@ -929,17 +933,56 @@ def configure_inventory(tools_dir: str, config: Dict, logger: Callable = None,
         # VelociraptorWindowsMSI). Listing it twice, and counting it twice in
         # the total, is noise either way, and the count is what an operator
         # reads to decide whether the tool set is complete.
-        served = sorted({
-            it.get('name', 'Unknown')
-            for it in inventory_table if it.get('serve_locally')
-        })
+        #
+        # SERVED-LOCALLY IS A REQUEST, NOT A FACT.
+        #
+        # `serve_locally` means "this tool should be fetched from the server
+        # rather than the internet" -- it is set by any artifact that declares
+        # `serve_locally: true`, whether or not a binary was ever supplied.
+        # Reporting that as "N tool(s) served locally" was measurably wrong:
+        # on a real air-gapped box 2026-08-25 it printed 42 while only 7 of
+        # those entries had a file behind them, the other 35 still pointing at
+        # github.com/live.sysinternals.com. On that box every artifact using
+        # SharpHound, Aftermath, SysmonBinary, capa or sigcheck would fail at
+        # collection time, and the install log said the opposite.
+        #
+        # The two registration paths key differently, which is why they never
+        # reconcile: lib/upgrade/velo_refresh.sh registers by FILENAME
+        # (`autorunsc64.exe`), while artifacts declare tools by TOOL NAME
+        # (`SharpHound`). Those are different inventory rows.
+        #
+        # So report both numbers, and name what is missing. `hash` is populated
+        # only when the server actually holds the file. If the field is absent
+        # entirely (an older Velociraptor that does not expose it), fall back
+        # to the old single count rather than claiming everything is missing.
+        wanted = {}
+        for it in inventory_table:
+            if it.get('serve_locally'):
+                wanted.setdefault(it.get('name', 'Unknown'), False)
+                if it.get('hash'):
+                    wanted[it.get('name', 'Unknown')] = True
+        served = sorted(wanted)
+        have_hash_field = any('hash' in it for it in inventory_table)
+        with_file = sorted(n for n, ok in wanted.items() if ok)
+        missing = sorted(n for n, ok in wanted.items() if not ok)
+
         log("=" * 60)
         log("TOOLS SERVED LOCALLY")
         log("=" * 60)
         for name in served:
-            log(f"  ✓ {name}")
+            log(f"  {'✓' if wanted[name] else '·'} {name}")
         log("-" * 60)
-        log(f"{len(served)} tool(s) served locally")
+        if not have_hash_field:
+            log(f"{len(served)} tool(s) marked serve_locally")
+        elif missing:
+            log(f"{len(with_file)} of {len(served)} tool(s) are actually held locally; "
+                f"{len(missing)} have no binary on the server")
+            log(f"  no binary: {', '.join(missing)}")
+            log("  Artifacts using those will try to reach the internet and will")
+            log("  FAIL on an air-gapped box. Upload them via Settings -> Tools,")
+            log("  or run Maintenance -> Download Tools on a connected box.")
+        else:
+            log(f"{len(served)} tool(s) served locally")
         log("=" * 60)
 
     return {

@@ -511,6 +511,26 @@ main() {
     plan_current_versions
     plan_log_environment
     plan_build
+
+    # THE PINS AS THEY WERE, BEFORE THE PACKAGE MERGE OVERWRITES THEM.
+    #
+    # u_undo_pin captures its rollback value by reading config.yaml at the
+    # moment it is called -- inside each module, i.e. stage 5-ish. But the
+    # `intact` module runs FIRST and _intact_merge_versions has by then already
+    # written the package's NEW pins into config.yaml. So the "undo" restored
+    # the new version: a no-op. Every rollback since has left config.yaml
+    # pinned to the version it rolled back FROM, disagreeing with the .env the
+    # rollback correctly restored -- and update_env_files (install.sh,
+    # change_ip.sh) re-derives .env FROM config.yaml, so the next repair
+    # silently pushes the box forward again with no upgrade running.
+    #
+    # Observed 2026-08-25: iris failed, rolled back to v2.4.27 in its .env, and
+    # config.yaml kept v2.4.29.
+    #
+    # Captured here because this is the last point that is still (a) after the
+    # config is readable and (b) before any module can touch it -- including on
+    # an `--only <module>` run, where `intact` never executes at all.
+    u_snapshot_pins
     # --dry-run --json is a MACHINE-READABLE answer for the dashboard, so the
     # human table and the advisory chatter below would corrupt the stream.
     # Everything that follows still runs -- the refusals below are the point of

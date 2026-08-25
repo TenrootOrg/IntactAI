@@ -7,6 +7,62 @@
 # boot. The dump is NEW here -- the Python upgrader took none, the docs ask
 # for one, and it costs seconds.
 
+# WHY THIS DIAGNOSTIC EXISTS.
+#
+# On 2026-08-25 a real air-gapped upgrade failed with
+# "dependency failed to start: container intact_iris_rabbitmq is unhealthy",
+# 13.06 s after that container started -- and the SAME container reported
+# Healthy 28.41 s after start, during the rollback that followed. rabbitmq
+# needs ~28 s for an Erlang/Mnesia cold boot under memory pressure, so 13 s is
+# far too early to condemn it.
+#
+# That should have been impossible. modules/iris/docker-compose.yaml declares
+# `start_period: 120s` (added 2026-08-18 for exactly this failure), the file is
+# present in the release, the upgrade refreshed it before starting, and a later
+# `docker inspect` reported StartPeriod=120000000000. Within a 120 s grace
+# window a failing probe cannot count against `retries`, so the container could
+# not be declared unhealthy at 13 s -- yet it was.
+#
+# The arithmetic and the configuration disagree, and the evidence needed to
+# settle it (the container as it existed at that moment) is destroyed by the
+# rollback that recreates it. So: record what the ENGINE actually sees, both
+# from the compose file it is about to apply and from the running container if
+# the step fails. Cheap, and it turns "we cannot explain this" into a log line
+# the next occurrence answers by itself. Never fails the step -- diagnostics
+# must not be able to break the thing they are observing.
+_u_iris_log_healthcheck() {
+    local dir="$1" when="$2" cid
+
+    if [[ "$when" == "before" ]]; then
+        local declared
+        # Flag-based, not an awk RANGE: `/^  iris-rabbitmq:/,/^  [^ ]/` would
+        # end on its own start line (both match "two spaces then a token") and
+        # capture exactly one line. Verified against the shipped compose file.
+        declared="$(awk '/^  iris-rabbitmq:/{f=1;next} f && /^  [^ ]/{f=0} f && $1 ~ /^(interval|timeout|retries|start_period):$/{printf "%s ", $0}' \
+                    "${dir}/docker-compose.yaml" 2>/dev/null | tr -s ' ')"
+        log_info "  iris healthcheck (as declared in the compose file being applied): ${declared:-<none found>}"
+        return 0
+    fi
+
+    # The step failed. Capture the container's EFFECTIVE healthcheck and its
+    # recent probe results before anything recreates it.
+    cid="$("${DOCKER_BIN:-docker}" ps -aq --filter name='^intact_iris_rabbitmq$' 2>/dev/null | head -1)"
+    if [[ -z "$cid" ]]; then
+        log_warn "  iris rabbitmq: no container to inspect (already removed)"
+        return 0
+    fi
+    log_warn "  iris rabbitmq failed its healthcheck — recording what docker actually applied:"
+    log_warn "    effective: $("${DOCKER_BIN:-docker}" inspect -f \
+        'StartPeriod={{.Config.Healthcheck.StartPeriod}} Interval={{.Config.Healthcheck.Interval}} Retries={{.Config.Healthcheck.Retries}}' \
+        "$cid" 2>/dev/null || echo '<inspect failed>')"
+    log_warn "    started:   $("${DOCKER_BIN:-docker}" inspect -f '{{.State.StartedAt}}' "$cid" 2>/dev/null || echo '?')"
+    log_warn "    status:    $("${DOCKER_BIN:-docker}" inspect -f '{{.State.Health.Status}} after {{len .State.Health.Log}} probe(s)' "$cid" 2>/dev/null || echo '?')"
+    # Probe transcript: the definitive answer to "was the grace window honoured".
+    "${DOCKER_BIN:-docker}" inspect -f '{{range .State.Health.Log}}      probe start={{.Start}} exit={{.ExitCode}}
+{{end}}' "$cid" 2>/dev/null >>"${LOG_FILE:-/dev/null}" || true
+    return 0
+}
+
 upgrade_module_iris() {
     local target="$1"
     local dir; dir="$(_u_module_dir iris)"
@@ -63,7 +119,9 @@ upgrade_module_iris() {
     # missing/empty, never rotates an existing secret -- so this is a no-op
     # on every normal upgrade, where they already exist.
     u_do "generate IRIS secrets" -- generate_iris_secrets
+    _u_iris_log_healthcheck "$dir" before
     u_do --timeout 900 "start iris" -- _u_compose "$dir" up -d --no-build --pull never
+    (( $? == 0 )) || _u_iris_log_healthcheck "$dir" after
 
     u_end iris rollback 240
     local rc=$?

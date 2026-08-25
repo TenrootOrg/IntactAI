@@ -126,6 +126,12 @@ upgrade_module_velociraptor() {
     # pin -- and for Elasticsearch a regressed pin means the node refuses to
     # start at all against a data directory a newer version wrote. Observed on
     # this box 2026-08-13. plaso and aws_sigma already did this.
+    # Registered BEFORE the pin, so the undo stack holds the pre-upgrade value.
+    # This module pinned config.yaml with no undo at all, so a velociraptor
+    # rollback restored its .env and left config.yaml naming the version it had
+    # just rolled back from -- and update_env_files re-derives .env FROM
+    # config.yaml, so the next repair pushed it forward again unattended.
+    u_undo_pin velociraptor
     u_do "pin velociraptor in config.yaml" -- _pin_module_version velociraptor "$target"
     u_do "point velociraptor at this appliance" -- _velo_stamp_domain "$envf"
     u_do --timeout 600 "stage client binaries" -- _velo_stage_binaries "$target"
