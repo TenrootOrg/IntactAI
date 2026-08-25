@@ -582,6 +582,26 @@ main() {
         velo_refresh "$UPKG_DIR"
     fi
 
+    # BACKEND INTEGRATIONS THE MODULE LOOP CANNOT REACH.
+    #
+    # bootstrap_iris_api_key is called from upgrade_module_iris, so it only
+    # runs when the IRIS MODULE ITSELF moves. On the ordinary upgrade -- intact
+    # moves, every other module is already at target and reports noop -- it is
+    # never reached, so a box whose backend has no IRIS api key never gets one
+    # no matter how many times it upgrades. Measured 2026-08-25: a 0824 -> 0825
+    # upgrade left `secrets` with zero iris rows because iris was a noop, with
+    # the bootstrap appearing zero times in the log.
+    #
+    # Safe to call unconditionally, and cheap: the function returns early when
+    # IRIS is disabled, skips when the key is already stored (the sentinel
+    # check that had been silently failing until 2026-08-24), and on any
+    # failure warns and returns 0 rather than failing the upgrade. `|| true`
+    # anyway, because a missing integration must never turn a good upgrade
+    # into a bad one.
+    if declare -F bootstrap_iris_api_key >/dev/null; then
+        bootstrap_iris_api_key || true
+    fi
+
     refresh_nginx_upstreams
     fix_source_permissions
     u_post_upgrade_gate
