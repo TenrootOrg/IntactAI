@@ -352,7 +352,7 @@ def create_collections(run_id, artifacts, settings, client_ids):
 
     stub = api_pb2_grpc.APIStub(channel)
     timeout_seconds = settings.get('timeout', 3600)
-    cpu_limit = settings.get('cpu_limit', 80)
+    cpu_limit = settings.get('cpu_limit', 50)
     # Flow-level resource limits — without these the agentic per-client
     # collection inherits Velociraptor's daemon defaults (1 GiB upload, 1M rows)
     # and can be cancelled mid-flow on a real KAPE-class collection. Defaults

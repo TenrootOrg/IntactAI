@@ -177,7 +177,7 @@ async function onForensicsBlueprintChange(blueprintId) {
     const timeoutEl = document.getElementById('forensics-bp-timeout');
     if (timeoutEl) timeoutEl.textContent = (bp.settings?.timeout || 3600) + 's';
     const cpuEl = document.getElementById('forensics-bp-cpu');
-    if (cpuEl) cpuEl.textContent = (bp.settings?.cpu_limit || 90) + '%';
+    if (cpuEl) cpuEl.textContent = (bp.settings?.cpu_limit || 50) + '%';
     if (infoDiv) infoDiv.classList.remove('hidden');
 }
 
@@ -255,7 +255,7 @@ async function startForensicsCollection() {
                     blueprint_name: blueprint.name || 'Custom',
                     expire_minutes: blueprint.settings?.hunt_expiry || 120,
                     timeout_seconds: blueprint.settings?.timeout || 3600,
-                    cpu_limit: blueprint.settings?.cpu_limit || 90,
+                    cpu_limit: blueprint.settings?.cpu_limit || 50,
                     per_artifact: perArtifact,
                     // Label targeting: [] => run on all clients.
                     include_labels: getSelectedForensicsLabels(),

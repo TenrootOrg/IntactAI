@@ -288,7 +288,7 @@ function renderBlueprintCard(bp) {
         } else {
             pluginLabel = `${ps.length} plugin(s)`;
         }
-        const cpu = bp.settings?.cpu_limit ?? 80;
+        const cpu = bp.settings?.cpu_limit ?? 50;
         settingsHtml = `
             <span>${pluginLabel}</span>
             <span>CPU: ${cpu}%</span>
@@ -296,7 +296,7 @@ function renderBlueprintCard(bp) {
     } else {
         const expiry = bp.settings?.hunt_expiry || 120;
         const timeout = bp.settings?.timeout || 3600;
-        const cpu = bp.settings?.cpu_limit || 90;
+        const cpu = bp.settings?.cpu_limit || 50;
         settingsHtml = `
             <span>${artifactCount} artifacts</span>
             <span>Expiry: ${expiry}m</span>
@@ -442,7 +442,7 @@ async function editBlueprint(blueprintId, type) {
         document.getElementById('blueprint-ts-plaso').value = bp.settings?.plaso_parser || 'win7';
         document.getElementById('blueprint-ts-workers').value = bp.settings?.plaso_workers || 2;
         document.getElementById('blueprint-ts-timeout').value = bp.settings?.collection_timeout || 10000;
-        document.getElementById('blueprint-ts-cpu').value = bp.settings?.cpu_limit || 80;
+        document.getElementById('blueprint-ts-cpu').value = bp.settings?.cpu_limit || 50;
         document.getElementById('blueprint-ts-hasher').value = bp.settings?.plaso_hasher || 'none';
         document.getElementById('blueprint-ts-maxsize').value = bp.settings?.plaso_hasher_size || 100;
         // Flow resource limits (TS path uses collect_client). Defaults match the
@@ -457,13 +457,13 @@ async function editBlueprint(blueprintId, type) {
         toggleHasherSize();
     } else if (type === 'memory') {
         const pluginSet = bp.settings?.plugin_set || [];
-        document.getElementById('blueprint-memory-cpu').value = bp.settings?.cpu_limit ?? 80;
+        document.getElementById('blueprint-memory-cpu').value = bp.settings?.cpu_limit ?? 50;
         document.getElementById('blueprint-memory-max-bytes').value = bp.settings?.max_bytes ?? 68719476736;
         await populateMemoryPluginCheckboxes(pluginSet);
     } else {
         document.getElementById('blueprint-expiry').value = bp.settings?.hunt_expiry || 120;
         document.getElementById('blueprint-timeout').value = bp.settings?.timeout || 3600;
-        document.getElementById('blueprint-cpu').value = bp.settings?.cpu_limit || 90;
+        document.getElementById('blueprint-cpu').value = bp.settings?.cpu_limit || 50;
         // Flow resource limits (Velociraptor / Agentic — applied to hunt() VQL).
         document.getElementById('blueprint-flow-max-rows').value = bp.settings?.flow_max_rows ?? 10000000;
         document.getElementById('blueprint-flow-max-logs').value = bp.settings?.flow_max_logs ?? 1000000;
@@ -693,7 +693,7 @@ async function saveBlueprintFromModal() {
             plaso_parser: document.getElementById('blueprint-ts-plaso').value || 'win7',
             plaso_workers: parseInt(document.getElementById('blueprint-ts-workers').value) || 2,
             collection_timeout: parseInt(document.getElementById('blueprint-ts-timeout').value) || 10000,
-            cpu_limit: parseInt(document.getElementById('blueprint-ts-cpu').value) || 80,
+            cpu_limit: parseInt(document.getElementById('blueprint-ts-cpu').value) || 50,
             plaso_hasher: hasher,
             plaso_hasher_size: hasher !== 'none' ? parseInt(document.getElementById('blueprint-ts-maxsize').value) || 100 : null,
             // Flow resource limits — backend reads these via settings.get(...) in
@@ -732,7 +732,7 @@ async function saveBlueprintFromModal() {
             yara_rulesets: [],
             compression: 'None',
             max_bytes: parseInt(document.getElementById('blueprint-memory-max-bytes').value) || 68719476736,
-            cpu_limit: parseInt(document.getElementById('blueprint-memory-cpu').value) || 80,
+            cpu_limit: parseInt(document.getElementById('blueprint-memory-cpu').value) || 50,
         };
         data = { name, description, settings };
     } else {
@@ -821,7 +821,7 @@ async function onVelociraptorBlueprintChange(blueprintId) {
     document.getElementById('bestpractice-bp-artifact-count').textContent = (bp.artifacts?.length || 0) + ' artifacts';
     document.getElementById('bestpractice-bp-expiry').textContent = (bp.settings?.hunt_expiry || 120) + ' min';
     document.getElementById('bestpractice-bp-timeout').textContent = (bp.settings?.timeout || 3600) + 's';
-    document.getElementById('bestpractice-bp-cpu').textContent = (bp.settings?.cpu_limit || 90) + '%';
+    document.getElementById('bestpractice-bp-cpu').textContent = (bp.settings?.cpu_limit || 50) + '%';
     if (infoDiv) infoDiv.classList.remove('hidden');
 }
 

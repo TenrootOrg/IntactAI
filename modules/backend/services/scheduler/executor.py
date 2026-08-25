@@ -143,7 +143,7 @@ def run_velociraptor_hunt(job_name: str, blueprint_id: str, client_ids: list, op
     settings = blueprint.get('settings', {})
     expire_minutes = settings.get('hunt_expiry', 120)
     timeout_seconds = settings.get('timeout', 3600)
-    cpu_limit = settings.get('cpu_limit', 80)
+    cpu_limit = settings.get('cpu_limit', 50)
     # Flow-level resource limits — bumped from the historical hardcoded values
     # (1M rows / 100K logs / 1 GiB) to defaults that fit real KAPE-class
     # collections. Existing blueprints that don't carry these keys inherit
@@ -335,7 +335,7 @@ def run_timesketch_pipeline(job_meta: dict, client_ids: list):
 
     kape_target = settings.get('kape_target', '_KapeTriage')
     timeout_seconds = settings.get('collection_timeout', 10000)
-    cpu_limit = settings.get('cpu_limit', 80)
+    cpu_limit = settings.get('cpu_limit', 50)
     # KAPE artifact env params (passed into collect_client(env=dict(...))).
     # Defaults match default_blueprints.yaml so even legacy DB rows that
     # predate these keys still get the bumped ceilings.

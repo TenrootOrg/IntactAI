@@ -37,7 +37,7 @@ def seed_default_templates():
             "description": "Single artifact for testing - Windows.System.Pslist only",
             "artifacts": ["Windows.System.Pslist"],
             "parameters": {
-                "CpuLimit": 80,
+                "CpuLimit": 50,
                 "MaxExecutionTimeInSeconds": 300,
                 "MaxIdleTimeInSeconds": 60,
                 "EncryptionScheme": "None"
@@ -50,7 +50,7 @@ def seed_default_templates():
             "description": "Ultra-fast collection (< 2 min) - processes, network, renamed binaries",
             "artifacts": QUICK_TRIAGE_ARTIFACTS,
             "parameters": {
-                "CpuLimit": 80,
+                "CpuLimit": 50,
                 "MaxExecutionTimeInSeconds": 300,
                 "MaxIdleTimeInSeconds": 60,
                 "EncryptionScheme": "None"
@@ -63,7 +63,7 @@ def seed_default_templates():
             "description": "Comprehensive collection with all recommended artifacts",
             "artifacts": DEFAULT_ARTIFACTS,
             "parameters": {
-                "CpuLimit": 80,
+                "CpuLimit": 50,
                 "MaxExecutionTimeInSeconds": 3600,
                 "MaxIdleTimeInSeconds": 600,
                 "EncryptionScheme": "None"

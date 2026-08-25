@@ -50,7 +50,7 @@ async function runBestPracticeHunts() {
     const artifacts = blueprint.artifacts;
     const expireMinutes = blueprint.settings?.hunt_expiry || 120;
     const timeoutSeconds = blueprint.settings?.timeout || 3600;
-    const cpuLimit = blueprint.settings?.cpu_limit || 90;
+    const cpuLimit = blueprint.settings?.cpu_limit || 50;
 
     if (!confirm(`Run "${blueprint.name}" (${artifacts.length} artifacts)?\n\nExpiry: ${expireMinutes} minutes\nTimeout: ${timeoutSeconds} seconds\nCPU Limit: ${cpuLimit}%`)) {
         return;

@@ -144,7 +144,7 @@ _RERUN_SPECS = {
         'blueprint_name': d.get('blueprint') or 'Custom',
         'expire_minutes': d.get('expire_minutes') or 120,
         'timeout_seconds': d.get('timeout_seconds') or 10000,
-        'cpu_limit': d.get('cpu_limit') or 80,
+        'cpu_limit': d.get('cpu_limit') or 50,
         'per_artifact': bool(d.get('per_artifact')),
         'include_labels': d.get('include_labels') or [],
     }),

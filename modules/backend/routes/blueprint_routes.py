@@ -335,7 +335,7 @@ def create_velociraptor_blueprint():
             "description": data.get('description', ''),
             "is_default": False,
             "artifacts": data['artifacts'],
-            "settings": data.get('settings', {"hunt_expiry": 120, "timeout": 3600, "cpu_limit": 80})
+            "settings": data.get('settings', {"hunt_expiry": 120, "timeout": 3600, "cpu_limit": 50})
         }
 
         result = save_velociraptor_blueprint(blueprint)

@@ -210,7 +210,7 @@ YARA_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
 #     requires an inner-layer decode step we deliberately removed.
 ACQUISITION_DEFAULTS: dict = {
     "max_bytes": 68_719_476_736,   # 64 GiB cap
-    "cpu_limit": 80,               # percentage on the target host
+    "cpu_limit": 50,               # percentage on the target host
     "compression": "None",         # MUST stay None — see comment above
     "urgent": True,                # ask Velociraptor to schedule ahead of routine work
 }

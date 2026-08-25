@@ -20,7 +20,7 @@ velociraptor:
     settings:
       hunt_expiry: 720
       timeout: 3600
-      cpu_limit: 90
+      cpu_limit: 50
       # Flow-level resource limits (passed into the hunt's VQL `hunt(...)`).
       # Override the historical 1 GiB / 1 M-row hardcoded defaults from
       # velociraptor_service.py so big collections don't get cancelled.
@@ -48,7 +48,7 @@ velociraptor:
     settings:
       hunt_expiry: 720
       timeout: 21600
-      cpu_limit: 90
+      cpu_limit: 50
       # Flow-level resource limits — see velociraptor_quick_scan for notes.
       flow_max_rows: 10000000
       flow_max_logs: 1000000
@@ -93,7 +93,7 @@ velociraptor:
     settings:
       hunt_expiry: 1080
       timeout: 43200
-      cpu_limit: 90
+      cpu_limit: 50
       # Flow-level resource limits — see velociraptor_quick_scan for notes.
       flow_max_rows: 10000000
       flow_max_logs: 1000000
@@ -171,7 +171,7 @@ velociraptor:
     settings:
       hunt_expiry: 720
       timeout: 3600
-      cpu_limit: 90
+      cpu_limit: 50
       # Flow-level resource limits — see velociraptor_quick_scan for notes.
       flow_max_rows: 10000000
       flow_max_logs: 1000000
@@ -220,7 +220,7 @@ velociraptor:
     settings:
       hunt_expiry: 720
       timeout: 3600
-      cpu_limit: 90
+      cpu_limit: 50
       # Flow-level resource limits — see velociraptor_quick_scan for notes.
       flow_max_rows: 10000000
       flow_max_logs: 1000000
@@ -289,7 +289,7 @@ timesketch:
       plaso_hasher: "none"
       plaso_hasher_size: 100
       collection_timeout: 100000
-      cpu_limit: 80
+      cpu_limit: 50
       # KAPE artifact parameters (passed to env=dict() in collect_client VQL).
       # Defaults are deliberately permissive on size + endpoint-friendly on
       # hashing; override per-blueprint if a workflow needs different behavior.
@@ -324,7 +324,7 @@ timesketch:
       plaso_hasher: "none"
       plaso_hasher_size: 100
       collection_timeout: 100000
-      cpu_limit: 80
+      cpu_limit: 50
       # KAPE artifact parameters — see timesketch_full_triage above for notes.
       kape_max_file_size: 10737418240
       kape_max_hash_size: 0
@@ -347,7 +347,7 @@ timesketch:
       plaso_hasher: "none"
       plaso_hasher_size: 100
       collection_timeout: 100000
-      cpu_limit: 80
+      cpu_limit: 50
       # KAPE artifact parameters — see timesketch_full_triage above for notes.
       kape_max_file_size: 10737418240
       kape_max_hash_size: 0
@@ -458,7 +458,7 @@ memory:
       yara_categories: []          # broad-net: scan the full corpus (recommended default)
       compression: "None"         # MUST stay None — see services/memory/defaults.py
       max_bytes: 68719476736      # 64 GiB cap
-      cpu_limit: 80
+      cpu_limit: 50
 
   - id: memory_yara_only_triage
     name: "Memory Analysis: Empty (no plugins)"
@@ -471,7 +471,7 @@ memory:
       yara_categories: []          # broad-net: dedicated YARA sweep wants full coverage
       compression: "None"
       max_bytes: 68719476736
-      cpu_limit: 80
+      cpu_limit: 50
 
   # --------------------------------------------------------------------------
   # Speed-tiered triage (orthogonal to scenario-specific blueprints below)
@@ -496,7 +496,7 @@ memory:
       yara_categories: [ransomware, hacktool, trojan, webshell]
       compression: "None"
       max_bytes: 68719476736
-      cpu_limit: 80
+      cpu_limit: 50
 
   - id: memory_all_plugins
     name: "Memory Analysis: All plugins (deep dive)"
@@ -514,7 +514,7 @@ memory:
       yara_categories: []          # broad-net: deep dive scans the full corpus (the "run all")
       compression: "None"
       max_bytes: 68719476736
-      cpu_limit: 80
+      cpu_limit: 50
 
   # --------------------------------------------------------------------------
   # Scenario blueprints — one per investigation focus. Each one is the
@@ -545,7 +545,7 @@ memory:
       yara_categories: [trojan, hacktool, apt]
       compression: "None"
       max_bytes: 68719476736
-      cpu_limit: 80
+      cpu_limit: 50
 
   - id: memory_persistence_deep
     name: "Memory Analysis: Persistence"
@@ -568,7 +568,7 @@ memory:
       yara_categories: [trojan, apt, hacktool]
       compression: "None"
       max_bytes: 68719476736
-      cpu_limit: 80
+      cpu_limit: 50
 
   - id: memory_network_deep
     name: "Memory Analysis: Network"
@@ -588,7 +588,7 @@ memory:
       yara_categories: [trojan, apt, hacktool]
       compression: "None"
       max_bytes: 68719476736
-      cpu_limit: 80
+      cpu_limit: 50
 
   - id: memory_credentials_deep
     name: "Memory Analysis: Credentials"
@@ -606,4 +606,4 @@ memory:
       yara_categories: [hacktool, stealer]
       compression: "None"
       max_bytes: 68719476736
-      cpu_limit: 80
+      cpu_limit: 50

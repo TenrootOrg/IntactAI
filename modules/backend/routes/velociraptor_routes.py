@@ -35,7 +35,7 @@ def run_timesketch_collection():
         client_name = data.get('client_name', 'Unknown')  # Get client name (hostname)
         kape_target = data.get('kape_target', '_KapeTriage')  # Default to _KapeTriage
         timeout_seconds = data.get('timeout_seconds', 10000)  # Default ~2.8 hours
-        cpu_limit = data.get('cpu_limit', 80)  # Default 80%
+        cpu_limit = data.get('cpu_limit', 50)  # Default 50%
         blueprint_id = data.get('blueprint_id')
         blueprint_name = data.get('blueprint', 'Unknown')
 
@@ -321,7 +321,7 @@ def run_bestpractice_hunts():
         blueprint_name = data.get('blueprint_name', 'Custom')
         expire_minutes = data.get('expire_minutes', 120)
         timeout_seconds = data.get('timeout_seconds', 10000)
-        cpu_limit = data.get('cpu_limit', 80)
+        cpu_limit = data.get('cpu_limit', 50)
         per_artifact = bool(data.get('per_artifact', False))
         # Optional label targeting: scope the hunt to clients carrying any of
         # these Velociraptor labels. Empty/missing => run on ALL clients.

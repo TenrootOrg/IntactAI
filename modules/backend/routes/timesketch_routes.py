@@ -193,7 +193,7 @@ def run_timesketch_import():
                             "timeline_name": timeline_name,
                             "kape_target": job_info.get('kape_target', 'Unknown'),
                             "timeout_seconds": job_info.get('timeout_seconds', 10000),
-                            "cpu_limit": job_info.get('cpu_limit', 80),
+                            "cpu_limit": job_info.get('cpu_limit', 50),
                             "monitor_timeout": monitor_timeout,
                             "blueprint_id": job_info.get('blueprint_id'),
                             "blueprint": job_info.get('blueprint', 'Unknown')
@@ -469,7 +469,7 @@ def start_multi_client_timesketch():
         # KAPE / blueprint settings (same shape as /api/velociraptor/timesketch)
         kape_target     = data.get('kape_target', '_KapeTriage')
         timeout_seconds = data.get('timeout_seconds', 10000)
-        cpu_limit       = data.get('cpu_limit', 80)
+        cpu_limit       = data.get('cpu_limit', 50)
         blueprint_id    = data.get('blueprint_id')
         blueprint_name  = data.get('blueprint', 'Unknown')
 

@@ -94,7 +94,7 @@ function getTimesketchBlueprintSettings() {
         plaso_hasher: blueprint.settings?.plaso_hasher || 'none',
         plaso_hasher_size: blueprint.settings?.plaso_hasher_size || 100,
         collection_timeout: blueprint.settings?.collection_timeout || 10000,
-        cpu_limit: blueprint.settings?.cpu_limit || 80
+        cpu_limit: blueprint.settings?.cpu_limit || 50
     };
 }
 
@@ -161,7 +161,7 @@ async function runTimeSketchWorkflow() {
     const sketchName = document.getElementById('sketch-name').value.trim() || `Investigation-${new Date().toISOString().split('T')[0]}`;
     const kapeTarget = blueprintSettings.kape_target;
     const timeoutSeconds = blueprintSettings.collection_timeout || 10000;
-    const cpuLimit = blueprintSettings.cpu_limit || 80;
+    const cpuLimit = blueprintSettings.cpu_limit || 50;
     const monitorTimeout = blueprintSettings.collection_timeout || 10000;
 
     // Plaso settings from blueprint

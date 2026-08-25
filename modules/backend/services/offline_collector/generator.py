@@ -96,7 +96,7 @@ def get_blueprint_as_config(blueprint_id):
                     'config_name': bp.get('name', blueprint_id),
                     'artifacts': bp.get('artifacts', []),
                     'parameters': {
-                        'CpuLimit': bp.get('settings', {}).get('cpu_limit', 80),
+                        'CpuLimit': bp.get('settings', {}).get('cpu_limit', 50),
                         'MaxExecutionTimeInSeconds': bp.get('settings', {}).get('timeout', 3600),
                         'Concurrency': bp.get('settings', {}).get('concurrency', DEFAULT_COLLECTOR_CONCURRENCY),
                         'ProgressTimeout': bp.get('settings', {}).get('progress_timeout', DEFAULT_COLLECTOR_PROGRESS_TIMEOUT)
@@ -112,7 +112,7 @@ def get_blueprint_as_config(blueprint_id):
                     'config_name': bp.get('name', blueprint_id),
                     'artifacts': bp.get('artifacts', []),
                     'parameters': {
-                        'CpuLimit': bp.get('settings', {}).get('cpu_limit', 80),
+                        'CpuLimit': bp.get('settings', {}).get('cpu_limit', 50),
                         'MaxExecutionTimeInSeconds': bp.get('settings', {}).get('timeout', 3600),
                         'Concurrency': bp.get('settings', {}).get('concurrency', DEFAULT_COLLECTOR_CONCURRENCY),
                         'ProgressTimeout': bp.get('settings', {}).get('progress_timeout', DEFAULT_COLLECTOR_PROGRESS_TIMEOUT)
@@ -141,7 +141,7 @@ def get_blueprint_as_config(blueprint_id):
                     'config_name': bp.get('name', blueprint_id),
                     'artifacts': ['Windows.Triage.Targets'],
                     'parameters': {
-                        'CpuLimit': s.get('cpu_limit', 80),
+                        'CpuLimit': s.get('cpu_limit', 50),
                         'MaxExecutionTimeInSeconds': s.get('collection_timeout',
                                                            s.get('timeout', 100000)),
                         'Concurrency': s.get('concurrency', DEFAULT_COLLECTOR_CONCURRENCY),
@@ -422,7 +422,7 @@ def generate_collector(config_id, os_type="windows",
                     opt_banner="N",
                     opt_prompt="N",
                     opt_admin="Y",
-                    opt_cpu_limit={parameters.get('CpuLimit', 80)},
+                    opt_cpu_limit={parameters.get('CpuLimit', 50)},
                     opt_timeout={parameters.get('MaxExecutionTimeInSeconds', 3600)},
                     opt_concurrency={parameters.get('Concurrency', DEFAULT_COLLECTOR_CONCURRENCY)},
                     opt_progress_timeout={parameters.get('ProgressTimeout', DEFAULT_COLLECTOR_PROGRESS_TIMEOUT)}{encryption_vql}
@@ -910,7 +910,7 @@ echo [!] NOTE: {len(skipped_artifacts)} artifacts skipped (require internet):
             for idx, artifact in enumerate(artifacts, 1):
                 artifact_commands.append(f'echo.')
                 artifact_commands.append(f'echo [{idx}/{total_artifacts}] {artifact}')
-                artifact_commands.append(f'velociraptor_client.exe --nobanner artifacts collect "{artifact}" --output "%ZIP_FILE%" --format jsonl --cpu_limit {parameters.get("CpuLimit", 80)} --timeout {parameters.get("MaxExecutionTimeInSeconds", 300)}')
+                artifact_commands.append(f'velociraptor_client.exe --nobanner artifacts collect "{artifact}" --output "%ZIP_FILE%" --format jsonl --cpu_limit {parameters.get("CpuLimit", 50)} --timeout {parameters.get("MaxExecutionTimeInSeconds", 300)}')
 
             artifact_section = '\n'.join(artifact_commands)
 
@@ -1007,7 +1007,7 @@ mkdir -p "$OUTPUT_DIR"
 echo ""
 echo "[*] Configuration:"
 echo "    Artifacts: {len(artifacts)}"
-echo "    CPU Limit: {parameters.get('CpuLimit', 80)}%"
+echo "    CPU Limit: {parameters.get('CpuLimit', 50)}%"
 echo "    Timeout: {parameters.get('MaxExecutionTimeInSeconds', 3600)} seconds"
 echo ""
 
@@ -1030,7 +1030,7 @@ echo "    Output: $ZIP_FILE"
 echo ""
 
 # Run collection
-"$VELO_PATH" artifacts collect "${{ARTIFACTS[@]}}" --output "$ZIP_FILE" --format jsonl --cpu_limit {parameters.get('CpuLimit', 80)} --timeout {parameters.get('MaxExecutionTimeInSeconds', 3600)} || true
+"$VELO_PATH" artifacts collect "${{ARTIFACTS[@]}}" --output "$ZIP_FILE" --format jsonl --cpu_limit {parameters.get('CpuLimit', 50)} --timeout {parameters.get('MaxExecutionTimeInSeconds', 3600)} || true
 
 # Check result
 echo ""

@@ -19,7 +19,7 @@ def run_kape_collection_grpc(
     client_id,
     kape_target="KapeTriage",
     timeout_seconds=10000,
-    cpu_limit=80,
+    cpu_limit=50,
     # Flow-level resource limits (passed to collect_client). Defaults match
     # the historical Velociraptor server defaults so callers that don't pass
     # these see identical pre-patch behavior.
@@ -39,7 +39,7 @@ def run_kape_collection_grpc(
         client_id: Velociraptor client ID
         kape_target: KAPE target (e.g., '_KapeTriage', '_SANS_Triage', '_J')
         timeout_seconds: Collection timeout in seconds (default 10000 = ~2.8 hours)
-        cpu_limit: CPU limit percentage on endpoint (default 80%)
+        cpu_limit: CPU limit percentage on endpoint (default 50%)
         max_rows: Max rows the flow may produce (Velociraptor default: 1,000,000)
         max_logs: Max log lines the flow may produce (Velociraptor default: 100,000)
         max_upload_mb: Max megabytes the flow may upload (Velociraptor default: 1024)
