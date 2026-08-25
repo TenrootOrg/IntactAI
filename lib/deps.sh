@@ -503,10 +503,24 @@ INTACT_BUNDLE_DIR=""
 # (extract it). Echoes the final directory on success. Any failure here is
 # fatal to the caller -- once a release advertises a bundle there is nowhere
 # else to fall through to.
+# Sets _STAGED_BUNDLE_DIR to the directory holding the staged bundle.
+#
+# AN OUT-VARIABLE, NOT STDOUT, and this one is load-bearing rather than tidy.
+# It used to `echo` the path and be called as
+# `INTACT_BUNDLE_DIR="$(_stage_system_bundle_from_source …)" || exit 1`.
+# In that command substitution the log_error below is CAPTURED INTO THE
+# VARIABLE instead of being shown: the operator sees nothing, `|| exit 1`
+# fires, and because install.sh installs no EXIT trap,
+# print_final_issues_report never runs either. Net effect on an air-gapped
+# install with a truncated or corrupt bundle tar: exit status 1, and not one
+# word anywhere about the cause -- the single worst instance of this pattern
+# in the tree, because it is the failure an air-gapped operator is least able
+# to diagnose from the outside.
 _stage_system_bundle_from_source() {
     local src="$1"
+    _STAGED_BUNDLE_DIR=""
     if [[ -d "$src" ]]; then
-        echo "$src"
+        _STAGED_BUNDLE_DIR="$src"
         return 0
     fi
     local extract_dir="${SCRIPT_DIR}/data/tmp/system-bundle-pkg/system-bundle"
@@ -516,7 +530,7 @@ _stage_system_bundle_from_source() {
         log_error "  Could not extract the supplied dependency bundle (${src})"
         return 1
     fi
-    echo "$extract_dir"
+    _STAGED_BUNDLE_DIR="$extract_dir"
 }
 
 ensure_core_dependencies() {
@@ -552,7 +566,8 @@ ensure_core_dependencies() {
     # -------------------------------------------------------------------------
     if [[ "$INTACT_AIRGAP" == "1" ]]; then
         if [[ -n "${INTACT_SYSTEM_BUNDLE_SRC:-}" ]]; then
-            INTACT_BUNDLE_DIR="$(_stage_system_bundle_from_source "$INTACT_SYSTEM_BUNDLE_SRC")" || exit 1
+            _stage_system_bundle_from_source "$INTACT_SYSTEM_BUNDLE_SRC" || exit 1
+            INTACT_BUNDLE_DIR="$_STAGED_BUNDLE_DIR"
         fi
     else
         local _bundle_tag; _bundle_tag="$(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null || true)"

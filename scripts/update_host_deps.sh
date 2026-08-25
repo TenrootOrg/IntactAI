@@ -91,7 +91,8 @@ else
     esac
 fi
 
-BUNDLE_DIR="$(_stage_system_bundle_from_source "$BUNDLE_SRC")" || exit 1
+_stage_system_bundle_from_source "$BUNDLE_SRC" || exit 1
+BUNDLE_DIR="$_STAGED_BUNDLE_DIR"
 _verify_system_bundle_os_match "$BUNDLE_DIR" || exit 1
 
 # ── what would change ─────────────────────────────────────────────────────

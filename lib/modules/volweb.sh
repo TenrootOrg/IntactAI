@@ -208,7 +208,16 @@ u.set_password('${tenroot_pass}')
 u.save()
 print('CREATED' if created else 'UPDATED', 'admin', u.username)
 EOF
-    return $?
+    # PIPESTATUS[0], NOT $?. `$?` after a pipeline is TAIL's status, and tail
+    # succeeds whatever docker exec did -- so this function returned 0
+    # unconditionally and both callers' guards were unreachable dead code:
+    #   lib/modules/volweb.sh          `if ! seed_volweb_admin; then log_warn`
+    #   lib/upgrade/modules/volweb.sh  `seed_volweb_admin || log_warn`
+    # A container that is absent (exec 125/126/127) or a Django exception both
+    # looked identical to success. Must be read on the line immediately after
+    # EOF -- any command in between overwrites it.
+    local rc=${PIPESTATUS[0]}
+    return "$rc"
 }
 
 

@@ -53,14 +53,33 @@ _velo_legacy_volume() {
     return 1
 }
 
-# Echoes the readable host path of <volume>'s content, or nothing.
+# Sets _VELO_VOL_MP to the readable host path of <volume>'s content.
+#
+# AN OUT-VARIABLE, NOT STDOUT, so this runs in the CALLER'S shell.
+#
+# It used to `printf` the path and be invoked as `mp="$(_velo_volume_path …)"`.
+# That command substitution forks, and log_warn does two things (lib/common.sh):
+# it writes the line for the operator AND appends to INSTALL_WARNINGS, which
+# print_final_issues_report reads at the end of the run. In a fork the append
+# dies with the subshell and the console line is swallowed into `mp` -- so both
+# warnings below reached $LOG_FILE and nothing else. Measured on a real
+# air-gapped upgrade 2026-08-25: "legacy volume velociraptor_velociraptor_data
+# has no readable mountpoint" was in the log file, absent from the ATTENTION
+# summary, and the summary's own count was one short.
+#
+# That matters here more than most places: _velo_require_ca tells the operator
+# to "see the warnings it printed", and on this path there were none to see.
+# Given the standing rule that an upgrade must never lose the Velociraptor CA,
+# a warning about the Velociraptor data volume is the last one that should be
+# silently dropped.
 _velo_volume_path() {
     local vol="$1" driver mp
+    _VELO_VOL_MP=""
     driver="$("${DOCKER_BIN:-docker}" volume inspect -f '{{.Driver}}' "$vol" 2>/dev/null)"
     [[ "$driver" == "local" ]] || { log_warn "  legacy volume ${vol} uses the '${driver:-unknown}' driver; cannot read it directly"; return 1; }
     mp="$("${DOCKER_BIN:-docker}" volume inspect -f '{{.Mountpoint}}' "$vol" 2>/dev/null)"
     [[ -n "$mp" && -d "$mp" ]] || { log_warn "  legacy volume ${vol} has no readable mountpoint"; return 1; }
-    printf '%s\n' "$mp"
+    _VELO_VOL_MP="$mp"
 }
 
 # Fingerprint a server.config.yaml at an arbitrary path (velo_ca_fp is fixed to
@@ -87,7 +106,8 @@ _velo_migrate_legacy_config() {
     local vol mp f n=0
 
     vol="$(_velo_legacy_volume)" || return 0        # nothing legacy -> nothing to do
-    mp="$(_velo_volume_path "$vol")" || return 0
+    _velo_volume_path "$vol" || return 0            # warns in THIS shell, so it is reported
+    mp="$_VELO_VOL_MP"
 
     if [[ ! -f "${mp}/server.config.yaml" ]]; then
         return 0                                    # volume exists but holds no config
