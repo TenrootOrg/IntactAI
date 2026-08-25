@@ -274,8 +274,16 @@ def _regenerate_report(case_id, d=None, attempt=0) -> None:
     report that could not be written is worth a line in the activity log and
     nothing more, because the alternative — letting it escape — lands in _fire's
     handler, which would blame the fuse and clear a flag it did not set.
+
+    IT MUST NOT PAY TWICE. Reaching here supersedes any retry already armed for
+    this case, so the first thing it does is cancel one. Without that: a retry is
+    waiting on a busy report, new data lands, _fire regenerates successfully, and
+    the orphaned retry fires a minute later and buys a second narration of data
+    the report already describes. _fire_report guards the same thing from the
+    other side.
     """
     store = _store()
+    _cancel_report_retry(case_id)
     try:
         if d is None:
             d = store.get_case(case_id) or {}
@@ -318,6 +326,15 @@ def _regenerate_report(case_id, d=None, attempt=0) -> None:
             pass
 
 
+def _cancel_report_retry(case_id) -> None:
+    """Disarm a pending report retry. Whatever is calling this is about to do the
+    retry's job, so letting it also fire is a duplicate — and a billed one."""
+    with _GUARD:
+        t = _REPORT_TIMERS.pop(case_id, None)
+    if t is not None:
+        t.cancel()
+
+
 def _schedule_report(case_id, attempt) -> None:
     """Arm a retry of the report step alone. Its own timer registry: re-arming the
     FUSE would be wrong — the graph is already current, so _fire would find nothing
@@ -333,6 +350,26 @@ def _schedule_report(case_id, attempt) -> None:
 
 
 def _fire_report(case_id, attempt) -> None:
+    """The retry timer expired: re-narrate, but only if that is still needed.
+
+    The mirror of _fire's `if not stale: return` — and for the same reason. This
+    retry exists because a report was busy a minute ago; by now that report may
+    have finished and already covered this data, or an operator may have pressed
+    Regenerate themselves. Narrating anyway would rewrite a current report with
+    an identical one, and on a box with a model configured that costs real money.
+
+    report_stale_runs is the honest answer to "does the written report reflect
+    every completed member run", now that regenerate_report stamps report_run_ids.
+    A legacy case that has a report but no tracking answers "not behind", so the
+    retry stands down — the conservative direction: a missed refresh is visible
+    and fixable, a surprise bill is neither.
+    """
     with _GUARD:
         _REPORT_TIMERS.pop(case_id, None)
+    store = _store()
+    try:
+        if not store.report_stale_runs(case_id):
+            return                             # someone already covered this data
+    except Exception:                          # noqa: BLE001 — a broken probe must
+        pass                                   # not strand the report behind forever
     _regenerate_report(case_id, None, attempt)

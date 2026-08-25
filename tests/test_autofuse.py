@@ -66,6 +66,7 @@ class FakeStore:
         self.reports = []        # (kind, kwargs) of every report regeneration
         self.report_busy_times = 0   # raise ReportGenerationBusy this often, then succeed
         self.report_raises = None
+        self.report_behind = True    # what report_stale_runs answers for this case
         self.lock = threading.Lock()
 
     def get_case(self, cid):
@@ -117,6 +118,9 @@ class FakeStore:
     def regenerate_report_async(self, cid, **kw):
         self._record_report("locked", cid, kw)
         return {"status": "started"}
+
+    def report_stale_runs(self, cid, d=None):
+        return ["run_1"] if self.report_behind else []
 
     def report_kinds(self):
         return [k for k, _kw in self.reports]
@@ -422,6 +426,63 @@ class TestABusyReportIsRetried(_Base):
             time.sleep(0.005)
         self.assertTrue(autofuse.cancel("case_1"))
         self.assertEqual(autofuse._REPORT_TIMERS, {})
+
+    def test_a_retry_stands_down_once_the_report_has_caught_up(self):
+        # The report that was busy a minute ago has finished and already covers
+        # this data. Narrating again would rewrite a current report with an
+        # identical one — and with a model configured, pay for it.
+        self.store.report_busy_times = 1
+        autofuse.schedule("case_1")
+        deadline = time.time() + 2.0
+        while time.time() < deadline and not autofuse._REPORT_TIMERS:
+            time.sleep(0.005)
+        self.store.report_behind = False       # someone else covered it
+        self.settle()
+        self.assertEqual(len(self.store.reports), 1,
+                         "the retry must not buy a second narration of the same data")
+
+    def test_a_fresh_fuse_cancels_an_armed_retry(self):
+        """THE DUPLICATE-BILLING BUG.
+
+        A retry is waiting on a busy report; new data lands; _fire regenerates
+        successfully; the orphaned retry then fires and narrates the same data a
+        second time. With a model configured that is a real invoice.
+
+        The retry delay is set LONGER than the quiet period on purpose. With the
+        defaults inverted the retry always fires first and the collision never
+        happens, so the test would pass against the broken code — which is exactly
+        what it did before this comment was written.
+        """
+        autofuse.REPORT_RETRY_SECONDS = 5.0        # long: it must still be armed
+        self.store.report_busy_times = 1
+        autofuse.schedule("case_1")
+        deadline = time.time() + 2.0
+        while time.time() < deadline and not autofuse._REPORT_TIMERS:
+            time.sleep(0.005)
+        self.assertTrue(autofuse._REPORT_TIMERS, "precondition: a retry is armed")
+
+        # New data lands while that retry is still pending.
+        self.store._per_case["case_1"] = ["run_2"]
+        autofuse.schedule("case_1")
+        self.settle()
+
+        self.assertEqual(autofuse._REPORT_TIMERS, {},
+                         "the superseded retry must not still be armed")
+        self.assertEqual(len(self.store.fuses), 2)
+        # busy(1) + the fuse's own regeneration = 2. A third would be the orphan.
+        self.assertEqual(len(self.store.reports), 2,
+                         "an armed retry plus a fresh fuse must not narrate twice")
+
+    def test_a_broken_staleness_probe_does_not_strand_the_report(self):
+        # The probe is a saving, not a gate. If it cannot answer, retry anyway —
+        # a report left permanently behind is the worse failure.
+        def boom(cid, d=None):
+            raise RuntimeError("db down")
+        self.store.report_stale_runs = boom
+        self.store.report_busy_times = 1
+        autofuse.schedule("case_1")
+        self.settle()
+        self.assertEqual(len(self.store.reports), 2)
 
     def test_report_timers_are_daemon_threads(self):
         self.store.report_busy_times = 99
