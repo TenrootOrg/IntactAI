@@ -400,6 +400,26 @@ main() {
         UPKG_DIR="$UPGRADE_PACKAGE_DIR"
         UPKG_MANIFEST="${UPKG_DIR}/manifest.json"
         log_info "Using the package extracted by the previous stage: ${UPKG_DIR}"
+        # AN ALREADY-EXTRACTED PACKAGE IS STILL A PACKAGE UPGRADE.
+        #
+        # These are set in the --package branch below, but this branch returns
+        # early and used to skip them -- so every air-gap guard in the tree
+        # (preflight_host_check's DNS probe, timesketch.sh, velociraptor.sh,
+        # seed_yara_rulesets' "no bundled rules, say so" path) silently stayed
+        # OFF for a run entered this way. Measured on a real air-gapped
+        # dashboard upgrade 2026-08-25: preflight warned "DNS lookup for
+        # github.com failed" per module, and VolWeb's YARA seeding took the
+        # ONLINE path and failed both imports against a box with no route out,
+        # leaving an empty rule corpus while the module reported success.
+        #
+        # Two ways in, both documented to operators as the way to resume:
+        # lib/upgrade/interrupt.sh and lib/upgrade/velo_refresh.sh both print
+        # `--package-dir` in their recovery instructions. A box that resumes an
+        # interrupted air-gapped upgrade must not quietly become an online one.
+        INTACT_UPGRADE_OFFLINE=1
+        export INTACT_UPGRADE_OFFLINE
+        INTACT_AIRGAP=1
+        export INTACT_AIRGAP
         upkg_read_manifest || return 2
     else
         if [[ -n "$UPGRADE_TAG" ]]; then

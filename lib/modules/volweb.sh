@@ -570,6 +570,21 @@ seed_yara_rulesets() {
     # in-tree and import natively. See routes/maintenance_routes.py +
     # upgrade/package.py.
 
+    # A FAILED IMPORT IS A WARNING, NOT AN [INFO] LINE.
+    #
+    # Every response used to be logged at INFO whatever it said, and the step
+    # then announced "YARA seeding dispatched" and returned 0 regardless -- so
+    # an import that failed outright was invisible in the final report and the
+    # module was ticked as upgraded. Measured on a real run 2026-08-25: BOTH
+    # rulesets failed with "Max retries exceeded ... NameResolutionError" and
+    # the run still reported `1 error(s), 11 warning(s)` with neither of these
+    # among them. The box ended up with an empty rule corpus and nothing said
+    # so -- the operator finds out during an investigation, which is the worst
+    # possible time.
+    #
+    # The response is JSON on both paths, so the check is "does it carry an
+    # error key", not a status code (curl -s already swallowed that).
+    local seeded=0 failed_names=()
     for entry in "${rulesets[@]}"; do
         local name="${entry%%|*}"
         local rest="${entry#*|}"
@@ -582,8 +597,25 @@ seed_yara_rulesets() {
             -H 'Content-Type: application/json' \
             -d "{\"name\":\"${name}\",\"github_url\":\"${url}\",\"description\":\"${desc}\"}" \
             http://localhost:8000/api/yararulesets/import/github/)
-        log_info "      ${resp:0:200}"
+        if [[ -z "$resp" || "$resp" == *'"error"'* ]]; then
+            failed_names+=("$name")
+            log_warn "      ${name}: import FAILED — ${resp:0:300}"
+        else
+            seeded=$((seeded + 1))
+            log_info "      ${resp:0:200}"
+        fi
     done
+
+    if (( ${#failed_names[@]} )); then
+        log_warn "  YARA seeding: ${seeded}/${#rulesets[@]} ruleset(s) imported;"
+        log_warn "    failed: ${failed_names[*]}"
+        log_warn "    VolWeb's rule corpus is incomplete. Re-run from"
+        log_warn "    Maintenance -> Refresh YARA Rulesets once the cause is fixed."
+        # Still 0: the caller treats this as advisory and the module is
+        # otherwise healthy. The point is that it is now SAID, not that it
+        # should fail the run.
+        return 0
+    fi
 
     log_success "  YARA seeding dispatched (rule validation runs async in workers-yarascan)"
     return 0

@@ -94,5 +94,32 @@ assert_present "the upgrade caller only warns" 'seed_volweb_admin || log_warn' \
                "$ROOT/lib/upgrade/modules/volweb.sh"
 
 echo
+echo "== an already-extracted package is still an air-gapped run =="
+UPG="$ROOT/scripts/upgrade.sh"
+run=$((run+1))
+# The --package-dir branch must set the air-gap flags; it returns early and
+# used to skip the block below that sets them.
+if sed -n '/if \[\[ -n "${UPGRADE_PACKAGE_DIR:-}" \]\]; then/,/^    else$/p' "$UPG" \
+     | grep -q 'INTACT_AIRGAP=1'; then
+    ok "--package-dir sets INTACT_AIRGAP"
+else bad "--package-dir sets INTACT_AIRGAP"; fi
+run=$((run+1))
+if sed -n '/if \[\[ -n "${UPGRADE_PACKAGE_DIR:-}" \]\]; then/,/^    else$/p' "$UPG" \
+     | grep -q 'INTACT_UPGRADE_OFFLINE=1'; then
+    ok "--package-dir sets INTACT_UPGRADE_OFFLINE"
+else bad "--package-dir sets INTACT_UPGRADE_OFFLINE"; fi
+
+echo
+echo "== a failed YARA import is reported, not swallowed =="
+assert_present "a failing import raises a warning" 'import FAILED' "$VW"
+assert_present "the summary names which rulesets failed" 'failed: ${failed_names' "$VW"
+run=$((run+1))
+# Non-vacuous: the old code logged every response at INFO unconditionally.
+if sed -n '/for entry in "${rulesets\[@\]}"/,/^    done$/p' "$VW" | grep -qE 'log_info "      \$\{resp:0:200\}"' \
+   && sed -n '/for entry in "${rulesets\[@\]}"/,/^    done$/p' "$VW" | grep -q 'log_warn'; then
+    ok "the success path still logs at INFO (only failures warn)"
+else bad "the success path still logs at INFO (only failures warn)"; fi
+
+echo
 echo "$(basename "$0"): ${run} run, ${failed} failed"
 [[ $failed -eq 0 ]]
