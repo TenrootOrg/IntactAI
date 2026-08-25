@@ -30,6 +30,7 @@ Three deliberate design choices:
    prints a URL plus a short code that can be approved from any device.
 """
 
+import glob
 import hashlib
 import json
 import os
@@ -171,14 +172,109 @@ def _spec(provider) -> dict:
     return spec
 
 
-def binary_path(provider) -> str:
-    """Absolute path the CLI is installed to (may not exist yet)."""
+# Search roots for a CLI somebody else installed. Module-level so they read as
+# data, and so a test can point them at a sandbox instead of finding whatever is
+# really on the build machine.
+_NPM_ROOTS = (
+    "/usr/local/lib/node_modules",
+    "/usr/lib/node_modules",
+    os.path.expanduser("~/.npm-global/lib/node_modules"),
+    os.path.expanduser("~/.nvm/versions/node/*/lib/node_modules"),
+    "/opt/homebrew/lib/node_modules",
+)
+_BIN_SEARCH_DIRS = ("/usr/local/bin", "/usr/bin", "~/.local/bin", "/opt/bin")
+
+
+def install_target_path(provider) -> str:
+    """Where OUR installer puts it. Not where it might already be — see
+    binary_path. Used to verify the install and to chmod what it wrote."""
     return os.path.join(_BIN_DIR, _spec(provider)["binary"])
 
 
+def _npm_vendor_globs(binary):
+    """Where `npm i -g @openai/codex` actually leaves a runnable binary.
+
+    Measured on a box with a normal install, because the layout is not what the
+    name suggests:
+
+      /usr/local/bin/codex
+        -> ../lib/node_modules/@openai/codex/bin/codex.js        (a NODE shim)
+      /usr/local/lib/node_modules/@openai/codex/node_modules/
+        @openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex
+                                                                 (the real thing)
+
+    The launcher on PATH is JavaScript. Finding it and exec'ing it needs a node
+    runtime, which this image does not ship — so the vendored binary underneath
+    is the one worth finding. It is a static-pie ELF and answers `--version` on
+    its own (verified: codex-cli 0.147.0, no node involved).
+
+    Globbed rather than listed: the platform triple and the package name both
+    vary by arch, and a hardcoded x86_64 path would quietly find nothing on an
+    arm64 appliance.
+    """
+    for root in _NPM_ROOTS:
+        # the vendored native binary (preferred — no runtime needed)
+        yield f"{root}/@openai/{binary}/node_modules/@openai/{binary}-*/vendor/*/bin/{binary}"
+        # and the shim, as a last resort: harmless when node is absent, since
+        # _usable only reports it and exec would fail loudly rather than silently
+        yield f"{root}/@openai/{binary}/bin/{binary}"
+
+
+def _candidate_paths(provider):
+    """Every place a usable CLI could be, best first.
+
+    This used to be one hardcoded path, and the panel told operators who had
+    just installed the CLI that it was not installed. It only ever looked in the
+    directory OUR installer writes to, so an operator who installed codex the
+    normal way — which puts it somewhere completely different — got a flat
+    contradiction of what they could see in their own shell.
+
+    Order is deliberate: the copy we manage wins, because that is the one the
+    upgrade keeps current. A stray newer binary earlier in the list would
+    silently outrank it and drift.
+
+    USABLE is the operative word, and it is the part no path list can fix. This
+    process runs inside the backend container, so it can only find and exec what
+    is on the CONTAINER's filesystem. A CLI installed on the host is invisible
+    here however hard we look — verified: /usr/local/lib/node_modules does not
+    exist in this image. detect() says that in as many words rather than
+    repeating "not installed" at someone looking at their own working install.
+    """
+    binary = _spec(provider)["binary"]
+    seen = set()
+
+    def _emit(c):
+        if c and c not in seen:
+            seen.add(c)
+            return [c]
+        return []
+
+    out = list(_emit(install_target_path(provider)))
+    out += _emit(shutil.which(binary))          # anything on the container's PATH
+    for pattern in _npm_vendor_globs(binary):
+        for hit in sorted(glob.glob(pattern)):
+            out += _emit(hit)
+    for d in _BIN_SEARCH_DIRS:
+        out += _emit(os.path.join(os.path.expanduser(d), binary))
+    out += _emit(os.path.expanduser(f"~/.{binary}/bin/{binary}"))
+    return out
+
+
+def _usable(path) -> bool:
+    return bool(path) and os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+def binary_path(provider) -> str:
+    """The CLI we would actually run. Falls back to the install target, so a
+    message that formats this path still names where an install would land."""
+    for c in _candidate_paths(provider):
+        if _usable(c):
+            return c
+    return install_target_path(provider)
+
+
 def is_installed(provider) -> bool:
-    p = binary_path(provider)
-    return os.path.isfile(p) and os.access(p, os.X_OK)
+    return any(_usable(c) for c in _candidate_paths(provider))
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +378,12 @@ def forget_credentials(provider) -> bool:
 def _env_for(provider, home) -> dict:
     env = dict(os.environ)
     env[_spec(provider)["home_env"]] = home
-    env["PATH"] = _BIN_DIR + os.pathsep + env.get("PATH", "")
+    # Both the managed dir AND wherever the binary actually resolved: the CLI
+    # shells out to helper binaries that sit beside itself, so a copy found
+    # somewhere other than _BIN_DIR needs its own directory on PATH too.
+    _own = os.path.dirname(binary_path(provider))
+    _pre = [_BIN_DIR] + ([_own] if _own and _own != _BIN_DIR else [])
+    env["PATH"] = os.pathsep.join(_pre + [env.get("PATH", "")])
     # keep the CLI from trying to be interactive or open a browser
     env["CI"] = "1"
     env["NO_COLOR"] = "1"
@@ -324,9 +425,22 @@ def detect(provider) -> dict:
         "login_pending": _login_pending(provider),
     }
     if not is_installed(provider):
-        out["detail"] = f"{spec['binary']} CLI is not installed"
+        # Name the paths. An operator who has just installed the CLI reads a bare
+        # "not installed" as the product being broken — and from where they are
+        # standing they are right, because their copy is usually on the HOST and
+        # this runs in a container that cannot see or execute it.
+        looked = _candidate_paths(provider)
+        out["searched"] = looked
+        out["detail"] = (
+            f"{spec['binary']} CLI is not installed on the appliance. "
+            f"Searched: {', '.join(looked)}. "
+            f"A copy installed on the host does not count — this runs inside the "
+            f"backend container and cannot reach or run it. Use Install CLI, which "
+            f"puts a self-contained copy in {install_target_path(provider)} where "
+            f"upgrades keep it.")
         return out
     out["installed"] = True
+    out["path"] = binary_path(provider)
 
     home = _materialize_home(provider)
     try:
@@ -483,16 +597,20 @@ def install(provider, run_id=None) -> dict:
     tail = _plain((r.stdout or "") + (r.stderr or "")).strip()[-800:]
     for line in [l for l in tail.splitlines() if l.strip()][-12:]:
         _log(provider, line.strip(), run_id=run_id)
-    if not is_installed(provider):
+    # install_target_path, NOT binary_path: this is asking "did the installer
+    # produce the file it was told to produce". Accepting any candidate would
+    # let an unrelated copy already on PATH report a failed download as a
+    # successful install, and the next upgrade would have nothing to update.
+    if not _usable(install_target_path(provider)):
         _log(provider,
-             f"Installer exited {r.returncode} but {binary_path(provider)} is "
+             f"Installer exited {r.returncode} but {install_target_path(provider)} is "
              f"missing — the download or unpack step failed.", "error", run_id)
         return {"success": False,
                 "error": f"installer finished (exit {r.returncode}) but "
-                         f"{binary_path(provider)} is missing. Output: {tail}",
+                         f"{install_target_path(provider)} is missing. Output: {tail}",
                 "log": get_log(provider)}
     try:
-        os.chmod(binary_path(provider), 0o755)
+        os.chmod(install_target_path(provider), 0o755)
     except Exception:
         pass
     _progress(run_id, 95)
