@@ -82,6 +82,37 @@ STATE_PATHS=(
     # state living under modules/, which is exactly what this registry is for,
     # and iris/secrets is already here for the same reason.
     "modules/timesketch/secrets"
+    # elk and volweb, registered as FILES rather than as their secrets/ dir.
+    #
+    # That distinction is load-bearing. A registered DIRECTORY is replaced by a
+    # symlink, and lib/permissions.sh's sweep uses plain `find` -- which does
+    # not follow symlinks, not even as a starting argument. So every path in
+    # this list that is a directory is silently skipped by the permissions
+    # pass: measured on a live box, `find` sees 8 files under modules/*/secrets
+    # while `find -L` sees 15, the 7 missing ones being everything behind the
+    # iris and timesketch symlinks. Registering a FILE leaves a hard link at
+    # the historical path, so the file stays a real file, the sweep keeps
+    # finding it, and no container's bind-mount can tell the difference.
+    #
+    # (state_migrate_one already falls back to a symlink if data/ is on another
+    # filesystem, so a cross-device appliance still works -- it just inherits
+    # the same sweep gap as iris/timesketch until that is fixed separately.)
+    #
+    # kibana-keys.env holds Kibana's encryption keys. Lose them and every
+    # encrypted saved object -- alerting rules, connectors, reporting -- is
+    # orphaned SILENTLY, with no warning at all, unlike the timesketch case
+    # which at least logs "secrets/postgres.env is missing — re-applying".
+    "modules/elk/secrets/kibana-keys.env"
+    # The VolWeb admin password. Read host-side by lib/modules/volweb.sh and by
+    # services/memory/volweb_client.py via HOST_PATH; nothing in compose mounts
+    # it, so a hard link here is invisible to every container.
+    "modules/volweb/secrets/ADMIN_PASSWORD"
+    #
+    # modules/nginx/secrets is deliberately NOT registered. It has no consumers
+    # left: its generator was deleted from lib/modules/nginx.sh, and the
+    # migration it existed for (auth_basic -> app login) reads config.yaml's
+    # dashboard block, never nginx_basic_auth_password. Registering dead state
+    # buys nothing and adds a migration step that can fail.
 )
 
 # STATE, but deliberately NOT moved. Listed so the inventory is honest and so

@@ -60,7 +60,25 @@ fix_source_permissions() {
     # IRIS's own 5 app/postgres secrets are EXCLUDED here on purpose --
     # see the dedicated 644 pass a few lines down for why. Every other
     # module's secrets/ and every .env still get the blanket 600.
-    find "${SCRIPT_DIR}/modules" -type f \( -path "*/secrets/*" -o -name ".env" \) \
+    # find -L: FOLLOW SYMLINKS.
+    #
+    # lib/state_registry.sh relocates some per-box state into data/state/ and
+    # leaves a symlink at the historical path -- modules/iris/secrets and
+    # modules/timesketch/secrets are both directory symlinks on any box that
+    # has upgraded. Plain `find` does not follow symlinks, not even as a
+    # starting argument, so every file behind them was silently exempt from
+    # this hardening sweep. Measured on a live box 2026-08-25: `find` saw 8
+    # files under modules/*/secrets, `find -L` saw 15.
+    #
+    # Safe for the five IRIS secrets: they are excluded below and then
+    # explicitly restored to 644 by the pass further down, so following the
+    # symlink does not put them back to 600. The one file whose mode actually
+    # changes is modules/timesketch/secrets/postgres.env (644 -> 600), which is
+    # consumed via `env_file` -- read by the Docker daemon as root at container
+    # create and injected as environment variables. Nothing mounts it and no
+    # container process opens it, so the 65534-cannot-read failure described
+    # below does not apply to it.
+    find -L "${SCRIPT_DIR}/modules" -type f \( -path "*/secrets/*" -o -name ".env" \) \
         -not -path "*/modules/iris/secrets/IRIS_ADM_PASSWORD" \
         -not -path "*/modules/iris/secrets/IRIS_SECRET_KEY" \
         -not -path "*/modules/iris/secrets/IRIS_SECURITY_PASSWORD_SALT" \
@@ -85,7 +103,11 @@ fix_source_permissions() {
     # 2026-08-05: an online upgrade recreated intact_iris_app and it
     # crash-looped with exactly this error; restoring 644 fixed it
     # immediately, no data or credentials touched.
-    find "${SCRIPT_DIR}/modules/iris/secrets" -maxdepth 1 -type f \
+    # -L for the same reason as above: on a migrated box this path IS a symlink,
+    # so without it this corrective 644 pass never ran at all -- the files kept
+    # whatever mode generate_iris_secrets left them at (644, by umask) and were
+    # correct only by accident.
+    find -L "${SCRIPT_DIR}/modules/iris/secrets" -maxdepth 1 -type f \
         \( -name IRIS_ADM_PASSWORD -o -name IRIS_SECRET_KEY \
            -o -name IRIS_SECURITY_PASSWORD_SALT \
            -o -name POSTGRES_ADMIN_PASSWORD -o -name POSTGRES_PASSWORD \) \
