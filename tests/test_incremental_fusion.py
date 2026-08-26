@@ -125,6 +125,36 @@ class TestAddingCannotDuplicate(unittest.TestCase):
         self.assertIn("g.relate(Relationship.from_dict(rd))", body,
                       "relationships are loaded without populating the dedupe index")
 
+    def test_evidence_is_merged_not_appended(self):
+        """THE ONE THAT WAS NOT IDEMPOTENT, and it was found by measuring.
+
+        sources and flags were unioned; evidence was extend()ed. Harmless while
+        every fuse rebuilt from nothing — and not harmless once fusion became
+        incremental, because "Fetch results" drops a run from fused_run_ids and
+        the additive path then maps that run onto a stored graph that still
+        contains it.
+
+        Measured on a two-run case, re-fetching one of them three times:
+            59,047 -> 59,412 -> 59,777 -> 60,142      (+365 every time)
+        which is precisely that run's whole evidence trail, re-appended. After
+        the fix it holds at 22,191 across the same four rounds — and note the
+        baseline moved too: deduping also removes ~37,000 duplicates that a
+        single ordinary fuse was already accumulating.
+        """
+        seg = read(SCHEMA)
+        body = seg[seg.index("def upsert(self, e: Entity)"):]
+        body = body[:body.index("\n    def ", 10)]
+        self.assertIn("_union_evidence(cur.evidence, e.evidence)", body)
+        self.assertNotIn("cur.evidence.extend(", body,
+                         "evidence is appended again, so re-fusing a run doubles it")
+
+    def test_the_evidence_key_is_the_whole_ref(self):
+        # module+run_id+locator. Keying on anything less would collapse genuinely
+        # distinct observations of the same entity.
+        seg = read(SCHEMA)
+        body = seg[seg.index("def _union_evidence"):seg.index("class EvidenceRef")]
+        self.assertIn("(e.module, e.run_id, e.locator)", body)
+
     def test_findings_are_cleared_when_seeding(self):
         seg = read(CORRELATE)
         body = seg[seg.index("def assemble("):seg.index("def _stamp_finding_watermarks")]

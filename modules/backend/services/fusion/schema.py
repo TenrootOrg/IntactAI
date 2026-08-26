@@ -49,6 +49,35 @@ def _union(dst: list, src: list) -> None:
             seen.add(x)
 
 
+def _union_evidence(dst: list, src: list) -> None:
+    """Order-preserving union of EvidenceRefs, keyed on (module, run_id, locator).
+
+    Sources and flags were unioned and evidence was extend()ed unconditionally.
+    That was invisible for as long as every fuse rebuilt the graph from nothing —
+    the same entity was only ever built once per fuse.
+
+    It stopped being invisible when fusion became incremental. "Fetch results"
+    drops a run from fused_run_ids so the case treats it as new; on a case with
+    OTHER members the additive path stays alive, seeds from the stored graph —
+    which still holds that run's entities — and maps the run onto itself.
+    Measured on a two-run case, re-fetching one of them three times:
+
+        59,047 -> 59,412 -> 59,777 -> 60,142     (+365 every time)
+
+    +365 is precisely that run's whole evidence trail, appended again. Entities,
+    relationships and findings were all stable; only the evidence grew, which is
+    the bulk of a stored graph and what the report cites per finding. An operator
+    pressing the button twice would have seen a finding gain corroboration it
+    never earned.
+    """
+    seen = {(e.module, e.run_id, e.locator) for e in dst}
+    for e in src:
+        k = (e.module, e.run_id, e.locator)
+        if k not in seen:
+            dst.append(e)
+            seen.add(k)
+
+
 @dataclass
 class EvidenceRef:
     module: str          # "memory" | "agentic" | "timesketch" | "cve"
@@ -196,7 +225,7 @@ class FusionGraph:
             return e
         _union(cur.sources, e.sources)
         _union(cur.flags, e.flags)
-        cur.evidence.extend(e.evidence)
+        _union_evidence(cur.evidence, e.evidence)
         cur.anomaly = max(cur.anomaly, e.anomaly)
         cur.first_seen = _wider(cur.first_seen, e.first_seen, want_min=True)
         cur.last_seen = _wider(cur.last_seen, e.last_seen, want_min=False)
