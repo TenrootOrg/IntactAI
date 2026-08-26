@@ -129,12 +129,19 @@ class TestItLooksBeyondOurOwnDirectory(_Base):
                         "a normal npm install still reads as 'not installed'")
         self.assertEqual(self.sub.binary_path(self.P), want)
 
-    def test_the_managed_copy_beats_an_npm_one(self):
-        self.plant("npm/@openai/codex/node_modules/@openai/"
-                   "codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex")
+    def test_the_newest_copy_wins_regardless_of_install_method(self):
+        # Not list order. An npm install made after ours is the one the operator
+        # is using, and pretending otherwise is how a box ends up running a
+        # binary its operator replaced.
         mine = self.plant("cli/bin/codex")
-        self.assertEqual(self.sub.binary_path(self.P), mine,
-                         "the copy upgrades keep current must win")
+        os.utime(mine, (1_000_000, 1_000_000))
+        theirs = self.plant("npm/@openai/codex/node_modules/@openai/"
+                            "codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex")
+        os.utime(theirs, (2_000_000, 2_000_000))
+        self.assertEqual(self.sub.binary_path(self.P), theirs)
+        # ...and the reverse, so this is about mtime and not about which glob ran.
+        os.utime(mine, (3_000_000, 3_000_000))
+        self.assertEqual(self.sub.binary_path(self.P), mine)
 
     def test_a_binary_on_a_plain_bin_dir_is_found(self):
         want = self.plant("usrbin/codex")
@@ -227,6 +234,60 @@ class TestItExplainsItselfWhenNothingIsFound(_Base):
         self.assertEqual(d.get("path"), self.sub.install_target_path(self.P))
 
 
+class TestTheOfficialInstallerLayout(_Base):
+    """`curl -fsSL https://chatgpt.com/codex/install.sh | sh` — the command the
+    vendor's own page gives, and a THIRD layout again:
+
+        ~/.local/bin/codex                                       launcher symlink
+        ~/.codex/packages/standalone/current      -> releases/<v>-<triple>
+        ~/.codex/packages/standalone/releases/<v>-<triple>/bin/codex   the binary
+
+    Two things bit here on a real box, both measured:
+
+      * `current` is an ABSOLUTE symlink into the operator's home. Inside the
+        container that path does not exist, so it resolves to nothing while the
+        file sits right there under the mount. Everything must go through
+        releases/*, never through current.
+      * the installer keeps every release it has ever fetched. A lexical sort
+        puts 0.99.0 above 0.149.1, so an operator who had just upgraded would
+        keep running the old binary with nothing on any screen saying so.
+    """
+
+    def _standalone(self, version, *, mtime=None):
+        rel = f"hostcodex/packages/standalone/releases/{version}-x86_64-unknown-linux-musl/bin/codex"
+        p = self.plant(rel)
+        self.sub._HOST_CODEX_HOME = os.path.join(self.tmp, "hostcodex")
+        if mtime is not None:
+            os.utime(p, (mtime, mtime))
+        return p
+
+    def test_the_official_installer_layout_is_found(self):
+        want = self._standalone("0.149.1")
+        self.assertTrue(self.sub.is_installed(self.P),
+                        "the vendor's own install command produces a layout we miss")
+        self.assertEqual(self.sub.binary_path(self.P), want)
+
+    def test_it_never_goes_through_the_current_symlink(self):
+        pats = " ".join(self.sub._npm_vendor_globs("codex"))
+        self.assertIn("packages/standalone/releases/*/bin/codex", pats)
+        self.assertNotIn("standalone/current", pats,
+                         "current is an absolute host path — dead in a container")
+
+    def test_the_newest_release_wins_not_the_alphabetical_one(self):
+        old = self._standalone("0.99.0", mtime=1_000_000)
+        new = self._standalone("0.149.1", mtime=2_000_000)
+        self.assertGreater(old, new)               # lexically, 0.99 sorts after
+        self.assertEqual(self.sub.binary_path(self.P), new,
+                         "an upgraded operator would keep running the old binary")
+
+    def test_the_credential_mount_carries_the_binary_too(self):
+        # The binary lives inside ~/.codex, which is already mounted for the
+        # credential — so this costs no second mount, and that is worth pinning
+        # because someone tidying the compose file would not guess it.
+        pats = " ".join(self.sub._npm_vendor_globs("codex"))
+        self.assertIn(self.sub._HOST_CODEX_HOME + "/packages/standalone", pats)
+
+
 class TestTheHostCredential(_Base):
     """The operator's own login is the source of truth, and stays theirs."""
 
@@ -315,7 +376,7 @@ class TestTheMountPointsAreNotReadFromTheEnvironment(_Base):
     COMPOSE = os.path.join(ROOT, "modules/backend/docker-compose.yaml")
 
     def test_the_mount_points_are_constants(self):
-        self.assertEqual(self.sub._HOST_PKG_DIR, "/host/node_modules")
+        self.assertEqual(self.sub._HOST_PKG_DIR, "/host/codex-pkg")
         self.assertEqual(self.sub._HOST_CODEX_HOME, "/host/codex")
 
     def test_the_host_side_variables_cannot_reach_them(self):
@@ -325,20 +386,65 @@ class TestTheMountPointsAreNotReadFromTheEnvironment(_Base):
         self.addCleanup(os.environ.pop, "INTACT_HOST_CODEX_PKG", None)
         self.addCleanup(os.environ.pop, "INTACT_HOST_CODEX_HOME", None)
         fresh = _load(os.path.join(self.tmp, "cli2"))
-        self.assertEqual(fresh._HOST_PKG_DIR, "/host/node_modules",
+        self.assertEqual(fresh._HOST_PKG_DIR, "/host/codex-pkg",
                          "the host path leaked in through env_file again")
         self.assertEqual(fresh._HOST_CODEX_HOME, "/host/codex")
+
+    def test_an_upgrade_does_not_strand_the_appliance(self):
+        """THE VERSION-STABILITY RULE.
+
+        `codex upgrade` writes a new release beside the old one. Any mount whose
+        PATH names a version pins the box to whatever was installed the day it
+        was configured — and it fails silently, because the old binary is still
+        there and still runs. So the two roots that are meant to hit carry no
+        version at all, and versions are resolved by glob inside them.
+        """
+        self.assertEqual(self.sub._HOST_CODEX_HOME, "/host/codex")
+        self.assertEqual(self.sub._HOST_NPM_DIR, "/host/node_modules")
+        # The rule is "no version in the path", not "must contain a glob":
+        # /host/node_modules/@openai/codex/bin/codex carries no version because
+        # npm overwrites the package in place, and that is fine.
+        import re as _re
+        for pat in self.sub._npm_vendor_globs("codex"):
+            if pat.startswith(("/host/codex/", "/host/node_modules/")):
+                self.assertIsNone(_re.search(r"\d+\.\d+", pat),
+                                  f"{pat} pins a version into the search path")
+
+    def test_a_new_release_is_picked_up_with_no_re_stamp(self):
+        # Install 0.149.1, then "upgrade" to 0.150.0 the way the standalone
+        # installer does — a new sibling under releases/. Nothing re-runs on the
+        # host; the appliance must simply follow.
+        home = os.path.join(self.tmp, "hostcodex")
+        self.sub._HOST_CODEX_HOME = home
+        old = self.plant("hostcodex/packages/standalone/releases/"
+                         "0.149.1-x86_64-unknown-linux-musl/bin/codex")
+        os.utime(old, (1_000_000, 1_000_000))
+        self.assertEqual(self.sub.binary_path(self.P), old)
+        new = self.plant("hostcodex/packages/standalone/releases/"
+                         "0.150.0-x86_64-unknown-linux-musl/bin/codex")
+        os.utime(new, (2_000_000, 2_000_000))
+        self.assertEqual(self.sub.binary_path(self.P), new,
+                         "the box kept running the release the operator replaced")
+
+    def test_the_npm_root_is_searched_without_a_version_in_the_path(self):
+        pats = [p for p in self.sub._npm_vendor_globs("codex")
+                if p.startswith("/host/node_modules")]
+        self.assertTrue(pats, "the npm global root is not searched at all")
+        for p in pats:
+            self.assertNotIn("0.1", p)
 
     def test_the_mount_destinations_match_the_compose_file(self):
         with open(self.COMPOSE, encoding="utf-8") as fh:
             compose = fh.read()
-        self.assertIn(f":{self.sub._HOST_PKG_DIR}:ro", compose)
-        self.assertIn(f":{self.sub._HOST_CODEX_HOME}:ro", compose)
+        for dest in (self.sub._HOST_PKG_DIR, self.sub._HOST_CODEX_HOME,
+                     self.sub._HOST_NPM_DIR):
+            self.assertIn(f":{dest}:ro", compose)
 
     def test_the_mounts_are_read_only(self):
         with open(self.COMPOSE, encoding="utf-8") as fh:
             compose = fh.read()
-        for dest in (self.sub._HOST_PKG_DIR, self.sub._HOST_CODEX_HOME):
+        for dest in (self.sub._HOST_PKG_DIR, self.sub._HOST_CODEX_HOME,
+                     self.sub._HOST_NPM_DIR):
             self.assertNotIn(f":{dest}:rw", compose)
             self.assertNotIn(f":{dest}\n", compose)
 
@@ -351,12 +457,37 @@ class TestTheMountPointsAreNotReadFromTheEnvironment(_Base):
             self.assertNotIn(dangerous, compose,
                              f"a mount at {dangerous} would shadow the image")
 
-    def test_the_npm_root_is_searched_first(self):
-        # A fresh load, not self.sub: setUp sandboxes _NPM_ROOTS, so asserting
-        # on it here would only ever measure the sandbox.
+    def test_every_mounted_root_is_searched(self):
         fresh = _load(os.path.join(self.tmp, "cli3"))
-        self.assertEqual(fresh._NPM_ROOTS[0], "/host/node_modules",
-                         "the operator's own install must be searched first")
+        pats = " ".join(fresh._npm_vendor_globs("codex"))
+        for root in ("/host/codex-pkg", "/host/codex/", "/host/node_modules"):
+            self.assertIn(root, pats, f"{root} is not searched")
+
+
+class TestThePanelTellsThemTheRightCommand(_Base):
+    """An install instruction that 404s is worse than none. The first version of
+    this panel guessed a raw.githubusercontent URL; the documented one is
+    chatgpt.com/codex/install.sh."""
+
+    STORE = os.path.join(ROOT, "modules/nginx/html/js/stores/settings.js")
+
+    def test_the_documented_installer_url_is_offered(self):
+        with open(self.STORE, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn("https://chatgpt.com/codex/install.sh", src)
+        self.assertNotIn("raw.githubusercontent.com/openai/codex", src)
+
+    def test_the_login_command_is_offered(self):
+        with open(self.STORE, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn("codex login", src)
+
+    def test_the_panel_offers_no_install_button(self):
+        panel = os.path.join(ROOT, "modules/nginx/html/partials/settings.html")
+        with open(panel, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertNotIn("Install CLI", src)
+        self.assertNotIn("cliInstall(", src)
 
 
 class TestThereIsNoInstallOrSignInAnyMore(_Base):

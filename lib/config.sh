@@ -79,53 +79,80 @@ read_config() {
 # Point the backend container at the operator's OWN codex install.
 #
 # The appliance stopped installing and signing in to codex: the operator does
-# that on the host, the ordinary way, and the backend just uses it. It runs in a
-# container, so the two things it needs have to be bind-mounted in, and this
-# works out WHERE they are on this particular box.
+# that on the host, whichever way they like, and the backend just uses it. It
+# runs in a container, so what it needs has to be bind-mounted in — and this
+# works out where.
 #
-# Two facts make it less obvious than it sounds, both measured rather than
-# assumed (see tests/test_agentic_cli_discovery.py):
-#   * `command -v codex` finds a JavaScript shim, not a program. The runnable
-#     binary is buried in the package tree beside it, and the backend image
-#     ships no node — so the PACKAGE ROOT is what has to be mounted, not the bin.
-#   * the credential lives in the INVOKING operator's home, not root's. This runs
-#     under sudo, so $HOME is /root and the answer would be wrong every time.
+# THE RULE IS: MOUNT SOMETHING THAT DOES NOT MOVE WHEN THEY UPGRADE.
 #
-# Both keys are always written, empty-string-safe: compose falls back to the two
-# empty directories install.sh creates, and an absent mount and an empty one are
-# the same answer to "is codex here".
+# Asking the shell where codex is (which is how a person would check) and
+# mounting the answer is the obvious approach, and it is subtly wrong on its
+# own: `codex` resolves to
+#   ~/.codex/packages/standalone/releases/0.149.1-x86_64-unknown-linux-musl/bin/codex
+# and mounting that directory pins the appliance to 0.149.1 — the next `codex
+# upgrade` writes 0.150.0 beside it and the mount points at a version the
+# operator no longer runs, silently, until someone re-runs this function.
+#
+# So three roots go in, and the two that matter carry no version at all:
+#
+#   ~/.codex          — the credential home. Exists for anyone who has ever run
+#                       codex, and the official installer
+#                       (curl https://chatgpt.com/codex/install.sh | sh) puts
+#                       every release under it. Version-independent.
+#   npm root -g       — where `npm i -g @openai/codex` puts the package, asked of
+#                       npm rather than assumed, so a custom prefix or an nvm
+#                       node still resolves. Version-independent.
+#   the resolved root — whatever `command -v codex` actually points at, for an
+#                       install in neither of those places. This is the one that
+#                       CAN go stale, and it is the fallback, not the mechanism.
+#
+# Two things this must NOT do, both learned the hard way:
+#   * never resolve through a "current" convenience symlink — the standalone
+#     installer's is ABSOLUTE (/home/<them>/.codex/...), so inside the container
+#     it points at nothing while the file sits right there under the mount;
+#   * never read $HOME. This runs under sudo, so $HOME is /root and the
+#     credential it would look for is the wrong user's every single time.
 _stamp_host_codex_paths() {
-    local backend_env="$1" bin pkg home user
+    local backend_env="$1" bin dir pkg npmroot home user
 
     mkdir -p "${SCRIPT_DIR}/data/agentic_cli/host-pkg" \
              "${SCRIPT_DIR}/data/agentic_cli/host-home" 2>/dev/null || true
-
     pkg="${SCRIPT_DIR}/data/agentic_cli/host-pkg"
-    bin="$(command -v codex 2>/dev/null || true)"
-    if [[ -n "$bin" ]]; then
-        bin="$(readlink -f "$bin" 2>/dev/null || echo "$bin")"
-        # .../node_modules/@openai/codex/bin/codex.js -> .../node_modules
-        local root
-        root="$(cd "$(dirname "$bin")/../../.." 2>/dev/null && pwd || true)"
-        [[ -d "${root}/@openai" ]] && pkg="$root"
-    fi
+    npmroot="${SCRIPT_DIR}/data/agentic_cli/host-pkg"
 
-    # The operator, not root. SUDO_USER is who typed the command; fall back to
-    # the owner of the appliance directory, which is the same person on every
-    # install we have seen and is right when the caller is already root.
+    # As the OPERATOR, not as root: a per-user install (~/.local/bin, nvm) is
+    # not on root's PATH, and this runs under sudo.
     user="${SUDO_USER:-}"
     [[ -z "$user" ]] && user="$(stat -c '%U' "$SCRIPT_DIR" 2>/dev/null || true)"
-    home="$(getent passwd "$user" 2>/dev/null | cut -d: -f6)"
-    [[ -z "$home" ]] && home="${HOME:-/root}"
-    if [[ -d "${home}/.codex" ]]; then
-        home="${home}/.codex"
-    else
-        home="${SCRIPT_DIR}/data/agentic_cli/host-home"
+    _as_operator() { su - "$user" -c "$1" 2>/dev/null || true; }
+
+    bin="$(_as_operator 'command -v codex')"
+    [[ -z "$bin" ]] && bin="$(command -v codex 2>/dev/null || true)"
+    if [[ -n "$bin" ]]; then
+        bin="$(readlink -f "$bin" 2>/dev/null || echo "$bin")"
+        dir="$(dirname "$bin")"
+        # <root>/bin/codex -> <root>; the helper binaries and codex-resources/
+        # sit beside bin/, so mounting bin/ alone would leave them behind.
+        [[ "$(basename "$dir")" == "bin" ]] && pkg="$(dirname "$dir")" || pkg="$dir"
     fi
 
+    local r
+    r="$(_as_operator 'npm root -g')"
+    [[ -d "$r" ]] && npmroot="$r"
+
+    home="$(getent passwd "$user" 2>/dev/null | cut -d: -f6)"
+    [[ -n "$home" && -d "${home}/.codex" ]] && home="${home}/.codex" \
+        || home="${SCRIPT_DIR}/data/agentic_cli/host-home"
+
     update_env_var "$backend_env" "INTACT_HOST_CODEX_PKG" "$pkg"
+    update_env_var "$backend_env" "INTACT_HOST_CODEX_NPM" "$npmroot"
     update_env_var "$backend_env" "INTACT_HOST_CODEX_HOME" "$home"
-    log_info "  codex (operator-installed): package=${pkg}, home=${home}"
+    # No apostrophe inside ${bin:-...}: bash starts a quote on it even within a
+    # double-quoted string, and the rest of the file parses as one long string.
+    log_info "  codex (operator-installed): ${bin:-not found on the PATH}"
+    log_info "    home=${home}   (version-independent)"
+    log_info "    npm=${npmroot}  (version-independent)"
+    log_info "    pkg=${pkg}"
 }
 
 # Write a single pin into config.yaml's `versions:` block.

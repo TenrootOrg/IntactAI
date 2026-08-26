@@ -1606,13 +1606,16 @@ document.addEventListener('alpine:init', () => {
 
         // The one-liners an operator runs on the host. Kept here rather than in
         // the markup so the copy button has a single source for the text.
+        // The command the vendor's own page gives. It was a guessed
+        // raw.githubusercontent URL, which is not the documented one — an
+        // install instruction that 404s is worse than none.
         cliInstallCommands() {
-            return 'npm install -g @openai/codex\n' +
-                   '# or, without node:\n' +
-                   'curl -fsSL https://raw.githubusercontent.com/openai/codex/main/install.sh | sh';
+            return 'curl -fsSL https://chatgpt.com/codex/install.sh | sh\n' +
+                   '# or, if you already use node:\n' +
+                   'npm install -g @openai/codex';
         },
         cliLoginCommand() { return 'codex login'; },
-        cliDocsUrl() { return 'https://github.com/openai/codex'; },
+        cliDocsUrl() { return 'https://developers.openai.com/codex/cli/'; },
 
         async cliRefresh() {
             if (!this.isSubscription()) return;

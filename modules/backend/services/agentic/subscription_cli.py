@@ -191,11 +191,24 @@ def _spec(provider) -> dict:
 #
 # The destination is a contract between docker-compose.yaml and this module, not
 # a setting. Tests override the module attributes directly.
-_HOST_PKG_DIR = "/host/node_modules"
+#
+# THREE ROOTS, and the point of the first two is that NOTHING IN THEIR PATH
+# CHANGES WHEN CODEX IS UPGRADED:
+#   /host/codex        the operator's ~/.codex — credential, and every release
+#                      the official installer has ever fetched
+#   /host/node_modules the npm global root, from `npm root -g`
+#   /host/codex-pkg    whatever `command -v codex` resolved to, for an install in
+#                      neither of those. This one CAN name a version
+#                      (.../releases/0.149.1-.../), so it is the fallback and not
+#                      the mechanism — an upgrade would leave it pointing at a
+#                      release the operator no longer runs.
+# Versions inside each root are handled by globs, never by a pinned path.
+_HOST_PKG_DIR = "/host/codex-pkg"
 _HOST_CODEX_HOME = "/host/codex"
+_HOST_NPM_DIR = "/host/node_modules"
 
 _NPM_ROOTS = (
-    _HOST_PKG_DIR,                      # the operator's own install, mounted in
+    _HOST_NPM_DIR,
     "/usr/local/lib/node_modules",
     "/usr/lib/node_modules",
     os.path.expanduser("~/.npm-global/lib/node_modules"),
@@ -232,6 +245,47 @@ def _npm_vendor_globs(binary):
     vary by arch, and a hardcoded x86_64 path would quietly find nothing on an
     arm64 appliance.
     """
+    # THE OFFICIAL INSTALLER'S LAYOUT, which is a third one again:
+    #
+    #   curl -fsSL https://chatgpt.com/codex/install.sh | sh
+    #     ~/.local/bin/codex                                        launcher symlink
+    #     ~/.codex/packages/standalone/current       -> releases/<v>-<triple>
+    #     ~/.codex/packages/standalone/releases/<v>-<triple>/bin/codex   the binary
+    #
+    # Globbed through releases/*, NEVER through `current`. `current` is an
+    # ABSOLUTE symlink into the operator's home — /home/<them>/.codex/... — and
+    # this process is in a container where that path does not exist, so it
+    # resolves to nothing even though the file is right there under the mount.
+    # Measured: `ls .../current/bin/codex` fails inside the container while
+    # `ls .../releases/*/bin/codex` finds it and it runs (codex-cli 0.149.1).
+    #
+    # Under _HOST_CODEX_HOME because that is already mounted for the credential;
+    # the binary happens to live inside the same directory, so this costs no
+    # extra mount. The un-mounted local twin is listed too, for a box where this
+    # module is not containerised.
+    # THE MOUNTED PACKAGE ROOT comes first, and is the one that is meant to hit.
+    # lib/config.sh resolved it by asking the operator's own shell where codex is
+    # and following the symlinks to the real file — so it is whatever they
+    # actually installed, not a layout we guessed. Both known shapes are checked
+    # inside it, because "package root" means a different depth in each:
+    #   standalone: <root>/bin/codex
+    #   npm:        <root>/node_modules/@openai/codex-<arch>/vendor/<triple>/bin/codex
+    yield f"{_HOST_PKG_DIR}/bin/{binary}"
+    yield f"{_HOST_PKG_DIR}/node_modules/@openai/{binary}-*/vendor/*/bin/{binary}"
+    # The npm global root, asked of npm itself at stamp time rather than
+    # assumed. Version-independent: the package directory keeps its name across
+    # every upgrade, so this keeps working with no re-stamp.
+    yield f"{_HOST_NPM_DIR}/@openai/{binary}/node_modules/@openai/{binary}-*/vendor/*/bin/{binary}"
+    yield f"{_HOST_NPM_DIR}/@openai/{binary}/bin/{binary}"
+
+    # Then the layouts, as a safety net for the case the resolution above cannot
+    # cover: codex installed AFTER this appliance was last configured, so the
+    # mount still points at the empty placeholder. ~/.codex is mounted regardless
+    # (the credential lives there) and the standalone installer happens to put
+    # the binary inside it, so that route keeps working with no re-stamp at all.
+    for home in (_HOST_CODEX_HOME, os.path.expanduser(f"~/.{binary}")):
+        yield f"{home}/packages/standalone/releases/*/bin/{binary}"
+
     for root in _NPM_ROOTS:
         # the vendored native binary (preferred — no runtime needed)
         yield f"{root}/@openai/{binary}/node_modules/@openai/{binary}-*/vendor/*/bin/{binary}"
@@ -272,6 +326,8 @@ def _candidate_paths(provider):
     out = list(_emit(install_target_path(provider)))
     out += _emit(shutil.which(binary))          # anything on the container's PATH
     for pattern in _npm_vendor_globs(binary):
+        # Order here is only for the diagnostic "searched" list; binary_path
+        # ranks the usable ones by mtime across every root.
         for hit in sorted(glob.glob(pattern)):
             out += _emit(hit)
     for d in _BIN_SEARCH_DIRS:
@@ -280,17 +336,40 @@ def _candidate_paths(provider):
     return out
 
 
+def _mtime_or_zero(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0
+
+
 def _usable(path) -> bool:
     return bool(path) and os.path.isfile(path) and os.access(path, os.X_OK)
 
 
 def binary_path(provider) -> str:
-    """The CLI we would actually run. Falls back to the install target, so a
-    message that formats this path still names where an install would land."""
-    for c in _candidate_paths(provider):
-        if _usable(c):
-            return c
-    return install_target_path(provider)
+    """The CLI we would actually run: the NEWEST usable copy on the box.
+
+    Ranked by mtime rather than by list order, and that is the whole point.
+    Candidates come from three mounted roots and a handful of local paths, and
+    list order encodes a guess about which install method matters most — a guess
+    that is wrong the moment the operator upgrades. Measured on a live
+    appliance: `codex upgrade` wrote 0.150.0 beside 0.149.1, and the appliance
+    went on resolving 0.149.1 through the stamped mount, silently, because that
+    mount came first. The old binary was still there and still ran, so nothing
+    looked broken.
+
+    "Newest wins" is the rule that survives every install method: whatever the
+    operator most recently installed or upgraded to is what the box uses, and it
+    needs no re-stamp, no restart and no knowledge of which installer they chose.
+
+    Falls back to the install target so a message that formats this path still
+    names somewhere sensible when nothing is installed at all.
+    """
+    usable = [c for c in _candidate_paths(provider) if _usable(c)]
+    if not usable:
+        return install_target_path(provider)
+    return max(usable, key=_mtime_or_zero)
 
 
 def is_installed(provider) -> bool:

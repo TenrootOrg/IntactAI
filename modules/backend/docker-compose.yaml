@@ -54,7 +54,8 @@ services:
       # creates empty, so a box with no codex mounts two empty dirs rather than
       # having docker invent /root/.codex on the host. update_env_files points
       # them at the real thing when it finds one (lib/config.sh).
-      - ${INTACT_HOST_CODEX_PKG:-../../data/agentic_cli/host-pkg}:/host/node_modules:ro
+      - ${INTACT_HOST_CODEX_PKG:-../../data/agentic_cli/host-pkg}:/host/codex-pkg:ro
+      - ${INTACT_HOST_CODEX_NPM:-../../data/agentic_cli/host-pkg}:/host/node_modules:ro
       - ${INTACT_HOST_CODEX_HOME:-../../data/agentic_cli/host-home}:/host/codex:ro
       # Wave F "the flip": code (app.py, config.py, services/, routes/,
       # config/default_blueprints.yaml) and /app/logs used to be bind-mounted
