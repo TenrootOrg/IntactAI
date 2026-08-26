@@ -389,14 +389,6 @@
                                 <p class="text-xs text-gray-500 mt-1">Copy it from the Velociraptor GUI. A hunt pulls every client that reported; a flow pulls one host.</p>
                             </div>
 
-                            <div>
-                                <label class="block text-sm font-medium text-gray-300 mb-1">Client ID <span class="text-gray-500 font-normal">(optional)</span></label>
-                                <input type="text" id="adopt-client-id" placeholder="C.1a2b3c4d5e6f7890"
-                                       class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-2.5 text-sm font-mono focus:border-blue-500 focus:outline-none"
-                                       @keydown.enter="adoptVelociraptorId()">
-                                <p class="text-xs text-gray-500 mt-1">Only speeds up a flow lookup. Leave blank and every client is searched.</p>
-                            </div>
-
                             <div class="bg-gray-900 border border-gray-700 rounded-lg p-3">
                                 <p class="text-xs text-gray-400">
                                     Only artifacts fusion has mappers for are read &mdash; anything else in the collection is skipped and never enters the case graph.

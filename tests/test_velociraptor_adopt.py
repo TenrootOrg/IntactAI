@@ -192,8 +192,10 @@ class TestValidationHappensBeforeAnythingElse(unittest.TestCase):
                         self.src.index("create_automation_run"),
                         "the id must be validated before a run row is created")
 
-    def test_client_id_is_validated(self):
-        self.assertIn("is_valid_client_id", self.src)
+    def test_no_client_id_is_asked_for(self):
+        # The fetch enumerates every client and locates the flow itself, so a
+        # client id bought nothing but a field the operator could get wrong.
+        self.assertNotIn("client_id", self.src)
 
     def test_duplicate_check_precedes_the_run(self):
         self.assertLess(self.src.index("_adopt_existing_run"),
@@ -244,7 +246,10 @@ class TestTheWorkerAlwaysReachesATerminalState(unittest.TestCase):
 
     def test_a_flow_persists_the_client_it_resolved_on(self):
         # At fuse time _velo_hunt_contribution re-pulls live and needs flow_id
-        # AND client_id together. The operator may have pasted a bare F.xxx.
+        # AND client_id together. Nobody supplies one, so the client the fetch
+        # resolved the flow on MUST be written back — without it the adopted
+        # flow fuses once and can never be re-read.
+        self.assertIn('resolved = next(iter(client_info or {}), None)', self.src)
         self.assertIn('det["client_id"] = resolved', self.src)
 
 
@@ -289,6 +294,7 @@ class TestTheOperatorCanFindIt(unittest.TestCase):
         self.assertIn("forensicsTab = 'adopt'", panel)
         self.assertIn("forensicsTab === 'adopt'", panel)
         self.assertIn('id="adopt-id"', panel)
+        self.assertNotIn('id="adopt-client-id"', panel)
 
     def test_it_says_no_collection_is_started(self):
         # The single most important thing to convey: this does not touch the

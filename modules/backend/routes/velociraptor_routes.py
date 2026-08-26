@@ -796,7 +796,7 @@ def _adopt_existing_run(case_id, ident):
     return None
 
 
-def _adopt_worker(run_id, kind, ident, client_id):
+def _adopt_worker(run_id, kind, ident):
     """Read the flow/hunt's supported rows and persist them where fusion looks.
 
     Owns the run's terminal state on EVERY path, including the empty ones — a
@@ -818,9 +818,6 @@ def _adopt_worker(run_id, kind, ident, client_id):
         add_log_to_run(run_id, f"Artifact filter: fusion's supported set "
                                f"({len(SUPPORTED_ARTIFACTS)} artifacts). Anything "
                                f"else in this collection is skipped.")
-        if kind == "flow":
-            add_log_to_run(run_id, f"Client scope: {client_id}" if client_id
-                           else "Client scope: every client (no client id given)")
         update_run_status(run_id, "running", progress=10)
 
         if kind == "hunt":
@@ -828,9 +825,11 @@ def _adopt_worker(run_id, kind, ident, client_id):
                 run_id, hunt_id=ident,
                 only_artifacts=SUPPORTED_ARTIFACTS, progress_log=True)
         else:
+            # No client scoping: the fetch enumerates every client and locates
+            # the flow itself, so asking the operator which host it came from
+            # bought nothing but a field to get wrong.
             results, artifacts, client_info = get_existing_collection_results(
                 run_id, flow_id=ident,
-                client_ids=([client_id] if client_id else None),
                 only_artifacts=SUPPORTED_ARTIFACTS, progress_log=True)
 
         update_run_status(run_id, "running", progress=85)
@@ -853,10 +852,11 @@ def _adopt_worker(run_id, kind, ident, client_id):
             det["total_rows"] = total
             # A FLOW locator must carry its client_id: at fuse time
             # _velo_hunt_contribution re-pulls live and needs flow_id AND
-            # client_id together. The operator may have pasted a bare F.xxx, so
-            # persist whichever client the fetch actually resolved it on.
+            # client_id together. Nobody supplies it, so persist whichever client
+            # the fetch resolved the flow on — without this the adopted flow
+            # fuses once and can never be re-read.
             if kind == "flow" and not det.get("client_id"):
-                resolved = client_id or next(iter(client_info or {}), None)
+                resolved = next(iter(client_info or {}), None)
                 if resolved:
                     det["client_id"] = resolved
 
@@ -899,11 +899,9 @@ def adopt_velociraptor_collection():
     try:
         import threading
         from services.workflow_service import _resolve_case_id
-        from services.vql_safety import is_valid_client_id
 
         data = request.get_json(silent=True) or {}
         raw_id = (data.get('id') or data.get('flow_id') or data.get('hunt_id') or '')
-        client_id = (data.get('client_id') or '').strip() or None
 
         kind, ident = _adopt_normalize_id(raw_id)
         if not kind:
@@ -912,9 +910,6 @@ def adopt_velociraptor_collection():
             # from an operator rather than from a run we created.
             return jsonify({"error": f"'{str(raw_id).strip()}' is not a valid id. "
                                      f"{_ADOPT_ID_HINT}"}), 400
-        if client_id and not is_valid_client_id(client_id):
-            return jsonify({"error": f"'{client_id}' is not a valid client id "
-                                     f"(expected C.xxxxxxxxxxxxxxxx)."}), 400
 
         case_id = _resolve_case_id("velociraptor_adopt", None)
         if not case_id:
@@ -934,7 +929,6 @@ def adopt_velociraptor_collection():
             automation_type="velociraptor_adopt",
             name=f"Adopt {'hunt' if kind == 'hunt' else 'flow'} {ident}",
             details={("hunt_id" if kind == "hunt" else "flow_id"): ident,
-                     "client_id": client_id,
                      "adopted_id": ident,
                      # An analyst ran this by hand in the Velociraptor GUI — no
                      # agent was involved. Display label only (_run_passes_gate
@@ -945,7 +939,7 @@ def adopt_velociraptor_collection():
         add_log_to_run(run_id, f"Adopting {kind} {ident} into the case")
 
         threading.Thread(target=_adopt_worker,
-                         args=(run_id, kind, ident, client_id),
+                         args=(run_id, kind, ident),
                          daemon=True).start()
 
         return jsonify({"run_id": run_id, "kind": kind, "id": ident}), 202

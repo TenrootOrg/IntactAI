@@ -559,12 +559,10 @@ document.addEventListener('partials:ready', () => {
 // other module, rather than in a second progress UI here.
 async function adoptVelociraptorId() {
     const idInput = document.getElementById('adopt-id');
-    const clientInput = document.getElementById('adopt-client-id');
     const statusDiv = document.getElementById('adopt-status');
     const btn = document.getElementById('adopt-btn');
 
     const ident = (idInput?.value || '').trim();
-    const clientId = (clientInput?.value || '').trim();
 
     statusDiv.classList.remove('hidden');
 
@@ -580,7 +578,7 @@ async function adoptVelociraptorId() {
         const response = await fetch('/api/velociraptor/adopt', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: ident, client_id: clientId || null })
+            body: JSON.stringify({ id: ident })
         });
 
         const data = await response.json();
@@ -590,7 +588,6 @@ async function adoptVelociraptorId() {
             statusDiv.innerHTML = `<span class="text-green-400">${kind} ${escapeHtml(data.id || ident)} `
                 + `added to the case. Opening Workflows…</span>`;
             idInput.value = '';
-            clientInput.value = '';
             setTimeout(() => {
                 switchTab('workflows');
                 loadWorkflows();
