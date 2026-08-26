@@ -9,6 +9,7 @@ fetched, dispatched to their module mapper, assembled into one graph by
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -563,6 +564,41 @@ def get_case(case_id) -> dict:
     if not run or run.get("automation_type") != CASE_TYPE:
         return {}
     return run.get("details") or {}
+
+
+def _graph_filter_signature(d, baseline) -> str:
+    """Everything whose change invalidates the STORED graph.
+
+    The stored graph is the FILTERED set — correlate.assemble drops entities
+    outside the window or under the severity floor at ingest, and module gating
+    decides which runs contribute at all. So none of these can be re-applied to
+    a graph that was built under different ones; they need a rebuild.
+
+    Dispositions are in here for a subtler reason: suppression is global. A
+    verdict recorded on one finding can re-open or silence others through
+    _apply_dispositions, so a triage action is a rebuild even though no new data
+    arrived. That is also what today's per-action re-fuses already do.
+    """
+    tw = d.get("time_window") or {}
+    payload = {
+        "window": [tw.get("start"), tw.get("end")],
+        "min_severity": d.get("min_severity", "informational"),
+        "modules": sorted(normalize_modules(d.get("fusion_modules"))),
+        "included": sorted(d.get("included_run_ids") or []) if d.get("included_run_ids") is not None else None,
+        "is_baseline": bool(d.get("is_baseline")),
+        "baseline": bool(baseline),
+        "dispositions": _stable_hash(d.get("dispositions") or {}),
+    }
+    return _stable_hash(payload)
+
+
+def _stable_hash(obj) -> str:
+    try:
+        return hashlib.sha256(
+            json.dumps(obj, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()[:16]
+    except Exception:
+        return "unhashable"
 
 
 def _members_for_case(case_id, d=None) -> list:
@@ -1295,6 +1331,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     inc = d.get("included_run_ids")
     if inc is not None:
         members = [m for m in members if m in set(inc)]
+    seed_graph = None            # set below only on the additive path
     if contributions_override is not None:
         contributions = contributions_override
         # Counted off the override itself, so the name `contributions` is never
@@ -1310,10 +1347,28 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
               + (" · re-reading each one from Velociraptor (this is why a manual "
                  "Refusion takes longer than an automatic one)" if refetch else ""),
               pct=5)
-        # PASS 1 — decide membership. Module gating only: a run row is ~1 KB, so
-        # this is cheap and touches none of the evidence.
+        # PASS 1 — decide membership. Module gating + terminal state: a run row is
+        # ~1 KB, so this is cheap and touches none of the evidence.
         # (Disabled modules' runs stay tagged members but contribute nothing; they
         # are dropped from `members` too so run_ids/baseline reflect what was fused.)
+        #
+        # A RUN STILL IN FLIGHT IS NOT A MEMBER OF THIS FUSE, and leaving it in was
+        # a silent data-loss race. `members` is membership by case TAG, with no
+        # regard for status, and the fuse writes fused_run_ids = list(members) —
+        # so a Refusion pressed while a job was running stamped that job as
+        # "already fused" with none of its data in the graph. stale_member_runs
+        # then applies the opposite rule (terminal AND not in fused_run_ids), so
+        # when the job finally finished it was not stale, the automatic fuse woke
+        # up, found nothing to do, and returned. No graph update, no report, and
+        # nothing in any log to say why.
+        #
+        # Measured on this appliance 2026-08-26: memory_1787736379968 was created
+        # 09:26:19, a Refusion ran 09:28:06 while it was still collecting, and the
+        # run completed 09:42:01 — the case log ends at the Refusion and its
+        # 15-minute memory acquisition never reached the case.
+        #
+        # Same predicate stale_member_runs uses, so the two halves now agree:
+        # a run is fused when it is terminal, and stale until it has been.
         kept, kept_runs = [], []
         for rid in members:
             run = ws.get_automation_run(rid)
@@ -1321,9 +1376,64 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                 continue
             if not _run_passes_gate(run, d):
                 continue
+            if (run.get("status") or "") not in ("completed", "success"):
+                continue
             kept.append(rid)
             kept_runs.append((rid, run))
         members = kept
+
+        # ---- ADD, OR REBUILD? -------------------------------------------
+        #
+        # A full rebuild re-reads and re-maps EVERY member run — measured at
+        # 27-54s on a real case, against ~1s for the correlation itself. When the
+        # only thing that happened is that a run landed, all of that work
+        # reproduces a graph we already have.
+        #
+        # Rebuilding is required when a GLOBAL parameter moved, because the
+        # stored graph is the filtered set: window, severity floor, module
+        # selection, included runs, the baseline, and dispositions (suppression
+        # reaches findings the new run never touched). _graph_filter_signature
+        # captures all of them, and a manual Refusion is exactly when they change.
+        #
+        # Everything else — a run finishing, a re-collect bringing more rows — is
+        # additive, so the new runs are mapped onto the stored graph and the
+        # derivation passes re-run over the merged result. Both merge primitives
+        # are keyed and idempotent (FusionGraph.upsert / relate), so nothing is
+        # duplicated by doing this repeatedly.
+        # Baseline resolved HERE, before the decision, because it is part of the
+        # signature: a case that has since captured (or lost) an environment
+        # baseline cannot add to a graph built without (or with) one.
+        _baseline_for_sig = (None if d.get("is_baseline")
+                             else load_baseline(_env_key_from_members(members)))
+        _sig = _graph_filter_signature(d, _baseline_for_sig)
+        _already = [r for r in (d.get("fused_run_ids") or []) if r in set(members)]
+        _incremental_ok = (
+            trig == TRIGGER_AUTOMATIC_RUN_LANDED
+            and bool(_already)
+            and d.get("graph_filter_sig") == _sig
+            and not contributions_override
+        )
+        if _incremental_ok:
+            try:
+                seed_graph = load_graph(case_id)
+                _cap = int(d.get("max_entities") or DEFAULT_MAX_ENTITIES)
+                if not seed_graph.entities or len(seed_graph.entities) >= _cap:
+                    # A graph at the storage cap was PRUNED on the way to disk, so
+                    # it is not a faithful base to add to — adding would compound
+                    # the loss silently on every landing run.
+                    seed_graph = None
+            except Exception as _e:                  # noqa: BLE001
+                _plog("Refusion · rebuilding", "info",
+                      f"stored graph unreadable ({type(_e).__name__}) — full rebuild")
+                seed_graph = None
+
+        if seed_graph is not None:
+            _new = [(rid, run) for rid, run in kept_runs if rid not in set(_already)]
+            _plog("Refusion · adding new data", "info",
+                  f"{len(_new)} new run(s) onto {len(seed_graph.entities):,} stored "
+                  f"entities — the other {len(_already)} run(s) are already in the "
+                  f"graph and are not re-read", pct=5)
+            kept_runs = _new
 
         # PASS 2 — map the evidence, ONE RUN AT A TIME.
         #
@@ -1360,8 +1470,10 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     # subtract the environment baseline (if one was captured) so provisioning /
     # automation noise doesn't read as attack signal.
     baseline = None if d.get("is_baseline") else load_baseline(_env_key_from_members(members))
+    _sig_full = _graph_filter_signature(d, baseline)
     g = correlate.assemble(case_id, contributions, members, baseline=baseline, window=window,
-                           min_severity=min_sev, dispositions=d.get("dispositions") or None)
+                           min_severity=min_sev, dispositions=d.get("dispositions") or None,
+                           seed=seed_graph)
     # Optional cross-infra identity correlation: add analyst-confirmed / auto / manual
     # identity edges. Best-effort + fully isolated — never breaks the fuse (below).
     _apply_identity_links(g, d, log=_plog if _record else None)
@@ -1531,6 +1643,10 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                                   # have landed since (stale_member_runs) and show a
                                   # "rescan suggested" hint without re-fusing on load.
                                   "fused_run_ids": list(members),
+                                  # What this graph was built under. The next
+                                  # automatic fuse may only ADD to it if these
+                                  # still match — see _graph_filter_signature.
+                                  "graph_filter_sig": _sig_full,
                                   # members the LLM report/chat narrative reflects
                                   # (updated only when the report is rebuilt, not on
                                   # a plain graph re-fuse) — drives the "rescan to

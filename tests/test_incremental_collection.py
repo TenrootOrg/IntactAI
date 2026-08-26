@@ -175,16 +175,25 @@ class TestTheClockIsTheWallClock(_Base):
 
 class TestNothingCollectedIsEverThrownAway(unittest.TestCase):
 
-    def test_the_snapshot_is_written_before_the_cancel_check(self):
+    def test_nothing_can_exit_between_collecting_and_saving(self):
+        """The property, not the position.
+
+        The first version of this test asserted that the persist appeared before
+        A cancel check. It passed, and a live cancellation still lost every row,
+        because the run exited at a DIFFERENT one — there were three `return`s
+        between the collection and the save. What has to be true is that no exit
+        path of any kind sits between the rows existing and the rows being
+        written.
+        """
         src = read(RUNNERS)
-        persist = src.index("persist_pipeline_artifacts(run_id, all_results)")
-        after = src[persist:]
-        cancel = after.index("if cancel_event and cancel_event.is_set():")
-        self.assertGreater(cancel, 0,
-                           "the cancel check no longer follows the persist")
-        # ...and nothing returns between them.
-        between = after[:cancel]
-        self.assertNotIn("return", between)
+        code = "\n".join(l.split("#", 1)[0] for l in src.splitlines())
+        start = code.index("all_results, timed_out = stream_collect_and_analyze(")
+        persist = code.index("persist_pipeline_artifacts(run_id, all_results)", start)
+        between = code[start:persist]
+        for exit_kw in ("return", "raise", "continue", "break"):
+            self.assertNotIn(exit_kw, between,
+                             f"a `{exit_kw}` sits between the collection and the "
+                             f"save — a run taking it loses everything it gathered")
 
     def test_a_stopped_run_says_what_was_kept(self):
         self.assertIn("were saved and can be fused", read(RUNNERS))

@@ -34,8 +34,33 @@ _STRUCTURAL_TYPES = {"asset", "account", "ioc", "identity", "config"}
 
 
 def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None,
-             min_severity="informational", dispositions=None) -> FusionGraph:
-    g = FusionGraph(case_id=case_id)
+             min_severity="informational", dispositions=None, seed=None) -> FusionGraph:
+    """Build the case graph from `contributions`.
+
+    `seed` is an existing graph to add to instead of starting empty — the
+    incremental path, used when new data lands and NOTHING about the case's
+    filters changed. Adding to it is safe because both merge primitives are
+    keyed and idempotent: FusionGraph.upsert merges an entity that is already
+    present (union sources/flags, max anomaly, widen first/last seen) and
+    relate() dedupes on Relationship.key(), so the derivation passes below can
+    run again over the merged graph without duplicating what they created last
+    time.
+
+    Findings are the exception and are CLEARED. Every finding here is derived
+    from entities further down (mappers return only entities and relationships),
+    so keeping the seed's would double them. Re-deriving is also what makes the
+    result correct rather than merely cheap: a finding's severity, occurrence
+    watermark and cross-host status all depend on the whole graph, and the run
+    that just landed is allowed to change them for entities it never touched.
+
+    A caller must NOT pass a seed when the window, severity floor, module
+    selection, baseline or dispositions have changed — the stored graph is the
+    FILTERED set (see the ingest filter below), so those are global and require a
+    rebuild. store._fuse_case_locked decides that.
+    """
+    g = seed if seed is not None else FusionGraph(case_id=case_id)
+    if seed is not None:
+        g.findings = []
     for rid in run_ids or []:
         g.note_run(rid)
     # INGEST FILTER (performance + relevance): only fuse non-asset entities that

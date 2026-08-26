@@ -131,6 +131,28 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, c
             run_id, success_collections, artifacts, collection_minutes, _update_phase, cancel_event,
         )
 
+        # SNAPSHOT IMMEDIATELY. Not after the next check, not after the one after
+        # that — the first thing that happens once rows exist is that they are
+        # written down.
+        #
+        # There are three `return`s between here and where the persist used to
+        # sit, and any of them discarded everything collected. On a QA appliance
+        # 2026-08-26 the watchdog fired 32 seconds after "All 1 flows completed!"
+        # and ~465,000 rows gathered over 25 minutes went with it: no
+        # raw_results.json, no totals, nothing to fuse and nothing for Fetch
+        # results to build on.
+        #
+        # An earlier attempt at this moved the persist above ONE of those returns
+        # and was verified by a test asserting the source order. It passed, and a
+        # live cancellation still lost everything, because the run exited at a
+        # different one. Position is not the property that matters; "the rows are
+        # on disk before any exit path" is, which is why this now sits directly
+        # under the call that produces them.
+        try:
+            persist_pipeline_artifacts(run_id, all_results)
+        except Exception as _e:
+            print(f"[AGENTIC] persist_pipeline_artifacts failed (non-fatal): {_e}", flush=True)
+
         # 4. The window is a deadline for US, not for the endpoints.
         #
         # This used to cancel_collections() on timeout, which killed flows that
@@ -200,16 +222,8 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, c
                        f"Case for analysis.", "info")
         _update_phase(run_id, "report_ready", 85)
 
-        # SAVE FIRST, THEN HONOUR THE CANCEL. This check used to sit ABOVE the
-        # persist, so anything that stopped the pipeline threw away everything it
-        # had collected. Measured on a QA appliance 2026-08-26 (run
-        # velociraptor_collection_1787727431255): the watchdog fired 32 seconds
-        # after "All 1 flows completed!", and ~465,000 rows gathered over 25
-        # minutes went with it — no raw_results.json, no totals on the run,
-        # nothing to fuse and nothing to re-collect from.
-        #
-        # Writing the snapshot is a local file write of data already in memory.
-        # There is no version of "stop this run" that is served by deleting it.
+        # Already written immediately after collection; this is the final state
+        # after the phases above, and a no-op rewrite if nothing changed.
         try:
             persist_pipeline_artifacts(run_id, all_results)
         except Exception as _e:
