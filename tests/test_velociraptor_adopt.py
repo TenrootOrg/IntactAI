@@ -110,6 +110,105 @@ def load_id_helpers():
     return ns
 
 
+
+def run_worker(*, rows=None, artifacts=None, client_info=None, kind="flow",
+               ident="F.ABC", fetch_raises=None, persist_raises=None):
+    """EXECUTE _adopt_worker against fakes and report what it did.
+
+    The rest of this file asserts on source text, which is the house style and
+    catches a whole class of registry mistakes — but it cannot tell whether the
+    worker actually reaches a terminal state, and that is the property that
+    matters most. So this one runs it.
+    """
+    calls = {"status": [], "logs": [], "persisted": [], "details": {}}
+
+    def update_run_status(rid, status, progress=None, error=None, **kw):
+        calls["status"].append((status, progress, error))
+
+    def add_log_to_run(rid, msg, level="info"):
+        calls["logs"].append((level, msg))
+
+    def get_existing_collection_results(rid, **kw):
+        calls.setdefault("fetch_kwargs", []).append(kw)
+        if fetch_raises:
+            raise fetch_raises
+        return (rows or {}), (artifacts or []), (client_info or {})
+
+    def persist_pipeline_artifacts(rid, res):
+        if persist_raises:
+            raise persist_raises
+        calls["persisted"].append(res)
+
+    def mutate_run_details(rid, mutator):
+        mutator(calls["details"])
+
+    fake_collectors = type("m", (), {
+        "get_existing_collection_results": staticmethod(get_existing_collection_results),
+        "persist_pipeline_artifacts": staticmethod(persist_pipeline_artifacts)})
+    fake_mapper = type("m", (), {"SUPPORTED_ARTIFACTS": frozenset({"a", "b", "c"})})
+    fake_ws = type("m", (), {"mutate_run_details": staticmethod(mutate_run_details)})
+
+    import builtins
+    real_import = builtins.__import__
+
+    def fake_import(name, g=None, l=None, fromlist=(), level=0):
+        if name == "services.agentic.collectors":
+            return fake_collectors
+        if name == "services.fusion.mappers.agentic":
+            return fake_mapper
+        if name == "services.workflow_service":
+            return fake_ws
+        return real_import(name, g, l, fromlist, level)
+
+    # The worker prints a traceback on its error path by design; stub it so a
+    # deliberately-failing test does not look like a broken one in the output.
+    quiet_tb = type("m", (), {"print_exc": staticmethod(lambda *a, **k: None),
+                              "format_exc": staticmethod(lambda *a, **k: "")})
+    ns = {"__builtins__": dict(vars(builtins)),
+          "update_run_status": update_run_status,
+          "add_log_to_run": add_log_to_run,
+          "traceback": quiet_tb,
+          "print": lambda *a, **k: None}
+    ns["__builtins__"]["__import__"] = fake_import
+    exec(compile(func_source(ROUTES, "_adopt_worker"), ROUTES, "exec"), ns)
+    ns["_adopt_worker"]("run_1", kind, ident)
+    calls["final"] = calls["status"][-1][0] if calls["status"] else None
+    calls["error"] = calls["status"][-1][2] if calls["status"] else None
+    return calls
+
+
+
+def load_existing_run_finder():
+    """Exec the real _adopt_existing_run with the DB lookup replaced, so the
+    matching rules are tested rather than grepped."""
+    src = read(ROUTES)
+    tree = ast.parse(src)
+    import builtins
+    real_import = builtins.__import__
+    holder = {}
+
+    def fake_import(name, g=None, l=None, fromlist=(), level=0):
+        if name == "services.workflow_service":
+            return type("m", (), {
+                "get_automation_runs_by_case": staticmethod(lambda cid: holder["runs"])})
+        return real_import(name, g, l, fromlist, level)
+
+    ns = {"__builtins__": dict(vars(builtins))}
+    ns["__builtins__"]["__import__"] = fake_import
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name in (
+                "_adopt_existing_run", "_adopt_ids_in_details"):
+            exec(compile(ast.Module([node], []), ROUTES, "exec"), ns)
+        if isinstance(node, ast.Assign) and getattr(
+                node.targets[0], "id", "") == "_ADOPT_DEAD_STATUSES":
+            exec(compile(ast.Module([node], []), ROUTES, "exec"), ns)
+
+    def find(runs, ident):
+        holder["runs"] = runs
+        return ns["_adopt_existing_run"]("case_x", ident)
+    return find
+
+
 class TestTheIdIsClassifiedBeforeItReachesVQL(unittest.TestCase):
     """A hunt-derived flow id (F.xxx.H) IS a hunt — get_existing_collection_results
     normalizes it to H.xxx before querying hunt_flows(). Classifying it as a flow
@@ -168,14 +267,80 @@ class TestDuplicateDetectionSeesEveryLocatorShape(unittest.TestCase):
 
 
 class TestTheSameHuntUnderBothItsNames(unittest.TestCase):
-    """H.xxx and F.xxx.H are one hunt wearing two names. If the duplicate check
-    compares only the string typed, an operator who pastes the other form adopts
-    the same hunt a second time and every finding in it doubles."""
+    """H.xxx and F.xxx.H are one hunt wearing two names. Comparing only the
+    string typed lets an operator who pastes the other form adopt the same hunt
+    twice, and every finding in it doubles."""
 
-    def test_both_directions_are_compared(self):
-        src = func_source(ROUTES, "_adopt_existing_run")
-        self.assertIn('"H." + ident[2:-2]', src)
-        self.assertIn('"F." + ident[2:] + ".H"', src)
+    def setUp(self):
+        self.find = load_existing_run_finder()
+
+    def test_hunt_id_matches_its_derived_flow_form(self):
+        runs = [{"run_id": "r1", "status": "completed",
+                 "details": {"hunt_id": "H.ABC"}}]
+        self.assertIsNotNone(self.find(runs, "F.ABC.H"))
+
+    def test_derived_flow_form_matches_the_hunt_id(self):
+        runs = [{"run_id": "r1", "status": "completed",
+                 "details": {"flow_id": "F.ABC.H"}}]
+        self.assertIsNotNone(self.find(runs, "H.ABC"))
+
+    def test_an_unrelated_id_does_not_match(self):
+        runs = [{"run_id": "r1", "status": "completed",
+                 "details": {"hunt_id": "H.ABC"}}]
+        self.assertIsNone(self.find(runs, "H.DEF"))
+
+    def test_it_matches_a_flow_inside_a_list(self):
+        runs = [{"run_id": "r1", "status": "completed",
+                 "details": {"flow_id": ["F.AAA", "F.BBB"]}}]
+        self.assertEqual(self.find(runs, "F.BBB")["run_id"], "r1")
+
+    def test_it_matches_an_ordinary_collection_not_just_an_adopt(self):
+        # The case this meets most often: the flow is already in the case
+        # because Intact launched it.
+        runs = [{"run_id": "c1", "status": "completed",
+                 "automation_type": "velociraptor_collection",
+                 "details": {"flow_id": "F.AAA"}}]
+        self.assertEqual(self.find(runs, "F.AAA")["run_id"], "c1")
+
+
+class TestAFailedAttemptDoesNotBlockRetrying(unittest.TestCase):
+    """A failed or cancelled adopt contributed nothing. Counting it as a
+    duplicate turns one transient Velociraptor outage into a permanent refusal,
+    with a 409 pointing at a run that has no data to fetch — found live."""
+
+    def setUp(self):
+        self.find = load_existing_run_finder()
+
+    def test_a_failed_run_is_ignored(self):
+        runs = [{"run_id": "r1", "status": "failed", "details": {"flow_id": "F.AAA"}}]
+        self.assertIsNone(self.find(runs, "F.AAA"))
+
+    def test_a_cancelled_run_is_ignored(self):
+        runs = [{"run_id": "r1", "status": "cancelled", "details": {"flow_id": "F.AAA"}}]
+        self.assertIsNone(self.find(runs, "F.AAA"))
+
+    def test_a_completed_run_still_blocks(self):
+        runs = [{"run_id": "r1", "status": "completed", "details": {"flow_id": "F.AAA"}}]
+        self.assertEqual(self.find(runs, "F.AAA")["run_id"], "r1")
+
+    def test_an_in_flight_run_still_blocks(self):
+        # Two adopts of one id racing would fetch and persist the same rows twice.
+        for st in ("running", "pending"):
+            with self.subTest(status=st):
+                runs = [{"run_id": "r1", "status": st, "details": {"flow_id": "F.AAA"}}]
+                self.assertEqual(self.find(runs, "F.AAA")["run_id"], "r1")
+
+    def test_a_later_successful_run_wins_over_an_earlier_failure(self):
+        runs = [{"run_id": "bad", "status": "failed", "details": {"flow_id": "F.AAA"}},
+                {"run_id": "good", "status": "completed", "details": {"flow_id": "F.AAA"}}]
+        self.assertEqual(self.find(runs, "F.AAA")["run_id"], "good")
+
+    def test_the_route_words_an_in_flight_collision_differently(self):
+        # Telling someone to press Fetch results on a run that is still fetching
+        # is the wrong instruction.
+        src = func_source(ROUTES, "adopt_velociraptor_collection")
+        self.assertIn("being adopted right now", src)
+        self.assertIn('("pending", "running")', src)
 
 
 class TestValidationHappensBeforeAnythingElse(unittest.TestCase):
@@ -229,28 +394,89 @@ class TestOnlySupportedArtifactsAreRead(unittest.TestCase):
 class TestTheWorkerAlwaysReachesATerminalState(unittest.TestCase):
     """A run left at 'running' is a row the operator can never clear. One marked
     'completed' with nothing in it is worse: the fuse counts it as a member that
-    contributed zero and never looks at it again."""
+    contributed zero and never looks at it again. These EXECUTE the worker."""
 
-    def setUp(self):
-        self.src = func_source(ROUTES, "_adopt_worker")
+    def test_a_normal_fetch_completes_and_persists(self):
+        c = run_worker(rows={"a": [{"x": 1}, {"x": 2}]}, artifacts=["a"],
+                       client_info={"C.1": {"hostname": "HOST1"}})
+        self.assertEqual(c["final"], "completed")
+        self.assertEqual(c["persisted"], [{"a": [{"x": 1}, {"x": 2}]}])
+        self.assertEqual(c["details"]["total_rows"], 2)
 
-    def test_empty_result_fails_rather_than_completing(self):
-        head, _, tail = self.src.partition("if total == 0:")
-        self.assertTrue(tail, "the zero-row branch must exist")
-        branch = tail[:tail.index("hostnames =")]
-        self.assertIn('update_run_status(run_id, "failed"', branch)
-        self.assertNotIn('"completed"', branch)
+    def test_an_unlocatable_id_says_so_rather_than_blaming_the_allowlist(self):
+        # client_info empty == the id is not on this server. Reporting "no
+        # supported artifacts" here sends someone to argue about the allowlist
+        # over a transposed character.
+        c = run_worker(rows={}, artifacts=[], client_info={})
+        self.assertEqual(c["final"], "failed")
+        self.assertIn("not found on the Velociraptor server", c["error"])
+        self.assertNotIn("none of its artifacts", c["error"])
 
-    def test_exceptions_mark_the_run_failed(self):
-        self.assertIn('update_run_status(run_id, "failed", error=str(e))', self.src)
+    def test_a_located_collection_with_nothing_mapped_names_the_host(self):
+        c = run_worker(rows={}, artifacts=[], client_info={"C.1": {"hostname": "HOST1"}})
+        self.assertEqual(c["final"], "failed")
+        self.assertIn("none of its artifacts", c["error"])
+        self.assertIn("HOST1", c["error"])
+        self.assertNotIn("not found on the Velociraptor server", c["error"])
+
+    def test_a_fetch_that_raises_marks_the_run_failed(self):
+        c = run_worker(fetch_raises=RuntimeError("velociraptor is down"))
+        self.assertEqual(c["final"], "failed")
+        self.assertIn("velociraptor is down", c["error"])
+
+    def test_a_persist_that_raises_marks_the_run_failed(self):
+        # The rows were read but never written. Completing here would leave a
+        # member run the fuse counts and can never read.
+        c = run_worker(rows={"a": [{"x": 1}]}, artifacts=["a"],
+                       client_info={"C.1": {"hostname": "H"}},
+                       persist_raises=OSError("disk full"))
+        self.assertEqual(c["final"], "failed")
+        self.assertIn("disk full", c["error"])
+
+    def test_it_never_ends_on_running(self):
+        for kw in ({}, {"rows": {"a": [{"x": 1}]}, "artifacts": ["a"],
+                        "client_info": {"C.1": {"hostname": "H"}}},
+                   {"fetch_raises": RuntimeError("boom")}):
+            with self.subTest(kw=sorted(kw)):
+                self.assertIn(run_worker(**kw)["final"], ("completed", "failed"))
 
     def test_a_flow_persists_the_client_it_resolved_on(self):
         # At fuse time _velo_hunt_contribution re-pulls live and needs flow_id
         # AND client_id together. Nobody supplies one, so the client the fetch
         # resolved the flow on MUST be written back — without it the adopted
         # flow fuses once and can never be re-read.
-        self.assertIn('resolved = next(iter(client_info or {}), None)', self.src)
-        self.assertIn('det["client_id"] = resolved', self.src)
+        c = run_worker(kind="flow", rows={"a": [{"x": 1}]}, artifacts=["a"],
+                       client_info={"C.abc": {"hostname": "HOST1"}})
+        self.assertEqual(c["details"]["client_id"], "C.abc")
+
+    def test_a_hunt_does_not_invent_a_client_id(self):
+        # A hunt spans many clients; pinning one would make the re-pull read a
+        # single host's slice as if it were the whole hunt.
+        c = run_worker(kind="hunt", ident="H.ABC", rows={"a": [{"x": 1}]},
+                       artifacts=["a"],
+                       client_info={"C.1": {"hostname": "H1"}, "C.2": {"hostname": "H2"}})
+        self.assertNotIn("client_id", c["details"])
+
+    def test_hostnames_reach_the_run_for_every_client(self):
+        c = run_worker(kind="hunt", ident="H.ABC", rows={"a": [{"x": 1}]},
+                       artifacts=["a"],
+                       client_info={"C.1": {"hostname": "H1"}, "C.2": {"hostname": "H2"}})
+        self.assertEqual(c["details"]["hostnames"], {"C.1": "H1", "C.2": "H2"})
+
+    def test_the_allowlist_is_passed_on_whichever_branch_runs(self):
+        for kind, ident in (("flow", "F.ABC"), ("hunt", "H.ABC")):
+            with self.subTest(kind=kind):
+                c = run_worker(kind=kind, ident=ident, rows={"a": [{"x": 1}]},
+                               artifacts=["a"], client_info={"C.1": {"hostname": "H"}})
+                kw = c["fetch_kwargs"][0]
+                self.assertIn("only_artifacts", kw)
+                self.assertTrue(kw["only_artifacts"])
+                self.assertTrue(kw.get("progress_log"))
+
+    def test_no_client_scoping_is_sent(self):
+        c = run_worker(kind="flow", rows={"a": [{"x": 1}]}, artifacts=["a"],
+                       client_info={"C.1": {"hostname": "H"}})
+        self.assertNotIn("client_ids", c["fetch_kwargs"][0])
 
 
 class TestEveryRegistryKnowsTheType(unittest.TestCase):

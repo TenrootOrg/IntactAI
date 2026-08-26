@@ -775,6 +775,13 @@ def _adopt_ids_in_details(details):
     return out
 
 
+# A run in one of these states holds no data for its id — it either never
+# fetched any or was stopped before it could. Blocking a re-adopt on one strands
+# the operator: Velociraptor was briefly unreachable, the adopt failed, and the
+# id can now never be adopted into this case again.
+_ADOPT_DEAD_STATUSES = ("failed", "cancelled", "error", "stopped")
+
+
 def _adopt_existing_run(case_id, ident):
     """The run already holding `ident` IN THIS CASE, or None.
 
@@ -782,6 +789,10 @@ def _adopt_existing_run(case_id, ident):
     exist in this specific case". The same flow legitimately belongs to two
     cases when one incident spans them, so this is a duplicate check, not an
     ownership claim.
+
+    A failed or cancelled attempt does NOT count. It contributed nothing, so
+    treating it as a duplicate would turn one transient Velociraptor outage into
+    a permanent refusal, with a 409 pointing at a run that has no data to fetch.
     """
     from services.workflow_service import get_automation_runs_by_case
     needle = {ident.strip().lower()}
@@ -791,6 +802,8 @@ def _adopt_existing_run(case_id, ident):
     elif ident.startswith("H."):
         needle.add(("F." + ident[2:] + ".H").lower())
     for run in (get_automation_runs_by_case(case_id) or []):
+        if (run.get("status") or "").lower() in _ADOPT_DEAD_STATUSES:
+            continue
         if _adopt_ids_in_details(run.get("details")) & needle:
             return run
     return None
@@ -835,9 +848,26 @@ def _adopt_worker(run_id, kind, ident):
         update_run_status(run_id, "running", progress=85)
         total = sum(len(rows) for rows in (results or {}).values())
         if total == 0:
-            msg = (f"No supported artifacts found in {ident}. Fusion ingests only "
-                   f"the artifacts it has mappers for — see the log above for what "
-                   f"this collection contained and what was skipped.")
+            # TWO different failures wear the same zero, and telling them apart
+            # decides where the operator goes looking. `client_info` is populated
+            # only once the collection has actually been LOCATED on a client, so
+            # empty means the id isn't on this server at all — a typo — while
+            # populated means it is there and simply carries nothing fusion maps.
+            # Reporting "no supported artifacts" for a mistyped id sends someone
+            # to argue about the allowlist over a transposed character.
+            if not client_info:
+                msg = (f"{ident} was not found on the Velociraptor server. Check "
+                       f"the id: a flow looks like F.XXXXXXXX, a hunt like "
+                       f"H.XXXXXXXX, and a hunt's per-client flow like "
+                       f"F.XXXXXXXX.H.")
+            else:
+                where = ", ".join(sorted(
+                    ((info or {}).get("hostname") or cid)
+                    for cid, info in client_info.items())) or "the server"
+                msg = (f"{ident} was found on {where}, but none of its artifacts "
+                       f"are ones fusion maps — nothing was added to the case. "
+                       f"The log above lists what it collected and what was "
+                       f"skipped.")
             add_log_to_run(run_id, msg, "error")
             update_run_status(run_id, "failed", error=msg)
             return
@@ -917,10 +947,18 @@ def adopt_velociraptor_collection():
 
         existing = _adopt_existing_run(case_id, ident)
         if existing:
+            label = existing.get('name') or existing.get('run_id')
+            if (existing.get("status") or "").lower() in ("pending", "running"):
+                # Not "already in the case" — it is arriving right now. Telling
+                # someone to press Fetch results on a run that is still fetching
+                # is the wrong instruction.
+                hint = (f"{ident} is being adopted right now by \"{label}\". "
+                        f"Watch it in Workflows.")
+            else:
+                hint = (f"{ident} is already in this case as \"{label}\". "
+                        f"Use Fetch results on that run to pull anything new.")
             return jsonify({
-                "error": f"{ident} is already in this case as "
-                         f"\"{existing.get('name') or existing.get('run_id')}\". "
-                         f"Use Fetch results on that run to pull anything new.",
+                "error": hint,
                 "duplicate": True,
                 "run_id": existing.get("run_id"),
             }), 409
