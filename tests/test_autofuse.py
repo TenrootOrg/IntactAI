@@ -523,6 +523,72 @@ class TestABusyReportIsRetried(_Base):
             self.assertTrue(t.daemon, "a retry timer must never hold up a shutdown")
 
 
+class TestEveryDataModuleIsCovered(_Base):
+    """Which run types regenerate the report, pinned as a contract.
+
+    Asked for explicitly for MEMORY, and it already worked — memory was in
+    AGENTIC_TYPES and in FUSION_MODULES_DEFAULT, so it armed the fuse and passed
+    the fusion gate without anything being added. Verified end to end on a live
+    appliance: a memory run reaching 'completed' produced one fuse and one
+    narrated report; the same run reaching 'failed' produced neither.
+
+    That is exactly the kind of guarantee that gets removed by accident, by
+    someone tidying a set they do not realise is load-bearing. Two independent
+    lists have to agree for a module to work, and neither says so locally:
+
+      workflow_service.AGENTIC_TYPES     -> whether a landing run arms the fuse
+      store.FUSION_MODULES_DEFAULT       -> whether its data may enter the graph
+                                            (a member that fails the gate is not
+                                            'stale', so the fuse is a no-op)
+
+    Source-level, because both live in modules the fake store deliberately does
+    not import.
+    """
+
+    WF = os.path.join(ROOT, "modules/backend/services/workflow_service.py")
+    STORE = os.path.join(ROOT, "modules/backend/services/fusion/store.py")
+
+    def _read(self, path):
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_memory_runs_arm_the_fuse(self):
+        block = self._read(self.WF)
+        block = block[block.index("AGENTIC_TYPES = {"):]
+        block = block[:block.index("}") + 1]
+        self.assertIn('"memory"', block,
+                      "a finished memory workflow would no longer refresh the report")
+
+    def test_memory_data_is_fused_by_default(self):
+        # Being in AGENTIC_TYPES is not enough: _run_passes_gate drops runs whose
+        # module is off for the case, and stale_member_runs skips them too — so
+        # the fuse would arm, find nothing stale, and silently do nothing.
+        block = self._read(self.STORE)
+        block = block[block.index("FUSION_MODULES_DEFAULT = ["):]
+        self.assertIn('"memory"', block[:block.index("]") + 1],
+                      "memory runs would arm a fuse that then ignores them")
+
+    def test_the_collection_modules_are_all_covered(self):
+        block = self._read(self.WF)
+        block = block[block.index("AGENTIC_TYPES = {"):]
+        block = block[:block.index("}") + 1]
+        for t in ("velociraptor_collection", "velociraptor_hunt",
+                  "velociraptor_upload", "memory", "timesketch",
+                  "aws_scan", "azure_scan"):
+            self.assertIn(f'"{t}"', block, f"{t} no longer refreshes the report")
+
+    def test_only_success_arms_it(self):
+        # "as long as it succeeded" — a failed or cancelled run has produced no
+        # new data, so arming would schedule a fuse that finds nothing.
+        block = self._read(self.WF)
+        block = block[block.index("_TERMINAL_STATUSES = ("):]
+        block = block[:block.index(")") + 1]
+        self.assertIn('"completed"', block)
+        self.assertIn('"success"', block)
+        for bad in ("failed", "cancelled", "running"):
+            self.assertNotIn(f'"{bad}"', block, f"{bad} must not arm a fuse")
+
+
 class TestItIsANoOpWhenNothingIsNew(_Base):
 
     def test_nothing_stale_means_no_fuse(self):
