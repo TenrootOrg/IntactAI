@@ -178,8 +178,21 @@ def _spec(provider) -> dict:
 # own python). Both resolve to an empty directory when the operator has no codex
 # — an absent mount and an empty one are the same answer here, which is why
 # nothing below has to care which it got.
-_HOST_PKG_DIR = os.environ.get("INTACT_HOST_CODEX_PKG", "/host/node_modules")
-_HOST_CODEX_HOME = os.environ.get("INTACT_HOST_CODEX_HOME", "/host/codex")
+# FIXED, and deliberately NOT read from the environment.
+#
+# INTACT_HOST_CODEX_PKG / INTACT_HOST_CODEX_HOME are the HOST-side sources of
+# those mounts, written into modules/backend/.env for compose to expand. And
+# compose passes .env through `env_file:`, so every one of those variables also
+# lands in the container's environment. Reading them here therefore got the
+# HOST path -- /usr/local/lib/node_modules, which does not exist in this image
+# -- and discovery found nothing while the mount sat there working. Measured on
+# a live appliance: the mount was present and readable at /host/node_modules,
+# and _NPM_ROOTS came back ('/usr/local/lib/node_modules', ...) twice over.
+#
+# The destination is a contract between docker-compose.yaml and this module, not
+# a setting. Tests override the module attributes directly.
+_HOST_PKG_DIR = "/host/node_modules"
+_HOST_CODEX_HOME = "/host/codex"
 
 _NPM_ROOTS = (
     _HOST_PKG_DIR,                      # the operator's own install, mounted in

@@ -296,6 +296,69 @@ class TestTheHostCredential(_Base):
         self.sub._release_home(self.P, home, persist=False)
 
 
+class TestTheMountPointsAreNotReadFromTheEnvironment(_Base):
+    """The bug that made the whole bridge silently do nothing.
+
+    modules/backend/.env carries INTACT_HOST_CODEX_PKG / INTACT_HOST_CODEX_HOME
+    so compose can expand them as the HOST side of two bind mounts. compose also
+    passes that same file through `env_file:`, so both variables land in the
+    CONTAINER's environment too. Reading them here got the host path --
+    /usr/local/lib/node_modules, which does not exist inside this image -- and
+    discovery found nothing while the mount sat at /host/node_modules working
+    perfectly. Measured on a live appliance: the mount was readable, the binary
+    was there, and _NPM_ROOTS came back holding the host path twice.
+
+    The destination is a contract between docker-compose.yaml and this module.
+    It is not a setting, and it must not be reachable from the environment.
+    """
+
+    COMPOSE = os.path.join(ROOT, "modules/backend/docker-compose.yaml")
+
+    def test_the_mount_points_are_constants(self):
+        self.assertEqual(self.sub._HOST_PKG_DIR, "/host/node_modules")
+        self.assertEqual(self.sub._HOST_CODEX_HOME, "/host/codex")
+
+    def test_the_host_side_variables_cannot_reach_them(self):
+        # Non-vacuous: this is exactly what env_file: does to this process.
+        os.environ["INTACT_HOST_CODEX_PKG"] = "/usr/local/lib/node_modules"
+        os.environ["INTACT_HOST_CODEX_HOME"] = "/home/someone/.codex"
+        self.addCleanup(os.environ.pop, "INTACT_HOST_CODEX_PKG", None)
+        self.addCleanup(os.environ.pop, "INTACT_HOST_CODEX_HOME", None)
+        fresh = _load(os.path.join(self.tmp, "cli2"))
+        self.assertEqual(fresh._HOST_PKG_DIR, "/host/node_modules",
+                         "the host path leaked in through env_file again")
+        self.assertEqual(fresh._HOST_CODEX_HOME, "/host/codex")
+
+    def test_the_mount_destinations_match_the_compose_file(self):
+        with open(self.COMPOSE, encoding="utf-8") as fh:
+            compose = fh.read()
+        self.assertIn(f":{self.sub._HOST_PKG_DIR}:ro", compose)
+        self.assertIn(f":{self.sub._HOST_CODEX_HOME}:ro", compose)
+
+    def test_the_mounts_are_read_only(self):
+        with open(self.COMPOSE, encoding="utf-8") as fh:
+            compose = fh.read()
+        for dest in (self.sub._HOST_PKG_DIR, self.sub._HOST_CODEX_HOME):
+            self.assertNotIn(f":{dest}:rw", compose)
+            self.assertNotIn(f":{dest}\n", compose)
+
+    def test_nothing_is_mounted_over_the_images_own_bin(self):
+        # The obvious implementation mounts /usr/local/bin over itself, and this
+        # image keeps its python interpreter there.
+        with open(self.COMPOSE, encoding="utf-8") as fh:
+            compose = fh.read()
+        for dangerous in (":/usr/local/bin", ":/usr/bin", ":/usr/local/lib"):
+            self.assertNotIn(dangerous, compose,
+                             f"a mount at {dangerous} would shadow the image")
+
+    def test_the_npm_root_is_searched_first(self):
+        # A fresh load, not self.sub: setUp sandboxes _NPM_ROOTS, so asserting
+        # on it here would only ever measure the sandbox.
+        fresh = _load(os.path.join(self.tmp, "cli3"))
+        self.assertEqual(fresh._NPM_ROOTS[0], "/host/node_modules",
+                         "the operator's own install must be searched first")
+
+
 class TestThereIsNoInstallOrSignInAnyMore(_Base):
     """The appliance stopped installing software on the host and holding
     somebody's ChatGPT credential. Pinned so neither comes back by accident."""
