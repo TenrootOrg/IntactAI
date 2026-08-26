@@ -134,6 +134,23 @@ _stamp_host_codex_paths() {
         # <root>/bin/codex -> <root>; the helper binaries and codex-resources/
         # sit beside bin/, so mounting bin/ alone would leave them behind.
         [[ "$(basename "$dir")" == "bin" ]] && pkg="$(dirname "$dir")" || pkg="$dir"
+
+        # THEN WALK UP OUT OF THE VERSION.
+        #
+        # The package root for a standalone install is
+        #   ~/.codex/packages/standalone/releases/0.149.1-x86_64-unknown-linux-musl
+        # and mounting THAT pins the appliance to 0.149.1 — measured: `codex
+        # upgrade` writes 0.150.0 beside it and the box goes on running the old
+        # one, silently, because the old binary is still there and still works.
+        #
+        # So climb while the last path component carries a version, and mount the
+        # stable parent (…/releases). The versioned component is then resolved
+        # inside the container at request time, where it can follow an upgrade
+        # without anything being re-run out here. A path with no version in it
+        # (/opt/codex, an npm vendor dir) is already stable and does not move.
+        while [[ "$(basename "$pkg")" =~ [0-9]+\.[0-9]+ && "$pkg" != "/" ]]; do
+            pkg="$(dirname "$pkg")"
+        done
     fi
 
     local r
@@ -152,7 +169,7 @@ _stamp_host_codex_paths() {
     log_info "  codex (operator-installed): ${bin:-not found on the PATH}"
     log_info "    home=${home}   (version-independent)"
     log_info "    npm=${npmroot}  (version-independent)"
-    log_info "    pkg=${pkg}"
+    log_info "    pkg=${pkg}  (version stripped: an upgrade needs no re-stamp)"
 }
 
 # Write a single pin into config.yaml's `versions:` block.

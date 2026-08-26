@@ -288,6 +288,87 @@ class TestTheOfficialInstallerLayout(_Base):
         self.assertIn(self.sub._HOST_CODEX_HOME + "/packages/standalone", pats)
 
 
+class TestItReadsWhatTheInstallerSaysIsLive(_Base):
+    """Ranking by mtime is a guess. `current` is an answer.
+
+    The standalone installer keeps a `current` symlink beside releases/ naming
+    the release it just installed — the one the operator's own `codex` resolves
+    to. Its target is an ABSOLUTE host path, useless to follow from inside this
+    container, but its basename is exact. When the two disagree, the marker is
+    right: anything else has the appliance running a different binary from the
+    person supporting it.
+    """
+
+    def _release(self, version, *, mtime=None):
+        rel = ("hostcodex/packages/standalone/releases/"
+               f"{version}-x86_64-unknown-linux-musl/bin/codex")
+        p = self.plant(rel)
+        self.sub._HOST_CODEX_HOME = os.path.join(self.tmp, "hostcodex")
+        if mtime:
+            os.utime(p, (mtime, mtime))
+        return p
+
+    def _mark(self, version):
+        base = os.path.join(self.tmp, "hostcodex/packages/standalone")
+        link = os.path.join(base, "current")
+        if os.path.islink(link):
+            os.unlink(link)
+        # ABSOLUTE, exactly as the installer writes it — and pointing at a path
+        # that does not exist here, which is the whole difficulty.
+        os.symlink(f"/home/someone/.codex/packages/standalone/releases/"
+                   f"{version}-x86_64-unknown-linux-musl", link)
+
+    def test_the_marker_decides_which_release_runs(self):
+        old = self._release("0.149.1", mtime=2_000_000)     # newer on disk
+        new = self._release("0.150.0", mtime=1_000_000)     # older on disk
+        self._mark("0.150.0")                                # but marked live
+        self.assertEqual(self.sub.binary_path(self.P), new,
+                         "mtime overruled the installer's own marker")
+        self.assertTrue(os.path.exists(old))
+
+    def test_an_absolute_marker_is_not_followed(self):
+        # Following it resolves to nothing in a container. Only the basename is
+        # used — that is what makes this work at all.
+        self._release("0.150.0")
+        self._mark("0.150.0")
+        got = self.sub.binary_path(self.P)
+        self.assertTrue(got.startswith(self.tmp), got)
+        self.assertNotIn("/home/someone", got)
+
+    def test_a_marker_pointing_at_a_missing_release_is_ignored(self):
+        real = self._release("0.149.1")
+        self._mark("9.9.9")                                  # stale marker
+        self.assertEqual(self.sub.binary_path(self.P), real,
+                         "a stale marker must not strand the appliance")
+
+    def test_no_marker_falls_back_to_newest(self):
+        self._release("0.149.1", mtime=1_000_000)
+        new = self._release("0.150.0", mtime=2_000_000)
+        self.assertEqual(self.sub.binary_path(self.P), new)
+
+
+class TestTheContainerLocalGuessesAreGone(_Base):
+    """/usr/local/bin, /usr/bin, ~/.local/bin and /opt/bin are the CONTAINER's
+    filesystem. The operator's install can never be at any of them, so they could
+    only ever match something inside the image — a false positive — while padding
+    the diagnostic list with six paths that were never candidates."""
+
+    def test_no_container_local_bin_dirs_are_searched(self):
+        fresh = _load(os.path.join(self.tmp, "cli4"))
+        self.assertEqual(fresh._BIN_SEARCH_DIRS, ())
+        for c in fresh._candidate_paths(self.P):
+            self.assertFalse(c in ("/usr/local/bin/codex", "/usr/bin/codex",
+                                   "/opt/bin/codex", "/root/.local/bin/codex"), c)
+
+    def test_the_searched_list_is_only_reachable_paths(self):
+        fresh = _load(os.path.join(self.tmp, "cli5"))
+        allowed = ("/host/", os.path.dirname(fresh.install_target_path(self.P)),
+                   os.path.expanduser("~/."))
+        for c in fresh._candidate_paths(self.P):
+            self.assertTrue(c.startswith(allowed),
+                            f"{c} is not somewhere the operator's copy can be")
+
+
 class TestTheHostCredential(_Base):
     """The operator's own login is the source of truth, and stays theirs."""
 

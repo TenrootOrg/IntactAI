@@ -215,7 +215,13 @@ _NPM_ROOTS = (
     os.path.expanduser("~/.nvm/versions/node/*/lib/node_modules"),
     "/opt/homebrew/lib/node_modules",
 )
-_BIN_SEARCH_DIRS = ("/usr/local/bin", "/usr/bin", "~/.local/bin", "/opt/bin")
+# Deliberately EMPTY, and not an oversight. This used to list /usr/local/bin,
+# /usr/bin, ~/.local/bin and /opt/bin — every one of which is the CONTAINER's
+# filesystem, not the host's. The operator's install can never be at any of them,
+# so they could only ever produce a false positive from something inside the
+# image, and they padded the "searched" list with six paths that were never
+# candidates. The operator's copy arrives through the mounts below or not at all.
+_BIN_SEARCH_DIRS: tuple = ()
 
 
 def install_target_path(provider) -> str:
@@ -271,6 +277,7 @@ def _npm_vendor_globs(binary):
     #   standalone: <root>/bin/codex
     #   npm:        <root>/node_modules/@openai/codex-<arch>/vendor/<triple>/bin/codex
     yield f"{_HOST_PKG_DIR}/bin/{binary}"
+    yield f"{_HOST_PKG_DIR}/releases/*/bin/{binary}"
     yield f"{_HOST_PKG_DIR}/node_modules/@openai/{binary}-*/vendor/*/bin/{binary}"
     # The npm global root, asked of npm itself at stamp time rather than
     # assumed. Version-independent: the package directory keeps its name across
@@ -324,6 +331,8 @@ def _candidate_paths(provider):
         return []
 
     out = list(_emit(install_target_path(provider)))
+    for exact in _marked_live(provider):
+        out += _emit(exact)
     out += _emit(shutil.which(binary))          # anything on the container's PATH
     for pattern in _npm_vendor_globs(binary):
         # Order here is only for the diagnostic "searched" list; binary_path
@@ -334,6 +343,36 @@ def _candidate_paths(provider):
         out += _emit(os.path.join(os.path.expanduser(d), binary))
     out += _emit(os.path.expanduser(f"~/.{binary}/bin/{binary}"))
     return out
+
+
+def _marked_live(provider):
+    """The release the installer says is live, read rather than guessed.
+
+    The standalone installer keeps a `current` symlink beside releases/ naming
+    the release it just installed. The target is an ABSOLUTE host path, so it
+    cannot be followed from inside this container — but its BASENAME is the
+    exact answer, and that beats ranking files by mtime.
+
+    Mtime is a guess about which file is newest; this is what the operator's own
+    shell resolves. They agree almost always, and when they disagree the marker
+    is right: `codex` on the host follows this symlink, so anything else would
+    have the appliance running a different binary from the person supporting it.
+    """
+    binary = _spec(provider)["binary"]
+    roots = (_HOST_PKG_DIR,
+             os.path.dirname(_HOST_PKG_DIR),
+             f"{_HOST_CODEX_HOME}/packages/standalone")
+    seen = set()
+    for root in roots:
+        if not root or root in seen:
+            continue
+        seen.add(root)
+        try:
+            live = os.path.basename(os.readlink(os.path.join(root, "current")))
+        except OSError:
+            continue
+        if live:
+            yield os.path.join(root, "releases", live, "bin", binary)
 
 
 def _mtime_or_zero(path):
@@ -348,24 +387,27 @@ def _usable(path) -> bool:
 
 
 def binary_path(provider) -> str:
-    """The CLI we would actually run: the NEWEST usable copy on the box.
+    """The CLI we would actually run.
 
-    Ranked by mtime rather than by list order, and that is the whole point.
-    Candidates come from three mounted roots and a handful of local paths, and
-    list order encodes a guess about which install method matters most — a guess
-    that is wrong the moment the operator upgrades. Measured on a live
-    appliance: `codex upgrade` wrote 0.150.0 beside 0.149.1, and the appliance
-    went on resolving 0.149.1 through the stamped mount, silently, because that
-    mount came first. The old binary was still there and still ran, so nothing
-    looked broken.
+    Two rules, in order, and the order is the point:
 
-    "Newest wins" is the rule that survives every install method: whatever the
-    operator most recently installed or upgraded to is what the box uses, and it
-    needs no re-stamp, no restart and no knowledge of which installer they chose.
+      1. WHAT THE INSTALLER SAYS IS LIVE. Its `current` marker names the release
+         the operator's own `codex` resolves to. Reading it means the appliance
+         and the person supporting it are running the same binary.
+
+      2. Failing that, the NEWEST usable copy by mtime. A fallback, not the
+         mechanism — npm leaves no marker and only ever keeps one copy, so there
+         is nothing to disagree about there; this also covers a hand-placed
+         binary. It is a guess, and it is last for that reason. Measured why it
+         cannot be the only rule: `codex upgrade` writes a new release beside the
+         old one, and list order alone kept the appliance on the old one.
 
     Falls back to the install target so a message that formats this path still
     names somewhere sensible when nothing is installed at all.
     """
+    for exact in _marked_live(provider):
+        if _usable(exact):
+            return exact
     usable = [c for c in _candidate_paths(provider) if _usable(c)]
     if not usable:
         return install_target_path(provider)
