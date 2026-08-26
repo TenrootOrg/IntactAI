@@ -28,7 +28,13 @@ AGENTIC_TYPES = {"velociraptor_collection", "memory", "timesketch",
                  # flow AND (in the same run) collects it into the fused graph.
                  # Listing it here makes the single upload row a case member —
                  # it shows in the workspace and is picked up by the fuse.
-                 "velociraptor_upload"}
+                 "velociraptor_upload",
+                 # A flow/hunt an analyst ran directly in the Velociraptor GUI and
+                 # then adopted into this case by id. It is case work like any
+                 # other collection — listing it here makes the run a case member
+                 # and lets the terminal-status hook below arm the fuse, which is
+                 # the whole point of adopting it.
+                 "velociraptor_adopt"}
 
 # Statuses that mean "this run's data is final and fuseable". Deliberately the
 # SAME pair fusion.store.stale_member_runs counts as members, so the auto-fuse

@@ -31,6 +31,11 @@
                         class="px-4 py-2 text-sm font-medium -mb-px">
                         Offline Collectors
                     </button>
+                    <button @click="forensicsTab = 'adopt'"
+                        :class="forensicsTab === 'adopt' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-gray-400 hover:text-gray-300'"
+                        class="px-4 py-2 text-sm font-medium -mb-px">
+                        Add by ID
+                    </button>
                 </div>
 
                 <!-- ==================== COLLECTIONS TAB ==================== -->
@@ -360,6 +365,55 @@
                             </div>
                         </div>
 
+                    </div>
+                </div>
+
+                <!-- ==================== ADD BY ID TAB ==================== -->
+                <!--
+                  Adopting work an investigator did in the Velociraptor GUI. This
+                  starts NO collection and touches no endpoint: it reads results
+                  the server already holds. Lives beside Collections rather than
+                  under Offline Collectors because the data is on the live
+                  server, not in an air-gapped ZIP.
+                -->
+                <div x-show="forensicsTab === 'adopt'" class="max-w-3xl">
+                    <p class="text-gray-400 mb-6 text-sm">Pull a collection that already ran on the Velociraptor server into this case &mdash; including one an investigator launched by hand in the Velociraptor GUI.</p>
+
+                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-1">Flow ID or Hunt ID</label>
+                                <input type="text" id="adopt-id" placeholder="F.CVJ8K2M4NQ1P0 or H.CVJ8K2M4NQ1P0"
+                                       class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-2.5 text-sm font-mono focus:border-blue-500 focus:outline-none"
+                                       @keydown.enter="adoptVelociraptorId()">
+                                <p class="text-xs text-gray-500 mt-1">Copy it from the Velociraptor GUI. A hunt pulls every client that reported; a flow pulls one host.</p>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-1">Client ID <span class="text-gray-500 font-normal">(optional)</span></label>
+                                <input type="text" id="adopt-client-id" placeholder="C.1a2b3c4d5e6f7890"
+                                       class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-2.5 text-sm font-mono focus:border-blue-500 focus:outline-none"
+                                       @keydown.enter="adoptVelociraptorId()">
+                                <p class="text-xs text-gray-500 mt-1">Only speeds up a flow lookup. Leave blank and every client is searched.</p>
+                            </div>
+
+                            <div class="bg-gray-900 border border-gray-700 rounded-lg p-3">
+                                <p class="text-xs text-gray-400">
+                                    Only artifacts fusion has mappers for are read &mdash; anything else in the collection is skipped and never enters the case graph.
+                                    Nothing is collected from the endpoint. Once the data lands, the case report refreshes on its own.
+                                </p>
+                            </div>
+
+                            <button onclick="adoptVelociraptorId()" id="adopt-btn"
+                                    class="w-full bg-blue-600 hover:bg-blue-700 px-4 py-3 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                                </svg>
+                                Add to Case
+                            </button>
+
+                            <div id="adopt-status" class="js-run-status text-sm text-gray-400 hidden"></div>
+                        </div>
                     </div>
                 </div>
             </div>

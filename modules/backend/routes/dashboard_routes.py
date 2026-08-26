@@ -241,7 +241,8 @@ def rerun_spec(run_id):
 # exact fetch fusion uses (get_existing_collection_results), so there is one
 # implementation of "read a flow's results" and it cannot drift.
 _RECOLLECTABLE = ("velociraptor_collection", "velociraptor_upload",
-                  "velociraptor_hunt", "velociraptor_offline_import")
+                  "velociraptor_hunt", "velociraptor_offline_import",
+                  "velociraptor_adopt")
 
 _recollect_lock = threading.Lock()
 _recollecting = set()

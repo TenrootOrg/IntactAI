@@ -716,3 +716,241 @@ def get_artifacts():
         "cached": False,
         "count": len(artifacts)
     })
+
+
+# =============================================================================
+# Adopt an existing Velociraptor flow / hunt into the active case
+# =============================================================================
+#
+# Closes the loop the product was missing: investigators work in parallel in the
+# Velociraptor GUI, and until now nothing they collected there could ever reach
+# an Intact case — a case could only contain runs Intact itself dispatched (or an
+# offline-collector ZIP). So the case froze as a snapshot of the automated pass
+# while the real investigation walked away from it.
+#
+# This is deliberately NOT a second launch path. It starts no collection and
+# touches no endpoint: it reads results the Velociraptor server ALREADY holds for
+# an id the operator types, through the exact same fetch fusion uses
+# (get_existing_collection_results), filtered to SUPPORTED_ARTIFACTS at the
+# boundary so no unmapped raw Velociraptor data enters the graph.
+
+_ADOPT_ID_HINT = ("Expected a Velociraptor flow id (F.XXXXXXXX), "
+                  "a hunt id (H.XXXXXXXX), or a hunt-derived flow id (F.XXXXXXXX.H).")
+
+
+def _adopt_normalize_id(value):
+    """('hunt'|'flow', canonical_id) for a well-formed id, else (None, None).
+
+    A hunt-derived flow id (F.xxx.H) IS a hunt: get_existing_collection_results
+    normalizes it to H.xxx before querying hunt_flows(), so classify it as one
+    here too — otherwise it would take the single-flow path and find nothing.
+    """
+    from services.agentic.collectors._base import _is_valid_hunt_or_derived_flow_id
+    from services.vql_safety import is_valid_flow_id
+
+    v = (value or "").strip()
+    if not v:
+        return None, None
+    if _is_valid_hunt_or_derived_flow_id(v):
+        return "hunt", v
+    if is_valid_flow_id(v):
+        return "flow", v
+    return None, None
+
+
+def _adopt_ids_in_details(details):
+    """Every Velociraptor locator a run row names, lowercased for comparison.
+
+    Covers the four shapes runs actually store: `flow_id` (a LIST when several
+    clients were selected, a bare string when one was), `hunt_id`, and the
+    `offline_*` pair an offline-collector import stamps.
+    """
+    out = set()
+    for key in ("flow_id", "hunt_id", "offline_flow_id", "offline_hunt_id"):
+        val = (details or {}).get(key)
+        if isinstance(val, list):
+            out.update(str(v).strip().lower() for v in val if v)
+        elif val:
+            out.add(str(val).strip().lower())
+    return out
+
+
+def _adopt_existing_run(case_id, ident):
+    """The run already holding `ident` IN THIS CASE, or None.
+
+    Scoped to the case on purpose: the operator asked for "an id that doesn't
+    exist in this specific case". The same flow legitimately belongs to two
+    cases when one incident spans them, so this is a duplicate check, not an
+    ownership claim.
+    """
+    from services.workflow_service import get_automation_runs_by_case
+    needle = {ident.strip().lower()}
+    # F.xxx.H and H.xxx are the same hunt wearing two names — compare both.
+    if ident.startswith("F.") and ident.endswith(".H"):
+        needle.add(("H." + ident[2:-2]).lower())
+    elif ident.startswith("H."):
+        needle.add(("F." + ident[2:] + ".H").lower())
+    for run in (get_automation_runs_by_case(case_id) or []):
+        if _adopt_ids_in_details(run.get("details")) & needle:
+            return run
+    return None
+
+
+def _adopt_worker(run_id, kind, ident, client_id):
+    """Read the flow/hunt's supported rows and persist them where fusion looks.
+
+    Owns the run's terminal state on EVERY path, including the empty ones — a
+    run left at 'running' is a row the operator can never clear, and one marked
+    'completed' with nothing in it is worse: the fuse would count it as a member
+    that contributed zero and never look at it again.
+    """
+    from services.agentic.collectors import (
+        get_existing_collection_results, persist_pipeline_artifacts)
+    from services.fusion.mappers.agentic import SUPPORTED_ARTIFACTS
+    from services.workflow_service import mutate_run_details
+
+    try:
+        update_run_status(run_id, "running", progress=5)
+        add_log_to_run(run_id, f"=== Adopting Velociraptor {kind} {ident} ===")
+        add_log_to_run(run_id, "Reading results the Velociraptor server already "
+                               "holds. No collection is started and no endpoint "
+                               "is contacted.")
+        add_log_to_run(run_id, f"Artifact filter: fusion's supported set "
+                               f"({len(SUPPORTED_ARTIFACTS)} artifacts). Anything "
+                               f"else in this collection is skipped.")
+        if kind == "flow":
+            add_log_to_run(run_id, f"Client scope: {client_id}" if client_id
+                           else "Client scope: every client (no client id given)")
+        update_run_status(run_id, "running", progress=10)
+
+        if kind == "hunt":
+            results, artifacts, client_info = get_existing_collection_results(
+                run_id, hunt_id=ident,
+                only_artifacts=SUPPORTED_ARTIFACTS, progress_log=True)
+        else:
+            results, artifacts, client_info = get_existing_collection_results(
+                run_id, flow_id=ident,
+                client_ids=([client_id] if client_id else None),
+                only_artifacts=SUPPORTED_ARTIFACTS, progress_log=True)
+
+        update_run_status(run_id, "running", progress=85)
+        total = sum(len(rows) for rows in (results or {}).values())
+        if total == 0:
+            msg = (f"No supported artifacts found in {ident}. Fusion ingests only "
+                   f"the artifacts it has mappers for — see the log above for what "
+                   f"this collection contained and what was skipped.")
+            add_log_to_run(run_id, msg, "error")
+            update_run_status(run_id, "failed", error=msg)
+            return
+
+        hostnames = {str(cid): (info or {}).get("hostname")
+                     for cid, info in (client_info or {}).items()
+                     if cid and (info or {}).get("hostname")}
+
+        def _stamp(det):
+            det["hostnames"] = {**(det.get("hostnames") or {}), **hostnames}
+            det["artifacts"] = sorted(artifacts or [])
+            det["total_rows"] = total
+            # A FLOW locator must carry its client_id: at fuse time
+            # _velo_hunt_contribution re-pulls live and needs flow_id AND
+            # client_id together. The operator may have pasted a bare F.xxx, so
+            # persist whichever client the fetch actually resolved it on.
+            if kind == "flow" and not det.get("client_id"):
+                resolved = client_id or next(iter(client_info or {}), None)
+                if resolved:
+                    det["client_id"] = resolved
+
+        mutate_run_details(run_id, _stamp)
+
+        for cid, info in sorted((client_info or {}).items()):
+            host = (info or {}).get("hostname") or "unknown host"
+            add_log_to_run(run_id, f"  host {host} ({cid})")
+        for name in sorted(results or {}):
+            add_log_to_run(run_id, f"  {name}: {len(results[name])} row(s)")
+
+        update_run_status(run_id, "running", progress=92)
+        add_log_to_run(run_id, "Persisting rows where the case graph reads them…")
+        persist_pipeline_artifacts(run_id, results)
+
+        add_log_to_run(
+            run_id,
+            f"Adopted {total} row(s) across {len(artifacts or [])} supported "
+            f"artifact(s) from {len(client_info or {})} host(s) into the case.",
+            "success")
+        add_log_to_run(run_id, "The case graph and report refresh on their own "
+                               "shortly — no need to press Fusion.")
+        # No explicit fuse call: velociraptor_adopt is in AGENTIC_TYPES, so
+        # update_run_status arms the debounced auto-fuse for the case.
+        update_run_status(run_id, "completed", progress=100)
+
+    except Exception as e:
+        print(f"[ADOPT] {ident} failed: {e}", flush=True)
+        traceback.print_exc()
+        try:
+            add_log_to_run(run_id, f"Adopt failed: {e}", "error")
+            update_run_status(run_id, "failed", error=str(e))
+        except Exception:
+            pass
+
+
+@velociraptor_bp.route('/api/velociraptor/adopt', methods=['POST'])
+def adopt_velociraptor_collection():
+    """Pull an existing Velociraptor flow/hunt into the active case by id."""
+    try:
+        import threading
+        from services.workflow_service import _resolve_case_id
+        from services.vql_safety import is_valid_client_id
+
+        data = request.get_json(silent=True) or {}
+        raw_id = (data.get('id') or data.get('flow_id') or data.get('hunt_id') or '')
+        client_id = (data.get('client_id') or '').strip() or None
+
+        kind, ident = _adopt_normalize_id(raw_id)
+        if not kind:
+            # Validate BEFORE anything else: these ids are interpolated straight
+            # into VQL downstream, and this is the first route that takes one
+            # from an operator rather than from a run we created.
+            return jsonify({"error": f"'{str(raw_id).strip()}' is not a valid id. "
+                                     f"{_ADOPT_ID_HINT}"}), 400
+        if client_id and not is_valid_client_id(client_id):
+            return jsonify({"error": f"'{client_id}' is not a valid client id "
+                                     f"(expected C.xxxxxxxxxxxxxxxx)."}), 400
+
+        case_id = _resolve_case_id("velociraptor_adopt", None)
+        if not case_id:
+            return jsonify({"error": "No active case to adopt into."}), 400
+
+        existing = _adopt_existing_run(case_id, ident)
+        if existing:
+            return jsonify({
+                "error": f"{ident} is already in this case as "
+                         f"\"{existing.get('name') or existing.get('run_id')}\". "
+                         f"Use Fetch results on that run to pull anything new.",
+                "duplicate": True,
+                "run_id": existing.get("run_id"),
+            }), 409
+
+        run_id = create_automation_run(
+            automation_type="velociraptor_adopt",
+            name=f"Adopt {'hunt' if kind == 'hunt' else 'flow'} {ident}",
+            details={("hunt_id" if kind == "hunt" else "flow_id"): ident,
+                     "client_id": client_id,
+                     "adopted_id": ident,
+                     # An analyst ran this by hand in the Velociraptor GUI — no
+                     # agent was involved. Display label only (_run_passes_gate
+                     # admits every Velociraptor run), but it should be honest.
+                     "is_agentic": False},
+            case_id=case_id,
+        )
+        add_log_to_run(run_id, f"Adopting {kind} {ident} into the case")
+
+        threading.Thread(target=_adopt_worker,
+                         args=(run_id, kind, ident, client_id),
+                         daemon=True).start()
+
+        return jsonify({"run_id": run_id, "kind": kind, "id": ident}), 202
+
+    except Exception as e:
+        print(f"[ADOPT] ✗ {e}", flush=True)
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500

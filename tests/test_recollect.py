@@ -96,7 +96,11 @@ class TestItRefusesWhatItCannotDo(unittest.TestCase):
         ns = load_route_helpers()
         self.assertEqual(set(ns["_RECOLLECTABLE"]),
                          {"velociraptor_collection", "velociraptor_upload",
-                          "velociraptor_hunt", "velociraptor_offline_import"})
+                          "velociraptor_hunt", "velociraptor_offline_import",
+                          # An ADOPTED hunt keeps collecting on the server just
+                          # like one Intact dispatched — the operator adopting it
+                          # early must be able to come back for the rest.
+                          "velociraptor_adopt"})
         # A memory or timesketch run holds no Velociraptor flow to re-read.
         self.assertNotIn("memory", ns["_RECOLLECTABLE"])
 

@@ -21,6 +21,7 @@
                                     <option value="velociraptor_hunt">Velociraptor Hunt</option>
                                     <option value="velociraptor_offline_collector">Offline Collector</option>
                                     <option value="velociraptor_offline_import">Offline Import</option>
+                                    <option value="velociraptor_adopt">Adopted Collection</option>
                                     <option value="maintenance">Maintenance</option>
                                 </select>
                             </div>
@@ -154,7 +155,7 @@
                                                      rather than anything that reads like re-running.
                                                      Only Velociraptor-backed runs have anything to
                                                      re-fetch; the server refuses the rest by type. -->
-                                                <template x-if="['completed','failed','cancelled'].includes(run.status) &amp;&amp; ['velociraptor_collection','velociraptor_upload','velociraptor_hunt','velociraptor_offline_import'].includes(run.type)">
+                                                <template x-if="['completed','failed','cancelled'].includes(run.status) &amp;&amp; ['velociraptor_collection','velociraptor_upload','velociraptor_hunt','velociraptor_offline_import','velociraptor_adopt'].includes(run.type)">
                                                     <button @click.stop="$store.workflows.recollect(run.id)"
                                                             :disabled="$store.workflows.recollecting === run.id"
                                                             title="Ask Velociraptor for results it already has — no new collection, the endpoint is not touched. Use after a collection ran out of time, or while a hunt is still reporting."

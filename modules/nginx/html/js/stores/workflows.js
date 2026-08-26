@@ -330,6 +330,7 @@ document.addEventListener('alpine:init', () => {
                 velociraptor_upload: 'bg-green-700',
                 velociraptor_offline_collector: 'bg-green-700',
                 velociraptor_offline_import: 'bg-green-700',
+                velociraptor_adopt: 'bg-green-700',
                 offline_collector: 'bg-green-700',
                 offline_import: 'bg-green-700',
                 hunt: 'bg-green-700',

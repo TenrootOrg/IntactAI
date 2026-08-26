@@ -546,3 +546,67 @@ function resetOfflineImport() {
 document.addEventListener('partials:ready', () => {
     setTimeout(initOfflineImportDropzone, 100);
 });
+
+
+// =============================================================================
+// Add by ID — adopt an existing Velociraptor flow/hunt into the active case
+// =============================================================================
+//
+// Starts no collection. The backend reads results the Velociraptor server
+// already holds for this id, keeps only the artifacts fusion has mappers for,
+// and files it as a normal workflow run tagged to the active case — so progress,
+// the full per-artifact log and Stop all live in the Workflows tab like every
+// other module, rather than in a second progress UI here.
+async function adoptVelociraptorId() {
+    const idInput = document.getElementById('adopt-id');
+    const clientInput = document.getElementById('adopt-client-id');
+    const statusDiv = document.getElementById('adopt-status');
+    const btn = document.getElementById('adopt-btn');
+
+    const ident = (idInput?.value || '').trim();
+    const clientId = (clientInput?.value || '').trim();
+
+    statusDiv.classList.remove('hidden');
+
+    if (!ident) {
+        statusDiv.innerHTML = '<span class="text-red-400">Enter a flow id or hunt id.</span>';
+        return;
+    }
+
+    btn.disabled = true;
+    statusDiv.innerHTML = '<span class="text-yellow-400">Starting…</span>';
+
+    try {
+        const response = await fetch('/api/velociraptor/adopt', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: ident, client_id: clientId || null })
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+            const kind = data.kind === 'hunt' ? 'Hunt' : 'Flow';
+            statusDiv.innerHTML = `<span class="text-green-400">${kind} ${escapeHtml(data.id || ident)} `
+                + `added to the case. Opening Workflows…</span>`;
+            idInput.value = '';
+            clientInput.value = '';
+            setTimeout(() => {
+                switchTab('workflows');
+                loadWorkflows();
+                statusDiv.classList.add('hidden');
+                btn.disabled = false;
+            }, 1200);
+            return;
+        }
+
+        // 409 = already in this case. Say which run holds it rather than a bare
+        // error, so the operator can go straight to Fetch results on that row.
+        statusDiv.innerHTML = `<span class="text-${response.status === 409 ? 'yellow' : 'red'}-400">`
+            + `${escapeHtml(data.error || 'Request failed')}</span>`;
+        btn.disabled = false;
+    } catch (error) {
+        statusDiv.innerHTML = `<span class="text-red-400">Error: ${escapeHtml(error.message)}</span>`;
+        btn.disabled = false;
+    }
+}

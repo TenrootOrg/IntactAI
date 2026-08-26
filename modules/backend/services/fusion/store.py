@@ -113,7 +113,8 @@ def _enabled_run_types(d):
 
 
 _VELOCIRAPTOR_TYPES = {"velociraptor_collection", "velociraptor_upload",
-                       "velociraptor_hunt", "velociraptor_offline_import"}
+                       "velociraptor_hunt", "velociraptor_offline_import",
+                       "velociraptor_adopt"}
 
 
 def _is_agentic_run(run) -> bool:
@@ -1118,10 +1119,15 @@ def _contribution_for_run(run, log=None, refetch=False):
             if atype == "velociraptor_upload":
                 _relabel_source(ents, rels, "agentic", "velociraptor")
             return ents, rels
-        if atype in ("velociraptor_hunt", "velociraptor_offline_import"):
+        if atype in ("velociraptor_hunt", "velociraptor_offline_import",
+                     "velociraptor_adopt"):
             # An offline import lands its rows under a Velociraptor HUNT (the
             # importer stores hunt_id on the run); read it the same way as a live
-            # hunt. The artifact allowlist in the mapper keeps the graph clean.
+            # hunt. An ADOPTED flow/hunt is the same shape again — _velo_hunt_
+            # contribution already handles both a hunt_id and a flow_id+client_id
+            # locator, pulls live with only_artifacts=SUPPORTED_ARTIFACTS, and
+            # relabels the source 'velociraptor' (no agent ran). The artifact
+            # allowlist in the mapper keeps the graph clean.
             return _velo_hunt_contribution(rid, det, log=log)
         if atype == "timesketch":
             evs = det.get("events") or det.get("timeline_events")
