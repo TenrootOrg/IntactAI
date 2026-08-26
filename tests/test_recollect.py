@@ -181,7 +181,99 @@ class TestAManualRefusionRereadsFromVelociraptor(unittest.TestCase):
         # Otherwise the next automatic fuse drops straight back to the old rows.
         seg = self.src[self.src.index("def _refetch_agentic_rows"):
                        self.src.index("def _contribution_for_run")]
-        self.assertIn("persist_pipeline_artifacts", seg)
+        self.assertIn("_resnapshot_without_losing_rows", seg)
+
+
+class TestFusionAsksOnlyForWhatItUses(unittest.TestCase):
+    """Fusion was fetching everything and keeping almost none of it.
+
+    Measured on a real BestPractice collection (DESKTOP-566AT85, 2026-08-26):
+
+        collected   38 sources   713,520 rows
+        fused        8 sources       322 rows      <- 99.95% discarded
+
+    Two artifacts are almost all of it — Windows.NTFS.MFT (354,831) and
+    Windows.Forensics.Usn (353,367) — and fusion supports neither. Every manual
+    Refusion pulled all of that over gRPC, per member run, to throw it away.
+
+    This is a FETCH filter, not a policy change: those artifacts are still
+    collected, still stored, still downloadable. Fusion just stops asking.
+    """
+
+    def setUp(self):
+        self.store = read(STORE)
+        self.base = read(os.path.join(
+            ROOT, "modules/backend/services/agentic/collectors/_base.py"))
+
+    def test_the_fetch_can_be_scoped(self):
+        self.assertIn("only_artifacts", self.base)
+        self.assertIn("def _wanted_source(", self.base)
+
+    def test_sub_sources_and_export_prefixes_normalize(self):
+        # "Generic.Forensic.SQLiteHunter/AllFiles" and "All Windows.NTFS.MFT"
+        # must resolve to their base name, exactly as the fusion allowlist does.
+        ns = {}
+        seg = self.base[self.base.index("def _wanted_source("):
+                        self.base.index("def get_existing_collection_results(")]
+        exec(compile(seg, "base", "exec"), ns)
+        w = ns["_wanted_source"]
+        allow = {"windows.ntfs.mft"}
+        self.assertTrue(w("Windows.NTFS.MFT", allow))
+        self.assertTrue(w("All Windows.NTFS.MFT", allow))
+        self.assertTrue(w("Windows.NTFS.MFT/Sub", allow))
+        self.assertFalse(w("Windows.Forensics.Usn", allow))
+
+    def test_an_empty_allowlist_fetches_everything(self):
+        # Re-collect and any other consumer must be unaffected.
+        ns = {}
+        seg = self.base[self.base.index("def _wanted_source("):
+                        self.base.index("def get_existing_collection_results(")]
+        exec(compile(seg, "base", "exec"), ns)
+        self.assertTrue(ns["_wanted_source"]("Anything.At.All", None))
+        self.assertTrue(ns["_wanted_source"]("Anything.At.All", set()))
+
+    def test_both_fusion_fetches_pass_the_allowlist(self):
+        for fn in ("def _refetch_agentic_rows", "def _velo_hunt_contribution"):
+            seg = self.store[self.store.index(fn):]
+            seg = seg[:seg.index("\ndef ", 10)]
+            self.assertIn("only_artifacts=SUPPORTED_ARTIFACTS", seg,
+                          f"{fn} still fetches artifacts fusion discards")
+
+    def test_re_collect_still_fetches_everything(self):
+        # The operator's own action restores the RUN's data, not fusion's subset.
+        routes = read(ROUTES)
+        seg = routes[routes.index("def _recollect_worker"):routes.index("def recollect(")]
+        self.assertNotIn("only_artifacts", seg,
+                         "re-collect would silently drop artifacts the operator "
+                         "collected on purpose")
+
+
+class TestAScopedFetchNeverShrinksTheSnapshot(unittest.TestCase):
+    """THE TRAP IN THIS FIX.
+
+    raw_results.json is the RUN's data — downloadable, exportable, not fusion's
+    private cache. A fusion-scoped fetch returns 322 of 713,520 rows, so writing
+    it straight over the snapshot would delete 708,198 rows the operator
+    collected on purpose. The refreshed sources are merged OVER the existing
+    ones instead.
+    """
+
+    def setUp(self):
+        self.src = read(STORE)
+
+    def test_the_merge_helper_reads_the_existing_snapshot_first(self):
+        seg = self.src[self.src.index("def _resnapshot_without_losing_rows"):]
+        seg = seg[:seg.index("\ndef ", 10)]
+        self.assertIn("_agentic_collected_data(rid, det)", seg)
+        self.assertIn("merged.update(fetched", seg)
+
+    def test_no_scoped_fetch_persists_directly(self):
+        for fn in ("def _refetch_agentic_rows", "def _velo_hunt_contribution"):
+            seg = self.src[self.src.index(fn):]
+            seg = seg[:seg.index("\ndef ", 10)]
+            code = "\n".join(l.split("#", 1)[0] for l in seg.splitlines())
+            self.assertNotIn("persist_pipeline_artifacts(rid,", code,
+                             f"{fn} overwrites the run's snapshot with a subset")
 
     def test_the_operator_is_told_why_it_is_slower(self):
         self.assertIn("re-reading each one from Velociraptor", self.src)

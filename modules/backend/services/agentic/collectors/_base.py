@@ -622,7 +622,24 @@ def cancel_collections(run_id, collection_results):
     add_log_to_run(run_id, f"[Velociraptor] Cancelled {cancelled} collection(s)", "info")
 
 
-def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_filter=None, client_ids=None):
+def _wanted_source(source_name, only_artifacts):
+    """Should this result source be fetched at all?
+
+    `only_artifacts` is a set of lowercase BASE artifact names. A source may be a
+    sub-source ("Generic.Forensic.SQLiteHunter/AllFiles") or carry an export
+    prefix ("All Windows.NTFS.MFT"), so it is normalized the same way the fusion
+    allowlist normalizes its keys.
+    """
+    if not only_artifacts:
+        return True
+    n = str(source_name or "")
+    if n[:4].lower() == "all ":
+        n = n[4:]
+    return n.split("/")[0].strip().lower() in only_artifacts
+
+
+def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_filter=None,
+                                    client_ids=None, only_artifacts=None):
     """Fetch results from an existing Velociraptor flow or hunt with optional time filtering.
 
     Args:
@@ -630,6 +647,19 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
         flow_id: Flow ID (F.xxx) for single client collection
         hunt_id: Hunt ID (H.xxx OR F.xxx.H) for multi-client hunt
         time_filter: Optional time filter config for VQL-level filtering
+        only_artifacts: Optional set of lowercase base artifact names. Sources
+            outside it are never queried.
+
+            FUSION PASSES ITS ALLOWLIST HERE, and the numbers are the argument.
+            Measured on a real BestPractice collection: 38 sources, 713,520 rows
+            fetched, of which fusion keeps 8 sources and 322 rows — 99.95%
+            transferred over gRPC, held in memory and discarded. Two artifacts
+            account for almost all of it (Windows.NTFS.MFT 354,831 and
+            Windows.Forensics.Usn 353,367) and fusion supports neither.
+
+            This is a fetch filter, not a policy change: those artifacts are
+            still collected, still stored, still downloadable. Fusion simply
+            stops asking for rows it is about to throw away.
         client_ids: Optional list of Velociraptor client IDs to scope a hunt
             to. When non-empty, the hunt-flows enumeration query gets a
             ``WHERE ClientId IN (...)`` filter so only those clients' rows
@@ -819,7 +849,20 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
 
                 # Pull rows for each artifact source, tag with client context
                 # so per-client report filters and IRIS asset linking work.
+                #
+                # SECOND FETCH LOOP. The single-flow path inlines its VQL rather
+                # than calling query_artifact_results, so a grep for that helper
+                # does not find it — which is exactly how the first version of
+                # the only_artifacts filter got applied to the hunt loop alone
+                # and changed nothing for collections (measured: still 38
+                # sources, 713,520 rows). Both loops honour it.
+                _skipped = [x for x in flow_sources if not _wanted_source(x, only_artifacts)]
+                if _skipped:
+                    add_log_to_run(run_id, f"[Velociraptor] Skipping {len(_skipped)} source(s) "
+                                           f"this consumer does not use", "info")
                 for source in flow_sources:
+                    if not _wanted_source(source, only_artifacts):
+                        continue
                     query = f"SELECT * FROM source(client_id='{located_client_id}', flow_id='{fid}', artifact='{source}')"
                     src_req = api_pb2.VQLCollectorArgs(
                         max_wait=60,
@@ -987,7 +1030,13 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                         client_info[flow_client_id]["hostname"] = resolved_hostname
 
                 # Fetch results from each source with VQL time filtering
+                _skipped = [x for x in sources if not _wanted_source(x, only_artifacts)]
+                if _skipped:
+                    add_log_to_run(run_id, f"[Velociraptor] Skipping {len(_skipped)} source(s) "
+                                           f"this consumer does not use", "info")
                 for source_name in sources:
+                    if not _wanted_source(source_name, only_artifacts):
+                        continue
                     rows = query_artifact_results(stub, flow_client_id, flow_id, source_name, start_iso, end_iso)
                     if rows:
                         if source_name not in artifacts:

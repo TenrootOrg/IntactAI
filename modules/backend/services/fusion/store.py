@@ -942,12 +942,13 @@ def _velo_hunt_contribution(rid, det, log=None):
         from services.agentic.collectors import get_existing_collection_results, persist_pipeline_artifacts
         cd, _arts, client_info = get_existing_collection_results(
             rid, flow_id=(None if hunt_id else flow_id),
-            hunt_id=hunt_id, client_ids=(None if hunt_id else [client_id]))
+            hunt_id=hunt_id, client_ids=(None if hunt_id else [client_id]),
+            only_artifacts=SUPPORTED_ARTIFACTS)
         if cd:
-            try:
-                persist_pipeline_artifacts(rid, cd)      # fallback snapshot
-            except Exception:
-                pass
+            # Merged, not overwritten: this fetch is scoped to what fusion maps,
+            # so writing it straight over the snapshot would delete every other
+            # artifact the hunt collected.
+            _resnapshot_without_losing_rows(rid, det, cd)
             hostnames = {str(c): (i or {}).get("hostname")
                          for c, i in (client_info or {}).items() if c and (i or {}).get("hostname")}
             if hostnames:
@@ -994,6 +995,24 @@ def _distill_ts_events(events, *, per_tag=5):
     return out
 
 
+def _resnapshot_without_losing_rows(rid, det, fetched):
+    """Persist `fetched` over the run's snapshot WITHOUT dropping what it holds.
+
+    Fusion fetches only the artifacts it supports (322 rows of a real 713,520-row
+    collection), so writing that straight to raw_results.json would delete the
+    run's Windows.NTFS.MFT and Windows.Forensics.Usn — 708,198 rows the operator
+    collected on purpose and can still download. The refreshed sources are merged
+    OVER the existing ones and everything else is left alone.
+    """
+    try:
+        from services.agentic.collectors import persist_pipeline_artifacts
+        merged = dict(_agentic_collected_data(rid, det) or {})
+        merged.update(fetched or {})
+        persist_pipeline_artifacts(rid, merged)
+    except Exception:
+        pass
+
+
 def _refetch_agentic_rows(rid, det, log=None):
     """Ask Velociraptor for this collection's CURRENT results, and re-snapshot.
 
@@ -1019,21 +1038,18 @@ def _refetch_agentic_rows(rid, det, log=None):
         return None
     cid = det.get("client_id")
     try:
-        from services.agentic.collectors import (get_existing_collection_results,
-                                                 persist_pipeline_artifacts)
+        from services.agentic.collectors import get_existing_collection_results
         merged = {}
         for fid in flows:
             got, _a, _ci = get_existing_collection_results(
-                rid, flow_id=fid, client_ids=([cid] if cid else None))
+                rid, flow_id=fid, client_ids=([cid] if cid else None),
+                only_artifacts=SUPPORTED_ARTIFACTS)
             for k, v in (got or {}).items():
                 merged.setdefault(k, [])
                 merged[k].extend(v or [])
         if not merged:
             return None
-        try:
-            persist_pipeline_artifacts(rid, merged)
-        except Exception:
-            pass
+        _resnapshot_without_losing_rows(rid, det, merged)
         if log:
             log(f"run {rid}: re-read {sum(len(v) for v in merged.values()):,} row(s) "
                 f"from Velociraptor", "info")
