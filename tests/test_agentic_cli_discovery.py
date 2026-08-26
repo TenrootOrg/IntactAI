@@ -362,6 +362,11 @@ class TestTheContainerLocalGuessesAreGone(_Base):
 
     def test_the_searched_list_is_only_reachable_paths(self):
         fresh = _load(os.path.join(self.tmp, "cli5"))
+        # A freshly loaded module has no stubs, so shutil.which() would run for
+        # real and pick up whatever codex is on the developer's PATH. Blind it,
+        # the same way _Base does — a test whose answer depends on the machine
+        # running it is not a test.
+        fresh.shutil = _NoWhich(fresh.shutil)
         allowed = ("/host/", os.path.dirname(fresh.install_target_path(self.P)),
                    os.path.expanduser("~/."))
         for c in fresh._candidate_paths(self.P):

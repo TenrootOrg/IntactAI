@@ -1374,8 +1374,23 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     # customer-confirmation checklist — generate once (preserve operator decisions on
     # re-fuse). GENERATED here, but WRITTEN after the bulk patch below via
     # _mutate_list_field — see the note there for why it may not ride along in the patch.
+    # `allow_llm` GUARDS THIS TOO, and it did not, which made a documented
+    # promise false. The automatic fuse passes allow_llm=False precisely so a
+    # graph rebuild is fast, free and cannot be held up by a provider — the
+    # report and advisory above both honour it. This call did not, so every
+    # first automatic fuse of a case made a model call anyway, and with a model
+    # configured but unreachable it blocked the fuse for up to
+    # ONLINE_LLM_TIMEOUT_SECONDS (600) while holding the case's fuse lock, so
+    # data landing behind it got FusionBusy and retried. Measured on a live
+    # appliance: an automatic fuse sat in "LLM · calling OpenAI (Subscription)"
+    # and never reached "Refusion complete".
+    #
+    # The checklist is not lost by skipping it here: regenerate_report generates
+    # one when the case has none, and the automatic path calls that immediately
+    # after the fuse (services/fusion/autofuse.py). Every model call now happens
+    # in the narration step, which is the one allowed to be slow and billed.
     fresh_checklist = None
-    if not d.get("disposition_checklist"):
+    if allow_llm and not d.get("disposition_checklist"):
         try:
             fresh_checklist = llm_sim.generate_disposition_checklist(
                 gv, window=window, min_severity=min_sev, run_id=case_id, mask=mask)
@@ -1958,6 +1973,24 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
     except Exception as e:
         log_case_event(case_id, "Report generation", "error", f"LLM/render failed: {e}")
         raise
+    # The customer-confirmation checklist moved here from fuse_case, which
+    # generated it regardless of allow_llm and so made every first automatic
+    # fuse a billed, blockable call. This is the narration step — the one that is
+    # allowed to be slow and to spend tokens — and it runs immediately after an
+    # automatic fuse, so a case still gets a checklist without the graph rebuild
+    # waiting on one. Generated once and never regenerated: it carries the
+    # operator's decisions.
+    if not d.get("disposition_checklist"):
+        try:
+            fresh = llm_sim.generate_disposition_checklist(
+                gv, window=window, min_severity=min_sev, run_id=case_id, mask=mask)
+            if fresh:
+                _mutate_list_field(case_id, "disposition_checklist",
+                                   lambda cur: cur or fresh)
+        except Exception as e:                       # noqa: BLE001
+            log_case_event(case_id, "Checklist", "warning",
+                           f"could not be generated ({type(e).__name__}); "
+                           f"the report is unaffected")
     try:
         patch = {"report_md": report, "analysis": analysis, "report_dirty": False}
         # Stamp WHICH runs this narrative describes. It was clearing report_dirty

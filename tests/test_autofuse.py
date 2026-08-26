@@ -269,6 +269,35 @@ class TestTheFuseItselfNeverCallsTheModel(_Base):
         self.settle()
         self.assertNotEqual(self.store.fuses[0].get("force_report"), True)
 
+    def test_the_fuse_makes_no_model_call_at_all(self):
+        """allow_llm=False must reach EVERY model call in fuse_case, not most.
+
+        It reached the report and the advisory and missed the disposition
+        checklist, which is generated on a case that has none — i.e. on the FIRST
+        automatic fuse of every case. So the automatic path made a billed call
+        while documented, and tested, as making none. With a model configured but
+        unreachable it blocked the fuse for up to 600s holding the case's fuse
+        lock, and data landing behind it got FusionBusy and retried. Measured on
+        a live appliance: the fuse sat in "LLM · calling OpenAI (Subscription)"
+        and never reached "Refusion complete".
+
+        Asserted on the source, because the fake store cannot see inside
+        fuse_case: every llm_sim call in it must sit under an allow_llm guard.
+        """
+        import re
+        src_path = os.path.join(ROOT, "modules/backend/services/fusion/store.py")
+        with open(src_path, encoding="utf-8") as fh:
+            src = fh.read()
+        body = src[src.index("def _fuse_case_locked"):src.index("def stale_member_runs")]
+        code = "\n".join(l.split("#", 1)[0] for l in body.splitlines())
+        for m in re.finditer(r"llm_sim\.(generate_report|analyze|generate_disposition_checklist)\(",
+                             code):
+            head = code[:m.start()]
+            guard = head.rfind("allow_llm")
+            branch = max(head.rfind("\n    if "), head.rfind("\n    else:"))
+            self.assertGreater(guard, branch,
+                               f"llm_sim.{m.group(1)} is not under an allow_llm guard")
+
     def test_it_labels_itself_automatic(self):
         autofuse.schedule("case_1")
         self.settle()

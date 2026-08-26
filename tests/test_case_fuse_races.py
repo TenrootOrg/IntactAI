@@ -266,7 +266,7 @@ class TestChecklistWiring(unittest.TestCase):
 
     def test_generation_is_still_skipped_when_one_exists(self):
         body = ast.get_source_segment(self.src, self._fuse_fn()) or ""
-        self.assertIn('if not d.get("disposition_checklist"):', body,
+        self.assertIn('not d.get("disposition_checklist"):', body,
                       "an existing checklist must not be regenerated on every fuse")
 
     def test_mutate_list_field_reads_and_writes_under_one_lock(self):
