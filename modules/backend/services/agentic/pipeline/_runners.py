@@ -200,15 +200,30 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, c
                        f"Case for analysis.", "info")
         _update_phase(run_id, "report_ready", 85)
 
-        if cancel_event and cancel_event.is_set():
-            return
-
-        # Save raw row data for fusion to read. Cheap to write, best-effort:
-        # failures are logged but don't fail the pipeline.
+        # SAVE FIRST, THEN HONOUR THE CANCEL. This check used to sit ABOVE the
+        # persist, so anything that stopped the pipeline threw away everything it
+        # had collected. Measured on a QA appliance 2026-08-26 (run
+        # velociraptor_collection_1787727431255): the watchdog fired 32 seconds
+        # after "All 1 flows completed!", and ~465,000 rows gathered over 25
+        # minutes went with it — no raw_results.json, no totals on the run,
+        # nothing to fuse and nothing to re-collect from.
+        #
+        # Writing the snapshot is a local file write of data already in memory.
+        # There is no version of "stop this run" that is served by deleting it.
         try:
             persist_pipeline_artifacts(run_id, all_results)
         except Exception as _e:
             print(f"[AGENTIC] persist_pipeline_artifacts failed (non-fatal): {_e}", flush=True)
+
+        if cancel_event and cancel_event.is_set():
+            add_log_to_run(
+                run_id,
+                f"[Collection] Stopped early — {total_rows:,} row(s) across "
+                f"{len(all_results)} artifact(s) were saved and can be fused. "
+                f"Use Fetch results later to pick up anything the flow collected "
+                f"after this point.",
+                "warning")
+            return
 
         _update_phase(run_id, "completed", 100)
         # The run ends the same way whether or not the time limit was reached: it

@@ -24,6 +24,21 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
     all filtering (time window, severity) and analysis. `timed_out` is True if
     collection ended due to timeout, False if all flows completed naturally."""
     total_seconds = collection_minutes * 60
+    # WALL CLOCK, not a tally of intervals.
+    #
+    # `elapsed` used to be incremented by `interval` once per loop, on the
+    # assumption that a loop takes about `interval`. It does not: each iteration
+    # also fetches results, and that got slower as data accumulated. Measured on
+    # a QA appliance 2026-08-26, the gaps between "one minute" heartbeats ran
+    # 75s, 130s, 139s, 205s, 287s — so the pipeline believed 7m30s had passed
+    # when 22m10s had. A 10-minute collection therefore sailed past the
+    # 25-minute watchdog and was killed.
+    #
+    # The incremental fetch above removes the cause; this removes the fiction.
+    # "10 minutes" now means ten minutes however long the polls take, so the
+    # collection window is a promise the loop can keep and the watchdog
+    # (window + 15 min) stops being reachable by drift.
+    _started_at = time.monotonic()
     elapsed = 0
     interval = 30  # Check every 30 seconds
 
@@ -101,6 +116,20 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
 
     # Track discovered sources (including sub-artifacts)
     discovered_sources = {}  # flow_id -> set of source names
+    # Rows already retrieved, keyed (client_id, source). The next poll asks
+    # Velociraptor to skip exactly this many.
+    #
+    # PER CLIENT, not per source, and that matters: a hunt-shaped collection has
+    # several flows writing the same artifact, and a shared offset would have one
+    # host's progress skip past another host's rows.
+    #
+    # Counted from what we RECEIVED, never from what we asked for. A fetch cut
+    # short by the query timeout therefore leaves the offset where the data
+    # really ends, and the next poll resumes from there instead of stepping over
+    # a gap. That also removes the old "row count went backwards" symptom
+    # (479,334 -> 455,315 in a real run): rows are appended now, never replaced,
+    # so a short read can no longer delete rows we already had.
+    fetched_offsets = {}     # (client_id, source_name) -> int
 
     try:
         while elapsed < total_seconds:
@@ -131,9 +160,13 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                 # next poll — nothing to track to get that for free.
                 client_hostname = _name(client_id)
                 for source_name in discovered_sources[flow_id]:
-                    rows = query_artifact_results(stub, client_id, flow_id, source_name)
+                    _key = (client_id, source_name)
+                    _seen = fetched_offsets.get(_key, 0)
+                    rows = query_artifact_results(stub, client_id, flow_id,
+                                                  source_name, start_row=_seen)
                     if not rows:
                         continue
+                    fetched_offsets[_key] = _seen + len(rows)
 
                     # Tag every row with _client_id + _hostname — the
                     # multi-client merge below relies on this to keep each
@@ -145,13 +178,13 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                             r.setdefault('_client_id', client_id)
                             r.setdefault('_hostname', client_hostname)
 
-                    # Multi-client merge: keep rows from OTHER clients,
-                    # replace this client's rows with its latest fetch.
-                    existing_other_clients = [
-                        r for r in all_results.get(source_name, [])
-                        if isinstance(r, dict) and r.get('_client_id') != client_id
-                    ]
-                    all_results[source_name] = existing_other_clients + rows
+                    # APPEND the tail. This used to rebuild the source by
+                    # keeping other clients' rows and REPLACING this client's
+                    # with its latest full fetch — which is why every poll had to
+                    # re-download everything. With start_row the fetch returns
+                    # only what is new, so it is added to what is already there.
+                    all_results.setdefault(source_name, [])
+                    all_results[source_name].extend(rows)
 
             # Check flow status
             for col in active_flows:
@@ -226,7 +259,7 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
             # `remaining` feeds both the sleep below and the heartbeat text,
             # so it's computed every poll regardless of whether the
             # heartbeat itself is due this cycle.
-            remaining = total_seconds - elapsed
+            remaining = int(max(0, total_seconds - elapsed))
 
             # Progress bar updates every poll — unrelated to log volume, no
             # reason to throttle it along with the text heartbeat below.
@@ -275,12 +308,12 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                             "info",
                         )
 
-            sleep_time = min(interval, remaining)
+            sleep_time = max(0, min(interval, remaining))
             if cancel_event:
                 cancel_event.wait(timeout=sleep_time)
             else:
                 time.sleep(sleep_time)
-            elapsed += interval
+            elapsed = time.monotonic() - _started_at
 
         # Collection phase done - do one final poll
         add_log_to_run(run_id, "[Velociraptor] Collection ended - final data retrieval...", "info")
@@ -297,26 +330,30 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
             # Get final list of all sources
             final_sources = enumerate_flow_sources(stub, client_id, flow_id)
             for source_name in final_sources:
-                rows = query_artifact_results(stub, client_id, flow_id, source_name)
+                # The TAIL, not the whole thing. This pass exists to pick up
+                # whatever landed after the last poll, and re-downloading every
+                # source in full to do that is what made the closing phase of a
+                # large collection take minutes per artifact — on a QA run the
+                # watchdog fired 32 seconds into it and destroyed the lot.
+                _key = (client_id, source_name)
+                _seen = fetched_offsets.get(_key, 0)
+                rows = query_artifact_results(stub, client_id, flow_id,
+                                              source_name, start_row=_seen)
                 if rows:
+                    fetched_offsets[_key] = _seen + len(rows)
                     # Tag rows for per-client attribution (same as main poll loop)
                     for r in rows:
                         if isinstance(r, dict):
                             r.setdefault('_client_id', client_id)
                             r.setdefault('_hostname', client_hostname)
 
-                    if source_name not in all_results:
-                        all_results[source_name] = rows
-                        add_log_to_run(run_id, f"[Velociraptor] [{client_hostname}] Final: {source_name} ({len(rows)} rows)", "info")
-                    else:
-                        # Multi-client merge: keep other clients' rows,
-                        # replace this client's with the latest set.
-                        existing_other_clients = [
-                            r for r in all_results[source_name]
-                            if isinstance(r, dict) and r.get('_client_id') != client_id
-                        ]
-                        all_results[source_name] = existing_other_clients + rows
-                        add_log_to_run(run_id, f"[Velociraptor] [{client_hostname}] Final: {source_name} ({len(rows)} rows added — total now {len(all_results[source_name])})", "info")
+                    all_results.setdefault(source_name, [])
+                    all_results[source_name].extend(rows)
+                    add_log_to_run(
+                        run_id,
+                        f"[Velociraptor] [{client_hostname}] Final: {source_name} "
+                        f"({len(rows)} new — total now {len(all_results[source_name])})",
+                        "info")
 
         # Report what was RETRIEVED, and say plainly whether the flows had
         # actually finished. This used to log "Collection complete" in green

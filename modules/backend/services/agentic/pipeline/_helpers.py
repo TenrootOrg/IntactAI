@@ -21,13 +21,13 @@ def _start_watchdog(run_id: str, collection_minutes: int, label: str = "agentic"
         # Log loudly so the operator sees this in the run log instead
         # of just a status flip.
         try:
-            add_log_to_run(
-                run_id,
-                f"[Pipeline] Watchdog: {label} pipeline exceeded "
-                f"{deadline}s — forcing cancellation",
-                "error",
-            )
-            request_stop(run_id)
+            _why = (f"Watchdog: the {label} pipeline exceeded its budget of "
+                    f"{deadline}s ({collection_minutes} min collection window + "
+                    f"{_PIPELINE_SYNTHESIS_GRACE_SECONDS // 60} min grace) and was "
+                    f"stopped. Whatever had been collected by then is saved — use "
+                    f"Fetch results to pick up the rest.")
+            add_log_to_run(run_id, f"[Pipeline] {_why}", "error")
+            request_stop(run_id, reason=_why)
         except Exception:
             pass
 

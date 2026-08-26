@@ -133,7 +133,13 @@ class FakeVelociraptor:
     def enumerate_flow_sources(self, stub, client_id, flow_id):
         return [f"Artifact.{i}" for i in range(self._landed())]
 
-    def query_artifact_results(self, stub, client_id, flow_id, source):
+    def query_artifact_results(self, stub, client_id, flow_id, source,
+                               start_iso=None, end_iso=None, start_row=0):
+        # start_row: the loop fetches only what it has not already stored, so a
+        # source it has already read returns nothing on the next poll. One row
+        # per artifact here, so any offset means "already have it".
+        if int(start_row or 0) > 0:
+            return []
         idx = int(source.split(".")[1])
         return [{"row": idx}] if idx < self._landed() else []
 
@@ -149,9 +155,12 @@ class _Base(unittest.TestCase):
         self.mod.add_log_to_run = lambda rid, msg, lvl="info": self.logs.append((lvl, msg))
         self.mod.register_cleanup = lambda *a, **k: None
         self.mod.cancel_collections = lambda *a, **k: None
-        # Time is simulated: sleeping advances the fake clock instead of the wall.
+        # Time is simulated: sleeping advances the fake clock instead of the wall,
+        # and monotonic() reads it — the loop measures its window against the
+        # wall clock now rather than tallying intervals.
         self.mod.time = types.SimpleNamespace(
-            sleep=lambda s: setattr(self.velo, "now", self.velo.now + s))
+            sleep=lambda s: setattr(self.velo, "now", self.velo.now + s),
+            monotonic=lambda: self.velo.now)
 
     def collect(self, minutes=30):
         flows = [{"client_id": "C.1", "flow_id": "F.1", "hostname": "DESKTOP-9RNKFB0"}]

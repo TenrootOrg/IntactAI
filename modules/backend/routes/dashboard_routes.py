@@ -275,18 +275,28 @@ def _recollect_worker(run_id, run):
     flow_id, hunt_id, client_ids = _recollect_locator(details)
     flows = flow_id if isinstance(flow_id, list) else ([flow_id] if flow_id else [])
     try:
-        add_log_to_run(run_id, "[Re-collect] Asking Velociraptor for this run's "
-                               "results — no new collection is being started.", "info")
+        _what = f"hunt {hunt_id}" if hunt_id else (
+            f"{len(flows)} flow(s)" if len(flows) != 1 else f"flow {flows[0]}")
+        add_log_to_run(run_id, f"[Fetch] Asking Velociraptor for this run's results "
+                               f"({_what}) — no new collection is being started.", "info")
+        # progress_log=True: the fetch IS the operation here, and a hunt keeps
+        # collecting after its window closes, so an operator re-fetches the same
+        # run repeatedly. One line then two minutes of silence is
+        # indistinguishable from a button that did nothing — every source is
+        # reported as it lands, the same way a live collection reports.
         merged = {}
         if hunt_id:
-            got, _arts, _ci = get_existing_collection_results(run_id, hunt_id=hunt_id)
+            got, _arts, _ci = get_existing_collection_results(
+                run_id, hunt_id=hunt_id, progress_log=True)
             merged.update(got or {})
         else:
             # Several flows (one per client) merge into one result set, exactly
             # as the original collection did.
-            for fid in flows:
+            for _i, fid in enumerate(flows, 1):
+                if len(flows) > 1:
+                    add_log_to_run(run_id, f"[Fetch] Flow {_i}/{len(flows)}: {fid}", "info")
                 got, _arts, _ci = get_existing_collection_results(
-                    run_id, flow_id=fid, client_ids=client_ids)
+                    run_id, flow_id=fid, client_ids=client_ids, progress_log=True)
                 for k, v in (got or {}).items():
                     merged.setdefault(k, [])
                     merged[k].extend(v or [])
@@ -294,7 +304,7 @@ def _recollect_worker(run_id, run):
         rows = sum(len(v or []) for v in merged.values())
         before = int(details.get("total_rows") or 0)
         if not merged:
-            add_log_to_run(run_id, "[Re-collect] Velociraptor returned nothing for this "
+            add_log_to_run(run_id, "[Fetch] Velociraptor returned nothing for this "
                                    "run. Its results may have expired on the server, or "
                                    "no client has reported yet.", "warning")
             return
@@ -306,8 +316,10 @@ def _recollect_worker(run_id, run):
         gained = rows - before
         add_log_to_run(
             run_id,
-            f"[Re-collect] {rows:,} row(s) across {len(merged)} artifact(s)"
-            + (f" — {gained:+,} vs the last fetch." if before else "."),
+            f"[Fetch] Done — {rows:,} row(s) across {len(merged)} artifact(s)"
+            + (f", {gained:+,} vs the last fetch." if before else ".")
+            + (" A hunt keeps collecting after its window closes; fetch again "
+               "later to pick up more." if hunt_id else ""),
             "success")
 
         # Make the case treat this run as new data again. Without this the
@@ -324,14 +336,14 @@ def _recollect_worker(run_id, run):
                 fused = [x for x in (d.get("fused_run_ids") or []) if x != run_id]
                 fusion_store._merge_case_details(case_id, {"fused_run_ids": fused})
                 autofuse.schedule(case_id, reason=f"re-collected {run_id}")
-                add_log_to_run(run_id, "[Re-collect] The case will fold this in and "
+                add_log_to_run(run_id, "[Fetch] The case will fold this in and "
                                        "refresh its report automatically.", "info")
             except Exception as e:      # noqa: BLE001 — the rows are saved either way
-                add_log_to_run(run_id, f"[Re-collect] Saved, but the case could not be "
+                add_log_to_run(run_id, f"[Fetch] Saved, but the case could not be "
                                        f"re-armed ({e}). Press Refusion on the case.",
                                "warning")
     except Exception as e:              # noqa: BLE001 — a worker thread must not die loudly
-        add_log_to_run(run_id, f"[Re-collect] Failed: {type(e).__name__}: {e}", "error")
+        add_log_to_run(run_id, f"[Fetch] Failed: {type(e).__name__}: {e}", "error")
     finally:
         with _recollect_lock:
             _recollecting.discard(run_id)

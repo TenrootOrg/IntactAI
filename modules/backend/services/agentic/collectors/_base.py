@@ -535,7 +535,8 @@ SELECT * FROM enumerate_flow(client_id='{client_id}', flow_id='{flow_id}')
         return []
 
 
-def query_artifact_results(stub, client_id, flow_id, artifact, start_iso=None, end_iso=None):
+def query_artifact_results(stub, client_id, flow_id, artifact, start_iso=None,
+                           end_iso=None, start_row=0):
     """Query for available results from a specific artifact with optional VQL time filtering.
 
     Args:
@@ -545,6 +546,22 @@ def query_artifact_results(stub, client_id, flow_id, artifact, start_iso=None, e
         artifact: Artifact name (may include /source suffix)
         start_iso: Optional start time (ISO 8601) for VQL filtering
         end_iso: Optional end time (ISO 8601) for VQL filtering
+        start_row: Skip this many rows server-side and return only what follows.
+
+            THIS IS WHAT KEEPS A LONG COLLECTION FROM STRANGLING ITSELF. The
+            poll loop used to re-download every source in full every 30 seconds,
+            so each poll got slower as the data grew and the loop's own clock
+            fell behind the wall clock — measured at 3x on a QA appliance, which
+            pushed a 10-minute collection past its 25-minute watchdog and lost
+            all 465,000 rows.
+
+            Velociraptor's source() takes start_row, and the difference is not
+            marginal. Measured against a real 354,831-row Windows.NTFS.MFT:
+
+                full fetch                 354,831 rows   46.8s
+                start_row=350000             4,831 rows    0.6s
+
+            Same rows, 78x faster, and exact rather than sampled.
 
     Returns:
         List of rows or empty list
@@ -555,11 +572,17 @@ def query_artifact_results(stub, client_id, flow_id, artifact, start_iso=None, e
         # gRPC streams responses in chunks; we cap server-side via
         # VELO_MAX_ROWS_PER_ARTIFACT and warn loudly on overflow.
         # Time filtering is still done client-side post-fetch.
+        # start_row is an int we control (a count of rows we already hold), not
+        # operator input, but it is formatted as one anyway so a malformed value
+        # can never reach VQL.
+        _offset = max(0, int(start_row or 0))
         query = (
             f"SELECT * FROM source("
             f"client_id='{client_id}', "
             f"flow_id='{flow_id}', "
-            f"artifact='{artifact}')"
+            f"artifact='{artifact}'"
+            + (f", start_row={_offset}" if _offset else "")
+            + ")"
         )
         request_obj = api_pb2.VQLCollectorArgs(
             max_wait=10,
@@ -639,7 +662,8 @@ def _wanted_source(source_name, only_artifacts):
 
 
 def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_filter=None,
-                                    client_ids=None, only_artifacts=None):
+                                    client_ids=None, only_artifacts=None,
+                                    progress_log=False):
     """Fetch results from an existing Velociraptor flow or hunt with optional time filtering.
 
     Args:
@@ -660,6 +684,14 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
             This is a fetch filter, not a policy change: those artifacts are
             still collected, still stored, still downloadable. Fusion simply
             stops asking for rows it is about to throw away.
+        progress_log: Log a line per source as it lands.
+
+            Off for fusion, which fetches quietly inside a fuse that has its own
+            progress. On for the operator-facing "Fetch results", where the fetch
+            IS the operation: a hunt keeps collecting after its window closes, so
+            an operator re-fetches it repeatedly, and a button that prints one
+            line and then goes silent for two minutes is indistinguishable from
+            one that did nothing.
         client_ids: Optional list of Velociraptor client IDs to scope a hunt
             to. When non-empty, the hunt-flows enumeration query gets a
             ``WHERE ClientId IN (...)`` filter so only those clients' rows
@@ -860,6 +892,8 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                 if _skipped:
                     add_log_to_run(run_id, f"[Velociraptor] Skipping {len(_skipped)} source(s) "
                                            f"this consumer does not use", "info")
+                _n_want = sum(1 for x in flow_sources if _wanted_source(x, only_artifacts))
+                _done = 0
                 for source in flow_sources:
                     if not _wanted_source(source, only_artifacts):
                         continue
@@ -879,6 +913,13 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                             except Exception:
                                 pass
 
+                    _done += 1
+                    if progress_log:
+                        add_log_to_run(
+                            run_id,
+                            f"[Fetch] {located_hostname}: {_done}/{_n_want} "
+                            f"{source} — {len(rows or []):,} row(s)",
+                            "info")
                     if not rows:
                         continue
 
@@ -1034,10 +1075,19 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
                 if _skipped:
                     add_log_to_run(run_id, f"[Velociraptor] Skipping {len(_skipped)} source(s) "
                                            f"this consumer does not use", "info")
+                _n_want = sum(1 for x in sources if _wanted_source(x, only_artifacts))
+                _done = 0
                 for source_name in sources:
                     if not _wanted_source(source_name, only_artifacts):
                         continue
                     rows = query_artifact_results(stub, flow_client_id, flow_id, source_name, start_iso, end_iso)
+                    _done += 1
+                    if progress_log:
+                        add_log_to_run(
+                            run_id,
+                            f"[Fetch] {resolved_hostname}: {_done}/{_n_want} "
+                            f"{source_name} — {len(rows or []):,} row(s)",
+                            "info")
                     if rows:
                         if source_name not in artifacts:
                             artifacts.append(source_name)

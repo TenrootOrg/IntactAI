@@ -298,8 +298,15 @@ def terminate_subprocess(process, timeout: float = 5.0) -> None:
         pass
 
 
-def request_stop(run_id):
-    """Stop a running workflow: set cancel event, run cleanup callbacks, update status."""
+def request_stop(run_id, reason=None):
+    """Stop a running workflow: set cancel event, run cleanup callbacks, update status.
+
+    `reason` is recorded on the run and named in the log. Without it every stop
+    reads "Stop requested by user" and leaves `error: None` — which is a lie when
+    the watchdog did it, and left an operator looking at a QA run that said
+    "cancelled, 50%" with nothing anywhere stating why (measured 2026-08-26,
+    velociraptor_collection_1787727431255).
+    """
     with _cancel_lock:
         event = _cancel_events.get(run_id)
         callbacks = list(_cleanup_callbacks.get(run_id, []))
@@ -314,8 +321,10 @@ def request_stop(run_id):
         except Exception as e:
             print(f"[WORKFLOW] Cleanup callback error for {run_id}: {e}", flush=True)
 
-    add_log_to_run(run_id, "[Pipeline] Stop requested by user", "warning")
-    update_run_status(run_id, "cancelled")
+    add_log_to_run(run_id,
+                   f"[Pipeline] {reason}" if reason else "[Pipeline] Stop requested by user",
+                   "warning")
+    update_run_status(run_id, "cancelled", error=reason or None)
 
     # Clean up registry
     with _cancel_lock:
