@@ -994,7 +994,58 @@ def _distill_ts_events(events, *, per_tag=5):
     return out
 
 
-def _contribution_for_run(run, log=None):
+def _refetch_agentic_rows(rid, det, log=None):
+    """Ask Velociraptor for this collection's CURRENT results, and re-snapshot.
+
+    A collection run fuses from raw_results.json — the snapshot written when the
+    collection ended. That snapshot is frozen, and three ordinary situations
+    leave the server holding more than it contains: the collection budget
+    expired while the flow was still running (measured on a live 10-minute
+    BestPractice run, which ended with "Some flows had not finished yet — they
+    keep running in Velociraptor"), a flow errored and was abandoned by releases
+    before that was fixed, or the fetch was cut short.
+
+    So a MANUAL Refusion re-reads them. Not every fuse: this is a full result
+    fetch per member run, measured at minutes for one 350k-row artifact, and the
+    automatic fuse must stay quick. The operator pressing Refusion is asking for
+    exactly this and is watching it happen.
+
+    Returns None when there is nothing to re-fetch or the fetch fails, so the
+    caller falls back to the snapshot rather than fusing an empty case.
+    """
+    flow = det.get("flow_id")
+    flows = flow if isinstance(flow, list) else ([flow] if flow else [])
+    if not flows:
+        return None
+    cid = det.get("client_id")
+    try:
+        from services.agentic.collectors import (get_existing_collection_results,
+                                                 persist_pipeline_artifacts)
+        merged = {}
+        for fid in flows:
+            got, _a, _ci = get_existing_collection_results(
+                rid, flow_id=fid, client_ids=([cid] if cid else None))
+            for k, v in (got or {}).items():
+                merged.setdefault(k, [])
+                merged[k].extend(v or [])
+        if not merged:
+            return None
+        try:
+            persist_pipeline_artifacts(rid, merged)
+        except Exception:
+            pass
+        if log:
+            log(f"run {rid}: re-read {sum(len(v) for v in merged.values()):,} row(s) "
+                f"from Velociraptor", "info")
+        return merged
+    except Exception as e:                      # noqa: BLE001 — never fail a fuse
+        if log:
+            log(f"run {rid}: could not re-read from Velociraptor ({e}); "
+                f"using the stored snapshot", "warning")
+        return None
+
+
+def _contribution_for_run(run, log=None, refetch=False):
     atype, rid = run.get("automation_type"), run.get("run_id")
     det = run.get("details") or {}
     try:
@@ -1007,7 +1058,10 @@ def _contribution_for_run(run, log=None):
         # "agentic" -> "velociraptor" (the data is just imported Velociraptor
         # artifacts) so the report doesn't read as if an agent had run.
         if atype in ("velociraptor_collection", "velociraptor_upload"):
-            ents, rels = map_agentic(_filter_supported(_agentic_collected_data(rid, det)), run_id=rid,
+            rows = _refetch_agentic_rows(rid, det, log=log) if refetch else None
+            if rows is None:
+                rows = _agentic_collected_data(rid, det)
+            ents, rels = map_agentic(_filter_supported(rows), run_id=rid,
                                      hostnames=det.get("hostnames") or {})
             if atype == "velociraptor_upload":
                 _relabel_source(ents, rels, "agentic", "velociraptor")
@@ -1116,7 +1170,8 @@ def _fuse_lock(case_id):
 
 
 def fuse_case(case_id, *, contributions_override=None, log=None, _record=True,
-              force_report=False, trigger=None, allow_llm=True) -> FusionGraph:
+              force_report=False, trigger=None, allow_llm=True,
+              refetch=None) -> FusionGraph:
     """Fuse the case. Refuses to run concurrently with itself.
 
     `allow_llm=False` forbids this fuse from calling the model even when one is
@@ -1152,7 +1207,8 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True,
     try:
         return _fuse_case_locked(case_id, contributions_override=contributions_override,
                                  log=log, _record=_record, force_report=force_report,
-                                 trigger=trigger, allow_llm=allow_llm, _phase=phase)
+                                 trigger=trigger, allow_llm=allow_llm,
+                                 refetch=refetch, _phase=phase)
     except Exception as e:
         # A fuse that dies used to leave the log ending mid-progress — the last row
         # was whatever phase it reached, with no indication anything went wrong, so
@@ -1170,7 +1226,7 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True,
 
 def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record=True,
                       force_report=False, trigger=None, allow_llm=True,
-                      _phase=None) -> FusionGraph:
+                      refetch=None, _phase=None) -> FusionGraph:
     ws = _ws()
     d = get_case(case_id)
     # WHY this fuse is running. A fuse costs ~33s on a real case (9 hosts / 18.7k
@@ -1180,6 +1236,18 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     # names its trigger; `_TRIGGER_UNKNOWN` marks the ones that have not been
     # taught to, so an unlabelled fuse is visible rather than silently generic.
     trig = (trigger or _TRIGGER_UNKNOWN).strip()
+    # WHEN TO GO BACK TO VELOCIRAPTOR. Only when a person asked for this fuse.
+    #
+    # A collection's rows come from a snapshot taken when it ended, and
+    # Velociraptor routinely holds more than that — a flow that outlived the
+    # collection budget keeps running server-side. Re-reading fixes it, and
+    # costs a full result fetch per member run (minutes, for one large
+    # artifact). That is fine for a Refusion the operator is watching and quite
+    # wrong for the automatic fuse that follows every landing run, which has to
+    # stay quick. So: manual triggers re-read, everything else uses the snapshot.
+    if refetch is None:
+        refetch = trig in (TRIGGER_MANUAL_REFUSION, TRIGGER_MANUAL_RESCAN,
+                           TRIGGER_API_FUSE)
     # Shared with fuse_case so a failure there can name the phase this reached.
     _phase = _phase if _phase is not None else {"at": "starting", "pct": 0}
 
@@ -1222,7 +1290,10 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         # members but contribute nothing to the graph. Drop the filtered runs
         # from `members` too so run_ids/baseline reflect what was actually fused.
         _plog("Refusion · reading + mapping run data", "info",
-              f"{len(members)} member run(s)", pct=5)
+              f"{len(members)} member run(s)"
+              + (" · re-reading each one from Velociraptor (this is why a manual "
+                 "Refusion takes longer than an automatic one)" if refetch else ""),
+              pct=5)
         # PASS 1 — decide membership. Module gating only: a run row is ~1 KB, so
         # this is cheap and touches none of the evidence.
         # (Disabled modules' runs stay tagged members but contribute nothing; they
@@ -1253,7 +1324,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
 
         def _contributions():
             for _i, (rid, run) in enumerate(kept_runs):
-                yield _contribution_for_run(run, log=log)
+                yield _contribution_for_run(run, log=log, refetch=refetch)
                 # 5% → 40% spread across the member runs (the per-run read + map is
                 # the bulk of I/O for a multi-host hunt import).
                 _plog(f"Refusion · mapped {_i + 1}/{_nmem} run(s)", "info",

@@ -79,6 +79,8 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
+        recollecting: null,
+
         // Relaunch a finished run with its ORIGINAL configuration.
         //
         // Two steps on purpose. The server returns a SPEC (endpoint + payload)
@@ -117,6 +119,40 @@ document.addEventListener('alpine:init', () => {
                 alert('Rerun failed: ' + e.message);
             } finally {
                 this.rerunning = null;
+            }
+        },
+
+        // Fetch results Velociraptor ALREADY HAS. Not a rerun.
+        //
+        // Deliberately a separate action with a separate word, because the two
+        // differ enormously in cost and the difference is invisible from the
+        // button: Rerun launches a fresh collection on the customer's endpoint;
+        // this asks the Velociraptor server for rows it is already holding and
+        // touches no endpoint at all.
+        //
+        // It exists because three ordinary things leave data behind: a
+        // collection whose budget expired while the flow kept running
+        // server-side, a hunt whose clients report over the following hours, and
+        // runs collected before errored flows stopped being abandoned.
+        async recollect(runId) {
+            if (this.recollecting) return;
+            this.recollecting = runId;
+            try {
+                const res = await fetch(`/api/dashboard/automation/${runId}/recollect`,
+                                        { method: 'POST' });
+                const d = await res.json();
+                if (!res.ok || d.error) {
+                    alert(d.error || `Re-collect failed (${res.status})`);
+                    return;
+                }
+                // The fetch runs in the background and logs into this same run,
+                // so send them where they can watch it rather than leaving a
+                // button that looks like it did nothing.
+                this.viewLogs(runId);
+            } catch (e) {
+                alert('Re-collect failed: ' + e.message);
+            } finally {
+                this.recollecting = null;
             }
         },
 

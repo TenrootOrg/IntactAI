@@ -3,6 +3,8 @@
 Dashboard Routes - Dashboard/workflow endpoints
 """
 
+import threading
+
 from flask import Blueprint, jsonify
 
 from services import (
@@ -215,6 +217,161 @@ def rerun_spec(run_id):
                         "reason": f"Could not rebuild the configuration: {e}"})
     return jsonify({"supported": True, "endpoint": endpoint, "payload": payload,
                     "source_run_id": run_id, "automation_type": atype})
+
+
+# ---------------------------------------------------------------------------
+# RE-COLLECT — fetch what Velociraptor already has. NOT a re-run.
+#
+# The distinction is the whole feature. Re-run launches a fresh collection and
+# costs the customer's endpoint another hour; re-collect touches no endpoint at
+# all, it only asks the Velociraptor SERVER for results it is already holding.
+#
+# Every one of these leaves data on the server that the run never picked up, and
+# three of them are not bugs:
+#   * the collection budget expired while the flow was still going. Measured
+#     2026-08-26 on DESKTOP-566AT85: a 10-minute BestPractice run ended with
+#     "Some flows had not finished yet — they keep running in Velociraptor".
+#     The operator set 10 minutes and the work needed longer. Nothing to fix.
+#   * a hunt collects over its whole expire window, but its run is marked
+#     completed as soon as Velociraptor HOLDS the hunt — seconds after dispatch.
+#     Clients reporting over the next two hours arrive long after.
+#   * runs collected before the errored-flow fix stopped at the first error.
+#
+# What it must never become is a second copy of the launch path. It re-uses the
+# exact fetch fusion uses (get_existing_collection_results), so there is one
+# implementation of "read a flow's results" and it cannot drift.
+_RECOLLECTABLE = ("velociraptor_collection", "velociraptor_upload",
+                  "velociraptor_hunt", "velociraptor_offline_import")
+
+_recollect_lock = threading.Lock()
+_recollecting = set()
+
+
+def _recollect_locator(details):
+    """(flow_id, hunt_id, client_ids) for the fetch, or None when unlocatable.
+
+    A collection stores `flow_id` — as a LIST when several clients were selected,
+    a bare string when one was. An offline import stores flow_id + client_id. A
+    hunt stores hunt_id. Mirrors what fusion's _contribution_for_run accepts, so
+    anything fusion can read, this can refetch.
+    """
+    hunt_id = details.get("hunt_id")
+    if hunt_id:
+        return None, hunt_id, None
+    flow = details.get("flow_id")
+    if isinstance(flow, list):
+        flow = flow[0] if len(flow) == 1 else flow      # multi handled by caller
+    if not flow:
+        return None, None, None
+    cid = details.get("client_id")
+    return flow, None, ([cid] if cid else None)
+
+
+def _recollect_worker(run_id, run):
+    from services.workflow_service import add_log_to_run, mutate_run_details
+    from services.agentic.collectors import (get_existing_collection_results,
+                                             persist_pipeline_artifacts)
+    details = run.get("details") or {}
+    flow_id, hunt_id, client_ids = _recollect_locator(details)
+    flows = flow_id if isinstance(flow_id, list) else ([flow_id] if flow_id else [])
+    try:
+        add_log_to_run(run_id, "[Re-collect] Asking Velociraptor for this run's "
+                               "results — no new collection is being started.", "info")
+        merged = {}
+        if hunt_id:
+            got, _arts, _ci = get_existing_collection_results(run_id, hunt_id=hunt_id)
+            merged.update(got or {})
+        else:
+            # Several flows (one per client) merge into one result set, exactly
+            # as the original collection did.
+            for fid in flows:
+                got, _arts, _ci = get_existing_collection_results(
+                    run_id, flow_id=fid, client_ids=client_ids)
+                for k, v in (got or {}).items():
+                    merged.setdefault(k, [])
+                    merged[k].extend(v or [])
+
+        rows = sum(len(v or []) for v in merged.values())
+        before = int(details.get("total_rows") or 0)
+        if not merged:
+            add_log_to_run(run_id, "[Re-collect] Velociraptor returned nothing for this "
+                                   "run. Its results may have expired on the server, or "
+                                   "no client has reported yet.", "warning")
+            return
+
+        persist_pipeline_artifacts(run_id, merged)
+        mutate_run_details(run_id, lambda d: d.update(
+            {"total_rows": rows, "artifact_count": len(merged),
+             "last_recollected_rows": rows}))
+        gained = rows - before
+        add_log_to_run(
+            run_id,
+            f"[Re-collect] {rows:,} row(s) across {len(merged)} artifact(s)"
+            + (f" — {gained:+,} vs the last fetch." if before else "."),
+            "success")
+
+        # Make the case treat this run as new data again. Without this the
+        # re-collected rows sit in raw_results.json and never reach the graph:
+        # stale_member_runs only counts members that are NOT in fused_run_ids,
+        # so a run that has been fused once is never stale again however much
+        # its data grows. Dropping it from that list is honest — it genuinely
+        # holds something the graph has not seen.
+        case_id = run.get("case_id")
+        if case_id:
+            try:
+                from services.fusion import store as fusion_store, autofuse
+                d = fusion_store.get_case(case_id) or {}
+                fused = [x for x in (d.get("fused_run_ids") or []) if x != run_id]
+                fusion_store._merge_case_details(case_id, {"fused_run_ids": fused})
+                autofuse.schedule(case_id, reason=f"re-collected {run_id}")
+                add_log_to_run(run_id, "[Re-collect] The case will fold this in and "
+                                       "refresh its report automatically.", "info")
+            except Exception as e:      # noqa: BLE001 — the rows are saved either way
+                add_log_to_run(run_id, f"[Re-collect] Saved, but the case could not be "
+                                       f"re-armed ({e}). Press Refusion on the case.",
+                               "warning")
+    except Exception as e:              # noqa: BLE001 — a worker thread must not die loudly
+        add_log_to_run(run_id, f"[Re-collect] Failed: {type(e).__name__}: {e}", "error")
+    finally:
+        with _recollect_lock:
+            _recollecting.discard(run_id)
+
+
+@dashboard_bp.route('/api/dashboard/automation/<run_id>/recollect', methods=['POST'])
+def recollect(run_id):
+    """Re-fetch this run's results from Velociraptor. Starts no collection."""
+    run = get_automation_run(run_id)
+    if not run or not _run_visible_in_active_workspace(run):
+        return jsonify({"error": f"Automation run {run_id} not found"}), 404
+
+    atype = run.get("automation_type")
+    if atype not in _RECOLLECTABLE:
+        return jsonify({"supported": False,
+                        "error": f"'{atype}' runs hold no Velociraptor results to "
+                                 f"re-fetch."}), 400
+    if run.get("status") in ("running", "pending"):
+        return jsonify({"supported": False,
+                        "error": "This run is still collecting — wait for it to "
+                                 "finish, then re-collect."}), 409
+
+    details = run.get("details") or {}
+    flow_id, hunt_id, _cids = _recollect_locator(details)
+    if not flow_id and not hunt_id:
+        return jsonify({"supported": False,
+                        "error": "This run did not record a Velociraptor flow or "
+                                 "hunt id, so there is nothing to re-fetch."}), 400
+
+    with _recollect_lock:
+        if run_id in _recollecting:
+            return jsonify({"error": "A re-collect is already running for this "
+                                     "run.", "busy": True}), 409
+        _recollecting.add(run_id)
+
+    threading.Thread(target=_recollect_worker, args=(run_id, run),
+                     daemon=True, name=f"recollect-{run_id}").start()
+    return jsonify({"success": True, "run_id": run_id,
+                    "message": "Re-collecting from Velociraptor — follow the "
+                               "run's log."}), 202
 
 
 @dashboard_bp.route('/api/dashboard/automation/<run_id>/stop', methods=['POST'])

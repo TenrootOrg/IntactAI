@@ -147,6 +147,25 @@
                                                         <span x-text="$store.workflows.rerunning === run.id ? 'Starting…' : 'Rerun'"></span>
                                                     </button>
                                                 </template>
+                                                <!-- Re-collect: fetch results the Velociraptor SERVER
+                                                     already holds. Touches no endpoint, starts no
+                                                     collection — which is the entire difference from
+                                                     Rerun beside it, so it is worded as "Fetch results"
+                                                     rather than anything that reads like re-running.
+                                                     Only Velociraptor-backed runs have anything to
+                                                     re-fetch; the server refuses the rest by type. -->
+                                                <template x-if="['completed','failed','cancelled'].includes(run.status) &amp;&amp; ['velociraptor_collection','velociraptor_upload','velociraptor_hunt','velociraptor_offline_import'].includes(run.type)">
+                                                    <button @click.stop="$store.workflows.recollect(run.id)"
+                                                            :disabled="$store.workflows.recollecting === run.id"
+                                                            title="Ask Velociraptor for results it already has — no new collection, the endpoint is not touched. Use after a collection ran out of time, or while a hunt is still reporting."
+                                                            style="color:#fff;background-color:#0f766e;"
+                                                            class="hover:bg-teal-700 disabled:opacity-50 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3"></path>
+                                                        </svg>
+                                                        <span x-text="$store.workflows.recollecting === run.id ? 'Fetching…' : 'Fetch results'"></span>
+                                                    </button>
+                                                </template>
                                                 <button @click.stop="$store.workflows.viewLogs(run.id)" style="color:#fff;background-color:#475569;" class="hover:bg-slate-600 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1">
                                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
