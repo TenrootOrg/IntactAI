@@ -568,6 +568,28 @@ class TestEveryDataModuleIsCovered(_Base):
         self.assertIn('"memory"', block[:block.index("]") + 1],
                       "memory runs would arm a fuse that then ignores them")
 
+    def test_aws_cloudtrail_fuses_by_default(self):
+        # It was opt-in, which meant a CloudTrail scan the operator deliberately
+        # ran was silently left out of the graph and the report until they found
+        # a checkbox. Costs nothing on a case with no aws_scan runs — the gate
+        # has nothing to admit — so off-by-default protected nobody.
+        block = self._read(self.STORE)
+        block = block[block.index("FUSION_MODULES_DEFAULT = ["):]
+        block = block[:block.index("]") + 1]
+        self.assertIn('"aws"', block,
+                      "a CloudTrail scan would not reach the report unless the "
+                      "operator ticked a box")
+
+    def test_a_case_with_no_stored_modules_inherits_the_default(self):
+        # The default must stay DYNAMIC. If case creation ever froze the list
+        # into the row, every existing case would keep whichever default was
+        # current the day it was made, and this change would reach none of them.
+        block = self._read(self.STORE)
+        create = block[block.index("def create_case("):]
+        create = create[:create.index("\ndef ")]
+        self.assertNotIn("fusion_modules", create,
+                         "create_case now freezes the module list into the case row")
+
     def test_the_collection_modules_are_all_covered(self):
         block = self._read(self.WF)
         block = block[block.index("AGENTIC_TYPES = {"):]

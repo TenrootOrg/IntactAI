@@ -61,12 +61,18 @@ FUSION_MODULE_TYPES = {
 # 'velociraptor' alias are intentionally NOT shown — only agentic blueprints fuse.
 FUSION_MODULES_UI = ["velociraptor_agentic", "memory",
                      "timesketch", "aws", "azure"]
-# Selectable now: Velociraptor (Agentic) [default-on] + Memory [default-on] +
-# AWS (CloudTrail) [opt-in]. AWS is off by default (not every case is cloud) but
-# selectable so a CloudTrail scan fuses into the case. TimeSketch/Azure stay
-# greyed/disabled.
+# Selectable now: Velociraptor (Agentic), Memory (VolWeb) and AWS (CloudTrail),
+# all three on by default. TimeSketch/Azure stay greyed/disabled.
+#
+# AWS was opt-in on the reasoning that "not every case is cloud". That reasoning
+# had it backwards: a case with no CloudTrail scan has no aws_scan runs, so the
+# module being on costs exactly nothing — the gate has nothing to admit. The
+# only cases it changes are the ones that DID run a CloudTrail scan, and there
+# an off-by-default module meant the scan the operator deliberately ran was
+# silently left out of the fused graph and the report until they found this
+# checkbox. Defaulting off protected nobody and hid real evidence.
 FUSION_MODULES_AVAILABLE = ("velociraptor_agentic", "memory", "aws")
-FUSION_MODULES_DEFAULT = ["velociraptor_agentic", "memory"]
+FUSION_MODULES_DEFAULT = ["velociraptor_agentic", "memory", "aws"]
 _FUSION_MODULE_LABELS = {
     "velociraptor_agentic": "Velociraptor (Agentic)",
     "velociraptor_all": "Velociraptor (All)",
