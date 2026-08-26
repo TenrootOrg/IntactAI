@@ -1606,13 +1606,22 @@ document.addEventListener('alpine:init', () => {
 
         // The one-liners an operator runs on the host. Kept here rather than in
         // the markup so the copy button has a single source for the text.
-        // The command the vendor's own page gives. It was a guessed
-        // raw.githubusercontent URL, which is not the documented one — an
-        // install instruction that 404s is worse than none.
+        // ONE command, the one the vendor's own page gives. The npm route was
+        // offered alongside it and taken out again: two ways to install invites
+        // an operator to pick the one we have exercised less, and detection is
+        // strictly better on this one — the standalone installer publishes a
+        // `current` marker naming the live release, so the appliance READS which
+        // binary to run instead of inferring it from file timestamps.
+        //
+        // Detection still finds an npm install; it is just not what we tell
+        // people to do.
+        // Install AND sign in, in one block with one Copy. They are two steps of
+        // one job — the appliance is no use after the first without the second —
+        // and splitting them gave the operator two boxes and two buttons for
+        // something they were always going to paste together.
         cliInstallCommands() {
             return 'curl -fsSL https://chatgpt.com/codex/install.sh | sh\n' +
-                   '# or, if you already use node:\n' +
-                   'npm install -g @openai/codex';
+                   'codex login';
         },
         cliLoginCommand() { return 'codex login'; },
         cliDocsUrl() { return 'https://developers.openai.com/codex/cli/'; },

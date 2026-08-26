@@ -558,10 +558,25 @@ class TestThePanelTellsThemTheRightCommand(_Base):
         self.assertIn("https://chatgpt.com/codex/install.sh", src)
         self.assertNotIn("raw.githubusercontent.com/openai/codex", src)
 
-    def test_the_login_command_is_offered(self):
+    def test_exactly_one_install_command_is_offered(self):
+        # Two routes invites the operator to pick the one we exercised less.
+        # Detection still finds an npm install — we just do not advertise it.
         with open(self.STORE, encoding="utf-8") as fh:
             src = fh.read()
-        self.assertIn("codex login", src)
+        body = src[src.index("cliInstallCommands()"):]
+        body = body[:body.index("},")]
+        self.assertNotIn("npm install", body)
+
+    def test_install_and_login_are_one_copyable_block(self):
+        # Two steps of one job. Splitting them gave the operator two boxes and
+        # two Copy buttons for something they were always going to paste
+        # together.
+        with open(self.STORE, encoding="utf-8") as fh:
+            src = fh.read()
+        body = src[src.index("cliInstallCommands()"):]
+        body = body[:body.index("},")]
+        self.assertIn("chatgpt.com/codex/install.sh", body)
+        self.assertIn("codex login", body)
 
     def test_the_panel_offers_no_install_button(self):
         panel = os.path.join(ROOT, "modules/nginx/html/partials/settings.html")

@@ -26,7 +26,7 @@
             const ph = document.querySelector(`[data-partial="${name}"]`);
             if (!ph) return;
             try {
-                const res = await fetch(`partials/${name}.html?v=21`);
+                const res = await fetch(`partials/${name}.html?v=22`);
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 ph.outerHTML = await res.text();
             } catch (e) {

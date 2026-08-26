@@ -768,13 +768,7 @@
                                     <div class="flex items-start gap-2">
                                         <pre class="flex-1 bg-black/40 text-gray-300 rounded px-3 py-2 text-[11px] leading-relaxed overflow-x-auto whitespace-pre"
                                              x-text="$store.settings.cliInstallCommands()"></pre>
-                                        <button @click="$store.settings.cliCopy($store.settings.cliInstallCommands(), 'Install commands')"
-                                                class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-xs shrink-0">Copy</button>
-                                    </div>
-                                    <div class="flex items-start gap-2 mt-2">
-                                        <pre class="flex-1 bg-black/40 text-gray-300 rounded px-3 py-2 text-[11px]"
-                                             x-text="$store.settings.cliLoginCommand()"></pre>
-                                        <button @click="$store.settings.cliCopy($store.settings.cliLoginCommand(), 'Login command')"
+                                        <button @click="$store.settings.cliCopy($store.settings.cliInstallCommands(), 'Commands')"
                                                 class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-xs shrink-0">Copy</button>
                                     </div>
                                     <div class="flex flex-wrap items-center gap-3 mt-3">
