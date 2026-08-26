@@ -48,6 +48,23 @@ VELO_MAX_ROWS_PER_ARTIFACT = int(os.environ.get("VELO_MAX_ROWS_PER_ARTIFACT", "2
 VELO_QUERY_TIMEOUT_SECONDS = int(os.environ.get("VELO_QUERY_TIMEOUT_SECONDS", "300"))
 
 
+def _distinct_artifacts(sources):
+    """Artifact NAMES from a list of Velociraptor result SOURCES.
+
+    `artifacts_with_results` names sources, not artifacts: one
+    Generic.Forensic.SQLiteHunter collection contributes a dozen entries
+    ("…/AllFiles", "…/Chromium Browser Cookies_Cookies", …). Counting that list
+    as "artifacts completed" produced the warning QA reported —
+
+        21 artifact(s) did not complete (…). 21/31 succeeded - pipeline continues.
+
+    — where the first 21 counts artifact names and the second counts sources.
+    They collided by coincidence, made the line read as a contradiction, and hid
+    that only 10 of 31 artifacts had produced anything at all.
+    """
+    return set(str(a).split('/')[0] for a in (sources or []))
+
+
 def check_flow_status(stub, client_id, flow_id):
     """Check the status of a Velociraptor flow.
 
@@ -82,10 +99,14 @@ def check_flow_status(stub, client_id, flow_id):
                             artifacts_done = row.get('artifacts_with_results', [])
                             artifacts_requested = row.get('request', {}).get('artifacts', [])
 
-                            # Find which artifact(s) failed
+                            # Find which artifact(s) failed. `artifacts_done` is
+                            # a list of SOURCES — one artifact with twelve
+                            # sub-sources appears twelve times — so it is
+                            # collapsed to artifact names before either count is
+                            # taken. See _distinct_artifacts.
+                            done_set = _distinct_artifacts(artifacts_done)
                             failed_artifacts = []
                             if artifacts_requested and artifacts_done:
-                                done_set = set(a.split('/')[0] for a in artifacts_done)  # Handle sub-sources
                                 failed_artifacts = [a for a in artifacts_requested if a not in done_set]
 
                             # Try to extract error reason from backtrace
@@ -101,7 +122,7 @@ def check_flow_status(stub, client_id, flow_id):
                             error_info = {
                                 'backtrace': backtrace[:500] if backtrace else None,
                                 'context': context,
-                                'artifacts_completed': len(artifacts_done) if artifacts_done else 0,
+                                'artifacts_completed': len(done_set),
                                 'artifacts_requested': len(artifacts_requested) if artifacts_requested else 0,
                                 'failed_artifacts': failed_artifacts,
                                 'error_reason': error_reason

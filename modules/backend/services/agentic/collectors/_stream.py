@@ -29,6 +29,24 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
 
     # Track state
     completed_flows = set()
+    # AN ERRORED FLOW IS STILL RUNNING.
+    #
+    # Velociraptor sets a flow's state to ERROR the moment ANY artifact in it
+    # errors — the remaining artifacts keep collecting, and the state never
+    # becomes FINISHED afterwards. Treating ERROR as terminal is therefore not a
+    # status-mapping detail, it throws away evidence: measured on QA's run
+    # 2026-08-25 (flow F.DA6NFH7FCBNS0), one stock artifact's VQL failed
+    # ("Symbol CommandLine not found"), we quit 34s in, and Velociraptor's own
+    # flow record shows it stayed active for 290.83s — 4m17s of a 30-minute
+    # collection discarded, and the run still reported COMPLETED.
+    #
+    # So for an errored flow the state cannot be the completion signal. PROGRESS
+    # is: it is finished when it stops producing. Each poll fingerprints what the
+    # flow has yielded (sources + rows); IDLE_POLLS_BEFORE_DONE consecutive polls
+    # with no change means it has genuinely stopped, and the operator's time
+    # budget remains the outer bound either way.
+    errored_flows = {}        # flow_id -> {"fingerprint": tuple, "idle": int}
+    IDLE_POLLS_BEFORE_DONE = 3
     all_results = {}  # artifact -> [rows] (combined from all clients)
     poll_count = 0
     # The log used to trace every per-source transition — "Discovered
@@ -59,6 +77,12 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
     multi_client = len(active_flows) > 1
     def _name(cid):
         return flow_hostnames.get(cid, cid)
+
+    _flow_owner = {c.get('flow_id'): c.get('client_id')
+                   for c in collection_results if c.get('flow_id')}
+
+    def _name_for_flow(fid):
+        return _name(_flow_owner.get(fid, fid))
 
     # Setup Velociraptor connection
     channel = setup_velociraptor_connection()
@@ -141,7 +165,14 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                     completed_flows.add(flow_id)
                     add_log_to_run(run_id, f"[Velociraptor] Flow completed on {_name(client_id)}", "info")
                 elif status == 'ERROR':
-                    completed_flows.add(flow_id)
+                    # NOT added to completed_flows — see the note above. The
+                    # warning is logged ONCE (this branch is now reached on every
+                    # subsequent poll too, and repeating it every 30s for the rest
+                    # of a 30-minute collection would bury the log).
+                    first_time = flow_id not in errored_flows
+                    errored_flows.setdefault(flow_id, {"fingerprint": None, "idle": 0})
+                    if not first_time:
+                        continue
                     host = _name(client_id)
                     # Log error details but continue processing - data may still be available
                     if error_info and error_info.get('artifacts_completed', 0) > 0:
@@ -164,6 +195,27 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                         # Log first line of backtrace for debugging
                         bt_first_line = error_info['backtrace'].split('\n')[0][:100]
                         print(f"[AGENTIC] Flow {flow_id} error: {bt_first_line}", flush=True)
+
+            # An errored flow is done when it stops producing. Fingerprint what
+            # each one has yielded so far; unchanged for IDLE_POLLS_BEFORE_DONE
+            # consecutive polls means it has finished as far as it ever will.
+            for fid, st in errored_flows.items():
+                if fid in completed_flows:
+                    continue
+                srcs = discovered_sources.get(fid, set())
+                fp = (len(srcs), sum(len(all_results.get(sn) or []) for sn in srcs))
+                if fp == st["fingerprint"]:
+                    st["idle"] += 1
+                else:
+                    st["fingerprint"] = fp
+                    st["idle"] = 0
+                if st["idle"] >= IDLE_POLLS_BEFORE_DONE:
+                    completed_flows.add(fid)
+                    add_log_to_run(
+                        run_id,
+                        f"[Velociraptor] {_name_for_flow(fid)}: flow stopped producing "
+                        f"after its error — {fp[0]} source(s), {fp[1]} row(s) collected",
+                        "info")
 
             # Check if all flows are done
             all_flows_completed = len(completed_flows) == len(active_flows)
