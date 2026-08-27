@@ -1085,7 +1085,8 @@ class TestTheAnalyzerSetStaysCurated(unittest.TestCase):
 
     def test_the_detection_analyzers_remain(self):
         block = read(CONF).split("AUTO_SKETCH_ANALYZERS = [")[1].split("]")[0]
-        for name in ("sigma", "tagger", "login", "domain", "phishy_domains",
+        # NOT sigma — see TestSigmaIsDeliberatelyAbsent.
+        for name in ("tagger", "login", "domain", "phishy_domains",
                      "ntfs_timestomp", "evtx_gap", "win_crash", "account_finder"):
             with self.subTest(analyzer=name):
                 self.assertIn(f"'{name}'", block)
@@ -1099,61 +1100,51 @@ class TestTheAnalyzerSetStaysCurated(unittest.TestCase):
         self.assertIn("curate_timesketch_analyzers\n", deploy)
 
 
-class TestSigmaHasRulesToDetectWith(unittest.TestCase):
-    """The sigma analyzer ran on every timeline and found nothing: the
-    sigmarule table ships EMPTY and the only mounted rule was an upstream Linux
-    zmap sample, useless against a Windows KAPE timeline. Fusion selects
-    TimeSketch events BY TAG, so an analyzer that never tags contributes
-    nothing at all."""
+class TestSigmaIsDeliberatelyAbsent(unittest.TestCase):
+    """Timesketch ships an empty sigmarule table, and that is NOT an oversight.
 
-    def setUp(self):
-        self.src = read(DEPLOY)
+    I treated it as one, imported 53 stable SigmaHQ Windows rules, and measured
+    the result against 79,019 real attack events covering every ATT&CK tactic:
+    53 analyzer sessions ran DONE and produced ZERO tags. The reason is
+    structural, not configuration — plaso's EVTX parser emits event_identifier,
+    a POSITIONAL strings[] array and xml_string, and no named Windows fields at
+    all. Sigma matches on names: 25 of the 53 rules use EventID (which does
+    map), but every single one ALSO needs CommandLine (14), Image (12),
+    OriginalFileName (9), ParentImage (6)... so 0 of 53 are satisfiable.
 
-    def test_the_installer_imports_rules(self):
-        self.assertIn("import_timesketch_sigma_rules()", self.src)
-        self.assertIn("import_timesketch_sigma_rules\n", self.src)
+    It is not free either: sigma is a multi-analyzer, one session per rule per
+    timeline. And importing the rules actively broke the appliance — SigmaHQ's
+    `date:` field is a datetime.date, which Timesketch json.dumps() when
+    scheduling analyzers, 500ing /api/v1/upload/ for EVERY import.
 
-    def test_only_stable_rules_are_staged(self):
-        # sigma_tagger.py skips every other status, so importing all 2,403
-        # Windows rules would write 2,349 rows that can never run.
-        self.assertIn("grep -rl '^status: stable'", self.src)
+    Sigma detection on this appliance lives in the Velociraptor/Hayabusa path,
+    which parses EVTX into named fields properly. This test exists so the next
+    person to notice the empty rule table does not repeat the whole detour."""
 
-    def test_rules_using_an_unsupported_modifier_are_skipped(self):
-        # ONE rule using `windash` aborts the whole import with a KeyError —
-        # measured: 10 rules in, 43 never imported.
-        self.assertIn("windash", self.src)
+    def test_sigma_is_not_in_the_analyzer_set(self):
+        for path in (CONF, LEGACY_CONF):
+            block = read(path).split("AUTO_SKETCH_ANALYZERS = [")[1].split("]")[0]
+            with self.subTest(conf=os.path.basename(path)):
+                self.assertNotIn("'sigma'", block)
 
-    def test_rule_dates_are_quoted_before_import(self):
-        # SigmaHQ ships `date: 2017-02-19`, which YAML parses into a
-        # datetime.date. Timesketch json.dumps() rule kwargs when it schedules
-        # analyzers (tasks.py:617), so an unquoted date raises "Object of type
-        # date is not JSON serializable" INSIDE the analyzer pipeline — which
-        # 500s /api/v1/upload/ and breaks EVERY timeline import on the box, not
-        # just sigma. Observed: uploads failed with five retries and no usable
-        # message until the rules were removed.
-        self.assertIn("(date|modified):", self.src)
-        self.assertIn("json.dumps", self.src)
+    def test_the_reason_is_written_down(self):
+        conf = read(CONF)
+        self.assertIn("no named Windows fields", conf)
+        self.assertIn("ZERO tags", conf)
 
-    def test_the_staged_rules_carry_no_bare_date(self):
+    def test_the_installer_does_not_import_rules(self):
+        self.assertNotIn("import_timesketch_sigma_rules", read(DEPLOY))
+
+    def test_an_existing_appliance_gets_sigma_stripped_too(self):
+        # Boxes whose conf predates this keep running 53 sessions per timeline
+        # for nothing otherwise.
+        self.assertIn("|sigma)", read(DEPLOY))
+
+    def test_no_rules_are_staged_in_the_repo(self):
         import glob
         staged = glob.glob(os.path.join(
             ROOT, "modules/timesketch/config/sigma/rules/windows/*.yml"))
-        if not staged:
-            self.skipTest("no rules staged in this checkout")
-        import re as _re
-        bare = _re.compile(r"^(date|modified):\s+[0-9]{4}[-/][0-9]{2}", _re.M)
-        offenders = [os.path.basename(f) for f in staged if bare.search(read(f))]
-        self.assertEqual(offenders, [], f"unquoted date in {offenders[:3]}")
-
-    def test_a_missing_ruleset_is_not_an_error(self):
-        # Air-gapped appliances have no /opt/sigma-rules.
-        self.assertIn('if [[ ! -d "$src" ]]', self.src)
-
-    def test_a_failed_import_never_fails_the_deploy(self):
-        seg = self.src[self.src.index("import_timesketch_sigma_rules() {"):]
-        seg = seg[:seg.index("\ndeploy_timesketch()")]
-        self.assertIn("log_warn", seg)
-        self.assertNotIn("return 1", seg)
+        self.assertEqual(staged, [])
 
 
 if __name__ == "__main__":

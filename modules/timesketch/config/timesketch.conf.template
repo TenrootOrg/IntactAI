@@ -102,8 +102,20 @@ PLASO_UPPER_MEMORY_LIMIT = None
 # The workflow waits for this set to finish before the run goes terminal
 # (services/timesketch_service.wait_for_analyzers), so every analyzer added
 # here also lengthens the pipeline's tail.
+# `sigma` IS DELIBERATELY ABSENT. Timesketch ships an empty sigmarule table and
+# that is not an oversight to fix: plaso's EVTX parser emits event_identifier, a
+# POSITIONAL strings[] array and xml_string — and no named Windows fields at
+# all. Sigma rules match on names (Image, CommandLine, ParentImage,
+# OriginalFileName, TargetUserName). Measured against 79,019 real attack events
+# covering every ATT&CK tactic, with 53 stable SigmaHQ Windows rules loaded:
+# 53 analyzer sessions ran DONE and produced ZERO tags, because 0 of the 53
+# rules can be satisfied by fields plaso does not emit. It also costs one
+# analyzer session PER RULE per timeline.
+#
+# Sigma detection on this appliance lives in the VELOCIRAPTOR path instead
+# (Hayabusa parses EVTX into named fields properly), which is why the two
+# modules are complementary rather than redundant.
 AUTO_SKETCH_ANALYZERS = [
-    'sigma',
     'tagger',
     'domain',
     'login',

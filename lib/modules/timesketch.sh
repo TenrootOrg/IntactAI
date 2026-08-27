@@ -204,6 +204,12 @@ render_timesketch_conf_templates() {
 # Why these four (measured 2026-08-27 on a real 380k-event import):
 #   chain / similarity_scorer / sessionizer -- session & similarity tag floods
 #     with no detection value for fusion.
+#   sigma -- cannot fire at all. plaso's EVTX parser emits no named Windows
+#     fields (Image, CommandLine, ParentImage), which is what sigma rules match
+#     on. Measured against 79,019 real attack events with 53 stable SigmaHQ
+#     rules loaded: 53 sessions DONE, ZERO tags, 0/53 rules satisfiable. It also
+#     costs one session PER RULE per timeline. Sigma detection lives in the
+#     Velociraptor/Hayabusa path, which parses EVTX properly.
 #   feature_extraction -- writes attributes rather than detection tags. Note it
 #     returns anyway as a declared DEPENDENCY of `domain` and `account_finder`
 #     (analyzers/manager.py:_build_dependencies), so this removes 3 sessions,
@@ -218,73 +224,12 @@ curate_timesketch_analyzers() {
                 "${SCRIPT_DIR}/modules/timesketch/config/timesketch_legacy.conf"; do
         [[ -f "$conf" ]] || continue
         local dropped
-        dropped=$(grep -cE "^\s*'(chain|similarity_scorer|sessionizer|feature_extraction)',?\s*$" "$conf" || true)
+        dropped=$(grep -cE "^\s*'(chain|similarity_scorer|sessionizer|feature_extraction|sigma)',?\s*$" "$conf" || true)
         if [[ "${dropped:-0}" -gt 0 ]]; then
-            sed -i -E "/^\s*'(chain|similarity_scorer|sessionizer|feature_extraction)',?\s*$/d" "$conf"
+            sed -i -E "/^\s*'(chain|similarity_scorer|sessionizer|feature_extraction|sigma)',?\s*$/d" "$conf"
             log_success "  Curated AUTO_SKETCH_ANALYZERS in $(basename "$conf") (removed ${dropped} flood/heavyweight analyzer(s))"
         fi
     done
-    return 0
-}
-
-# Stage + import Sigma rules so Timesketch's `sigma` analyzer has something to
-# detect with. Without this it runs on every timeline and finds nothing: the
-# sigmarule table ships EMPTY, and the only rule mounted is an upstream Linux
-# zmap sample that cannot match a Windows KAPE timeline. Fusion selects
-# TimeSketch events BY TAG, so an analyzer that never tags is an analyzer that
-# contributes nothing to a case.
-#
-# Two filters, both load-bearing (measured against SigmaHQ 2026-08-27):
-#   * `status: stable` only. Timesketch's analyzer skips every other status
-#     (sigma_tagger.py: `if rule.get("status") == "stable"`), so importing all
-#     2,403 Windows rules would put 2,349 rows in the database that can never
-#     run. 54 are stable.
-#   * no `windash`. The pysigma bundled with Timesketch 20260630 supports
-#     all/base64/base64offset/contains/endswith/re/startswith/utf16*/wide and
-#     nothing else, and ONE rule using a newer modifier aborts the WHOLE import
-#     with a KeyError — 10 rules in, 43 silently never imported.
-#
-# Idempotent and air-gap aware: no rules directory, no work, no error.
-import_timesketch_sigma_rules() {
-    local src="/opt/sigma-rules/rules/windows"
-    local dest="${SCRIPT_DIR}/modules/timesketch/config/sigma/rules/windows"
-    if [[ ! -d "$src" ]]; then
-        log_info "  Sigma rules not present on this host (skip)"
-        return 0
-    fi
-    mkdir -p "$dest"
-    local staged=0 skipped=0 f
-    while IFS= read -r f; do
-        [[ -n "$f" ]] || continue
-        if grep -q '|windash' "$f" 2>/dev/null; then
-            skipped=$((skipped + 1))
-            continue
-        fi
-        # QUOTE THE DATES. SigmaHQ rules carry `date: 2017-02-19`, which YAML
-        # parses into a datetime.date — and Timesketch serializes rule kwargs
-        # with json.dumps when it schedules analyzers
-        # (lib/tasks.py:617 build_sketch_analysis_pipeline). An unquoted date
-        # therefore raises "Object of type date is not JSON serializable"
-        # INSIDE the analyzer pipeline, which returns 500 from /api/v1/upload/
-        # — so importing these rules breaks EVERY timeline import on the
-        # appliance, not just sigma. Observed exactly that: uploads failed with
-        # five retries and no usable message until the rules were removed.
-        sed -E "s/^(date|modified):[[:space:]]+([0-9]{4}[-\/][0-9]{2}[-\/][0-9]{2})[[:space:]]*$/\1: '\2'/" \
-            "$f" > "$dest/$(basename "$f")" 2>/dev/null && staged=$((staged + 1))
-    done < <(grep -rl '^status: stable' "$src" 2>/dev/null)
-    if [[ "$staged" -eq 0 ]]; then
-        log_warn "  No importable Sigma rules found (skip)"
-        return 0
-    fi
-    log_info "  Staged ${staged} stable Sigma rule(s)$([[ $skipped -gt 0 ]] && echo " (${skipped} skipped: unsupported modifier)")"
-    if docker exec intact_timesketch_web \
-            tsctl import-sigma-rules /etc/timesketch/sigma/rules/windows >/dev/null 2>&1; then
-        log_success "  Sigma rules imported into Timesketch"
-    else
-        # Never fatal: a timeline still imports and every other analyzer still
-        # runs; only sigma detections are missing.
-        log_warn "  Sigma rule import failed — the sigma analyzer will find nothing"
-    fi
     return 0
 }
 
@@ -428,10 +373,6 @@ deploy_timesketch() {
         # Keep the analyzer list curated on appliances whose conf predates the
         # curation (the renderer never rewrites an existing conf).
         curate_timesketch_analyzers
-
-        # Give the sigma analyzer rules to detect with.
-        log_info "  Importing Sigma rules..."
-        import_timesketch_sigma_rules
 
         # Populate /etc/timesketch/dfiq/ with the upstream Google DFIQ
         # YAML files. The Timesketch image does NOT ship these — the

@@ -79,7 +79,6 @@ PLASO_UPPER_MEMORY_LIMIT = None
 
 # Analyzers
 AUTO_SKETCH_ANALYZERS = [
-    'sigma',
     'tagger',
     'domain',
     'login',
