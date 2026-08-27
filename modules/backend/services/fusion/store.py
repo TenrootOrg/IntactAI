@@ -52,7 +52,12 @@ FUSION_MODULE_TYPES = {
     "velociraptor_all": {"velociraptor_collection", "velociraptor_upload",
                          "velociraptor_hunt"},
     "memory": {"memory"},
-    "timesketch": {"timesketch"},
+    # timesketch_kape_upload = a bare KAPE/plaso file upload (no Velociraptor
+    # run behind it). It lands in the SAME sketch machinery and stores the same
+    # sketch locator, so it fuses identically — leaving it out was the same
+    # class of bug as velociraptor_offline_import missing from AGENTIC_TYPES:
+    # imported evidence that silently never reached the case.
+    "timesketch": {"timesketch", "timesketch_kape_upload"},
     "aws": {"aws_scan"},
     "azure": {"azure_scan"},
     # legacy alias for cases saved before the agentic/all split (maps to agentic)
@@ -61,14 +66,16 @@ FUSION_MODULE_TYPES = {
 # Order + membership of the UI picker. 'velociraptor_all' and the legacy
 # 'velociraptor' alias are intentionally NOT shown — only agentic blueprints fuse.
 #
-# TimeSketch and Azure are also not shown. They were rendered greyed-out with a
-# "disabled" badge, which reads as "this is broken / you are missing something"
-# rather than "not built yet" — two dead rows in a five-row picker, permanently.
-# They stay in FUSION_MODULE_TYPES and _FUSION_MODULE_LABELS below so a legacy
-# case that still carries one keeps mapping correctly; only their visibility is
-# removed. To bring either back, add it here AND to FUSION_MODULES_AVAILABLE —
-# listing it here alone just restores the greyed row.
-FUSION_MODULES_UI = ["velociraptor_agentic", "memory", "aws"]
+# Azure is not shown. It was rendered greyed-out with a "disabled" badge, which
+# reads as "this is broken / you are missing something" rather than "not built
+# yet" — a dead row in the picker, permanently. It stays in FUSION_MODULE_TYPES
+# and _FUSION_MODULE_LABELS below so a legacy case that still carries it keeps
+# mapping correctly; only visibility is removed. To bring it back, add it here
+# AND to FUSION_MODULES_AVAILABLE — listing it here alone just restores the
+# greyed row. (TimeSketch went through exactly that cycle: hidden 2026-08-27,
+# restored the same day when its fusion path became real — curated analyzers,
+# analyzer-wait before terminal status, window-bounded fetch.)
+FUSION_MODULES_UI = ["velociraptor_agentic", "memory", "timesketch", "aws"]
 # Selectable now: Velociraptor (Agentic), Memory (VolWeb) and AWS (CloudTrail),
 # all three on by default. TimeSketch/Azure stay greyed/disabled.
 #
@@ -79,7 +86,12 @@ FUSION_MODULES_UI = ["velociraptor_agentic", "memory", "aws"]
 # an off-by-default module meant the scan the operator deliberately ran was
 # silently left out of the fused graph and the report until they found this
 # checkbox. Defaulting off protected nobody and hid real evidence.
-FUSION_MODULES_AVAILABLE = ("velociraptor_agentic", "memory", "aws")
+# TimeSketch is selectable but OFF by default — deliberately unlike AWS. The
+# AWS argument ("a module with no runs costs nothing") does not transfer: a
+# TimeSketch fetch is a live network call to the TS server on every fuse of a
+# case that has a TS run, and the analyzer set is new. One release of opt-in
+# first.
+FUSION_MODULES_AVAILABLE = ("velociraptor_agentic", "memory", "timesketch", "aws")
 FUSION_MODULES_DEFAULT = ["velociraptor_agentic", "memory", "aws"]
 _FUSION_MODULE_LABELS = {
     "velociraptor_agentic": "Velociraptor (Agentic)",
@@ -1009,12 +1021,21 @@ def _velo_hunt_contribution(rid, det, log=None):
     return ents, rels
 
 
-def _distill_ts_events(events, *, per_tag=5):
+def _distill_ts_events(events, *, per_tag=5, cap=600):
     """Collapse a large tagged-event pull into a small, representative set: keep up
     to `per_tag` highest-anomaly events per distinct tag (one tag = one analyzer /
     SIGMA detection class). A KAPE timeline routinely has thousands of 'logon-event'
     rows that would flood the 2500-entity graph and bury the real signal; this keeps
-    every distinct detection (e.g. 'rare-domain') while capping the noisy classes."""
+    every distinct detection (e.g. 'rare-domain') while capping the noisy classes.
+
+    `cap` is an ABSOLUTE ceiling on top of the per-tag cap. Without it the total
+    is 5 × distinct-tag-count, which is only small while the tag vocabulary is:
+    the curated analyzer set yields ~4-20 distinct tags today (measured
+    2026-08-27: 4 tags on a real 380k-event timeline), but sigma with a full
+    ruleset tags per RULE NAME, and one noisy ruleset would turn "bounded per
+    tag" into thousands of events. When the ceiling bites, the highest-scoring
+    events win across all buckets — the graph budget is 2500 entities and
+    TimeSketch is one contributor among several."""
     from .anomaly import score_row
     buckets = {}
     for e in events or []:
@@ -1029,14 +1050,17 @@ def _distill_ts_events(events, *, per_tag=5):
             sc = 0
         for t in tags:
             buckets.setdefault(str(t), []).append((sc, e))
-    out, seen = [], set()
+    picked, seen = [], set()
     for rows in buckets.values():
         rows.sort(key=lambda x: x[0], reverse=True)
-        for _sc, e in rows[:per_tag]:
+        for sc, e in rows[:per_tag]:
             if id(e) not in seen:
                 seen.add(id(e))
-                out.append(e)
-    return out
+                picked.append((sc, e))
+    if cap and len(picked) > cap:
+        picked.sort(key=lambda x: x[0], reverse=True)
+        picked = picked[:cap]
+    return [e for _sc, e in picked]
 
 
 def _resnapshot_without_losing_rows(rid, det, fetched):
@@ -1105,7 +1129,7 @@ def _refetch_agentic_rows(rid, det, log=None):
         return None
 
 
-def _contribution_for_run(run, log=None, refetch=False):
+def _contribution_for_run(run, log=None, refetch=False, window=None):
     atype, rid = run.get("automation_type"), run.get("run_id")
     det = run.get("details") or {}
     try:
@@ -1136,9 +1160,17 @@ def _contribution_for_run(run, log=None, refetch=False):
             # relabels the source 'velociraptor' (no agent ran). The artifact
             # allowlist in the mapper keeps the graph clean.
             return _velo_hunt_contribution(rid, det, log=log)
-        if atype == "timesketch":
+        if atype in ("timesketch", "timesketch_kape_upload"):
             evs = det.get("events") or det.get("timeline_events")
             fetched = False
+            if refetch:
+                # Manual Refusion means "re-read the sources". The cached
+                # distilled set on the row is exactly what must NOT win here:
+                # analyzers finish after the first fuse (and analysts keep
+                # tagging/starring), so the cache is the stale view by
+                # definition. Ignore it and pull live; the fresh distill is
+                # re-cached below.
+                evs = None
             if not evs and (det.get("sketch_id") or det.get("sketch_name")):
                 # TimeSketch keeps the timeline on its server (the sketch), not in
                 # the run row — pull the analyst-relevant subset (tagged SIGMA /
@@ -1154,7 +1186,8 @@ def _contribution_for_run(run, log=None, refetch=False):
                     if not sid and det.get("sketch_name"):
                         sid = find_sketch_by_name(det["sketch_name"], TIMESKETCH_CONFIG, logger=log)
                     if sid:
-                        evs = fetch_sketch_events(sid, TIMESKETCH_CONFIG, logger=log)
+                        evs = fetch_sketch_events(sid, TIMESKETCH_CONFIG,
+                                                  window=window, logger=log)
                         fetched = True
                 except Exception as _e:
                     if log:
@@ -1190,6 +1223,11 @@ def _contribution_for_run(run, log=None, refetch=False):
                         hostname = next(iter(hns.values()), None)
                 asset = keys.asset_id(client_id or hostname or rid)
                 return map_timesketch(evs, run_id=rid, asset=asset, hostname=hostname)
+            # No events (sketch unreachable, nothing tagged yet, or no sketch
+            # locator at all): contribute nothing, EXPLICITLY. Falling through
+            # to the aws/azure check below happened to return the same value,
+            # but only by accident of ordering.
+            return [], []
         if atype in ("aws_scan", "azure_scan"):
             prov = "aws" if atype == "aws_scan" else "azure"
             return _cloud_contribution(rid, det, prov)
@@ -1463,7 +1501,12 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
 
         def _contributions():
             for _i, (rid, run) in enumerate(kept_runs):
-                yield _contribution_for_run(run, log=log, refetch=refetch)
+                # The case window rides into the contribution so fetch-time
+                # consumers (currently only TimeSketch) can bound their pull
+                # server-side instead of serializing everything and letting
+                # assemble() cut it afterwards.
+                yield _contribution_for_run(run, log=log, refetch=refetch,
+                                            window=d.get("time_window") or None)
                 # 5% → 40% spread across the member runs (the per-run read + map is
                 # the bulk of I/O for a multi-host hunt import).
                 _plog(f"Refusion · mapped {_i + 1}/{_nmem} run(s)", "info",

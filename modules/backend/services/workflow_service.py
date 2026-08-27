@@ -34,7 +34,11 @@ AGENTIC_TYPES = {"velociraptor_collection", "memory", "timesketch",
                  # other collection — listing it here makes the run a case member
                  # and lets the terminal-status hook below arm the fuse, which is
                  # the whole point of adopting it.
-                 "velociraptor_adopt"}
+                 "velociraptor_adopt",
+                 # A bare KAPE/plaso upload (no Velociraptor behind it) builds
+                 # the same sketch a timesketch run does; membership is what
+                 # lets it fuse and arm the auto-fuse when it completes.
+                 "timesketch_kape_upload"}
 
 # Statuses that mean "this run's data is final and fuseable". Deliberately the
 # SAME pair fusion.store.stale_member_runs counts as members, so the auto-fuse

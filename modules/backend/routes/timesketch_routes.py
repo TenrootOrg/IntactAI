@@ -768,6 +768,29 @@ def start_multi_client_timesketch():
                     if result and result.get('status') == 'completed':
                         add_log_to_run(run_id, f"[Plaso/{item['client_name']}] ✓ Imported (sketch {result.get('sketch_id')}, timeline {result.get('timeline_id')})", "success")
                         update_job(item['flow_id'], {'status': 'completed', 'phase': 'Completed', 'sketch_id': result.get('sketch_id'), 'timeline_id': result.get('timeline_id')})
+                        # Land the sketch locator on the PARENT run. In
+                        # multi-client mode process_kape_upload runs with
+                        # suppress_status_writes=True (the orchestrator owns
+                        # the status field), so its own details write is a
+                        # no-op — without this the parent run keeps
+                        # sketch_id=None and fusion falls back to resolving
+                        # the sketch by NAME, which picks the wrong one as
+                        # soon as two runs share a name. Every client here
+                        # imports into the SAME sketch, so last-writer-wins
+                        # is correct; timeline_id is per client and only the
+                        # last is kept (fusion reads the sketch, not the
+                        # timeline).
+                        try:
+                            from services.workflow_service import mutate_run_details
+
+                            def _stamp(_d, _r=result):
+                                if _r.get('sketch_id'):
+                                    _d['sketch_id'] = _r.get('sketch_id')
+                                if _r.get('timeline_id'):
+                                    _d['timeline_id'] = _r.get('timeline_id')
+                            mutate_run_details(run_id, _stamp)
+                        except Exception as _e:
+                            add_log_to_run(run_id, f"Could not record sketch id: {_e}", "warning")
                     elif result and result.get('status') == 'no_events':
                         add_log_to_run(run_id, f"[Plaso/{item['client_name']}] Completed — no events to import", "warning")
                         update_job(item['flow_id'], {'status': 'completed', 'phase': 'Completed (no events)'})

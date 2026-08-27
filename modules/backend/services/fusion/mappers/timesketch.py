@@ -19,6 +19,46 @@ from ..severity import from_anomaly
 from . import fieldspec as F
 
 MODULE = "timesketch"
+
+# An analyzer TAG is a detection, and it is the reason fusion selected the event
+# out of a 380k-event timeline at all (the fetch queries `_exists_:tag`). But
+# anomaly scoring is keyword-matching over the row text, so a tagged event whose
+# message happens to contain no scary words scores 0 -> "informational" -> and is
+# then cut by the case's default `medium` severity floor. Measured: a real fuse
+# pulled 382 tagged events and put ONE asset node in the graph, because every
+# event had been selected for its tag and then thrown away for not mentioning
+# mimikatz. Selecting by detection and ignoring the detection when scoring it is
+# the same mistake twice.
+#
+# So a tag confers a severity FLOOR (the row's own score still wins if higher):
+_TAG_FLOOR_HIGH = 20        # -> "high"
+_TAG_FLOOR_MEDIUM = 10      # -> "medium", clears the default floor
+# Routine bookkeeping tags that an analyzer emits for EVERY matching event, not
+# because anything is wrong. These stay at whatever the row scores on its own —
+# a case has thousands of logons (3,480 measured on one host), and promoting an
+# arbitrary 5 of them to medium is noise wearing a detection's clothes. They
+# still reach the graph when the operator drops the floor to informational,
+# which is exactly the control that exists for this.
+_ROUTINE_TAGS = {
+    "logon-event", "logoff-event", "session-id", "known-domain",
+    "browser-search", "browser-timeframe", "win-service",
+}
+# Detections worth surfacing above the default floor.
+_HIGH_TAG_HINTS = ("sigma", "phishy", "timestomp", "bruteforce", "malware",
+                   "suspicious", "crash")
+
+
+def _tag_floor(tags) -> int:
+    """Minimum anomaly a tagged event deserves, from its analyzer tags."""
+    floor = 0
+    for t in tags or []:
+        low = str(t).strip().lower()
+        if not low or low in _ROUTINE_TAGS:
+            continue
+        if any(h in low for h in _HIGH_TAG_HINTS):
+            return _TAG_FLOOR_HIGH          # can't be beaten by another tag
+        floor = max(floor, _TAG_FLOOR_MEDIUM)
+    return floor
 _IP = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
 _DOM = re.compile(r"\b[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+){1,}\b")
 _HASH = re.compile(r"\b[0-9a-fA-F]{32,64}\b")
@@ -45,11 +85,26 @@ def map_timesketch(events, *, run_id: str, asset: str, hostname=None) -> tuple[l
         ts = keys.norm_ts(F.get(e, "datetime", "Timestamp", "TimeCreated", *F.TIMES))
         msg = str(F.get(e, "message", "Message", "description", default="") or "")
         anom = score_row(e)
-        loc = f"event/row={i}"
+        # Address the ORIGINAL TimeSketch event when the fetch kept its
+        # OpenSearch id. `event/row=i` is an index into the *distilled* list,
+        # so it renumbers whenever the analyzer tags change and points at a
+        # different event on the next fetch — useless as evidence.
+        ts_id = e.get("_ts_id")
+        loc = f"sketch/event/{ts_id}" if ts_id else f"event/row={i}"
         eid = keys.event_id(asset, ts, msg)
+        # The analyzer tag is WHY this event was selected out of a 380k-event
+        # timeline (fusion queries `_exists_:tag`), and it was being dropped
+        # here — the graph recorded the event but never which analyzer flagged
+        # it, so a 'rare-domain' hit and a routine logon looked identical.
+        tags = e.get("tag") or []
+        if not isinstance(tags, list):
+            tags = [tags]
+        tags = [str(t) for t in tags if t]
+        anom = max(anom, _tag_floor(tags))
         ents.append(_ent(eid, "event", (msg[:80] or F.get(e, "parser", default="event")),
                          asset, run_id, loc, anomaly=anom, first=ts,
-                         parser=F.get(e, "parser", "source_name", default=None)))
+                         parser=F.get(e, "parser", "source_name", default=None),
+                         tags=tags or None))
 
         # indicators from explicit fields + the message text
         cand = set()
@@ -60,6 +115,14 @@ def map_timesketch(events, *, run_id: str, asset: str, hostname=None) -> tuple[l
             cand.add(m)
         for h in _HASH.findall(msg):
             cand.add(h)
+        # Domains too — the module docstring always promised them and the regex
+        # was compiled but never used, so the `domain` / `phishy_domains`
+        # analyzers in the curated set contributed tags with no IOC to
+        # correlate against. keys.classify_indicator is what makes this safe on
+        # Windows event text: it rejects filenames (svchost.exe is not a
+        # domain) and benign update domains.
+        for dm in _DOM.findall(msg):
+            cand.add(dm)
         for val in cand:
             kind = keys.classify_indicator(val)
             if not kind:

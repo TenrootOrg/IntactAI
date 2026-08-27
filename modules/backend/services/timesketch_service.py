@@ -336,6 +336,122 @@ def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=1000
     return (False, "unknown", None)
 
 
+def wait_for_analyzers(sketch_id, timesketch_config, *, timeout_seconds=1800,
+                       poll_interval=20, logger=None, cancel_event=None):
+    """Block until every analyzer session on the sketch settles (DONE/ERROR).
+
+    WHY THIS EXISTS. Timesketch fires AUTO_SKETCH_ANALYZERS in its own Celery
+    workers AFTER a timeline is imported, but the workflow used to flip
+    `completed` the moment the import finished. `timesketch` is in
+    AGENTIC_TYPES, so that terminal status arms the case's debounced auto-fuse
+    60s later — which then queried `_exists_:tag` against a sketch whose 75
+    analyzer tasks were all still PENDING (measured live, 2026-08-27: the
+    count was 0 while 3,542 tags were on their way). Nothing ever re-armed
+    when the tags landed, so TimeSketch contributed nothing to the case,
+    forever. Completing the run only after the analyzers settle is what makes
+    the auto-fuse read a TAGGED sketch.
+
+    Bounded and non-fatal by design: on timeout or error the caller should log
+    a warning and complete anyway — an analyst's starred events still fuse,
+    and a later Refusion picks up late tags. Returns
+    (settled: bool, summary: dict[name -> {status: count}]).
+
+    The 5 ERROR sessions on the first real run (account_finder, evtx_gap,
+    domain, feature_extraction) are why the per-analyzer summary is returned
+    rather than a bare bool: analyzers DO fail on real timelines and the run
+    log must say which.
+    """
+    def log(message, level="info"):
+        print(f"[TIMESKETCH] {message}", flush=True)
+        if logger:
+            try:
+                logger(f"[TIMESKETCH] {message}", level)
+            except Exception:
+                pass
+
+    _TERMINAL = {"DONE", "ERROR"}
+    try:
+        sid = int(sketch_id)
+    except (TypeError, ValueError):
+        return False, {}
+
+    api = _connect_timesketch_api(timesketch_config, logger)
+    if not api:
+        return False, {}
+    start = time.time()
+    consecutive_errors = 0
+    try:
+        sketch = api.get_sketch(sid)
+        log(f"Waiting for analyzers on sketch {sid} (timeout {timeout_seconds}s)…")
+        while time.time() - start < timeout_seconds:
+            try:
+                sessions = sketch.get_analyzer_status() or []
+                consecutive_errors = 0
+                pending = [x for x in sessions
+                           if str(x.get("status") or "").upper() not in _TERMINAL]
+                if sessions and not pending:
+                    summary = {}
+                    for x in sessions:
+                        name = str(x.get("name") or "?")
+                        st = str(x.get("status") or "?").upper()
+                        summary.setdefault(name, {})
+                        summary[name][st] = summary[name].get(st, 0) + 1
+                    return True, summary
+                if not sessions:
+                    # Analyzer sessions are created by TS shortly after the
+                    # timeline flips ready; an empty list this early means
+                    # they have not been registered yet — keep waiting, but
+                    # only briefly: past 2 minutes an empty list means auto
+                    # analyzers are disabled server-side, and waiting the
+                    # full timeout for work that was never scheduled would
+                    # stall every import on a deliberately-lean install.
+                    if time.time() - start > 120:
+                        log("No analyzer sessions appeared after 2 minutes — "
+                            "AUTO_SKETCH_ANALYZERS may be disabled; continuing.",
+                            "warning")
+                        return True, {}
+                else:
+                    log(f"Analyzers: {len(sessions) - len(pending)}/{len(sessions)} settled…")
+            except Exception as e:
+                consecutive_errors += 1
+                err = str(e).lower()
+                if (("json" in err or "decode" in err or "login" in err
+                     or "401" in err or "unauthorized" in err
+                     or consecutive_errors >= 2) and timesketch_config):
+                    log("Session likely expired — re-authenticating to TimeSketch...",
+                        "warning")
+                    new_api = _connect_timesketch_api(timesketch_config, logger=logger)
+                    if new_api:
+                        old_api = api
+                        api = new_api
+                        try:
+                            old_api.session.close()
+                        except Exception:
+                            pass
+                        try:
+                            sketch = api.get_sketch(sid)
+                            consecutive_errors = 0
+                        except Exception as rebind_err:
+                            log(f"Sketch rebind after re-auth failed: {rebind_err}",
+                                "warning")
+                else:
+                    log(f"Analyzer status check failed: {e}, retrying…", "warning")
+            if cancel_event is not None:
+                if cancel_event.wait(poll_interval):
+                    log("Stop requested — abandoning analyzer wait", "warning")
+                    return False, {}
+            else:
+                time.sleep(poll_interval)
+        log(f"Analyzers still running after {timeout_seconds}s — continuing "
+            f"without them (a later Refusion picks up their tags).", "warning")
+        return False, {}
+    finally:
+        try:
+            api.session.close()
+        except Exception:
+            pass
+
+
 def find_sketch_by_name(sketch_name, timesketch_config, logger=None):
     """Find an existing sketch by name
 
@@ -382,7 +498,25 @@ def find_sketch_by_name(sketch_name, timesketch_config, logger=None):
         return None
 
 
-def fetch_sketch_events(sketch_id, timesketch_config, *, limit=2000, logger=None):
+def _ts_window_clause(window):
+    """OpenSearch `datetime:[a TO b]` clause for a case time window, or "".
+
+    Mirrors fusion's in_window open semantics (correlate.py): no window, a
+    half-set window's missing side, and a degenerate start >= end all widen to
+    open rather than excluding everything. Values are used as-is — the case
+    stores ISO-8601 strings, which OpenSearch range queries accept."""
+    w = window or {}
+    start = str(w.get("start") or "").strip()
+    end = str(w.get("end") or "").strip()
+    if not start and not end:
+        return ""
+    if start and end and start >= end:
+        return ""                        # degenerate — treat as open
+    return f"datetime:[{start or '*'} TO {end or '*'}]"
+
+
+def fetch_sketch_events(sketch_id, timesketch_config, *, limit=2000, window=None,
+                        logger=None):
     """Pull the analyst-relevant events from a sketch — those an analyzer TAGGED
     (SIGMA / threat-intel hits) or an analyst STARRED/commented — so the fusion
     layer can ingest TimeSketch findings.
@@ -390,10 +524,22 @@ def fetch_sketch_events(sketch_id, timesketch_config, *, limit=2000, logger=None
     TimeSketch keeps the timeline on its own server (inside the sketch), not in the
     workflow run row, so fusion has nothing to map from the run alone. This fetches
     the distilled subset on demand. NEVER the whole (potentially millions-row)
-    timeline — only tagged/starred events. Returns a list of event dicts (each
-    hit's `_source`: datetime / message / tag / parser / ...). Best-effort: returns
-    [] on any failure (TS unreachable, bad creds, empty sketch) so the fuse never
-    breaks because TimeSketch is down."""
+    timeline — only tagged/starred events, and when the case has a time window,
+    only ANALYZER tags inside it: OpenSearch cuts out-of-window events server-side
+    before anything is serialized. Starred/commented events are DELIBERATELY
+    exempt from the window — a human judgment outranks the filter, and the events
+    most worth starring (e.g. timestomped files, whose timestamps are absurd by
+    construction; the live index's minimum is 1970) are exactly the ones a window
+    would cut.
+
+    Each returned dict is the hit's `_source` plus `_ts_id` (the OpenSearch doc
+    id) when present, so evidence locators can address the original event
+    stably instead of an index into a distilled list. Best-effort: returns []
+    on any failure (TS unreachable, bad creds, empty sketch) so the fuse never
+    breaks because TimeSketch is down.
+
+    `max_entries` is best-effort in the API client (it pages 10k at a time), so
+    the result is ALSO truncated client-side to `limit`."""
     def log(message, level="info"):
         print(f"[TIMESKETCH] {message}", flush=True)
         if logger:
@@ -411,15 +557,25 @@ def fetch_sketch_events(sketch_id, timesketch_config, *, limit=2000, logger=None
         if not api:
             return []
         sketch = api.get_sketch(sid)
-        query = "_exists_:tag OR label:__ts_star OR label:__ts_comment"
+        clause = _ts_window_clause(window)
+        if clause:
+            query = (f"(_exists_:tag AND {clause}) "
+                     f"OR label:__ts_star OR label:__ts_comment")
+        else:
+            query = "_exists_:tag OR label:__ts_star OR label:__ts_comment"
         res = sketch.explore(query_string=query, as_pandas=False, max_entries=limit)
         objs = res.get("objects") if isinstance(res, dict) else (res or [])
         events = []
         for o in (objs or []):
             src = o.get("_source") if isinstance(o, dict) else None
             if isinstance(src, dict):
+                if isinstance(o.get("_id"), (str, int)):
+                    src["_ts_id"] = str(o["_id"])
                 events.append(src)
-        log(f"fusion: pulled {len(events)} analyst-relevant event(s) from sketch {sid}")
+                if len(events) >= limit:
+                    break                # client-side backstop for the 10k paging
+        log(f"fusion: pulled {len(events)} analyst-relevant event(s) from "
+            f"sketch {sid}" + (f" (window {clause})" if clause else ""))
         return events
     except Exception as e:
         log(f"fusion: could not fetch events from sketch {sid}: {e}", "warning")

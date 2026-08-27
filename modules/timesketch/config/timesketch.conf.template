@@ -77,11 +77,24 @@ GENERIC_MAPPING_FILE = '/etc/timesketch/generic.mappings'
 PLASO_FORMATTERS = '/etc/timesketch/plaso_formatters.yaml'
 PLASO_UPPER_MEMORY_LIMIT = None
 
-# Analyzers
+# Analyzers — the curated set whose TAGS feed case fusion.
+#
+# Every analyzer here runs automatically on each imported timeline, and the
+# fusion layer selects events by tag existence — so this list IS the
+# "selective analyzers" control. Curated for signal-per-event on a KAPE
+# timeline; measured 2026-08-27 on a real 380k-event _BasicCollection import.
+#
+# Dropped from the old 15 on purpose (do not re-add casually):
+#   chain, similarity_scorer, sessionizer — session/similarity tag floods with
+#     no detection value for fusion; they made "has a tag" meaningless.
+#   feature_extraction — 44 of the import's 75 Celery tasks (the heaviest by
+#     far) and it writes attributes, not detection tags.
+# The workflow waits for this set to finish before the run goes terminal
+# (services/timesketch_service.wait_for_analyzers), so every analyzer added
+# here also lengthens the pipeline's tail.
 AUTO_SKETCH_ANALYZERS = [
     'sigma',
     'tagger',
-    'feature_extraction',
     'domain',
     'login',
     'browser_search',
@@ -90,9 +103,6 @@ AUTO_SKETCH_ANALYZERS = [
     'ntfs_timestomp',
     'evtx_gap',
     'win_crash',
-    'chain',
-    'similarity_scorer',
-    'sessionizer',
     'account_finder'
 ]
 AUTO_SKETCH_ANALYZERS_KWARGS = {}

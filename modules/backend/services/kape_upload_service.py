@@ -371,6 +371,47 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
         return None
 
 
+def _wait_for_sketch_analyzers(run_id, sketch_id, settings):
+    """Block until Timesketch's auto-analyzers settle, then report per analyzer.
+
+    Non-fatal on every path: an analyzer that errors, a wait that times out, or
+    TimeSketch being unreachable must never fail an import whose timeline is
+    already in the sketch. Starred events still fuse, and a later Refusion
+    picks up tags that arrive after we stop waiting.
+    """
+    if not sketch_id:
+        return
+    try:
+        from services.timesketch_service import wait_for_analyzers
+        from config import TIMESKETCH_CONFIG
+        timeout = int(settings.get("timesketch_analyzer_timeout", 1800) or 1800)
+        add_log_to_run(run_id, "Waiting for Timesketch analyzers to finish "
+                               "(their tags are what the case graph reads)…")
+        settled, summary = wait_for_analyzers(
+            sketch_id, TIMESKETCH_CONFIG, timeout_seconds=timeout,
+            logger=lambda m, l="info": add_log_to_run(run_id, m, l),
+            cancel_event=get_cancel_event(run_id) if get_cancel_event else None,
+        )
+        for name in sorted(summary or {}):
+            counts = summary[name]
+            errs = counts.get("ERROR", 0)
+            total = sum(counts.values())
+            add_log_to_run(
+                run_id,
+                f"  analyzer {name}: {total - errs}/{total} ok"
+                + (f", {errs} error(s)" if errs else ""),
+                "warning" if errs else "info")
+        if settled:
+            add_log_to_run(run_id, "Analyzers finished — their tags are now "
+                                   "available to the case graph.", "success")
+        else:
+            add_log_to_run(run_id, "Analyzers did not finish in time — the "
+                                   "import is complete and a later Refusion "
+                                   "will pick up their tags.", "warning")
+    except Exception as e:
+        add_log_to_run(run_id, f"Analyzer wait skipped: {e}", "warning")
+
+
 def process_kape_upload(zip_path, original_filename, settings, run_id=None, cleanup_zip=True, suppress_status_writes=False):
     """Process uploaded KAPE file through Plaso and import to Timesketch
 
@@ -582,6 +623,24 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
         if result:
             add_log_to_run(run_id, f"Import complete! Sketch ID: {result.get('sketch_id')}", "success")
             add_log_to_run(run_id, f"Timeline ID: {result.get('timeline_id')}", "success")
+
+            # LAND THE SKETCH LOCATOR ON THE RUN. Without this the import
+            # result was logged and thrown away, and fusion had to find the
+            # sketch BY NAME at fuse time — which silently picks the wrong
+            # sketch the moment two runs share a name or one is renamed.
+            _status("running", progress=95, details={
+                "sketch_id": result.get("sketch_id"),
+                "timeline_id": result.get("timeline_id"),
+                "timeline_name": timeline_name,
+            })
+
+            # WAIT FOR THE ANALYZERS before going terminal. Timesketch fires
+            # AUTO_SKETCH_ANALYZERS in its own Celery workers after the import,
+            # and `timesketch*` types arm the case auto-fuse the instant this
+            # run completes. Completing here used to hand the fuse a sketch
+            # with zero tags (measured), and nothing re-armed when they landed.
+            _wait_for_sketch_analyzers(run_id, result.get("sketch_id"), settings)
+
             _status("completed", progress=100)
 
             return {

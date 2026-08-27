@@ -81,7 +81,6 @@ PLASO_UPPER_MEMORY_LIMIT = None
 AUTO_SKETCH_ANALYZERS = [
     'sigma',
     'tagger',
-    'feature_extraction',
     'domain',
     'login',
     'browser_search',
@@ -90,9 +89,6 @@ AUTO_SKETCH_ANALYZERS = [
     'ntfs_timestomp',
     'evtx_gap',
     'win_crash',
-    'chain',
-    'similarity_scorer',
-    'sessionizer',
     'account_finder'
 ]
 AUTO_SKETCH_ANALYZERS_KWARGS = {}

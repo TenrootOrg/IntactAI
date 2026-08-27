@@ -91,7 +91,15 @@ def ioc_id(kind: str, value) -> str:
 _FILE_EXT = {"exe", "dll", "sys", "txt", "log", "dat", "tmp", "bin", "ini", "xml",
              "json", "db", "lnk", "bat", "ps1", "vbs", "js", "msi", "cab", "zip",
              "png", "jpg", "jpeg", "ico", "mui", "config", "manifest", "etl",
-             "evtx", "pf", "old", "bak", "rs", "py", "html", "css", "node"}
+             "evtx", "pf", "old", "bak", "rs", "py", "html", "css", "node",
+             # Data/report extensions that show up constantly in Windows event
+             # text. A real miss: "WER.dbfb444b-….tmp.csv" was classified as a
+             # DOMAIN and entered a case graph as an IOC, because only the LAST
+             # component is checked and "csv" was not listed.
+             "csv", "tsv", "jsonl", "yaml", "yml", "toml", "md", "sqlite",
+             "eml", "msg", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+             "rtf", "gz", "7z", "rar", "iso", "vhd", "vhdx", "url", "lock",
+             "pid", "swp", "plist", "reg", "wer", "dmp", "sqlite3"}
 _BENIGN_DOM = {"microsoft.com", "windows.com", "msftncsi.com", "windowsupdate.com",
                "office.com", "live.com", "msn.com", "bing.com", "google.com",
                "gstatic.com", "office365.com", "azureedge.net", "akamaized.net"}
@@ -119,8 +127,14 @@ def classify_indicator(value) -> str | None:
         return "hash"
     if re.match(r"^([a-z0-9-]+\.)+[a-z]{2,24}$", s):
         last = s.rsplit(".", 1)[-1]
-        if last in _FILE_EXT or s in _BENIGN_DOM:
-            return None                       # filename or benign-update domain
+        if last in _FILE_EXT:
+            return None                       # filename, not a domain
+        # Benign-update infrastructure, matched on the REGISTRABLE domain rather
+        # than the exact string: "microsoft.com" was listed but "fs.microsoft.com"
+        # still became an IOC, and update/telemetry traffic is overwhelmingly
+        # subdomains. Every module's IOC extraction gets quieter for this.
+        if s in _BENIGN_DOM or any(s.endswith("." + b) for b in _BENIGN_DOM):
+            return None
         return "domain"
     return None
 

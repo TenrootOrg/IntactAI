@@ -193,6 +193,37 @@ render_timesketch_conf_templates() {
     return 0
 }
 
+# Remove the flood/heavyweight analyzers from an EXISTING timesketch.conf's
+# AUTO_SKETCH_ANALYZERS list. The template already ships the curated set, but
+# render_timesketch_conf_templates deliberately never touches an existing conf
+# (post-install edits survive) -- so without this, every appliance installed
+# before the curation keeps the old 15-analyzer list forever. Same idempotent
+# sed-on-live-conf pattern as the DFIQ_ENABLED enable below: deleting a line
+# that is not there is a no-op, so re-running on every deploy is safe.
+#
+# Why these four (measured 2026-08-27 on a real 380k-event import):
+#   chain / similarity_scorer / sessionizer -- session & similarity tag floods
+#     with no detection value for fusion.
+#   feature_extraction -- 44 of the import's 75 Celery tasks, writes
+#     attributes rather than detection tags.
+# Fusion selects TimeSketch events BY TAG, and the workflow now waits for the
+# analyzer set to finish before the run completes -- so every extra analyzer
+# here is both noise in the case graph and minutes on the pipeline's tail.
+curate_timesketch_analyzers() {
+    local conf
+    for conf in "${SCRIPT_DIR}/modules/timesketch/config/timesketch.conf" \
+                "${SCRIPT_DIR}/modules/timesketch/config/timesketch_legacy.conf"; do
+        [[ -f "$conf" ]] || continue
+        local dropped
+        dropped=$(grep -cE "^\s*'(chain|similarity_scorer|sessionizer|feature_extraction)',?\s*$" "$conf" || true)
+        if [[ "${dropped:-0}" -gt 0 ]]; then
+            sed -i -E "/^\s*'(chain|similarity_scorer|sessionizer|feature_extraction)',?\s*$/d" "$conf"
+            log_success "  Curated AUTO_SKETCH_ANALYZERS in $(basename "$conf") (removed ${dropped} flood/heavyweight analyzer(s))"
+        fi
+    done
+    return 0
+}
+
 deploy_timesketch() {
     local ts_enabled=$(read_config "['modules']['timesketch']['enabled']")
     if ! is_enabled "$ts_enabled"; then
@@ -329,6 +360,10 @@ deploy_timesketch() {
         log_info "  Enabling DFIQ..."
         sed -i 's/DFIQ_ENABLED = False/DFIQ_ENABLED = True/' "${SCRIPT_DIR}/modules/timesketch/config/timesketch.conf"
         log_success "  DFIQ enabled"
+
+        # Keep the analyzer list curated on appliances whose conf predates the
+        # curation (the renderer never rewrites an existing conf).
+        curate_timesketch_analyzers
 
         # Populate /etc/timesketch/dfiq/ with the upstream Google DFIQ
         # YAML files. The Timesketch image does NOT ship these — the

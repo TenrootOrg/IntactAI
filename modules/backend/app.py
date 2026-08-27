@@ -377,7 +377,7 @@ def run_startup_initialization():
         from services.workflow_service import load_workflows, update_run_status
         _REAP_TYPES = {"velociraptor_upload", "timesketch", "velociraptor_collection",
                        "agentic", "aws_scan", "azure_scan", "memory",
-                       "velociraptor_adopt"}
+                       "velociraptor_adopt", "timesketch_kape_upload"}
         _reaped = 0
         for _w in (load_workflows() or []):
             if (_w.get("automation_type") in _REAP_TYPES
