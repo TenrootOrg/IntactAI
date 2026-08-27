@@ -79,16 +79,37 @@ PLASO_UPPER_MEMORY_LIMIT = None
 
 # Analyzers
 AUTO_SKETCH_ANALYZERS = [
-    'tagger',
+    # --- detection / tagging: these put tags on events, which is what the
+    #     case-fusion layer selects on ---
     'domain',
-    'login',
-    'browser_search',
-    'browser_timeframe',
     'phishy_domains',
+    'login',
+    'win_crash',
     'ntfs_timestomp',
     'evtx_gap',
-    'win_crash',
-    'account_finder'
+    'browser_search',
+    'browser_timeframe',
+    'account_finder',
+    'tagger',
+    'windowsbruteforceanalyser',
+    'sshbruteforceanalyzer',
+    # --- sessionizers: group related events into sessions ---
+    'sessionizer',
+    'ssh_sessionizer',
+    'ssh_bruteforce_sessionizer',
+    'web_activity_sessionizer',
+    'chain',
+    'similarity_scorer',
+    # --- enrichment: run clean, and become useful the moment their service
+    #     is configured; harmless no-ops until then ---
+    'hashlookup_analyzer',
+    'safebrowsing',
+    'geo_ip_maxmind_db',
+    'geo_ip_maxmind_web',
+    'misp_analyzer',
+    'gcp_logging',
+    'gcp_servicekey',
+    'llm_log_analyzer',
 ]
 AUTO_SKETCH_ANALYZERS_KWARGS = {}
 ANALYZERS_DEFAULT_KWARGS = {}

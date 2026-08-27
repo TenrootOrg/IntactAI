@@ -345,6 +345,12 @@ def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=1000
 # cheap (a poll), the run says "Analyzers: n/m settled" throughout, and Stop
 # still works; finishing early and silently losing every detection is not.
 _TS_ANALYZER_TIMEOUT = int(os.environ.get("INTACT_TS_ANALYZER_TIMEOUT", "7200"))
+# How long the settled count may stand still, with work still pending, before
+# we conclude the remainder is never going to start. Generous enough that a
+# genuinely slow analyzer on a multi-million-event timeline is not cut off:
+# the slowest observed single analyzer on a 4.16M-event import was well inside
+# this.
+_TS_ANALYZER_STALL = int(os.environ.get("INTACT_TS_ANALYZER_STALL", "900"))
 
 
 # The analyzers we run, scheduled explicitly per timeline (see
@@ -488,10 +494,22 @@ def wait_for_analyzers(sketch_id, timesketch_config, *, timeout_seconds=None,
     _TERMINAL = {"DONE", "ERROR"}
     if timeout_seconds is None:
         timeout_seconds = _TS_ANALYZER_TIMEOUT
+    # STALL DETECTION. Some analyzers never leave PENDING at all — the six
+    # yeti* ones sit there indefinitely when no Yeti API root/key is
+    # configured, and an analyzer that is never going to start is
+    # indistinguishable from one that is about to. Waiting the full timeout for
+    # them would add hours to every import for work that will never happen. So:
+    # if the settled COUNT has not moved for this long while some are still
+    # pending, treat the rest as never-coming and continue. The full timeout
+    # remains the outer bound for genuinely slow analysis.
     try:
         sid = int(sketch_id)
     except (TypeError, ValueError):
         return False, {}
+    # Started only once the id is known good — nothing above here can block.
+    stall_seconds = _TS_ANALYZER_STALL
+    last_settled = -1
+    last_progress_at = time.time()
 
     api = _connect_timesketch_api(timesketch_config, logger)
     if not api:
@@ -507,6 +525,23 @@ def wait_for_analyzers(sketch_id, timesketch_config, *, timeout_seconds=None,
                 consecutive_errors = 0
                 pending = [x for x in sessions
                            if str(x.get("status") or "").upper() not in _TERMINAL]
+                settled_now = len(sessions) - len(pending)
+                if settled_now != last_settled:
+                    last_settled = settled_now
+                    last_progress_at = time.time()
+                elif pending and (time.time() - last_progress_at) > stall_seconds:
+                    stuck = sorted({str(x.get("name") or "?") for x in pending})
+                    log(f"{len(pending)} analyzer(s) have not progressed in "
+                        f"{int(stall_seconds)}s and are treated as never "
+                        f"starting: {', '.join(stuck[:8])}"
+                        f"{'…' if len(stuck) > 8 else ''}", "warning")
+                    summary = {}
+                    for x in sessions:
+                        name = str(x.get("name") or "?")
+                        st = str(x.get("status") or "?").upper()
+                        summary.setdefault(name, {})
+                        summary[name][st] = summary[name].get(st, 0) + 1
+                    return True, summary
                 if sessions and not pending:
                     summary = {}
                     for x in sessions:

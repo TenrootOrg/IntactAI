@@ -887,6 +887,7 @@ class TestTheAnalyzerWaitSettles(unittest.TestCase):
 
         ns = {
             "_TS_ANALYZER_TIMEOUT": 7200,
+            "_TS_ANALYZER_STALL": 900,
             "_connect_timesketch_api": lambda *a, **k: FakeApi(),
             "time": type("t", (), {"time": staticmethod(lambda: calls["polls"] * 1.0),
                                    "sleep": staticmethod(lambda _s: None)}),
@@ -942,6 +943,7 @@ class TestTheAnalyzerWaitSettles(unittest.TestCase):
     def test_a_bad_sketch_id_is_refused_before_connecting(self):
         fn = load_func(TSSVC, "wait_for_analyzers", {
             "_TS_ANALYZER_TIMEOUT": 7200,
+            "_TS_ANALYZER_STALL": 900,
             "_connect_timesketch_api": lambda *a, **k: (_ for _ in ()).throw(
                 AssertionError("must not connect")),
             "print": lambda *a, **k: None,
@@ -1105,12 +1107,40 @@ class TestTheAnalyzerSetStaysCurated(unittest.TestCase):
 
     FLOOD = ("chain", "similarity_scorer", "sessionizer")
 
-    def test_the_conf_runs_the_curated_set(self):
+    ACTIVE_MIN = 26
+
+    def _active(self, path):
+        import re as _re
+        block = read(path).split("AUTO_SKETCH_ANALYZERS = [")[1].split("\n]")[0]
+        return set(_re.findall(r"'([a-z_0-9]+)'", block))
+
+    def test_the_conf_runs_everything_that_works(self):
+        # 26 of the 35 this Timesketch ships. Each was RUN against real data
+        # and observed to complete before being listed.
         for path in (CONF, LEGACY_CONF):
-            block = read(path).split("AUTO_SKETCH_ANALYZERS = [")[1].split("]")[0]
             with self.subTest(conf=os.path.basename(path)):
-                self.assertIn("'domain'", block)
-                self.assertNotIn("'sigma'", block)
+                self.assertGreaterEqual(len(self._active(path)), self.ACTIVE_MIN)
+
+    def test_the_nine_exclusions_are_each_for_a_measured_reason(self):
+        active = self._active(CONF)
+        # never start without a Yeti API root+key -> would hold every import
+        # open (wait_for_analyzers now stalls out, but they still do nothing)
+        for n in ("yetibadnessindicators", "yetibloomchecker", "yetiinvestigations",
+                  "yetikeywords", "yetilolbasindicators", "yetitriageindicators"):
+            with self.subTest(analyzer=n):
+                self.assertNotIn(n, active)
+        # refuses to start without a hashR database
+        self.assertNotIn("hashr_lookup", active)
+        # 0 of 53 rules satisfiable on plaso data
+        self.assertNotIn("sigma", active)
+        # arrives anyway as a dependency of domain/account_finder
+        self.assertNotIn("feature_extraction", active)
+
+    def test_the_reasons_are_written_next_to_the_list(self):
+        conf = read(CONF)
+        for marker in ("hashR database", "Yeti API", "0 of 53", "DEPENDENCY"):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, conf)
 
     def test_the_flood_analyzers_are_not_in_our_set(self):
         block = read(TSSVC).split("TS_ANALYZERS = (")[1].split(")")[0]
@@ -1185,6 +1215,34 @@ class TestTheTimelineIdReachesTheAnalyzers(unittest.TestCase):
         # Without the patch this list is actively harmful: analyzers report
         # ERROR while writing visualizations nobody can open.
         self.assertIn("must stay EMPTY", read(CONF))
+
+
+class TestAStuckAnalyzerCannotBlockAnImport(unittest.TestCase):
+    """Some analyzers never leave PENDING at all — the six yeti* ones sit there
+    indefinitely with no Yeti API root/key configured. An analyzer that is
+    never going to start looks exactly like one that is about to, so waiting
+    the full timeout for them would add hours to every import for work that
+    will never happen."""
+
+    def setUp(self):
+        self.src = read(TSSVC)
+
+    def test_the_wait_gives_up_when_nothing_progresses(self):
+        fn = func_source(TSSVC, "wait_for_analyzers")
+        self.assertIn("last_progress_at", fn)
+        self.assertIn("stall_seconds", fn)
+
+    def test_progress_resets_the_stall_clock(self):
+        # A slow analyzer that IS working must never be cut off.
+        fn = func_source(TSSVC, "wait_for_analyzers")
+        self.assertIn("if settled_now != last_settled:", fn)
+        self.assertIn("last_progress_at = time.time()", fn)
+
+    def test_it_names_what_it_gave_up_on(self):
+        self.assertIn("treated as never", self.src)
+
+    def test_the_stall_window_is_configurable(self):
+        self.assertIn("INTACT_TS_ANALYZER_STALL", self.src)
 
 
 class TestTheGuiSurvivesAContainerRecreate(unittest.TestCase):

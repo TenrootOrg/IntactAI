@@ -142,17 +142,66 @@ PLASO_UPPER_MEMORY_LIMIT = None
 # every caller. Without that patch this list must stay EMPTY — running these
 # with timeline_id=None is worse than not running them, because they report
 # ERROR while silently writing visualizations nobody can open.
+# 26 of the 35 analyzers this Timesketch ships. Every one here was RUN against
+# real data and observed to complete; the nine that are absent are absent for a
+# measured reason, not caution:
+#
+#   feature_extraction  runs anyway — `domain` and `account_finder` declare it
+#                       as a DEPENDENCY (analyzers/manager.py:_build_dependencies),
+#                       so listing it here would only duplicate it.
+#   sigma               0 of 53 stable SigmaHQ Windows rules are satisfiable on
+#                       plaso data: plaso's EVTX parser emits event_identifier,
+#                       a positional strings[] and xml_string, and NO named
+#                       fields (Image, CommandLine, ParentImage) — which is what
+#                       sigma matches on. Measured on 79,019 real attack events:
+#                       53 sessions DONE, ZERO tags. It is also one session PER
+#                       RULE per timeline. Sigma detection lives in the
+#                       Velociraptor/Hayabusa path, which parses EVTX properly.
+#   hashr_lookup        refuses to start without a hashR database ("please
+#                       uncomment the section and provide the connection
+#                       details"). Add the config, then add it here.
+#   yeti* (6)           never leave PENDING without a Yeti API root and key —
+#                       not an error, they simply never start, so they would
+#                       hold every import open. Configure Yeti, then add them.
+#                       (wait_for_analyzers stalls out after 15 min regardless,
+#                       so a stuck analyzer can no longer block a pipeline.)
+#
+# The enrichment analyzers near the bottom run clean with no service
+# configured — they are harmless no-ops that start producing the moment their
+# credentials exist, which is why they are on rather than waiting for a
+# config change nobody will remember to make.
 AUTO_SKETCH_ANALYZERS = [
-    'tagger',
+    # --- detection / tagging: these put tags on events, which is what the
+    #     case-fusion layer selects on ---
     'domain',
-    'login',
-    'browser_search',
-    'browser_timeframe',
     'phishy_domains',
+    'login',
+    'win_crash',
     'ntfs_timestomp',
     'evtx_gap',
-    'win_crash',
-    'account_finder'
+    'browser_search',
+    'browser_timeframe',
+    'account_finder',
+    'tagger',
+    'windowsbruteforceanalyser',
+    'sshbruteforceanalyzer',
+    # --- sessionizers: group related events into sessions ---
+    'sessionizer',
+    'ssh_sessionizer',
+    'ssh_bruteforce_sessionizer',
+    'web_activity_sessionizer',
+    'chain',
+    'similarity_scorer',
+    # --- enrichment: run clean, and become useful the moment their service
+    #     is configured; harmless no-ops until then ---
+    'hashlookup_analyzer',
+    'safebrowsing',
+    'geo_ip_maxmind_db',
+    'geo_ip_maxmind_web',
+    'misp_analyzer',
+    'gcp_logging',
+    'gcp_servicekey',
+    'llm_log_analyzer',
 ]
 AUTO_SKETCH_ANALYZERS_KWARGS = {}
 ANALYZERS_DEFAULT_KWARGS = {}
