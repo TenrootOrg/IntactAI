@@ -1422,3 +1422,112 @@ class TestSigmaIsDeliberatelyAbsent(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestAttackRuleVocabulary(unittest.TestCase):
+    """The Windows ATT&CK rule set (modules/timesketch/config/tags.yaml) tags a
+    hit with an explicit severity word and its technique codes, e.g.
+    ['win-mimikatz','T1003','Credential-Access','High']. Measured on this
+    appliance: 21 of its 116 rules fire on an ATT&CK EVTX sample set and 16 of
+    those are silent on a clean corporate desktop, against ONE true positive
+    from all 27 built-in analyzers combined. None of that reaches an analyst if
+    the mapper reads the tags wrong."""
+
+    def setUp(self):
+        import sys
+        import types
+        import importlib
+        backend = os.path.join(ROOT, "modules/backend")
+        if "services" not in sys.modules:
+            shim = types.ModuleType("services")
+            shim.__path__ = [os.path.join(backend, "services")]
+            sys.modules["services"] = shim
+        self.mod = importlib.import_module("services.fusion.mappers.timesketch")
+
+    def _map(self, tags, **fields):
+        row = {"datetime": "2026-08-01T00:00:00Z",
+               "message": "something happened", "tag": list(tags)}
+        row.update(fields)
+        return self.mod.map_timesketch(
+            [row], run_id="r1", asset="asset:endpoint:C.1", hostname="H")
+
+    def _event(self, tags, **fields):
+        ents, _ = self._map(tags, **fields)
+        return [e for e in ents if e.type == "event"][0]
+
+    def test_the_explicit_severity_word_beats_the_substring_guess(self):
+        """The rule author graded the detection; _HIGH_TAG_HINTS is a guess."""
+        e = self._event(["win-schtask", "T1053.005", "Persistence", "Medium"])
+        self.assertEqual(e.severity, "medium")
+        # ...even when a hint word would otherwise force it high.
+        e2 = self._event(["win-suspicious-thing", "T1059", "Execution", "Medium"])
+        self.assertEqual(e2.severity, "medium")
+
+    def test_a_high_rule_raises_high(self):
+        e = self._event(["win-zerologon", "T1068", "Privilege-Escalation", "High"])
+        self.assertIn("detection", e.flags)
+        self.assertEqual(e.severity, "high")
+
+    def test_info_rules_are_host_facts_and_never_findings(self):
+        """win_OSVersion / win_hostname / win_timezone are deterministic facts,
+        the same shape a Velociraptor artifact returns. A clean desktop fired 10
+        of them; each would have been a finding."""
+        e = self._event(["win-osversion", "Info"])
+        self.assertNotIn("detection", e.flags)
+        self.assertIsNone(e.attrs.get("title"))
+        self.assertEqual(e.severity, "informational")
+
+    def test_info_rules_land_on_the_endpoint_entity(self):
+        ents, _ = self._map(["win-osversion", "Info"], message="Windows 10 22H2")
+        asset = [e for e in ents if e.type == "asset"][0]
+        facts = asset.attrs.get("host_facts") or {}
+        self.assertIn("win-osversion", facts)
+        self.assertIn("Windows 10", str(facts["win-osversion"]))
+
+    def test_attack_codes_reach_the_title_and_the_attrs(self):
+        """An analyst pivots to ATT&CK without opening the rule file, and the
+        LLM gets a technique rather than an opaque rule name."""
+        e = self._event(["win-rdp-tunnel", "T1021.001", "T1572",
+                         "Lateral-Movement", "High"])
+        self.assertEqual(e.attrs.get("attack"), ["T1021.001", "T1572"])
+        self.assertIn("T1021.001", e.attrs.get("title") or "")
+        self.assertIn("win-rdp-tunnel", e.attrs.get("title") or "")
+
+    def test_a_tactic_or_code_alone_is_never_the_finding_title(self):
+        """Severity words, tactics and codes travel WITH a hit. Treated as
+        detections they would multiply one rule hit into four findings, and the
+        title could end up being 'Credential-Access'."""
+        for tags in (["T1003", "Credential-Access", "High"],
+                     ["Defense-Evasion", "Medium"],
+                     ["High"], ["T1055"]):
+            with self.subTest(tags=tags):
+                e = self._event(tags)
+                title = e.attrs.get("title")
+                if title:
+                    for label in ("Credential-Access", "Defense-Evasion",
+                                  "High", "Medium"):
+                        self.assertNotEqual(title, f"TimeSketch: {label}")
+
+    def test_a_rule_detection_survives_the_indicator_gate(self):
+        """The indicator gate exists for rare-domain/phishy-domain, which mean
+        nothing without a domain. A rule hit is self-contained and must raise
+        with no indicator on the event at all."""
+        e = self._event(["win-eventlog-clear", "T1070.001",
+                         "Defense-Evasion", "High"])
+        self.assertIn("detection", e.flags)
+        self.assertEqual(e.severity, "high")
+
+    def test_a_loud_rule_cannot_crowd_out_a_quiet_one(self):
+        """win_ifaceportproxy fired 387 times on the malicious index while
+        win_winrm_activity fired once. Per-tag bucketing is what keeps the
+        single-event technique in the graph; with 116 rules it is load-bearing."""
+        from services.fusion import store
+        loud = [{"datetime": "2026-08-01T00:00:00Z", "message": f"proxy {i}",
+                 "tag": ["win-portproxy", "T1090", "High"]} for i in range(387)]
+        quiet = [{"datetime": "2026-08-01T00:00:00Z", "message": "winrm once",
+                  "tag": ["win-winrm", "T1021.006", "High"]}]
+        kept = store._distill_ts_events(loud + quiet)
+        tags_kept = {t for e in kept for t in (e.get("tag") or [])}
+        self.assertIn("win-winrm", tags_kept)
+        self.assertLessEqual(sum(1 for e in kept
+                                 if "win-portproxy" in (e.get("tag") or [])), 5)

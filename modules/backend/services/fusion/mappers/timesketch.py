@@ -61,12 +61,119 @@ _ROUTINE_TAGS = {
     # indicator dressed as an actionable one. Keep the tag on the event so it
     # is visible in the timeline; do not raise it.
     "outside-active-hours",
+    # --------------------------------------------------------------------
+    # UBIQUITOUS FORENSIC ARTIFACTS from the Windows ATT&CK rule set. These
+    # rules are pivot views, not alerts — the upstream author marks every one
+    # `create_view: true`, i.e. "a saved search for an analyst to browse".
+    #
+    # MUICache / ShimCache / UserAssist / BAM record EVERY program ever run;
+    # Run keys, firewall rules and TaskCache exist on every Windows install;
+    # 4634 logoff fires on every session end. Measured on a clean corporate
+    # desktop they produced 14 medium "win-execution" findings, 5 "win-autorun"
+    # at HIGH and 5 "win-user-acc" — 20 findings on a machine with nothing
+    # wrong with it, against a budget of five.
+    #
+    # They stay ON, keep their tags, and remain searchable in the timeline and
+    # visible as graph context. They simply do not raise. A rule describing an
+    # ANOMALY (win_firewalldisabled, win_uacbypass, win_eventlog_clear) uses a
+    # different tag and is deliberately not listed here — verified: no tag
+    # below is shared with a detection rule.
+    "win-execution",        # execution_indicator / shimcache / userassist / bam
+    "win-autorun",          # Run keys — present on every host
+    "win-user-acc",         # includes 4634 logoff
+    "win-firewall",         # the firewall RULE inventory, not firewalldisabled
+    "win-rdp",              # session start/stop records; RDP-Tunnel is separate
+    "powershell config",    # the ExecutionPolicy value, not its abuse
 }
 # Detections worth surfacing above the default floor.
 # NOTE: "crash" deliberately absent — win_crash is routine context above, and
 # leaving the hint in would fight that decision for any crash-named tag.
 _HIGH_TAG_HINTS = ("sigma", "phishy", "timestomp", "bruteforce", "malware",
                    "suspicious")
+
+# --------------------------------------------------------------------------
+# The Windows ATT&CK rule set (modules/timesketch/config/tags.yaml) tags every
+# hit with an EXPLICIT severity word and its ATT&CK codes, e.g.
+#   ['win-mimikatz', 'T1003', 'Credential-Access', 'High']
+# An author who wrote "High" on the rule has told us more than any substring
+# guess can, so the explicit word wins; _HIGH_TAG_HINTS stays as the fallback
+# for tags the built-in analyzers generate, which carry no severity at all.
+# `context` is OURS, added to the vendored rule file — see tags.yaml. It marks a
+# rule whose artifact exists on every healthy Windows host (MUICache, Run keys,
+# TaskCache, firewall rules, RDP session records). Those rules are pivot views,
+# not alerts: the event keeps its tags and stays searchable and visible in the
+# graph, but raises nothing and is not a host fact either.
+_SEVERITY_WORDS = {"high": None, "medium": None, "low": None, "info": None,
+                   "context": None}
+
+# ATT&CK technique codes: T1003, T1021.001, T1546.003.
+_ATTACK_RE = re.compile(r"^T\d{4}(?:\.\d{3})?$", re.IGNORECASE)
+
+# ATT&CK TACTIC names. These appear alongside the technique code on the same
+# rule and are LABELS describing the technique, not detections of their own.
+# Without this every rule hit would derive a second finding titled
+# "TimeSketch: Credential-Access" sitting next to the real one.
+_TACTIC_WORDS = frozenset((
+    "reconnaissance", "resource-development", "initial-access", "execution",
+    "persistence", "privilege-escalation", "defense-evasion",
+    "credential-access", "discovery", "lateral-movement", "collection",
+    "command-and-control", "exfiltration", "impact",
+    # Free-form descriptors the rule set uses next to the tactic.
+    "user-execution", "macro-enabled", "base64", "double-encoded",
+    "double-encoded-null-padding", "encoded-python", "encoded-gzip",
+    "impacket", "bluekeep", "scan", "wireless", "applocker-denied",
+    "applocker-allowed", "security log disabled", "event log disabled",
+    # Generic descriptors that lose to a real name but win alphabetically, or
+    # that belong to a Context rule co-matching a real one. "Software" beat
+    # "SysInternals" on win_sysinternals; "Existence" (the ShimCache rule's
+    # sub-tag) titled a HIGH finding raised by a different rule on the same
+    # event; "end"/"start" are RDP session-record markers.
+    "software", "existence", "end", "start",
+    # `win` is the rule set's generic platform marker, carried by many rules.
+    # It is not the name of anything. Left in the running it won titles and a
+    # real run produced five findings all called "TimeSketch: win (T1070)",
+    # which tells an analyst nothing and merges unrelated techniques.
+    "win",
+))
+
+
+# Ordered worst-first. An event routinely matches SEVERAL rules — a ShimCache
+# entry for a malicious binary hits both the execution-artifact rule (Context)
+# and whatever detection named that binary — so the grade must be the MAXIMUM
+# present, never the first one iteration happens to reach. Taking the first cost
+# a real run its RDP-Tunnel (T1021.001) and named-pipe-privesc (T1134.001)
+# findings, because both events also matched a Context rule.
+_SEVERITY_ORDER = ("high", "medium", "low", "info", "context")
+
+
+def _severity_word(tags):
+    """The most severe explicit severity keyword on this event, or None."""
+    found = {str(t).strip().lower() for t in (tags or [])} & set(_SEVERITY_ORDER)
+    for word in _SEVERITY_ORDER:
+        if word in found:
+            return word
+    return None
+
+
+def _attack_codes(tags):
+    """ATT&CK technique codes on this event, uppercased and de-duplicated."""
+    out = []
+    for t in tags or []:
+        v = str(t).strip()
+        if _ATTACK_RE.match(v) and v.upper() not in out:
+            out.append(v.upper())
+    return out
+
+
+def _is_label(tag) -> bool:
+    """True for tags that describe a detection rather than being one.
+
+    Severity words, ATT&CK codes and tactic names all travel WITH a rule hit.
+    Treating any of them as a detection in its own right would multiply one
+    rule hit into three or four findings on the same event."""
+    low = str(tag).strip().lower()
+    return (low in _SEVERITY_WORDS or low in _TACTIC_WORDS
+            or bool(_ATTACK_RE.match(str(tag).strip())))
 
 
 def _summarise(msg: str) -> str:
@@ -105,11 +212,25 @@ def _summarise(msg: str) -> str:
 
 
 def _tag_floor(tags) -> int:
-    """Minimum anomaly a tagged event deserves, from its analyzer tags."""
+    """Minimum anomaly a tagged event deserves, from its analyzer tags.
+
+    An EXPLICIT severity word from the ATT&CK rule set wins outright — the rule
+    author graded the detection and that beats our substring heuristics. `info`
+    is host posture (hostname, OS version, timezone) and grades to nothing.
+    Everything else falls back to the built-in analyzers' tag names, which
+    carry no severity of their own."""
+    word = _severity_word(tags)
+    if word == "high":
+        return _TAG_FLOOR_HIGH
+    if word == "medium":
+        return _TAG_FLOOR_MEDIUM
+    if word in ("low", "info", "context"):
+        return 0
+
     floor = 0
     for t in tags or []:
         low = str(t).strip().lower()
-        if not low or low in _ROUTINE_TAGS:
+        if not low or low in _ROUTINE_TAGS or _is_label(t):
             continue
         if any(h in low for h in _HIGH_TAG_HINTS):
             return _TAG_FLOOR_HIGH          # can't be beaten by another tag
@@ -141,8 +262,12 @@ _INDICATOR_TAGS = frozenset((
 
 def _needs_indicator(tags) -> bool:
     """True when every non-routine tag on this event is indicator-only."""
-    real = [str(t).strip().lower() for t in (tags or []) if str(t).strip()]
-    real = [t for t in real if t not in _ROUTINE_TAGS]
+    real = [str(t).strip() for t in (tags or []) if str(t).strip()]
+    # Labels (severity word, ATT&CK code, tactic) are not tags that could
+    # satisfy the gate; without dropping them a rare-domain event carrying a
+    # severity word would look "not indicator-only" and skip the check.
+    real = [t.lower() for t in real
+            if t.lower() not in _ROUTINE_TAGS and not _is_label(t)]
     return bool(real) and all(t in _INDICATOR_TAGS for t in real)
 
 
@@ -161,14 +286,44 @@ def _detection_title(tags) -> str | None:
     context for a timeline, not something to raise. Same rule as the severity
     floor above, and for the same reason.
     """
+    # `info` rules are deterministic host FACTS, not detections. They land as
+    # attributes on the endpoint entity instead — see map_timesketch.
+    if _severity_word(tags) in ("low", "info", "context"):
+        return None
+
     names = [str(t).strip() for t in (tags or []) if str(t).strip()]
-    real = [t for t in names if t.lower() not in _ROUTINE_TAGS]
+    # Drop the labels that travel with a rule hit (severity word, ATT&CK code,
+    # tactic name). Keeping them would let "Credential-Access" or "T1003"
+    # become the title of a finding instead of the rule that fired.
+    real = [t for t in names
+            if t.lower() not in _ROUTINE_TAGS and not _is_label(t)]
+    codes = _attack_codes(tags)
     if not real:
+        # 24 of the 116 rules carry no descriptive tag at all — only the
+        # generic `win` marker plus their technique codes (win_uacbypass,
+        # win_namedpipeprivesc, win_csbeaconexec, win_schtask_deleted…).
+        # Dropping them because `win` is uninformative silenced real
+        # detections; the technique IS a usable name, so title from it.
+        if codes and _severity_word(tags) not in ("low", "info", "context"):
+            return "TimeSketch: " + ", ".join(codes)
         return None
     # One title per event, so an event carrying two detections groups under the
     # more serious one rather than splitting arbitrarily.
-    real.sort(key=lambda t: (0 if any(h in t.lower() for h in _HIGH_TAG_HINTS) else 1, t))
-    return f"TimeSketch: {real[0]}"
+    # Prefer the RULE that fired over an analyzer's tag when an event carries
+    # both. The BITS-job rule and the domain analyzer hit the same a.uguu.se
+    # event; "win-bitstransfer" names the technique that matched, "rare-domain"
+    # only names how the domain analyzer felt about the hostname.
+    _rule_first = lambda t: 0 if str(t).lower().startswith("win") else 1
+    real.sort(key=lambda t: (_rule_first(t),
+                             0 if any(h in t.lower() for h in _HIGH_TAG_HINTS) else 1,
+                             t))
+    title = f"TimeSketch: {real[0]}"
+    # Name the technique. An analyst reading "TimeSketch: win_zero_logon
+    # (T1068)" can pivot to ATT&CK without opening the rule file, and the LLM
+    # gets a technique it can reason about rather than an opaque rule name.
+    if codes:
+        title = f"{title} ({', '.join(codes)})"
+    return title
 
 
 def map_timesketch(events, *, run_id: str, asset: str, hostname=None,
@@ -203,9 +358,18 @@ def map_timesketch(events, *, run_id: str, asset: str, hostname=None,
     # Every asset that actually appears gets a node — declared up front for the
     # default one, and lazily below for any other host the events name.
     seen_assets = {asset}
-    ents.append(Entity(id=asset, type="asset", label=str(hostname or asset.split(":")[-1]),
-                       attrs={"hostname": hostname, "kind": "endpoint", "_assets": [asset]},
-                       sources=[MODULE], evidence=[EvidenceRef(MODULE, run_id, "asset")]))
+    asset_ents = {}
+    # Deterministic host FACTS from the `Info` rules — OS version, hostname,
+    # timezone, proxy config, network adapters, user profiles. They are the
+    # same shape of value a Velociraptor artifact returns, so they belong on
+    # the endpoint entity where the report's host table and the LLM already
+    # read, NOT in a finding. Collected during the loop, attached after it.
+    posture = {}
+    _a0 = Entity(id=asset, type="asset", label=str(hostname or asset.split(":")[-1]),
+                 attrs={"hostname": hostname, "kind": "endpoint", "_assets": [asset]},
+                 sources=[MODULE], evidence=[EvidenceRef(MODULE, run_id, "asset")])
+    asset_ents[asset] = _a0
+    ents.append(_a0)
 
     for i, e in enumerate(events or []):
         if not isinstance(e, dict):
@@ -213,11 +377,13 @@ def map_timesketch(events, *, run_id: str, asset: str, hostname=None,
         ev_asset, ev_host = _host_for(e)
         if ev_asset not in seen_assets:
             seen_assets.add(ev_asset)
-            ents.append(Entity(
+            _an = Entity(
                 id=ev_asset, type="asset",
                 label=str(ev_host or ev_asset.split(":")[-1]),
                 attrs={"hostname": ev_host, "kind": "endpoint", "_assets": [ev_asset]},
-                sources=[MODULE], evidence=[EvidenceRef(MODULE, run_id, "asset")]))
+                sources=[MODULE], evidence=[EvidenceRef(MODULE, run_id, "asset")])
+            asset_ents[ev_asset] = _an
+            ents.append(_an)
         ts = keys.norm_ts(F.get(e, "datetime", "Timestamp", "TimeCreated", *F.TIMES))
         msg = str(F.get(e, "message", "Message", "description", default="") or "")
         # Score the EVIDENCE, never our own annotations. score_row concatenates
@@ -245,6 +411,22 @@ def map_timesketch(events, *, run_id: str, asset: str, hostname=None,
             tags = [tags]
         tags = [str(t) for t in tags if t]
         anom = max(anom, _tag_floor(tags))
+
+        # Host posture. An `Info` rule fired: record WHICH fact it established
+        # and a one-line value, keyed by the rule's own descriptive tag. Capped
+        # per host because a rule like win_usrprofile fires once per profile and
+        # we want the fact, not an inventory dump in the graph.
+        if _severity_word(tags) == "info":
+            facts = posture.setdefault(ev_asset, {})
+            for t in tags:
+                low = str(t).strip().lower()
+                if low in _ROUTINE_TAGS or _is_label(t):
+                    continue
+                vals = facts.setdefault(low, [])
+                summary = _summarise(msg)
+                if summary and summary not in vals and len(vals) < 5:
+                    vals.append(summary)
+
         det_title = _detection_title(tags)
         ev_entity = _ent(eid, "event",
                          (_summarise(msg) or F.get(e, "parser", default="event")),
@@ -252,6 +434,7 @@ def map_timesketch(events, *, run_id: str, asset: str, hostname=None,
                          flags=["detection"] if det_title else None,
                          parser=F.get(e, "parser", "source_name", default=None),
                          title=det_title,
+                         attack=_attack_codes(tags) or None,
                          tags=tags or None)
         ents.append(ev_entity)
 
@@ -331,5 +514,15 @@ def map_timesketch(events, *, run_id: str, asset: str, hostname=None,
                                        if f != "detection"]
                 except Exception:
                     pass
+
+    # Attach the collected host facts. Stored under one `host_facts` key rather
+    # than splattered across the asset's attrs, so a downstream reader can tell
+    # what TimeSketch established from what the other modules did.
+    for a_id, facts in posture.items():
+        ent = asset_ents.get(a_id)
+        if ent is None or not facts:
+            continue
+        ent.attrs["host_facts"] = {k: (v[0] if len(v) == 1 else v)
+                                   for k, v in sorted(facts.items())}
 
     return ents, rels
