@@ -315,3 +315,81 @@ class TestTheButtonSaysWhatItDoes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestAFetchAfterACancelIsAudible(unittest.TestCase):
+    """A Fetch is very often pressed on a run the operator just STOPPED — that
+    is the whole point of the button when a collection budget ran out.
+
+    add_log_to_run drops logs on a cancelled run, to keep subprocess wrap-up
+    from writing "success" lines after "[Pipeline] Stop requested by user".
+    That guard swallowed this worker's entire narrative. Measured on case
+    'test2': the fetch ran, re-read 481,253 rows and updated the run's details,
+    and wrote not one log line — so the button looked dead and the operator
+    reported it as broken.
+
+    The worker owns a deliberate post-cancel operation, so it must force its
+    logs. This pins the wiring; test_post_cancel_logging.py pins the guard
+    itself.
+    """
+
+    def setUp(self):
+        self.src = read(ROUTES)
+        tree = ast.parse(self.src)
+        self.worker = next(
+            ast.get_source_segment(self.src, n) for n in tree.body
+            if isinstance(n, ast.FunctionDef) and n.name == "_recollect_worker")
+
+    def test_the_worker_logs_through_a_forcing_wrapper(self):
+        """Executed, not grepped: run the worker's own body far enough to bind
+        its logger, then check what that logger does to a cancelled run."""
+        seen = []
+
+        def fake_add_log(rid, msg, level="info", force=False):
+            seen.append({"msg": msg, "force": force})
+
+        ns = {}
+        # The worker imports its collaborators inside the function body, so a
+        # stub module is what it will bind.
+        import sys
+        import types
+        mod = types.ModuleType("services.workflow_service")
+        mod.add_log_to_run = fake_add_log
+        mod.mutate_run_details = lambda *a, **k: None
+        col = types.ModuleType("services.agentic.collectors")
+        col.get_existing_collection_results = lambda *a, **k: ({}, None, None)
+        col.persist_pipeline_artifacts = lambda *a, **k: None
+        saved = {k: sys.modules.get(k) for k in
+                 ("services", "services.workflow_service", "services.agentic",
+                  "services.agentic.collectors")}
+        try:
+            pkg = types.ModuleType("services"); pkg.__path__ = []
+            ag = types.ModuleType("services.agentic"); ag.__path__ = []
+            sys.modules.update({"services": pkg, "services.workflow_service": mod,
+                                "services.agentic": ag,
+                                "services.agentic.collectors": col})
+            ns.update(load_route_helpers())
+            ns["_recollect_lock"] = __import__("threading").Lock()
+            ns["_recollecting"] = set()
+            exec(compile(self.worker, ROUTES, "exec"), ns)
+            ns["_recollect_worker"]("r1", {"details": {"flow_id": "F.ABC"},
+                                           "case_id": None})
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+
+        self.assertTrue(seen, "the worker must say something when it starts")
+        self.assertTrue(all(e["force"] for e in seen),
+                        "every Fetch log must be forced, or a cancelled run "
+                        "silently swallows the whole narrative")
+        self.assertTrue(any("Fetch" in e["msg"] for e in seen))
+
+    def test_the_empty_result_warning_is_forced_too(self):
+        """'Velociraptor returned nothing' is the ONE line that explains a
+        no-op fetch. Dropped on a cancelled run, the button looks broken
+        instead of informative — which is exactly how this was reported."""
+        self.assertIn("returned nothing", self.src,
+                      "the empty-result explanation must still exist")
