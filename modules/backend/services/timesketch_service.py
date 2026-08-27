@@ -360,6 +360,17 @@ def wait_for_analyzers(sketch_id, timesketch_config, *, timeout_seconds=1800,
     domain, feature_extraction) are why the per-analyzer summary is returned
     rather than a bare bool: analyzers DO fail on real timelines and the run
     log must say which.
+
+    Those five turned out to be UPSTREAM Timesketch bugs, not misconfiguration
+    — jsonschema validation blowing up in the analyzer interface for
+    account_finder/domain, and crashes inside win_evtxgap.py and
+    feature_extraction.py. The important consequence: an analyzer that reports
+    ERROR may still have TAGGED its events before dying. `domain` did exactly
+    that here — it errored, and its 20 `rare-domain` tags were on the documents
+    anyway. This is why fusion selects on tags (which live on the OpenSearch
+    documents) rather than on analyzer `result` rows (which are what failed to
+    write), and why an ERROR here must never be treated as "this analyzer
+    contributed nothing".
     """
     def log(message, level="info"):
         print(f"[TIMESKETCH] {message}", flush=True)
@@ -611,8 +622,11 @@ def fetch_sketch_timelines(sketch_id, timesketch_config, logger=None):
                 pass
 
 
+_TS_MAX_TAG_QUERIES = int(os.environ.get("INTACT_TS_MAX_TAG_QUERIES", "250"))
+
+
 def fetch_sketch_events(sketch_id, timesketch_config, *, limit=4000, window=None,
-                        per_tag_min=25, logger=None):
+                        per_tag_min=25, max_tag_queries=None, logger=None):
     """Pull the analyst-relevant events from a sketch — those an analyzer TAGGED
     (SIGMA / threat-intel hits) or an analyst STARRED/commented — so the fusion
     layer can ingest TimeSketch findings.
@@ -653,6 +667,8 @@ def fetch_sketch_events(sketch_id, timesketch_config, *, limit=4000, window=None
         sid = int(sketch_id)
     except (TypeError, ValueError):
         return []
+    if max_tag_queries is None:
+        max_tag_queries = _TS_MAX_TAG_QUERIES
     api = None
     try:
         api = _connect_timesketch_api(timesketch_config, logger)
@@ -710,7 +726,14 @@ def fetch_sketch_events(sketch_id, timesketch_config, *, limit=4000, window=None
         if tag_counts:
             budget = max(1, int(limit / max(1, len(tag_counts))))
             per_tag_cap = max(per_tag_min, min(budget, limit))
-            for tag in sorted(tag_counts, key=lambda t: tag_counts[t]):
+            # One query per tag, and a sigma ruleset tags per RULE NAME — 2,590
+            # Windows rules is a realistic upper end, which would be 2,590
+            # sequential round trips. Bounded, rarest-first (the specific
+            # detections beat the common ones), and the operator is TOLD what
+            # was left out: a silent cap reads as "we looked at everything".
+            ordered = sorted(tag_counts, key=lambda t: tag_counts[t])
+            queried = ordered[:max_tag_queries]
+            for tag in queried:
                 if len(events) >= limit:
                     break
                 # Lucene-escape the tag for a quoted phrase: backslash first,
@@ -718,9 +741,15 @@ def fetch_sketch_events(sketch_id, timesketch_config, *, limit=4000, window=None
                 safe = str(tag).replace("\\", "\\\\").replace('"', '\\"')
                 q = f'tag:"{safe}"' + (f" AND {clause}" if clause else "")
                 _collect(q, min(per_tag_cap, limit - len(events)), events, seen)
+            skipped = len(ordered) - len(queried)
             log(f"fusion: {len(tag_counts)} distinct tag(s) in sketch {sid}; "
                 f"pulled {len(events)} tagged event(s) at up to {per_tag_cap} each"
                 + (f" (window {clause})" if clause else ""))
+            if skipped > 0:
+                log(f"fusion: {skipped} more common tag(s) not queried "
+                    f"(cap {max_tag_queries}); rarest detections were taken "
+                    f"first — raise INTACT_TS_MAX_TAG_QUERIES to widen",
+                    "warning")
         else:
             # Aggregation unavailable (old server, permissions): fall back to the
             # single broad query rather than contributing nothing.

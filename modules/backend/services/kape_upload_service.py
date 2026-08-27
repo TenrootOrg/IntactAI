@@ -401,9 +401,18 @@ def _wait_for_sketch_analyzers(run_id, sketch_id, settings):
                 f"  analyzer {name}: {total - errs}/{total} ok"
                 + (f", {errs} error(s)" if errs else ""),
                 "warning" if errs else "info")
-        if settled:
+        if settled and summary:
             add_log_to_run(run_id, "Analyzers finished — their tags are now "
                                    "available to the case graph.", "success")
+        elif settled:
+            # wait_for_analyzers returns settled with an empty summary when no
+            # analyzer sessions ever appeared. Saying "finished" there claims
+            # tags exist that do not, and the empty case that follows then looks
+            # like a fusion bug rather than a Timesketch that was asked to run
+            # nothing.
+            add_log_to_run(run_id, "No analyzers ran on this timeline "
+                                   "(AUTO_SKETCH_ANALYZERS may be empty) — the "
+                                   "case will only see starred events.", "warning")
         else:
             add_log_to_run(run_id, "Analyzers did not finish in time — the "
                                    "import is complete and a later Refusion "

@@ -139,15 +139,26 @@ class TestNoDetectionClassIsStarvedByANoisyOne(unittest.TestCase):
 
     def test_the_tag_vocabulary_is_discovered_before_events_are_pulled(self):
         self.assertLess(self.src.index("_sketch_tag_counts"),
-                        self.src.index("for tag in sorted(tag_counts"))
+                        self.src.index("for tag in queried:"))
 
     def test_the_rarest_tags_are_served_first(self):
         # If the budget runs out it must run out on the noisy classes.
-        self.assertIn("sorted(tag_counts, key=lambda t: tag_counts[t])", self.src)
+        self.assertIn("ordered = sorted(tag_counts, key=lambda t: tag_counts[t])",
+                      self.src)
 
     def test_each_tag_gets_a_floor_not_just_a_share(self):
         # An even split alone starves everything once the vocabulary is large.
         self.assertIn("max(per_tag_min, min(budget, limit))", self.src)
+
+    def test_the_number_of_tag_queries_is_bounded(self):
+        # A sigma ruleset tags per RULE NAME; 2,590 Windows rules would be
+        # 2,590 sequential round trips.
+        self.assertIn("ordered[:max_tag_queries]", self.src)
+
+    def test_a_skipped_tag_is_announced_not_silently_dropped(self):
+        # A silent cap reads as "we looked at everything".
+        self.assertIn("not queried", self.src)
+        self.assertIn("INTACT_TS_MAX_TAG_QUERIES", self.src)
 
     def test_it_still_works_without_the_aggregator(self):
         # Older servers / restricted permissions must degrade to the old
