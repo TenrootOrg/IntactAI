@@ -10,6 +10,7 @@ Handles:
 """
 
 import os
+import re
 import zipfile
 import json
 import shutil
@@ -340,10 +341,8 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
                 # in the dashboard. 200-char cap is defensive — Plaso
                 # doesn't emit longer lines in practice.
                 if logger:
-                    line_lower = line.lower()
-                    level = "error" if 'error' in line_lower else ("warning" if 'warning' in line_lower else "info")
                     try:
-                        logger(line[:200], level)
+                        logger(line[:200], _plaso_line_level(line))
                     except Exception:
                         pass
 
@@ -369,6 +368,41 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
         log(f"Plaso error: {e}", "error")
         traceback.print_exc()
         return None
+
+
+# Plaso status lines end with ", file: <path>" (or "file: <path>"); everything
+# from there on is a filesystem path and must never influence the log level.
+_PLASO_PATH_TAIL = re.compile(r",?\s*file:\s", re.IGNORECASE)
+_PLASO_ERROR_WORD = re.compile(r"\berrors?\b", re.IGNORECASE)
+_PLASO_WARNING_WORD = re.compile(r"\bwarnings?\b", re.IGNORECASE)
+
+
+def _plaso_line_level(line):
+    """Log level for one line of log2timeline output.
+
+    This used to be `"error" if "error" in line.lower()` over the WHOLE line —
+    and every plaso worker status line ends with the path it is currently
+    parsing:
+
+      Worker_01 (PID: 15) status: idle, event data produced: 0,
+        file: .../OneDrive/.../images/lightTheme/SyncStatusError.svg
+
+    A OneDrive icon called SyncStatusError.svg therefore logged at error level,
+    which tripped workflow_service's "any error-level entry auto-fails the run"
+    rule, which marked a perfect 4.16M-event import FAILED — and because
+    `failed` is not a terminal SUCCESS status, the case auto-fuse never armed
+    and the whole TimeSketch integration silently did not happen. A filename
+    decided whether an hour of collection reached the case.
+
+    So: classify on the message, never on the path, and match whole words —
+    "error" inside "SyncStatusError" or "terror" is not a log level.
+    """
+    text = _PLASO_PATH_TAIL.split(line, 1)[0]
+    if _PLASO_ERROR_WORD.search(text):
+        return "error"
+    if _PLASO_WARNING_WORD.search(text):
+        return "warning"
+    return "info"
 
 
 def _wait_for_sketch_analyzers(run_id, sketch_id, settings):

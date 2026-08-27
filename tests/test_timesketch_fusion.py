@@ -737,6 +737,60 @@ class TestExtractedIndicatorsAreReal(unittest.TestCase):
 
 # ------------------------------------------------------- the completion order
 
+class TestAFilenameCannotFailTheRun(unittest.TestCase):
+    """A perfect 4.16M-event import was marked FAILED because plaso logged a
+    progress line naming a OneDrive icon called SyncStatusError.svg. The level
+    was chosen by `"error" in line.lower()` over the WHOLE line — and every
+    plaso worker status line ends with the path it is currently parsing.
+
+    The consequence was not cosmetic: workflow_service auto-fails any run with
+    an error-level entry, `failed` is not a terminal SUCCESS status, so the
+    case auto-fuse never armed and the entire TimeSketch integration silently
+    did not happen. A filename decided whether an hour of collection reached
+    the case."""
+
+    def setUp(self):
+        self.level = load_func(
+            os.path.join(ROOT, "modules/backend/services/kape_upload_service.py"),
+            "_plaso_line_level",
+            {"_PLASO_PATH_TAIL": __import__("re").compile(r",?\s*file:\s", 2),
+             "_PLASO_ERROR_WORD": __import__("re").compile(r"\berrors?\b", 2),
+             "_PLASO_WARNING_WORD": __import__("re").compile(r"\bwarnings?\b", 2)})
+
+    def test_the_exact_line_that_failed_a_real_run(self):
+        line = ("Worker_01 (PID: 15) status: idle, event data produced: 0, "
+                "file: OS:/source/auto/C:/Users/vagrant/AppData/Local/Microsoft/"
+                "OneDrive/26.150.0804.0011/images/lightTheme/SyncStatusError.svg")
+        self.assertEqual(self.level(line), "info")
+
+    def test_a_path_containing_warning_is_not_a_warning(self):
+        self.assertEqual(
+            self.level("Worker_00 status: extracting, file: C:/W/warningsound.wav"),
+            "info")
+
+    def test_real_plaso_errors_still_register(self):
+        for line in ("ERROR: unable to parse file entry",
+                     "[ERROR] plaso backend failed",
+                     "Unable to open storage file, error: permission denied"):
+            with self.subTest(line=line):
+                self.assertEqual(self.level(line), "error")
+
+    def test_real_plaso_warnings_still_register(self):
+        for line in ("WARNING: skipping unsupported format",
+                     "2 warnings generated during processing"):
+            with self.subTest(line=line):
+                self.assertEqual(self.level(line), "warning")
+
+    def test_ordinary_progress_is_info(self):
+        self.assertEqual(
+            self.level("Main (PID: 7) status: merging, event data produced: 945339"),
+            "info")
+
+    def test_a_substring_is_not_a_word(self):
+        # "terror", "SyncStatusError" — neither is a log level.
+        self.assertEqual(self.level("processing terror.txt sample"), "info")
+
+
 class TestTheRunWaitsForItsAnalyzers(unittest.TestCase):
     """Completion arms the case auto-fuse 60s later. Completing before the
     analyzers settle hands that fuse a sketch with zero tags."""
