@@ -224,6 +224,57 @@ curate_timesketch_analyzers() {
     return 0
 }
 
+# Stage + import Sigma rules so Timesketch's `sigma` analyzer has something to
+# detect with. Without this it runs on every timeline and finds nothing: the
+# sigmarule table ships EMPTY, and the only rule mounted is an upstream Linux
+# zmap sample that cannot match a Windows KAPE timeline. Fusion selects
+# TimeSketch events BY TAG, so an analyzer that never tags is an analyzer that
+# contributes nothing to a case.
+#
+# Two filters, both load-bearing (measured against SigmaHQ 2026-08-27):
+#   * `status: stable` only. Timesketch's analyzer skips every other status
+#     (sigma_tagger.py: `if rule.get("status") == "stable"`), so importing all
+#     2,403 Windows rules would put 2,349 rows in the database that can never
+#     run. 54 are stable.
+#   * no `windash`. The pysigma bundled with Timesketch 20260630 supports
+#     all/base64/base64offset/contains/endswith/re/startswith/utf16*/wide and
+#     nothing else, and ONE rule using a newer modifier aborts the WHOLE import
+#     with a KeyError — 10 rules in, 43 silently never imported.
+#
+# Idempotent and air-gap aware: no rules directory, no work, no error.
+import_timesketch_sigma_rules() {
+    local src="/opt/sigma-rules/rules/windows"
+    local dest="${SCRIPT_DIR}/modules/timesketch/config/sigma/rules/windows"
+    if [[ ! -d "$src" ]]; then
+        log_info "  Sigma rules not present on this host (skip)"
+        return 0
+    fi
+    mkdir -p "$dest"
+    local staged=0 skipped=0 f
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        if grep -q '|windash' "$f" 2>/dev/null; then
+            skipped=$((skipped + 1))
+            continue
+        fi
+        cp -f "$f" "$dest/" 2>/dev/null && staged=$((staged + 1))
+    done < <(grep -rl '^status: stable' "$src" 2>/dev/null)
+    if [[ "$staged" -eq 0 ]]; then
+        log_warn "  No importable Sigma rules found (skip)"
+        return 0
+    fi
+    log_info "  Staged ${staged} stable Sigma rule(s)$([[ $skipped -gt 0 ]] && echo " (${skipped} skipped: unsupported modifier)")"
+    if docker exec intact_timesketch_web \
+            tsctl import-sigma-rules /etc/timesketch/sigma/rules/windows >/dev/null 2>&1; then
+        log_success "  Sigma rules imported into Timesketch"
+    else
+        # Never fatal: a timeline still imports and every other analyzer still
+        # runs; only sigma detections are missing.
+        log_warn "  Sigma rule import failed — the sigma analyzer will find nothing"
+    fi
+    return 0
+}
+
 deploy_timesketch() {
     local ts_enabled=$(read_config "['modules']['timesketch']['enabled']")
     if ! is_enabled "$ts_enabled"; then
@@ -364,6 +415,10 @@ deploy_timesketch() {
         # Keep the analyzer list curated on appliances whose conf predates the
         # curation (the renderer never rewrites an existing conf).
         curate_timesketch_analyzers
+
+        # Give the sigma analyzer rules to detect with.
+        log_info "  Importing Sigma rules..."
+        import_timesketch_sigma_rules
 
         # Populate /etc/timesketch/dfiq/ with the upstream Google DFIQ
         # YAML files. The Timesketch image does NOT ship these — the

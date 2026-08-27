@@ -1024,5 +1024,40 @@ class TestTheAnalyzerSetStaysCurated(unittest.TestCase):
         self.assertIn("curate_timesketch_analyzers\n", deploy)
 
 
+class TestSigmaHasRulesToDetectWith(unittest.TestCase):
+    """The sigma analyzer ran on every timeline and found nothing: the
+    sigmarule table ships EMPTY and the only mounted rule was an upstream Linux
+    zmap sample, useless against a Windows KAPE timeline. Fusion selects
+    TimeSketch events BY TAG, so an analyzer that never tags contributes
+    nothing at all."""
+
+    def setUp(self):
+        self.src = read(DEPLOY)
+
+    def test_the_installer_imports_rules(self):
+        self.assertIn("import_timesketch_sigma_rules()", self.src)
+        self.assertIn("import_timesketch_sigma_rules\n", self.src)
+
+    def test_only_stable_rules_are_staged(self):
+        # sigma_tagger.py skips every other status, so importing all 2,403
+        # Windows rules would write 2,349 rows that can never run.
+        self.assertIn("grep -rl '^status: stable'", self.src)
+
+    def test_rules_using_an_unsupported_modifier_are_skipped(self):
+        # ONE rule using `windash` aborts the whole import with a KeyError —
+        # measured: 10 rules in, 43 never imported.
+        self.assertIn("windash", self.src)
+
+    def test_a_missing_ruleset_is_not_an_error(self):
+        # Air-gapped appliances have no /opt/sigma-rules.
+        self.assertIn('if [[ ! -d "$src" ]]', self.src)
+
+    def test_a_failed_import_never_fails_the_deploy(self):
+        seg = self.src[self.src.index("import_timesketch_sigma_rules() {"):]
+        seg = seg[:seg.index("\ndeploy_timesketch()")]
+        self.assertIn("log_warn", seg)
+        self.assertNotIn("return 1", seg)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
