@@ -99,12 +99,39 @@ _DOM = re.compile(r"\b[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+){1,}\b")
 _HASH = re.compile(r"\b[0-9a-fA-F]{32,64}\b")
 
 
-def _ent(eid, etype, label, asset, run_id, locator, *, anomaly=0, first=None, **attrs):
+def _ent(eid, etype, label, asset, run_id, locator, *, anomaly=0, first=None,
+         flags=None, **attrs):
     a = {"_assets": [asset]}
     a.update({k: v for k, v in attrs.items() if v not in (None, "", [])})
     return Entity(id=eid, type=etype, label=label, attrs=a, sources=[MODULE],
                   evidence=[EvidenceRef(MODULE, run_id, locator)], anomaly=anomaly,
-                  severity=from_anomaly(anomaly), first_seen=first, last_seen=first)
+                  severity=from_anomaly(anomaly), first_seen=first, last_seen=first,
+                  flags=list(flags or []))
+
+
+def _detection_title(tags) -> str | None:
+    """A human detection name for the analyzer tags on an event, or None.
+
+    correlate._derive_findings groups NON-sigma detection events per
+    (host, title) into one finding each — that is the mechanism by which a
+    detection reaches the case timeline, the report and the LLM at all. It keys
+    off the `detection` flag and `attrs["title"]`, and the TimeSketch mapper
+    stamped neither, so every TimeSketch event landed in the graph as a bare
+    entity that no finding ever referenced and no operator ever saw. A fuse of
+    real tagged data produced 12 event entities and 0 findings.
+
+    Routine bookkeeping tags deliberately do NOT produce a detection: a logon is
+    context for a timeline, not something to raise. Same rule as the severity
+    floor above, and for the same reason.
+    """
+    names = [str(t).strip() for t in (tags or []) if str(t).strip()]
+    real = [t for t in names if t.lower() not in _ROUTINE_TAGS]
+    if not real:
+        return None
+    # One title per event, so an event carrying two detections groups under the
+    # more serious one rather than splitting arbitrarily.
+    real.sort(key=lambda t: (0 if any(h in t.lower() for h in _HIGH_TAG_HINTS) else 1, t))
+    return f"TimeSketch: {real[0]}"
 
 
 def map_timesketch(events, *, run_id: str, asset: str, hostname=None,
@@ -173,10 +200,13 @@ def map_timesketch(events, *, run_id: str, asset: str, hostname=None,
             tags = [tags]
         tags = [str(t) for t in tags if t]
         anom = max(anom, _tag_floor(tags))
+        det_title = _detection_title(tags)
         ents.append(_ent(eid, "event",
                          (_summarise(msg) or F.get(e, "parser", default="event")),
                          ev_asset, run_id, loc, anomaly=anom, first=ts,
+                         flags=["detection"] if det_title else None,
                          parser=F.get(e, "parser", "source_name", default=None),
+                         title=det_title,
                          tags=tags or None))
 
         # indicators from explicit fields + the message text

@@ -322,6 +322,79 @@ class TestTheMapperKeepsWhyTheEventWasSelected(unittest.TestCase):
         self.assertEqual(iocs, ["8.8.8.8"])
 
 
+class TestDetectionsActuallyReachTheAnalyst(unittest.TestCase):
+    """The single most consequential bug in this integration. The report
+    timeline renders graph.FINDINGS, not entities, and correlate._derive_findings
+    groups non-sigma detections per (host, title) keyed off the `detection` flag
+    and attrs["title"]. The TimeSketch mapper stamped neither — so every
+    TimeSketch event landed in the graph as a bare entity that no finding
+    referenced and no operator ever saw. Measured on real tagged data before the
+    fix: 12 event entities, 0 findings, nothing in the report."""
+
+    def setUp(self):
+        import sys
+        import types
+        import importlib
+        backend = os.path.join(ROOT, "modules/backend")
+        if "services" not in sys.modules:
+            shim = types.ModuleType("services")
+            shim.__path__ = [os.path.join(backend, "services")]
+            sys.modules["services"] = shim
+        self.mod = importlib.import_module("services.fusion.mappers.timesketch")
+
+    def _event(self, tag):
+        ents, _ = self.mod.map_timesketch(
+            [{"datetime": "2026-08-01T00:00:00Z", "message": "something happened",
+              "tag": [tag]}],
+            run_id="r1", asset="asset:endpoint:C.1", hostname="H")
+        return [e for e in ents if e.type == "event"][0]
+
+    def test_a_detection_tag_flags_the_event_for_finding_derivation(self):
+        e = self._event("rare-domain")
+        self.assertIn("detection", e.flags)
+        self.assertEqual(e.attrs.get("title"), "TimeSketch: rare-domain")
+
+    def test_a_routine_tag_raises_nothing(self):
+        # A logon is context for a timeline, not something to raise — the same
+        # rule as the severity floor, for the same reason.
+        e = self._event("logon-event")
+        self.assertNotIn("detection", e.flags)
+        self.assertIsNone(e.attrs.get("title"))
+
+    def test_an_untagged_event_raises_nothing(self):
+        ents, _ = self.mod.map_timesketch(
+            [{"datetime": "2026-08-01T00:00:00Z", "message": "x"}],
+            run_id="r1", asset="asset:endpoint:C.1", hostname="H")
+        e = [x for x in ents if x.type == "event"][0]
+        self.assertNotIn("detection", e.flags)
+
+    def test_the_more_serious_tag_names_the_finding(self):
+        # An event carrying two detections must group under one title, and it
+        # should be the one worth reading.
+        ents, _ = self.mod.map_timesketch(
+            [{"datetime": "2026-08-01T00:00:00Z", "message": "x",
+              "tag": ["rare-domain", "sigma_credential_dump"]}],
+            run_id="r1", asset="asset:endpoint:C.1", hostname="H")
+        e = [x for x in ents if x.type == "event"][0]
+        self.assertEqual(e.attrs.get("title"), "TimeSketch: sigma_credential_dump")
+
+    def test_routine_tags_do_not_mask_a_real_detection(self):
+        e = self._event("logon-event")
+        self.assertIsNone(e.attrs.get("title"))
+        ents, _ = self.mod.map_timesketch(
+            [{"datetime": "2026-08-01T00:00:00Z", "message": "x",
+              "tag": ["logon-event", "rare-domain"]}],
+            run_id="r1", asset="asset:endpoint:C.1", hostname="H")
+        both = [x for x in ents if x.type == "event"][0]
+        self.assertEqual(both.attrs.get("title"), "TimeSketch: rare-domain")
+
+    def test_the_detection_severity_clears_the_grouping_floor(self):
+        # _derive_findings only groups detections at medium or above; a flag
+        # with an informational severity would still never surface.
+        import services.fusion.severity as sev
+        self.assertTrue(sev.at_least(self._event("rare-domain").severity, "medium"))
+
+
 class TestEventLabelsAreReadable(unittest.TestCase):
     """The label is what reaches the case timeline and the LLM payload. It was
     a raw 80-character slice of a multi-line EVTX record, so it arrived with
