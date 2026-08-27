@@ -47,10 +47,26 @@ _ROUTINE_TAGS = {
     # "TimeSketch: known-cdn" finding on every host, which is noise wearing a
     # detection's clothes and exactly what the routine list is for.
     "known-cdn",
+    # An application crash is timeline CONTEXT, not a finding. Measured on a
+    # clean corporate desktop: win_crash raised five HIGH findings, and the
+    # crashing programs were CalculatorApp.exe, setup.exe and Velociraptor.exe
+    # (our own agent). Crashes do matter in DFIR — a process dying repeatedly
+    # can mark a failed exploit — but that is a pattern an analyst reads off
+    # the timeline, not a per-crash high-severity alert.
+    "win_crash", "win-crash",
+    # Off-hours activity is the same shape of signal: real on a compromised
+    # host, pure noise on any machine whose owner works late. Worse, the
+    # analyzer attaches whatever domain the event touched, so it produced
+    # medium findings named "outside-active-hours (github.com)" — an innocent
+    # indicator dressed as an actionable one. Keep the tag on the event so it
+    # is visible in the timeline; do not raise it.
+    "outside-active-hours",
 }
 # Detections worth surfacing above the default floor.
+# NOTE: "crash" deliberately absent — win_crash is routine context above, and
+# leaving the hint in would fight that decision for any crash-named tag.
 _HIGH_TAG_HINTS = ("sigma", "phishy", "timestomp", "bruteforce", "malware",
-                   "suspicious", "crash")
+                   "suspicious")
 
 
 def _summarise(msg: str) -> str:

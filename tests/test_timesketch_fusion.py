@@ -351,10 +351,11 @@ class TestDetectionsActuallyReachTheAnalyst(unittest.TestCase):
         return [e for e in ents if e.type == "event"][0]
 
     def test_a_detection_tag_flags_the_event_for_finding_derivation(self):
-        # win_crash means something on its own; it is not indicator-only.
-        e = self._event("win_crash")
+        # timestomp means something on its own; it is not indicator-only, and
+        # unlike win_crash it is not routine context either.
+        e = self._event("timestomp")
         self.assertIn("detection", e.flags)
-        self.assertEqual(e.attrs.get("title"), "TimeSketch: win_crash")
+        self.assertEqual(e.attrs.get("title"), "TimeSketch: timestomp")
 
     def test_an_indicator_tag_raises_only_when_an_indicator_survives(self):
         """rare-domain/phishy-domain exist solely to point at a domain. On a
@@ -549,8 +550,8 @@ class TestATagIsADetectionAndScoresLikeOne(unittest.TestCase):
         self.assertEqual(self._sev("rare-domain"), "medium")
 
     def test_a_strong_detection_tag_goes_higher(self):
-        for tag in ("win_crash", "sigma_rule_whatever", "phishy-domain",
-                    "timestomp", "ssh-bruteforce"):
+        for tag in ("sigma_rule_whatever", "phishy-domain",
+                    "timestomp", "ssh-bruteforce", "malware-dropper"):
             with self.subTest(tag=tag):
                 self.assertEqual(self._sev(tag), "high")
 
@@ -558,7 +559,12 @@ class TestATagIsADetectionAndScoresLikeOne(unittest.TestCase):
         # 3,480 logon events on one host, measured. Promoting an arbitrary 5 of
         # them to medium is noise wearing a detection's clothes; they still
         # reach the graph if the operator drops the floor to informational.
-        for tag in ("logon-event", "logoff-event", "session-id", "known-domain"):
+        for tag in ("logon-event", "logoff-event", "session-id", "known-domain",
+                    # Context, not findings — see _ROUTINE_TAGS. A clean desktop
+                    # raised five HIGH win_crash findings (CalculatorApp.exe,
+                    # setup.exe, our own Velociraptor.exe) and medium
+                    # "outside-active-hours (github.com)" findings.
+                    "win_crash", "outside-active-hours"):
             with self.subTest(tag=tag):
                 self.assertEqual(self._sev(tag), "informational")
 
