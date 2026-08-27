@@ -838,6 +838,15 @@ class TestTheLogShowsTheFunnel(unittest.TestCase):
     def test_it_names_the_detection_classes(self):
         self.assertIn("detection class(es)", self.src)
 
+    def test_module_notes_reach_the_persistent_case_log(self):
+        # `log` is an optional callable only /fuse and /rescan pass (for their
+        # HTTP response), so these notes were invisible to the automatic fuse
+        # and absent from the Log tab an operator actually reads.
+        fuse = func_source(STORE, "_fuse_case_locked")
+        self.assertIn("def _contrib_log(", fuse)
+        self.assertIn('_plog("Refusion · module note"', fuse)
+        self.assertIn("_contribution_for_run(run, log=_contrib_log", fuse)
+
 
 class TestBothSourcesStampTimeTheSameWay(unittest.TestCase):
     """Found by comparing a real Velociraptor collection against a real

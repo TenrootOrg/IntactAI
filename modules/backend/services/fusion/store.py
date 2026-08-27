@@ -1575,13 +1575,33 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         # instead of every run plus the graph.
         _nmem = max(1, len(kept_runs))
 
+        def _contrib_log(_m, _lvl="info"):
+            """Module-level notes from the per-run read, into the CASE log.
+
+            `log` is an optional callable only two routes pass (/fuse and
+            /rescan collect it for their HTTP response), so every warning these
+            mappers emit — a TimeSketch fetch that was skipped, a hunt whose
+            live pull failed, the count of events a 380,000-event timeline
+            actually contributed — was invisible to the automatic fuse and
+            absent from the Log tab an operator actually reads. Low volume by
+            construction: these are per-run notes, not per-row progress.
+            """
+            if log:
+                try:
+                    log(_m, _lvl)
+                except Exception:
+                    pass
+            _plog("Refusion · module note",
+                  _lvl if _lvl in ("info", "warning", "error") else "info",
+                  str(_m)[:300])
+
         def _contributions():
             for _i, (rid, run) in enumerate(kept_runs):
                 # The case window rides into the contribution so fetch-time
                 # consumers (currently only TimeSketch) can bound their pull
                 # server-side instead of serializing everything and letting
                 # assemble() cut it afterwards.
-                yield _contribution_for_run(run, log=log, refetch=refetch,
+                yield _contribution_for_run(run, log=_contrib_log, refetch=refetch,
                                             window=d.get("time_window") or None)
                 # 5% → 40% spread across the member runs (the per-run read + map is
                 # the bulk of I/O for a multi-host hunt import).
