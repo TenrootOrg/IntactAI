@@ -1269,14 +1269,23 @@ def _contribution_for_run(run, log=None, refetch=False, window=None):
                         from services.timesketch_service import fetch_sketch_timelines
                         from config import TIMESKETCH_CONFIG as _TSCFG
                         names = fetch_sketch_timelines(sid, _TSCFG, logger=log)
+                        # Timelines are named "<client_name>_<stamp>". Match on
+                        # the SEPARATOR, and try the longest client name first:
+                        # a bare startswith would let "ALClient01" claim
+                        # "ALClient012_20260827_..." and silently file one
+                        # host's entire timeline under another host.
+                        by_len = sorted(
+                            (c for c in cl_list if isinstance(c, dict)),
+                            key=lambda c: len(str(c.get("client_name") or "")),
+                            reverse=True)
                         for tl_id, tl_name in (names or {}).items():
                             low = str(tl_name or "").lower()
-                            for c in cl_list:
-                                cname = str((c or {}).get("client_name") or "")
-                                if cname and low.startswith(cname.lower()):
+                            for c in by_len:
+                                cname = str(c.get("client_name") or "")
+                                if cname and low.startswith(cname.lower() + "_"):
                                     host_index[str(tl_id)] = {
                                         "asset": keys.asset_id(
-                                            (c or {}).get("client_id") or cname),
+                                            c.get("client_id") or cname),
                                         "hostname": cname,
                                     }
                                     break

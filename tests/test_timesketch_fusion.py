@@ -623,6 +623,16 @@ class TestEveryHostKeepsItsOwnEvents(unittest.TestCase):
         assets = [e.id for e in ents if e.type == "asset"]
         self.assertEqual(assets, ["asset:endpoint:C.aaa"])
 
+    def test_a_client_name_that_prefixes_another_does_not_steal_its_timeline(self):
+        # Timelines are named "<client_name>_<stamp>". A bare startswith lets
+        # ALClient01 claim ALClient012's timeline and files an entire host's
+        # events under the wrong machine. This box really does have ALClient01,
+        # ALClient04, ALClient09 and ALClient022.
+        src = func_source(STORE, "_contribution_for_run")
+        self.assertIn('low.startswith(cname.lower() + "_")', src)
+        self.assertIn("key=lambda c: len(str(c.get(\"client_name\") or \"\")),", src)
+        self.assertIn("reverse=True", src)
+
     def test_iocs_are_scoped_to_the_host_that_saw_them(self):
         ents, _ = self._map([self._ev(2, "beacon to evil-c2.example.net")],
                             host_index=self.index)
