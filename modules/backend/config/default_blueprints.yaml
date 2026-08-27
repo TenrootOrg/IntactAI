@@ -43,7 +43,7 @@ velociraptor:
 
   - id: velociraptor_best_practice
     name: "Velociraptor: BestPractice"
-    description: "Curated best-practice artifact collection for thorough IR triage (31 artifacts)"
+    description: "Curated best-practice artifact collection for thorough IR triage (32 artifacts)"
     is_default: true
     settings:
       hunt_expiry: 720
@@ -54,6 +54,20 @@ velociraptor:
       flow_max_logs: 1000000
       flow_max_upload_mb: 51200
     artifacts:
+      # Sigma detection over the Windows event logs. Compiles the Hayabusa
+      # ruleset through Velociraptor's INTERNAL sigma engine, so it needs no
+      # hayabusa.exe pushed to the endpoint (the binary in
+      # offline_collector/constants.py is the separate offline-collector path).
+      # It was only in the agentic set, leaving the best-practice collection —
+      # our most thorough curated hunt — with no event-log sigma coverage.
+      #
+      # NOTE: this improves the COLLECTION, not the fused graph. A blueprint
+      # hunt is recorded as automation_type "velociraptor_hunt"
+      # (velociraptor_routes.py:443), and only "velociraptor_collection" /
+      # "velociraptor_upload" fuse — see FUSION_MODULE_TYPES in
+      # services/fusion/store.py, where velociraptor_all is deliberately not
+      # fusable. The results land in Velociraptor for the analyst.
+      - Windows.Hayabusa.Rules
       - Generic.Forensic.SQLiteHunter
       - Windows.Analysis.EvidenceOfDownload
       - Windows.NTFS.MFT
