@@ -50,7 +50,7 @@ function renderScheduleCard(job) {
         typeBadgeColor = 'bg-cyan-900 text-cyan-300';
         typeBadgeColor = 'bg-amber-900 text-amber-300';
     } else if (job.blueprint_type === 'memory') {
-        typeLabel = 'Memory';
+        typeLabel = 'Volatile Memory';
         typeBadgeColor = 'bg-rose-900 text-rose-300';
     } else if (job.blueprint_type === 'aws') {
         typeLabel = 'AWS (CloudTrail)';

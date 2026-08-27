@@ -34,7 +34,7 @@ document.addEventListener('alpine:init', () => {
         includeYara: true,        // independent of blueprint — adds yarascan layer
         // Default case name: "Memory YYYY-MM-DD" so operators get a
         // sensible group out of the box without having to type one.
-        caseName: 'Memory ' + new Date().toISOString().split('T')[0],
+        caseName: 'Volatile Memory ' + new Date().toISOString().split('T')[0],
         selectedClient: '',
         // Advanced-timeouts disclosure (closed by default). Operators
         // bump these for very large dumps or slow hardware. Blank or
@@ -134,7 +134,7 @@ document.addEventListener('alpine:init', () => {
                     client_name: c.hostname || null,
                     blueprint_id: this.blueprintId || undefined,
                     mode: this.derivedMode(),
-                    case_name: this.caseName || ('Memory ' + new Date().toISOString().split('T')[0]),
+                    case_name: this.caseName || ('Volatile Memory ' + new Date().toISOString().split('T')[0]),
                 };
                 // Only send timeouts the operator actually overrode —
                 // sending nulls / zeros would defeat the server-side
@@ -225,7 +225,7 @@ document.addEventListener('alpine:init', () => {
             fd.append('file', this.uploadFile);
             if (this.blueprintId) fd.append('blueprint_id', this.blueprintId);
             fd.append('mode', this.derivedMode());
-            fd.append('case_name', this.caseName || ('Memory ' + new Date().toISOString().split('T')[0]));
+            fd.append('case_name', this.caseName || ('Volatile Memory ' + new Date().toISOString().split('T')[0]));
             // No client_name for now — the operator can rename the
             // workflow from the Workflows table if they care.
 

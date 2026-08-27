@@ -509,7 +509,7 @@ def run_memory_pipeline(
     client_id: str = "",
     client_name: str | None = None,
     mode: str = "layered",
-    case_name: str = "Memory",
+    case_name: str = "Volatile Memory",
     dumps_dir: str = "/data/memory_dumps",
     blueprint: dict | None = None,
     from_upload_path: str | None = None,

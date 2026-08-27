@@ -92,7 +92,7 @@ async function loadAvailableArtifacts(forceRefresh = false) {
 const TYPE_CONFIG = {
     velociraptor: { label: 'Velociraptor', badgeColor: 'bg-blue-900 text-blue-300', borderColor: 'border-blue-900' },
     timesketch: { label: 'Timesketch', badgeColor: 'bg-orange-900 text-orange-300', borderColor: 'border-orange-900' },
-    memory: { label: 'Memory', badgeColor: 'bg-purple-900 text-purple-300', borderColor: 'border-purple-900' }
+    memory: { label: 'Volatile Memory', badgeColor: 'bg-purple-900 text-purple-300', borderColor: 'border-purple-900' }
 };
 
 // ============================================================================
@@ -261,7 +261,7 @@ function renderBlueprintCard(bp) {
         borderColor = 'border-orange-900';
     } else if (displayType === 'memory') {
         badgeColor = 'bg-purple-900 text-purple-300';
-        badgeLabel = 'Memory';
+        badgeLabel = 'Volatile Memory';
         borderColor = 'border-purple-900';
     } else {
         badgeColor = 'bg-blue-900 text-blue-300';

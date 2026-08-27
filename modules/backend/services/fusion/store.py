@@ -84,7 +84,7 @@ FUSION_MODULES_DEFAULT = ["velociraptor_agentic", "memory", "aws"]
 _FUSION_MODULE_LABELS = {
     "velociraptor_agentic": "Velociraptor (Agentic)",
     "velociraptor_all": "Velociraptor (All)",
-    "memory": "Memory (VolWeb)",
+    "memory": "Volatile Memory (VolWeb)",
     "timesketch": "TimeSketch", "aws": "AWS (CloudTrail)", "azure": "Azure",
 }
 

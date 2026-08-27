@@ -153,7 +153,7 @@ def start_memory_run():
         return jsonify({"error": "client_id must match C.<hex>"}), 400
 
     client_name = (data.get("client_name") or "").strip() or None
-    case_name = (data.get("case_name") or "").strip() or "Memory"
+    case_name = (data.get("case_name") or "").strip() or "Volatile Memory"
 
     # Resolve blueprint (optional) — settings precedence:
     # explicit ``mode`` in request > blueprint.settings.mode > "layered"
