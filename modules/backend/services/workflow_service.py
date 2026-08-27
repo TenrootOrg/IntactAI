@@ -430,7 +430,7 @@ def _get_run_log_lock(run_id):
         return lock
 
 
-def add_log_to_run(run_id, log_message, log_level="info"):
+def add_log_to_run(run_id, log_message, log_level="info", force=False):
     """Add a log entry to an automation run.
 
     Thread-safe per run_id: load-modify-save is serialized so concurrent
@@ -440,6 +440,9 @@ def add_log_to_run(run_id, log_message, log_level="info"):
     counter is read at terminal-status time so a pipeline that logs a
     fatal error mid-run can't accidentally end up marked 'completed'
     — see update_run_status() for the auto-flip rule.
+
+    `force=True` writes even to a cancelled run. Use it ONLY for work the
+    operator deliberately started after the cancel — see the guard below.
     """
     with _get_run_log_lock(run_id):
         workflow = file_get_workflow(run_id)
@@ -451,7 +454,15 @@ def add_log_to_run(run_id, log_message, log_level="info"):
             # event fired and when the background thread noticed.
             # Drop them so the UI shows a clean "cancelled" timeline
             # instead of confusing "success/failed" lines after Stop.
-            if workflow.get("status") == "cancelled":
+            #
+            # But NOT everything after a cancel is residue. An operator can
+            # stop a collection and then press Fetch on that same run to pull
+            # what Velociraptor already has — a deliberate, later action whose
+            # whole output this guard was swallowing. Reproduced on case
+            # 'test2': the fetch ran, wrote 481,253 rows and updated the run's
+            # details, and logged NOTHING, so the button looked dead. Callers
+            # that own a post-cancel operation pass force=True.
+            if workflow.get("status") == "cancelled" and not force:
                 return
 
             if "logs" not in workflow:

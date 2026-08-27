@@ -269,7 +269,16 @@ def _recollect_locator(details):
 
 
 def _recollect_worker(run_id, run):
-    from services.workflow_service import add_log_to_run, mutate_run_details
+    from services.workflow_service import add_log_to_run as _add_log, mutate_run_details
+
+    # A Fetch is something the operator started AFTER the run reached its
+    # terminal state — very often after cancelling it. add_log_to_run drops
+    # logs on a cancelled run (race residue from subprocess wrap-up), which
+    # silently swallowed this worker's entire narrative and made the button
+    # look dead. force=True says "this is deliberate, not residue".
+    def add_log_to_run(rid, msg, level="info"):
+        return _add_log(rid, msg, level, force=True)
+
     from services.agentic.collectors import (get_existing_collection_results,
                                              persist_pipeline_artifacts)
     details = run.get("details") or {}

@@ -205,3 +205,68 @@ def tearDownModule():
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestAStoppedRunStillHoldsItsData(_Base):
+    """A collection the operator STOPPED is not empty.
+
+    Reported from the box (case 'test2'): a Velociraptor collection was started,
+    stopped part-way, and Fetch was pressed to pull what the server already had.
+    The rows landed — 481,253 of them across 37 artifacts, mapping to 446 graph
+    entities — and the case stayed at 0 entities. Nothing in any log said why.
+
+    Three predicates had to agree and did not. `_members_for_case` applies NO
+    status filter, so the cancelled run was a full member of the case. But
+    `stale_member_runs` and fuse_case's own membership pass both said
+    `status in ("completed", "success")` — successful-only, despite the comment
+    beside the fuse_case one stating the rule as "a run is fused when it is
+    TERMINAL". So the data was a member fusion refused to read, and the
+    staleness signal that drives auto-fuse never fired either: Fetch persisted
+    the rows, dropped the run from fused_run_ids, armed auto-fuse, and auto-fuse
+    woke up, saw nothing stale, and returned.
+
+    Terminal means "not still collecting". Excluding running/pending is the real
+    intent — folding in a job mid-flight fuses a partial snapshot, which is the
+    2026-08-26 race the completed-only predicate was introduced to close. That
+    guard survives; cancelled and failed simply stop being collateral.
+    """
+
+    def test_a_cancelled_run_is_stale(self):
+        STATE["runs"] = [_run("velociraptor_collection_1", status="cancelled")]
+        self.assertEqual(self.stale({}), ["velociraptor_collection_1"],
+                         "a stopped collection still holds what it collected")
+
+    def test_a_failed_run_is_stale(self):
+        """A run that errored part-way can still have handed over rows."""
+        STATE["runs"] = [_run("velociraptor_collection_1", status="failed")]
+        self.assertEqual(self.stale({}), ["velociraptor_collection_1"])
+
+    def test_an_in_flight_run_is_never_stale(self):
+        """The 2026-08-26 race guard: fusing a job mid-collection stamps it
+        fused with none of its data in the graph."""
+        for status in ("running", "pending"):
+            with self.subTest(status=status):
+                STATE["runs"] = [_run("memory_1", status=status)]
+                self.assertEqual(self.stale({}), [],
+                                 "an in-flight run must not be folded in yet")
+
+    def test_a_cancelled_run_stops_being_stale_once_fused(self):
+        STATE["runs"] = [_run("velociraptor_collection_1", status="cancelled")]
+        d = {"fused_run_ids": ["velociraptor_collection_1"]}
+        self.assertEqual(self.stale(d), [], "already in the graph — not new data")
+
+    def test_a_disabled_module_run_is_still_never_stale(self):
+        """Module gating outranks status: a disabled module's run can never
+        enter the graph, so flagging it would prompt a Refusion that does
+        nothing."""
+        STATE["runs"] = [_run("aws_scan_1", status="cancelled", gated=False)]
+        self.assertEqual(self.stale({}), [])
+
+    def test_the_report_uses_the_same_rule(self):
+        """If the graph ingests a cancelled run but the report's staleness check
+        does not, the narrative silently lags the data it describes."""
+        STATE["runs"] = [_run("velociraptor_collection_1", status="cancelled")]
+        self.assertEqual(self.report_stale({"report_run_ids": []}),
+                         ["velociraptor_collection_1"])
+        self.assertEqual(
+            self.report_stale({"report_run_ids": ["velociraptor_collection_1"]}), [])

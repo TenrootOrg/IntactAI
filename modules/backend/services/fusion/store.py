@@ -1382,6 +1382,17 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         #
         # Same predicate stale_member_runs uses, so the two halves now agree:
         # a run is fused when it is terminal, and stale until it has been.
+        #
+        # TERMINAL means "not still collecting" — cancelled and failed included.
+        # This said ("completed", "success"), which is SUCCESSFUL-only and
+        # contradicted the sentence above it. An operator who stops a
+        # collection keeps everything Velociraptor already handed over, and
+        # _members_for_case applies no status filter, so that data is a member
+        # of the case that fusion then refused to read. Reproduced on case
+        # 'test2': a cancelled run holding 481,253 rows mapped to 446 entities
+        # via _contribution_for_run, yet fuse_case produced 0 — and because
+        # stale_member_runs used the same wrong predicate, nothing ever
+        # reported why.
         kept, kept_runs = [], []
         for rid in members:
             run = ws.get_automation_run(rid)
@@ -1389,7 +1400,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                 continue
             if not _run_passes_gate(run, d):
                 continue
-            if (run.get("status") or "") not in ("completed", "success"):
+            if (run.get("status") or "") in ("running", "pending"):
                 continue
             kept.append(rid)
             kept_runs.append((rid, run))
@@ -1705,8 +1716,9 @@ def _ever_fused(case_id, d) -> bool:
 
 
 def stale_member_runs(case_id, d=None) -> list:
-    """Completed member runs NOT reflected in the persisted graph — i.e. data
-    added since the last fuse. Returns their run_ids (empty when the graph is
+    """Terminal member runs NOT reflected in the persisted graph — i.e. data
+    added since the last fuse. "Terminal" includes cancelled/failed: a stopped
+    collection still holds what it collected, and fusion ingests it. Returns their run_ids (empty when the graph is
     current, or when a LEGACY graph predates `fused_run_ids` tracking, so we never
     cry 'stale' on one). Cheap: no graph build, just a member scan."""
     d = d or get_case(case_id) or {}
@@ -1730,8 +1742,24 @@ def stale_member_runs(case_id, d=None) -> list:
     ws = _ws()
     out = []
     for r in ws.get_automation_runs_by_case(case_id):
+        # TERMINAL, not "completed". A run the operator STOPPED still holds
+        # everything Velociraptor handed over before the stop, and
+        # _members_for_case (above) applies no status filter at all — so that
+        # data fuses perfectly well the moment someone presses Refusion. Only
+        # this staleness check disagreed, and because auto-fuse re-checks it
+        # before firing, a cancelled run's data could never reach the graph on
+        # its own: pressing Fetch persisted the rows, dropped the run from
+        # fused_run_ids, armed auto-fuse — and auto-fuse then saw nothing
+        # stale and did nothing. Reproduced on case 'test2': a cancelled
+        # collection holding 481,253 rows (446 entities) reported 0 stale runs
+        # and 0 entities until Refusion was pressed by hand.
+        #
+        # Excluding running/pending is the real intent — those are still
+        # collecting, and folding them in mid-flight would fuse a partial
+        # snapshot. That is exactly the guard the recollect route already uses
+        # (dashboard_routes.py: "still collecting — wait for it to finish").
         if (_run_passes_gate(r, d)
-                and r.get("status") in ("completed", "success")
+                and r.get("status") not in ("running", "pending")
                 and r.get("run_id") not in fused):
             out.append(r.get("run_id"))
     return out
@@ -1758,8 +1786,11 @@ def report_stale_runs(case_id, d=None) -> list:
     ws = _ws()
     out = []
     for r in ws.get_automation_runs_by_case(case_id):
+        # Terminal, not completed-only — must match what fuse_case actually
+        # ingests, or a cancelled run's data lands in the graph while the
+        # report never learns it is behind.
         if (_run_passes_gate(r, d)   # only enabled-module runs can reach the report
-                and r.get("status") in ("completed", "success")
+                and r.get("status") not in ("running", "pending")
                 and r.get("run_id") not in rep):
             out.append(r.get("run_id"))
     return out
