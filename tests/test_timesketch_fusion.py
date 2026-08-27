@@ -379,6 +379,31 @@ class TestATagIsADetectionAndScoresLikeOne(unittest.TestCase):
         return [e for e in ents if e.type == "event"][0].severity
 
 
+class TestOneBadTagDoesNotLoseTheRest(unittest.TestCase):
+    """Each tag is now a separate query. Letting one propagate would throw away
+    every class already collected because a single detection had an awkward name
+    or its shard hiccuped — a partial result becoming no result."""
+
+    def setUp(self):
+        self.src = func_source(TSSVC, "fetch_sketch_events")
+
+    def test_each_query_is_individually_guarded(self):
+        self.assertIn("return _collect_unsafe(query, cap, into, seen)", self.src)
+        guard = self.src[self.src.index("def _collect(") :
+                         self.src.index("def _collect_unsafe(")]
+        self.assertIn("except Exception as e:", guard)
+        self.assertIn("return 0", guard)
+
+    def test_a_failed_query_is_reported_not_swallowed_silently(self):
+        self.assertIn('log(f"query failed', self.src)
+
+    def test_a_tag_is_lucene_escaped_backslash_first(self):
+        # Escaping the quote before the backslash would double-escape it.
+        i_bs = self.src.index('replace("\\\\", "\\\\\\\\")')
+        i_q = self.src.index("""replace('"', '\\\\"')""")
+        self.assertLess(i_bs, i_q)
+
+
 class TestEveryHostKeepsItsOwnEvents(unittest.TestCase):
     """TimeSketch is not only used on one machine at a time. A multi-client run
     imports ONE TIMELINE PER CLIENT into a shared sketch, and the mapper used to
@@ -612,6 +637,48 @@ class TestTheAnalyzerWaitSettles(unittest.TestCase):
 
 
 # ------------------------------------------------------------ the registries
+
+class TestTheCachedEventsBelongToTheirWindow(unittest.TestCase):
+    """The distilled set written back to the run is whatever the window at the
+    time selected — but only MANUAL fuses set refetch. So after an operator
+    narrows the window in the Configuration rail, the next automatic fuse would
+    rebuild the graph (its filter signature changed) while still reading events
+    fetched for the OLD window: a case that silently disagrees with its own
+    configuration."""
+
+    def setUp(self):
+        self.src = func_source(STORE, "_contribution_for_run")
+
+    def test_the_window_is_stamped_next_to_the_cache(self):
+        self.assertIn('"timeline_events_window": _win_sig', self.src)
+
+    def test_a_mismatched_window_discards_the_cache(self):
+        self.assertIn('det.get("timeline_events_window") != _win_sig', self.src)
+        self.assertIn("evs = None", self.src)
+
+    def test_the_signature_is_order_independent(self):
+        # dict ordering must not look like a window change.
+        self.assertIn("sort_keys=True", self.src)
+
+    def test_the_operator_is_told_why_it_re_read(self):
+        self.assertIn("fetched for a", self.src)
+
+
+class TestTheLogShowsTheFunnel(unittest.TestCase):
+    """An operator looking at a case with 10 TimeSketch events out of a 380,000
+    event timeline needs to see where the other 379,990 went, or the module
+    looks broken rather than selective."""
+
+    def setUp(self):
+        self.src = func_source(STORE, "_contribution_for_run")
+
+    def test_it_reports_fetched_versus_kept(self):
+        self.assertIn("tagged event(s) -> ", self.src)
+        self.assertIn("_n_fetched", self.src)
+
+    def test_it_names_the_detection_classes(self):
+        self.assertIn("detection class(es)", self.src)
+
 
 class TestBothSourcesStampTimeTheSameWay(unittest.TestCase):
     """Found by comparing a real Velociraptor collection against a real

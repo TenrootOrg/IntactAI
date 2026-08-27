@@ -662,7 +662,20 @@ def fetch_sketch_events(sketch_id, timesketch_config, *, limit=4000, window=None
         clause = _ts_window_clause(window)
 
         def _collect(query, cap, into, seen):
-            """Run one query and append its hits, de-duplicated by document id."""
+            """Run one query and append its hits, de-duplicated by document id.
+
+            Never raises. Each tag is a SEPARATE query now, so letting one
+            propagate would throw away every tag already collected because a
+            single detection class had an awkward name or its shard hiccuped —
+            turning a partial result into no result at all.
+            """
+            try:
+                return _collect_unsafe(query, cap, into, seen)
+            except Exception as e:
+                log(f"query failed ({query[:60]}): {e}", "warning")
+                return 0
+
+        def _collect_unsafe(query, cap, into, seen):
             res = sketch.explore(query_string=query, as_pandas=False, max_entries=cap)
             objs = res.get("objects") if isinstance(res, dict) else (res or [])
             added = 0
@@ -700,7 +713,9 @@ def fetch_sketch_events(sketch_id, timesketch_config, *, limit=4000, window=None
             for tag in sorted(tag_counts, key=lambda t: tag_counts[t]):
                 if len(events) >= limit:
                     break
-                safe = str(tag).replace('"', '\\"')
+                # Lucene-escape the tag for a quoted phrase: backslash first,
+                # or it would double-escape the quote we add next.
+                safe = str(tag).replace("\\", "\\\\").replace('"', '\\"')
                 q = f'tag:"{safe}"' + (f" AND {clause}" if clause else "")
                 _collect(q, min(per_tag_cap, limit - len(events)), events, seen)
             log(f"fusion: {len(tag_counts)} distinct tag(s) in sketch {sid}; "

@@ -1166,6 +1166,20 @@ def _contribution_for_run(run, log=None, refetch=False, window=None):
             # Bound here, not inside the fetch branch: the per-host attribution
             # below needs it even when the events came from the row's cache.
             sid = det.get("sketch_id")
+            # THE CACHE IS WINDOW-SPECIFIC. The distilled set written back below
+            # is whatever the window at the time selected, but only MANUAL fuses
+            # set refetch — so after an operator narrows the window in the
+            # Configuration rail, the next automatic fuse would rebuild the graph
+            # (the filter signature changed) while still reading events fetched
+            # for the OLD window. Stamp the window alongside the cache and treat
+            # a mismatch as no cache at all.
+            _win_sig = json.dumps(window or {}, sort_keys=True, default=str)
+            if evs and det.get("timeline_events_window") != _win_sig:
+                if det.get("timeline_events"):
+                    if log:
+                        log(f"timesketch: cached events were fetched for a "
+                            f"different time window — re-reading sketch", "info")
+                    evs = None
             if refetch:
                 # Manual Refusion means "re-read the sources". The cached
                 # distilled set on the row is exactly what must NOT win here:
@@ -1196,14 +1210,28 @@ def _contribution_for_run(run, log=None, refetch=False, window=None):
                         log(f"fuse: timesketch fetch for {rid} skipped: {_e}", "warning")
                     evs = None
             if evs:
+                _n_fetched = len(evs)
                 evs = _distill_ts_events(evs, per_tag=5)
+                if log:
+                    _tags = set()
+                    for _e in evs:
+                        _t = _e.get("tag") if isinstance(_e, dict) else None
+                        for _x in (_t if isinstance(_t, list) else [_t]):
+                            if _x:
+                                _tags.add(str(_x))
+                    log(f"timesketch: {_n_fetched} tagged event(s) -> "
+                        f"{len(evs)} after distilling to the top few per tag "
+                        f"({len(_tags)} detection class(es): "
+                        f"{', '.join(sorted(_tags)[:6])}"
+                        f"{'…' if len(_tags) > 6 else ''})")
                 if fetched:
                     # Cache the distilled set on the run so later fuses (dispositions,
                     # timeline validations) don't re-hit TimeSketch every time. A
                     # fresh Refusion after new analyzer tags re-imports the timeline.
                     try:
                         _ws().update_run_status(rid, run.get("status") or "completed",
-                                                details={"timeline_events": evs})
+                                                details={"timeline_events": evs,
+                                                         "timeline_events_window": _win_sig})
                     except Exception:
                         pass
                 # Resolve the REAL host so timesketch merges with its velociraptor/
