@@ -60,8 +60,15 @@ FUSION_MODULE_TYPES = {
 }
 # Order + membership of the UI picker. 'velociraptor_all' and the legacy
 # 'velociraptor' alias are intentionally NOT shown — only agentic blueprints fuse.
-FUSION_MODULES_UI = ["velociraptor_agentic", "memory",
-                     "timesketch", "aws", "azure"]
+#
+# TimeSketch and Azure are also not shown. They were rendered greyed-out with a
+# "disabled" badge, which reads as "this is broken / you are missing something"
+# rather than "not built yet" — two dead rows in a five-row picker, permanently.
+# They stay in FUSION_MODULE_TYPES and _FUSION_MODULE_LABELS below so a legacy
+# case that still carries one keeps mapping correctly; only their visibility is
+# removed. To bring either back, add it here AND to FUSION_MODULES_AVAILABLE —
+# listing it here alone just restores the greyed row.
+FUSION_MODULES_UI = ["velociraptor_agentic", "memory", "aws"]
 # Selectable now: Velociraptor (Agentic), Memory (VolWeb) and AWS (CloudTrail),
 # all three on by default. TimeSketch/Azure stay greyed/disabled.
 #
