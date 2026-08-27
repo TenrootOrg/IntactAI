@@ -1123,6 +1123,28 @@ class TestSigmaHasRulesToDetectWith(unittest.TestCase):
         # measured: 10 rules in, 43 never imported.
         self.assertIn("windash", self.src)
 
+    def test_rule_dates_are_quoted_before_import(self):
+        # SigmaHQ ships `date: 2017-02-19`, which YAML parses into a
+        # datetime.date. Timesketch json.dumps() rule kwargs when it schedules
+        # analyzers (tasks.py:617), so an unquoted date raises "Object of type
+        # date is not JSON serializable" INSIDE the analyzer pipeline — which
+        # 500s /api/v1/upload/ and breaks EVERY timeline import on the box, not
+        # just sigma. Observed: uploads failed with five retries and no usable
+        # message until the rules were removed.
+        self.assertIn("(date|modified):", self.src)
+        self.assertIn("json.dumps", self.src)
+
+    def test_the_staged_rules_carry_no_bare_date(self):
+        import glob
+        staged = glob.glob(os.path.join(
+            ROOT, "modules/timesketch/config/sigma/rules/windows/*.yml"))
+        if not staged:
+            self.skipTest("no rules staged in this checkout")
+        import re as _re
+        bare = _re.compile(r"^(date|modified):\s+[0-9]{4}[-/][0-9]{2}", _re.M)
+        offenders = [os.path.basename(f) for f in staged if bare.search(read(f))]
+        self.assertEqual(offenders, [], f"unquoted date in {offenders[:3]}")
+
     def test_a_missing_ruleset_is_not_an_error(self):
         # Air-gapped appliances have no /opt/sigma-rules.
         self.assertIn('if [[ ! -d "$src" ]]', self.src)

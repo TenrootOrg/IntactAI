@@ -260,7 +260,17 @@ import_timesketch_sigma_rules() {
             skipped=$((skipped + 1))
             continue
         fi
-        cp -f "$f" "$dest/" 2>/dev/null && staged=$((staged + 1))
+        # QUOTE THE DATES. SigmaHQ rules carry `date: 2017-02-19`, which YAML
+        # parses into a datetime.date — and Timesketch serializes rule kwargs
+        # with json.dumps when it schedules analyzers
+        # (lib/tasks.py:617 build_sketch_analysis_pipeline). An unquoted date
+        # therefore raises "Object of type date is not JSON serializable"
+        # INSIDE the analyzer pipeline, which returns 500 from /api/v1/upload/
+        # — so importing these rules breaks EVERY timeline import on the
+        # appliance, not just sigma. Observed exactly that: uploads failed with
+        # five retries and no usable message until the rules were removed.
+        sed -E "s/^(date|modified):[[:space:]]+([0-9]{4}[-\/][0-9]{2}[-\/][0-9]{2})[[:space:]]*$/\1: '\2'/" \
+            "$f" > "$dest/$(basename "$f")" 2>/dev/null && staged=$((staged + 1))
     done < <(grep -rl '^status: stable' "$src" 2>/dev/null)
     if [[ "$staged" -eq 0 ]]; then
         log_warn "  No importable Sigma rules found (skip)"
