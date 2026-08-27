@@ -72,9 +72,38 @@ def _ent(eid, etype, label, asset, run_id, locator, *, anomaly=0, first=None, **
                   severity=from_anomaly(anomaly), first_seen=first, last_seen=first)
 
 
-def map_timesketch(events, *, run_id: str, asset: str, hostname=None) -> tuple[list, list]:
+def map_timesketch(events, *, run_id: str, asset: str, hostname=None,
+                   host_index=None) -> tuple[list, list]:
+    """Map tagged TimeSketch events onto per-host entities.
+
+    `host_index` maps an event's `__ts_timeline_id` to
+    {"asset": <asset id>, "hostname": <name>}. A multi-client run imports one
+    timeline per client into a shared sketch, so without it every event in a
+    20-host collection is attributed to `asset` — the first client — and the
+    graph claims one machine did everything. Events whose timeline is unknown
+    fall back to `asset`, which is also the whole single-host path.
+    """
     ents: list[Entity] = []
     rels: list[Relationship] = []
+    host_index = host_index or {}
+
+    def _host_for(e):
+        tl = e.get("__ts_timeline_id")
+        hit = host_index.get(str(tl)) if tl is not None else None
+        if hit:
+            return hit.get("asset") or asset, hit.get("hostname") or hostname
+        # Second chance from the event itself: EVTX records carry
+        # computer_name (plaso leaves `hostname` as the literal "N/A").
+        cn = str(e.get("computer_name") or "").strip()
+        if cn and cn.upper() != "N/A":
+            for hit in host_index.values():
+                if str(hit.get("hostname") or "").lower() == cn.lower():
+                    return hit.get("asset") or asset, hit.get("hostname")
+        return asset, hostname
+
+    # Every asset that actually appears gets a node — declared up front for the
+    # default one, and lazily below for any other host the events name.
+    seen_assets = {asset}
     ents.append(Entity(id=asset, type="asset", label=str(hostname or asset.split(":")[-1]),
                        attrs={"hostname": hostname, "kind": "endpoint", "_assets": [asset]},
                        sources=[MODULE], evidence=[EvidenceRef(MODULE, run_id, "asset")]))
@@ -82,6 +111,14 @@ def map_timesketch(events, *, run_id: str, asset: str, hostname=None) -> tuple[l
     for i, e in enumerate(events or []):
         if not isinstance(e, dict):
             continue
+        ev_asset, ev_host = _host_for(e)
+        if ev_asset not in seen_assets:
+            seen_assets.add(ev_asset)
+            ents.append(Entity(
+                id=ev_asset, type="asset",
+                label=str(ev_host or ev_asset.split(":")[-1]),
+                attrs={"hostname": ev_host, "kind": "endpoint", "_assets": [ev_asset]},
+                sources=[MODULE], evidence=[EvidenceRef(MODULE, run_id, "asset")]))
         ts = keys.norm_ts(F.get(e, "datetime", "Timestamp", "TimeCreated", *F.TIMES))
         msg = str(F.get(e, "message", "Message", "description", default="") or "")
         anom = score_row(e)
@@ -91,7 +128,7 @@ def map_timesketch(events, *, run_id: str, asset: str, hostname=None) -> tuple[l
         # different event on the next fetch — useless as evidence.
         ts_id = e.get("_ts_id")
         loc = f"sketch/event/{ts_id}" if ts_id else f"event/row={i}"
-        eid = keys.event_id(asset, ts, msg)
+        eid = keys.event_id(ev_asset, ts, msg)
         # The analyzer tag is WHY this event was selected out of a 380k-event
         # timeline (fusion queries `_exists_:tag`), and it was being dropped
         # here — the graph recorded the event but never which analyzer flagged
@@ -102,7 +139,7 @@ def map_timesketch(events, *, run_id: str, asset: str, hostname=None) -> tuple[l
         tags = [str(t) for t in tags if t]
         anom = max(anom, _tag_floor(tags))
         ents.append(_ent(eid, "event", (msg[:80] or F.get(e, "parser", default="event")),
-                         asset, run_id, loc, anomaly=anom, first=ts,
+                         ev_asset, run_id, loc, anomaly=anom, first=ts,
                          parser=F.get(e, "parser", "source_name", default=None),
                          tags=tags or None))
 
@@ -128,7 +165,7 @@ def map_timesketch(events, *, run_id: str, asset: str, hostname=None) -> tuple[l
             if not kind:
                 continue
             iid = keys.ioc_id(kind, val)
-            ents.append(_ent(iid, "ioc", str(val), asset, run_id, loc, anomaly=1,
+            ents.append(_ent(iid, "ioc", str(val), ev_asset, run_id, loc, anomaly=1,
                              ioc_kind=kind, first=ts))
             rels.append(Relationship(eid, iid, "event_about", sources=[MODULE], ts=ts))
 

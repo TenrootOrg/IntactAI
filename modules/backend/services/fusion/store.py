@@ -1163,6 +1163,9 @@ def _contribution_for_run(run, log=None, refetch=False, window=None):
         if atype in ("timesketch", "timesketch_kape_upload"):
             evs = det.get("events") or det.get("timeline_events")
             fetched = False
+            # Bound here, not inside the fetch branch: the per-host attribution
+            # below needs it even when the events came from the row's cache.
+            sid = det.get("sketch_id")
             if refetch:
                 # Manual Refusion means "re-read the sources". The cached
                 # distilled set on the row is exactly what must NOT win here:
@@ -1182,7 +1185,6 @@ def _contribution_for_run(run, log=None, refetch=False, window=None):
                     from services.timesketch_service import (
                         fetch_sketch_events, find_sketch_by_name)
                     from config import TIMESKETCH_CONFIG
-                    sid = det.get("sketch_id")
                     if not sid and det.get("sketch_name"):
                         sid = find_sketch_by_name(det["sketch_name"], TIMESKETCH_CONFIG, logger=log)
                     if sid:
@@ -1222,7 +1224,44 @@ def _contribution_for_run(run, log=None, refetch=False, window=None):
                     elif isinstance(hns, dict) and hns:
                         hostname = next(iter(hns.values()), None)
                 asset = keys.asset_id(client_id or hostname or rid)
-                return map_timesketch(evs, run_id=rid, asset=asset, hostname=hostname)
+                # PER-HOST ATTRIBUTION. A multi-client run imports one timeline
+                # per client into a shared sketch and every event carries its
+                # __ts_timeline_id; timeline names are "<client_name>_<stamp>".
+                # Match them back to details.clients[] so a 20-host collection
+                # does not attribute everything to the first client. Falls back
+                # to the single `asset` above for anything unmatched, which is
+                # also the entire single-host path.
+                host_index = {}
+                try:
+                    cl_list = det.get("clients")
+                    if isinstance(cl_list, list) and len(cl_list) > 1 and sid:
+                        # Imported here as well as in the fetch branch above:
+                        # when the events came from the row's cache that branch
+                        # never ran, so neither name is bound.
+                        from services.timesketch_service import fetch_sketch_timelines
+                        from config import TIMESKETCH_CONFIG as _TSCFG
+                        names = fetch_sketch_timelines(sid, _TSCFG, logger=log)
+                        for tl_id, tl_name in (names or {}).items():
+                            low = str(tl_name or "").lower()
+                            for c in cl_list:
+                                cname = str((c or {}).get("client_name") or "")
+                                if cname and low.startswith(cname.lower()):
+                                    host_index[str(tl_id)] = {
+                                        "asset": keys.asset_id(
+                                            (c or {}).get("client_id") or cname),
+                                        "hostname": cname,
+                                    }
+                                    break
+                        if log and host_index:
+                            log(f"timesketch: attributing events across "
+                                f"{len(host_index)} host timeline(s)")
+                except Exception as _e:
+                    if log:
+                        log(f"timesketch: per-host attribution unavailable "
+                            f"({_e}) — all events attach to {hostname or asset}",
+                            "warning")
+                return map_timesketch(evs, run_id=rid, asset=asset, hostname=hostname,
+                                      host_index=host_index or None)
             # No events (sketch unreachable, nothing tagged yet, or no sketch
             # locator at all): contribute nothing, EXPLICITLY. Falling through
             # to the aws/azure check below happened to return the same value,

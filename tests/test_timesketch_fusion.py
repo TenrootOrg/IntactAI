@@ -106,24 +106,73 @@ class TestStarredEventsOutrankTheWindow(unittest.TestCase):
         self.src = func_source(TSSVC, "fetch_sketch_events")
 
     def test_the_window_constrains_only_the_tag_arm(self):
-        self.assertIn('f"(_exists_:tag AND {clause}) "', self.src)
-        self.assertIn('f"OR label:__ts_star OR label:__ts_comment"', self.src)
-
-    def test_without_a_window_the_query_is_unchanged_from_before(self):
-        self.assertIn('query = "_exists_:tag OR label:__ts_star OR label:__ts_comment"',
+        # Tag queries carry the window; the starred/commented query is issued
+        # separately and never does.
+        self.assertIn('q = f\'tag:"{safe}"\' + (f" AND {clause}" if clause else "")',
                       self.src)
+        star = self.src[self.src.index("label:__ts_star OR label:__ts_comment"):]
+        self.assertNotIn("clause", star.split("\n")[0])
+
+    def test_without_a_window_the_tag_query_carries_no_clause(self):
+        self.assertIn('if clause else ""', self.src)
 
     def test_the_limit_is_enforced_client_side_too(self):
         # explore(max_entries=) is best-effort in the API client: it pages 10k
-        # at a time, so a 2000 cap can return ~10,000 without this backstop.
+        # at a time, so a cap can return ~10,000 without this backstop.
+        self.assertIn("if added >= cap:", self.src)
         self.assertIn("if len(events) >= limit:", self.src)
-        self.assertIn("break", self.src)
 
     def test_the_opensearch_id_is_kept(self):
-        self.assertIn('src["_ts_id"] = str(o["_id"])', self.src)
+        self.assertIn('src["_ts_id"] = doc_id', self.src)
 
 
 # ------------------------------------------------------------- the distiller
+
+class TestNoDetectionClassIsStarvedByANoisyOne(unittest.TestCase):
+    """Measured on a real host: 3,480 of 3,542 tagged events were `logon-event`
+    and 20 were `rare-domain`. A flat "first N events" pull can therefore be
+    100% logons and miss every genuine detection — and the case would look
+    confidently empty. Each tag is asked for separately, rarest first."""
+
+    def setUp(self):
+        self.src = func_source(TSSVC, "fetch_sketch_events")
+
+    def test_the_tag_vocabulary_is_discovered_before_events_are_pulled(self):
+        self.assertLess(self.src.index("_sketch_tag_counts"),
+                        self.src.index("for tag in sorted(tag_counts"))
+
+    def test_the_rarest_tags_are_served_first(self):
+        # If the budget runs out it must run out on the noisy classes.
+        self.assertIn("sorted(tag_counts, key=lambda t: tag_counts[t])", self.src)
+
+    def test_each_tag_gets_a_floor_not_just_a_share(self):
+        # An even split alone starves everything once the vocabulary is large.
+        self.assertIn("max(per_tag_min, min(budget, limit))", self.src)
+
+    def test_it_still_works_without_the_aggregator(self):
+        # Older servers / restricted permissions must degrade to the old
+        # behaviour rather than contributing nothing.
+        self.assertIn("no tag aggregation", self.src)
+
+    def test_starred_events_are_a_separate_unfiltered_query(self):
+        self.assertIn('_collect("label:__ts_star OR label:__ts_comment"', self.src)
+
+    def test_documents_are_de_duplicated_across_the_per_tag_queries(self):
+        # One event carrying two tags is returned by two queries.
+        self.assertIn("if doc_id in seen:", self.src)
+
+    def test_the_aggregator_gets_times_not_a_query_string(self):
+        # field_bucket takes start_time/end_time; a Lucene clause silently
+        # returns nothing and drops us back to the flat query.
+        agg = func_source(TSSVC, "_sketch_tag_counts")
+        self.assertIn('params["start_time"]', agg)
+        self.assertIn('params["end_time"]', agg)
+        self.assertNotIn("query_string", agg)
+
+    def test_a_degenerate_window_does_not_aggregate_an_empty_range(self):
+        agg = func_source(TSSVC, "_sketch_tag_counts")
+        self.assertIn('params["start_time"] >= params["end_time"]', agg)
+
 
 class TestTheDistillerIsBoundedTwice(unittest.TestCase):
     """Per-tag alone is bounded only while the tag vocabulary is."""
@@ -330,6 +379,83 @@ class TestATagIsADetectionAndScoresLikeOne(unittest.TestCase):
         return [e for e in ents if e.type == "event"][0].severity
 
 
+class TestEveryHostKeepsItsOwnEvents(unittest.TestCase):
+    """TimeSketch is not only used on one machine at a time. A multi-client run
+    imports ONE TIMELINE PER CLIENT into a shared sketch, and the mapper used to
+    attach every event to details.clients[0] — so a 20-host collection produced
+    a graph claiming the first machine did all of it."""
+
+    def setUp(self):
+        import sys
+        import types
+        import importlib
+        backend = os.path.join(ROOT, "modules/backend")
+        if "services" not in sys.modules:
+            shim = types.ModuleType("services")
+            shim.__path__ = [os.path.join(backend, "services")]
+            sys.modules["services"] = shim
+        self.mod = importlib.import_module("services.fusion.mappers.timesketch")
+        self.index = {
+            "1": {"asset": "asset:endpoint:C.aaa", "hostname": "HOST-A"},
+            "2": {"asset": "asset:endpoint:C.bbb", "hostname": "HOST-B"},
+        }
+
+    def _map(self, events, **kw):
+        return self.mod.map_timesketch(
+            events, run_id="r1", asset="asset:endpoint:C.aaa",
+            hostname="HOST-A", **kw)
+
+    def _ev(self, tl, msg, **extra):
+        d = {"datetime": "2026-08-01T00:00:00Z", "message": msg,
+             "tag": ["rare-domain"]}
+        if tl is not None:
+            d["__ts_timeline_id"] = tl
+        d.update(extra)
+        return d
+
+    def test_events_follow_their_own_timeline(self):
+        ents, _ = self._map([self._ev(1, "on A"), self._ev(2, "on B")],
+                            host_index=self.index)
+        by_msg = {e.label: e for e in ents if e.type == "event"}
+        self.assertEqual(by_msg["on A"].attrs["_assets"], ["asset:endpoint:C.aaa"])
+        self.assertEqual(by_msg["on B"].attrs["_assets"], ["asset:endpoint:C.bbb"])
+
+    def test_every_named_host_gets_an_asset_node(self):
+        ents, _ = self._map([self._ev(2, "only B")], host_index=self.index)
+        assets = sorted(e.id for e in ents if e.type == "asset")
+        self.assertEqual(assets, ["asset:endpoint:C.aaa", "asset:endpoint:C.bbb"])
+
+    def test_an_unknown_timeline_falls_back_to_the_run_asset(self):
+        ents, _ = self._map([self._ev(99, "orphan")], host_index=self.index)
+        ev = [e for e in ents if e.type == "event"][0]
+        self.assertEqual(ev.attrs["_assets"], ["asset:endpoint:C.aaa"])
+
+    def test_computer_name_rescues_an_event_with_no_timeline_id(self):
+        # plaso leaves `hostname` as the literal "N/A"; EVTX records carry
+        # computer_name, registry ones do not.
+        ents, _ = self._map([self._ev(None, "evtx", computer_name="HOST-B")],
+                            host_index=self.index)
+        ev = [e for e in ents if e.type == "event"][0]
+        self.assertEqual(ev.attrs["_assets"], ["asset:endpoint:C.bbb"])
+
+    def test_the_literal_NA_hostname_is_not_treated_as_a_host(self):
+        ents, _ = self._map([self._ev(None, "reg", computer_name="N/A")],
+                            host_index=self.index)
+        ev = [e for e in ents if e.type == "event"][0]
+        self.assertEqual(ev.attrs["_assets"], ["asset:endpoint:C.aaa"])
+
+    def test_the_single_host_path_is_unchanged(self):
+        ents, _ = self._map([self._ev(1, "solo")])
+        assets = [e.id for e in ents if e.type == "asset"]
+        self.assertEqual(assets, ["asset:endpoint:C.aaa"])
+
+    def test_iocs_are_scoped_to_the_host_that_saw_them(self):
+        ents, _ = self._map([self._ev(2, "beacon to evil-c2.example.net")],
+                            host_index=self.index)
+        ioc = [e for e in ents if e.type == "ioc"][0]
+        self.assertEqual(ioc.attrs["_assets"], ["asset:endpoint:C.bbb"])
+
+
 class TestExtractedIndicatorsAreReal(unittest.TestCase):
     """Turning on domain extraction immediately put two non-indicators into a
     real case graph, so the guards get their own tests."""
@@ -486,6 +612,52 @@ class TestTheAnalyzerWaitSettles(unittest.TestCase):
 
 
 # ------------------------------------------------------------ the registries
+
+class TestBothSourcesStampTimeTheSameWay(unittest.TestCase):
+    """Found by comparing a real Velociraptor collection against a real
+    TimeSketch run on the SAME host: Velociraptor entities carried
+    "2026-08-26T05:19:34.7568747Z" and TimeSketch ones "2026-08-26T05:19:34".
+
+    Nothing errored — the graph just quietly stopped being able to relate them.
+    keys.event_id embeds the timestamp, so one real moment seen by two modules
+    minted two entities that could never merge; correlation-by-time could never
+    fire across sources; and in_window's string comparison behaved differently
+    depending on which module produced the row."""
+
+    def setUp(self):
+        import sys
+        import types
+        import importlib
+        backend = os.path.join(ROOT, "modules/backend")
+        if "services" not in sys.modules:
+            shim = types.ModuleType("services")
+            shim.__path__ = [os.path.join(backend, "services")]
+            sys.modules["services"] = shim
+        self.F = importlib.import_module("services.fusion.mappers.fieldspec")
+        self.keys = importlib.import_module("services.fusion.keys")
+
+    def test_velociraptors_rendering_is_normalised(self):
+        # The exact value observed on the appliance.
+        got = self.F.first_ts({"Mtime": "2026-08-26T05:19:34.7568747Z"})
+        self.assertEqual(got, "2026-08-26T05:19:34")
+
+    def test_it_agrees_with_the_normaliser_everything_else_uses(self):
+        for raw in ("2026-08-26T05:19:34.7568747Z", "2026-08-26T05:19:34",
+                    "2026-08-26 05:19:34", 1787817574, "1787817574"):
+            with self.subTest(raw=raw):
+                self.assertEqual(self.F.first_ts({"Mtime": raw}),
+                                 self.keys.norm_ts(raw))
+
+    def test_two_renderings_of_one_moment_now_produce_one_event_id(self):
+        a = self.F.first_ts({"Mtime": "2026-08-26T05:19:34.7568747Z"})
+        b = self.F.first_ts({"Mtime": "2026-08-26T05:19:34"})
+        self.assertEqual(self.keys.event_id("asset:endpoint:C.1", a, "same message"),
+                         self.keys.event_id("asset:endpoint:C.1", b, "same message"))
+
+    def test_a_missing_timestamp_is_still_none(self):
+        self.assertIsNone(self.F.first_ts({}))
+        self.assertIsNone(self.F.first_ts({"Mtime": ""}))
+
 
 class TestTheModuleIsReachableAgain(unittest.TestCase):
     """A module absent from the picker cannot be enabled, and a run type

@@ -70,8 +70,30 @@ TIMES = ("CreateTime", "Created", "TimeCreated", "EventTime", "Timestamp",
 
 
 def first_ts(row: dict) -> str | None:
-    """Best-effort timestamp for a row, normalised to a string."""
+    """Best-effort timestamp for a row, normalised to 'YYYY-MM-DDTHH:MM:SS'.
+
+    It used to return str(v) unchanged, which quietly split the graph in two.
+    This is the base timestamp for nearly every entity the Velociraptor agentic
+    mapper emits, so those carried Velociraptor's raw rendering
+    ("2026-08-26T05:19:34.7568747Z") while TimeSketch and memory — and the ten
+    call sites in the same mapper that DO call keys.norm_ts — carried
+    "2026-08-26T05:19:34". Measured consequences:
+
+      * cross-source correlation could never fire on time: the same moment seen
+        by two modules produced two different strings, so a TimeSketch event and
+        a Velociraptor event one second apart looked no more related than ones a
+        year apart.
+      * keys.event_id embeds the timestamp, so the same real event described by
+        two sources minted two entities that could never merge.
+      * in_window compares ISO strings; mixing a fractional-second Z-suffixed
+        value with a plain one makes boundary behaviour depend on which module
+        produced the row.
+
+    Normalising here rather than at each call site is the point: the call sites
+    that remembered were never the problem.
+    """
     v = get(row, *TIMES)
     if v in (None, ""):
         return None
-    return str(v)
+    from .. import keys
+    return keys.norm_ts(v)

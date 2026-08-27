@@ -515,8 +515,104 @@ def _ts_window_clause(window):
     return f"datetime:[{start or '*'} TO {end or '*'}]"
 
 
-def fetch_sketch_events(sketch_id, timesketch_config, *, limit=2000, window=None,
-                        logger=None):
+def _sketch_tag_counts(sketch, window, logger=None):
+    """{tag: count} for the sketch, honouring the window. {} if unavailable.
+
+    Uses Timesketch's `field_bucket` aggregator — a terms aggregation, so this
+    is one cheap call that returns NO events, only the tag vocabulary and how
+    common each one is. That is what makes a per-tag fetch possible instead of
+    "take the first N and hope".
+
+    The aggregator takes start_time/end_time, NOT a query string (its parameter
+    list is start_time | end_time | field | limit | index). Passing a Lucene
+    clause here silently returns nothing and drops the caller back to a flat
+    bulk query — which is exactly the failure mode the per-tag fetch exists to
+    avoid, so it is worth getting right rather than tolerating the fallback.
+    """
+    params = {"field": "tag", "limit": 500}
+    w = window or {}
+    if w.get("start"):
+        params["start_time"] = str(w["start"])
+    if w.get("end"):
+        params["end_time"] = str(w["end"])
+    # A degenerate window is treated as open everywhere else; do the same here
+    # rather than aggregating over an empty range.
+    if (params.get("start_time") and params.get("end_time")
+            and params["start_time"] >= params["end_time"]):
+        params.pop("start_time", None)
+        params.pop("end_time", None)
+    try:
+        agg = sketch.run_aggregator("field_bucket", params)
+        data = agg.to_dict() or {}
+        out = {}
+        for entry in data.values():
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("tag")
+            if name:
+                try:
+                    out[str(name)] = int(entry.get("count") or 0)
+                except (TypeError, ValueError):
+                    out[str(name)] = 0
+        return out
+    except Exception as e:
+        if logger:
+            try:
+                logger(f"[TIMESKETCH] tag aggregation unavailable ({e}) — "
+                       f"falling back to a single bulk query", "warning")
+            except Exception:
+                pass
+        return {}
+
+
+def fetch_sketch_timelines(sketch_id, timesketch_config, logger=None):
+    """{timeline_id: timeline_name} for a sketch, or {} on any failure.
+
+    A multi-client TimeSketch run imports ONE TIMELINE PER CLIENT into a shared
+    sketch, and each event carries its `__ts_timeline_id`. That is the only
+    reliable way to attribute a fused event back to the host it came from:
+    `hostname` is literally "N/A" in plaso's Windows output, and `computer_name`
+    exists on EVTX records but not on registry ones. Without this map every
+    event in a 20-host collection lands on the first client in the run — the
+    graph then says one machine did everything.
+    """
+    def log(message, level="info"):
+        print(f"[TIMESKETCH] {message}", flush=True)
+        if logger:
+            try:
+                logger(f"[TIMESKETCH] {message}", level)
+            except Exception:
+                pass
+    try:
+        sid = int(sketch_id)
+    except (TypeError, ValueError):
+        return {}
+    api = None
+    try:
+        api = _connect_timesketch_api(timesketch_config, logger)
+        if not api:
+            return {}
+        sketch = api.get_sketch(sid)
+        out = {}
+        for t in (sketch.list_timelines() or []):
+            try:
+                out[str(t.id)] = str(t.name)
+            except Exception:
+                continue
+        return out
+    except Exception as e:
+        log(f"could not list timelines for sketch {sid}: {e}", "warning")
+        return {}
+    finally:
+        if api is not None:
+            try:
+                api.session.close()
+            except Exception:
+                pass
+
+
+def fetch_sketch_events(sketch_id, timesketch_config, *, limit=4000, window=None,
+                        per_tag_min=25, logger=None):
     """Pull the analyst-relevant events from a sketch — those an analyzer TAGGED
     (SIGMA / threat-intel hits) or an analyst STARRED/commented — so the fusion
     layer can ingest TimeSketch findings.
@@ -532,14 +628,20 @@ def fetch_sketch_events(sketch_id, timesketch_config, *, limit=2000, window=None
     construction; the live index's minimum is 1970) are exactly the ones a window
     would cut.
 
+    Events are fetched PER TAG rather than as one bulk query, because the tag
+    distribution is never even — see the comment on the fetch loop below. Each
+    tag gets an equal share of `limit`, floored at `per_tag_min` so a rare
+    detection is never squeezed out by a large vocabulary, and the rarest tags
+    are asked for first so they are served before the budget runs down.
+
     Each returned dict is the hit's `_source` plus `_ts_id` (the OpenSearch doc
-    id) when present, so evidence locators can address the original event
-    stably instead of an index into a distilled list. Best-effort: returns []
-    on any failure (TS unreachable, bad creds, empty sketch) so the fuse never
-    breaks because TimeSketch is down.
+    id), so evidence locators can address the original event stably instead of
+    an index into a distilled list. Best-effort: returns [] on any failure (TS
+    unreachable, bad creds, empty sketch) so the fuse never breaks because
+    TimeSketch is down.
 
     `max_entries` is best-effort in the API client (it pages 10k at a time), so
-    the result is ALSO truncated client-side to `limit`."""
+    every query is ALSO truncated client-side."""
     def log(message, level="info"):
         print(f"[TIMESKETCH] {message}", flush=True)
         if logger:
@@ -558,24 +660,68 @@ def fetch_sketch_events(sketch_id, timesketch_config, *, limit=2000, window=None
             return []
         sketch = api.get_sketch(sid)
         clause = _ts_window_clause(window)
-        if clause:
-            query = (f"(_exists_:tag AND {clause}) "
-                     f"OR label:__ts_star OR label:__ts_comment")
-        else:
-            query = "_exists_:tag OR label:__ts_star OR label:__ts_comment"
-        res = sketch.explore(query_string=query, as_pandas=False, max_entries=limit)
-        objs = res.get("objects") if isinstance(res, dict) else (res or [])
-        events = []
-        for o in (objs or []):
-            src = o.get("_source") if isinstance(o, dict) else None
-            if isinstance(src, dict):
-                if isinstance(o.get("_id"), (str, int)):
-                    src["_ts_id"] = str(o["_id"])
-                events.append(src)
+
+        def _collect(query, cap, into, seen):
+            """Run one query and append its hits, de-duplicated by document id."""
+            res = sketch.explore(query_string=query, as_pandas=False, max_entries=cap)
+            objs = res.get("objects") if isinstance(res, dict) else (res or [])
+            added = 0
+            for o in (objs or []):
+                src = o.get("_source") if isinstance(o, dict) else None
+                if not isinstance(src, dict):
+                    continue
+                doc_id = o.get("_id")
+                if isinstance(doc_id, (str, int)):
+                    doc_id = str(doc_id)
+                    if doc_id in seen:
+                        continue
+                    seen.add(doc_id)
+                    src["_ts_id"] = doc_id
+                into.append(src)
+                added += 1
+                if added >= cap:
+                    break               # client-side backstop for the 10k paging
+            return added
+
+        events, seen = [], set()
+
+        # PER-TAG FETCH. Taking the first N events of one broad query is only
+        # safe while the tag distribution is even, and it never is: measured on
+        # a real host, 3,480 of 3,542 tagged events were `logon-event` and just
+        # 20 were `rare-domain`. A flat 2,000-event pull can therefore be 100%
+        # logons and miss every real detection — and the operator would see a
+        # confident, empty-handed case. Asking per tag makes each detection
+        # class independently reachable no matter how noisy its neighbours are,
+        # which is the whole point on a busy machine.
+        tag_counts = _sketch_tag_counts(sketch, window, logger=logger)
+        if tag_counts:
+            budget = max(1, int(limit / max(1, len(tag_counts))))
+            per_tag_cap = max(per_tag_min, min(budget, limit))
+            for tag in sorted(tag_counts, key=lambda t: tag_counts[t]):
                 if len(events) >= limit:
-                    break                # client-side backstop for the 10k paging
-        log(f"fusion: pulled {len(events)} analyst-relevant event(s) from "
-            f"sketch {sid}" + (f" (window {clause})" if clause else ""))
+                    break
+                safe = str(tag).replace('"', '\\"')
+                q = f'tag:"{safe}"' + (f" AND {clause}" if clause else "")
+                _collect(q, min(per_tag_cap, limit - len(events)), events, seen)
+            log(f"fusion: {len(tag_counts)} distinct tag(s) in sketch {sid}; "
+                f"pulled {len(events)} tagged event(s) at up to {per_tag_cap} each"
+                + (f" (window {clause})" if clause else ""))
+        else:
+            # Aggregation unavailable (old server, permissions): fall back to the
+            # single broad query rather than contributing nothing.
+            q = ((f"(_exists_:tag AND {clause})" if clause else "_exists_:tag"))
+            _collect(q, limit, events, seen)
+            log(f"fusion: pulled {len(events)} tagged event(s) from sketch {sid} "
+                f"(no tag aggregation)" + (f" (window {clause})" if clause else ""))
+
+        # Starred / commented events, ALWAYS and regardless of the window — an
+        # analyst's judgement is not subject to a filter they may not have set.
+        if len(events) < limit:
+            before = len(events)
+            _collect("label:__ts_star OR label:__ts_comment",
+                     limit - len(events), events, seen)
+            if len(events) > before:
+                log(f"fusion: + {len(events) - before} starred/commented event(s)")
         return events
     except Exception as e:
         log(f"fusion: could not fetch events from sketch {sid}: {e}", "warning")
