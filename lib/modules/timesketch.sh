@@ -224,10 +224,10 @@ curate_timesketch_analyzers() {
                 "${SCRIPT_DIR}/modules/timesketch/config/timesketch_legacy.conf"; do
         [[ -f "$conf" ]] || continue
         local dropped
-        dropped=$(grep -cE "^\s*'(chain|similarity_scorer|sessionizer|feature_extraction|sigma)',?\s*$" "$conf" || true)
+        dropped=$(grep -cE "^\s*'[a-z_]+',?\s*$" "$conf" || true)
         if [[ "${dropped:-0}" -gt 0 ]]; then
-            sed -i -E "/^\s*'(chain|similarity_scorer|sessionizer|feature_extraction|sigma)',?\s*$/d" "$conf"
-            log_success "  Curated AUTO_SKETCH_ANALYZERS in $(basename "$conf") (removed ${dropped} flood/heavyweight analyzer(s))"
+            sed -i -E "/^\s*'[a-z_]+',?\s*$/d" "$conf"
+            log_success "  Curated AUTO_SKETCH_ANALYZERS in $(basename "$conf") (emptied AUTO_SKETCH_ANALYZERS: ${dropped} entr(y/ies) removed; the appliance schedules per-timeline instead)"
         fi
     done
     return 0

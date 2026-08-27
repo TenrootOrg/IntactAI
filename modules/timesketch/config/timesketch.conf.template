@@ -115,6 +115,33 @@ PLASO_UPPER_MEMORY_LIMIT = None
 # Sigma detection on this appliance lives in the VELOCIRAPTOR path instead
 # (Hayabusa parses EVTX into named fields properly), which is why the two
 # modules are complementary rather than redundant.
+# Timesketch's own auto-hook runs these, which is the right place for them:
+# it also covers timelines an analyst uploads through the Timesketch GUI, not
+# just the ones this appliance imports.
+#
+# Timesketch's upload path calls build_sketch_analysis_pipeline WITHOUT a
+# timeline_id (lib/tasks.py:471); the parameter defaults to None while its
+# other caller, the add-timeline API (timeline.py:206), passes it correctly.
+# So every analyzer this list would auto-run receives timeline_id=None, and
+# that one omission produces two failures that look unrelated:
+#
+#   * the analyzer's own output fails jsonschema ("None is not of type
+#     'integer'" on platform_meta_data.timeline_id), so it reports ERROR after
+#     having tagged its events perfectly well;
+#   * saved aggregations are written with "timeline_ids": [null], so every
+#     visualization the analyzers create fails to open with
+#     RequestError(400, 'No value specified for terms query').
+#
+# Verified side by side on one sketch: aggregations from an explicitly
+# scheduled run carry "timeline_ids": [6] and work; auto-scheduled ones carry
+# [null] and do not.
+#
+# THE ROOT CAUSE IS PATCHED, not worked around: analyzer_patches/apply.sh
+# adds the missing `timeline_id=timeline_id` to that call
+# (INTACT-PATCH pass-timeline-id), so the auto-hook now schedules correctly for
+# every caller. Without that patch this list must stay EMPTY — running these
+# with timeline_id=None is worse than not running them, because they report
+# ERROR while silently writing visualizations nobody can open.
 AUTO_SKETCH_ANALYZERS = [
     'tagger',
     'domain',

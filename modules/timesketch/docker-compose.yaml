@@ -121,6 +121,7 @@ services:
       - |
         mkdir -p /var/log/timesketch
         [ -r /opt/intact/llm_providers/apply.sh ] && bash /opt/intact/llm_providers/apply.sh; true
+        [ -r /opt/intact/analyzer_patches/apply.sh ] && bash /opt/intact/analyzer_patches/apply.sh; true
         exec /docker-entrypoint.sh timesketch-web
     environment:
       - NUM_WSGI_WORKERS=${NUM_WSGI_WORKERS:-4}
@@ -134,6 +135,12 @@ services:
       # applied upgrade docker bind-mounts an empty dir, and Timesketch must
       # still start. See llm_providers/README.md.
       - ./llm_providers:/opt/intact/llm_providers:ro
+      # Patches for two upstream analyzer crashes (pandas-2 in
+      # win_evtxgap, None in regex_features' strings[]). Same
+      # start-up-prologue contract as llm_providers: /opt/venv is
+      # image-layer content, so a docker cp dies on the next
+      # recreate. See analyzer_patches/apply.sh.
+      - ./analyzer_patches:/opt/intact/analyzer_patches:ro
       - timesketch_upload:/usr/share/timesketch/upload
       - timesketch_logs:/var/log/timesketch
     restart: unless-stopped
@@ -160,6 +167,7 @@ services:
       - |
         mkdir -p /var/log/timesketch
         [ -r /opt/intact/llm_providers/apply.sh ] && bash /opt/intact/llm_providers/apply.sh; true
+        [ -r /opt/intact/analyzer_patches/apply.sh ] && bash /opt/intact/analyzer_patches/apply.sh; true
         exec /docker-entrypoint.sh timesketch-web-legacy
     environment:
       - NUM_WSGI_WORKERS=${NUM_WSGI_WORKERS:-2}
@@ -168,6 +176,12 @@ services:
     volumes:
       - ./config:/etc/timesketch
       - ./llm_providers:/opt/intact/llm_providers:ro
+      # Patches for two upstream analyzer crashes (pandas-2 in
+      # win_evtxgap, None in regex_features' strings[]). Same
+      # start-up-prologue contract as llm_providers: /opt/venv is
+      # image-layer content, so a docker cp dies on the next
+      # recreate. See analyzer_patches/apply.sh.
+      - ./analyzer_patches:/opt/intact/analyzer_patches:ro
       - timesketch_upload:/usr/share/timesketch/upload
       - timesketch_logs:/var/log/timesketch
     restart: unless-stopped
@@ -196,6 +210,7 @@ services:
       - |
         mkdir -p /var/log/timesketch
         [ -r /opt/intact/llm_providers/apply.sh ] && bash /opt/intact/llm_providers/apply.sh; true
+        [ -r /opt/intact/analyzer_patches/apply.sh ] && bash /opt/intact/analyzer_patches/apply.sh; true
         exec /docker-entrypoint.sh timesketch-web-v3
     environment:
       - NUM_WSGI_WORKERS=${NUM_WSGI_WORKERS:-2}
@@ -203,6 +218,12 @@ services:
     volumes:
       - ./config:/etc/timesketch
       - ./llm_providers:/opt/intact/llm_providers:ro
+      # Patches for two upstream analyzer crashes (pandas-2 in
+      # win_evtxgap, None in regex_features' strings[]). Same
+      # start-up-prologue contract as llm_providers: /opt/venv is
+      # image-layer content, so a docker cp dies on the next
+      # recreate. See analyzer_patches/apply.sh.
+      - ./analyzer_patches:/opt/intact/analyzer_patches:ro
       - timesketch_upload:/usr/share/timesketch/upload
       - timesketch_logs:/var/log/timesketch
     restart: unless-stopped
@@ -256,6 +277,7 @@ services:
       - |
         mkdir -p /var/log/timesketch
         [ -r /opt/intact/llm_providers/apply.sh ] && bash /opt/intact/llm_providers/apply.sh; true
+        [ -r /opt/intact/analyzer_patches/apply.sh ] && bash /opt/intact/analyzer_patches/apply.sh; true
         exec /docker-entrypoint.sh timesketch-worker
     environment:
       - WORKER_LOG_LEVEL=${WORKER_LOG_LEVEL:-INFO}
@@ -264,6 +286,12 @@ services:
       # The worker runs the Celery-side LLM features (summarize/synthesize),
       # so it needs the providers just as much as the web frontends do.
       - ./llm_providers:/opt/intact/llm_providers:ro
+      # Patches for two upstream analyzer crashes (pandas-2 in
+      # win_evtxgap, None in regex_features' strings[]). Same
+      # start-up-prologue contract as llm_providers: /opt/venv is
+      # image-layer content, so a docker cp dies on the next
+      # recreate. See analyzer_patches/apply.sh.
+      - ./analyzer_patches:/opt/intact/analyzer_patches:ro
       - timesketch_upload:/usr/share/timesketch/upload
       - timesketch_logs:/var/log/timesketch
     restart: unless-stopped

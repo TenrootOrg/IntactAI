@@ -1099,46 +1099,139 @@ class TestTheModuleIsReachableAgain(unittest.TestCase):
 
 
 class TestTheAnalyzerSetStaysCurated(unittest.TestCase):
-    """Fusion selects by tag existence, so a flood analyzer makes 'has a tag'
-    meaningless — and every analyzer here now lengthens the pipeline's tail,
-    because the run waits for the set to finish."""
+    """The set lives in code (timesketch_service.TS_ANALYZERS) now, not in the
+    conf, because the conf's auto path cannot pass a timeline_id. What the conf
+    must keep saying is: run nothing automatically."""
 
-    FLOOD = ("chain", "similarity_scorer", "sessionizer", "feature_extraction")
+    FLOOD = ("chain", "similarity_scorer", "sessionizer")
 
-    def test_the_flood_analyzers_are_gone_from_both_templates(self):
+    def test_the_conf_runs_the_curated_set(self):
         for path in (CONF, LEGACY_CONF):
             block = read(path).split("AUTO_SKETCH_ANALYZERS = [")[1].split("]")[0]
-            for name in self.FLOOD:
-                with self.subTest(conf=os.path.basename(path), analyzer=name):
-                    self.assertNotIn(f"'{name}'", block)
+            with self.subTest(conf=os.path.basename(path)):
+                self.assertIn("'domain'", block)
+                self.assertNotIn("'sigma'", block)
 
-    def test_the_conf_admits_feature_extraction_comes_back(self):
-        # Timesketch expands AUTO_SKETCH_ANALYZERS through
-        # analyzers/manager.py:_build_dependencies, and both `domain` and
-        # `account_finder` declare DEPENDENCIES = {"feature_extraction"}.
-        # Removing it from the list does NOT stop it running: measured, 44 of
-        # 72 scheduled sessions on a 4.16M-event timeline were
-        # feature_extraction. A comment claiming otherwise would send the next
-        # reader hunting for a bug that is upstream behaviour.
-        conf = read(CONF)
-        self.assertIn("_build_dependencies", conf)
-        self.assertIn("removes 3 sessions", conf)
-
-    def test_the_detection_analyzers_remain(self):
-        block = read(CONF).split("AUTO_SKETCH_ANALYZERS = [")[1].split("]")[0]
-        # NOT sigma — see TestSigmaIsDeliberatelyAbsent.
-        for name in ("tagger", "login", "domain", "phishy_domains",
-                     "ntfs_timestomp", "evtx_gap", "win_crash", "account_finder"):
+    def test_the_flood_analyzers_are_not_in_our_set(self):
+        block = read(TSSVC).split("TS_ANALYZERS = (")[1].split(")")[0]
+        for name in self.FLOOD:
             with self.subTest(analyzer=name):
-                self.assertIn(f"'{name}'", block)
+                self.assertNotIn(f'"{name}"', block)
 
-    def test_an_existing_appliance_gets_curated_too(self):
-        # render_timesketch_conf_templates never rewrites an existing conf, so
-        # without this every box installed before the curation keeps the old
-        # 15-analyzer list forever.
+    def test_feature_extraction_is_not_requested_but_arrives_anyway(self):
+        # It is a declared DEPENDENCY of domain and account_finder
+        # (analyzers/manager.py:_build_dependencies), so asking for those pulls
+        # it in regardless. Measured: 44 of 72 sessions on a real timeline.
+        block = read(TSSVC).split("TS_ANALYZERS = (")[1].split(")")[0]
+        self.assertNotIn("feature_extraction", block)
+        self.assertIn('"domain"', block)
+
+    def test_an_existing_appliance_gets_its_auto_list_emptied(self):
         deploy = read(DEPLOY)
         self.assertIn("curate_timesketch_analyzers()", deploy)
         self.assertIn("curate_timesketch_analyzers\n", deploy)
+
+
+class TestTheTimelineIdReachesTheAnalyzers(unittest.TestCase):
+    """One upstream omission produced two failures that looked unrelated.
+
+    build_index_pipeline ALREADY takes a timeline_id (tasks.py:398) and simply
+    did not pass it to build_sketch_analysis_pipeline (tasks.py:470), so it
+    defaulted to None. Its sibling caller, the add-timeline API
+    (timeline.py:206), passes it correctly. Every analyzer scheduled by an
+    UPLOAD therefore ran with timeline_id=None, and that produced:
+
+      * AnalyzerOutput.platform_meta_data["timeline_id"] = None, failing the
+        analyzer's own jsonschema ("None is not of type 'integer'"). The
+        analyzer tags its events and THEN dies writing its result row, so it
+        reports ERROR with its tags intact — which is why `domain` errored and
+        still produced 21 rare-domain tags, and why the same analyzer errored
+        on one timeline and succeeded on another.
+      * Saved aggregations written with "timeline_ids": [null], so every
+        visualization the analyzers create fails to open with
+        RequestError(400, 'No value specified for terms query').
+
+    Measured side by side in one sketch: [null] before, [2] after, and
+    account_finder / domain / evtx_gap all flipped ERROR -> DONE.
+
+    Fixed at the SOURCE rather than worked around, so it also covers timelines
+    an analyst uploads through the Timesketch GUI — not only the imports this
+    appliance drives."""
+
+    def setUp(self):
+        self.patch = read(os.path.join(
+            ROOT, "modules/timesketch/analyzer_patches/apply.sh"))
+
+    def test_the_missing_argument_is_patched_in(self):
+        self.assertIn("pass-timeline-id", self.patch)
+        self.assertIn("timeline_id=timeline_id", self.patch)
+
+    def test_the_auto_hook_still_runs_the_analyzers(self):
+        # Emptying AUTO_SKETCH_ANALYZERS would have left GUI-uploaded timelines
+        # with no analysis at all; patching the root cause keeps the upstream
+        # mechanism and makes it correct.
+        for path in (CONF, LEGACY_CONF):
+            block = read(path).split("AUTO_SKETCH_ANALYZERS = [")[1].split("]")[0]
+            with self.subTest(conf=os.path.basename(path)):
+                self.assertIn("'domain'", block)
+                self.assertIn("'login'", block)
+
+    def test_the_pipeline_does_not_schedule_them_a_second_time(self):
+        kape = read(os.path.join(
+            ROOT, "modules/backend/services/kape_upload_service.py"))
+        self.assertNotIn("run_timeline_analyzers(", kape)
+
+    def test_the_conf_warns_that_the_list_depends_on_the_patch(self):
+        # Without the patch this list is actively harmful: analyzers report
+        # ERROR while writing visualizations nobody can open.
+        self.assertIn("must stay EMPTY", read(CONF))
+
+
+class TestUpstreamAnalyzerBugsArePatched(unittest.TestCase):
+    """Two upstream crashes that are fixable, and would otherwise break on
+    every installation. Patched in the container at start-up, the same way the
+    LLM providers already are — /opt/venv is image-layer content with no volume
+    on it, so a docker cp would be destroyed by the next recreate."""
+
+    def setUp(self):
+        self.patch = read(os.path.join(
+            ROOT, "modules/timesketch/analyzer_patches/apply.sh"))
+
+    def test_evtx_gap_pandas2_crash_is_patched(self):
+        # DataFrame.append() was removed in pandas 2.0, and the line is only
+        # reached when a gap WAS found — so evtx_gap failed 100% of the times
+        # it had something to report.
+        self.assertIn("pandas2-concat", self.patch)
+        self.assertIn("pd.concat", self.patch)
+
+    def test_regex_features_none_crash_is_patched(self):
+        # ",".join() over a plaso strings[] containing a null raises TypeError.
+        # Real Microsoft-Windows-Bits-Client records contain one, which is why
+        # feature_extraction failed on some timelines and not others.
+        self.assertIn("join-skip-none", self.patch)
+        self.assertIn("if _x is not None", self.patch)
+
+    def test_each_patch_is_idempotent(self):
+        self.assertEqual(self.patch.count("already patched"), 4)
+
+    def test_it_can_never_stop_timesketch_starting(self):
+        # The header explains the contract (and names `set -e`); what matters
+        # is that no line ever enables it.
+        for line in self.patch.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            with self.subTest(line=stripped[:50]):
+                self.assertNotRegex(stripped, r"^set\s+-[eu]")
+        self.assertIn("exit 0", self.patch)
+
+    def test_it_notices_if_upstream_changes_the_line(self):
+        # Silence would look like success on a Timesketch that fixed these.
+        self.assertEqual(self.patch.count("expected line absent"), 4)
+
+    def test_it_is_wired_into_both_services(self):
+        compose = read(os.path.join(ROOT, "modules/timesketch/docker-compose.yaml"))
+        self.assertGreaterEqual(compose.count("analyzer_patches"), 2)
 
 
 class TestSigmaIsDeliberatelyAbsent(unittest.TestCase):
@@ -1177,9 +1270,13 @@ class TestSigmaIsDeliberatelyAbsent(unittest.TestCase):
         self.assertNotIn("import_timesketch_sigma_rules", read(DEPLOY))
 
     def test_an_existing_appliance_gets_sigma_stripped_too(self):
-        # Boxes whose conf predates this keep running 53 sessions per timeline
-        # for nothing otherwise.
-        self.assertIn("|sigma)", read(DEPLOY))
+        # The curation now empties AUTO_SKETCH_ANALYZERS entirely on existing
+        # boxes, which removes sigma along with everything else — see
+        # TestAnalyzersAreScheduledWithTheirTimelineId for why the whole auto
+        # path is disabled rather than just trimmed.
+        deploy = read(DEPLOY)
+        self.assertIn("curate_timesketch_analyzers()", deploy)
+        self.assertIn("'[a-z_]+',?", deploy)
 
     def test_no_rules_are_staged_in_the_repo(self):
         import glob

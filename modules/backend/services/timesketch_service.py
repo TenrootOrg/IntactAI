@@ -347,6 +347,100 @@ def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=1000
 _TS_ANALYZER_TIMEOUT = int(os.environ.get("INTACT_TS_ANALYZER_TIMEOUT", "7200"))
 
 
+# The analyzers we run, scheduled explicitly per timeline (see
+# run_timeline_analyzers). Curated: everything here works on plaso-parsed
+# Windows data with no external service. Deliberately excluded —
+#   yeti* (6)        never leave PENDING without a Yeti API root+key, so they
+#                    would hang the analyzer wait until its timeout
+#   hashr_lookup     needs an external hashR database ("please uncomment the
+#                    section and provide the connection details")
+#   misp/safebrowsing/geo_ip/gcp_*/llm_log_analyzer
+#                    need credentials or an external service
+#   sigma            0 of 53 rules satisfiable on plaso data (see the conf)
+#   chain/similarity_scorer/sessionizer
+#                    session & similarity tag floods with no detection value
+TS_ANALYZERS = ("tagger", "domain", "login", "browser_search",
+                "browser_timeframe", "phishy_domains", "ntfs_timestomp",
+                "evtx_gap", "win_crash", "account_finder")
+
+
+def run_timeline_analyzers(sketch_id, timeline_id, timesketch_config, *,
+                           analyzers=None, logger=None):
+    """Schedule analyzers on ONE timeline, with its id attached.
+
+    WHY WE SCHEDULE THESE OURSELVES instead of letting AUTO_SKETCH_ANALYZERS do
+    it. Timesketch's upload path calls build_sketch_analysis_pipeline WITHOUT a
+    timeline_id (lib/tasks.py:471 — `build_sketch_analysis_pipeline(sketch_id,
+    searchindex.id, user_id=None)`), and the parameter defaults to None. Its
+    OTHER caller, the add-timeline API (api/v1/resources/timeline.py:206),
+    passes it correctly. So every analyzer scheduled by a plaso UPLOAD — which
+    is every analyzer this appliance runs — receives timeline_id=None, and that
+    single omission produces two separate, confusing failures:
+
+      * AnalyzerOutput.platform_meta_data["timeline_id"] is None, which fails
+        the analyzer's own jsonschema ("None is not of type 'integer'"). The
+        analyzer TAGS its events first and dies writing its result row, so it
+        reports ERROR while its tags are perfectly fine — which is why `domain`
+        errored and still produced 21 rare-domain tags.
+      * Saved aggregations are stored with "timeline_ids": [null], so every
+        visualization the analyzers create raises
+        RequestError(400, 'No value specified for terms query') when opened.
+        Verified side by side: aggregations from an explicitly-scheduled run
+        carry "timeline_ids": [6] and work; the auto-scheduled ones carry
+        [null] and do not.
+
+    Timeline.run_analyzers() passes the id, so doing it ourselves fixes both.
+    Best-effort: returns the number scheduled, never raises — a timeline that
+    imported is worth having even with no analysis on it.
+    """
+    def log(message, level="info"):
+        print(f"[TIMESKETCH] {message}", flush=True)
+        if logger:
+            try:
+                logger(f"[TIMESKETCH] {message}", level)
+            except Exception:
+                pass
+
+    names = list(analyzers or TS_ANALYZERS)
+    api = None
+    try:
+        api = _connect_timesketch_api(timesketch_config, logger)
+        if not api:
+            return 0
+        sketch = api.get_sketch(int(sketch_id))
+        target = None
+        for t in (sketch.list_timelines() or []):
+            if str(t.id) == str(timeline_id):
+                target = t
+                break
+        if target is None:
+            log(f"timeline {timeline_id} not found on sketch {sketch_id} — "
+                f"no analyzers scheduled", "warning")
+            return 0
+        scheduled = 0
+        for name in names:
+            # One at a time: a name this server does not have must not stop the
+            # rest (the analyzer set differs between Timesketch releases).
+            try:
+                target.run_analyzers([name], ignore_previous=True)
+                scheduled += 1
+            except Exception as e:
+                log(f"analyzer {name} could not be scheduled: {e}", "warning")
+        log(f"scheduled {scheduled}/{len(names)} analyzer(s) on timeline "
+            f"{timeline_id}")
+        return scheduled
+    except Exception as e:
+        log(f"could not schedule analyzers on timeline {timeline_id}: {e}",
+            "warning")
+        return 0
+    finally:
+        if api is not None:
+            try:
+                api.session.close()
+            except Exception:
+                pass
+
+
 def wait_for_analyzers(sketch_id, timesketch_config, *, timeout_seconds=None,
                        poll_interval=30, logger=None, cancel_event=None):
     """Block until every analyzer session on the sketch settles (DONE/ERROR).

@@ -405,7 +405,7 @@ def _plaso_line_level(line):
     return "info"
 
 
-def _wait_for_sketch_analyzers(run_id, sketch_id, settings):
+def _wait_for_sketch_analyzers(run_id, sketch_id, settings, timeline_id=None):
     """Block until Timesketch's auto-analyzers settle, then report per analyzer.
 
     Non-fatal on every path: an analyzer that errors, a wait that times out, or
@@ -418,6 +418,12 @@ def _wait_for_sketch_analyzers(run_id, sketch_id, settings):
     try:
         from services.timesketch_service import wait_for_analyzers
         from config import TIMESKETCH_CONFIG
+        # NOT scheduled here. Timesketch's own auto-hook (AUTO_SKETCH_ANALYZERS)
+        # does it, which also covers timelines an analyst uploads through the
+        # Timesketch GUI rather than only the ones this appliance imports. That
+        # hook used to schedule with timeline_id=None; analyzer_patches/apply.sh
+        # fixes it at the source (INTACT-PATCH pass-timeline-id). Scheduling
+        # here as well would simply run everything twice.
         # None -> the service's own default (INTACT_TS_ANALYZER_TIMEOUT).
         timeout = settings.get("timesketch_analyzer_timeout") or None
         if timeout:
@@ -685,7 +691,8 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
             # and `timesketch*` types arm the case auto-fuse the instant this
             # run completes. Completing here used to hand the fuse a sketch
             # with zero tags (measured), and nothing re-armed when they landed.
-            _wait_for_sketch_analyzers(run_id, result.get("sketch_id"), settings)
+            _wait_for_sketch_analyzers(run_id, result.get("sketch_id"), settings,
+                                       timeline_id=result.get("timeline_id"))
 
             _status("completed", progress=100)
 
