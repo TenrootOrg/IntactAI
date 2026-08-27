@@ -87,8 +87,18 @@ PLASO_UPPER_MEMORY_LIMIT = None
 # Dropped from the old 15 on purpose (do not re-add casually):
 #   chain, similarity_scorer, sessionizer — session/similarity tag floods with
 #     no detection value for fusion; they made "has a tag" meaningless.
-#   feature_extraction — 44 of the import's 75 Celery tasks (the heaviest by
-#     far) and it writes attributes, not detection tags.
+#   feature_extraction — writes attributes, not detection tags.
+#
+# BUT feature_extraction COMES BACK REGARDLESS, and removing it from this list
+# does not stop it. Timesketch expands AUTO_SKETCH_ANALYZERS through
+# analyzers/manager.py:_build_dependencies, and both `domain` and
+# `account_finder` declare DEPENDENCIES = frozenset(["feature_extraction"]).
+# Measured on a 4.16M-event timeline: 44 of the 72 scheduled sessions are
+# feature_extraction, pulled in by `domain`. Keeping `domain` is the right
+# trade — `rare-domain` was one of only four tags a real Windows timeline
+# produced, and it is a genuine detection — but be honest about the cost: this
+# curation removes 3 sessions, not 47. Dropping feature_extraction for real
+# means dropping `domain` and `account_finder` too.
 # The workflow waits for this set to finish before the run goes terminal
 # (services/timesketch_service.wait_for_analyzers), so every analyzer added
 # here also lengthens the pipeline's tail.

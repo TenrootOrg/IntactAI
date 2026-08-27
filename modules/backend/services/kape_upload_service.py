@@ -384,7 +384,10 @@ def _wait_for_sketch_analyzers(run_id, sketch_id, settings):
     try:
         from services.timesketch_service import wait_for_analyzers
         from config import TIMESKETCH_CONFIG
-        timeout = int(settings.get("timesketch_analyzer_timeout", 1800) or 1800)
+        # None -> the service's own default (INTACT_TS_ANALYZER_TIMEOUT).
+        timeout = settings.get("timesketch_analyzer_timeout") or None
+        if timeout:
+            timeout = int(timeout)
         add_log_to_run(run_id, "Waiting for Timesketch analyzers to finish "
                                "(their tags are what the case graph reads)…")
         settled, summary = wait_for_analyzers(

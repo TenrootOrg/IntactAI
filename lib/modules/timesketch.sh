@@ -204,8 +204,11 @@ render_timesketch_conf_templates() {
 # Why these four (measured 2026-08-27 on a real 380k-event import):
 #   chain / similarity_scorer / sessionizer -- session & similarity tag floods
 #     with no detection value for fusion.
-#   feature_extraction -- 44 of the import's 75 Celery tasks, writes
-#     attributes rather than detection tags.
+#   feature_extraction -- writes attributes rather than detection tags. Note it
+#     returns anyway as a declared DEPENDENCY of `domain` and `account_finder`
+#     (analyzers/manager.py:_build_dependencies), so this removes 3 sessions,
+#     not 47. Keeping `domain` is still right: `rare-domain` is a real
+#     detection and one of only four tags a Windows timeline produced.
 # Fusion selects TimeSketch events BY TAG, and the workflow now waits for the
 # analyzer set to finish before the run completes -- so every extra analyzer
 # here is both noise in the case graph and minutes on the pipeline's tail.

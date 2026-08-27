@@ -791,6 +791,7 @@ class TestTheAnalyzerWaitSettles(unittest.TestCase):
                 return FakeSketch()
 
         ns = {
+            "_TS_ANALYZER_TIMEOUT": 7200,
             "_connect_timesketch_api": lambda *a, **k: FakeApi(),
             "time": type("t", (), {"time": staticmethod(lambda: calls["polls"] * 1.0),
                                    "sleep": staticmethod(lambda _s: None)}),
@@ -830,6 +831,13 @@ class TestTheAnalyzerWaitSettles(unittest.TestCase):
         self.assertEqual(summary["domain"], {"ERROR": 1})
         self.assertEqual(summary["feature_extraction"], {"ERROR": 1, "DONE": 1})
 
+    def test_the_default_timeout_survives_a_real_timeline(self):
+        # Measured: a _KapeTriage import is 4.16M events and 72 sequential
+        # analyzer sessions. 30 minutes expires mid-queue and hands the
+        # auto-fuse an untagged sketch — the exact failure the wait prevents.
+        src = read(TSSVC)
+        self.assertIn('INTACT_TS_ANALYZER_TIMEOUT", "7200"', src)
+
     def test_a_timeout_reports_unsettled_rather_than_hanging(self):
         (settled, summary), _ = self._wait(
             [[{"name": "sigma", "status": "PENDING"}]], timeout_seconds=3)
@@ -838,6 +846,7 @@ class TestTheAnalyzerWaitSettles(unittest.TestCase):
 
     def test_a_bad_sketch_id_is_refused_before_connecting(self):
         fn = load_func(TSSVC, "wait_for_analyzers", {
+            "_TS_ANALYZER_TIMEOUT": 7200,
             "_connect_timesketch_api": lambda *a, **k: (_ for _ in ()).throw(
                 AssertionError("must not connect")),
             "print": lambda *a, **k: None,
@@ -1007,6 +1016,18 @@ class TestTheAnalyzerSetStaysCurated(unittest.TestCase):
             for name in self.FLOOD:
                 with self.subTest(conf=os.path.basename(path), analyzer=name):
                     self.assertNotIn(f"'{name}'", block)
+
+    def test_the_conf_admits_feature_extraction_comes_back(self):
+        # Timesketch expands AUTO_SKETCH_ANALYZERS through
+        # analyzers/manager.py:_build_dependencies, and both `domain` and
+        # `account_finder` declare DEPENDENCIES = {"feature_extraction"}.
+        # Removing it from the list does NOT stop it running: measured, 44 of
+        # 72 scheduled sessions on a 4.16M-event timeline were
+        # feature_extraction. A comment claiming otherwise would send the next
+        # reader hunting for a bug that is upstream behaviour.
+        conf = read(CONF)
+        self.assertIn("_build_dependencies", conf)
+        self.assertIn("removes 3 sessions", conf)
 
     def test_the_detection_analyzers_remain(self):
         block = read(CONF).split("AUTO_SKETCH_ANALYZERS = [")[1].split("]")[0]

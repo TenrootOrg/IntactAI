@@ -336,8 +336,19 @@ def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=1000
     return (False, "unknown", None)
 
 
-def wait_for_analyzers(sketch_id, timesketch_config, *, timeout_seconds=1800,
-                       poll_interval=20, logger=None, cancel_event=None):
+# Analyzers run SEQUENTIALLY in Timesketch's Celery workers, one session at a
+# time, over the whole timeline. Measured on a real _KapeTriage import: 4.16M
+# events, 72 scheduled sessions, and the import itself took about an hour before
+# they even started. 30 minutes was the first guess and it was wrong — it would
+# expire mid-queue on any realistic host and hand the auto-fuse an untagged
+# sketch, which is the exact failure this wait exists to prevent. Waiting is
+# cheap (a poll), the run says "Analyzers: n/m settled" throughout, and Stop
+# still works; finishing early and silently losing every detection is not.
+_TS_ANALYZER_TIMEOUT = int(os.environ.get("INTACT_TS_ANALYZER_TIMEOUT", "7200"))
+
+
+def wait_for_analyzers(sketch_id, timesketch_config, *, timeout_seconds=None,
+                       poll_interval=30, logger=None, cancel_event=None):
     """Block until every analyzer session on the sketch settles (DONE/ERROR).
 
     WHY THIS EXISTS. Timesketch fires AUTO_SKETCH_ANALYZERS in its own Celery
@@ -381,6 +392,8 @@ def wait_for_analyzers(sketch_id, timesketch_config, *, timeout_seconds=1800,
                 pass
 
     _TERMINAL = {"DONE", "ERROR"}
+    if timeout_seconds is None:
+        timeout_seconds = _TS_ANALYZER_TIMEOUT
     try:
         sid = int(sketch_id)
     except (TypeError, ValueError):
