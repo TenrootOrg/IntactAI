@@ -553,6 +553,56 @@ class TestOneBadTagDoesNotLoseTheRest(unittest.TestCase):
         self.assertLess(i_bs, i_q)
 
 
+class TestOurOwnAnnotationsAreNotEvidence(unittest.TestCase):
+    """score_row concatenates every value in a row and keyword-matches the
+    blob, and "rwx" is a THREE-character _CRIT keyword worth +100. We inject
+    the OpenSearch document id as `_ts_id`, so a random id containing those
+    letters turned an ordinary logon into a CRITICAL finding. Reproduced live
+    before the fix: {"message": "an ordinary logon", "_ts_id":
+    "jXcZQqrwxBGKvPYSzpM7"} scored 100.
+
+    A spurious critical is the worst defect class a triage tool can ship — it
+    spends an analyst's attention on nothing and teaches them to distrust the
+    severity column."""
+
+    def setUp(self):
+        import sys
+        import types
+        import importlib
+        backend = os.path.join(ROOT, "modules/backend")
+        if "services" not in sys.modules:
+            shim = types.ModuleType("services")
+            shim.__path__ = [os.path.join(backend, "services")]
+            sys.modules["services"] = shim
+        self.mod = importlib.import_module("services.fusion.mappers.timesketch")
+
+    def _sev(self, **extra):
+        row = {"datetime": "2026-08-01T00:00:00Z", "message": "an ordinary logon",
+               "tag": ["logon-event"]}
+        row.update(extra)
+        ents, _ = self.mod.map_timesketch(
+            [row], run_id="r1", asset="asset:endpoint:C.1", hostname="H")
+        e = [x for x in ents if x.type == "event"][0]
+        return e.anomaly, e.severity
+
+    def test_a_document_id_containing_rwx_does_not_mint_a_critical(self):
+        self.assertEqual(self._sev(_ts_id="jXcZQqrwxBGKvPYSzpM7"), (0, "informational"))
+
+    def test_a_benign_document_id_is_unchanged(self):
+        self.assertEqual(self._sev(_ts_id="jXcZQqABGKvPYSzpM7L7"), (0, "informational"))
+
+    def test_other_injected_metadata_is_also_excluded(self):
+        for key in ("__ts_timeline_id", "__ts_emojis", "_ts_id"):
+            with self.subTest(key=key):
+                self.assertEqual(self._sev(**{key: "rwx"}), (0, "informational"))
+
+    def test_real_evidence_still_scores(self):
+        # The filter must not blunt the scorer on actual fields.
+        anom, sev = self._sev(message="process with PAGE_EXECUTE_READWRITE memory")
+        self.assertGreaterEqual(anom, 100)
+        self.assertEqual(sev, "critical")
+
+
 class TestEveryHostKeepsItsOwnEvents(unittest.TestCase):
     """TimeSketch is not only used on one machine at a time. A multi-client run
     imports ONE TIMELINE PER CLIENT into a shared sketch, and the mapper used to

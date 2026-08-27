@@ -183,7 +183,15 @@ def map_timesketch(events, *, run_id: str, asset: str, hostname=None,
                 sources=[MODULE], evidence=[EvidenceRef(MODULE, run_id, "asset")]))
         ts = keys.norm_ts(F.get(e, "datetime", "Timestamp", "TimeCreated", *F.TIMES))
         msg = str(F.get(e, "message", "Message", "description", default="") or "")
-        anom = score_row(e)
+        # Score the EVIDENCE, never our own annotations. score_row concatenates
+        # every value in the row and keyword-matches the blob, and "rwx" is a
+        # three-character _CRIT keyword worth +100 — so a random OpenSearch
+        # document id that happens to contain those letters (we inject it as
+        # `_ts_id`) turns an ordinary logon into a CRITICAL finding. Reproduced:
+        # {"message": "an ordinary logon", "_ts_id": "jXcZQqrwxBGKvPYSzpM7"}
+        # scores 100. Underscore-prefixed keys are metadata we added — _ts_id,
+        # __ts_timeline_id, __ts_emojis — and none of them are evidence.
+        anom = score_row({k: v for k, v in e.items() if not str(k).startswith("_")})
         # Address the ORIGINAL TimeSketch event when the fetch kept its
         # OpenSearch id. `event/row=i` is an index into the *distilled* list,
         # so it renumbers whenever the analyzer tags change and points at a
