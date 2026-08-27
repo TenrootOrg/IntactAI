@@ -342,17 +342,56 @@ class TestDetectionsActuallyReachTheAnalyst(unittest.TestCase):
             sys.modules["services"] = shim
         self.mod = importlib.import_module("services.fusion.mappers.timesketch")
 
-    def _event(self, tag):
+    def _event(self, tag, **fields):
+        row = {"datetime": "2026-08-01T00:00:00Z",
+               "message": "something happened", "tag": [tag]}
+        row.update(fields)
         ents, _ = self.mod.map_timesketch(
-            [{"datetime": "2026-08-01T00:00:00Z", "message": "something happened",
-              "tag": [tag]}],
-            run_id="r1", asset="asset:endpoint:C.1", hostname="H")
+            [row], run_id="r1", asset="asset:endpoint:C.1", hostname="H")
         return [e for e in ents if e.type == "event"][0]
 
     def test_a_detection_tag_flags_the_event_for_finding_derivation(self):
-        e = self._event("rare-domain")
+        # win_crash means something on its own; it is not indicator-only.
+        e = self._event("win_crash")
         self.assertIn("detection", e.flags)
-        self.assertEqual(e.attrs.get("title"), "TimeSketch: rare-domain")
+        self.assertEqual(e.attrs.get("title"), "TimeSketch: win_crash")
+
+    def test_an_indicator_tag_raises_only_when_an_indicator_survives(self):
+        """rare-domain/phishy-domain exist solely to point at a domain. On a
+        clean corporate desktop `phishy_domains` flagged the private address
+        192.168.1.23 eight times and `domain` called doubleclick.net rare —
+        each would have raised a finding naming nothing actionable. If nothing
+        on the event survives classify_indicator, the tag has nothing to say."""
+        bare = self._event("rare-domain")
+        self.assertNotIn("detection", bare.flags)
+        self.assertIsNone(bare.attrs.get("title"))
+
+        private = self._event("phishy-domain", domain="192.168.1.23")
+        self.assertNotIn("detection", private.flags)
+
+        cdn = self._event("rare-domain", domain="r2---sn-5hne.gvt1.com")
+        self.assertNotIn("detection", cdn.flags)
+
+        netbios = self._event("rare-domain", domain="WORKGROUP")
+        self.assertNotIn("detection", netbios.flags)
+
+    def test_a_real_indicator_is_named_in_the_finding_title(self):
+        """Findings group per (host, title), so a bare tag name collapses every
+        flagged domain on a host into one finding naming none of them."""
+        e = self._event("rare-domain", domain="a.uguu.se")
+        self.assertIn("detection", e.flags)
+        self.assertEqual(e.attrs.get("title"),
+                         "TimeSketch: rare-domain (a.uguu.se)")
+
+    def test_the_indicator_comes_from_the_field_not_only_the_message(self):
+        """explore() returns the analyzer's verdict in a FIELD; scanning only
+        message text found no indicator and the finding named nothing."""
+        ents, _ = self.mod.map_timesketch(
+            [{"datetime": "2026-08-01T00:00:00Z", "message": "no indicator here",
+              "tag": ["rare-domain"], "domain": "a.uguu.se"}],
+            run_id="r1", asset="asset:endpoint:C.1", hostname="H")
+        iocs = [e for e in ents if e.type == "ioc"]
+        self.assertIn("a.uguu.se", [e.label for e in iocs])
 
     def test_a_routine_tag_raises_nothing(self):
         # A logon is context for a timeline, not something to raise — the same
@@ -402,10 +441,11 @@ class TestDetectionsActuallyReachTheAnalyst(unittest.TestCase):
         self.assertIsNone(e.attrs.get("title"))
         ents, _ = self.mod.map_timesketch(
             [{"datetime": "2026-08-01T00:00:00Z", "message": "x",
-              "tag": ["logon-event", "rare-domain"]}],
+              "tag": ["logon-event", "rare-domain"], "domain": "a.uguu.se"}],
             run_id="r1", asset="asset:endpoint:C.1", hostname="H")
         both = [x for x in ents if x.type == "event"][0]
-        self.assertEqual(both.attrs.get("title"), "TimeSketch: rare-domain")
+        self.assertEqual(both.attrs.get("title"),
+                         "TimeSketch: rare-domain (a.uguu.se)")
 
     def test_the_detection_severity_clears_the_grouping_floor(self):
         # _derive_findings only groups detections at medium or above; a flag

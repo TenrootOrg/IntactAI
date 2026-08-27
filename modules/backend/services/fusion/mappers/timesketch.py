@@ -114,6 +114,22 @@ def _ent(eid, etype, label, asset, run_id, locator, *, anomaly=0, first=None,
                   flags=list(flags or []))
 
 
+# Tags whose ENTIRE meaning is the indicator they point at. If no indicator on
+# the event survives keys.classify_indicator, the tag has nothing to say and
+# must not raise a finding. See the call site for the measured false positives.
+_INDICATOR_TAGS = frozenset((
+    "rare-domain", "phishy-domain", "phishy_domain", "known-domain",
+    "suspicious-domain", "malicious-domain",
+))
+
+
+def _needs_indicator(tags) -> bool:
+    """True when every non-routine tag on this event is indicator-only."""
+    real = [str(t).strip().lower() for t in (tags or []) if str(t).strip()]
+    real = [t for t in real if t not in _ROUTINE_TAGS]
+    return bool(real) and all(t in _INDICATOR_TAGS for t in real)
+
+
 def _detection_title(tags) -> str | None:
     """A human detection name for the analyzer tags on an event, or None.
 
@@ -280,5 +296,24 @@ def map_timesketch(events, *, run_id: str, asset: str, hostname=None,
             ind = named.get("domain") or named.get("url") or named.get("ip")
             if ind:
                 ev_entity.attrs["title"] = f"{det_title} ({ind})"
+            elif _needs_indicator(tags):
+                # AN INDICATOR DETECTION WITH NO INDICATOR IS NOT A DETECTION.
+                # These analyzers exist solely to point at a domain/URL, and
+                # their false-positive rate on real endpoints is high: measured
+                # on a clean corporate desktop, `phishy_domains` flagged the
+                # private address 192.168.1.23 eight times and `domain` called
+                # doubleclick.net / go.microsoft.com / clarity.ms rare. Each
+                # would have raised a HIGH or medium finding naming nothing an
+                # analyst could act on. classify_indicator already rejects
+                # private IPs, NetBIOS names, private TLDs and known CDNs — so
+                # "the tag fired but nothing survived classification" is
+                # precisely the signature of a false positive. Keep the event
+                # in the graph as timeline context; just do not raise it.
+                ev_entity.attrs.pop("title", None)
+                try:
+                    ev_entity.flags = [f for f in (ev_entity.flags or [])
+                                       if f != "detection"]
+                except Exception:
+                    pass
 
     return ents, rels
