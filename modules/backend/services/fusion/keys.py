@@ -99,10 +99,30 @@ _FILE_EXT = {"exe", "dll", "sys", "txt", "log", "dat", "tmp", "bin", "ini", "xml
              "csv", "tsv", "jsonl", "yaml", "yml", "toml", "md", "sqlite",
              "eml", "msg", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
              "rtf", "gz", "7z", "rar", "iso", "vhd", "vhdx", "url", "lock",
-             "pid", "swp", "plist", "reg", "wer", "dmp", "sqlite3"}
+             "pid", "swp", "plist", "reg", "wer", "dmp", "sqlite3",
+             # Disk/image/media extensions seen turning into "domains" on real
+             # data: BB1a7GBU.img entered a case graph as an IOC.
+             "img", "iso9660", "vhdx", "vmdk", "wim", "esd", "swm", "mp4",
+             "avi", "wav", "svg", "ttf", "woff", "woff2", "cur", "ani"}
+
+# Private / internal-use TLDs. RFC 6762 (.local) and the de-facto corporate
+# ones: an Active Directory domain is not threat infrastructure, and treating
+# it as one produced "Indicator INTERNAL.CORP seen on 2 hosts" as a HIGH
+# cross-host finding on a real case — a confident, entirely empty alert about
+# the customer's own domain name.
+_PRIVATE_TLD = {"local", "corp", "lan", "internal", "intranet", "home",
+                "domain", "localdomain", "test", "invalid", "example"}
+# Benign update / CDN infrastructure. Matched on the registrable domain (see
+# classify_indicator), so subdomains are covered. Deliberately CURATED and
+# short rather than clever: in DFIR a missed C2 costs far more than a noisy
+# CDN row, so this only grows when a real case shows a domain is pure noise.
+# gvt1.com earned its place that way — r2/r3---sn-*.gvt1.com (Google video)
+# surfaced as HIGH cross-host indicators on a real two-host fuse.
 _BENIGN_DOM = {"microsoft.com", "windows.com", "msftncsi.com", "windowsupdate.com",
                "office.com", "live.com", "msn.com", "bing.com", "google.com",
-               "gstatic.com", "office365.com", "azureedge.net", "akamaized.net"}
+               "gstatic.com", "office365.com", "azureedge.net", "akamaized.net",
+               "gvt1.com", "gvt2.com", "googlevideo.com", "ytimg.com",
+               "doubleclick.net", "cloudfront.net", "fbcdn.net", "licdn.com"}
 
 
 def classify_indicator(value) -> str | None:
@@ -129,6 +149,8 @@ def classify_indicator(value) -> str | None:
         last = s.rsplit(".", 1)[-1]
         if last in _FILE_EXT:
             return None                       # filename, not a domain
+        if last in _PRIVATE_TLD:
+            return None                       # AD / internal name, not infrastructure
         # Benign-update infrastructure, matched on the REGISTRABLE domain rather
         # than the exact string: "microsoft.com" was listed but "fs.microsoft.com"
         # still became an IOC, and update/telemetry traffic is overwhelmingly

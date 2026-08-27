@@ -368,6 +368,25 @@ class TestDetectionsActuallyReachTheAnalyst(unittest.TestCase):
         e = [x for x in ents if x.type == "event"][0]
         self.assertNotIn("detection", e.flags)
 
+    def test_a_known_cdn_tag_is_not_a_detection(self):
+        # The domain analyzer saying "this is Akamai/Google" is the OPPOSITE of
+        # a detection; it was raising a medium finding on every host.
+        e = self._event("known-cdn")
+        self.assertNotIn("detection", e.flags)
+        self.assertIsNone(e.attrs.get("title"))
+
+    def test_escaped_whitespace_does_not_corrupt_indicators(self):
+        # plaso stores literal "\t" sequences; the domain regex happily made
+        # `\tINTERNAL.CORP` into an IOC called `tINTERNAL.CORP`.
+        ents, _ = self.mod.map_timesketch(
+            [{"datetime": "2026-08-01T00:00:00Z", "tag": ["rare-domain"],
+              "message": "user logged on\\tevil-c2.example.net was contacted"}],
+            run_id="r1", asset="asset:endpoint:C.1", hostname="H")
+        iocs = [e.label for e in ents if e.type == "ioc"]
+        self.assertIn("evil-c2.example.net", iocs)
+        self.assertFalse([i for i in iocs if i.startswith("t")],
+                         f"escaped-whitespace bleed: {iocs}")
+
     def test_the_more_serious_tag_names_the_finding(self):
         # An event carrying two detections must group under one title, and it
         # should be the one worth reading.
@@ -727,6 +746,28 @@ class TestExtractedIndicatorsAreReal(unittest.TestCase):
         # endswith on "." + domain, so this must NOT be swallowed.
         self.assertEqual(self.keys.classify_indicator("notmicrosoft.com"), "domain")
         self.assertEqual(self.keys.classify_indicator("microsoft.com.evil.ru"), "domain")
+
+    def test_an_internal_ad_domain_is_not_threat_infrastructure(self):
+        # Observed on a real two-host fuse: "Indicator INTERNAL.CORP seen on
+        # 2 hosts" as a HIGH cross-host finding — a confident, entirely empty
+        # alert about the customer's own domain name.
+        for dom in ("INTERNAL.CORP", "WINLAB.LOCAL", "dc01.internal",
+                    "srv.lan", "printer.home"):
+            with self.subTest(dom=dom):
+                self.assertIsNone(self.keys.classify_indicator(dom))
+
+    def test_disk_and_media_extensions_are_not_domains(self):
+        # BB1a7GBU.img entered a case graph as an IOC.
+        for name in ("BB1a7GBU.img", "disk.vmdk", "boot.wim", "clip.mp4",
+                     "icon.svg"):
+            with self.subTest(name=name):
+                self.assertIsNone(self.keys.classify_indicator(name))
+
+    def test_known_cdns_are_not_indicators(self):
+        for dom in ("r3---sn-5hnedn7z.gvt1.com", "rr1.googlevideo.com",
+                    "d1234.cloudfront.net"):
+            with self.subTest(dom=dom):
+                self.assertIsNone(self.keys.classify_indicator(dom))
 
     def test_real_indicators_still_classify(self):
         self.assertEqual(self.keys.classify_indicator("evil-c2.example.net"), "domain")

@@ -42,6 +42,11 @@ _TAG_FLOOR_MEDIUM = 10      # -> "medium", clears the default floor
 _ROUTINE_TAGS = {
     "logon-event", "logoff-event", "session-id", "known-domain",
     "browser-search", "browser-timeframe", "win-service",
+    # `known-cdn` is the domain analyzer saying "this is Akamai/Google/etc" —
+    # the OPPOSITE of a detection. It was surfacing as a medium-severity
+    # "TimeSketch: known-cdn" finding on every host, which is noise wearing a
+    # detection's clothes and exactly what the routine list is for.
+    "known-cdn",
 }
 # Detections worth surfacing above the default floor.
 _HIGH_TAG_HINTS = ("sigma", "phishy", "timestomp", "bruteforce", "malware",
@@ -217,14 +222,20 @@ def map_timesketch(events, *, run_id: str, asset: str, hostname=None,
                          title=det_title,
                          tags=tags or None))
 
-        # indicators from explicit fields + the message text
+        # indicators from explicit fields + the message text.
+        # UNESCAPE FIRST. plaso stores these records as one physical line
+        # containing literal "\\n" / "\\t" sequences, and the domain regex is
+        # happy to treat the "t" of a "\\t" as part of a hostname: a real fused
+        # case carried an IOC called `tINTERNAL.CORP`, which is `\\tINTERNAL.CORP`
+        # with the backslash eaten. Same normalisation the label uses.
+        scan = str(msg).replace("\\n", " ").replace("\\t", " ")
         cand = set()
         for v in (F.get(e, "src_ip", "dst_ip", "ip", "RemoteAddr", "ipAddress", default=None),):
             if v:
                 cand.add(str(v))
-        for m in _IP.findall(msg):
+        for m in _IP.findall(scan):
             cand.add(m)
-        for h in _HASH.findall(msg):
+        for h in _HASH.findall(scan):
             cand.add(h)
         # Domains too — the module docstring always promised them and the regex
         # was compiled but never used, so the `domain` / `phishy_domains`
@@ -232,7 +243,7 @@ def map_timesketch(events, *, run_id: str, asset: str, hostname=None,
         # correlate against. keys.classify_indicator is what makes this safe on
         # Windows event text: it rejects filenames (svchost.exe is not a
         # domain) and benign update domains.
-        for dm in _DOM.findall(msg):
+        for dm in _DOM.findall(scan):
             cand.add(dm)
         for val in cand:
             kind = keys.classify_indicator(val)
