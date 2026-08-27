@@ -61,12 +61,16 @@ velociraptor:
       # It was only in the agentic set, leaving the best-practice collection —
       # our most thorough curated hunt — with no event-log sigma coverage.
       #
-      # NOTE: this improves the COLLECTION, not the fused graph. A blueprint
-      # hunt is recorded as automation_type "velociraptor_hunt"
-      # (velociraptor_routes.py:443), and only "velociraptor_collection" /
-      # "velociraptor_upload" fuse — see FUSION_MODULE_TYPES in
-      # services/fusion/store.py, where velociraptor_all is deliberately not
-      # fusable. The results land in Velociraptor for the analyst.
+      # These results DO reach the fused graph. A blueprint hunt is recorded as
+      # automation_type "velociraptor_hunt", and _run_passes_gate (the predicate
+      # fusion actually applies) admits it: _VELOCIRAPTOR_TYPES in
+      # services/fusion/store.py includes velociraptor_hunt, so every
+      # Velociraptor run fuses when a velociraptor module is enabled. Verified
+      # on the appliance — a cancelled hunt was auto-folded into the case's
+      # fused_run_ids. Note FUSION_MODULE_TYPES lists a narrower set; that map
+      # is not what gates ingestion.
+      # windows.hayabusa.rules is in the SUPPORTED_ARTIFACTS allowlist, so its
+      # detections land in the case graph, not just in Velociraptor.
       - Windows.Hayabusa.Rules
       - Generic.Forensic.SQLiteHunter
       - Windows.Analysis.EvidenceOfDownload
