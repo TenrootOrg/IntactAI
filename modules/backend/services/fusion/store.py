@@ -1037,6 +1037,44 @@ def _distill_ts_events(events, *, per_tag=5, cap=600):
     events win across all buckets — the graph budget is 2500 entities and
     TimeSketch is one contributor among several."""
     from .anomaly import score_row
+    from . import keys as _keys
+
+    def _indicator(e):
+        """The indicator this event carries, if it survives classification.
+
+        This is what makes the per-tag pick MEANINGFUL rather than arbitrary. A
+        real run measured 53 `rare-domain` events spanning 16 distinct domains,
+        of which exactly one (a.uguu.se, a throwaway file-host used for
+        staging/exfil) was a true positive; the rest were NetBIOS names
+        (WORKGROUP, IEWIN7), private TLDs (INTERNAL.CORP) and Google/Akamai
+        CDNs that the `domain` analyzer mislabels. Ranking by keyword score
+        alone picked five of the noise and dropped the one hit, so the case
+        graph carried a high-severity "rare-domain" finding that pointed at
+        nothing. classify_indicator already knows how to reject the noise —
+        this just lets it decide WHICH events are worth keeping.
+        """
+        for f in ("domain", "url", "host", "src_ip", "dst_ip", "ip"):
+            v = e.get(f)
+            if not v:
+                continue
+            try:
+                if _keys.classify_indicator(str(v)):
+                    return str(v)
+            except Exception:
+                pass
+        return None
+
+    def _score(e):
+        # Underscore keys are OUR metadata (_ts_id and friends), not evidence.
+        # score_row concatenates every value and keyword-matches the blob, so a
+        # doc id containing "rwx" scores +100 — the same trap the mapper hit.
+        # Ranking with it in produces a different, arbitrary top-5.
+        try:
+            return score_row({k: v for k, v in e.items()
+                              if not str(k).startswith("_")})
+        except Exception:
+            return 0
+
     buckets = {}
     for e in events or []:
         if not isinstance(e, dict):
@@ -1044,16 +1082,34 @@ def _distill_ts_events(events, *, per_tag=5, cap=600):
         tags = e.get("tag") or ["_untagged"]
         if not isinstance(tags, list):
             tags = [tags]
-        try:
-            sc = score_row(e)
-        except Exception:
-            sc = 0
+        sc = _score(e)
+        ind = _indicator(e)
         for t in tags:
-            buckets.setdefault(str(t), []).append((sc, e))
+            buckets.setdefault(str(t), []).append((sc, ind, e))
     picked, seen = [], set()
     for rows in buckets.values():
-        rows.sort(key=lambda x: x[0], reverse=True)
-        for sc, e in rows[:per_tag]:
+        # Events carrying a real indicator first, then by score. Within a
+        # bucket keep one event per DISTINCT indicator before spending the
+        # budget on repeats: five hits on the same CDN host say nothing five
+        # different domains would not say better.
+        rows.sort(key=lambda x: (0 if x[1] else 1, -x[0]))
+        used_ind = set()
+        take = []
+        for sc, ind, e in rows:
+            if ind and ind in used_ind:
+                continue
+            if ind:
+                used_ind.add(ind)
+            take.append((sc, e))
+            if len(take) >= per_tag:
+                break
+        if len(take) < per_tag:          # budget left: backfill with repeats
+            for sc, ind, e in rows:
+                if len(take) >= per_tag:
+                    break
+                if not any(e is x[1] for x in take):
+                    take.append((sc, e))
+        for sc, e in take:
             if id(e) not in seen:
                 seen.add(id(e))
                 picked.append((sc, e))

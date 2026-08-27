@@ -766,6 +766,17 @@ def fetch_sketch_timelines(sketch_id, timesketch_config, logger=None):
 
 _TS_MAX_TAG_QUERIES = int(os.environ.get("INTACT_TS_MAX_TAG_QUERIES", "250"))
 
+# What explore() must return alongside the defaults. Keep this list in sync with
+# what the fusion mapper reads for IOCs (mappers/timesketch.py) — a field absent
+# here is invisible to fusion no matter what the analyzer wrote.
+_TS_RETURN_FIELDS = ",".join((
+    "datetime", "timestamp", "timestamp_desc", "message", "tag", "label",
+    "comment", "data_type", "source_name", "parser",
+    "domain", "url", "host", "hostname",
+    "src_ip", "dst_ip", "ip", "source_ip", "dest_ip",
+    "username", "user", "event_identifier", "computer_name",
+))
+
 
 def fetch_sketch_events(sketch_id, timesketch_config, *, limit=4000, window=None,
                         per_tag_min=25, max_tag_queries=None, logger=None):
@@ -834,7 +845,17 @@ def fetch_sketch_events(sketch_id, timesketch_config, *, limit=4000, window=None
                 return 0
 
         def _collect_unsafe(query, cap, into, seen):
-            res = sketch.explore(query_string=query, as_pandas=False, max_entries=cap)
+            # ASK FOR THE INDICATOR FIELDS. explore() defaults to a small
+            # _source (datetime/message/tag/timestamp/label/comment), so the
+            # very field an analyzer wrote its verdict into never came back:
+            # `domain` sets domain=a.uguu.se, the browser analyzers set `url`,
+            # network events set src_ip/dst_ip. Fusion was therefore scanning
+            # only the message text for indicators and finding none, which is
+            # why a high-severity "rare-domain" finding could reach the report
+            # naming no domain at all. Wildcard is not accepted here; the list
+            # is explicit, and any field a timeline lacks is simply absent.
+            res = sketch.explore(query_string=query, as_pandas=False,
+                                 max_entries=cap, return_fields=_TS_RETURN_FIELDS)
             objs = res.get("objects") if isinstance(res, dict) else (res or [])
             added = 0
             for o in (objs or []):

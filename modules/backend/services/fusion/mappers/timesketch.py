@@ -214,13 +214,14 @@ def map_timesketch(events, *, run_id: str, asset: str, hostname=None,
         tags = [str(t) for t in tags if t]
         anom = max(anom, _tag_floor(tags))
         det_title = _detection_title(tags)
-        ents.append(_ent(eid, "event",
+        ev_entity = _ent(eid, "event",
                          (_summarise(msg) or F.get(e, "parser", default="event")),
                          ev_asset, run_id, loc, anomaly=anom, first=ts,
                          flags=["detection"] if det_title else None,
                          parser=F.get(e, "parser", "source_name", default=None),
                          title=det_title,
-                         tags=tags or None))
+                         tags=tags or None)
+        ents.append(ev_entity)
 
         # indicators from explicit fields + the message text.
         # UNESCAPE FIRST. plaso stores these records as one physical line
@@ -230,7 +231,20 @@ def map_timesketch(events, *, run_id: str, asset: str, hostname=None,
         # with the backslash eaten. Same normalisation the label uses.
         scan = str(msg).replace("\\n", " ").replace("\\t", " ")
         cand = set()
+        named = {}
         for v in (F.get(e, "src_ip", "dst_ip", "ip", "RemoteAddr", "ipAddress", default=None),):
+            if v:
+                cand.add(str(v))
+        # The analyzers that matter write their indicator to an explicit FIELD,
+        # not into the message text: `domain`/`phishy_domains` set `domain`,
+        # browser analyzers set `url`. Scanning only `message` meant the value
+        # that JUSTIFIED the detection never became an IOC and never reached the
+        # graph — a real run surfaced "TimeSketch: rare-domain" as high severity
+        # while the domain behind it (a.uguu.se, a throwaway file-host used for
+        # staging) existed nowhere in the case. classify_indicator still rejects
+        # the NetBIOS names (WORKGROUP, IEWIN7) and CDNs the analyzer mislabels
+        # as domains, so this adds signal without adding that noise.
+        for v in (F.get(e, "domain", "url", "host", "hostname_query", default=None),):
             if v:
                 cand.add(str(v))
         for m in _IP.findall(scan):
@@ -253,5 +267,18 @@ def map_timesketch(events, *, run_id: str, asset: str, hostname=None,
             ents.append(_ent(iid, "ioc", str(val), ev_asset, run_id, loc, anomaly=1,
                              ioc_kind=kind, first=ts))
             rels.append(Relationship(eid, iid, "event_about", sources=[MODULE], ts=ts))
+            named.setdefault(kind, str(val))
+
+        # NAME THE INDICATOR IN THE FINDING. _derive_findings groups per
+        # (host, title), so a bare "TimeSketch: rare-domain" collapses every
+        # flagged domain on a host into ONE finding whose text names none of
+        # them — an operator reading the report cannot tell a.uguu.se from
+        # WORKGROUP without opening TimeSketch. Appending the indicator both
+        # makes the finding actionable and splits it per indicator, which is
+        # how an analyst wants them: one finding per suspicious domain.
+        if det_title:
+            ind = named.get("domain") or named.get("url") or named.get("ip")
+            if ind:
+                ev_entity.attrs["title"] = f"{det_title} ({ind})"
 
     return ents, rels
