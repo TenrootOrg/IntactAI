@@ -1187,6 +1187,37 @@ class TestTheTimelineIdReachesTheAnalyzers(unittest.TestCase):
         self.assertIn("must stay EMPTY", read(CONF))
 
 
+class TestTheGuiSurvivesAContainerRecreate(unittest.TestCase):
+    """nginx caches a static upstream's container IP at start-up, forever.
+
+    Recreating timesketch-web gives it a new IP and every request then 502s
+    against a dead address — `connect() failed (111: Connection refused) ...
+    upstream: 172.18.0.21` — until someone restarts the nginx container, which
+    is not an obvious thing to think of. Hit exactly that after a
+    `compose up -d --force-recreate timesketch-web`, and a customer would hit
+    it on any upgrade or Settings->Timesketch restart that recreates the web
+    container.
+
+    The fix was already in this same file for /v3/, with a comment explaining
+    why; it just had not been applied to the routes that matter most."""
+
+    def setUp(self):
+        self.conf = read(os.path.join(ROOT, "modules/timesketch/nginx/nginx.conf"))
+
+    def test_no_static_upstream_blocks_remain(self):
+        self.assertNotIn("\nupstream ", "\n" + self.conf)
+
+    def test_every_route_resolves_lazily(self):
+        # main UI, legacy and v3
+        self.assertEqual(self.conf.count("resolver 127.0.0.11"), 3)
+        for var in ("$ts_web", "$ts_legacy", "$ts_v3"):
+            with self.subTest(var=var):
+                self.assertIn(f"proxy_pass http://{var}", self.conf)
+
+    def test_the_reason_is_written_down(self):
+        self.assertIn("caches the container IP", self.conf)
+
+
 class TestUpstreamAnalyzerBugsArePatched(unittest.TestCase):
     """Two upstream crashes that are fixable, and would otherwise break on
     every installation. Patched in the container at start-up, the same way the
