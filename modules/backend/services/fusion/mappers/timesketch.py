@@ -48,6 +48,41 @@ _HIGH_TAG_HINTS = ("sigma", "phishy", "timestomp", "bruteforce", "malware",
                    "suspicious", "crash")
 
 
+def _summarise(msg: str) -> str:
+    """A one-line label for a plaso event message.
+
+    EVTX messages are multi-line records — "[4634] An account was logged
+    off.\\n\\nSubject:\\n\\tSecurity ID:\\t\\tS-1-5-18\\n\\tAccount Name:..." — and the
+    label was a raw 80-character slice of that. It reached the case timeline and
+    the LLM payload with embedded newlines and tabs, which renders as broken
+    text and spends tokens on whitespace. The FIRST line is the part a human
+    wrote as the summary; everything after it is the field dump, which stays
+    available in the evidence locator.
+    """
+    # plaso stores these as ONE physical line containing literal "\\n"
+    # sequences, so unescape before splitting or there is nothing to split on.
+    text = str(msg or "").replace("\\n", "\n").replace("\\t", "\t")
+    lines = [" ".join(ln.split()) for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    out = lines[0]
+    # The headline alone is often too thin to triage on — "[1001] Fault bucket
+    # 1159357481657437299, type 5" says nothing about WHAT crashed, and the
+    # answer ("Event Name: crashpad_log") is the very next line. Pull in the
+    # first couple of populated "Key: value" lines, skipping bare section
+    # headers like "Subject:" which carry no value of their own.
+    for ln in lines[1:]:
+        if len(out) >= 140:
+            break
+        if ":" not in ln:
+            continue
+        key, _, val = ln.partition(":")
+        if not val.strip() or not key.strip():
+            continue
+        out += " · " + ln
+    return out[:200]
+
+
 def _tag_floor(tags) -> int:
     """Minimum anomaly a tagged event deserves, from its analyzer tags."""
     floor = 0
@@ -138,7 +173,8 @@ def map_timesketch(events, *, run_id: str, asset: str, hostname=None,
             tags = [tags]
         tags = [str(t) for t in tags if t]
         anom = max(anom, _tag_floor(tags))
-        ents.append(_ent(eid, "event", (msg[:80] or F.get(e, "parser", default="event")),
+        ents.append(_ent(eid, "event",
+                         (_summarise(msg) or F.get(e, "parser", default="event")),
                          ev_asset, run_id, loc, anomaly=anom, first=ts,
                          parser=F.get(e, "parser", "source_name", default=None),
                          tags=tags or None))

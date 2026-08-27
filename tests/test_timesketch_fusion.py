@@ -322,6 +322,71 @@ class TestTheMapperKeepsWhyTheEventWasSelected(unittest.TestCase):
         self.assertEqual(iocs, ["8.8.8.8"])
 
 
+class TestEventLabelsAreReadable(unittest.TestCase):
+    """The label is what reaches the case timeline and the LLM payload. It was
+    a raw 80-character slice of a multi-line EVTX record, so it arrived with
+    embedded newlines and tabs, rendered as broken text, spent tokens on
+    whitespace — and cut off before saying anything useful. "[1001] Fault
+    bucket 1159357481657437299, type 5" does not tell an analyst what crashed;
+    the answer was on the very next line."""
+
+    def setUp(self):
+        import sys
+        import types
+        import importlib
+        backend = os.path.join(ROOT, "modules/backend")
+        if "services" not in sys.modules:
+            shim = types.ModuleType("services")
+            shim.__path__ = [os.path.join(backend, "services")]
+            sys.modules["services"] = shim
+        self.sm = importlib.import_module(
+            "services.fusion.mappers.timesketch")._summarise
+
+    def test_literal_backslash_n_is_unescaped_first(self):
+        # plaso stores the record as ONE physical line containing literal "\n"
+        # sequences; without unescaping there is nothing to split on.
+        got = self.sm("[1001] Fault bucket 99, type 5\\nEvent Name: crashpad_log")
+        self.assertIn("Fault bucket 99", got)
+        self.assertIn("Event Name: crashpad_log", got)
+
+    def test_real_newlines_work_too(self):
+        got = self.sm("[4634] Logged off.\nAccount Name: bob")
+        self.assertTrue(got.startswith("[4634] Logged off."))
+        self.assertIn("Account Name: bob", got)
+
+    def test_no_newlines_or_tabs_survive(self):
+        got = self.sm("head\\nKey: value\\n\\tIndented: x")
+        self.assertNotIn("\n", got)
+        self.assertNotIn("\t", got)
+
+    def test_bare_section_headers_are_skipped(self):
+        # "Subject:" carries no value of its own.
+        got = self.sm("[4634] Logged off.\\nSubject:\\nSecurity ID: S-1-5-18")
+        self.assertNotIn("Subject:", got)
+        self.assertIn("Security ID: S-1-5-18", got)
+
+    def test_lines_without_a_colon_are_not_appended(self):
+        got = self.sm("head\\nsome prose with no field\\nKey: value")
+        self.assertNotIn("some prose", got)
+
+    def test_it_is_bounded(self):
+        got = self.sm("head\\n" + "\\n".join(f"K{i}: {'v' * 40}" for i in range(30)))
+        self.assertLessEqual(len(got), 200)
+
+    def test_empty_and_junk_are_safe(self):
+        self.assertEqual(self.sm(""), "")
+        self.assertEqual(self.sm(None), "")
+        self.assertEqual(self.sm("   \\n  \\n "), "")
+
+    def test_the_mapper_falls_back_to_the_parser_name(self):
+        import importlib
+        mod = importlib.import_module("services.fusion.mappers.timesketch")
+        ents, _ = mod.map_timesketch(
+            [{"datetime": "2026-08-01T00:00:00Z", "message": "", "parser": "winreg"}],
+            run_id="r1", asset="asset:endpoint:C.1", hostname="H")
+        self.assertEqual([e for e in ents if e.type == "event"][0].label, "winreg")
+
+
 class TestATagIsADetectionAndScoresLikeOne(unittest.TestCase):
     """Found by running the thing: a real fuse pulled 382 tagged events and put
     ONE asset node in the graph. Every event had been selected for its analyzer
