@@ -1114,7 +1114,7 @@ def get_existing_collection_results(run_id, flow_id=None, hunt_id=None, time_fil
     return all_results, artifacts, client_info
 
 
-def persist_pipeline_artifacts(run_id, all_results):
+def persist_pipeline_artifacts(run_id, all_results, *, fusion_only=False):
     """Save the raw row data for the fusion layer.
 
     Case Analysis (fusion) reads `raw_results.json` to build the cross-module
@@ -1124,8 +1124,42 @@ def persist_pipeline_artifacts(run_id, all_results):
     File written to /data/downloads/<run_id>/raw_results.json:
     dict[artifact_name -> [row, ...]]
 
+    `fusion_only=True` writes ONLY the artifacts fusion can actually ingest.
+    Measured across this appliance's stored payloads: 581 MB of 1,158 MB — half
+    the evidence store — is artifacts SUPPORTED_ARTIFACTS excludes and always
+    will. Two runs were 100% waste: a 403 MB Windows.NTFS.MFT dump (354,831
+    rows) and a 172 MB run that is almost entirely NTFS.MFT + Forensics.Usn.
+    Those map to zero entities even when admitted. Not writing them halves the
+    store AND the json.load cost that OOM-killed the backend.
+
+    IT DEFAULTS TO FALSE, and that is deliberate. This file is what every
+    RE-fuse reads, so filtering it is only safe where Velociraptor still holds
+    the data and the Fetch button can re-pull it — collections, hunts, adopts,
+    re-collects. An offline-collector UPLOAD has no such source: the zip is the
+    only copy and is usually gone after import, so filtering there would make
+    the excluded artifacts unrecoverable if the allowlist ever widens (its own
+    comment invites exactly that: "add a line here when a new artifact gets a
+    mapper"). Callers opt IN; a new caller that forgets keeps everything.
+
     Best-effort — a failure to persist this doesn't break the main pipeline.
     """
+    if fusion_only and all_results:
+        try:
+            from services.fusion.mappers.agentic import (
+                SUPPORTED_ARTIFACTS, _artifact_base)
+            kept = {k: v for k, v in all_results.items()
+                    if _artifact_base(k) in SUPPORTED_ARTIFACTS}
+            dropped = [k for k in all_results if k not in kept]
+            if dropped:
+                print(f"[PIPELINE] {run_id}: storing {len(kept)} fusable "
+                      f"artifact(s); not storing {len(dropped)} that fusion "
+                      f"cannot ingest ({', '.join(sorted(dropped)[:4])}"
+                      f"{'…' if len(dropped) > 4 else ''}) — they remain in "
+                      f"Velociraptor and a Fetch re-pulls them", flush=True)
+            all_results = kept
+        except Exception as e:          # noqa: BLE001 — never lose the write
+            print(f"[PIPELINE] {run_id}: fusion filter skipped ({e}); "
+                  f"storing everything", flush=True)
     downloads_dir = f"/data/downloads/{run_id}"
     try:
         os.makedirs(downloads_dir, exist_ok=True)

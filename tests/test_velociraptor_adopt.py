@@ -134,7 +134,11 @@ def run_worker(*, rows=None, artifacts=None, client_info=None, kind="flow",
             raise fetch_raises
         return (rows or {}), (artifacts or []), (client_info or {})
 
-    def persist_pipeline_artifacts(rid, res):
+    # **kw so the double keeps matching the real signature: it grew
+    # fusion_only= so recoverable callers stop storing artifacts fusion
+    # cannot read. A positional-only stub turns an additive change into a
+    # TypeError inside the worker, which then marks the run failed.
+    def persist_pipeline_artifacts(rid, res, **kw):
         if persist_raises:
             raise persist_raises
         calls["persisted"].append(res)

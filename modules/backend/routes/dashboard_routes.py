@@ -367,7 +367,7 @@ def _recollect_worker(run_id, run):
                                    "no client has reported yet.", "warning")
             return
 
-        persist_pipeline_artifacts(run_id, merged)
+        persist_pipeline_artifacts(run_id, merged, fusion_only=True)
         mutate_run_details(run_id, lambda d: d.update(
             {"total_rows": rows, "artifact_count": len(merged),
              "last_recollected_rows": rows}))
