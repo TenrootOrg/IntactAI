@@ -71,6 +71,7 @@ velociraptor:
       - DetectRaptor.Windows.Detection.LolDriversMalicious
       - DetectRaptor.Windows.Detection.LolDriversVulnerable
       - DetectRaptor.Windows.Detection.MFT
+      - DetectRaptor.Windows.Detection.MFT.Erasing.Tools
       - DetectRaptor.Windows.Detection.NamedPipes
       - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
       - DetectRaptor.Windows.Detection.Powershell.PSReadline
@@ -114,6 +115,7 @@ velociraptor:
       - DetectRaptor.Windows.Detection.LolDriversMalicious
       - DetectRaptor.Windows.Detection.LolDriversVulnerable
       - DetectRaptor.Windows.Detection.MFT
+      - DetectRaptor.Windows.Detection.MFT.Erasing.Tools
       - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
       - DetectRaptor.Windows.Detection.Powershell.PSReadline
       - DetectRaptor.Windows.Detection.Webhistory
@@ -196,9 +198,11 @@ velociraptor:
       - Windows.Detection.Malfind
       - DetectRaptor.Windows.Detection.Evtx
       - DetectRaptor.Windows.Detection.MFT
+      - DetectRaptor.Windows.Detection.MFT.Erasing.Tools
       - DetectRaptor.Windows.Detection.BinaryRename
       - DetectRaptor.Windows.Detection.Applications
       - DetectRaptor.Windows.Detection.Powershell.PSReadline
+      - DetectRaptor.Windows.Detection.Powershell.ISEAutoSave
       # Program Execution
       - DetectRaptor.Windows.Detection.Amcache
       # C2/Network

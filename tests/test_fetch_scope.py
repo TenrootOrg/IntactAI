@@ -186,16 +186,6 @@ class TestYaraWebshellIsUsable(unittest.TestCase):
         self.assertIn('flags=["detection"]', self.code)
         self.assertIn('YARA:', self.code)
 
-    def test_a_memory_scan_dedups_per_process(self):
-        """18 GoRat rule variants on one PID must be one finding, not eighteen.
-
-        A file scan keeps per-file identity (above); a process scan (a pid, no
-        file path) keys on (asset, pid) so the family's rule variants collapse
-        to one node named by the process.
-        """
-        self.assertIn("proc_scan", self.code)
-        self.assertIn('yarahit_id(asset, "proc", pid)', self.code)
-
 
 class TestSimulatedDetectionsAreAdmittedAndUsable(unittest.TestCase):
     """Five empty DetectRaptor artifacts were triggered on a live Windows host
@@ -205,23 +195,30 @@ class TestSimulatedDetectionsAreAdmittedAndUsable(unittest.TestCase):
         MFT.Erasing.Tools  6 rows -> 6 dated MEDIUM findings (Criticality)
         NamedPipes         4 rows -> 4 dated HIGH  findings (already wired)
         ISEAutoSave        2 rows -> 2 dated HIGH  findings (ATT&CK T1059.001)
-        YaraProcessWin    18 rows -> 4 HIGH findings (one per PID; undated by
-                                     nature — a memory match has no event time)
-        LolRMM             1 row  -> weak LOW node; left OUT (dual-use, noisy,
-                                     the mapper drops its RMM context)
+
+    Two fired but were left OUT:
+        YaraProcessWin    18 rows -> mapped, but undated (a memory match has no
+                                     event time) and the default FireEye/
+                                     SIGNATURE_BASE ruleset is a known FP source
+                                     against benign process memory — the YaraFile
+                                     failure mode. A rigged plant proved only the
+                                     plumbing; real signal-to-noise was unmeasured.
+        LolRMM             1 row  -> weak LOW node; dual-use, noisy, and the
+                                     mapper drops its RMM context.
     """
 
     def setUp(self):
         self.src = read("services/fusion/mappers/agentic.py")
 
-    def test_the_three_new_artifacts_are_admitted(self):
-        for base in ("detectraptor.windows.detection.yaraprocesswin",
-                     "detectraptor.windows.detection.powershell.iseautosave",
+    def test_the_two_new_artifacts_are_admitted(self):
+        for base in ("detectraptor.windows.detection.powershell.iseautosave",
                      "detectraptor.windows.detection.mft.erasing.tools"):
             self.assertIn(base, self.src)
 
-    def test_lolrmm_is_not_admitted(self):
-        """Its only mapped output is a low, undated, unflagged 'app:' node."""
+    def test_the_rejected_artifacts_are_not_admitted(self):
+        """YaraProcessWin (undated + noisy, the YaraFile failure mode) and LolRMM
+        (weak, dual-use) both fired in the simulation but stay out of fusion."""
+        self.assertNotIn("detectraptor.windows.detection.yaraprocesswin", self.src)
         self.assertNotIn("detectraptor.windows.detection.lolrmm", self.src)
 
     def _branch(self, head):

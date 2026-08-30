@@ -204,11 +204,12 @@ SUPPORTED_ARTIFACTS = frozenset({
     # (string coincidences in swapped-out memory) and which stays out.
     "detectraptor.generic.detection.yarawebshell",
     "detectraptor.windows.detection.namedpipes",
-    # In-memory YARA (e.g. FireEye GoRat) -> yarahit findings. Verified on a live
-    # endpoint: one process matched by 18 rule *variants* of one family, so the
-    # yara branch keys a process scan on (asset, pid) — one finding per process,
-    # not per rule. Undated (a memory scan has no event time) by nature.
-    "detectraptor.windows.detection.yaraprocesswin",
+    # NOT in-memory YARA (Detection.YaraProcessWin): evaluated and rejected. It
+    # maps, but it's undated (a memory match has no event time, so it can't
+    # correlate on the timeline) and the default FireEye/SIGNATURE_BASE ruleset is
+    # a known false-positive source against benign process memory — the same
+    # failure mode as Generic.Detection.YaraFile (excluded above). A rigged plant
+    # proved only the plumbing; real-world signal-to-noise was never measured.
     # PowerShell ISE autosave carrying attacker script content. Rows nest the
     # ATT&CK rule in Detection.Name and the date in FileInfo.Mtime.
     "detectraptor.windows.detection.powershell.iseautosave",
@@ -765,33 +766,18 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 # cmd.aspx) became one, and the path was never stored, so nothing
                 # said WHICH file matched.
                 ypath = F.get(r, "OSPath", *F.PATH, default=None)
-                # A MEMORY scan matches one process with many rule variants of one
-                # family (verified: 18 GoRat rows, one PID) — keying on the rule
-                # would emit 18 findings for one detection. A process scan (a pid,
-                # no file path) keys on (asset, pid) so it collapses to one finding
-                # named by the process; a file scan keeps per-file identity so
-                # distinct webshells stay distinct.
-                pname = F.get(r, "ProcessName", "Name", default=None)
-                proc_scan = pid is not None and not ypath
-                if proc_scan:
-                    yid = keys.yarahit_id(asset, "proc", pid)
-                    subject = str(pname) if pname else f"pid {pid}"
-                    ytitle = f"YARA: {str(rule)[:40]} in {subject[:30]}"
-                else:
-                    yid = keys.yarahit_id(asset, rule, pid if pid is not None else (ypath or ""))
-                    ytitle = (f"YARA: {str(rule)[:60]}"
-                              + (f" — {str(ypath).split(chr(92))[-1][:40]}" if ypath else ""))
+                yid = keys.yarahit_id(asset, rule, pid if pid is not None else (ypath or ""))
                 # A yarahit only became a finding through the CROSS-HOST path
                 # (correlate.py: type in ("ioc","account","yarahit") and >= 2 assets),
                 # so a signature hit on a single host produced no timeline row at
-                # all. A webshell on disk — or malware in memory — is a detection on
-                # one host as much as on five — flag it so it reaches the analyst.
+                # all. A webshell on disk is a detection on one host as much as on
+                # five — flag it so it reaches the analyst.
                 ents.append(_ent(yid, "yarahit", str(rule), asset, run_id, loc, anomaly=50,
                                  first=ts, rule=rule, artifact=artifact,
-                                 pid=pid if proc_scan else None,
-                                 proc=str(pname) if (proc_scan and pname) else None,
                                  path=str(ypath) if ypath else None,
-                                 flags=["detection"], title=ytitle))
+                                 flags=["detection"],
+                                 title=f"YARA: {str(rule)[:60]}"
+                                       + (f" — {str(ypath).split(chr(92))[-1][:40]}" if ypath else "")))
                 if pid is not None and proc_by_asset_pid.get((asset, str(pid))):
                     rels.append(Relationship(yid, proc_by_asset_pid[(asset, str(pid))],
                                              "matched", sources=[MODULE], ts=ts))
