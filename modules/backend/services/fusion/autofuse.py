@@ -216,6 +216,11 @@ def _fire(case_id, reason="new data", attempt=0) -> None:
                 "run out of memory on this case) — click Refusion to fuse it by hand")
             return
         store._merge_case_details(case_id, {"auto_fuse_incomplete": True})
+        # NOTE: no log line here on purpose. fuse_case already narrates itself
+        # into the case log ("Refusion · starting" through "Refusion complete"
+        # with counts), so anything added around it duplicates. The gap this
+        # feature was missing is EARLIER — between pressing Fetch and the fuse
+        # being armed — and it is filled by the recollect worker, not here.
         try:
             store.fuse_case(case_id,
                             trigger=store.TRIGGER_AUTOMATIC_RUN_LANDED,

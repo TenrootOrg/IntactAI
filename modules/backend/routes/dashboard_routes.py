@@ -289,6 +289,21 @@ def _recollect_worker(run_id, run):
             f"{len(flows)} flow(s)" if len(flows) != 1 else f"flow {flows[0]}")
         add_log_to_run(run_id, f"[Fetch] Asking Velociraptor for this run's results "
                                f"({_what}) — no new collection is being started.", "info")
+        # And say it on the CASE, immediately. Re-reading a large collection takes
+        # MINUTES (36 artifacts / 21,323 rows measured), and until now the case's
+        # Log tab stayed empty for that whole stretch — the operator pressed Fetch
+        # and watched an unchanged page with no evidence anything had started.
+        # Logging only when the fetch finishes closes the wrong half of the gap.
+        try:
+            from services.fusion import store as _fs
+            _cid = run.get("case_id")
+            if _cid:
+                _fs.log_case_event(_cid, "Fetching from Velociraptor", "info",
+                                   f"re-reading {_what} for {run_id} — no endpoint "
+                                   f"is being touched; this can take a few minutes "
+                                   f"on a large collection")
+        except Exception:
+            pass
         # progress_log=True: the fetch IS the operation here, and a hunt keeps
         # collecting after its window closes, so an operator re-fetches the same
         # run repeatedly. One line then two minutes of silence is
@@ -346,8 +361,22 @@ def _recollect_worker(run_id, run):
                 fused = [x for x in (d.get("fused_run_ids") or []) if x != run_id]
                 fusion_store._merge_case_details(case_id, {"fused_run_ids": fused})
                 autofuse.schedule(case_id, reason=f"re-collected {run_id}")
+                # Tell the CASE too, not just the run. The fuse is on a
+                # QUIET_SECONDS timer, and an operator watching Case Analysis
+                # sees a page that has not changed — with nothing in the Log tab
+                # to say a fuse is queued, that is indistinguishable from a
+                # button that did nothing.
+                try:
+                    fusion_store.log_case_event(
+                        case_id, "New data fetched", "info",
+                        f"{rows:,} row(s) across {len(merged)} artifact(s) from "
+                        f"{run_id} — folding in automatically within "
+                        f"{int(autofuse.QUIET_SECONDS)}s")
+                except Exception:
+                    pass
                 add_log_to_run(run_id, "[Fetch] The case will fold this in and "
-                                       "refresh its report automatically.", "info")
+                                       "refresh its report automatically "
+                                       f"(within {int(autofuse.QUIET_SECONDS)}s).", "info")
             except Exception as e:      # noqa: BLE001 — the rows are saved either way
                 add_log_to_run(run_id, f"[Fetch] Saved, but the case could not be "
                                        f"re-armed ({e}). Press Refusion on the case.",
