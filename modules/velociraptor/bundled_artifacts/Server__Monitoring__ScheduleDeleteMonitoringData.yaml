@@ -1,0 +1,103 @@
+name: Server.Monitoring.ScheduleDeleteMonitoringData
+author: TenRoot
+description: |
+  Periodically purge client MONITORING data (the continuous event logs under
+  /clients/<id>/monitoring{,_logs}) older than RetentionDays, by scheduling the
+  built-in Server.Utils.DeleteMonitoringData. Intended for busy servers (1k+
+  clients) where monitoring data accumulates and fills the disk.
+
+  SAFETY
+    * ReallyDoIt defaults to N (dry-run). Review this artifact's log / the
+      summary row, then set ReallyDoIt=Y to actually delete.
+    * A hard floor of MinRetentionDays (default 1) is enforced in the query, so
+      a mistyped RetentionDays of 0 or a negative can NEVER delete recent data.
+      The effective retention is max(RetentionDays, MinRetentionDays).
+    * Each run emits ONE aggregated summary row and one log line — never one row
+      per deleted file — so a 1k-client purge doesn't itself flood monitoring.
+
+  SCHEDULE
+    Default: Tuesday 01:28 UTC. The clock ticks every 60s; a run fires on the
+    first tick whose UTC time matches "T"+ScheduleTimeRegex and whose weekday
+    matches ScheduleDayRegex. For a per-minute test schedule set
+    ScheduleDayRegex=".*" and ScheduleTimeRegex="[0-9]{2}".
+
+type: SERVER_EVENT
+
+parameters:
+  - name: ScheduleDayRegex
+    default: Tuesday
+    type: regex
+  - name: ScheduleTimeRegex
+    description: Matched against the UTC time after the 'T' (e.g. "01:28").
+    default: "01:28"
+    type: regex
+  - name: RetentionDays
+    description: Delete monitoring data older than this many days.
+    default: "7"
+    type: int
+  - name: MinRetentionDays
+    description: Absolute floor (anti-typo); blocks a 0/negative RetentionDays
+      from deleting recent data. Effective retention is never below this.
+    default: "1"
+    type: int
+  - name: ArtifactRegex
+    description: Which monitoring artifacts to purge (default all).
+    default: ".*"
+    type: regex
+  - name: HostnameRegex
+    description: Limit to clients whose hostname matches.
+    default: "."
+    type: regex
+  - name: OnlyRegisteredClients
+    description: N also purges data left by deleted/unregistered clients.
+    default: "N"
+    type: bool
+  - name: ReallyDoIt
+    default: "N"
+    type: bool
+
+sources:
+  - query: |
+      -- Effective retention with a HARD FLOOR: a mistyped 0 or negative
+      -- RetentionDays can never delete recent data. Effective =
+      -- max(requested, MinRetentionDays), via if() (VQL max() is an aggregate).
+      LET EffRetention <= if(condition=RetentionDays < MinRetentionDays,
+                             then=MinRetentionDays, else=RetentionDays)
+
+      LET CutoffEpoch <= now() - EffRetention * 86400
+
+      -- Fire on the first 60s tick whose UTC time matches "T"+ScheduleTimeRegex
+      -- (anchored after the date's 'T') and whose weekday matches. The start log
+      -- always records the run, so a run that deletes nothing is still visible.
+      LET schedule = SELECT UTC.String AS Now, Weekday.String AS Today
+        FROM clock(period=60)
+        WHERE Now =~ "T" + ScheduleTimeRegex
+          AND Today =~ ScheduleDayRegex
+          AND log(message=format(
+                format="Monitoring cleanup starting at %v (requested retention=%v, effective=%v days, reallydoit=%v)",
+                args=[Now, RetentionDays, EffRetention, ReallyDoIt]))
+
+      -- One summary row PER RUN, never one row per deleted file: GROUP BY TRUE
+      -- collapses the built-in's per-file stream to a single {Files, Bytes} in
+      -- O(1) memory (safe at 1k+ clients). The purge side effect happens once,
+      -- inside this stream. The wrapping SELECT logs the completion summary.
+      SELECT *,
+             log(message=format(
+               format="Monitoring cleanup %v: %v files, %v bytes freed, older than %v",
+               args=[if(condition=Deleted, then="DELETED", else="DRY-RUN"),
+                     Files, Bytes, DeletedOlderThan])) AS _Logged
+      FROM foreach(row=schedule, query={
+        SELECT Now AS RunTime,
+               EffRetention AS RetentionDays,
+               ReallyDoIt AS Deleted,
+               timestamp(epoch=CutoffEpoch) AS DeletedOlderThan,
+               count() AS Files,
+               sum(item=Size) AS Bytes
+        FROM Artifact.Server.Utils.DeleteMonitoringData(
+               DateBefore=timestamp(epoch=CutoffEpoch),
+               ArtifactRegex=ArtifactRegex,
+               HostnameRegex=HostnameRegex,
+               OnlyRegisteredClients=OnlyRegisteredClients,
+               ReallyDoIt=ReallyDoIt)
+        GROUP BY TRUE
+      })
