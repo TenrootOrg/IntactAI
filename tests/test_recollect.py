@@ -393,3 +393,108 @@ class TestAFetchAfterACancelIsAudible(unittest.TestCase):
         instead of informative — which is exactly how this was reported."""
         self.assertIn("returned nothing", self.src,
                       "the empty-result explanation must still exist")
+
+
+class TestALongFetchKeepsSaying(unittest.TestCase):
+    """"It needs to write that it is still working, not say it is done and then
+    show nothing."
+
+    The fetch blocks while it re-reads every source from the Velociraptor server
+    — minutes on a large cold collection — and its per-source progress goes to
+    the RUN log only. The case's Log tab got one line at the start and then
+    nothing, which is indistinguishable from a stalled job. A daemon ticker
+    reports elapsed time to the CASE until the fetch returns.
+    """
+
+    def _run_worker(self, fetch_seconds, heartbeat_seconds, linger=0.0):
+        """Execute the real worker with a deliberately slow fetch."""
+        import sys
+        import threading
+        import time
+        import types
+
+        src = read(ROUTES)
+        worker = next(ast.get_source_segment(src, n) for n in ast.parse(src).body
+                      if isinstance(n, ast.FunctionDef) and n.name == "_recollect_worker")
+
+        case_events = []
+        mod = types.ModuleType("services.workflow_service")
+        mod.add_log_to_run = lambda *a, **k: None
+        mod.mutate_run_details = lambda *a, **k: None
+        col = types.ModuleType("services.agentic.collectors")
+
+        def slow_fetch(*a, **k):
+            time.sleep(fetch_seconds)
+            return ({"Some.Artifact": [{"x": 1}]}, None, None)
+        col.get_existing_collection_results = slow_fetch
+        col.persist_pipeline_artifacts = lambda *a, **k: None
+
+        fusion = types.ModuleType("services.fusion")
+        store_mod = types.ModuleType("services.fusion.store")
+        store_mod.log_case_event = lambda cid, action, status="ok", detail="": \
+            case_events.append(action)
+        store_mod.get_case = lambda cid: {}
+        store_mod._merge_case_details = lambda *a, **k: None
+        af = types.ModuleType("services.fusion.autofuse")
+        af.schedule = lambda *a, **k: True
+        af.QUIET_SECONDS = 60.0
+        fusion.store = store_mod
+        fusion.autofuse = af
+
+        saved = {k: sys.modules.get(k) for k in
+                 ("services", "services.workflow_service", "services.agentic",
+                  "services.agentic.collectors", "services.fusion",
+                  "services.fusion.store", "services.fusion.autofuse")}
+        try:
+            pkg = types.ModuleType("services"); pkg.__path__ = []
+            ag = types.ModuleType("services.agentic"); ag.__path__ = []
+            sys.modules.update({
+                "services": pkg, "services.workflow_service": mod,
+                "services.agentic": ag, "services.agentic.collectors": col,
+                "services.fusion": fusion, "services.fusion.store": store_mod,
+                "services.fusion.autofuse": af})
+            ns = dict(load_route_helpers())
+            ns.update({"threading": threading, "_recollect_lock": threading.Lock(),
+                       "_recollecting": set(), "_HEARTBEAT_SECONDS": heartbeat_seconds})
+            exec(compile(worker, ROUTES, "exec"), ns)
+            ns["_recollect_worker"]("r1", {"details": {"flow_id": "F.ABC"},
+                                           "case_id": "case_1"})
+            # Linger with the stubs STILL INSTALLED. Restoring sys.modules first
+            # would kill the ticker thread on its next import, and the test would
+            # pass whether or not _hb_stop was ever set.
+            if linger:
+                self._settled = len(case_events)
+                time.sleep(linger)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+        return case_events
+
+    def test_a_slow_fetch_reports_that_it_is_still_working(self):
+        events = self._run_worker(fetch_seconds=0.35, heartbeat_seconds=0.1)
+        self.assertGreaterEqual(events.count("Still fetching"), 2,
+                                "a long fetch must keep telling the case it is alive")
+
+    def test_the_case_hears_about_the_fetch_before_it_finishes(self):
+        events = self._run_worker(fetch_seconds=0.2, heartbeat_seconds=0.05)
+        self.assertEqual(events[0], "Fetching from Velociraptor",
+                         "the very first case entry must land when the fetch STARTS")
+
+    def test_a_fast_fetch_does_not_spam_the_log(self):
+        """The ticker must not fire at all when the work is quick."""
+        events = self._run_worker(fetch_seconds=0.01, heartbeat_seconds=5.0)
+        self.assertEqual(events.count("Still fetching"), 0)
+        self.assertIn("New data fetched", events)
+
+    def test_the_ticker_stops_when_the_fetch_returns(self):
+        """A daemon thread that outlives its work would log into a finished case
+        forever. Measured with the stubs still live, so only _hb_stop can end it."""
+        self._settled = None
+        events = self._run_worker(fetch_seconds=0.1, heartbeat_seconds=0.05,
+                                  linger=0.4)
+        self.assertIsNotNone(self._settled)
+        self.assertEqual(len(events), self._settled,
+                         "the heartbeat kept ticking after the fetch returned")

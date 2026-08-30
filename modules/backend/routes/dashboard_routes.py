@@ -244,6 +244,11 @@ _RECOLLECTABLE = ("velociraptor_collection", "velociraptor_upload",
                   "velociraptor_hunt", "velociraptor_offline_import",
                   "velociraptor_adopt")
 
+# How often a long fetch reports that it is still alive, in seconds. Long enough
+# not to spam a case's Log tab, short enough that silence is never mistaken for
+# a dead button.
+_HEARTBEAT_SECONDS = 20.0
+
 _recollect_lock = threading.Lock()
 _recollecting = set()
 
@@ -284,9 +289,37 @@ def _recollect_worker(run_id, run):
     details = run.get("details") or {}
     flow_id, hunt_id, client_ids = _recollect_locator(details)
     flows = flow_id if isinstance(flow_id, list) else ([flow_id] if flow_id else [])
+    # KEEP TALKING. The fetch below re-reads every source from the Velociraptor
+    # server and blocks for as long as that takes — minutes on a large cold
+    # collection. Its per-source progress goes to the RUN log only, so the case's
+    # Log tab showed one line and then nothing, which is the complaint that
+    # started this: "it needs to say it is still working, not say it is done and
+    # then show nothing". A daemon ticker writes an elapsed-time line to the case
+    # until the fetch returns.
+    import threading as _th
+    import time as _time
+    _hb_stop = _th.Event()
+
+    def _heartbeat(cid, what):
+        if not cid:
+            return
+        t0 = _time.time()
+        while not _hb_stop.wait(_HEARTBEAT_SECONDS):
+            try:
+                from services.fusion import store as _fs
+                _fs.log_case_event(
+                    cid, "Still fetching", "info",
+                    f"{what} — {int(_time.time() - t0)}s elapsed, still reading from "
+                    f"Velociraptor (no endpoint is being touched)")
+            except Exception:
+                return
+
     try:
         _what = f"hunt {hunt_id}" if hunt_id else (
             f"{len(flows)} flow(s)" if len(flows) != 1 else f"flow {flows[0]}")
+        _hb = _th.Thread(target=_heartbeat, args=(run.get("case_id"), _what),
+                         daemon=True, name=f"fetch-hb-{run_id}")
+        _hb.start()
         add_log_to_run(run_id, f"[Fetch] Asking Velociraptor for this run's results "
                                f"({_what}) — no new collection is being started.", "info")
         # And say it on the CASE, immediately. Re-reading a large collection takes
@@ -341,7 +374,7 @@ def _recollect_worker(run_id, run):
         gained = rows - before
         add_log_to_run(
             run_id,
-            f"[Fetch] Done — {rows:,} row(s) across {len(merged)} artifact(s)"
+            f"[Fetch] Fetch finished — {rows:,} row(s) across {len(merged)} artifact(s)"
             + (f", {gained:+,} vs the last fetch." if before else ".")
             + (" A hunt keeps collecting after its window closes; fetch again "
                "later to pick up more." if hunt_id else ""),
@@ -370,13 +403,14 @@ def _recollect_worker(run_id, run):
                     fusion_store.log_case_event(
                         case_id, "New data fetched", "info",
                         f"{rows:,} row(s) across {len(merged)} artifact(s) from "
-                        f"{run_id} — folding in automatically within "
-                        f"{int(autofuse.QUIET_SECONDS)}s")
+                        f"{run_id} — the case fuse is QUEUED and starts in about "
+                        f"{int(autofuse.QUIET_SECONDS)}s; it is not finished yet")
                 except Exception:
                     pass
-                add_log_to_run(run_id, "[Fetch] The case will fold this in and "
-                                       "refresh its report automatically "
-                                       f"(within {int(autofuse.QUIET_SECONDS)}s).", "info")
+                add_log_to_run(run_id, "[Fetch] Rows saved. The CASE is not updated "
+                                       "yet — a fuse is queued and starts in about "
+                                       f"{int(autofuse.QUIET_SECONDS)}s; follow "
+                                       "it in the case's Log tab.", "info")
             except Exception as e:      # noqa: BLE001 — the rows are saved either way
                 add_log_to_run(run_id, f"[Fetch] Saved, but the case could not be "
                                        f"re-armed ({e}). Press Refusion on the case.",
@@ -384,6 +418,7 @@ def _recollect_worker(run_id, run):
     except Exception as e:              # noqa: BLE001 — a worker thread must not die loudly
         add_log_to_run(run_id, f"[Fetch] Failed: {type(e).__name__}: {e}", "error")
     finally:
+        _hb_stop.set()                      # the fetch is over — stop ticking
         with _recollect_lock:
             _recollecting.discard(run_id)
 
