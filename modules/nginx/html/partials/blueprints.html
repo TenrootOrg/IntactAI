@@ -261,7 +261,16 @@
                                  x-show="$store.services.statuses['velociraptor'] !== 'not_installed'">
                                 <div class="flex items-center justify-between mb-2">
                                     <label class="block text-sm font-medium text-gray-300">Artifacts (<span id="blueprint-artifact-count">0</span> selected / <span id="blueprint-artifact-total">0</span> total)</label>
-                                    <div class="flex gap-2">
+                                    <div class="flex items-center gap-2">
+                                        <!-- 580 artifacts, ~30 of them selected: without this the only
+                                             way to review a blueprint's actual contents is to scroll the
+                                             whole list hunting for ticks. -->
+                                        <label class="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer select-none mr-1">
+                                            <input type="checkbox" id="blueprint-artifact-selected-only"
+                                                   onchange="filterBlueprintArtifacts()"
+                                                   class="rounded bg-gray-800 border-gray-600">
+                                            Selected only
+                                        </label>
                                         <button onclick="toggleAllBlueprintArtifacts(true)" class="text-xs bg-blue-700 hover:bg-blue-600 px-2 py-1 rounded">Check All</button>
                                         <button onclick="toggleAllBlueprintArtifacts(false)" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Uncheck All</button>
                                     </div>

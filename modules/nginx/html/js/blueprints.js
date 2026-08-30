@@ -341,6 +341,10 @@ function showNewBlueprintModal() {
     // Clear search box
     const searchBox = document.getElementById('blueprint-artifact-search');
     if (searchBox) searchBox.value = '';
+    // Reset the view filter too — a modal opened with "Selected only" left on
+    // from the previous blueprint looks like an empty artifact list.
+    const selOnly = document.getElementById('blueprint-artifact-selected-only');
+    if (selOnly) selOnly.checked = false;
 
     // Show type selector for new blueprints
     const typeSelector = document.getElementById('blueprint-type-selector');
@@ -427,6 +431,10 @@ async function editBlueprint(blueprintId, type) {
     // Clear search box
     const searchBox = document.getElementById('blueprint-artifact-search');
     if (searchBox) searchBox.value = '';
+    // Reset the view filter too — a modal opened with "Selected only" left on
+    // from the previous blueprint looks like an empty artifact list.
+    const selOnly = document.getElementById('blueprint-artifact-selected-only');
+    if (selOnly) selOnly.checked = false;
 
     // Hide type selector when editing (can't change type)
     const typeSelector = document.getElementById('blueprint-type-selector');
@@ -608,7 +616,7 @@ async function populateModalArtifacts(selectedArtifacts) {
     container.innerHTML = artifacts.map(artifact =>
         `<label class="flex items-center gap-2 text-xs text-white hover:bg-gray-800 px-2 py-1 rounded cursor-pointer">
             <input type="checkbox" class="blueprint-artifact-cb" value="${escapeHtml(artifact)}" ${selectedSet.has(artifact) ? 'checked' : ''}
-                onchange="updateBlueprintArtifactCount()">
+                onchange="updateBlueprintArtifactCount(); filterBlueprintArtifacts()">
             ${escapeHtml(artifact)}
         </label>`
     ).join('');
@@ -634,18 +642,28 @@ function toggleAllBlueprintArtifacts(checked) {
         }
     });
     updateBlueprintArtifactCount();
+    // "Uncheck All" with the toggle on empties the view; re-filter so the list
+    // matches the ticks rather than showing rows that are no longer selected.
+    filterBlueprintArtifacts();
 }
 
 function filterBlueprintArtifacts() {
     const searchInput = document.getElementById('blueprint-artifact-search');
     const searchTerm = searchInput ? searchInput.value.toLowerCase().trim() : '';
+    const selectedOnlyEl = document.getElementById('blueprint-artifact-selected-only');
+    const selectedOnly = !!(selectedOnlyEl && selectedOnlyEl.checked);
     const container = document.getElementById('blueprint-artifacts-list');
     const labels = container.querySelectorAll('label');
 
     let visibleCount = 0;
     labels.forEach(label => {
         const artifactName = label.textContent.toLowerCase();
-        if (searchTerm === '' || artifactName.includes(searchTerm)) {
+        const cb = label.querySelector('.blueprint-artifact-cb');
+        const matchesSearch = searchTerm === '' || artifactName.includes(searchTerm);
+        // An artifact the operator just UNTICKED must disappear while the
+        // toggle is on, which is why the checkbox's onchange re-runs this.
+        const matchesSelected = !selectedOnly || (cb && cb.checked);
+        if (matchesSearch && matchesSelected) {
             label.classList.remove('hidden');
             visibleCount++;
         } else {
@@ -655,13 +673,19 @@ function filterBlueprintArtifacts() {
 
     // Show message if no results
     let noResultsEl = container.querySelector('.no-results-msg');
-    if (visibleCount === 0 && searchTerm !== '') {
+    if (visibleCount === 0 && (searchTerm !== '' || selectedOnly)) {
         if (!noResultsEl) {
             noResultsEl = document.createElement('p');
             noResultsEl.className = 'no-results-msg text-gray-500 text-sm py-2';
             container.appendChild(noResultsEl);
         }
-        noResultsEl.textContent = `No artifacts matching "${searchTerm}"`;
+        if (searchTerm !== '' && selectedOnly) {
+            noResultsEl.textContent = `No selected artifacts matching "${searchTerm}"`;
+        } else if (selectedOnly) {
+            noResultsEl.textContent = 'Nothing selected yet.';
+        } else {
+            noResultsEl.textContent = `No artifacts matching "${searchTerm}"`;
+        }
     } else if (noResultsEl) {
         noResultsEl.remove();
     }
