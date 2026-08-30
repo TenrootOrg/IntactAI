@@ -13,13 +13,13 @@ velociraptor:
   # VELOCIRAPTOR BLUEPRINTS
   # --------------------------------------------------------------------------
 
-  - id: velociraptor_quick_scan
-    name: "Velociraptor: Quick Scan"
-    description: "Fast detection-focused scan for rapid assessment (12 artifacts)"
+  - id: velociraptor_best_practice
+    name: "Velociraptor: BestPractice"
+    description: "Curated best-practice artifact collection for thorough IR triage (37 artifacts)"
     is_default: true
     settings:
       hunt_expiry: 720
-      timeout: 3600
+      timeout: 21600
       cpu_limit: 50
       # Flow-level resource limits (passed into the hunt's VQL `hunt(...)`).
       # Override the historical 1 GiB / 1 M-row hardcoded defaults from
@@ -27,32 +27,6 @@ velociraptor:
       flow_max_rows: 10000000              # 10 M rows
       flow_max_logs: 1000000               # 1 M log lines
       flow_max_upload_mb: 51200            # 50 GiB total upload per flow
-    artifacts:
-      - DetectRaptor.Windows.Detection.Amcache
-      - DetectRaptor.Windows.Detection.NamedPipes
-      - DetectRaptor.Windows.Detection.BinaryRename
-      - DetectRaptor.Windows.Detection.Applications
-      - DetectRaptor.Windows.Detection.LolDriversMalicious
-      - DetectRaptor.Windows.Detection.YaraProcessWin
-      - Windows.System.DNSCache
-      - Windows.Network.NetstatEnriched
-      - Windows.System.UntrustedBinaries
-      - Windows.Attack.UnexpectedImagePath
-      - Windows.EventLogs.RDPAuth
-      - Generic.System.Pstree
-
-  - id: velociraptor_best_practice
-    name: "Velociraptor: BestPractice"
-    description: "Curated best-practice artifact collection for thorough IR triage (32 artifacts)"
-    is_default: true
-    settings:
-      hunt_expiry: 720
-      timeout: 21600
-      cpu_limit: 50
-      # Flow-level resource limits — see velociraptor_quick_scan for notes.
-      flow_max_rows: 10000000
-      flow_max_logs: 1000000
-      flow_max_upload_mb: 51200
     artifacts:
       # Sigma detection over the Windows event logs. Compiles the Hayabusa
       # ruleset through Velociraptor's INTERNAL sigma engine, so it needs no
@@ -103,16 +77,27 @@ velociraptor:
       - DetectRaptor.Windows.Detection.Webhistory
       - DetectRaptor.Windows.Detection.YaraProcessWin
       - DetectRaptor.Windows.Detection.ZoneIdentifier
+      # ---- from the agentic QuickWins set -------------------------------
+      # Already in SUPPORTED_ARTIFACTS with working mappers, so these reach
+      # the case graph as soon as they are collected. Measured on this
+      # appliance: the 18-artifact agentic blueprint fed 18 of the 20 Windows
+      # allowlist entries while this one fed 14 — the 'thorough' collection
+      # was the weaker fusion input. These close that gap.
+      - Windows.Detection.Malfind
+      - Windows.Analysis.SuspiciousWMIConsumers
+      - Windows.Forensics.SAM
+      - Windows.EventLogs.CondensedAccountUsage
+      - Windows.Kerberos.GoldenTicketTriage
 
   - id: velociraptor_full_collection
     name: "Velociraptor: Full Collection"
-    description: "Maximum artifact collection for deep forensic analysis (53 artifacts)"
+    description: "Maximum artifact collection for deep forensic analysis (57 artifacts)"
     is_default: true
     settings:
       hunt_expiry: 1080
       timeout: 43200
       cpu_limit: 50
-      # Flow-level resource limits — see velociraptor_quick_scan for notes.
+      # Flow-level resource limits — see velociraptor_best_practice for notes.
       flow_max_rows: 10000000
       flow_max_logs: 1000000
       flow_max_upload_mb: 51200
@@ -177,6 +162,17 @@ velociraptor:
       - Windows.Attack.UnexpectedImagePath
       - Windows.Detection.Yara.Process
       - Windows.Sys.AllUsers
+      # ---- from the agentic QuickWins set -------------------------------
+      # Already in SUPPORTED_ARTIFACTS with working mappers, so these reach
+      # the case graph as soon as they are collected. Measured on this
+      # appliance: the 18-artifact agentic blueprint fed 18 of the 20 Windows
+      # allowlist entries while this one fed 14 — the 'thorough' collection
+      # was the weaker fusion input. These close that gap.
+      - Windows.Hayabusa.Rules
+      - Windows.Detection.Malfind
+      - Windows.Analysis.SuspiciousWMIConsumers
+      - Windows.EventLogs.CondensedAccountUsage
+      - Windows.Kerberos.GoldenTicketTriage
 
   # --------------------------------------------------------------------------
   # AGENTIC BLUEPRINTS (LLM-optimized detection)
@@ -184,13 +180,13 @@ velociraptor:
 
   - id: agentic_quick_wins
     name: "Velociraptor Agentic QuickWins Windows"
-    description: "The agentic detection set — program execution, C2, defense-evasion, persistence & identity (19 artifacts)"
+    description: "The agentic detection set — program execution, C2, defense-evasion, persistence & identity (18 artifacts)"
     is_default: true
     settings:
       hunt_expiry: 720
       timeout: 3600
       cpu_limit: 50
-      # Flow-level resource limits — see velociraptor_quick_scan for notes.
+      # Flow-level resource limits — see velociraptor_best_practice for notes.
       flow_max_rows: 10000000
       flow_max_logs: 1000000
       flow_max_upload_mb: 51200
@@ -239,7 +235,7 @@ velociraptor:
       hunt_expiry: 720
       timeout: 3600
       cpu_limit: 50
-      # Flow-level resource limits — see velociraptor_quick_scan for notes.
+      # Flow-level resource limits — see velociraptor_best_practice for notes.
       flow_max_rows: 10000000
       flow_max_logs: 1000000
       flow_max_upload_mb: 51200
