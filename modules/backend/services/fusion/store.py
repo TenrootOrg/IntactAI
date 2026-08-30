@@ -1222,8 +1222,12 @@ def _contribution_for_run(run, log=None, refetch=False):
                 rows = _agentic_collected_data(rid, det, log=log)
             ents, rels = map_agentic(_filter_supported(rows), run_id=rid,
                                      hostnames=det.get("hostnames") or {})
-            if atype == "velociraptor_upload":
-                _relabel_source(ents, rels, "agentic", "velociraptor")
+            # Coverage is by DATA SOURCE, and a collection is Velociraptor data
+            # whether or not the agent post-analyzed it — exactly like a hunt,
+            # upload, import or adopt (all already relabelled). Relabel both here
+            # so the coverage column reads "velociraptor", never a confusing
+            # "agentic" that made the same source look like two.
+            _relabel_source(ents, rels, "agentic", "velociraptor")
             return ents, rels
         if atype in ("velociraptor_hunt", "velociraptor_offline_import",
                      "velociraptor_adopt"):
