@@ -158,7 +158,12 @@ class TestYaraWebshellIsUsable(unittest.TestCase):
     def setUp(self):
         self.src = read("services/fusion/mappers/agentic.py")
         i = self.src.index('elif "yara" in an:')
-        self.branch = self.src[i:i + 1800]
+        # to the next sibling branch (12-space `elif`), not a fixed char window —
+        # the branch grew when memory scans were added and a window truncated it.
+        j = self.src.index("\n            elif ", i + 1)
+        self.branch = self.src[i:j]
+        self.code = "\n".join(l for l in self.branch.splitlines()
+                              if not l.lstrip().startswith("#"))
 
     def test_the_webshell_artifact_is_admitted(self):
         self.assertIn("detectraptor.generic.detection.yarawebshell", self.src)
@@ -169,19 +174,75 @@ class TestYaraWebshellIsUsable(unittest.TestCase):
 
     def test_the_file_is_part_of_the_identity(self):
         """Without the path, three webshells matching one rule are one node."""
-        code = "\n".join(l for l in self.branch.splitlines()
-                         if not l.lstrip().startswith("#"))
-        self.assertIn("ypath", code)
-        self.assertIn("yarahit_id(asset, rule, pid if pid is not None else (ypath", code)
+        self.assertIn("ypath", self.code)
+        self.assertIn("yarahit_id(asset, rule, pid if pid is not None else (ypath",
+                      self.code)
 
     def test_the_path_is_stored_so_the_analyst_can_see_the_file(self):
-        code = "\n".join(l for l in self.branch.splitlines()
-                         if not l.lstrip().startswith("#"))
-        self.assertIn("path=str(ypath)", code)
+        self.assertIn("path=str(ypath)", self.code)
 
     def test_a_single_host_hit_still_reaches_the_timeline(self):
         """The timeline renders findings, and a finding needs this flag."""
-        code = "\n".join(l for l in self.branch.splitlines()
+        self.assertIn('flags=["detection"]', self.code)
+        self.assertIn('YARA:', self.code)
+
+    def test_a_memory_scan_dedups_per_process(self):
+        """18 GoRat rule variants on one PID must be one finding, not eighteen.
+
+        A file scan keeps per-file identity (above); a process scan (a pid, no
+        file path) keys on (asset, pid) so the family's rule variants collapse
+        to one node named by the process.
+        """
+        self.assertIn("proc_scan", self.code)
+        self.assertIn('yarahit_id(asset, "proc", pid)', self.code)
+
+
+class TestSimulatedDetectionsAreAdmittedAndUsable(unittest.TestCase):
+    """Five empty DetectRaptor artifacts were triggered on a live Windows host
+    (DESKTOP-566AT85) and mapped; three needed wiring beyond an allowlist line.
+
+    Live results, min_severity=informational:
+        MFT.Erasing.Tools  6 rows -> 6 dated MEDIUM findings (Criticality)
+        NamedPipes         4 rows -> 4 dated HIGH  findings (already wired)
+        ISEAutoSave        2 rows -> 2 dated HIGH  findings (ATT&CK T1059.001)
+        YaraProcessWin    18 rows -> 4 HIGH findings (one per PID; undated by
+                                     nature — a memory match has no event time)
+        LolRMM             1 row  -> weak LOW node; left OUT (dual-use, noisy,
+                                     the mapper drops its RMM context)
+    """
+
+    def setUp(self):
+        self.src = read("services/fusion/mappers/agentic.py")
+
+    def test_the_three_new_artifacts_are_admitted(self):
+        for base in ("detectraptor.windows.detection.yaraprocesswin",
+                     "detectraptor.windows.detection.powershell.iseautosave",
+                     "detectraptor.windows.detection.mft.erasing.tools"):
+            self.assertIn(base, self.src)
+
+    def test_lolrmm_is_not_admitted(self):
+        """Its only mapped output is a low, undated, unflagged 'app:' node."""
+        self.assertNotIn("detectraptor.windows.detection.lolrmm", self.src)
+
+    def _branch(self, head):
+        i = self.src.index(head)
+        j = self.src.index("\n            elif ", i + 1)
+        return "\n".join(l for l in self.src[i:j].splitlines()
                          if not l.lstrip().startswith("#"))
+
+    def test_iseautosave_takes_its_timestamp_from_fileinfo(self):
+        """The date is nested in FileInfo.Mtime; first_ts()'s top-level spec
+        misses it, so the branch must read it explicitly or land undated."""
+        code = self._branch('elif "iseautosave" in an')
+        self.assertIn('r.get("FileInfo")', code)
+        self.assertIn("Mtime", code)
+        self.assertIn("keys.norm_ts", code)
         self.assertIn('flags=["detection"]', code)
-        self.assertIn('title=f"YARA:', code)
+
+    def test_erasing_tools_promote_to_the_timeline(self):
+        """Anti-forensic tooling is the deliberate exception to the MFT branch's
+        BAU rule: it gets the 'detection' flag; the general MFT artifact does
+        not (its rules fire on routine files like OneDrive uploads)."""
+        code = self._branch('elif "mft" in an and ("detection" in an or "erasing" in an)')
+        self.assertIn('erasing = "erasing" in an', code)
+        self.assertIn('flags=["detection"] if erasing else ["mft_detection"]', code)

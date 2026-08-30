@@ -204,6 +204,18 @@ SUPPORTED_ARTIFACTS = frozenset({
     # (string coincidences in swapped-out memory) and which stays out.
     "detectraptor.generic.detection.yarawebshell",
     "detectraptor.windows.detection.namedpipes",
+    # In-memory YARA (e.g. FireEye GoRat) -> yarahit findings. Verified on a live
+    # endpoint: one process matched by 18 rule *variants* of one family, so the
+    # yara branch keys a process scan on (asset, pid) — one finding per process,
+    # not per rule. Undated (a memory scan has no event time) by nature.
+    "detectraptor.windows.detection.yaraprocesswin",
+    # PowerShell ISE autosave carrying attacker script content. Rows nest the
+    # ATT&CK rule in Detection.Name and the date in FileInfo.Mtime.
+    "detectraptor.windows.detection.powershell.iseautosave",
+    # Anti-forensic / data-wiping tool names in the MFT (sdelete, BleachBit,
+    # CCleaner...). Dated via $FN; unlike the general MFT-detection artifact this
+    # one promotes to the timeline (see the "erasing" case in the MFT branch).
+    "detectraptor.windows.detection.mft.erasing.tools",
     "detectraptor.windows.detection.webhistory",
     "detectraptor.windows.detection.hijacklibsmft",
     "detectraptor.windows.detection.hijacklibsenv",
@@ -753,18 +765,33 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 # cmd.aspx) became one, and the path was never stored, so nothing
                 # said WHICH file matched.
                 ypath = F.get(r, "OSPath", *F.PATH, default=None)
-                yid = keys.yarahit_id(asset, rule, pid if pid is not None else (ypath or ""))
+                # A MEMORY scan matches one process with many rule variants of one
+                # family (verified: 18 GoRat rows, one PID) — keying on the rule
+                # would emit 18 findings for one detection. A process scan (a pid,
+                # no file path) keys on (asset, pid) so it collapses to one finding
+                # named by the process; a file scan keeps per-file identity so
+                # distinct webshells stay distinct.
+                pname = F.get(r, "ProcessName", "Name", default=None)
+                proc_scan = pid is not None and not ypath
+                if proc_scan:
+                    yid = keys.yarahit_id(asset, "proc", pid)
+                    subject = str(pname) if pname else f"pid {pid}"
+                    ytitle = f"YARA: {str(rule)[:40]} in {subject[:30]}"
+                else:
+                    yid = keys.yarahit_id(asset, rule, pid if pid is not None else (ypath or ""))
+                    ytitle = (f"YARA: {str(rule)[:60]}"
+                              + (f" — {str(ypath).split(chr(92))[-1][:40]}" if ypath else ""))
                 # A yarahit only became a finding through the CROSS-HOST path
                 # (correlate.py: type in ("ioc","account","yarahit") and >= 2 assets),
                 # so a signature hit on a single host produced no timeline row at
-                # all. A webshell on disk is a detection on one host as much as on
-                # five — flag it so it reaches the analyst.
+                # all. A webshell on disk — or malware in memory — is a detection on
+                # one host as much as on five — flag it so it reaches the analyst.
                 ents.append(_ent(yid, "yarahit", str(rule), asset, run_id, loc, anomaly=50,
                                  first=ts, rule=rule, artifact=artifact,
+                                 pid=pid if proc_scan else None,
+                                 proc=str(pname) if (proc_scan and pname) else None,
                                  path=str(ypath) if ypath else None,
-                                 flags=["detection"],
-                                 title=f"YARA: {str(rule)[:60]}"
-                                       + (f" — {str(ypath).split(chr(92))[-1][:40]}" if ypath else "")))
+                                 flags=["detection"], title=ytitle))
                 if pid is not None and proc_by_asset_pid.get((asset, str(pid))):
                     rels.append(Relationship(yid, proc_by_asset_pid[(asset, str(pid))],
                                              "matched", sources=[MODULE], ts=ts))
@@ -862,6 +889,25 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             # Detection={Name,Criticality}; OSPath is the file. Criticality is
             # the rule author's rating (often benign BAU), so type + rank but do
             # NOT auto-finding.
+            # ---- PowerShell ISE autosave: attacker script content ----------
+            elif "iseautosave" in an or "autosave" in an:
+                # The row's point is the rule that fired (ATT&CK-tagged) and the
+                # file it fired on; keep only those plus the date (nested in
+                # FileInfo.Mtime, so first_ts()'s top-level spec misses it). Drop
+                # Content / Regex / IgnoreRegex / the other MACB times.
+                _d = r.get("Detection") if isinstance(r.get("Detection"), dict) else {}
+                dname = _d.get("Name") or "PowerShell ISE autosave"
+                _fi = r.get("FileInfo") if isinstance(r.get("FileInfo"), dict) else {}
+                ipath = _fi.get("OSPath") or F.get(r, "OSPath", *F.PATH, default="")
+                ise_ts = keys.norm_ts(_fi.get("Mtime") or _fi.get("Btime") or ts)
+                ents.append(_ent(keys.event_key(asset, f"iseautosave:{dname}", f"{ipath}"),
+                                 "event", f"ISE autosave: {str(dname)[:60]}", asset,
+                                 run_id, loc, anomaly=max(50, _rule_anomaly(dname)),
+                                 first=ise_ts, artifact=artifact,
+                                 flags=["detection"] if _rule_anomaly(dname) >= 60 else None,
+                                 detection=str(dname), path=str(ipath)[:200],
+                                 title=f"ISE autosave: {str(dname)[:60]}"))
+
             elif "mft" in an and ("detection" in an or "erasing" in an) \
                     and "hijacklib" not in an:
                 det = F.get(r, "Detection", default=None)
@@ -880,17 +926,24 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 _fn = r.get("FNTimestamps") if isinstance(r.get("FNTimestamps"), dict) else {}
                 mft_ts = keys.norm_ts(_fn.get("Created0x30") or _si.get("Created0x10")
                                       or _si.get("LastModified0x10") or _fn.get("LastModified0x30") or ts)
+                # Anti-forensic tooling is the exception to the BAU rule below:
+                # a data-wiping utility (sdelete / BleachBit / CCleaner) on disk is
+                # a real detection, not a routine file, so the Erasing.Tools
+                # artifact PROMOTES to the timeline. The general MFT-detection
+                # artifact keeps "mft_detection" only (its rules fire on BAU files
+                # like OneDrive uploads and must not become findings).
+                erasing = "erasing" in an
                 ev = _ent(keys.event_key(asset, f"mft:{dname}", f"{path}"),
                           "event", f"MFT: {str(dname)[:70]}", asset, run_id, loc,
                           anomaly=_level_anomaly(crit), first=mft_ts, artifact=artifact,
-                          # NOT "detection" — that flag is the correlator's
-                          # promote-me signal (correlate.py: "Keyed by the
-                          # 'detection' flag the mapper stamps"), so stamping it
-                          # here contradicted this branch's own rule three lines
-                          # up and turned every rule-author "High" on a routine
-                          # BAU file into a case finding. The event still lands
-                          # on the timeline; nothing filters events on flags.
-                          flags=["mft_detection"],
+                          # NOT "detection" for general MFT rules — that flag is the
+                          # correlator's promote-me signal (correlate.py: "Keyed by
+                          # the 'detection' flag the mapper stamps"), so stamping it
+                          # for a routine BAU file would turn every rule-author
+                          # "High" into a case finding. The event still lands on the
+                          # timeline; nothing filters events on flags. Erasing tools
+                          # are the deliberate exception (see note above).
+                          flags=["detection"] if erasing else ["mft_detection"],
                           title=f"MFT: {str(dname)[:60]}", detection=str(dname),
                           criticality=str(crit).lower(), path=str(path)[:200])
                 ev.severity = from_string(str(crit))
