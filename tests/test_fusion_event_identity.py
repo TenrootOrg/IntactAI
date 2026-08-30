@@ -108,3 +108,60 @@ class TestNoCallSiteStillMisusesTheTimestampSlot(unittest.TestCase):
                    encoding="utf-8").read()
         self.assertNotIn('event_id(asset, f"{asset}', src,
                          "a call site is smuggling the asset into the ts slot again")
+
+
+class TestSigmaFoldsInsteadOfCopying(unittest.TestCase):
+    """Fusion reduces. The Hayabusa branch was not reducing at all.
+
+    Its event id carried RecordID — unique per event-log record — so it emitted
+    ONE ENTITY PER ROW. Measured on a 9-host import: 183,436 sigma rows became
+    183,738 graph nodes for 534 distinct (host, rule) pairs. A 344:1
+    over-production, in the component whose entire job is to shrink evidence
+    into a case graph.
+
+    156,017 of those rows are Level "informational", which is why lowering a
+    case's severity filter to informational built 71,375 relationships and
+    exhausted a 15 GB appliance until the kernel killed the backend.
+
+    Folding by id ALONE would not have worked: upsert preserves forensic
+    integrity by parking conflicting attr values in `<k>_observations` lists, so
+    183k merges would have grown 183k-element lists instead of collapsing. The
+    rows are folded in the mapper, keeping an occurrence count, the true first
+    and last times, and the loudest row as the exemplar.
+
+    After: 188,790 rows -> 7,813 entities (24:1), 3,247 relationships,
+    534 sigma nodes, peak RSS 1.70 GB.
+    """
+
+    @staticmethod
+    def _sigma_branch_code():
+        """The sigma branch with comments stripped — the comment BLOCK there
+        explains the bug and names RecordID, so a raw substring check matches
+        the explanation rather than the code."""
+        src = open(os.path.join(ROOT,
+                   "modules/backend/services/fusion/mappers/agentic.py"),
+                   encoding="utf-8").read()
+        i = src.index('elif "hayabusa" in an or "sigma" in an:')
+        branch = src[i:i + 3000]
+        return "\n".join(l for l in branch.splitlines()
+                          if not l.lstrip().startswith("#"))
+
+    def test_the_id_no_longer_carries_a_per_record_discriminator(self):
+        """RecordID in the id is what made it one-node-per-row."""
+        self.assertNotIn("RecordID", self._sigma_branch_code(),
+                         "RecordID back in the sigma id means one node per row again")
+
+    def test_the_branch_folds_rather_than_appending_per_row(self):
+        branch = self._sigma_branch_code()
+        self.assertIn("sigma_agg", branch, "the sigma branch must fold, not append")
+        self.assertNotIn("ents.append(ev)", branch,
+                         "a per-row append in this branch is the bug returning")
+
+    def test_every_folded_row_is_still_counted(self):
+        """Folding must not lose evidence — the count is how 183,436 rows stay
+        accounted for behind 534 nodes."""
+        src = open(os.path.join(ROOT,
+                   "modules/backend/services/fusion/mappers/agentic.py"),
+                   encoding="utf-8").read()
+        self.assertIn("occurrences=n", src,
+                      "folded sigma entities must carry their occurrence count")

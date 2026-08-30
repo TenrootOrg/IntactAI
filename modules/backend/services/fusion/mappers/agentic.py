@@ -347,6 +347,8 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
     # happened to be iterated last, which would attribute every sigma-derived
     # process/account/IOC to an unrelated artifact.
     sigma_events: list = []
+    # (asset, rule) -> folded sigma occurrences; emitted after the row loop
+    sigma_agg: dict = {}
 
     for artifact, rows in (collected_data or {}).items():
         an = artifact.lower()
@@ -602,7 +604,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                     aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), owner)
                     if aeid:
                         ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset,
-                                         run_id, loc, user=u, domain=d, artifact=artifact))
+                                         run_id, loc, user=u, domain=d, artifact=artifact, first=ts))
                         rels.append(Relationship(aeid, eid, "executed", sources=[MODULE], ts=ts))
 
             # ---- spawned (second pass would be cleaner; do inline by ppid) -
@@ -698,7 +700,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                     aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), owner)
                     if aeid:
                         ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset,
-                                         run_id, loc, user=u, domain=d, artifact=artifact))
+                                         run_id, loc, user=u, domain=d, artifact=artifact, first=ps_ts))
                         rels.append(Relationship(aeid, eid, "executed", sources=[MODULE], ts=ps_ts))
 
             # ---- network -> netconn + ioc --------------------------------
@@ -780,31 +782,41 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             # severity. Generic handling discarded both, so SIGMA hits never
             # became findings. Keep them as level-scored events flagged 'sigma'.
             elif "hayabusa" in an or "sigma" in an:
+                # AGGREGATE PER (host, rule). This used to emit ONE ENTITY PER ROW —
+                # the id carried RecordID, which is unique per event-log record —
+                # so a 9-host import produced 183,436 sigma nodes for 534 distinct
+                # (host, rule) pairs: a 344:1 over-production, in a component whose
+                # whole job is to REDUCE. 156,017 of those rows are Level
+                # "informational", which is why lowering a case's severity filter
+                # to informational built 71,375 relationships and exhausted a 15 GB
+                # appliance until the kernel took the backend down.
+                #
+                # Collapsing by id alone would not work: upsert preserves forensic
+                # integrity by keeping conflicting attr values in `<k>_observations`
+                # lists, so 183k merges would grow 183k-element lists instead. The
+                # rows are folded HERE, keeping a count, the true first/last times,
+                # and the highest-severity row as the exemplar whose parsed evidence
+                # (cmdline / proc / pid / user / hashes) is carried.
                 title = F.get(r, "Title", "RuleTitle", "Rule", "Message", default=artifact)
                 level = F.get(r, "Level", "Severity", default="informational")
                 anom = _level_anomaly(level)
-                eid = keys.event_id(asset, f"{F.get(r, 'EID', 'EventID', default='')}",
-                                    f"sigma:{title}:{F.get(r, 'RecordID', default=ts)}")
-                raw_details = str(F.get(r, "Details", "Message", default=""))
-                pd = DET.parse_details(raw_details)        # parse once, reuse for linking
-                _hh = DET.hashes(pd)
-                _edom, _eusr = DET.user(pd)
-                ev = _ent(eid, "event", f"SIGMA: {str(title)[:80]}", asset, run_id, loc,
-                          anomaly=anom, first=ts, artifact=artifact,
-                          flags=["sigma"], title=str(title), level=str(level).lower(),
-                          channel=F.get(r, "Channel", default=None),
-                          eid_num=F.get(r, "EID", "EventID", default=None),
-                          details=raw_details[:_EV_DETAILS_CAP],
-                          # parsed evidence persisted for explicit-detail reports
-                          ev_cmdline=DET.cmdline(pd), ev_proc=DET.proc(pd),
-                          ev_pid=DET.pid(pd), ev_parentpid=DET.parentpid(pd),
-                          ev_user=(f"{_edom}\\{_eusr}" if _edom and _eusr else _eusr),
-                          ev_tgtip=DET.tgtip(pd),
-                          ev_sha256=_hh.get("sha256"), ev_md5=_hh.get("md5"))
-                ev.severity = from_string(str(level))   # true SIGMA level, not anomaly-derived
-                ents.append(ev)
-                # stash the parsed details (reused) for the linking pass
-                sigma_events.append((eid, asset, pd, ts, artifact))
+                akey = (asset, str(title))
+                agg = sigma_agg.get(akey)
+                if agg is None:
+                    sigma_agg[akey] = {
+                        "n": 1, "first": ts, "last": ts, "anom": anom, "level": level,
+                        "row": r, "loc": loc, "run_id": run_id, "artifact": artifact,
+                    }
+                else:
+                    agg["n"] += 1
+                    if ts and (not agg["first"] or ts < agg["first"]):
+                        agg["first"] = ts
+                    if ts and (not agg["last"] or ts > agg["last"]):
+                        agg["last"] = ts
+                    # the loudest row wins the exemplar — its parsed evidence is what
+                    # an analyst opens the finding to read
+                    if anom > agg["anom"]:
+                        agg.update({"anom": anom, "level": level, "row": r, "loc": loc})
 
             # ---- MFT detections -> criticality-typed event ----------------
             # Detection={Name,Criticality}; OSPath is the file. Criticality is
@@ -1019,6 +1031,38 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                  anomaly=0 if is_exec else 10, ioc_kind="hash",
                                  first=ts, full_hash=h, **_hash_attrs(r), artifact=artifact))
 
+    # ---- fold the sigma occurrences into one entity per (host, rule) ----
+    for (a_id, title), agg in sigma_agg.items():
+        r = agg["row"]
+        raw_details = str(F.get(r, "Details", "Message", default=""))
+        pd = DET.parse_details(raw_details)      # parse ONCE, for the exemplar only
+        _hh = DET.hashes(pd)
+        _edom, _eusr = DET.user(pd)
+        eid = keys.event_key(a_id, f"sigma:{title}")
+        n = agg["n"]
+        ev = _ent(eid, "event",
+                  (f"SIGMA: {str(title)[:80]}" if n == 1
+                   else f"SIGMA: {str(title)[:70]} (x{n:,})"),
+                  a_id, agg["run_id"], agg["loc"],
+                  anomaly=agg["anom"], first=agg["first"], artifact=agg["artifact"],
+                  flags=["sigma"], title=str(title), level=str(agg["level"]).lower(),
+                  occurrences=n,
+                  channel=F.get(r, "Channel", default=None),
+                  eid_num=F.get(r, "EID", "EventID", default=None),
+                  details=raw_details[:_EV_DETAILS_CAP],
+                  ev_cmdline=DET.cmdline(pd), ev_proc=DET.proc(pd),
+                  ev_pid=DET.pid(pd), ev_parentpid=DET.parentpid(pd),
+                  ev_user=(f"{_edom}\\{_eusr}" if _edom and _eusr else _eusr),
+                  ev_tgtip=DET.tgtip(pd),
+                  ev_sha256=_hh.get("sha256"), ev_md5=_hh.get("md5"))
+        ev.severity = from_string(str(agg["level"]))   # true SIGMA level
+        ev.last_seen = agg["last"]
+        ents.append(ev)
+        # One linking entry per RULE, not per row: the pass below creates
+        # processes/accounts/IOCs from parsed details, and feeding it 183k rows
+        # to produce a handful of capped entities was pure waste.
+        sigma_events.append((eid, a_id, pd, agg["first"], agg["artifact"]))
+
     # ---- spawned edges (ppid) across the processes we created -----------
     for artifact, rows in (collected_data or {}).items():
         an = artifact.lower()
@@ -1071,7 +1115,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             aeid, d, u = _account_eid(asset, dom, usr)
             if aeid:
                 ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset, run_id,
-                                 "hayabusa/details", user=u, domain=d, artifact=src_artifact))
+                                 "hayabusa/details", user=u, domain=d, artifact=src_artifact, first=ts))
                 if proc_eid:
                     rels.append(Relationship(aeid, proc_eid, "executed", sources=[MODULE], ts=ts))
         tip = DET.tgtip(pd)
