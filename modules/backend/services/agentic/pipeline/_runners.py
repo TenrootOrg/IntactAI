@@ -127,8 +127,16 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, c
         # 3. Stream-collect: monitor flows, retrieve results as they become available.
         add_log_to_run(run_id, f"[Velociraptor] Collecting data for up to {collection_minutes} minutes...", "info")
         _update_phase(run_id, "collecting", 10)
+        # RETRIEVE ONLY WHAT FUSION CAN MAP. The collection itself is untouched —
+        # every blueprint artifact still runs on the endpoint and still lands in
+        # Velociraptor for an analyst to pivot through. This stops pulling rows
+        # the appliance has no mapper for: measured, half the evidence store
+        # (581 MB of 1,158 MB) was such artifacts, including a 403 MB
+        # Windows.NTFS.MFT dump of 354,831 rows that maps to zero entities.
+        from services.fusion.mappers.agentic import SUPPORTED_ARTIFACTS
         all_results, timed_out = stream_collect_and_analyze(
             run_id, success_collections, artifacts, collection_minutes, _update_phase, cancel_event,
+            only_artifacts=SUPPORTED_ARTIFACTS,
         )
 
         # SNAPSHOT IMMEDIATELY. Not after the next check, not after the one after

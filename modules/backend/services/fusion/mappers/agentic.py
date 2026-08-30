@@ -197,6 +197,12 @@ SUPPORTED_ARTIFACTS = frozenset({
     "detectraptor.windows.detection.applications",
     "detectraptor.windows.detection.powershell.psreadline",
     "detectraptor.windows.detection.amcache",
+    # Webshells on disk. Verified on a live endpoint: 14 hits over 3 distinct
+    # files (b.jsp, tests.jsp, cmd.aspx) under an ATT&CK T1505.003 path, matched
+    # by SIGNATURE_BASE_WEBSHELL_* rules — real files, unlike its sibling
+    # Generic.Detection.YaraFile, whose 1,654 hits were ALL on C:\pagefile.sys
+    # (string coincidences in swapped-out memory) and which stays out.
+    "detectraptor.generic.detection.yarawebshell",
     "detectraptor.windows.detection.namedpipes",
     "detectraptor.windows.detection.webhistory",
     "detectraptor.windows.detection.hijacklibsmft",
@@ -603,9 +609,21 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 if owner:
                     aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), owner)
                     if aeid:
+                        # The process's own start time, not the generic row ts.
+                        # Pstree has no top-level time field in F.TIMES, so `ts` is
+                        # None on every row: the process entity computes
+                        # norm_ts(ct or ts) from StartTime and lands dated, while
+                        # the account beside it took the bare `ts` and landed
+                        # undated. Measured across the four feature tests, that was
+                        # 87 of the 105 undated entities — every one a Pstree
+                        # account. Cross-host "Account X used across N hosts"
+                        # findings take their date from exactly this field.
+                        _acct_ts = keys.norm_ts(ct or ts)
                         ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset,
-                                         run_id, loc, user=u, domain=d, artifact=artifact, first=ts))
-                        rels.append(Relationship(aeid, eid, "executed", sources=[MODULE], ts=ts))
+                                         run_id, loc, user=u, domain=d, artifact=artifact,
+                                         first=_acct_ts))
+                        rels.append(Relationship(aeid, eid, "executed", sources=[MODULE],
+                                                 ts=_acct_ts))
 
             # ---- spawned (second pass would be cleaner; do inline by ppid) -
             # handled in finalize below
@@ -695,7 +713,13 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                  command=str(line)[:400],
                                  detection=str(_rule) if _rule else None,
                                  title=(f"PowerShell: {str(_rule)[:60]}" if _rule else None),
-                                 flags=(["suspicious_powershell"] if an_ps >= 25 else None)))
+                                 # An ATT&CK-mapped rule reaches the timeline; the
+                                 # local keyword heuristic still marks the row but
+                                 # does not promote it on its own.
+                                 flags=([f for f in
+                                         (["suspicious_powershell"] if an_ps >= 25 else [])
+                                         + (["detection"] if _rule_anomaly(_rule) >= 60 else [])]
+                                        or None)))
                 if owner:
                     aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), owner)
                     if aeid:
@@ -722,9 +746,25 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             elif "yara" in an:
                 rule = F.get(r, "Rule", "rule", "RuleName", "name", default=None) or artifact
                 pid = F.get(r, *F.PID)
-                yid = keys.yarahit_id(asset, rule, pid or "")
+                # THE FILE IS PART OF THE HIT. A file-scan yara artifact has no pid,
+                # so the id degenerated to (asset, rule) and every file matching one
+                # signature collapsed into a single node — three distinct webshells
+                # under C:\AtomicRedTeam\atomics\T1505.003 (b.jsp, tests.jsp,
+                # cmd.aspx) became one, and the path was never stored, so nothing
+                # said WHICH file matched.
+                ypath = F.get(r, "OSPath", *F.PATH, default=None)
+                yid = keys.yarahit_id(asset, rule, pid if pid is not None else (ypath or ""))
+                # A yarahit only became a finding through the CROSS-HOST path
+                # (correlate.py: type in ("ioc","account","yarahit") and >= 2 assets),
+                # so a signature hit on a single host produced no timeline row at
+                # all. A webshell on disk is a detection on one host as much as on
+                # five — flag it so it reaches the analyst.
                 ents.append(_ent(yid, "yarahit", str(rule), asset, run_id, loc, anomaly=50,
-                                 first=ts, rule=rule, artifact=artifact))
+                                 first=ts, rule=rule, artifact=artifact,
+                                 path=str(ypath) if ypath else None,
+                                 flags=["detection"],
+                                 title=f"YARA: {str(rule)[:60]}"
+                                       + (f" — {str(ypath).split(chr(92))[-1][:40]}" if ypath else "")))
                 if pid is not None and proc_by_asset_pid.get((asset, str(pid))):
                     rels.append(Relationship(yid, proc_by_asset_pid[(asset, str(pid))],
                                              "matched", sources=[MODULE], ts=ts))
@@ -890,6 +930,12 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 ents.append(_ent(eid, "event", _label, asset, run_id, loc,
                                  anomaly=max(score_row(r), _level_anomaly(crit) if crit else 0),
                                  first=ts, artifact=artifact, path=str(path),
+                                 # Same gate — see the Evtx branch. On a clean host
+                                 # this promotes nothing, because Amcache's rules
+                                 # there are BAU ("BAU Cloud Data Transfer",
+                                 # "RMM - Microsoft Quick Assist"), which is correct.
+                                 flags=(["detection"] if _rule_anomaly(dname) >= 60
+                                        else None),
                                  detection=str(dname) if dname else None,
                                  criticality=str(crit) if crit else None,
                                  title=(f"Execution: {str(dname)[:60]}" if dname else None)))
@@ -1008,6 +1054,21 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                                   _level_anomaly(crit) if crit else 0,
                                                   _rule_anomaly(dname)),
                                  first=ts, artifact=artifact,
+                                 # PROMOTE ONLY WHAT THE RULE SET STANDS BEHIND.
+                                 # The timeline renders FINDINGS, and a finding needs
+                                 # this flag — so an artifact could carry a title and
+                                 # still never appear. Measured on a live QuickWins
+                                 # run: Evtx had 63 titled events and 0 flagged, so
+                                 # 37 hits of "T1059.001-Use of Base64 Commands" were
+                                 # invisible in the timeline.
+                                 # _rule_anomaly is the gate: ATT&CK-mapped and C2-
+                                 # rules promote; "IN DEVELOPMENT" and unmapped BAU
+                                 # rules do not. That keeps the MFT lesson intact —
+                                 # its rules here are "BAU Cloud Data Transfer"
+                                 # (OneDrive) and "RMM - Microsoft Quick Assist",
+                                 # which must never become case findings.
+                                 flags=(["detection"] if _rule_anomaly(dname) >= 60
+                                        else None),
                                  detection=str(dname) if dname else None,
                                  criticality=str(crit) if crit else None,
                                  title=(f"{artifact.split('.')[-1]}: {str(dname)[:60]}"

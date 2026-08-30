@@ -723,6 +723,39 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
             entity_ids=[e.id], asset_ids=asset, sources=e.sources,
             evidence=list(e.evidence), mitre=mitre, ts=e.first_seen, kind="single"))
 
+    # YARA signature hits on a single host. Same gap the account loop above
+    # exists for: the generic detection loop only iterates events, and a yarahit
+    # is its own entity type, so a flagged hit produced NO finding unless it
+    # appeared on 2+ assets via _cross_host_findings. Measured on a live
+    # endpoint: 14 webshell hits over three files (b.jsp, tests.jsp, cmd.aspx)
+    # under an ATT&CK T1505.003 path landed in the graph and never reached the
+    # timeline, because they were all on one host. A webshell on disk is a
+    # detection on one machine as much as on five.
+    for e in g.by_type("yarahit"):
+        fl = e.flags or []
+        if "detection" not in fl or "cross_host" in fl:
+            continue
+        if not sev.at_least(e.severity, "medium"):
+            continue
+        asset = _assets_of(e)
+        host = _host_label(g, asset[0]) if asset else "?"
+        path = e.attrs.get("path")
+        fname = str(path).replace("\\", "/").rstrip("/").split("/")[-1] if path else None
+        # T1505.003 (web shell) when the rule says so, else the generic
+        # "malicious file" technique — the rule name is the evidence either way.
+        rule_l = str(e.attrs.get("rule") or e.label or "").lower()
+        mitre = ["T1505.003"] if "webshell" in rule_l or "web_shell" in rule_l else ["T1204.002"]
+        g.add_finding(Finding(
+            id=_fid("yara", e.id),
+            title=(f"YARA {e.label} matched {fname} on {host}" if fname
+                   else f"YARA {e.label} matched on {host}"),
+            severity=sev.from_anomaly(e.anomaly), confidence="high",
+            summary=(f"Signature '{e.label}' matched "
+                     + (f"{path} " if path else "")
+                     + f"on {host}."),
+            entity_ids=[e.id], asset_ids=asset, sources=e.sources,
+            evidence=list(e.evidence), mitre=mitre, ts=e.first_seen, kind="single"))
+
     # endpoint SIGMA detections (Hayabusa) -> findings, grouped by detection
     # title per host so a rule firing N times is ONE finding (not N). Only
     # high/critical surface as findings; medium/low stay as ranked events.

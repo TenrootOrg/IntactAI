@@ -249,13 +249,28 @@ class TestFusionAsksOnlyForWhatItUses(unittest.TestCase):
             self.assertIn("only_artifacts=SUPPORTED_ARTIFACTS", seg,
                           f"{fn} still fetches artifacts fusion discards")
 
-    def test_re_collect_still_fetches_everything(self):
-        # The operator's own action restores the RUN's data, not fusion's subset.
+    def test_re_collect_fetches_only_what_fusion_maps(self):
+        """REVERSED DELIBERATELY. This asserted the opposite — that a Fetch
+        restores the RUN's data, not fusion's subset — on the reasoning that
+        dropping artifacts the operator collected on purpose was silent data
+        loss.
+
+        Measured, that reasoning cost more than it protected: half the evidence
+        store (581 MB of 1,158 MB) was artifacts with no mapper, including a
+        403 MB Windows.NTFS.MFT dump of 354,831 rows that produces zero
+        entities. Retrieving them cost collection time, disk, and the json.load
+        that OOM-killed the backend.
+
+        Nothing is lost by not pulling them: the COLLECTION is untouched, so
+        Velociraptor still holds every artifact the blueprint asked for, and an
+        artifact that later gains a mapper is one Fetch away. That is exactly
+        why the offline-collector IMPORT is still unscoped — its zip is deleted
+        after import (importer.py os.remove), so there raw_results.json really
+        is the only copy."""
         routes = read(ROUTES)
         seg = routes[routes.index("def _recollect_worker"):routes.index("def recollect(")]
-        self.assertNotIn("only_artifacts", seg,
-                         "re-collect would silently drop artifacts the operator "
-                         "collected on purpose")
+        self.assertIn("only_artifacts=SUPPORTED_ARTIFACTS", seg,
+                      "a Fetch must not pull artifacts the appliance cannot map")
 
 
 class TestAScopedFetchNeverShrinksTheSnapshot(unittest.TestCase):

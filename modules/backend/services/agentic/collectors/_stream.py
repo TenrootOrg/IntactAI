@@ -16,13 +16,40 @@ from services.velociraptor_service import setup_velociraptor_connection
 from services.workflow_service import add_log_to_run
 from services.agentic.collectors._base import *  # noqa: F401,F403
 
-def stream_collect_and_analyze(run_id, collection_results, artifacts, collection_minutes, update_phase_func=None, cancel_event=None):
+
+def _keep_source(name, only_artifacts):
+    """True when `name` is one of the artifacts we have a mapper for.
+
+    A source may be a sub-source ("Windows.Forensics.SAM/Parsed") or carry an
+    "All " export prefix, so compare on the BASE name — the same rule
+    _base._wanted_source applies. Defined locally rather than imported: this
+    module star-imports _base, which cannot carry an underscore-prefixed name,
+    and an explicit import breaks the test harnesses that stub _base."""
+    n = str(name or "").strip()
+    if n[:4].lower() == "all ":
+        n = n[4:]
+    return n.split("/")[0].strip().lower() in only_artifacts
+
+
+def stream_collect_and_analyze(run_id, collection_results, artifacts, collection_minutes,
+                               update_phase_func=None, cancel_event=None,
+                               only_artifacts=None):
     """Monitor a collection: poll artifact sources, retrieve/merge rows as flows
     complete. Returns (all_results, timed_out).
 
-    Pure collection — rows are persisted as-is for Case-level fusion, which owns
-    all filtering (time window, severity) and analysis. `timed_out` is True if
-    collection ended due to timeout, False if all flows completed naturally."""
+    Rows are persisted as-is for Case-level fusion, which owns the time-window
+    and severity filtering. `timed_out` is True if collection ended due to
+    timeout, False if all flows completed naturally.
+
+    `only_artifacts` is a set of lowercase BASE artifact names — sources outside
+    it are never RETRIEVED. The collection on the endpoint is unchanged: the
+    blueprint's full artifact set still runs and still lands in Velociraptor for
+    an analyst to pivot through. This only stops pulling rows the appliance has
+    no mapper for. Measured before this: half the evidence store (581 MB of
+    1,158 MB) was artifacts fusion excludes and always will — a 403 MB
+    Windows.NTFS.MFT dump of 354,831 rows, and a run that was almost entirely
+    NTFS.MFT + Forensics.Usn. Retrieving them cost collection time, disk, and the
+    json.load that OOM-killed the backend, to produce exactly zero entities."""
     total_seconds = collection_minutes * 60
     # WALL CLOCK, not a tally of intervals.
     #
@@ -160,6 +187,8 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
                 # next poll — nothing to track to get that for free.
                 client_hostname = _name(client_id)
                 for source_name in discovered_sources[flow_id]:
+                    if only_artifacts and not _keep_source(source_name, only_artifacts):
+                        continue          # no mapper for it — do not pull it
                     _key = (client_id, source_name)
                     _seen = fetched_offsets.get(_key, 0)
                     rows = query_artifact_results(stub, client_id, flow_id,
@@ -330,6 +359,12 @@ def stream_collect_and_analyze(run_id, collection_results, artifacts, collection
             # Get final list of all sources
             final_sources = enumerate_flow_sources(stub, client_id, flow_id)
             for source_name in final_sources:
+                # SAME SCOPE AS THE POLL LOOP. This closing pass is a second
+                # retrieval site, and scoping only the poll left it pulling
+                # everything: a live BestPractice collection still landed 25
+                # unmappable sources here after the poll had been filtered.
+                if only_artifacts and not _keep_source(source_name, only_artifacts):
+                    continue
                 # The TAIL, not the whole thing. This pass exists to pick up
                 # whatever landed after the last poll, and re-downloading every
                 # source in full to do that is what made the closing phase of a

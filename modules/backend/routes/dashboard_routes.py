@@ -342,10 +342,18 @@ def _recollect_worker(run_id, run):
         # run repeatedly. One line then two minutes of silence is
         # indistinguishable from a button that did nothing — every source is
         # reported as it lands, the same way a live collection reports.
+        # SCOPED TO WHAT FUSION MAPS. A Fetch used to pull every source the flow
+        # holds, including artifacts the appliance has no mapper for — measured,
+        # half the evidence store was such rows (a 403 MB Windows.NTFS.MFT dump of
+        # 354,831 rows producing zero entities). The collection on the endpoint is
+        # untouched and Velociraptor still holds everything, so an artifact that
+        # later gains a mapper is one Fetch away.
+        from services.fusion.mappers.agentic import SUPPORTED_ARTIFACTS
         merged = {}
         if hunt_id:
             got, _arts, _ci = get_existing_collection_results(
-                run_id, hunt_id=hunt_id, progress_log=True)
+                run_id, hunt_id=hunt_id, progress_log=True,
+                only_artifacts=SUPPORTED_ARTIFACTS)
             merged.update(got or {})
         else:
             # Several flows (one per client) merge into one result set, exactly
@@ -354,7 +362,8 @@ def _recollect_worker(run_id, run):
                 if len(flows) > 1:
                     add_log_to_run(run_id, f"[Fetch] Flow {_i}/{len(flows)}: {fid}", "info")
                 got, _arts, _ci = get_existing_collection_results(
-                    run_id, flow_id=fid, client_ids=client_ids, progress_log=True)
+                    run_id, flow_id=fid, client_ids=client_ids, progress_log=True,
+                    only_artifacts=SUPPORTED_ARTIFACTS)
                 for k, v in (got or {}).items():
                     merged.setdefault(k, [])
                     merged[k].extend(v or [])

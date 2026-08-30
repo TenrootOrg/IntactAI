@@ -111,16 +111,28 @@ def _fuse_offline_import(import_result, upload_run_id):
         from services.file_storage_service import save_workflow
         from services.agentic.collectors import get_existing_collection_results, persist_pipeline_artifacts
 
+        # SCOPED, like every other Velociraptor path. The ZIP has already been
+        # imported INTO Velociraptor by this point — that is what produced the
+        # hunt_id/flow_id above — so the server holds every artifact the collector
+        # gathered, and reading back only the mappable ones loses nothing: an
+        # artifact that later gains a mapper is one Fetch away, exactly as for a
+        # live collection. (Verified on this appliance: the hunt an upload created,
+        # H.DA9TC7LTQRN9S, was adopted into a fresh case afterwards and returned
+        # all 188,790 rows.) Measured, the unscoped read was half wasted — 581 MB
+        # of 1,158 MB across stored payloads was artifacts with no mapper.
+        from services.fusion.mappers.agentic import SUPPORTED_ARTIFACTS
         add_log_to_run(upload_run_id, "[Import] Reading imported data into the case…")
         if hunt_id:
             # Hunt: enumerate every imported client's flow and pull their rows.
             all_results, artifacts, client_info = get_existing_collection_results(
-                upload_run_id, flow_id=None, hunt_id=hunt_id, client_ids=None)
+                upload_run_id, flow_id=None, hunt_id=hunt_id, client_ids=None,
+                only_artifacts=SUPPORTED_ARTIFACTS)
         else:
             client_id = import_result.get("client_id")
             all_results, artifacts, client_info = get_existing_collection_results(
                 upload_run_id, flow_id=flow_id, hunt_id=None,
-                client_ids=[client_id] if client_id else None)
+                client_ids=[client_id] if client_id else None,
+                only_artifacts=SUPPORTED_ARTIFACTS)
 
         total_rows = sum(len(rows) for rows in (all_results or {}).values())
         if total_rows == 0:
