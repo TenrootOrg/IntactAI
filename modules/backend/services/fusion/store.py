@@ -553,14 +553,52 @@ def _ws():
     return ws
 
 
+def _case_created_dt(case_id):
+    """Creation time from the case id ('<type>_<ms-epoch>', see
+    workflow_service.create_automation_run), falling back to now."""
+    from datetime import datetime, timezone
+    try:
+        ms = int(str(case_id).rsplit("_", 1)[1])
+        return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+    except Exception:
+        return datetime.now(timezone.utc)
+
+
+def _default_window(created_dt) -> dict:
+    """Default case scope: the 7 days UP TO creation, both bounds concrete.
+
+    A bounded default stops a freshly-collected case from being dominated by
+    months-old staged events (e.g. a Dec log-wipe baked into a lab image) while
+    still covering the recent week an operator cares about — and it means a case
+    is never empty-by-default the way an all-of-history scope can feel. Concrete
+    bounds (not a live 'now') keep the case reproducible: the window doesn't
+    drift as wall-clock time passes. The lower bound is never cleared — see
+    set_analysis_config."""
+    from datetime import timedelta
+    fmt = "%Y-%m-%dT%H:%M:%S"
+    return {"start": (created_dt - timedelta(days=7)).strftime(fmt),
+            "end": created_dt.strftime(fmt)}
+
+
 def create_case(name, *, time_window=None, initial_access=None,
                 min_severity="medium", member_run_ids=None, is_default=False,
                 is_system=False) -> str:
+    from datetime import datetime, timezone
+    tw = dict(time_window or {})
+    # Default the scope to [creation-7d, creation] for normal investigation
+    # cases. System / default catch-all cases keep an open window (they're meant
+    # to surface everything that lands). Only fill bounds the caller left blank.
+    if not is_default and not is_system:
+        dw = _default_window(datetime.now(timezone.utc))
+        if not tw.get("start"):
+            tw["start"] = dw["start"]
+        if not tw.get("end"):
+            tw["end"] = dw["end"]
     # The case row is itself a workflow row but is NEVER case-scoped — pass
     # case_id=None explicitly so the request's active case doesn't tag it.
     return _ws().create_automation_run(
         automation_type=CASE_TYPE, name=f"Case — {name}", case_id=None,
-        details={"name": name, "time_window": time_window or {},
+        details={"name": name, "time_window": tw,
                  "initial_access_estimate": initial_access, "min_severity": min_severity,
                  "member_run_ids": list(member_run_ids or []),
                  "is_default": bool(is_default), "is_system": bool(is_system),
@@ -2394,7 +2432,13 @@ def set_analysis_config(case_id, cfg) -> dict:
     patch = {}
     if "time_window" in cfg:
         tw = cfg.get("time_window") or {}
-        patch["time_window"] = {"start": tw.get("start"), "end": tw.get("end")}
+        start = tw.get("start")
+        if not start:
+            # The 'from' bound is never empty — an open start is what let
+            # months-old staged events flood a case. Fall back to 7 days before
+            # creation. ('until' may be cleared to mean open-ended.)
+            start = _default_window(_case_created_dt(case_id))["start"]
+        patch["time_window"] = {"start": start, "end": tw.get("end")}
     for k in ("min_severity", "audience", "language", "tlp", "customer_name",
               "customer_logo_b64", "master_prompt"):
         if cfg.get(k) is not None:

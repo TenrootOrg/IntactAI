@@ -18,6 +18,7 @@ import hashlib
 
 from .schema import FusionGraph, Finding, EvidenceRef
 from . import severity as sev
+from . import keys
 
 
 def _fid(*parts) -> str:
@@ -940,7 +941,15 @@ def in_window(ts, window) -> bool:
         return True
     if not ts:
         return True            # structural (no time) — kept; filtered by link elsewhere
-    start, end = window.get("start"), window.get("end")
+    # Parse both sides to tz-aware UTC and compare as INSTANTS, not raw strings.
+    # String compare mixed frames (local-wall-clock picker bounds vs UTC event
+    # times) and sorted a trailing 'Z'/fractional-second row above a 19-char bound
+    # at the same instant, so freshly-collected in-window rows were dropped.
+    t = keys.to_utc_dt(ts)
+    if t is None:
+        return True            # unparseable — keep, never silently drop
+    s_dt = keys.to_utc_dt(window.get("start"))
+    e_dt = keys.to_utc_dt(window.get("end"))
     # A degenerate window (start >= end — e.g. start == end from a date picker
     # that defaulted both ends to the same instant) would drop every timestamped
     # row and silently produce an edgeless graph: only the events/files/hashes
@@ -949,10 +958,10 @@ def in_window(ts, window) -> bool:
     # nuking the case. (2026-07-26: a real hunt-import case with
     # start==end='2026-05-01T12:00:00' fused to 568 entities / 0 links; the same
     # data with an open window fuses to 18,768 entities / 368 links.)
-    if start and end and start >= end:
+    if s_dt and e_dt and s_dt >= e_dt:
         return True
-    if start and ts < start:
+    if s_dt and t < s_dt:
         return False
-    if end and ts > end:
+    if e_dt and t > e_dt:
         return False
     return True

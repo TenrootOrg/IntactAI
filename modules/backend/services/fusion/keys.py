@@ -11,8 +11,13 @@ key on provider+account/resource with the same shape.
 
 from __future__ import annotations
 
+import datetime as _dt
 import hashlib
 import re
+
+# A bare number = Unix epoch (seconds or ms), integer or float. Anchored so a
+# dashed date ("2026-08-30") never matches and get treated as an epoch.
+_EPOCH_RE = re.compile(r"-?\d+(?:\.\d+)?$")
 
 _HEXISH = re.compile(r"^[0-9a-fA-F.:-]+$")
 
@@ -54,6 +59,47 @@ def norm_ts(v) -> str | None:
     if " " in s and "-" in s:
         return s.replace(" ", "T")[:19]
     return s[:19]
+
+
+def to_utc_dt(v):
+    """Parse an ISO-ish / epoch timestamp to a tz-aware UTC datetime.
+
+    Naive values (no offset) are assumed UTC. Returns None if empty/unparseable.
+
+    This is the comparison primitive for the case time window: bounds and event
+    times must be judged in ONE frame. Before this, `in_window` string-compared a
+    local-wall-clock picker bound against UTC `first_seen` values that carried a
+    trailing 'Z' / fractional seconds — so a row at the window edge sorted as
+    "after end" and freshly-collected data got dropped. Parsing both sides fixes
+    the frame mismatch and the 'Z'/precision sort hazard at once.
+    """
+    if v in (None, ""):
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    if _EPOCH_RE.match(s):                   # epoch seconds or ms, int OR float
+        # Linux/Velociraptor pass some raw times through as Unix seconds, and a
+        # few as a FLOAT ("1788079621.57" from stat Mtime); `.isdigit()` rejected
+        # the float and it fell through to None -> kept-unfiltered. Accept both.
+        try:
+            n = float(s)
+            if n > 1_000_000_000_000:        # milliseconds -> seconds
+                n /= 1000.0
+            return _dt.datetime.fromtimestamp(n, tz=_dt.timezone.utc)
+        except (ValueError, OSError, OverflowError):
+            return None
+    t = s.replace(" ", "T")
+    try:
+        dt = _dt.datetime.fromisoformat(t)  # 3.11+ handles 'Z', offsets, fractions
+    except Exception:
+        try:
+            dt = _dt.datetime.strptime(t[:19], "%Y-%m-%dT%H:%M:%S")
+        except Exception:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_dt.timezone.utc)
+    return dt.astimezone(_dt.timezone.utc)
 
 
 # -- asset ----------------------------------------------------------------
