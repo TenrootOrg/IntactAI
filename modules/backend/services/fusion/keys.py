@@ -200,6 +200,30 @@ def yarahit_id(asset: str, rule, pid="") -> str:
 
 
 
+def event_key(asset: str, *parts) -> str:
+    """Identity for an event whose distinguishing content — not its time — is what
+    makes it unique: a file path, a DLL name, a service name.
+
+    WHY THIS EXISTS. `event_id`'s second parameter is a TIMESTAMP: it runs the
+    value through norm_ts(), which ends in `if "T" in s: return s[:19]`. Twenty
+    mapper call sites were passing `f"{asset}:{path}"` there to make the id
+    unique. Every one of those strings contains a "T" (in "asset:endpoinT"), so
+    norm_ts took the ISO branch and truncated it to a 19-character constant — the
+    asset prefix — silently deleting the path from the identity. Measured on a
+    real case: DetectRaptor MFT collapsed 516 detections into 69 nodes (86.6%
+    lost), one of them fusing AdFind.exe, PingCastle.exe, ADRecon.ps1 and
+    Everything.exe across 12 months into a single dated point; BinaryRename
+    merged a $Recycle.Bin copy of AdFind into a benign one.
+
+    Here the discriminating parts are explicit and variadic, so nothing can be
+    smuggled into a timestamp slot. No time is embedded — for these events the
+    time is a property, not part of who they are, and the previous ids carried a
+    truncated asset prefix in that position anyway, so none is lost.
+    """
+    blob = ":".join(str(p) for p in parts if p is not None and str(p) != "")
+    return f"event:{asset}:{_h(blob, 16)}"
+
+
 def event_id(asset: str, ts, msg) -> str:
     """Identity for an observed event — like every other key here it anchors on
     the ASSET (identity) plus the event's own (normalised) timestamp and a hash

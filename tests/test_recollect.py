@@ -463,6 +463,12 @@ class TestALongFetchKeepsSaying(unittest.TestCase):
             # would kill the ticker thread on its next import, and the test would
             # pass whether or not _hb_stop was ever set.
             if linger:
+                # A tick already inside log_case_event when the worker returned
+                # will still append once — that is the ticker stopping, not the
+                # ticker running. Let any in-flight tick land BEFORE taking the
+                # baseline, then assert nothing further arrives. Sampling the
+                # baseline immediately made this flaky under parallel test load.
+                time.sleep(linger / 4.0)
                 self._settled = len(case_events)
                 time.sleep(linger)
         finally:

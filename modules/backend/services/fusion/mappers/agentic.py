@@ -9,6 +9,8 @@ same account/IP seen on multiple assets collapses to one node whose
 
 from __future__ import annotations
 
+import re
+
 from .. import keys
 from ..schema import Entity, Relationship, EvidenceRef
 from ..anomaly import score_row
@@ -115,6 +117,34 @@ _PS_SUSPICIOUS = ("downloadstring", "downloadfile", "iex", "invoke-expression",
                   "-windowstyle hidden", "bypass", "invoke-webrequest", "iwr ",
                   "new-object net.webclient", "start-bitstransfer", "certutil",
                   "bitsadmin", "add-mppreference", "set-mppreference")
+
+
+_ATTACK_RULE = re.compile(r"\bT\d{4}(?:\.\d{3})?\b", re.IGNORECASE)
+
+
+def _rule_anomaly(rule) -> int:
+    """How much a DetectRaptor rule NAME should raise an event, on its own.
+
+    The rule set grades itself and we should read that rather than promote every
+    match equally. Measured on a real case: the single biggest contributor to both
+    PSReadline (70 of 178 rows) and Evtx (1,095 of 2,960) is
+    "Powershell Suspicious CommandLet - IN DEVELOPMENT" — the author's own marker
+    that it is not finished. Promoting those to high would bury the 18 genuine
+    "T1059.001-Mimikatz Execution via PowerShell" hits under ~1,700 unfinished ones,
+    which is the flood this whole exercise exists to avoid.
+
+      ATT&CK-mapped (T1059.001-…) or C2-…  -> high; a curated, named technique
+      IN DEVELOPMENT                       -> nothing; let score_row judge the row
+      anything else                        -> medium
+    """
+    name = str(rule or "").strip()
+    if not name:
+        return 0
+    if "in development" in name.lower():
+        return 0
+    if _ATTACK_RULE.search(name) or name.upper().startswith("C2-"):
+        return 60
+    return 30
 
 
 def _ps_anomaly(line: str) -> int:
@@ -311,7 +341,12 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
 
     assets_seen: dict[str, str] = {}
     proc_by_asset_pid: dict[tuple, str] = {}
-    sigma_events: list = []   # (event_id, asset, parsed_details, ts) for the linking pass
+    # (event_id, asset, parsed_details, ts, source_artifact). The artifact rides
+    # along because the linking pass below runs AFTER the per-artifact loop: any
+    # `artifact` still in scope there is a stale leftover from whichever artifact
+    # happened to be iterated last, which would attribute every sigma-derived
+    # process/account/IOC to an unrelated artifact.
+    sigma_events: list = []
 
     for artifact, rows in (collected_data or {}).items():
         an = artifact.lower()
@@ -351,13 +386,13 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                  flags=["injected"], pid=str(pid), name=name,
                                  protection=prot,
                                  address_range=F.get(r, "AddressRange", default=None),
-                                 createtime=keys.norm_ts(ct)))
+                                 createtime=keys.norm_ts(ct), artifact=artifact))
                 yh = F.get(r, "YaraHit", "Rule", "rule", default=None)
                 rule = (yh.get("Rule") if isinstance(yh, dict) else yh) if yh else None
                 if rule:
                     yid = keys.yarahit_id(asset, rule, pid)
                     ents.append(_ent(yid, "yarahit", str(rule), asset, run_id, loc,
-                                     anomaly=50, first=ts, rule=rule))
+                                     anomaly=50, first=ts, rule=rule, artifact=artifact))
                     rels.append(Relationship(yid, eid, "matched", sources=[MODULE], ts=ts))
 
             # ---- Linux agentic artifacts (quick_wins_linux) -----------------
@@ -368,7 +403,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             elif ab == "linux.persistence.ldpreload":
                 content = str(F.get(r, "Content", default="") or "").strip()
                 path = F.get(r, "OSPath", default="/etc/ld.so.preload")
-                eid = keys.event_id(asset, f"{asset}:{path}", f"ldpreload:{content[:60]}")
+                eid = keys.event_key(asset, f"ldpreload:{content[:60]}", f"{path}")
                 ents.append(_ent(eid, "event", f"LD_PRELOAD persistence: {content[:55]}", asset,
                                  run_id, loc, anomaly=70,
                                  first=keys.norm_ts(F.get(r, "Mtime", "Ctime", default=ts)),
@@ -380,7 +415,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 path = F.get(r, "OSPath", default=None)
                 # shared id with the AuthorizedKeys handler for the same file so the two
                 # detectors of one backdoor key merge into ONE finding (not two).
-                eid = keys.event_id(asset, f"{asset}:{path}", "ssh_authkey_backdoor")
+                eid = keys.event_key(asset, "ssh_authkey_backdoor", f"{path}")
                 ents.append(_ent(eid, "event", f"SSH forced-command backdoor: {str(cmd)[:45]}", asset,
                                  run_id, loc, anomaly=70, first=ts, artifact=artifact,
                                  flags=["detection", "persistence", "ssh", "linux"],
@@ -390,7 +425,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             elif ab == "linux.detection.incorrectpermissions":
                 path = F.get(r, "OSPath", default="?")
                 mism = F.get(r, "Mismatch", default="")
-                eid = keys.event_id(asset, f"{asset}:{path}", f"perm:{mism}")
+                eid = keys.event_key(asset, f"perm:{mism}", f"{path}")
                 ents.append(_ent(eid, "event", f"Permission anomaly: {str(path)[:45]} ({mism})", asset,
                                  run_id, loc, anomaly=45,
                                  first=keys.norm_ts(F.get(r, "Ctime", "Mtime", default=ts)),
@@ -400,7 +435,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             elif ab == "linux.forensics.environmentvariables":
                 line = str(F.get(r, "Line", default="") or "")
                 sev = _linux_susp(line)
-                eid = keys.event_id(asset, f"{asset}:{F.get(r, 'OSPath', default='')}", f"envvar:{line[:60]}")
+                eid = keys.event_key(asset, f"envvar:{line[:60]}", f"{F.get(r, 'OSPath', default='')}")
                 ents.append(_ent(eid, "event", f"shell-config: {line[:55]}", asset, run_id, loc,
                                  anomaly=60 if sev else 5, first=ts, artifact=artifact,
                                  flags=(["detection", "persistence", "linux"] if sev else ["linux"]),
@@ -411,7 +446,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 cmd = str(F.get(r, "Command", default="") or "")
                 sev = _linux_susp(cmd)
                 cu = F.get(r, "User", default=None); cpath = F.get(r, "Path", default=None)
-                eid = keys.event_id(asset, f"{asset}:{cpath}:{cu}", f"cron:{cmd[:50]}")
+                eid = keys.event_key(asset, f"cron:{cmd[:50]}", f"{cpath}:{cu}")
                 ents.append(_ent(eid, "event", f"cron: {cmd[:55]}", asset, run_id, loc,
                                  anomaly=60 if sev else 4, first=ts, artifact=artifact,
                                  flags=(["detection", "persistence", "cron", "linux"] if sev
@@ -424,7 +459,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 name = F.get(r, "Name", "Id", "OSPath", default=artifact)
                 execs = str(F.get(r, "ExecStart", "Exec", "Fragment", default="") or "")
                 sev = _linux_susp(execs) or _linux_susp(str(name))
-                eid = keys.event_id(asset, f"{asset}:{name}", f"svc:{name}")
+                eid = keys.event_key(asset, f"svc:{name}", f"{name}")
                 ents.append(_ent(eid, "event", f"systemd service: {str(name)[:45]}", asset, run_id,
                                  loc, anomaly=55 if sev else 3, first=ts, artifact=artifact,
                                  flags=(["detection", "persistence", "linux"] if sev else ["linux"]),
@@ -442,7 +477,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                      uid=str(uid) if uid is not None else None,
                                      home=F.get(r, "Homedir", default=None),
                                      shell=F.get(r, "Shell", default=None),
-                                     flags=(["detection", "privilege_escalation", "linux"] if rogue else None)))
+                                     flags=(["detection", "privilege_escalation", "linux"] if rogue else None), artifact=artifact))
 
             elif ab == "linux.syslog.sshlogin":
                 ip = F.get(r, "IP", default=None)
@@ -451,7 +486,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 aeid, d, u = _account_eid(asset, None, uname)
                 if aeid:
                     ents.append(_ent(aeid, "account", (u or str(uname)), asset, run_id, loc,
-                                     first=ts, user=u))
+                                     first=ts, user=u, artifact=artifact))
                     if res == "accepted":
                         rels.append(Relationship(aeid, asset, "authenticated", sources=[MODULE], ts=ts,
                                     attrs={"src_ip": ip, "result": res,
@@ -459,13 +494,13 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 if ip and keys.classify_indicator(ip) == "ip":
                     iid = keys.ioc_id("ip", ip)
                     ents.append(_ent(iid, "ioc", str(ip), asset, run_id, loc,
-                                     anomaly=1, ioc_kind="ip", first=ts))
+                                     anomaly=1, ioc_kind="ip", first=ts, artifact=artifact))
 
             elif ab == "linux.sys.suid":
                 path = str(F.get(r, "OSPath", *F.PATH, default="?"))
                 std = any(path.startswith(p) for p in ("/usr/bin/", "/bin/", "/usr/sbin/",
                                                        "/sbin/", "/usr/lib/", "/lib/"))
-                eid = keys.event_id(asset, f"{asset}:{path}", f"suid:{path}")
+                eid = keys.event_key(asset, f"suid:{path}", f"{path}")
                 ents.append(_ent(eid, "event", f"SUID: {path[:50]}", asset, run_id, loc,
                                  anomaly=60 if not std else 2,
                                  first=keys.norm_ts(F.get(r, "Mtime", default=ts)), artifact=artifact,
@@ -476,7 +511,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             elif ab == "linux.sys.getcap":
                 path = str(F.get(r, "OSPath", *F.PATH, default="?"))
                 cap = F.get(r, "Capabilities", "Cap", "Caps", default="")
-                eid = keys.event_id(asset, f"{asset}:{path}", f"cap:{cap}")
+                eid = keys.event_key(asset, f"cap:{cap}", f"{path}")
                 ents.append(_ent(eid, "event", f"capability {str(cap)[:30]}: {path[:40]}", asset,
                                  run_id, loc, anomaly=45, first=ts, artifact=artifact,
                                  flags=["detection", "privilege_escalation", "linux"],
@@ -485,7 +520,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             elif ab == "linux.detection.memfd":
                 pid = F.get(r, *F.PID)
                 name = F.get(r, *F.PROC_NAME) or "?"
-                eid = keys.event_id(asset, f"{asset}:{pid}", f"memfd:{name}")
+                eid = keys.event_key(asset, f"memfd:{name}", f"{pid}")
                 ents.append(_ent(eid, "event", f"in-memory exec (memfd): {name}", asset, run_id, loc,
                                  anomaly=80, first=ts, artifact=artifact,
                                  flags=["detection", "defense_evasion", "linux"],
@@ -501,8 +536,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                             for o in (opts if isinstance(opts, (list, tuple)) else [opts])))
                 # a forced-command key is the same backdoor SSHKeyFileCmd flags — share its
                 # event id (per file) so they dedup to one finding; benign keys keep their own.
-                eid = keys.event_id(asset, f"{asset}:{path}",
-                                    "ssh_authkey_backdoor" if has_cmd else f"authkey:{comment or kt}")
+                eid = keys.event_key(asset, "ssh_authkey_backdoor" if has_cmd else f"authkey:{comment or kt}", f"{path}")
                 ents.append(_ent(eid, "event", f"SSH authorized_key: {str(comment or kt)[:40]}", asset,
                                  run_id, loc, anomaly=65 if has_cmd else 6, first=ts, artifact=artifact,
                                  flags=(["detection", "persistence", "ssh", "linux"] if has_cmd
@@ -521,7 +555,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                     continue
                 detn = F.get(r, "Detection", default=None)
                 pid = F.get(r, "ProcPid", *F.PID)
-                eid = keys.event_id(asset, f"{asset}:{pid}", f"pipe:{pipe}")
+                eid = keys.event_key(asset, f"pipe:{pipe}", f"{pid}")
                 ents.append(_ent(eid, "event",
                                  f"named-pipe detection: {str(detn or pipe)[:60]}", asset, run_id,
                                  loc, anomaly=70 if detn else (score_row(r) or 10), first=ts,
@@ -554,21 +588,21 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                  pid=str(pid), name=name, cmdline=F.get(r, *F.CMDLINE),
                                  createtime=keys.norm_ts(ct), sha256=phash,
                                  elevated=F.get(r, "TokenIsElevated", default=None),
-                                 signed=(not untrusted) if F.get(r, "Authenticode") else None))
+                                 signed=(not untrusted) if F.get(r, "Authenticode") else None, artifact=artifact))
                 # Cross-host pivot: hash an UNSIGNED binary only (signed system
                 # binaries would flood the graph with benign hashes).
                 if phash and untrusted and keys.classify_indicator(phash) == "hash":
                     iid = keys.ioc_id("hash", phash)
                     ents.append(_ent(iid, "ioc", phash, asset, run_id, loc,           # full hash (IOC appendix)
                                      anomaly=20, ioc_kind="hash", first=ts, full_hash=phash,
-                                     image=name, **_hash_attrs(r)))   # md5/sha1 = bridge fuel
+                                     image=name, **_hash_attrs(r), artifact=artifact))   # md5/sha1 = bridge fuel
                     rels.append(Relationship(eid, iid, "matched", sources=[MODULE], ts=ts))
                 owner = F.get(r, *F.USER)
                 if owner:
                     aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), owner)
                     if aeid:
                         ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset,
-                                         run_id, loc, user=u, domain=d))
+                                         run_id, loc, user=u, domain=d, artifact=artifact))
                         rels.append(Relationship(aeid, eid, "executed", sources=[MODULE], ts=ts))
 
             # ---- spawned (second pass would be cleaner; do inline by ppid) -
@@ -586,7 +620,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                     bump = 5 if any(k in lproc for k in ("seclogon", "psexec", "winrm",
                                                          "wsmprovhost", "wmiprvse")) else 0
                     ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset, run_id,
-                                     loc, anomaly=score_row(r) + bump, first=ts, user=u, domain=d))
+                                     loc, anomaly=score_row(r) + bump, first=ts, user=u, domain=d, artifact=artifact))
                     rels.append(Relationship(
                         aeid, asset, "authenticated", sources=[MODULE], ts=ts,
                         attrs={"logon_type": F.get(r, "LogonType", "LogonTypeDescription", default=None),
@@ -603,7 +637,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 tt = F.get(r, "TicketType", default="ticket")
                 client = F.get(r, "Client", default="?")
                 server = F.get(r, "Server", default="?")
-                kid = keys.event_id(asset, f"{asset}:{client}", f"krb:{tt}:{server}")
+                kid = keys.event_key(asset, f"krb:{tt}:{server}", f"{client}")
                 truthy = str(susp).strip().lower() in ("true", "1", "yes") or susp is True
                 ents.append(_ent(kid, "event", f"Kerberos {tt}: {client} -> {server}", asset,
                                  run_id, loc, anomaly=60 if truthy else 1, first=ts,
@@ -622,31 +656,49 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                     ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset,
                                      run_id, loc, first=ts, user=u, domain=d, sid=sid,
                                      home=F.get(r, "Directory", "HomeDir", "ProfilePath",
-                                                default=None)))
+                                                default=None), artifact=artifact))
 
             # ---- powershell command history -> execution event -----------
             elif "psreadline" in an:
                 line = F.get(r, "Line", "Command", "CommandLine", default=None)
                 if not line or str(line).lstrip().startswith("#"):
                     continue                       # skip comments / blanks
-                an_ps = _ps_anomaly(line)
+                # THE DETECTRAPTOR RULE OUTRANKS OUR KEYWORD LIST. These rows exist
+                # because a rule matched — RuleName/RuleID are on every row — and the
+                # branch ignored them, grading instead against _PS_SUSPICIOUS, which
+                # does not contain "mimikatz". Measured on a real case: 18 rows whose
+                # rule was "T1059.001-Mimikatz Execution via PowerShell" with
+                # Line == "invoke-mimikatz" landed at anomaly=1, severity=low, and
+                # 85% of rule-confirmed detections graded low overall.
+                _rule = F.get(r, "RuleName", "RuleID", default=None)
+                an_ps = max(_ps_anomaly(line), _rule_anomaly(_rule))
                 # PSReadline nests the history-file times under FileInfo and has no
                 # per-command time, so anchor on the file's last write (most recent
                 # PowerShell activity), then birth. Without this the events were undated.
                 _fi = r.get("FileInfo") if isinstance(r.get("FileInfo"), dict) else {}
                 ps_ts = keys.norm_ts(_fi.get("Mtime") or _fi.get("Btime") or _fi.get("Ctime")) or ts
-                eid = keys.event_id(asset, f"{asset}:{F.get(r, 'OSPath', default='')}",
-                                    f"ps:{line}")
-                ents.append(_ent(eid, "event", f"powershell: {str(line)[:80]}", asset, run_id,
+                owner = F.get(r, "Username", *F.USER)
+                # FullPath is None on every row here, so the path contributed nothing
+                # to identity and 91 of 178 rows merged — 15 of them fusing commands
+                # run by DIFFERENT users into one node. The owner and the line number
+                # are what actually separate two history entries.
+                eid = keys.event_key(asset, f"ps:{line}", owner,
+                                     F.get(r, "LineNum", default=None),
+                                     F.get(r, 'OSPath', default=''))
+                ents.append(_ent(eid, "event",
+                                 (f"{str(_rule)[:40]}: {str(line)[:60]}" if _rule
+                                  else f"powershell: {str(line)[:80]}"),
+                                 asset, run_id,
                                  loc, anomaly=an_ps, first=ps_ts, artifact=artifact,
                                  command=str(line)[:400],
+                                 detection=str(_rule) if _rule else None,
+                                 title=(f"PowerShell: {str(_rule)[:60]}" if _rule else None),
                                  flags=(["suspicious_powershell"] if an_ps >= 25 else None)))
-                owner = F.get(r, "Username", *F.USER)
                 if owner:
                     aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), owner)
                     if aeid:
                         ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset,
-                                         run_id, loc, user=u, domain=d))
+                                         run_id, loc, user=u, domain=d, artifact=artifact))
                         rels.append(Relationship(aeid, eid, "executed", sources=[MODULE], ts=ps_ts))
 
             # ---- network -> netconn + ioc --------------------------------
@@ -658,7 +710,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 if kind:
                     iid = keys.ioc_id(kind, raddr)
                     ents.append(_ent(iid, "ioc", str(raddr), asset, run_id, loc,
-                                     anomaly=1, ioc_kind=kind, first=ts))
+                                     anomaly=1, ioc_kind=kind, first=ts, artifact=artifact))
                     pid = F.get(r, *F.PID)
                     src = proc_by_asset_pid.get((asset, str(pid))) if pid is not None else None
                     if src:
@@ -670,7 +722,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 pid = F.get(r, *F.PID)
                 yid = keys.yarahit_id(asset, rule, pid or "")
                 ents.append(_ent(yid, "yarahit", str(rule), asset, run_id, loc, anomaly=50,
-                                 first=ts, rule=rule))
+                                 first=ts, rule=rule, artifact=artifact))
                 if pid is not None and proc_by_asset_pid.get((asset, str(pid))):
                     rels.append(Relationship(yid, proc_by_asset_pid[(asset, str(pid))],
                                              "matched", sources=[MODULE], ts=ts))
@@ -694,7 +746,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 if detn or cat:
                     dname = (detn.get("Category") if isinstance(detn, dict) else detn) or cat or "web"
                     title = f"Web: {str(dname)[:30]} — {str(dom)[:40]}" if dom else f"Web: {str(dname)[:40]}"
-                    eid = keys.event_id(asset, f"{asset}:{dom}", f"webdet:{dname}:{dom}")
+                    eid = keys.event_key(asset, f"webdet:{dname}:{dom}", f"{dom}")
                     ents.append(_ent(eid, "event", title, asset, run_id, loc,
                                      anomaly=40, first=web_ts, artifact=artifact,
                                      flags=["detection", "web"], title=title,
@@ -706,7 +758,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 if kind:
                     iid = keys.ioc_id(kind, url)
                     ents.append(_ent(iid, "ioc", str(url), asset, run_id, loc, anomaly=1,
-                                     ioc_kind=kind, first=ts))
+                                     ioc_kind=kind, first=ts, artifact=artifact))
 
             # ---- persistence: services / autoruns / scheduled tasks ------
             elif any(k in an for k in ("autoruns", "services", "scheduledtask",
@@ -752,7 +804,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 ev.severity = from_string(str(level))   # true SIGMA level, not anomaly-derived
                 ents.append(ev)
                 # stash the parsed details (reused) for the linking pass
-                sigma_events.append((eid, asset, pd, ts))
+                sigma_events.append((eid, asset, pd, ts, artifact))
 
             # ---- MFT detections -> criticality-typed event ----------------
             # Detection={Name,Criticality}; OSPath is the file. Criticality is
@@ -776,7 +828,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 _fn = r.get("FNTimestamps") if isinstance(r.get("FNTimestamps"), dict) else {}
                 mft_ts = keys.norm_ts(_fn.get("Created0x30") or _si.get("Created0x10")
                                       or _si.get("LastModified0x10") or _fn.get("LastModified0x30") or ts)
-                ev = _ent(keys.event_id(asset, f"{asset}:{path}", f"mft:{dname}"),
+                ev = _ent(keys.event_key(asset, f"mft:{dname}", f"{path}"),
                           "event", f"MFT: {str(dname)[:70]}", asset, run_id, loc,
                           anomaly=_level_anomaly(crit), first=mft_ts, artifact=artifact,
                           # NOT "detection" — that flag is the correlator's
@@ -797,7 +849,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 cat = F.get(r, "Category", default="") or ""
                 name = F.get(r, "DisplayName", "Name", default=artifact)
                 rmm = any(k in str(cat).lower() for k in ("rmm", "remote", "lolrmm"))
-                ents.append(_ent(keys.event_id(asset, f"{asset}:{name}", f"app:{cat}:{name}"),
+                ents.append(_ent(keys.event_key(asset, f"app:{cat}:{name}", f"{name}"),
                                  "event", f"app: {str(name)[:50]} [{str(cat)[:30]}]", asset,
                                  run_id, loc, anomaly=30 if rmm else 1, first=ts, artifact=artifact,
                                  flags=(["rmm_tool"] if rmm else None), category=str(cat),
@@ -806,10 +858,29 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             # ---- execution evidence -> event (+ file + hash ioc) ---------
             elif any(k in an for k in ("amcache", "prefetch", "userassist", "shimcache",
                                        "appcompat", "srum", "bam")):
-                path = F.get(r, *F.PATH) or F.get(r, "Name", default=artifact)
-                eid = keys.event_id(asset, ts, f"exec:{path}")
-                ents.append(_ent(eid, "event", f"executed: {str(path)[:60]}", asset, run_id, loc,
-                                 anomaly=score_row(r), first=ts, artifact=artifact))
+                # DetectRaptor's Amcache calls its path EntryPath and its binary
+                # EntryName — neither is in F.PATH, and the fallback alias here was
+                # "Name", not "EntryName". Both lookups missed, so `path` fell back
+                # to the ARTIFACT NAME on every row: measured on a real case, all 59
+                # execution events were labelled "executed:
+                # DetectRaptor.Windows.Detection.Amcache" — 59 anonymous nodes, one
+                # silent id collision, and the rule that fired (14 High-criticality
+                # hits incl. Mimikatz Tools, PsExec and four Credential Theft) never
+                # read at all. The row had every one of those fields.
+                path = F.get(r, "EntryPath", *F.PATH) \
+                    or F.get(r, "EntryName", "OriginalFileName", "Name", default=artifact)
+                _d = r.get("Detection")
+                dname = (_d.get("Name") if isinstance(_d, dict) else _d) or None
+                crit = (_d.get("Criticality") if isinstance(_d, dict) else None)
+                eid = keys.event_key(asset, f"exec:{path}", ts, dname)
+                _label = (f"{str(dname)[:44]}: {str(path)[:60]}" if dname
+                          else f"executed: {str(path)[:60]}")
+                ents.append(_ent(eid, "event", _label, asset, run_id, loc,
+                                 anomaly=max(score_row(r), _level_anomaly(crit) if crit else 0),
+                                 first=ts, artifact=artifact, path=str(path),
+                                 detection=str(dname) if dname else None,
+                                 criticality=str(crit) if crit else None,
+                                 title=(f"Execution: {str(dname)[:60]}" if dname else None)))
 
             # ---- LolDrivers -> driver/module entity (BYOVD, T1068) --------
             elif "loldriver" in an:
@@ -837,7 +908,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 _si = r.get("SITimestamps") if isinstance(r.get("SITimestamps"), dict) else {}
                 _fn = r.get("FNTimestamps") if isinstance(r.get("FNTimestamps"), dict) else {}
                 hj_ts = keys.norm_ts(_fn.get("Created0x30") or _si.get("Created0x10")) or ts
-                eid = keys.event_id(asset, f"{asset}:{dll}", f"hijacklib:{dll}")
+                eid = keys.event_key(asset, f"hijacklib:{dll}", f"{dll}")
                 ents.append(_ent(eid, "event", f"DLL sideload: {str(dll)[:50]}", asset, run_id,
                                  loc, anomaly=15 if historical else 40, first=hj_ts, artifact=artifact,
                                  flags=["dll_hijack"], dll=str(dll),
@@ -855,7 +926,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 sha = _sha256_of(r)
                 btime = keys.norm_ts(F.get(r, "Btime", "Ctime", "Mtime", default=ts))
                 title = f"Renamed binary: {str(name or path)[:55]}"
-                eid = keys.event_id(asset, f"{asset}:{path}", f"binrename:{name or path}")
+                eid = keys.event_key(asset, f"binrename:{name or path}", f"{path}")
                 ents.append(_ent(eid, "event", title, asset, run_id, loc,
                                  anomaly=50, first=btime, artifact=artifact,
                                  flags=["detection", "masquerading"], title=title,
@@ -868,7 +939,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 name = F.get(r, "Name", "OSPath", *F.PATH, default=artifact)
                 bad = bool(F.get(r, "Revoked", "Malicious", "Vulnerable", "Detection",
                                  default=None))
-                eid = keys.event_id(asset, f"{asset}:{name}", f"boot:{name}")
+                eid = keys.event_key(asset, f"boot:{name}", f"{name}")
                 ents.append(_ent(eid, "event", f"bootloader: {str(name)[:50]}", asset, run_id,
                                  loc, anomaly=50 if bad else 1, first=ts, artifact=artifact,
                                  flags=(["firmware", "firmware_bad"] if bad else ["firmware"]),
@@ -891,8 +962,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 query = filt.get("Query") or None
                 ns = F.get(r, "Namespace", default=None)
                 title = f"WMI persistence: {str(cname)[:50]}"
-                eid = keys.event_id(asset, f"{asset}:{cname}",
-                                    f"wmiconsumer:{cname}:{str(action)[:40]}")
+                eid = keys.event_key(asset, f"wmiconsumer:{cname}:{str(action)[:40]}", f"{cname}")
                 ents.append(_ent(eid, "event", title, asset, run_id, loc,
                                  anomaly=70, first=ts, artifact=artifact,
                                  flags=["detection", "persistence", "wmi"], title=title,
@@ -905,9 +975,31 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             elif any(k in an for k in ("evtx", "eventlog", "binaryrename",
                                        "lnk", "detection")):
                 msg = F.get(r, "Message", "Description", "Name", *F.PATH, default=artifact)
-                eid = keys.event_id(asset, ts, f"{an}:{msg}")
-                ents.append(_ent(eid, "event", f"{artifact}: {str(msg)[:80]}", asset, run_id,
-                                 loc, anomaly=score_row(r), first=ts, artifact=artifact))
+                # THE RULE THAT FIRED IS THE POINT OF THE ROW. DetectRaptor nests it
+                # in Detection{Name, Criticality}; this branch used to read neither,
+                # so the name never reached the graph AND never entered the identity.
+                # Measured on a real case: 2,960 Evtx rows carrying 16 distinct rules
+                # collapsed to 2,080 nodes — 878 detections (29.7%) destroyed, one
+                # node fusing six DIFFERENT rules, and the survivors labelled with
+                # raw OS message text (untranslated Chinese in that dataset).
+                _d = r.get("Detection")
+                dname = (_d.get("Name") if isinstance(_d, dict) else _d) or None
+                crit = (_d.get("Criticality") if isinstance(_d, dict) else None)
+                eid = keys.event_key(asset, f"{an}:{msg}", ts, dname)
+                # Lead with the rule when we have one — an analyst scanning the
+                # timeline needs "what fired", not the first 80 chars of a
+                # localized Windows message.
+                _label = (f"{str(dname)[:60]} — {str(msg)[:60]}" if dname
+                          else f"{artifact}: {str(msg)[:80]}")
+                ents.append(_ent(eid, "event", _label, asset, run_id,
+                                 loc, anomaly=max(score_row(r),
+                                                  _level_anomaly(crit) if crit else 0,
+                                                  _rule_anomaly(dname)),
+                                 first=ts, artifact=artifact,
+                                 detection=str(dname) if dname else None,
+                                 criticality=str(crit) if crit else None,
+                                 title=(f"{artifact.split('.')[-1]}: {str(dname)[:60]}"
+                                        if dname else None)))
 
             # ---- hash extraction -> cross-host-capable IOC ---------------
             # Process artifacts handle their own hashes selectively above (only
@@ -925,7 +1017,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 # auto cross-host); detection hashes (binaryrename) stay suspicious.
                 ents.append(_ent(iid, "ioc", h, asset, run_id, loc,               # full hash (IOC appendix)
                                  anomaly=0 if is_exec else 10, ioc_kind="hash",
-                                 first=ts, full_hash=h, **_hash_attrs(r)))
+                                 first=ts, full_hash=h, **_hash_attrs(r), artifact=artifact))
 
     # ---- spawned edges (ppid) across the processes we created -----------
     for artifact, rows in (collected_data or {}).items():
@@ -951,7 +1043,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
     _DET_CAP = 300                                   # per-asset flood guard
     _det_made: dict = {}
     # (A) create from_detection processes where Pstree missed them
-    for eid, asset, pd, ts in sigma_events:
+    for eid, asset, pd, ts, src_artifact in sigma_events:
         p, pname = DET.pid(pd), DET.proc(pd)
         if not p or not pname or (asset, p) in proc_by_asset_pid:
             continue
@@ -963,9 +1055,9 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
         _det_made[asset] = _det_made.get(asset, 0) + 1
         ents.append(_ent(peid, "process", f"{name} ({p})", asset, run_id, "hayabusa/details",
                          anomaly=0, first=keys.norm_ts(ts), flags=["from_detection"],
-                         pid=p, name=name, cmdline=DET.cmdline(pd), createtime=keys.norm_ts(ts)))
+                         pid=p, name=name, cmdline=DET.cmdline(pd), createtime=keys.norm_ts(ts), artifact=src_artifact))
     # (B) edges: event_about(proc), spawned(parent), executed(account), connected(ioc)
-    for eid, asset, pd, ts in sigma_events:
+    for eid, asset, pd, ts, src_artifact in sigma_events:
         p = DET.pid(pd)
         proc_eid = proc_by_asset_pid.get((asset, p)) if p else None
         if proc_eid:
@@ -979,7 +1071,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             aeid, d, u = _account_eid(asset, dom, usr)
             if aeid:
                 ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset, run_id,
-                                 "hayabusa/details", user=u, domain=d))
+                                 "hayabusa/details", user=u, domain=d, artifact=src_artifact))
                 if proc_eid:
                     rels.append(Relationship(aeid, proc_eid, "executed", sources=[MODULE], ts=ts))
         tip = DET.tgtip(pd)
@@ -987,7 +1079,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             # link only — anomaly 0 so benign cloud telemetry never auto-finds
             iid = keys.ioc_id("ip", tip)
             ents.append(_ent(iid, "ioc", str(tip), asset, run_id, "hayabusa/details",
-                             anomaly=0, ioc_kind="ip", first=ts, from_detection=True))
+                             anomaly=0, ioc_kind="ip", first=ts, from_detection=True, artifact=src_artifact))
             if proc_eid:
                 rels.append(Relationship(proc_eid, iid, "connected", sources=[MODULE], ts=ts))
         # Details carry MD5+SHA256 together -> the bridge's alias fuel (anomaly 0).
@@ -997,7 +1089,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             hid = keys.ioc_id("hash", sha)
             ents.append(_ent(hid, "ioc", sha, asset, run_id, "hayabusa/details",  # full hash
                              anomaly=0, ioc_kind="hash", first=ts, full_hash=sha,
-                             md5=hh.get("md5"), imphash=hh.get("imphash")))
+                             md5=hh.get("md5"), imphash=hh.get("imphash"), artifact=src_artifact))
             if proc_eid:
                 rels.append(Relationship(proc_eid, hid, "matched", sources=[MODULE], ts=ts))
 
