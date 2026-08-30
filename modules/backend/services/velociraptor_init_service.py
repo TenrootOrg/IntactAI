@@ -41,6 +41,15 @@ STARTUP_SERVER_ARTIFACTS = [
 # These use add_server_monitoring() instead of collect_client()
 STARTUP_SERVER_EVENT_ARTIFACTS = [
     "Custom.Elastic.Flows.Upload",  # Auto-upload flows to Elasticsearch
+    # Weekly monitoring-data retention (default: Tuesday 01:28 UTC, keep 7 days).
+    # start_server_event_artifact arms this via add_server_monitoring with NO
+    # parameters (see below), so it runs with the artifact's DEFAULT params — and
+    # that default is ReallyDoIt=N -> DRY-RUN: it logs a weekly "would delete N
+    # files / N bytes" summary and deletes nothing. This is the "start dry" phase.
+    # To move to real deletion "for good", set the artifact's ReallyDoIt default
+    # to Y in bundled_artifacts/Server__Monitoring__ScheduleDeleteMonitoringData.yaml
+    # and rebuild; the YAML default is the knob, since the arm passes no params.
+    "Server.Monitoring.ScheduleDeleteMonitoringData",
 ]
 
 # Additional exchange artifacts that need manual import after startup:
