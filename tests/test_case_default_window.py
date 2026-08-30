@@ -1,4 +1,4 @@
-"""A new investigation case defaults its scope to [creation-7d, creation].
+"""A new investigation case defaults its scope to [creation-10y, creation].
 
 Why: an OPEN default let a freshly-collected case be dominated by months-old
 staged events (a lab image's December log-wipe), and — combined with event-time
@@ -7,7 +7,7 @@ concrete default keeps a case reproducible (the 'until' bound does not drift wit
 wall-clock time) and never empty-by-default.
 
 Rules under test:
-  - start  = 7 days before creation, and can never be cleared to empty.
+  - start  = 10 years before creation, and can never be cleared to empty.
   - end    = the creation time.
   - system / default catch-all cases keep an OPEN window.
 
@@ -58,14 +58,14 @@ class TestDefaultWindow(unittest.TestCase):
     def setUp(self):
         self.ns = _load()
 
-    def test_default_window_is_seven_days_up_to_creation(self):
+    def test_default_window_is_ten_years_up_to_creation(self):
         created = datetime(2026, 8, 30, 8, 46, 45, tzinfo=timezone.utc)
         w = self.ns["_default_window"](created)
         self.assertEqual(w["end"], "2026-08-30T08:46:45")
-        self.assertEqual(w["start"], "2026-08-23T08:46:45")
-        # exactly 7 days apart
+        self.assertEqual(w["start"], "2016-08-30T08:46:45")   # exactly 10 calendar years
         s = datetime.fromisoformat(w["start"]); e = datetime.fromisoformat(w["end"])
-        self.assertEqual(e - s, timedelta(days=7))
+        self.assertEqual(e.year - s.year, 10)
+        self.assertEqual((e.month, e.day, e.hour), (s.month, s.day, s.hour))
 
     def test_created_dt_comes_from_the_case_id(self):
         got = self.ns["_case_created_dt"]("case_1788079605210")
@@ -82,7 +82,7 @@ class TestDefaultWindow(unittest.TestCase):
         self.assertTrue(tw.get("start"), "start must be set")
         self.assertTrue(tw.get("end"), "end must be set")
         s = datetime.fromisoformat(tw["start"]); e = datetime.fromisoformat(tw["end"])
-        self.assertEqual(e - s, timedelta(days=7))
+        self.assertEqual(e.year - s.year, 10)
 
     def test_caller_supplied_bounds_are_respected(self):
         self.ns["create_case"]("scoped", time_window={"start": "2026-01-01T00:00:00",
@@ -99,14 +99,14 @@ class TestDefaultWindow(unittest.TestCase):
                 tw = self.ns["_state"]["created_details"]["time_window"]
                 self.assertEqual(tw, {}, "system/default cases keep an open window")
 
-    def test_the_empty_start_fallback_value_is_creation_minus_7d(self):
+    def test_the_empty_start_fallback_value_is_creation_minus_10y(self):
         """set_analysis_config replaces an empty 'from' with exactly this value.
         (The wiring inside set_analysis_config is integration-verified on the box;
         that function pulls in the whole backend and can't exec standalone here —
         this pins the fallback VALUE it computes.)"""
         start = self.ns["_default_window"](
             self.ns["_case_created_dt"]("case_1788079605210"))["start"]
-        self.assertEqual(start, "2026-08-23T08:46:45")
+        self.assertEqual(start, "2016-08-30T08:46:45")
 
 
 if __name__ == "__main__":

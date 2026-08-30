@@ -565,18 +565,22 @@ def _case_created_dt(case_id):
 
 
 def _default_window(created_dt) -> dict:
-    """Default case scope: the 7 days UP TO creation, both bounds concrete.
+    """Default case scope: the 10 YEARS UP TO creation, both bounds concrete.
 
-    A bounded default stops a freshly-collected case from being dominated by
-    months-old staged events (e.g. a Dec log-wipe baked into a lab image) while
-    still covering the recent week an operator cares about — and it means a case
-    is never empty-by-default the way an all-of-history scope can feel. Concrete
-    bounds (not a live 'now') keep the case reproducible: the window doesn't
-    drift as wall-clock time passes. The lower bound is never cleared — see
-    set_analysis_config."""
+    The window is wide on purpose — 10 years back reaches any real DFIR evidence,
+    so nothing relevant is hidden by default (a narrow default was the QA symptom:
+    findings older than the window silently vanished). What matters is that the
+    bounds are CONCRETE rather than 'open': a fixed [start, end] is reproducible
+    (it doesn't drift as wall-clock time passes) and is compared as a real instant
+    by correlate.in_window, which is the timezone-safe path. `end` is the creation
+    time; the lower bound is never cleared — see set_analysis_config."""
     from datetime import timedelta
     fmt = "%Y-%m-%dT%H:%M:%S"
-    return {"start": (created_dt - timedelta(days=7)).strftime(fmt),
+    try:
+        start_dt = created_dt.replace(year=created_dt.year - 10)
+    except ValueError:                     # created on Feb 29 -> no Feb 29 ten years back
+        start_dt = created_dt - timedelta(days=3653)
+    return {"start": start_dt.strftime(fmt),
             "end": created_dt.strftime(fmt)}
 
 
@@ -585,9 +589,10 @@ def create_case(name, *, time_window=None, initial_access=None,
                 is_system=False) -> str:
     from datetime import datetime, timezone
     tw = dict(time_window or {})
-    # Default the scope to [creation-7d, creation] for normal investigation
-    # cases. System / default catch-all cases keep an open window (they're meant
-    # to surface everything that lands). Only fill bounds the caller left blank.
+    # Default the scope to [creation-10y, creation] for normal investigation
+    # cases — wide enough to include any real evidence, but with CONCRETE bounds
+    # (reproducible, timezone-safe compare). System / default catch-all cases keep
+    # an open window. Only fill bounds the caller left blank.
     if not is_default and not is_system:
         dw = _default_window(datetime.now(timezone.utc))
         if not tw.get("start"):
@@ -2434,8 +2439,8 @@ def set_analysis_config(case_id, cfg) -> dict:
         tw = cfg.get("time_window") or {}
         start = tw.get("start")
         if not start:
-            # The 'from' bound is never empty — an open start is what let
-            # months-old staged events flood a case. Fall back to 7 days before
+            # The 'from' bound is never empty — a concrete lower bound keeps the
+            # window reproducible and timezone-safe. Fall back to 10 years before
             # creation. ('until' may be cleared to mean open-ended.)
             start = _default_window(_case_created_dt(case_id))["start"]
         patch["time_window"] = {"start": start, "end": tw.get("end")}
