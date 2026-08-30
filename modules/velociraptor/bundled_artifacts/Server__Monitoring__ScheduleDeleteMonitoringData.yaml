@@ -7,8 +7,9 @@ description: |
   clients) where monitoring data accumulates and fills the disk.
 
   SAFETY
-    * ReallyDoIt defaults to N (dry-run). Review this artifact's log / the
-      summary row, then set ReallyDoIt=Y to actually delete.
+    * ReallyDoIt defaults to Y: this DELETES on every scheduled run. Set N for a
+      dry-run that only logs what it would remove. The safety FLOOR below is the
+      real guard against a catastrophic wipe.
     * A hard floor of MinRetentionDays (default 1) is enforced in the query, so
       a mistyped RetentionDays of 0 or a negative can NEVER delete recent data.
       The effective retention is max(RetentionDays, MinRetentionDays).
@@ -53,7 +54,8 @@ parameters:
     default: "N"
     type: bool
   - name: ReallyDoIt
-    default: "N"
+    description: Y actually deletes; set N for a dry-run (logs what it WOULD delete).
+    default: "Y"
     type: bool
 
 sources:

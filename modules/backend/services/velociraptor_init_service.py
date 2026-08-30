@@ -42,13 +42,14 @@ STARTUP_SERVER_ARTIFACTS = [
 STARTUP_SERVER_EVENT_ARTIFACTS = [
     "Custom.Elastic.Flows.Upload",  # Auto-upload flows to Elasticsearch
     # Weekly monitoring-data retention (default: Tuesday 01:28 UTC, keep 7 days).
-    # start_server_event_artifact arms this via add_server_monitoring with NO
-    # parameters (see below), so it runs with the artifact's DEFAULT params — and
-    # that default is ReallyDoIt=N -> DRY-RUN: it logs a weekly "would delete N
-    # files / N bytes" summary and deletes nothing. This is the "start dry" phase.
-    # To move to real deletion "for good", set the artifact's ReallyDoIt default
-    # to Y in bundled_artifacts/Server__Monitoring__ScheduleDeleteMonitoringData.yaml
-    # and rebuild; the YAML default is the knob, since the arm passes no params.
+    # Armed on every boot via add_server_monitoring with NO parameters, so it runs
+    # with the artifact's DEFAULT params — and that default is now ReallyDoIt=Y, so
+    # it ACTUALLY DELETES monitoring data older than 7 days each week, on every
+    # appliance, with no operator action. Only the continuous monitoring event logs
+    # under /clients/*/monitoring{,_logs} are touched (flows/hunts/evidence are
+    # not), and a hard retention floor in the artifact guards against a mis-set
+    # 0/negative wiping recent data. To make it observe-only, set the artifact's
+    # ReallyDoIt default back to N (dry-run) and rebuild.
     "Server.Monitoring.ScheduleDeleteMonitoringData",
 ]
 
