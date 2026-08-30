@@ -923,7 +923,61 @@ def _cloud_contribution(rid, det, provider):
                      account=_cloud_account(det, finds))
 
 
-def _agentic_collected_data(rid, det):
+# A run's raw_results.json is read with json.load, which expands it in memory.
+# Measured on this appliance: a 539.9 MB file peaked at 1.64 GB RSS — 3.1x. Use a
+# margin over that, because the parse transiently holds both the text and the
+# objects.
+_PAYLOAD_RAM_MULTIPLIER = 4.0
+
+
+def _available_ram_bytes():
+    """MemAvailable, or None when it cannot be read (never guess a number —
+    a wrong guess here either blocks a fuse that would have worked or fails to
+    block one that kills the box)."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except Exception:
+        pass
+    return None
+
+
+def _payload_too_big(fp, log=None):
+    """True when loading `fp` would plausibly exhaust the box.
+
+    WHY THIS EXISTS. json.load has no ceiling: a payload larger than free memory
+    does not raise, it takes the machine down. That happened on this appliance —
+    the backend was OOM-killed mid-fuse and the operator had to restart the host.
+    The fuse itself is already streamed one member run at a time
+    (see PASS 2), so the exposure is a SINGLE oversized run, not the case total.
+
+    A refusal that names the file and the numbers is strictly better than a dead
+    box: the other member runs still fuse, and the run stays stale so it is
+    retried once there is headroom."""
+    import os
+    try:
+        size = os.path.getsize(fp)
+    except Exception:
+        return False
+    avail = _available_ram_bytes()
+    if not avail:
+        return False                      # cannot judge -> do not block
+    need = size * _PAYLOAD_RAM_MULTIPLIER
+    if need < avail * 0.6:                # comfortably fits
+        return False
+    if log:
+        log(f"fuse: SKIPPING {os.path.basename(os.path.dirname(fp))} — its "
+            f"raw_results.json is {size/1e9:.2f} GB and would need about "
+            f"{need/1e9:.2f} GB to parse, with only {avail/1e9:.2f} GB available. "
+            f"Loading it would exhaust this host. The other runs still fuse, and "
+            f"this one stays pending — free memory (or give the appliance more) "
+            f"and Refuse again.", "error")
+    return True
+
+
+def _agentic_collected_data(rid, det, log=None):
     """The real agentic pipeline persists rows to /data/downloads/<rid>/raw_results.json
     (not into details, to avoid bloating the SQLite blob). Prefer details.collected_data
     (test/legacy runs), else read the file. This is what makes a REAL agentic run fuseable."""
@@ -936,6 +990,8 @@ def _agentic_collected_data(rid, det):
                  det.get("output_dir") or ""):
         fp = os.path.join(base, "raw_results.json") if base else ""
         if fp and os.path.exists(fp):
+            if _payload_too_big(fp, log=log):
+                return {}
             try:
                 with open(fp) as f:
                     return json.load(f)
@@ -1120,7 +1176,7 @@ def _contribution_for_run(run, log=None, refetch=False):
         if atype in ("velociraptor_collection", "velociraptor_upload"):
             rows = _refetch_agentic_rows(rid, det, log=log) if refetch else None
             if rows is None:
-                rows = _agentic_collected_data(rid, det)
+                rows = _agentic_collected_data(rid, det, log=log)
             ents, rels = map_agentic(_filter_supported(rows), run_id=rid,
                                      hostnames=det.get("hostnames") or {})
             if atype == "velociraptor_upload":

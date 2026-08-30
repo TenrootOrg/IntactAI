@@ -179,7 +179,13 @@ class TestAManualRefusionRereadsFromVelociraptor(unittest.TestCase):
         caller = self.src[self.src.index("def _contribution_for_run"):]
         caller = caller[:caller.index("if atype in (\"velociraptor_hunt\"")]
         self.assertIn("if rows is None:", caller)
-        self.assertIn("_agentic_collected_data(rid, det)", caller)
+        # Match the CALL, not its exact argument list — the loader has since
+        # grown a `log=` kwarg so a refusal (payload too big to parse without
+        # exhausting the host) reaches the case log. Pinning the literal text
+        # made an unrelated, additive change look like a regression.
+        self.assertRegex(caller, r"_agentic_collected_data\(rid, det[,)]",
+                         "the snapshot fallback must still be the path taken "
+                         "when a refetch returns None")
 
     def test_the_refetch_is_re_snapshotted(self):
         # Otherwise the next automatic fuse drops straight back to the old rows.
