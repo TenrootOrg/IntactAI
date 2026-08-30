@@ -1108,7 +1108,7 @@ def _resnapshot_without_losing_rows(rid, det, fetched):
         from services.agentic.collectors import persist_pipeline_artifacts
         merged = dict(_agentic_collected_data(rid, det) or {})
         merged.update(fetched or {})
-        persist_pipeline_artifacts(rid, merged, fusion_only=True)
+        persist_pipeline_artifacts(rid, merged)
     except Exception:
         pass
 

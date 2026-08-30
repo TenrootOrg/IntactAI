@@ -900,7 +900,7 @@ def _adopt_worker(run_id, kind, ident):
 
         update_run_status(run_id, "running", progress=92)
         add_log_to_run(run_id, "Persisting rows where the case graph reads them…")
-        persist_pipeline_artifacts(run_id, results, fusion_only=True)
+        persist_pipeline_artifacts(run_id, results)
 
         add_log_to_run(
             run_id,

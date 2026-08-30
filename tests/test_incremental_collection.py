@@ -188,9 +188,7 @@ class TestNothingCollectedIsEverThrownAway(unittest.TestCase):
         src = read(RUNNERS)
         code = "\n".join(l.split("#", 1)[0] for l in src.splitlines())
         start = code.index("all_results, timed_out = stream_collect_and_analyze(")
-        # Match the CALL, not its argument list — it grew fusion_only= so a
-        # live collection stops storing artifacts fusion cannot ingest.
-        persist = code.index("persist_pipeline_artifacts(run_id, all_results", start)
+        persist = code.index("persist_pipeline_artifacts(run_id, all_results)", start)
         between = code[start:persist]
         for exit_kw in ("return", "raise", "continue", "break"):
             self.assertNotIn(exit_kw, between,

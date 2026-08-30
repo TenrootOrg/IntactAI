@@ -149,7 +149,7 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, c
         # on disk before any exit path" is, which is why this now sits directly
         # under the call that produces them.
         try:
-            persist_pipeline_artifacts(run_id, all_results, fusion_only=True)
+            persist_pipeline_artifacts(run_id, all_results)
         except Exception as _e:
             print(f"[AGENTIC] persist_pipeline_artifacts failed (non-fatal): {_e}", flush=True)
 
@@ -225,7 +225,7 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, c
         # Already written immediately after collection; this is the final state
         # after the phases above, and a no-op rewrite if nothing changed.
         try:
-            persist_pipeline_artifacts(run_id, all_results, fusion_only=True)
+            persist_pipeline_artifacts(run_id, all_results)
         except Exception as _e:
             print(f"[AGENTIC] persist_pipeline_artifacts failed (non-fatal): {_e}", flush=True)
 
