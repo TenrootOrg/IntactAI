@@ -1,8 +1,8 @@
 # Attack-simulation ACCURACY — recall under noise
 
-Attack telemetry + 20× benign volume on the same hosts (29 findings total).
+Attack telemetry + 20× benign volume on the same hosts (37 findings total).
 
-**Finding-eligible plants still detected: 29/29**
+**Finding-eligible plants still detected: 37/37**
 
 | Plant | Survived noise? |
 |---|:--:|
@@ -35,3 +35,11 @@ Attack telemetry + 20× benign volume on the same hosts (29 findings total).
 | uac-bypass | ✅ |
 | asrep-roast | ✅ |
 | c2-beacon | ✅ |
+| ntds-dump | ✅ |
+| adcs-abuse | ✅ |
+| token-theft | ✅ |
+| staging-archive | ✅ |
+| keylogger | ✅ |
+| fw-tamper | ✅ |
+| svc-acct-abuse | ✅ |
+| clear-usnjrnl | ✅ |

@@ -1,8 +1,8 @@
 # Attack-simulation ACCURACY — per scenario (deterministic)
 
-33 authored PowerShell attack scenarios through the REAL pipeline (map_agentic -> correlate.assemble). Recall = the planted technique surfaced as a finding on the right host.
+41 authored PowerShell attack scenarios through the REAL pipeline (map_agentic -> correlate.assemble). Recall = the planted technique surfaced as a finding on the right host.
 
-**Recall 29/33 (88%) · Host-grounded 29/33 · Severity-correct 27/33**
+**Recall 37/41 (90%) · Host-grounded 37/41 · Severity-correct 35/41**
 
 | # | Scenario | ATT&CK | Detected | Host✓ | Sev✓ | Matched finding |
 |---|---|---|:--:|:--:|:--:|---|
@@ -39,3 +39,11 @@
 | 31 | UAC bypass via fodhelper | T1548.002 | ✅ | ✅ | ✅ | `sigma: uac bypass via fodhelper registry hijack on wks-eval0` |
 | 32 | AS-REP roasting | T1558.004 | ✅ | ✅ | ✅ | `sigma: as-rep roasting attack on wks-eval02 :: wks-eval02` |
 | 33 | C2 beaconing to external IP | T1071.001 | ✅ | ✅ | ✅ | `sigma: c2 beaconing pattern detected on wks-eval01 :: wks-ev` |
+| 34 | NTDS.dit extraction | T1003.003 | ✅ | ✅ | ✅ | `sigma: ntds.dit extraction via ntdsutil on wks-eval02 :: wks` |
+| 35 | ADCS certificate abuse (ESC1) | T1649 | ✅ | ✅ | ✅ | `sigma: adcs certificate template abuse esc1 on wks-eval02 ::` |
+| 36 | Access token impersonation | T1134.001 | ✅ | ✅ | ✅ | `sigma: access token impersonation on wks-eval06 :: wks-eval0` |
+| 37 | Data staged in an archive | T1560.001 | ✅ | ✅ | ✅ | `sigma: data staged in password-protected archive on wks-eval` |
+| 38 | Keylogging / input capture | T1056.001 | ✅ | ✅ | ✅ | `sigma: keylogger input capture hook on wks-eval03 :: wks-eva` |
+| 39 | Firewall rule tampering | T1562.004 | ✅ | ✅ | ✅ | `sigma: windows firewall rule added via netsh on wks-eval05 :` |
+| 40 | Service account privilege abuse | T1078.002 | ✅ | ✅ | ✅ | `sigma: service account interactive logon on wks-eval06 :: wk` |
+| 41 | USN journal deletion | T1070.009 | ✅ | ✅ | ✅ | `sigma: usn journal deleted via fsutil on wks-eval07 :: wks-e` |

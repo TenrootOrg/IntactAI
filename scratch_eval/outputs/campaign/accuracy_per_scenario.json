@@ -329,8 +329,88 @@
       "grounded_host": true,
       "severity_ok": true,
       "matched": "sigma: c2 beaconing pattern detected on wks-eval01 :: wks-eval01"
+    },
+    {
+      "id": "ntds-dump",
+      "name": "NTDS.dit extraction",
+      "tech": "T1003.003",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: ntds.dit extraction via ntdsutil on wks-eval02 :: wks-eval02"
+    },
+    {
+      "id": "adcs-abuse",
+      "name": "ADCS certificate abuse (ESC1)",
+      "tech": "T1649",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: adcs certificate template abuse esc1 on wks-eval02 :: wks-eval02"
+    },
+    {
+      "id": "token-theft",
+      "name": "Access token impersonation",
+      "tech": "T1134.001",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: access token impersonation on wks-eval06 :: wks-eval06"
+    },
+    {
+      "id": "staging-archive",
+      "name": "Data staged in an archive",
+      "tech": "T1560.001",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: data staged in password-protected archive on wks-eval04 :: wks-eval04"
+    },
+    {
+      "id": "keylogger",
+      "name": "Keylogging / input capture",
+      "tech": "T1056.001",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: keylogger input capture hook on wks-eval03 :: wks-eval03"
+    },
+    {
+      "id": "fw-tamper",
+      "name": "Firewall rule tampering",
+      "tech": "T1562.004",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: windows firewall rule added via netsh on wks-eval05 :: wks-eval05"
+    },
+    {
+      "id": "svc-acct-abuse",
+      "name": "Service account privilege abuse",
+      "tech": "T1078.002",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: service account interactive logon on wks-eval06 :: wks-eval06"
+    },
+    {
+      "id": "clear-usnjrnl",
+      "name": "USN journal deletion",
+      "tech": "T1070.009",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: usn journal deleted via fsutil on wks-eval07 :: wks-eval07"
     }
   ],
-  "recall": 29,
-  "n": 33
+  "recall": 37,
+  "n": 41
 }

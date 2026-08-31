@@ -244,6 +244,51 @@ SCENARIOS += [
      "expect": {"find": ["beacon"], "sev": "critical"}},
 ]
 
+# Batch 6 — tactics not yet represented (collection, staging, token theft, ADCS,
+# NTDS, clipboard/keylog, service-account abuse, firewall tampering).
+SCENARIOS += [
+    {"id": "ntds-dump", "name": "NTDS.dit extraction", "tech": "T1003.003",
+     "host": "WKS-EVAL02", "activity": "ntdsutil IFM dump of the AD database",
+     "telemetry": {_T: _sigma("WKS-EVAL02", "NTDS.dit Extraction via Ntdsutil", "crit",
+                              "2026-08-01T11:12:00Z")},
+     "expect": {"find": ["ntds"], "sev": "critical"}},
+    {"id": "adcs-abuse", "name": "ADCS certificate abuse (ESC1)", "tech": "T1649",
+     "host": "WKS-EVAL02", "activity": "malicious certificate request for impersonation",
+     "telemetry": {_T: _sigma("WKS-EVAL02", "ADCS Certificate Template Abuse ESC1", "crit",
+                              "2026-08-01T11:14:00Z")},
+     "expect": {"find": ["certificate"], "sev": "critical"}},
+    {"id": "token-theft", "name": "Access token impersonation", "tech": "T1134.001",
+     "host": "WKS-EVAL06", "activity": "token duplication to impersonate SYSTEM",
+     "telemetry": {_T: _sigma("WKS-EVAL06", "Access Token Impersonation", "high",
+                              "2026-08-01T11:16:00Z")},
+     "expect": {"find": ["token"], "sev": "high"}},
+    {"id": "staging-archive", "name": "Data staged in an archive", "tech": "T1560.001",
+     "host": "WKS-EVAL04", "activity": "7z archive of collected documents for exfil",
+     "telemetry": {_T: _sigma("WKS-EVAL04", "Data Staged In Password-Protected Archive",
+                              "high", "2026-08-01T11:18:00Z")},
+     "expect": {"find": ["archive"], "sev": "high"}},
+    {"id": "keylogger", "name": "Keylogging / input capture", "tech": "T1056.001",
+     "host": "WKS-EVAL03", "activity": "keyboard hook installed to capture credentials",
+     "telemetry": {_T: _sigma("WKS-EVAL03", "Keylogger Input Capture Hook", "high",
+                              "2026-08-01T11:20:00Z")},
+     "expect": {"find": ["keylog"], "sev": "high"}},
+    {"id": "fw-tamper", "name": "Firewall rule tampering", "tech": "T1562.004",
+     "host": "WKS-EVAL05", "activity": "netsh advfirewall rule added for C2 egress",
+     "telemetry": {_T: _sigma("WKS-EVAL05", "Windows Firewall Rule Added Via Netsh",
+                              "high", "2026-08-01T11:22:00Z")},
+     "expect": {"find": ["firewall"], "sev": "high"}},
+    {"id": "svc-acct-abuse", "name": "Service account privilege abuse", "tech": "T1078.002",
+     "host": "WKS-EVAL06", "activity": "domain service account used interactively",
+     "telemetry": {_T: _sigma("WKS-EVAL06", "Service Account Interactive Logon", "high",
+                              "2026-08-01T11:24:00Z")},
+     "expect": {"find": ["service account"], "sev": "high"}},
+    {"id": "clear-usnjrnl", "name": "USN journal deletion", "tech": "T1070.009",
+     "host": "WKS-EVAL07", "activity": "fsutil usn deletejournal (anti-forensics)",
+     "telemetry": {_T: _sigma("WKS-EVAL07", "USN Journal Deleted Via Fsutil", "high",
+                              "2026-08-01T11:26:00Z")},
+     "expect": {"find": ["usn"], "sev": "high"}},
+]
+
 # BENIGN baseline — normal admin/IT activity that should NOT produce attack findings
 # (false-positive / precision test). Informational SIGMA + routine processes.
 BENIGN = {
