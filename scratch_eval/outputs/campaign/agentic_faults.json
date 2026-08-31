@@ -6,7 +6,7 @@
       "title": "turn-1 {final} give-up with 0 tool calls is not caught/retried",
       "severity": "high",
       "status": "FINDING",
-      "detail": "raised=False steps=0 answer='I could not find anything.' \u2014 the loop accepted a 0-tool final; nothing forces a lookup or retries.",
+      "detail": "raised=False steps=0 answer='I could not find anything.' \u2014 the loop accepted a 0-tool final; nothing forces a lookup or retries. | AT SCALE (Track B, 100 runs): 4% give-up, ALL on case 5586 (8% of that case) across raw-evidence/account/timeline and both arms; case 853 = 0/50. Case-content-triggered, not uniform noise.",
       "repro": "model emits {\"final\":...} on iteration 0"
     },
     {

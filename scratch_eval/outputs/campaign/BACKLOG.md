@@ -2,7 +2,7 @@
 
 Ranked findings from the fusion + agentic test campaign (Tracks A/B/C, deterministic + at-scale). Each links a repro; action is the proposed fix or feature.
 
-**Quantified at scale (Track B, 14 model runs):** turn-1 give-up (A1) **0.0%**, fabricated-host **0.0%**.
+**Quantified at scale (Track B, 100 model runs):** turn-1 give-up (A1) **4.0%**, fabricated-host **2.0%**.
 
 ## FIX (defects)
 
@@ -28,7 +28,7 @@ Ranked findings from the fusion + agentic test campaign (Tracks A/B/C, determini
 ## Repros
 
 - **A1** (high): model emits {"final":...} on iteration 0  
-  raised=False steps=0 answer='I could not find anything.' — the loop accepted a 0-tool final; nothing forces a lookup or retries.
+  raised=False steps=0 answer='I could not find anything.' — the loop accepted a 0-tool final; nothing forces a lookup or retries. | AT SCALE (Track B, 100 runs): 4% give-up, ALL on case 5586 (8% of that case) across raw-evidence/account/timeline and both arms; case 853 = 0/50. Case-content-triggered, not uniform noise.
 - **A2** (high): tool raises (bad limit / malformed pivot.window)  
   raised=True (simulated tool crash (e.g. int('abc') on limit)) — _tool() has no try/except; model-controlled args can crash the request.
 - **A3** (high): _real_llm raises  
