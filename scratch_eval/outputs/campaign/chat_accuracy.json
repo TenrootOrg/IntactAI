@@ -1,0 +1,111 @@
+{
+  "rows": [
+    {
+      "rep": 1,
+      "q": "Which host shows LSASS credential dumping, and what tool was used?",
+      "present": true,
+      "kw": true,
+      "host": true,
+      "ok": true,
+      "answer": "WKS-EVAL01 shows LSASS credential dumping at 2026-08-01 09:12 UTC. The detection identifies the tool as **Mimikatz**. [Finding `f_c970dac03a95`, \u201cSIGMA: Mimikatz LSASS Credential Dumping on WKS-EVAL01\u201d]"
+    },
+    {
+      "rep": 1,
+      "q": "Was a Kerberos ticket attack (Rubeus / Kerberoasting) seen? On which host?",
+      "present": true,
+      "kw": true,
+      "host": true,
+      "ok": true,
+      "answer": "Yes. Kerberos ticket abuse was detected on **WKS-EVAL02**:\n\n- **Rubeus Kerberos Ticket Request** at **2026-08-01 09:30 UTC** (high severity, medium confidence). [Finding `f_478ae3f8bb43`]\n- Related activity later included **Golden Ticket Kerberos Forgery** at "
+    },
+    {
+      "rep": 1,
+      "q": "Which single account appears on more than one host?",
+      "present": true,
+      "kw": true,
+      "host": true,
+      "ok": true,
+      "answer": "The single cross-host account is **`adatumlab\\svc_backup`**, observed on **WKS-EVAL04** and **WKS-EVAL05**. [Finding `f_648eb795f4ce`, 2026-08-01 09:55 UTC]"
+    },
+    {
+      "rep": 1,
+      "q": "Was Windows Defender disabled or tampered with, and where?",
+      "present": true,
+      "kw": true,
+      "host": true,
+      "ok": true,
+      "answer": "Yes. **Observation:** Windows Defender real-time protection was disabled on **WKS-EVAL02** at **2026-08-01 09:35 UTC**. This is a high-severity, medium-confidence SIGMA detection ([finding `f_b742170d42b9`]).\n\n**Assessment:** This was likely attacker defense e"
+    },
+    {
+      "rep": 1,
+      "q": "Is there ransomware or shadow-copy deletion activity? On which host?",
+      "present": true,
+      "kw": true,
+      "host": true,
+      "ok": true,
+      "answer": "Yes\u2014both occurred on **WKS-EVAL07**:\n\n- **Observation:** Ransomware mass-file-encryption behavior at **2026-08-01 10:40 UTC** (critical). [Finding `f_76c15efbb186`]\n- **Observation:** Volume Shadow Copies deleted via `vssadmin` one minute later at **10:41 UTC*"
+    },
+    {
+      "rep": 1,
+      "q": "Was data exfiltrated to cloud storage, and from which host?",
+      "present": true,
+      "kw": true,
+      "host": true,
+      "ok": true,
+      "answer": "Likely, from **WKS-EVAL04**.\n\n- **Observation:** \u201cRclone Cloud Exfiltration\u201d triggered on WKS-EVAL04 at **2026-08-01 10:45 UTC** [finding `f_970ccf5c6869`].\n- **Observation:** Password-protected archive staging was detected on the same host at **11:18 UTC** [f"
+    },
+    {
+      "rep": 1,
+      "q": "What process injection was observed and on which host?",
+      "present": true,
+      "kw": true,
+      "host": true,
+      "ok": true,
+      "answer": "Two process injections were observed:\n\n- **WKS-EVAL01:** `explorer.exe` PID **4820** contained injected/RWX memory and matched **CobaltStrike_Beacon**, with external C2 activity. **Observed:** 2026-08-01 09:50 UTC. [Finding `f_7e74c5dcca06`; MITRE T1055/T1071]"
+    },
+    {
+      "rep": 1,
+      "q": "Was NTDS.dit extracted from a domain controller? Which host?",
+      "present": true,
+      "kw": true,
+      "host": true,
+      "ok": true,
+      "answer": "Yes\u2014an **NTDS.dit extraction via `ntdsutil`** was detected on **WKS-EVAL02** at **2026-08-01 11:12 UTC** (critical, medium confidence) [finding `f_14ca318b0ffd`].\n\nHowever, the graph does **not identify WKS-EVAL02\u2019s server role**, so it cannot confirm that the"
+    },
+    {
+      "rep": 1,
+      "q": "Is there evidence of cryptocurrency mining (XMRig / Monero)?",
+      "present": false,
+      "kw": false,
+      "host": true,
+      "ok": false,
+      "answer": "No direct evidence of cryptocurrency mining appears in this graph. There are no findings or entities naming XMRig, Monero, mining pools, wallet addresses, or miner processes.\n\nThere is strong evidence of other malicious activity\u2014Cobalt Strike C2 in injected `e"
+    },
+    {
+      "rep": 1,
+      "q": "Was there any macOS or Linux malware in this environment?",
+      "present": false,
+      "kw": true,
+      "host": true,
+      "ok": true,
+      "answer": "No evidence of macOS or Linux malware appears in this graph.\n\nObservation: all eight assets are Windows-named endpoints (`WKS-EVAL01` through `WKS-EVAL08`), and the cited evidence comes exclusively from Windows sources such as `Windows.Hayabusa.Rules`, `Window"
+    },
+    {
+      "rep": 1,
+      "q": "Did an attacker use a printer-spooler exploit (PrintNightmare) here?",
+      "present": false,
+      "kw": true,
+      "host": true,
+      "ok": true,
+      "answer": "No evidence in this graph supports PrintNightmare or any other printer-spooler exploit.\n\nObservation: none of the 37 findings mention `spoolsv.exe`, the Print Spooler service, malicious printer drivers, Point-and-Print activity, or PrintNightmare exploitation."
+    }
+  ],
+  "plants": [
+    8,
+    8
+  ],
+  "neg": [
+    2,
+    3
+  ]
+}

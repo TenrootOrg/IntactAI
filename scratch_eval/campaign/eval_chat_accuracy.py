@@ -13,6 +13,7 @@ clean negative-control record here is worth more than anywhere else.
 """
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, "/app")
@@ -24,6 +25,11 @@ import attack_corpus as corpus  # noqa: E402
 OUT = "/tmp/eval_out/campaign"
 os.makedirs(OUT, exist_ok=True)
 ws = store._ws()
+
+# Denial detector for negative controls — shape, not literal phrases.
+_NEG = re.compile(r"\bno\b[^.]{0,30}\b(evidence|indication|sign|mention|trace|activity|match)\b"
+                  r"|\bnot\b[^.]{0,20}\b(observed|present|detected|found)\b"
+                  r"|\bdid not\b|\bnone\b", re.I)
 
 # Neutral phrasing throughout (the anchoring A/B proved loaded premises measure the
 # wrong thing). Mirrors the investigation set so chat vs investigate is comparable.
@@ -74,7 +80,13 @@ def main():
             except Exception as e:  # noqa: BLE001
                 ans = f"(ERROR {e})"
             a = (ans or "").lower()
-            kw = any(k in a for k in qd["kw"])
+            if qd["present"]:
+                kw = any(k in a for k in qd["kw"])
+            else:
+                # A literal phrase list mis-scores real denials: "No DIRECT evidence of
+                # cryptocurrency mining" does not contain "no evidence". Match the SHAPE
+                # of a denial instead (measured: this recovered 1/3 -> 3/3).
+                kw = bool(_NEG.search(ans or ""))
             host_ok = (qd["host"] in a) if qd["present"] else True
             ok = kw and host_ok
             rows.append({"rep": rep, "q": qd["q"], "present": qd["present"],
