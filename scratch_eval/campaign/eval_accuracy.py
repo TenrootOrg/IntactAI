@@ -180,6 +180,49 @@ def cmd_noise():
     print(md)
 
 
+def cmd_incremental():
+    """INCREMENTAL INTEGRITY: a real incident arrives over MULTIPLE collections. Fuse
+    the corpus as one batch, then as two halves fed incrementally, and assert the
+    detections are identical — no lost findings, no duplicates, no severity drift."""
+    tele = corpus.build_all_telemetry()
+    # one-shot
+    one = _fuse(tele, "inc_one")
+    # split every artifact's rows in half -> two "collections"
+    a_t, b_t = {}, {}
+    for art, rows in tele.items():
+        mid = max(1, len(rows) // 2)
+        a_t[art] = rows[:mid]
+        b_t[art] = rows[mid:]
+    ea, ra = map_agentic(a_t, run_id="run_a", hostnames={})
+    eb, rb = map_agentic(b_t, run_id="run_b", hostnames={})
+    seed = correlate.assemble("inc_two", [(ea, ra)], ["run_a"])
+    two = correlate.assemble("inc_two", [(eb, rb)], ["run_a", "run_b"], seed=seed)
+
+    def sig(g):
+        return sorted(f"{f.title}|{f.severity}" for f in g.findings)
+    s1, s2 = sig(one), sig(two)
+    only1 = [x for x in s1 if x not in s2]
+    only2 = [x for x in s2 if x not in s1]
+    dupes = [x for x in set(s2) if s2.count(x) > 1]
+    ok = not only1 and not only2 and not dupes
+    lines = ["# Incremental collection integrity", "",
+             "A real incident arrives over multiple collections. One-shot fuse vs the "
+             "same telemetry split into two collections fused incrementally.", "",
+             f"- one-shot findings: **{len(s1)}**",
+             f"- incremental findings: **{len(s2)}**",
+             f"- lost in incremental: **{len(only1)}** {only1[:4] or ''}",
+             f"- extra in incremental: **{len(only2)}** {only2[:4] or ''}",
+             f"- duplicated: **{len(dupes)}** {dupes[:4] or ''}", "",
+             f"**{'✅ PASS — incremental == one-shot' if ok else '❌ FAIL'}**"]
+    md = "\n".join(lines) + "\n"
+    open(f"{OUT}/accuracy_incremental.md", "w").write(md)
+    json.dump({"one": len(s1), "two": len(s2), "lost": only1, "extra": only2,
+               "dupes": dupes, "pass": ok},
+              open(f"{OUT}/accuracy_incremental.json", "w"), indent=2, default=str)
+    print(md)
+
+
 if __name__ == "__main__":
     {"per": cmd_per, "combined": cmd_combined, "precision": cmd_precision,
-     "noise": cmd_noise}.get(sys.argv[1] if sys.argv[1:] else "per", cmd_per)()
+     "noise": cmd_noise, "incremental": cmd_incremental}.get(
+        sys.argv[1] if sys.argv[1:] else "per", cmd_per)()
