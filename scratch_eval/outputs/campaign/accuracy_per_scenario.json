@@ -1,0 +1,106 @@
+{
+  "rows": [
+    {
+      "id": "cred-lsass",
+      "name": "LSASS credential dumping (Mimikatz)",
+      "tech": "T1003.001",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: mimikatz lsass credential dumping on wks-eval01 :: wks-eval01"
+    },
+    {
+      "id": "log-clear",
+      "name": "Security event log cleared",
+      "tech": "T1070.001",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: security eventlog cleared on wks-eval01 :: wks-eval01"
+    },
+    {
+      "id": "kerberoast",
+      "name": "Kerberoasting via Rubeus",
+      "tech": "T1558.003",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: rubeus kerberos ticket request on wks-eval02 :: wks-eval02"
+    },
+    {
+      "id": "defender-off",
+      "name": "Windows Defender disabled",
+      "tech": "T1562.001",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: windows defender real-time protection disabled on wks-eval02 :: wks-eval02"
+    },
+    {
+      "id": "enc-ps",
+      "name": "Encoded PowerShell execution",
+      "tech": "T1059.001",
+      "findings": 0,
+      "recall": false,
+      "grounded_host": false,
+      "severity_ok": false,
+      "matched": "(none)"
+    },
+    {
+      "id": "sched-task",
+      "name": "Scheduled task persistence",
+      "tech": "T1053.005",
+      "findings": 0,
+      "recall": false,
+      "grounded_host": false,
+      "severity_ok": false,
+      "matched": "(none)"
+    },
+    {
+      "id": "inject",
+      "name": "Process injection (RWX memory, YARA hit)",
+      "tech": "T1055",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "injected process with c2 \u2014 explorer.exe (4820) on wks-eval01 :: wks-eval01"
+    },
+    {
+      "id": "xhost-acct",
+      "name": "Cross-host credential reuse (service account)",
+      "tech": "T1021",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "account 'adatumlab\\svc_backup' used across 2 hosts :: wks-eval04 wks-eval05"
+    },
+    {
+      "id": "namedpipe-c2",
+      "name": "Cobalt Strike named pipe",
+      "tech": "T1071",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: cobalt strike named pipe pattern on wks-eval05 :: wks-eval05"
+    },
+    {
+      "id": "binrename",
+      "name": "Renamed system binary (procdump)",
+      "tech": "T1036.003",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: renamed procdump execution on wks-eval04 :: wks-eval04"
+    }
+  ],
+  "recall": 8,
+  "n": 10
+}
