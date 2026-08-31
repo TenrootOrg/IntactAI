@@ -1,0 +1,37 @@
+{
+  "B8": {
+    "planted": 8,
+    "findings_kept": 8,
+    "timeline_rows": 8,
+    "chronological": true,
+    "undated_kept": true,
+    "future_dated_present": 1,
+    "pass": true
+  },
+  "B9": {
+    "events": 36,
+    "groups": 36,
+    "critical_groups_expected": 11,
+    "critical_shown": 11,
+    "count_markers": 0,
+    "sum_of_counts_le_events": true,
+    "pass": true
+  },
+  "A4": {
+    "section_present": true,
+    "checks": [
+      [
+        "quiet-host count",
+        true,
+        "claimed 1, actual 1"
+      ],
+      [
+        "quiet host named",
+        true,
+        "named correctly"
+      ]
+    ],
+    "all_true": true,
+    "pass": true
+  }
+}
