@@ -67,6 +67,28 @@ MACRO_PROMPT = (
 )
 
 
+# --- S2: macro v2 — same triage map, but fix the judge's two dings on S1:
+#     (1) ground aggregate/environment-wide claims in named hosts + cited findings;
+#     (2) add a brief "Contain now" so a broad report still gives immediate actions.
+MACRO2_PROMPT = MACRO_PROMPT.replace(
+    "## What to do first\n"
+    "The 3 highest-value next actions: which scenario to zoom into first, which host(s) to "
+    "pull deeper (memory / timeline), and the single question that most changes the picture.\n",
+    "## Priority actions\n"
+    "Two short lists, each item naming the specific host/account:\n"
+    "  **Contain now** — the few steps that stop active access or protect tier-zero right "
+    "now (isolate a host, disable/rotate a shared account, protect the CA/DCs), each "
+    "justified by a cited finding. If nothing warrants immediate containment, say so.\n"
+    "  **Investigate next** — the scenario to zoom into first, the host(s) to pull deeper "
+    "(memory / timeline), and the single question that most changes the picture.\n",
+).replace(
+    "An honest 'undetermined, and here is what's missing' beats a guess.",
+    "An honest 'undetermined, and here is what's missing' beats a guess. Ground every "
+    "aggregate / environment-wide claim in specific hosts + a cited finding and time; never "
+    "assert broad reach without naming the evidence.",
+)
+
+
 def scope_facts(graph, d):
     window = d.get("time_window") or None
     msev = d.get("min_severity", "informational")
@@ -114,10 +136,14 @@ def run_strategy(name, graph, d, facts):
         if macro:
             return call_and_meter(MACRO_PROMPT, build_payload(graph, d, "summary"), name)
         return call_and_meter(FOCUSED_PROMPT, build_payload(graph, d, "explicit"), name)
+    if name == "S2-macro2":
+        if macro:
+            return call_and_meter(MACRO2_PROMPT, build_payload(graph, d, "summary"), name)
+        return call_and_meter(FOCUSED_PROMPT, build_payload(graph, d, "explicit"), name)
     raise ValueError(name)
 
 
-STRATEGIES = ["S0-baseline", "S1-altitude"]
+STRATEGIES = ["S0-baseline", "S1-altitude", "S2-macro2"]
 GRAPH_DIR = "/app/data/fusion_graphs"
 
 
@@ -146,14 +172,22 @@ if __name__ == "__main__":
     if not cases:
         print("usage: eval_report_strategies.py <case_id> [<case_id>...]  |  facts")
         sys.exit(1)
-    results = {}
+    only = [s for s in os.environ.get("EVAL_ONLY", "").split(",") if s]
+    strategies = only or STRATEGIES
+    # merge into any existing results so re-running one strategy keeps the others
+    try:
+        results = json.load(open(f"{OUT}/results.json"))
+    except Exception:
+        results = {}
     for cid in cases:
         g = store.load_graph(cid); d = store.get_case(cid) or {}
         facts = scope_facts(g, d)
         print(f"\n=== {cid} | hosts={facts['hosts']} findings={facts['findings']} "
               f"span_days={facts['span_days']} macro={is_macro(facts)} ===")
-        results[cid] = {"facts": facts, "macro": is_macro(facts), "reports": {}}
-        for s in STRATEGIES:
+        results.setdefault(cid, {"facts": facts, "macro": is_macro(facts), "reports": {}})
+        results[cid]["facts"] = facts
+        results[cid]["macro"] = is_macro(facts)
+        for s in strategies:
             text, m, plen = run_strategy(s, g, d, facts)
             results[cid]["reports"][s] = {"metrics": m, "payload_chars": plen, "report_chars": len(text)}
             open(f"{OUT}/{cid}__{s}.md", "w").write(text)
