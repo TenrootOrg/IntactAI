@@ -1,0 +1,130 @@
+{
+  "n": 10,
+  "hits": {
+    "cred-lsass": 9,
+    "kerberoast": 10,
+    "defender-off": 8,
+    "inject": 10,
+    "xhost-acct": 10,
+    "namedpipe-c2": 10,
+    "binrename": 9,
+    "wmi-persist": 8,
+    "dcsync": 10,
+    "rdp-lateral": 10,
+    "malfind-svc": 9,
+    "golden-ticket": 10,
+    "ransomware": 10,
+    "reg-sam": 4,
+    "dll-sideload": 3,
+    "amsi-bypass": 3,
+    "exfil-rclone": 10,
+    "mft-erasing": 10,
+    "psexec-lateral": 10,
+    "webshell": 10,
+    "uac-bypass": 3,
+    "asrep-roast": 8,
+    "c2-beacon": 9,
+    "ntds-dump": 10,
+    "adcs-abuse": 10,
+    "token-theft": 8,
+    "staging-archive": 10,
+    "keylogger": 3,
+    "clear-usnjrnl": 10,
+    "byovd": 8,
+    "certutil-dl": 3,
+    "svc-acct-abuse": 1,
+    "shadowcopy": 10,
+    "fw-tamper": 2
+  },
+  "mean": 26.8,
+  "always": [
+    "kerberoast",
+    "inject",
+    "xhost-acct",
+    "namedpipe-c2",
+    "dcsync",
+    "rdp-lateral",
+    "golden-ticket",
+    "ransomware",
+    "exfil-rclone",
+    "mft-erasing",
+    "psexec-lateral",
+    "webshell",
+    "ntds-dump",
+    "adcs-abuse",
+    "staging-archive",
+    "clear-usnjrnl",
+    "shadowcopy"
+  ],
+  "never": [],
+  "flaky": [
+    [
+      "svc-acct-abuse",
+      1
+    ],
+    [
+      "fw-tamper",
+      2
+    ],
+    [
+      "dll-sideload",
+      3
+    ],
+    [
+      "amsi-bypass",
+      3
+    ],
+    [
+      "uac-bypass",
+      3
+    ],
+    [
+      "keylogger",
+      3
+    ],
+    [
+      "certutil-dl",
+      3
+    ],
+    [
+      "reg-sam",
+      4
+    ],
+    [
+      "defender-off",
+      8
+    ],
+    [
+      "wmi-persist",
+      8
+    ],
+    [
+      "asrep-roast",
+      8
+    ],
+    [
+      "token-theft",
+      8
+    ],
+    [
+      "byovd",
+      8
+    ],
+    [
+      "cred-lsass",
+      9
+    ],
+    [
+      "binrename",
+      9
+    ],
+    [
+      "malfind-svc",
+      9
+    ],
+    [
+      "c2-beacon",
+      9
+    ]
+  ]
+}
