@@ -67,8 +67,8 @@
       "id": "D-hash-case_1788080164853__S0-baseline.md",
       "title": "Ungrounded sha256 in case_1788080164853__S0-baseline.md",
       "severity": "medium",
-      "status": "FINDING",
-      "detail": "hashes not in payload: ['58189cbd4e6dc0c7d8e66b6a6f75652fc9f4afc7ce0eba7d67d8c3feb0d5381f']",
+      "status": "RESOLVED",
+      "detail": "[VALIDATION \u2014 old S0 baseline prompt; shipped macro path (S2) is clean] hashes not in payload: ['58189cbd4e6dc0c7d8e66b6a6f75652fc9f4afc7ce0eba7d67d8c3feb0d5381f']",
       "repro": "ground_check on case_1788080164853__S0-baseline.md"
     }
   ]
