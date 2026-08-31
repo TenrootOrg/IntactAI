@@ -1269,11 +1269,17 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
         for f in tl:
             groups.setdefault((_norm_title(f.title), f.severity,
                                tuple(f.mitre or [])), []).append(f)
-        shown, cap = 0, TIMELINE_MAX_GROUPS
-        for (title, sv, mit), fs in groups.items():
-            if shown >= cap:
-                break
-            shown += 1
+        # The cap must NEVER be able to drop a critical: groups are in chronological
+        # order, so a plain head-slice silently hid late criticals behind earlier
+        # high-severity noise. Keep every critical group, then fill the remaining
+        # budget chronologically, then restore chronological order for display.
+        _ordered = list(groups.items())
+        _crit = [kv for kv in _ordered if kv[0][1] == "critical"]
+        _rest = [kv for kv in _ordered if kv[0][1] != "critical"]
+        _keep = _crit + _rest[: max(0, TIMELINE_MAX_GROUPS - len(_crit))]
+        _keep.sort(key=lambda kv: min((x.ts for x in kv[1] if x.ts), default=""))
+        _omitted = len(_ordered) - len(_keep)
+        for (title, sv, mit), fs in _keep:
             ts_all = sorted(x.ts for x in fs if x.ts)
             when = fmt_ts(ts_all[0])
             if len(ts_all) > 1 and ts_all[-1] != ts_all[0]:
@@ -1283,12 +1289,13 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
             mitre = f" `[{', '.join(mit)}]`" if mit else ""
             times = f" · ×{len(fs)}" if len(fs) > 1 else ""
             out.append(f"- `{when}` · **[{sv}]** {title}{mitre}{times}{hs}")
-        if len(groups) > cap:
-            out.append(f"- _… {len(groups) - cap} further recurring detection group(s) "
-                       "omitted at this altitude — narrow the scope for the full timeline._")
+        if _omitted:
+            out.append(f"- _… {_omitted} further **non-critical** recurring detection "
+                       "group(s) omitted at this altitude — every critical group is "
+                       "shown above; narrow the scope for the full timeline._")
         out.append(f"\n_{len(tl)} event(s) collapsed into {len(groups)} recurring "
                    "detection group(s); a repeated detection is stated once with its "
-                   "span and count._\n")
+                   f"span and count. All {len(_crit)} critical group(s) are shown._\n")
     else:
         for f in tl:
             mitre = f" `[{', '.join(f.mitre)}]`" if f.mitre else ""

@@ -135,6 +135,40 @@ class Heatmap(unittest.TestCase):
         self.assertEqual(render.suspicious_timeframes_md(_graph(0, [])), "")
 
 
+class SummaryTimeline(unittest.TestCase):
+    """The macro/summary timeline collapses + caps recurring detections. The cap
+    must NEVER hide a critical: groups are chronological, so a plain head-slice
+    dropped late criticals behind earlier high-severity noise."""
+
+    def _graph_with_late_critical(self, n_high):
+        # n_high distinct high groups early, then ONE critical last in time
+        fs = [_find(f"h{i}", sev="high", day=i) for i in range(n_high)]
+        for i, f in enumerate(fs):
+            f.title = f"Recurring high detection {i}"      # distinct groups
+        crit = _find("crit", sev="critical", day=n_high + 5)
+        crit.title = "LATE CRITICAL DETECTION"
+        return _graph(1, fs + [crit])
+
+    def test_late_critical_survives_the_cap(self):
+        g = self._graph_with_late_critical(render.TIMELINE_MAX_GROUPS + 25)
+        md = render.facts_md(g, detail="summary", narrated=True)
+        self.assertIn("LATE CRITICAL DETECTION", md)      # never dropped
+        self.assertIn("critical group(s) are shown", md)  # and stated
+
+    def test_cap_still_bounds_non_critical(self):
+        g = self._graph_with_late_critical(render.TIMELINE_MAX_GROUPS + 25)
+        md = render.facts_md(g, detail="summary", narrated=True)
+        self.assertIn("non-critical** recurring detection group(s) omitted", md)
+
+    def test_repeats_collapse_with_count(self):
+        # same detection on 3 hosts -> ONE row with a count, not three rows
+        fs = [_find(f"r{i}", sev="high", day=i, hosts=(f"host{i:03d}",)) for i in range(3)]
+        for i, f in enumerate(fs):
+            f.title = f"SIGMA: Same Rule on HOST-{i:03d}"   # title embeds the host
+        md = render.facts_md(_graph(3, fs), detail="summary", narrated=True)
+        self.assertIn("×3", md)
+
+
 class GroundingGuard(unittest.TestCase):
     def test_flags_hash_absent_from_evidence(self):
         ghost = "a" * 64
