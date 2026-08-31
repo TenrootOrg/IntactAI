@@ -10,7 +10,7 @@ Every run measures our system against KNOWN simulated ground truth (authored Pow
 | Precision (benign input) | benign telemetry | 0 false positive(s) | ✅ PASS |
 | Noise robustness | attack + 20× benign | 29/29 survive | ✅ |
 | Combined report grounding | 5-host incident | 92/100 grounding | 92% |
-| **AI investigation vs simulation** | 15 questions | 12/12 plants found, 3/3 neg-controls clean | **100%** |
+| **AI investigation vs simulation** | 15 questions | 11/12 plants found, 3/3 neg-controls clean | **93%** |
 
 ## Per-run detail (md in this folder)
 - `accuracy_per_scenario.md` — every technique, detected/host/severity
