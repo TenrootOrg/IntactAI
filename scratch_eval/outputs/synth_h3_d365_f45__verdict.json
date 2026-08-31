@@ -1,0 +1,27 @@
+{
+  "case_altitude": "broad",
+  "scores": [
+    {
+      "strategy": "S0-baseline",
+      "dfir_professionalism": 3,
+      "altitude_fit": 1,
+      "grounding": 3,
+      "actionability": 5,
+      "efficiency": 1,
+      "total": 13,
+      "rationale": "Thorough and executable, but it forces 351 days of sparse detections into one prolonged intrusion, repeatedly restates evidence, and buries key uncertainties in excessive narrative."
+    },
+    {
+      "strategy": "S2-macro2",
+      "dfir_professionalism": 5,
+      "altitude_fit": 5,
+      "grounding": 4,
+      "actionability": 5,
+      "efficiency": 5,
+      "total": 24,
+      "rationale": "Client-ready broad-scope assessment with ranked scenarios, calibrated confidence, precise evidence windows, decisive investigative questions, and excellent signal density; minor deduction for asserting tier-zero roles from hostnames."
+    }
+  ],
+  "winner": "S2-macro2",
+  "why": "It matches the broad case altitude by preserving competing explanations and directing responders to the evidence most likely to confirm or refute each scenario."
+}

@@ -1,0 +1,27 @@
+{
+  "case_altitude": "broad",
+  "scores": [
+    {
+      "strategy": "S0-baseline",
+      "dfir_professionalism": 3,
+      "altitude_fit": 1,
+      "grounding": 4,
+      "actionability": 5,
+      "efficiency": 1,
+      "total": 14,
+      "rationale": "Extensively cited and operationally strong, but forces one campaign narrative across a year-long 100-host scope, occasionally overstates correlation as proof, and is far too long to ship."
+    },
+    {
+      "strategy": "S2-macro2",
+      "dfir_professionalism": 5,
+      "altitude_fit": 5,
+      "grounding": 5,
+      "actionability": 5,
+      "efficiency": 5,
+      "total": 25,
+      "rationale": "Client-ready macro assessment: ranked and calibrated scenarios, precise evidence anchors, explicit competing explanations, bounded zoom targets, and concise prioritized response actions."
+    }
+  ],
+  "winner": "S2-macro2",
+  "why": "It matches the broad case altitude and converts sparse, distributed evidence into testable hypotheses without inventing a single continuous intrusion story."
+}
