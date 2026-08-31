@@ -11,7 +11,7 @@ whole point: the model cannot fabricate a timestamp/host/hash it had to fetch.
 import json
 import re
 
-from . import store, render
+from . import store, render, keys
 from . import severity as sev
 from . import llm_sim
 
@@ -30,6 +30,9 @@ INVESTIGATE_SYSTEM = (
     "  search({\"query\":\"...\"})         -> findings whose title/summary match a keyword.\n"
     "  evidence({\"finding_id\":\"...\"})  -> the RAW rows behind a finding (the ground truth).\n"
     "  clusters({})                    -> suspicious (host-cluster, time-window) hotspots.\n"
+    "  pivot({\"value\":\"<account|host|process|ip>\",\"window\":{\"start\":\"...\",\"end\":\"...\"}}) "
+    "-> raw EVENTS mentioning that value across the case (the classic investigative "
+    "pivot; window optional, ISO times).\n"
     "\n"
     "Investigate efficiently: start from list_findings or clusters, drill into the "
     "decisive ones with evidence, then answer in 3-6 tool calls. In your final answer "
@@ -64,6 +67,37 @@ def _tool(case_id, name, args):
         rows = store.get_evidence_rows(case_id, args.get("finding_id"), max_rows=6)
         return [{"artifact": r["artifact"],
                  "row": json.dumps(r["row"], default=str)[:_MAX_ROW_CHARS]} for r in rows]
+    if name == "pivot":
+        # The classic investigative move: every raw event that mentions a value
+        # (account, host, process, ip), optionally inside a time window. Grounded
+        # straight from the graph's event entities — nothing fetched can be invented.
+        val = str(args.get("value") or "").strip().lower()
+        if not val:
+            return {"error": "pivot needs a value"}
+        g = store.load_graph(case_id)
+        win = args.get("window") or {}
+        lo = keys.to_utc_dt(win.get("start")) if win.get("start") else None
+        hi = keys.to_utc_dt(win.get("end")) if win.get("end") else None
+        _EV_KEYS = ("ev_user", "ev_proc", "ev_cmdline", "ev_tgtip", "ev_sha256")
+        hits = []
+        for e in g.entities.values():
+            if e.type != "event":
+                continue
+            a = e.attrs or {}
+            labels = [render._host_label(g, x) for x in (a.get("_assets") or [])]
+            hay = " ".join(str(x) for x in
+                           ([e.label] + labels + [a.get(k) for k in _EV_KEYS]) if x).lower()
+            if val not in hay:
+                continue
+            t = keys.to_utc_dt(e.first_seen or e.last_seen)
+            if (lo and t and t < lo) or (hi and t and t > hi):
+                continue
+            hits.append((t, {"ts": e.first_seen or e.last_seen, "hosts": labels[:3],
+                             **{k: str(a[k])[:300] for k in _EV_KEYS if a.get(k)}}))
+        hits.sort(key=lambda x: (x[0] is None, x[0]))
+        total = len(hits)
+        rows = [h for _, h in hits[:15]]
+        return {"total_matches": total, "shown": len(rows), "events": rows}
     if name == "clusters":
         g = store.load_graph(case_id)
         d = store.get_case(case_id) or {}
@@ -89,17 +123,68 @@ def _parse(raw):
         return None
 
 
-def investigate(case_id, question, *, run_id=None, max_steps=6, log=None):
-    """Run the bounded ReAct loop. Returns {answer, steps:[{tool,args}], truncated}."""
+def _mask_for_case(d, graph, run_id):
+    """Per-case opt-in DataAnonymizer, gated EXACTLY like the report/chat paths
+    (store.py builds it the same way from d['masking']). None when masking is off
+    or unavailable — every mask helper is a no-op on None.
+
+    Honest limit: the mapping is graph-derived (_build_mask_mapping sweeps the whole
+    graph incl. bounded evidence), so a stray identifier appearing ONLY inside a raw
+    row is best-effort — the same standard the report's evidence lines accept."""
+    mk = (d or {}).get("masking") or {}
+    if not mk.get("enabled"):
+        return None
+    try:
+        from services.data_anonymizer import DataAnonymizer
+        mask = DataAnonymizer(custom_patterns=mk.get("patterns") or [])
+        llm_sim._build_mask_mapping(graph, mask)
+        llm_sim._log_mask_audit(run_id, mask)
+        return mask
+    except Exception:
+        return None
+
+
+def _revert_obj(o, mask):
+    """Revert pseudonyms→originals in every STRING of a parsed structure. Never on
+    serialized JSON: an original like 'DOMAIN\\user' substituted into a JSON string
+    would inject an invalid escape and corrupt the parse."""
+    if isinstance(o, str):
+        return llm_sim._revert_mask(o, mask)
+    if isinstance(o, dict):
+        return {k: _revert_obj(v, mask) for k, v in o.items()}
+    if isinstance(o, list):
+        return [_revert_obj(v, mask) for v in o]
+    return o
+
+
+def investigate(case_id, question, *, run_id=None, max_steps=6, log=None,
+                use_mask=True, enable_pivot=True):
+    """Run the bounded ReAct loop. Returns {answer, steps:[{tool,args}], truncated}.
+
+    Masking (when the case has it enabled): the model sees ONLY pseudonyms — the
+    question and every tool result are _apply_mask'ed before the send, tool ARGS
+    come back in pseudonym space and are reverted before execution, and the final
+    answer is reverted so the analyst reads real names. Same in-transit-only
+    contract as generate_report/chat. `use_mask`/`enable_pivot` exist for the
+    v1-vs-v2 eval harness; production callers leave them True."""
     _log = log or (lambda m, l="info": None)
-    if not store.get_case(case_id):
+    d = store.get_case(case_id)
+    if not d:
         return {"answer": "case not found", "steps": []}
-    convo = [f"CASE: {case_id}\nQUESTION: {question}\n\n"
-             "Begin. Pull what you need with tools, then answer with a single "
-             '{"final":"..."} object.']
+    mask = _mask_for_case(d, store.load_graph(case_id), run_id) if use_mask else None
+    system = ((llm_sim._MASK_IDENTITY_LEGEND if mask else "") + INVESTIGATE_SYSTEM)
+    if not enable_pivot:
+        system = "\n".join(l for l in system.splitlines() if "pivot(" not in l)
+
+    def _m(t):
+        return llm_sim._apply_mask(t, mask)
+
+    convo = [_m(f"CASE: {case_id}\nQUESTION: {question}\n\n"
+                "Begin. Pull what you need with tools, then answer with a single "
+                '{"final":"..."} object.')]
     steps = []
     for i in range(max_steps):
-        raw = llm_sim._real_llm(INVESTIGATE_SYSTEM, "\n\n".join(convo), run_id=run_id)
+        raw = llm_sim._real_llm(system, "\n\n".join(convo), run_id=run_id)
         obj = _parse(raw)
         if obj is None:
             convo.append("(your last message was not valid JSON — respond with ONE "
@@ -107,17 +192,24 @@ def investigate(case_id, question, *, run_id=None, max_steps=6, log=None):
             continue
         if "final" in obj:
             _log(f"investigation done in {len(steps)} tool call(s)")
-            return {"answer": obj.get("final") or "", "steps": steps, "truncated": False}
+            return {"answer": llm_sim._revert_mask(obj.get("final") or "", mask),
+                    "steps": steps, "truncated": False}
         tool, targs = obj.get("tool"), obj.get("args") or {}
-        _log(f"tool: {tool}({json.dumps(targs)[:80]})")
-        result = _tool(case_id, tool, targs)
-        steps.append({"tool": tool, "args": targs})
+        if not enable_pivot and tool == "pivot":
+            result = {"error": "unknown tool 'pivot'"}
+            real_args = targs
+        else:
+            real_args = _revert_obj(targs, mask)     # model speaks pseudonyms
+            result = _tool(case_id, tool, real_args)  # tools need real values
+        _log(f"tool: {tool}({json.dumps(real_args)[:80]})")
+        steps.append({"tool": tool, "args": real_args})   # analyst-facing trace: real
         convo.append(json.dumps({"tool": tool, "args": targs}))
-        convo.append(f"TOOL[{tool}] RESULT:\n"
-                     + json.dumps(result, default=str)[:_MAX_TOOL_RESULT_CHARS])
+        convo.append(_m(f"TOOL[{tool}] RESULT:\n"
+                        + json.dumps(result, default=str)[:_MAX_TOOL_RESULT_CHARS]))
     # out of budget -> force a final answer from what was gathered
     convo.append('Step budget reached. Give your {"final":"..."} answer now from '
                  "what the tools have shown you.")
-    raw = llm_sim._real_llm(INVESTIGATE_SYSTEM, "\n\n".join(convo), run_id=run_id)
+    raw = llm_sim._real_llm(system, "\n\n".join(convo), run_id=run_id)
     obj = _parse(raw) or {}
-    return {"answer": obj.get("final") or raw, "steps": steps, "truncated": True}
+    return {"answer": llm_sim._revert_mask(obj.get("final") or raw, mask),
+            "steps": steps, "truncated": True}

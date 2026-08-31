@@ -3306,6 +3306,19 @@ def chat_case(case_id, question) -> str:
     return ans
 
 
+def append_chat_exchange(case_id, question, answer):
+    """Persist a Q&A produced OUTSIDE llm_sim.chat (e.g. an agentic investigation)
+    into the same capped chat history, so it survives reloads like any chat turn
+    and gives later chat turns the context. Same atomic append + cap as chat()."""
+    def _append(details):
+        msgs = list(details.get("chat_messages") or [])
+        msgs += [{"role": "user", "content": question},
+                 {"role": "assistant", "content": answer}]
+        details["chat_messages"] = (msgs[-_CHAT_HISTORY_CAP:]
+                                    if len(msgs) > _CHAT_HISTORY_CAP else msgs)
+    _ws().mutate_run_details(case_id, _append)
+
+
 def get_chat(case_id) -> list:
     """The persisted conversation for a case (survives page refreshes)."""
     return list((get_case(case_id) or {}).get("chat_messages") or [])

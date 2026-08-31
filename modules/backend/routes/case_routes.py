@@ -532,6 +532,17 @@ def investigate_case(case_id):
     from services.fusion import investigate as _inv
     rid = store._ws().create_automation_run("investigation", f"investigate {case_id}")
     res = _inv.investigate(case_id, q, run_id=rid)
+    # persist into the case's chat history (same cap/atomicity as a chat turn), so
+    # the grounded answer survives reloads and feeds later chat turns as context
+    try:
+        trace = " → ".join(s.get("tool", "?") for s in (res.get("steps") or []))
+        content = (res.get("answer") or "") + (
+            f"\n\n---\n_🔧 investigated via: {trace}"
+            + (" · step budget reached" if res.get("truncated") else "") + "_"
+            if trace else "")
+        store.append_chat_exchange(case_id, q, content)
+    except Exception:
+        pass                                  # persistence is a convenience, never a 500
     return jsonify({"case_id": case_id, "question": q, **res})
 
 
