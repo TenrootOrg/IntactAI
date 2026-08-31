@@ -92,6 +92,16 @@ def _phase(f) -> str:
 # hash) for small, specific cases and SUMMARY (abstracted findings only) for big /
 # cross-org cases. EXPLICIT_MAX_HOSTS mirrors correlate.FLEET_RELATIVE_MIN (the
 # fleet-relative threshold) — below it a case is "specific", above it "at scale".
+# At macro altitude the flat timeline was ~half the whole report, mostly the same
+# detection repeating. Collapse to recurring groups and cap them; the count + span
+# preserve the information a raw repeat list carried.
+TIMELINE_MAX_GROUPS = 40
+# Below this share of findings carrying an ATT&CK technique, a technique matrix
+# implies coverage the data does not have — state the coverage instead.
+MITRE_MIN_COVERAGE_PCT = 25
+# Host table at scale: show the hosts that matter, count the rest.
+RISK_TABLE_MAX_ROWS = 15
+
 EXPLICIT_MAX_HOSTS = 12
 EXPLICIT_MAX_FINDINGS = 150
 EXPLICIT_EVENTS_PER_FINDING = 5            # evidence lines surfaced per finding
@@ -914,7 +924,11 @@ def risk_table_md(graph, *, window=None, min_severity="informational") -> str:
            "findings driving the score; _Next_ = the recommended action.\n",
            "| # | Host | Risk | Severity | Findings (C/H/M) | Why | Coverage | Next |",
            "|---|------|-----:|----------|------------------|-----|----------|------|"]
-    for i, r in enumerate(rows, 1):
+    # At fleet scale this table becomes a second wall of text. Rank order already
+    # puts what matters on top, so show that and COUNT the tail rather than
+    # printing a page of nominal hosts (the tail is still in the console).
+    shown = rows[:RISK_TABLE_MAX_ROWS]
+    for i, r in enumerate(shown, 1):
         cov = ", ".join(r["modules"]) or "—"
         cov += " 🔺" if r["escalate"] else (" ✓deep" if r["deep"] else "")
         t = r["by_severity"]
@@ -922,6 +936,12 @@ def risk_table_md(graph, *, window=None, min_severity="informational") -> str:
         why = (r["why"] or "").replace("|", "／")[:140]
         out.append(f"| {i} | **{r['host']}** | {r['risk_score']} | {r['severity']} | "
                    f"{chm} | {why} | {cov} | {r['next_action']} |")
+    if len(rows) > RISK_TABLE_MAX_ROWS:
+        rest = rows[RISK_TABLE_MAX_ROWS:]
+        top = max((r["risk_score"] for r in rest), default=0)
+        out.append("")
+        out.append(f"_… and {len(rest)} further host(s), all scoring ≤ {top} "
+                   "(ranked below the focus set above) — full ranking in the console._")
     out.append("")
     return "\n".join(out)
 
@@ -1227,6 +1247,48 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
                 key=lambda f: (f.ts, -sev.rank(f.severity)))
     if not tl:
         out.append("_No time-anchored high/critical activity in window._\n")
+    elif eff_detail == "summary":
+        # AT SCALE the flat list is the single largest block in the report and most
+        # of it is the SAME detection repeating — a senior report states a recurring
+        # detection once, with its span and count, not forty times. Collapse on
+        # (title, severity); criticals are never collapsed away, only grouped.
+        from collections import OrderedDict
+        # Finding titles embed the host ("SIGMA: Suspicious Service Path on ALDC02"),
+        # so grouping on the raw title collapses NOTHING. Strip the trailing
+        # " on <known-host>" so the SAME detection across hosts groups into one row
+        # with its host list — which is the whole point of the collapse.
+        _labels = {a.label for a in graph.by_type("asset") if a.label}
+
+        def _norm_title(t):
+            for lb in _labels:
+                if t.endswith(f" on {lb}"):
+                    return t[: -(len(lb) + 4)]
+            return t
+
+        groups: "OrderedDict[tuple, list]" = OrderedDict()
+        for f in tl:
+            groups.setdefault((_norm_title(f.title), f.severity,
+                               tuple(f.mitre or [])), []).append(f)
+        shown, cap = 0, TIMELINE_MAX_GROUPS
+        for (title, sv, mit), fs in groups.items():
+            if shown >= cap:
+                break
+            shown += 1
+            ts_all = sorted(x.ts for x in fs if x.ts)
+            when = fmt_ts(ts_all[0])
+            if len(ts_all) > 1 and ts_all[-1] != ts_all[0]:
+                when += f" → {fmt_ts(ts_all[-1])}"
+            hosts = sorted({_host_label(graph, a) for f2 in fs for a in (f2.asset_ids or [])})
+            hs = (f" · {', '.join(hosts[:4])}" + ("…" if len(hosts) > 4 else "")) if hosts else ""
+            mitre = f" `[{', '.join(mit)}]`" if mit else ""
+            times = f" · ×{len(fs)}" if len(fs) > 1 else ""
+            out.append(f"- `{when}` · **[{sv}]** {title}{mitre}{times}{hs}")
+        if len(groups) > cap:
+            out.append(f"- _… {len(groups) - cap} further recurring detection group(s) "
+                       "omitted at this altitude — narrow the scope for the full timeline._")
+        out.append(f"\n_{len(tl)} event(s) collapsed into {len(groups)} recurring "
+                   "detection group(s); a repeated detection is stated once with its "
+                   "span and count._\n")
     else:
         for f in tl:
             mitre = f" `[{', '.join(f.mitre)}]`" if f.mitre else ""
@@ -1259,7 +1321,23 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
         for t in f.mitre:
             techs.setdefault(t, []).append(f.title)
     if techs:
+        # HONESTY: state the mapping COVERAGE. Most findings carry no technique id,
+        # and a bare technique list silently implies the whole case is mapped. A
+        # reader must be able to tell "these are the mapped ones" from "this is all
+        # that happened" — below a floor the list is a caption, not a section.
+        mapped = sum(1 for f in findings if f.mitre)
+        pct = (100 * mapped // len(findings)) if findings else 0
+        if pct < MITRE_MIN_COVERAGE_PCT:
+            out.append(f"_ATT&CK techniques are mapped for only **{mapped} of "
+                       f"{len(findings)}** findings ({pct}%) — too sparse for a "
+                       "technique matrix; the mapped ones appear inline in the "
+                       "timeline above._\n")
+            techs = {}
+    if techs:
         out.append("## MITRE ATT&CK Mapping\n")
+        out.append(f"_Techniques mapped for {sum(1 for f in findings if f.mitre)} of "
+                   f"{len(findings)} findings — absence of a technique is not absence "
+                   "of activity._\n")
         for t in sorted(techs):
             extra = f" (+{len(techs[t]) - 1} more)" if len(techs[t]) > 1 else ""
             name = _MITRE_NAMES.get(t)
@@ -1273,9 +1351,55 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
         out.append(rt)
 
     # ---- Recommendations (actionable next steps) ----------------------
-    out.append(_recommendations_md(graph, findings, assets))
+    # Suppressed when the model wrote the narrative: its "Priority actions"
+    # (Contain now / Investigate next) is the same content, prioritised and
+    # case-specific. Two near-identical action lists of equal length in one report
+    # made the reader choose which to trust.
+    if not narrated:
+        out.append(_recommendations_md(graph, findings, assets))
+
+    # ---- Limitations & Assumptions (what this report could NOT see) ----
+    out.append(_limitations_md(graph, assets, findings, window=window,
+                               min_severity=min_severity, suppressed_iocs=suppressed))
 
     return "\n".join(out)
+
+
+def _limitations_md(graph, assets, findings, *, window=None,
+                    min_severity="informational", suppressed_iocs=0) -> str:
+    """What the report could NOT see. Every professional interim states this: without
+    it a reader cannot separate absence-of-evidence from evidence-of-absence, and the
+    severity floor / window silently determine everything above. Derived entirely from
+    the case's own filters and data — no LLM, so it cannot drift from what actually ran."""
+    lines = []
+    if min_severity and min_severity != "informational":
+        lines.append(f"- Findings **below `{min_severity}`** were excluded from this "
+                     "analysis and are not represented above.")
+    if window and (window.get("start") or window.get("end")):
+        lines.append(f"- Only activity between **{window.get('start') or 'open'}** and "
+                     f"**{window.get('end') or 'now'}** (UTC) was considered; earlier or "
+                     "later activity is out of scope for this report.")
+    quiet = [a.label for a in assets
+             if not any(a.id in (f.asset_ids or []) for f in findings)]
+    if quiet:
+        lines.append(f"- **{len(quiet)} host(s) in scope produced no findings** "
+                     f"({', '.join(sorted(quiet)[:6])}{'…' if len(quiet) > 6 else ''}) — "
+                     "this means nothing was detected in what was collected, NOT that "
+                     "the host is known-clean.")
+    undated = sum(1 for f in findings if not f.ts)
+    if undated:
+        lines.append(f"- **{undated} finding(s) carry no timestamp** and cannot be "
+                     "placed on the timeline; they are excluded from time-based "
+                     "conclusions.")
+    if suppressed_iocs:
+        lines.append(f"- **{suppressed_iocs} observed artefact(s)** were withheld from "
+                     "the IOC list as low-confidence noise.")
+    lines.append("- Findings derive from the artefacts collected on the hosts in scope. "
+                 "Activity that left no artefact — or occurred on a host not collected "
+                 "— cannot appear here.")
+    lines.append("- Host **role hints are inferred from naming convention** and should "
+                 "be confirmed against the asset inventory before being relied on.")
+    return "## Limitations & Assumptions\n\n" + "\n".join(lines) + "\n"
 
 
 def report(graph, *, window=None, min_severity="informational", initial_access=None,
