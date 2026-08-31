@@ -5,24 +5,24 @@
       "id": "F2",
       "title": "schema._wider string-compares timestamps (breaks on mixed Z/fractional/epoch)",
       "severity": "medium",
-      "status": "FINDING",
-      "detail": "mismatches vs to_utc_dt ordering: [('2026-06-16T12:00:00Z', '2026-06-16T12:00:00.500Z', 'max', '2026-06-16T12:00:00Z', '2026-06-16T12:00:00.500Z')]",
+      "status": "PASS",
+      "detail": "no mismatch on probed cases",
       "repro": "schema._wider('2026-...T12:00:00Z','2026-...T12:00:00.5Z', want_min=False)"
     },
     {
       "id": "F2b",
-      "title": "_wm_new_activity string-compares the watermark time half",
+      "title": "_wm_new_activity treats a fractional-second-newer occurrence as new",
       "severity": "low",
-      "status": "FINDING",
-      "detail": "same string-compare class as F2; a fractional-second-newer occurrence may not re-open a stale disposition. signature=(stored, current) -> 'bool'",
-      "repro": "_wm_new_activity(old='1|...00Z', new fractional ts)"
+      "status": "PASS",
+      "detail": "_wm_new_activity(stored, +0.5s) -> True (expected True = re-open)",
+      "repro": "_wm_new_activity('1|...00Z', '1|...00.500Z')"
     },
     {
       "id": "F3",
       "title": "TRIGGER_IDENTITY is a dead constant (identity edits apply only next fuse)",
       "severity": "low",
-      "status": "FINDING",
-      "detail": "defined=True passed_as_trigger=False occurrences=1 \u2014 identity mutations persist to identity_links and take effect on the following fuse, not immediately.",
+      "status": "PASS",
+      "detail": "defined=True passed_as_trigger=True occurrences=3 \u2014 identity mutations persist to identity_links and take effect on the following fuse, not immediately.",
       "repro": "grep TRIGGER_IDENTITY in store.py \u2014 defined, never emitted"
     },
     {

@@ -5,24 +5,24 @@
       "id": "A1",
       "title": "turn-1 {final} give-up with 0 tool calls is not caught/retried",
       "severity": "high",
-      "status": "FINDING",
-      "detail": "raised=False steps=0 answer='I could not find anything.' \u2014 the loop accepted a 0-tool final; nothing forces a lookup or retries. | AT SCALE (Track B, 100 runs): 4% give-up, ALL on case 5586 (8% of that case) across raw-evidence/account/timeline and both arms; case 853 = 0/50. Case-content-triggered, not uniform noise.",
+      "status": "PASS",
+      "detail": "raised=False steps=1 answer='I could not find anything.' \u2014 the loop accepted a 0-tool final; nothing forces a lookup or retries.",
       "repro": "model emits {\"final\":...} on iteration 0"
     },
     {
       "id": "A2",
       "title": "tool exception propagates out of investigate() -> HTTP 500",
       "severity": "high",
-      "status": "FINDING",
-      "detail": "raised=True (simulated tool crash (e.g. int('abc') on limit)) \u2014 _tool() has no try/except; model-controlled args can crash the request.",
+      "status": "PASS",
+      "detail": "raised=False () \u2014 _tool() has no try/except; model-controlled args can crash the request.",
       "repro": "tool raises (bad limit / malformed pivot.window)"
     },
     {
       "id": "A3",
       "title": "transport failure propagates -> unhandled 500 (report path catches it)",
       "severity": "high",
-      "status": "FINDING",
-      "detail": "raised=True (_Boom) \u2014 investigate does not catch LLMUnavailable like store.chat/report do.",
+      "status": "PASS",
+      "detail": "raised=False (dict) \u2014 investigate does not catch LLMUnavailable like store.chat/report do.",
       "repro": "_real_llm raises"
     },
     {
@@ -30,15 +30,15 @@
       "title": "malformed-JSON storm burns budget without a separate retry counter",
       "severity": "medium",
       "status": "PASS",
-      "detail": "raised=False truncated=True answer='garbage' \u2014 nudges consume max_steps; no distinct retry budget.",
+      "detail": "raised=False truncated=True answer='The investigation reached its step budget without a conclusive, grounded answer:' \u2014 nudges consume max_steps; no distinct retry budget.",
       "repro": "model never emits valid JSON"
     },
     {
       "id": "A7b",
       "title": "forced-final can return raw model text as the analyst answer",
       "severity": "medium",
-      "status": "FINDING",
-      "detail": "answer='{\"tool\":\"list_findings\",\"args\":{}}' \u2014 after budget, obj.get('final') or raw; a non-final raw blob becomes the answer.",
+      "status": "PASS",
+      "detail": "answer='The investigation reached its step budget without a conclusive, grounded answer ' \u2014 after budget, obj.get('final') or raw; a non-final raw blob becomes the answer.",
       "repro": "model never returns {final}, even on the forced call"
     },
     {
