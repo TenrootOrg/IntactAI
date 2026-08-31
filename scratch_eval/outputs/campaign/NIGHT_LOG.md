@@ -19,3 +19,4 @@ reverted with the reason recorded.
 | 19:55 | B8 timestomping / corrupt timestamps | ✅ 8/8 events kept (incl. undated + garbage), chronological; the 2099 timestomp sorts last and stays visible rather than reordering real events | none |
 | 19:55 | B9 collapse fidelity @ corpus scale | ✅ critical shown 11/11 (the critical-hiding fix holds); no invented counts. Note: 36→36 groups here because corpus titles are unique — collapse only bites on real repeat-heavy data (real case: 131→61) | none |
 | 19:55 | A4 Limitations correctness | ✅ every claim verified TRUE against the graph (quiet-host count 1=1, host named correctly) | none |
+| 19:56 | A6 regression on REAL adatumlab case | ✅ 9 hosts, 151→155 findings (+4 identity cross-host from tonight's fix); body 10,890c; collapse 131→61; **all 5 criticals shown**; Limitations correct | none |
