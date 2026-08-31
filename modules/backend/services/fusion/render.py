@@ -568,7 +568,89 @@ def distilled(graph, *, window=None, min_severity="informational", max_entities=
                           max_entities=max_entities, detail=detail,
                           max_identities=eff_ident, max_findings=eff_findings)
         steps += 1
+    # LAST RESORT — still over budget after the stepdowns. Measured: a case with
+    # thousands of findings blows through it (120 hosts / 4,321 findings produced a
+    # 2.6 MB payload against a 708 KB budget, 3.7x over) because MAX_STEPDOWNS caps
+    # the halving AND _trim_findings deliberately never drops anything >= high. So
+    # the budget silently stopped binding exactly when it mattered most.
+    #
+    # Do NOT drop signal to fix that. COLLAPSE it instead: the same detection
+    # repeating across many hosts is one fact, not N — state it once with its count,
+    # host list and time span (the treatment the rendered timeline already uses).
+    # Every distinct (title, severity) survives, so nothing an analyst could act on
+    # is lost; only the repetition goes.
+    if _b.over_budget(p, budget_chars) and (p.get("findings") or []):
+        p["findings"] = _collapse_findings(p["findings"])
+        p["findings_collapsed"] = True
+    # The timeline is the real bulk once findings collapse — measured at 120 hosts it
+    # was 90.8% of the payload (1.2 MB of 1.34 MB). Collapse it the same way: one row
+    # per (detection, severity) with its count, hosts and span.
+    if _b.over_budget(p, budget_chars) and (p.get("timeline") or []):
+        p["timeline"] = _collapse_findings(p["timeline"])
+        p["timeline_collapsed"] = True
     return p
+
+
+def _collapse_findings(findings):
+    """Group repeated findings by (title, severity): one row carrying the count, the
+    hosts it spans and its first/last time. Severity-preserving by construction — no
+    level is favoured or dropped, repetition is simply stated once."""
+    from collections import OrderedDict
+
+    def _hosts_of(f):
+        """Findings carry `hosts` (list); timeline rows carry `host` (comma string)."""
+        hs = f.get("hosts")
+        if isinstance(hs, list):
+            return [h for h in hs if h]
+        h = f.get("host") or hs
+        if isinstance(h, str) and h.strip() and h != "-":
+            return [x.strip() for x in h.split(",") if x.strip()]
+        return []
+
+    def _norm(f):
+        """Titles EMBED the host ("SIGMA: X on FLEET-042"), so grouping on the raw
+        title collapses nothing — every title is unique and the pass is a no-op
+        (measured: 4,321 titles -> 4,321 groups, 1.4 KB saved of 2.6 MB). Strip the
+        row's OWN host off the tail so the same detection across hosts groups."""
+        t = f.get("title") or ""
+        for h in _hosts_of(f):
+            if t.endswith(f" on {h}"):
+                return t[: -(len(h) + 4)]
+        return t
+
+    groups: "OrderedDict[tuple, dict]" = OrderedDict()
+    for f in findings:
+        key = (_norm(f), f.get("severity"))
+        g = groups.get(key)
+        if g is None:
+            groups[key] = {"title": _norm(f), "severity": f.get("severity"),
+                           "confidence": f.get("confidence"), "kind": f.get("kind"),
+                           "mitre": f.get("mitre"), "summary": f.get("summary"),
+                           "hosts": list(_hosts_of(f)), "count": 1,
+                           "first_ts": f.get("ts"), "last_ts": f.get("ts")}
+            continue
+        g["count"] += 1
+        for h in _hosts_of(f):
+            if h not in g["hosts"]:
+                g["hosts"].append(h)
+        ts = f.get("ts")
+        if ts:
+            if not g["first_ts"] or ts < g["first_ts"]:
+                g["first_ts"] = ts
+            if not g["last_ts"] or ts > g["last_ts"]:
+                g["last_ts"] = ts
+    out = []
+    for g in groups.values():
+        hosts = g["hosts"]
+        if len(hosts) > 8:                       # host list itself can be the bulk
+            g["hosts"] = hosts[:8]
+            g["hosts_total"] = len(hosts)
+        if g["count"] == 1:
+            g.pop("count", None)
+            g["ts"] = g.pop("first_ts", None)
+            g.pop("last_ts", None)
+        out.append(g)
+    return out
 
 
 def _finding_dict(graph, f):

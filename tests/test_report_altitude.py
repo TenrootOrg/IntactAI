@@ -13,6 +13,7 @@ while the product regressed:
        /app/tests/test_report_altitude.py -q'   # (or unittest, below)
 """
 import datetime as _dt
+import json
 import os
 import sys
 import unittest
@@ -167,6 +168,46 @@ class SummaryTimeline(unittest.TestCase):
             f.title = f"SIGMA: Same Rule on HOST-{i:03d}"   # title embeds the host
         md = render.facts_md(_graph(3, fs), detail="summary", narrated=True)
         self.assertIn("×3", md)
+
+
+class PayloadBudgetCollapse(unittest.TestCase):
+    """The LLM payload budget silently stopped binding at scale: MAX_STEPDOWNS caps the
+    halving and >=high findings are exempt from trimming, so a case with thousands of
+    high findings shipped far over budget (measured 2.6 MB against a 708 KB budget).
+    The last-resort pass collapses repeated detections instead of dropping signal."""
+
+    def _big(self, n_hosts):
+        fs = []
+        for h in range(n_hosts):
+            for k in range(6):
+                f = _find(f"f{h}_{k}", sev="high", day=k, hosts=(f"host{h:03d}",))
+                f.title = f"SIGMA: Recurring Detection {k} on HOST-{h:03d}"
+                fs.append(f)
+        return _graph(n_hosts, fs)
+
+    def test_collapse_fires_over_budget_and_preserves_detections(self):
+        g = self._big(40)
+        big = render.distilled(g, max_entities=50, budget_chars=10**9, detail="summary")
+        cut = render.distilled(g, max_entities=50, budget_chars=20000, detail="summary")
+        self.assertTrue(cut.get("findings_collapsed"))
+        # all 6 DISTINCT detections survive (only the per-host repetition collapses)
+        self.assertEqual(len({f["title"] for f in cut["findings"]}), 6)
+        self.assertLess(len(json.dumps(cut, default=str)),
+                        len(json.dumps(big, default=str)))
+
+    def test_collapse_keeps_severity_and_counts(self):
+        cut = render.distilled(self._big(40), max_entities=50, budget_chars=20000,
+                               detail="summary")
+        self.assertTrue(all(f["severity"] == "high" for f in cut["findings"]))
+        self.assertTrue(any(f.get("count", 1) > 1 for f in cut["findings"]))
+
+    def test_does_not_fire_under_budget(self):
+        # a small case must be byte-identical to the un-budgeted payload
+        g = self._big(2)
+        a = render.distilled(g, max_entities=50, budget_chars=10**9, detail="summary")
+        b = render.distilled(g, max_entities=50, budget_chars=10**9 - 1, detail="summary")
+        self.assertNotIn("findings_collapsed", b)
+        self.assertEqual(json.dumps(a, default=str), json.dumps(b, default=str))
 
 
 class GroundingGuard(unittest.TestCase):
