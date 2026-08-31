@@ -136,5 +136,50 @@ def cmd_combined():
     print(f"\nwrote {OUT}/accuracy_combined.md")
 
 
+def cmd_precision():
+    """FALSE-POSITIVE test: benign telemetry must NOT produce attack findings."""
+    g = _fuse(corpus.BENIGN, "eval_benign")
+    finds = [(f.title, f.severity) for f in g.findings]
+    # any high/critical finding on benign input is a false positive
+    fp = [f for f in g.findings if f.severity in ("high", "critical")]
+    lines = ["# Attack-simulation ACCURACY — precision (benign input)", "",
+             f"Benign admin/IT telemetry through the real pipeline. "
+             f"**{len(g.findings)} finding(s), {len(fp)} high/critical false positive(s).**", "",
+             "PASS = no high/critical findings invented from benign activity.", "",
+             f"**{'✅ PASS' if not fp else '❌ FAIL'}** — findings: {finds or 'none'}"]
+    md = "\n".join(lines) + "\n"
+    open(f"{OUT}/accuracy_precision.md", "w").write(md)
+    json.dump({"findings": finds, "false_positives": len(fp)},
+              open(f"{OUT}/accuracy_precision.json", "w"), indent=2, default=str)
+    print(md)
+
+
+def cmd_noise():
+    """RECALL-UNDER-NOISE: bury the attack telemetry in benign volume, confirm every
+    finding-eligible plant still surfaces (a detection must survive a noisy host)."""
+    tele = corpus.build_all_telemetry()
+    for art, rows in corpus.BENIGN.items():        # add benign noise on the same hosts
+        tele.setdefault(art, []).extend(rows * 20)  # 20x benign volume
+    g = _fuse(tele, "eval_noise")
+    fts = _finding_texts(g)
+    key = [{"id": s["id"], "kws": [k.lower() for k in s["expect"]["find"]],
+            "host": s["host"].lower(), "sev": s["expect"].get("sev")} for s in corpus.SCENARIOS
+           if s["expect"].get("sev") in ("high", "critical")]   # finding-eligible only
+    rows = [{"id": k["id"], "surfaced": any(all(w in t for w in k["kws"]) and k["host"] in t
+                                            for t in fts)} for k in key]
+    rec = sum(r["surfaced"] for r in rows)
+    lines = ["# Attack-simulation ACCURACY — recall under noise", "",
+             f"Attack telemetry + 20× benign volume on the same hosts "
+             f"({len(g.findings)} findings total).", "",
+             f"**Finding-eligible plants still detected: {rec}/{len(key)}**", "",
+             "| Plant | Survived noise? |", "|---|:--:|"]
+    for r in rows:
+        lines.append(f"| {r['id']} | {'✅' if r['surfaced'] else '❌ LOST'} |")
+    md = "\n".join(lines) + "\n"
+    open(f"{OUT}/accuracy_noise.md", "w").write(md)
+    print(md)
+
+
 if __name__ == "__main__":
-    {"per": cmd_per, "combined": cmd_combined}.get(sys.argv[1] if sys.argv[1:] else "per", cmd_per)()
+    {"per": cmd_per, "combined": cmd_combined, "precision": cmd_precision,
+     "noise": cmd_noise}.get(sys.argv[1] if sys.argv[1:] else "per", cmd_per)()

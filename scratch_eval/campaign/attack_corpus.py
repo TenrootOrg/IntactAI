@@ -97,6 +97,61 @@ SCENARIOS = [
 ]
 
 
+# More techniques, second batch — broaden tactic coverage to find more gaps.
+SCENARIOS += [
+    {"id": "wmi-persist", "name": "WMI event consumer persistence",
+     "tech": "T1546.003", "host": "WKS-EVAL06",
+     "activity": "permanent WMI event subscription for persistence",
+     "telemetry": {_T: _sigma("WKS-EVAL06", "WMI Event Subscription Persistence", "high",
+                              "2026-08-01T10:10:00Z")},
+     "expect": {"find": ["wmi"], "sev": "high"}},
+    {"id": "dcsync", "name": "DCSync credential replication",
+     "tech": "T1003.006", "host": "WKS-EVAL02",
+     "activity": "Mimikatz lsadump::dcsync pulling domain hashes",
+     "telemetry": {_T: _sigma("WKS-EVAL02", "DCSync Replication Rights Abuse", "crit",
+                              "2026-08-01T10:15:00Z")},
+     "expect": {"find": ["dcsync"], "sev": "critical"}},
+    {"id": "bloodhound", "name": "SharpHound/BloodHound AD collection",
+     "tech": "T1087.002", "host": "WKS-EVAL03",
+     "activity": "SharpHound.exe -c All domain enumeration",
+     "telemetry": {_T: _sigma("WKS-EVAL03", "SharpHound BloodHound Collection", "high",
+                              "2026-08-01T10:20:00Z")},
+     "expect": {"find": ["bloodhound"], "sev": "high"}},
+    {"id": "rdp-lateral", "name": "Non-standard outbound RDP",
+     "tech": "T1021.001", "host": "WKS-EVAL04",
+     "activity": "outbound RDP to a workstation (lateral movement)",
+     "telemetry": {_T: _sigma("WKS-EVAL04", "Non-Standard Outbound RDP Connection", "high",
+                              "2026-08-01T10:25:00Z")},
+     "expect": {"find": ["rdp"], "sev": "high"}},
+    {"id": "malfind-svc", "name": "Injected svchost (RWX, no YARA)",
+     "tech": "T1055.001", "host": "WKS-EVAL06",
+     "activity": "shellcode injected into svchost.exe (no signature match)",
+     "telemetry": {"Windows.Detection.Malfind": [
+         {"Computer": "WKS-EVAL06", "Pid": 992, "Name": "svchost.exe",
+          "Protection": "PAGE_EXECUTE_READWRITE", "CreateTime": "2026-08-01T10:30:00Z"}]},
+     "expect": {"find": ["svchost"], "sev": "critical"}},
+]
+
+# BENIGN baseline — normal admin/IT activity that should NOT produce attack findings
+# (false-positive / precision test). Informational SIGMA + routine processes.
+BENIGN = {
+    "Windows.Hayabusa.Rules": [
+        {"Computer": "WKS-EVAL01", "Title": "User Logon", "Level": "informational",
+         "EventTime": "2026-08-01T08:00:00Z"},
+        {"Computer": "WKS-EVAL01", "Title": "Windows Update Installed", "Level": "low",
+         "EventTime": "2026-08-01T08:05:00Z"},
+        {"Computer": "WKS-EVAL02", "Title": "Scheduled Defrag", "Level": "informational",
+         "EventTime": "2026-08-01T08:10:00Z"},
+    ],
+    "Generic.System.Pstree": [
+        {"Computer": "WKS-EVAL01", "Pid": 700, "Name": "explorer.exe",
+         "CommandLine": "C:\\Windows\\explorer.exe", "CreateTime": "2026-08-01T08:00:00Z"},
+        {"Computer": "WKS-EVAL02", "Pid": 812, "Name": "OUTLOOK.EXE",
+         "CommandLine": "outlook.exe", "CreateTime": "2026-08-01T08:12:00Z"},
+    ],
+}
+
+
 def build_all_telemetry():
     """Merge every scenario's telemetry into one multi-host collection (the combined
     incident) — {artifact: [rows across scenarios]}."""

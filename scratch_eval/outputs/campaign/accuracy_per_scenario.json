@@ -99,8 +99,58 @@
       "grounded_host": true,
       "severity_ok": true,
       "matched": "sigma: renamed procdump execution on wks-eval04 :: wks-eval04"
+    },
+    {
+      "id": "wmi-persist",
+      "name": "WMI event consumer persistence",
+      "tech": "T1546.003",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: wmi event subscription persistence on wks-eval06 :: wks-eval06"
+    },
+    {
+      "id": "dcsync",
+      "name": "DCSync credential replication",
+      "tech": "T1003.006",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: dcsync replication rights abuse on wks-eval02 :: wks-eval02"
+    },
+    {
+      "id": "bloodhound",
+      "name": "SharpHound/BloodHound AD collection",
+      "tech": "T1087.002",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: sharphound bloodhound collection on wks-eval03 :: wks-eval03"
+    },
+    {
+      "id": "rdp-lateral",
+      "name": "Non-standard outbound RDP",
+      "tech": "T1021.001",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: non-standard outbound rdp connection on wks-eval04 :: wks-eval04"
+    },
+    {
+      "id": "malfind-svc",
+      "name": "Injected svchost (RWX, no YARA)",
+      "tech": "T1055.001",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": false,
+      "matched": "code injection \u2014 svchost.exe (992) on wks-eval06 :: wks-eval06"
     }
   ],
-  "recall": 8,
-  "n": 10
+  "recall": 13,
+  "n": 15
 }

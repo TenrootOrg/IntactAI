@@ -1,8 +1,8 @@
 # Attack-simulation ACCURACY — per scenario (deterministic)
 
-10 authored PowerShell attack scenarios through the REAL pipeline (map_agentic -> correlate.assemble). Recall = the planted technique surfaced as a finding on the right host.
+15 authored PowerShell attack scenarios through the REAL pipeline (map_agentic -> correlate.assemble). Recall = the planted technique surfaced as a finding on the right host.
 
-**Recall 8/10 (80%) · Host-grounded 8/10 · Severity-correct 8/10**
+**Recall 13/15 (87%) · Host-grounded 13/15 · Severity-correct 12/15**
 
 | # | Scenario | ATT&CK | Detected | Host✓ | Sev✓ | Matched finding |
 |---|---|---|:--:|:--:|:--:|---|
@@ -16,3 +16,8 @@
 | 8 | Cross-host credential reuse (service account) | T1021 | ✅ | ✅ | ✅ | `account 'adatumlab\svc_backup' used across 2 hosts :: wks-ev` |
 | 9 | Cobalt Strike named pipe | T1071 | ✅ | ✅ | ✅ | `sigma: cobalt strike named pipe pattern on wks-eval05 :: wks` |
 | 10 | Renamed system binary (procdump) | T1036.003 | ✅ | ✅ | ✅ | `sigma: renamed procdump execution on wks-eval04 :: wks-eval0` |
+| 11 | WMI event consumer persistence | T1546.003 | ✅ | ✅ | ✅ | `sigma: wmi event subscription persistence on wks-eval06 :: w` |
+| 12 | DCSync credential replication | T1003.006 | ✅ | ✅ | ✅ | `sigma: dcsync replication rights abuse on wks-eval02 :: wks-` |
+| 13 | SharpHound/BloodHound AD collection | T1087.002 | ✅ | ✅ | ✅ | `sigma: sharphound bloodhound collection on wks-eval03 :: wks` |
+| 14 | Non-standard outbound RDP | T1021.001 | ✅ | ✅ | ✅ | `sigma: non-standard outbound rdp connection on wks-eval04 ::` |
+| 15 | Injected svchost (RWX, no YARA) | T1055.001 | ✅ | ✅ | — | `code injection — svchost.exe (992) on wks-eval06 :: wks-eval` |
