@@ -2650,6 +2650,17 @@ def _apply_identity_links(g, d, log=None) -> None:
 
 
 
+def _refuse_after_identity(case_id) -> None:
+    """F3 fix: an identity decision (link/group/split/undo/manual) now takes effect
+    IMMEDIATELY — re-fuse with TRIGGER_IDENTITY so the merged/split identities show
+    without waiting for the next unrelated fuse. Mirrors set_disposition. Best-effort
+    and fully isolated: a re-fuse hiccup never fails the decision that was persisted."""
+    try:
+        fuse_case(case_id, trigger=TRIGGER_IDENTITY)
+    except Exception as e:  # noqa: BLE001
+        log_case_event(case_id, "Identity · re-fuse deferred", "warning", str(e)[:120])
+
+
 def decide_identity_group(case_id, members, decision) -> dict:
     """Confirm/decline a whole grouped relationship (all its member links at once).
     Persists per-member so it survives re-fusion like any other decision."""
@@ -2675,6 +2686,7 @@ def decide_identity_group(case_id, members, decision) -> dict:
 
     _mutate_list_field(case_id, "identity_links", _mutate)
     log_case_event(case_id, "Identity · group decision", "info", f"{n} link(s) → {decision}")
+    _refuse_after_identity(case_id)
     return {"decision": decision, "count": n}
 
 
@@ -2696,6 +2708,7 @@ def split_account(case_id, account_id) -> dict:
 
     _mutate_list_field(case_id, "identity_links", _mutate)
     log_case_event(case_id, "Identity · account removed", "info", f"{account_id} split out")
+    _refuse_after_identity(case_id)
     return {"id": lid}
 
 
@@ -2727,6 +2740,7 @@ def undo_identity_decision(case_id, decision_id) -> dict:
     _mutate_list_field(case_id, "identity_links",
                        lambda links: [r for r in links if r.get("id") != decision_id])
     log_case_event(case_id, "Identity · undo", "info", str(decision_id))
+    _refuse_after_identity(case_id)
     return {"removed": decision_id}
 
 
@@ -2847,6 +2861,7 @@ def decide_identity_link(case_id, link_id, decision, *, a_id=None, b_id=None,
 
     _mutate_list_field(case_id, "identity_links", _mutate)
     log_case_event(case_id, "Identity · decision", "info", f"{link_id} → {decision}")
+    _refuse_after_identity(case_id)
     return {"id": link_id, "decision": decision}
 
 
@@ -2869,6 +2884,7 @@ def add_manual_identity_link(case_id, a_id, b_id, kind="same_identity") -> dict:
 
     _mutate_list_field(case_id, "identity_links", _mutate)
     log_case_event(case_id, "Identity · manual link", "info", f"{a_id} ⇄ {b_id} ({kind})")
+    _refuse_after_identity(case_id)
     return {"id": lid, "decision": "confirmed"}
 
 

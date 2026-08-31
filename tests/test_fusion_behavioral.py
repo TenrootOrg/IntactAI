@@ -138,5 +138,29 @@ class Filters(unittest.TestCase):
         self.assertIn("asset:c1", g.entities)
 
 
+class TimestampComparison(unittest.TestCase):
+    """F2/F2b: timestamp widening + watermark staleness must compare INSTANTS, not
+    lexicographic strings (a trailing 'Z' sorts after a fractional second)."""
+
+    def test_wider_picks_fractional_later_as_max(self):
+        z = "2026-06-16T12:00:00Z"
+        frac = "2026-06-16T12:00:00.500Z"        # 0.5s LATER, but ".5" < "Z" as strings
+        self.assertEqual(schema._wider(z, frac, want_min=False), frac)   # max = later
+        self.assertEqual(schema._wider(z, frac, want_min=True), z)       # min = earlier
+
+    def test_wider_single_and_blank(self):
+        self.assertEqual(schema._wider("2026-01-01T00:00:00Z", None, want_min=True),
+                         "2026-01-01T00:00:00Z")
+        self.assertIsNone(schema._wider(None, None, want_min=False))
+
+    def test_watermark_reopens_on_fractional_later(self):
+        # same count, current 0.5s later -> stale verdict must re-open (True)
+        self.assertTrue(correlate._wm_new_activity("1|2026-06-16T12:00:00Z",
+                                                   "1|2026-06-16T12:00:00.500Z"))
+        # fewer / not-later -> not stale
+        self.assertFalse(correlate._wm_new_activity("2|2026-06-16T12:00:00Z",
+                                                    "1|2026-06-16T12:00:00Z"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -32,11 +32,24 @@ SCHEMA_VERSION = 1
 
 
 def _wider(a: Optional[str], b: Optional[str], *, want_min: bool) -> Optional[str]:
-    """Min/max of two ISO8601 strings, ignoring blanks (ISO8601 sorts
-    lexicographically, so string compare is correct)."""
+    """Min/max of two timestamps, ignoring blanks. Compares as INSTANTS via
+    keys.to_utc_dt (F2 fix) — lexicographic string compare is WRONG when the two
+    sides use different notations that sort differently from their real order
+    (a trailing 'Z' vs a fractional second; a float-epoch vs an ISO date). The
+    ORIGINAL string is returned so the stored format is preserved; only the
+    ordering decision uses instants. Falls back to string compare if unparseable."""
     vals = [x for x in (a, b) if x]
     if not vals:
         return None
+    if len(vals) == 1:
+        return vals[0]
+    try:
+        from . import keys
+        da, db = keys.to_utc_dt(a), keys.to_utc_dt(b)
+        if da and db:
+            return a if ((da <= db) == want_min) else b
+    except Exception:
+        pass
     return min(vals) if want_min else max(vals)
 
 

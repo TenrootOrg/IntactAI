@@ -54,20 +54,16 @@ def probe_F2_watermark_compare():
     if not fn:
         rec("F2b", "_wm_new_activity absent (skip)", "info", False, "not found", "-")
         return
-    # old watermark 'count|ts', new activity ts one fractional second later
-    try:
-        older = "1|2026-06-16T12:00:00Z"
-        newer_ts = "2026-06-16T12:00:00.500Z"
-        # signature varies; call defensively
-        sig = inspect.signature(fn)
-        detail = f"signature={sig}"
-        rec("F2b", "_wm_new_activity string-compares the watermark time half",
-            "low", True,
-            "same string-compare class as F2; a fractional-second-newer occurrence "
-            f"may not re-open a stale disposition. {detail}",
-            "_wm_new_activity(old='1|...00Z', new fractional ts)")
-    except Exception as e:  # noqa: BLE001
-        rec("F2b", "_wm_new_activity probe error", "info", False, repr(e), "-")
+    # BEHAVIORAL: a same-count occurrence whose time is a fractional second LATER
+    # (notation that sorts BEFORE the stored 'Z' form lexicographically) must still
+    # be seen as new activity -> re-open. Lexicographic compare wrongly returns False.
+    stored = "1|2026-06-16T12:00:00Z"
+    later_frac = "1|2026-06-16T12:00:00.500Z"   # 0.5s later, but ".5" < "Z" as strings
+    got = fn(stored, later_frac)
+    rec("F2b", "_wm_new_activity treats a fractional-second-newer occurrence as new",
+        "low", not got,          # finding iff it FAILS to see the later occurrence
+        f"_wm_new_activity(stored, +0.5s) -> {got} (expected True = re-open)",
+        "_wm_new_activity('1|...00Z', '1|...00.500Z')")
 
 
 def probe_F3_trigger_identity_dead():

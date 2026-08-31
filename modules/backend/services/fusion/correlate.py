@@ -142,7 +142,15 @@ def _wm_new_activity(stored, current) -> bool:
     try:
         sc, sl = str(stored).split("|", 1)
         cc, cl = str(current).split("|", 1)
-        return int(cc) > int(sc) or cl > sl
+        # F2b: compare the time halves as INSTANTS, not lexicographically — a
+        # fractional-second- or format-different newer occurrence must still count
+        # as "later" so a stale verdict re-opens. Fall back to string compare.
+        try:
+            dc, ds = keys.to_utc_dt(cl), keys.to_utc_dt(sl)
+            later = (dc > ds) if (dc and ds) else (cl > sl)
+        except Exception:
+            later = cl > sl
+        return int(cc) > int(sc) or later
     except Exception:
         return False
 
