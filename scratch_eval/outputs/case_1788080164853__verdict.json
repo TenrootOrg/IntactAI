@@ -4,12 +4,12 @@
     {
       "strategy": "S0-baseline",
       "dfir_professionalism": 3,
-      "altitude_fit": 1,
+      "altitude_fit": 2,
       "grounding": 3,
       "actionability": 5,
       "efficiency": 1,
-      "total": 13,
-      "rationale": "Thorough and operationally useful, but far too long and forces a 757-day heterogeneous dataset into one campaign narrative despite repeatedly acknowledging broken chronology, ambiguous tooling, inferred roles, and unknown movement direction."
+      "total": 14,
+      "rationale": "Thorough and operationally useful, but forces a sustained campaign narrative across 757 days, occasionally overstates correlation as proof, and is far too long to ship."
     },
     {
       "strategy": "S1-altitude",
@@ -19,9 +19,29 @@
       "actionability": 4,
       "efficiency": 5,
       "total": 23,
-      "rationale": "Correctly treats the broad scope as competing ranked scenarios, calibrates uncertainty, identifies precise zoom windows, and preserves alternative authorised-activity explanations, though some aggregate infrastructure claims lack event-level citation and containment guidance is limited."
+      "rationale": "Best broad-scope treatment: ranked competing scenarios, calibrated confidence, precise zoom windows, and concise responder priorities without forcing continuity."
+    },
+    {
+      "strategy": "S2-macro2",
+      "dfir_professionalism": 4,
+      "altitude_fit": 5,
+      "grounding": 2,
+      "actionability": 5,
+      "efficiency": 5,
+      "total": 21,
+      "rationale": "Strong scenario-based and actionable report, but the opening claim of 96 findings directly contradicts the scoped 151 and materially damages grounding."
+    },
+    {
+      "strategy": "S4-anchored",
+      "dfir_professionalism": 4,
+      "altitude_fit": 4,
+      "grounding": 1,
+      "actionability": 4,
+      "efficiency": 4,
+      "total": 17,
+      "rationale": "Well structured, but introduces unsupported or contradictory timestamps and events\u2014including a timestamp for giladt despite the evidence stating it is null\u2014making it unsafe to ship."
     }
   ],
   "winner": "S1-altitude",
-  "why": "It matches the broad-case analytical altitude and gives responders concise, confidence-ranked hypotheses and targeted next pivots without inventing a single continuous intrusion story."
+  "why": "It most accurately matches the broad case altitude, preserves competing explanations, and directs investigators to decisive evidence with the best signal-to-length ratio."
 }

@@ -135,6 +135,38 @@ FOCUSED_TIGHT_PROMPT = (
 )
 
 
+# --- S4: anchor the macro scenarios to the deterministic zoom CLUSTERS, so the
+#     report's scenarios are grounded in real (host-cluster, window) hotspots AND
+#     align exactly with the clickable "Analyze this scope" cards.
+MACRO3_PROMPT = MACRO2_PROMPT.replace(
+    "scope (host/finding counts + evidence span).",
+    "scope (host/finding counts + evidence span); activity_clusters — PRE-COMPUTED, "
+    "grounded suspicious (host-cluster + time-window) hotspots with finding counts, "
+    "cross-host count and mitre, ranked by risk. These are your scenario SKELETON.",
+).replace(
+    "The 2-4 most plausible intrusion/abuse scenarios the evidence supports, highest risk "
+    "first. For each: a bolded title, then",
+    "Build the 2-4 most plausible scenarios ON TOP OF activity_clusters — each scenario "
+    "maps to one or more clusters (merge related clusters into one campaign, or keep them "
+    "separate), highest risk first. For each: a bolded title, then",
+).replace(
+    "  - **Zoom** — the exact scope to narrow to (which hosts + which time window) to confirm "
+    "or kill it.\n",
+    "  - **Zoom** — use the hosts + window of the cluster(s) this scenario is built on, so "
+    "the analyst can act on it directly.\n",
+)
+
+
+def build_payload_anchored(graph, d, detail="summary"):
+    p = build_payload(graph, d, detail)
+    cl = render.zoom_targets(graph, window=d.get("time_window") or None,
+                             min_severity=d.get("min_severity", "informational"), n=6)
+    p["activity_clusters"] = [{"window": c["window"], "hosts": c["host_labels"],
+                               "finding_count": c["finding_count"], "cross_host": c["cross_host"],
+                               "severity": c["severity"], "mitre": c["mitre"]} for c in cl]
+    return p
+
+
 def scope_facts(graph, d):
     window = d.get("time_window") or None
     msev = d.get("min_severity", "informational")
@@ -190,10 +222,14 @@ def run_strategy(name, graph, d, facts):
         if macro:
             return call_and_meter(MACRO2_PROMPT, build_payload(graph, d, "summary"), name)
         return call_and_meter(FOCUSED_TIGHT_PROMPT, build_payload(graph, d, "explicit"), name)
+    if name == "S4-anchored":                  # macro scenarios anchored to zoom clusters
+        if macro:
+            return call_and_meter(MACRO3_PROMPT, build_payload_anchored(graph, d, "summary"), name)
+        return call_and_meter(FOCUSED_TIGHT_PROMPT, build_payload(graph, d, "explicit"), name)
     raise ValueError(name)
 
 
-STRATEGIES = ["S0-baseline", "S1-altitude", "S2-macro2", "S3-final"]
+STRATEGIES = ["S0-baseline", "S1-altitude", "S2-macro2", "S3-final", "S4-anchored"]
 GRAPH_DIR = "/app/data/fusion_graphs"
 
 
