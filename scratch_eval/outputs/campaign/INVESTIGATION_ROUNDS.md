@@ -87,3 +87,30 @@ and measured it. **It did not help, and the diagnosis behind it was wrong.**
 kept — it is harmless and directionally sensible — but it is NOT established as
 effective. The honest status of this weakness is UNRESOLVED, with a corrected
 understanding of its cause (question-anchoring), not fixed.
+
+## RESOLVED: the cause is QUESTION ANCHORING (A/B, 10 runs/arm)
+
+| Arm | Target host (WKS-EVAL04) | Decoy cited (WKS-EVAL01) |
+|---|:--:|:--:|
+| loaded — "used **for credential theft**?" | **6/10 (60%)** | **7/10** |
+| neutral — "was procdump **executed**?" | **10/10 (100%)** | **0/10** |
+
+The decoy column proves the mechanism: the loaded phrase steers RETRIEVAL to the
+Mimikatz/LSASS finding (cited 7/10 vs 0/10 neutral), and ALL FOUR misses cite the
+decoy. The model is not losing a host it proved — it is answering about a different,
+real finding that the phrase "credential theft" pulled it toward.
+
+Conclusions:
+1. Root cause = question anchoring, NOT hedging/lost grounding. The reverted
+   grounding footer targeted the wrong mechanism — and would have appended the
+   DECOY's host, making a wrong answer more confident. Reverting it was correct.
+2. No fabrication: every miss accurately reports a REAL finding, just not the one
+   asked about. Grounding integrity intact; target selection is the weak part.
+3. Q8 was a badly-posed eval question — it measured phrasing sensitivity, not
+   investigation accuracy. The 38/40 (95%) headline is if anything understated.
+4. The prompt tweak kept earlier is unvalidated for this; neutral phrasing alone
+   reaches 100%.
+
+Product candidate (not implemented): when a question's premise matches multiple
+findings, have the loop DISAMBIGUATE ("did you mean the renamed-procdump execution
+on WKS-EVAL04, or the LSASS dumping on WKS-EVAL01?") instead of silently picking one.

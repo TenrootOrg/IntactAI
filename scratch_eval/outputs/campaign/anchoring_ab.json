@@ -1,0 +1,161 @@
+{
+  "n": 10,
+  "summary": {
+    "loaded": {
+      "target": 6,
+      "decoy": 7,
+      "n": 10
+    },
+    "neutral": {
+      "target": 10,
+      "decoy": 0,
+      "n": 10
+    }
+  },
+  "results": {
+    "loaded": [
+      {
+        "run": 1,
+        "target": true,
+        "decoy": false,
+        "procdump": true,
+        "answer": "**Confidence: MODERATE**\n\n**OBSERVATION:** A high-severity \u201cRenamed ProcDump Execution\u201d detection occurred on **WKS-EVAL04** at **2026-08-01T10:05:00Z**. A host pivot for 09:55\u201310:15Z returned only th"
+      },
+      {
+        "run": 2,
+        "target": true,
+        "decoy": true,
+        "procdump": true,
+        "answer": "**Confidence: MODERATE**\n\n**OBSERVATION:** A high-severity finding identified **Renamed ProcDump Execution** on **WKS-EVAL04** at **2026-08-01T10:05:00Z**. A host pivot over 09:55\u201310:15Z returned only"
+      },
+      {
+        "run": 3,
+        "target": false,
+        "decoy": true,
+        "procdump": true,
+        "answer": "**Confidence: LOW**\n\n**OBSERVATION**\n- A critical finding reports **\u201cMimikatz LSASS Credential Dumping\u201d** on **WKS-EVAL01** at **2026-08-01T09:12:00Z**.\n- The raw evidence confirms only that detection"
+      },
+      {
+        "run": 4,
+        "target": true,
+        "decoy": true,
+        "procdump": true,
+        "answer": "**Confidence: MODERATE**\n\n**OBSERVATION**\n- A finding titled **\u201cRenamed ProcDump Execution\u201d** was recorded on **WKS-EVAL04** at **2026-08-01T10:05:00Z**, with severity **high**.\n- Separately, **\u201cMimik"
+      },
+      {
+        "run": 5,
+        "target": true,
+        "decoy": false,
+        "procdump": true,
+        "answer": "**Confidence: MODERATE**\n\n**OBSERVATION:** A high-severity finding reports **\u201cRenamed ProcDump Execution\u201d** on **WKS-EVAL04** at **2026-08-01T10:05:00Z**. Its raw evidence consists of two identical `W"
+      },
+      {
+        "run": 6,
+        "target": true,
+        "decoy": true,
+        "procdump": true,
+        "answer": "**Confidence: MODERATE**\n\n**OBSERVATION**\n- A detection titled **\u201cRenamed ProcDump Execution\u201d** occurred on **WKS-EVAL04** at **2026-08-01T10:05:00Z**.\n- Separately, **\u201cMimikatz LSASS Credential Dumpi"
+      },
+      {
+        "run": 7,
+        "target": true,
+        "decoy": false,
+        "procdump": true,
+        "answer": "**Confidence: MODERATE**\n\n**OBSERVATION:** A high-severity Hayabusa/SIGMA finding recorded **\u201cRenamed ProcDump Execution\u201d** on **WKS-EVAL04** at **2026-08-01T10:05:00Z**. A host pivot from 09:55\u201310:15"
+      },
+      {
+        "run": 8,
+        "target": false,
+        "decoy": true,
+        "procdump": true,
+        "answer": "**Confidence: LOW**\n\n**OBSERVATION**\n- A critical `Mimikatz LSASS Credential Dumping` detection occurred on **WKS-EVAL01** at **2026-08-01T09:12:00Z**.\n- The raw evidence contains only the computer, d"
+      },
+      {
+        "run": 9,
+        "target": false,
+        "decoy": true,
+        "procdump": true,
+        "answer": "**Confidence: LOW**\n\n**OBSERVATION:** On **WKS-EVAL01** at **2026-08-01T09:12:00Z**, the evidence shows a critical **\u201cMimikatz LSASS Credential Dumping\u201d** detection. A host pivot confirms an event on "
+      },
+      {
+        "run": 10,
+        "target": false,
+        "decoy": true,
+        "procdump": true,
+        "answer": "**Confidence: MODERATE**\n\n**OBSERVATION**\n- `Windows.Hayabusa.Rules` recorded **\u201cMimikatz LSASS Credential Dumping\u201d** on **WKS-EVAL01** at **2026-08-01T09:12:00Z**.\n- Searches for **procdump** and a *"
+      }
+    ],
+    "neutral": [
+      {
+        "run": 1,
+        "target": true,
+        "decoy": false,
+        "procdump": true,
+        "answer": "**Confidence: HIGH**\n\n**OBSERVATION:** Two raw `Windows.Hayabusa.Rules` rows report **\u201cRenamed ProcDump Execution\u201d** on host **WKS-EVAL04** at **2026-08-01T10:05:00Z**, with severity `high`.\n\n**INFERE"
+      },
+      {
+        "run": 2,
+        "target": true,
+        "decoy": false,
+        "procdump": true,
+        "answer": "**Confidence: HIGH**\n\n**Observation:** `Windows.Hayabusa.Rules` produced a high-severity **\u201cRenamed ProcDump Execution\u201d** detection on host **WKS-EVAL04** at **2026-08-01T10:05:00Z**. The evidence con"
+      },
+      {
+        "run": 3,
+        "target": true,
+        "decoy": false,
+        "procdump": true,
+        "answer": "**Confidence: HIGH**\n\n**OBSERVATION:** Two raw `Windows.Hayabusa.Rules` rows report **\u201cRenamed ProcDump Execution\u201d** on host **WKS-EVAL04** at **2026-08-01T10:05:00Z**, with level **high**.\n\n**INFEREN"
+      },
+      {
+        "run": 4,
+        "target": true,
+        "decoy": false,
+        "procdump": true,
+        "answer": "**Confidence: MODERATE**\n\n**OBSERVATION:** Two identical raw `Windows.Hayabusa.Rules` rows report **\u201cRenamed ProcDump Execution\u201d** on host **WKS-EVAL04** at **2026-08-01T10:05:00Z**, with severity `hi"
+      },
+      {
+        "run": 5,
+        "target": true,
+        "decoy": false,
+        "procdump": true,
+        "answer": "**Confidence: HIGH**\n\n**OBSERVATION:** Two raw `Windows.Hayabusa.Rules` rows report **\u201cRenamed ProcDump Execution\u201d** on host **WKS-EVAL04** at **2026-08-01T10:05:00Z**, with severity `high`.\n\n**INFERE"
+      },
+      {
+        "run": 6,
+        "target": true,
+        "decoy": false,
+        "procdump": true,
+        "answer": "**Confidence: HIGH**\n\n**OBSERVATION:** Windows Hayabusa evidence reports **\u201cRenamed ProcDump Execution\u201d** on host **WKS-EVAL04** at **2026-08-01T10:05:00Z**. The finding is rated high severity.\n\n**INF"
+      },
+      {
+        "run": 7,
+        "target": true,
+        "decoy": false,
+        "procdump": true,
+        "answer": "**Confidence: HIGH**\n\n**Observation:** Two raw `Windows.Hayabusa.Rules` rows record **\u201cRenamed ProcDump Execution\u201d** on host **WKS-EVAL04** at **2026-08-01T10:05:00Z**, with severity `high`.\n\n**Infere"
+      },
+      {
+        "run": 8,
+        "target": true,
+        "decoy": false,
+        "procdump": true,
+        "answer": "**Confidence: MODERATE**\n\n**OBSERVATION:** Two identical `Windows.Hayabusa.Rules` rows report **\u201cRenamed ProcDump Execution\u201d** on host **WKS-EVAL04** at **2026-08-01T10:05:00Z**, with severity `high`."
+      },
+      {
+        "run": 9,
+        "target": true,
+        "decoy": false,
+        "procdump": true,
+        "answer": "**Confidence: HIGH**\n\n**OBSERVATION:** Two identical `Windows.Hayabusa.Rules` evidence rows report **\u201cRenamed ProcDump Execution\u201d** on host **WKS-EVAL04** at **2026-08-01 10:05:00 UTC**.\n\n**INFERENCE:"
+      },
+      {
+        "run": 10,
+        "target": true,
+        "decoy": false,
+        "procdump": true,
+        "answer": "**Confidence: MODERATE**\n\n**OBSERVATION:** Two identical `Windows.Hayabusa.Rules` rows report **\u201cRenamed ProcDump Execution\u201d** on host **WKS-EVAL04** at **2026-08-01 10:05:00 UTC**, with severity `hig"
+      }
+    ]
+  }
+}
