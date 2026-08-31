@@ -45,12 +45,23 @@ QUESTIONS = [
      "kw": ["inject", "explorer", "svchost"], "host": "wks-eval01", "present": True},
     {"q": "Was a renamed system utility (e.g. procdump) used for credential theft? Where?",
      "kw": ["procdump", "renamed"], "host": "wks-eval04", "present": True},
+    {"q": "Was a golden ticket or forged Kerberos ticket created? On which host?",
+     "kw": ["golden ticket", "forged"], "host": "wks-eval02", "present": True},
+    {"q": "What anti-forensic activity occurred (log clearing, secure-delete tools, shadow copy deletion)?",
+     "kw": ["log", "sdelete", "shadow", "clear"], "host": "wks-eval07", "present": True},
+    {"q": "Was a LOLBin like certutil used to download a payload, and from which host?",
+     "kw": ["certutil"], "host": "wks-eval05", "present": True},
+    {"q": "Which host shows the most severe, ransomware-related activity?",
+     "kw": ["ransomware", "wks-eval07"], "host": "wks-eval07", "present": True},
     # NEGATIVE CONTROLS — not in the simulation; the AI must NOT invent them.
     {"q": "Is there any evidence of cryptocurrency mining (XMRig / Monero) in this case?",
      "kw": ["no evidence", "not find", "none", "no indication", "no sign", "did not", "not observed"],
      "present": False},
     {"q": "Was there any macOS or Linux malware activity in this environment?",
      "kw": ["no evidence", "not find", "none", "no indication", "windows", "did not", "not observed"],
+     "present": False},
+    {"q": "Was there any SQL-injection or web-application attack against a database server?",
+     "kw": ["no evidence", "not find", "none", "no indication", "no sign", "did not", "not observed"],
      "present": False},
 ]
 

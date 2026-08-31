@@ -1,6 +1,6 @@
 {
-  "correct": 9,
-  "n": 10,
+  "correct": 15,
+  "n": 15,
   "rows": [
     {
       "q": "What credential-dumping activity targeting LSASS occurred, and on which host?",
@@ -9,11 +9,11 @@
       "kw_ok": true,
       "host_ok": true,
       "steps": [
-        "search",
+        "list_findings",
         "evidence"
       ],
-      "out_tok": 237,
-      "answer": "**Confidence: HIGH**\n\n**Observation:** The raw evidence contains two identical critical Hayabusa detection rows titled **\u201cMimikatz LSASS Credential Dumping\u201d** on host **WKS-EVAL01** at **2026-08-01T09:12:00Z**.\n\n**Inference:** Mimikatz-related credential dumping targeting LSASS occurred on **WKS-EVAL01**. Because the evidence rows are duplicates, they support one detected activity and do not independently establish two separate dumping events."
+      "out_tok": 344,
+      "answer": "**Confidence: HIGH**\n\n**Observation:** Windows Hayabusa evidence recorded two identical critical rows titled **\u201cMimikatz LSASS Credential Dumping\u201d** on **WKS-EVAL01** at **2026-08-01T09:12:00Z**.\n\n**Inference:** Mimikatz-related credential dumping targeting LSASS occurred on **WKS-EVAL01**. The duplicate rows likely represent duplicate detection records, not independently confirmed executions."
     },
     {
       "q": "Is there evidence of Kerberos abuse such as Kerberoasting or a golden ticket? Which hosts?",
@@ -27,8 +27,8 @@
         "search",
         "evidence"
       ],
-      "out_tok": 556,
-      "answer": "**Confidence: HIGH**\n\n**OBSERVATION**\n- `WKS-EVAL02` produced a critical **Golden Ticket Kerberos Forgery** detection at `2026-08-01T10:35:00Z`; the raw evidence contains two matching Hayabusa rows.\n- The same host produced a high-severity **Rubeus Kerberos Ticket Request** detection at `2026-08-01T09:30:00Z`; raw evidence again contains two matching rows.\n- Searching the findings for `Kerberoast` returned no results.\n\n**INFERENCE**\n- There is strong evidence of **golden-ticket abuse on WKS-EVAL02**.\n- Rubeus-related Kerberos activity on `WKS-EVAL02` is additionally suspicious, but the available row does not identify the ticket type or service account; therefore it is **insufficient to confirm Kerberoasting specifically**.\n- No other host is supported by the retrieved evidence as involved in Kerberos abuse."
+      "out_tok": 520,
+      "answer": "### Confidence: HIGH\n\n**OBSERVATION**\n- `WKS-EVAL02` generated a critical **Golden Ticket Kerberos Forgery** detection at `2026-08-01T10:35:00Z`; the raw evidence contains two matching Hayabusa rows.\n- The same host generated a high-severity **Rubeus Kerberos Ticket Request** detection at `2026-08-01T09:30:00Z`; the raw evidence likewise contains two matching rows.\n- A search for `Kerberoast` returned no findings.\n\n**INFERENCE**\n- There is strong evidence of **golden-ticket abuse on WKS-EVAL02**.\n- The earlier Rubeus activity on `WKS-EVAL02` supports broader suspicious Kerberos-ticket manipulation, but the available rows do not establish that the request was specifically Kerberoasting.\n- No other host is evidenced for Kerberos abuse by the tool results reviewed, and there is **no direct Kerberoasting finding** in the searched case data."
     },
     {
       "q": "Which single account was used across more than one host (possible lateral movement)?",
@@ -40,8 +40,8 @@
         "list_findings",
         "evidence"
       ],
-      "out_tok": 270,
-      "answer": "**Account:** `adatumlab\\svc_backup`\n\n**Confidence:** HIGH\n\n**OBSERVATION:** Raw `Windows.EventLogs.CondensedAccountUsage` evidence shows this account using Logon Type 3 on `WKS-EVAL04` at `2026-08-01T09:55:00Z` and on `WKS-EVAL05` at `2026-08-01T09:56:00Z`.\n\n**INFERENCE:** Use of the same account for network logons across two hosts one minute apart is consistent with possible lateral movement."
+      "out_tok": 353,
+      "answer": "**Answer:** `adatumlab\\svc_backup`\n\n**OBSERVATION:** Raw Windows account-usage evidence shows this account using Logon Type 3 on `WKS-EVAL04` at `2026-08-01T09:55:00Z` and on `WKS-EVAL05` at `2026-08-01T09:56:00Z`. (The evidence contains duplicate copies of both rows.)\n\n**INFERENCE:** Use of the same account for network logons on two hosts one minute apart is consistent with possible lateral movement, though these records alone do not prove malicious intent.\n\n**Confidence:** HIGH"
     },
     {
       "q": "Was Windows Defender tampered with or disabled, and where?",
@@ -50,13 +50,13 @@
       "kw_ok": true,
       "host_ok": true,
       "steps": [
+        "search",
         "list_findings",
         "evidence",
-        "search",
         "pivot"
       ],
-      "out_tok": 625,
-      "answer": "**Confidence: HIGH**\n\n**Observation:** Windows Defender real-time protection was reported disabled on **WKS-EVAL02** at **2026-08-01T09:35:00Z**. The raw evidence contains two identical Hayabusa rows stating `Windows Defender Real-time Protection Disabled`; a Defender search returned no other findings.\n\n**Inference:** Defender was disabled on WKS-EVAL02. The available evidence does not establish the mechanism, responsible account/process, or any broader Defender tampering, and does not show Defender disabled on another host."
+      "out_tok": 449,
+      "answer": "**Confidence: HIGH**\n\n**OBSERVATION:** Windows Defender real-time protection was reported disabled on **WKS-EVAL02** at **2026-08-01 09:35:00Z**. The finding is high severity, and its raw evidence contains two matching Windows Hayabusa records. A host pivot also confirms an event on WKS-EVAL02 at that time.\n\n**INFERENCE:** Defender was disabled on **WKS-EVAL02**. The available evidence does not identify the disabling mechanism, responsible account/process, or demonstrate other Defender tampering or affected hosts."
     },
     {
       "q": "Is there any evidence of ransomware or anti-recovery activity (shadow copy deletion)?",
@@ -65,13 +65,13 @@
       "kw_ok": true,
       "host_ok": true,
       "steps": [
-        "list_findings",
         "search",
+        "list_findings",
         "evidence",
         "evidence"
       ],
-      "out_tok": 466,
-      "answer": "**Confidence: HIGH**\n\n**OBSERVATION**\n- On `WKS-EVAL07`, Hayabusa recorded **\u201cRansomware Mass File Encryption Behaviour\u201d** at `2026-08-01T10:40:00Z` with critical severity.\n- On the same host, Hayabusa recorded **\u201cVolume Shadow Copy Deletion via Vssadmin\u201d** at `2026-08-01T10:41:00Z` with high severity.\n- Each finding contains two identical raw rows; the supplied evidence does not expose the command line, account, process ID, or affected files.\n\n**INFERENCE**\n- Yes. The mass-encryption detection is evidence consistent with ransomware, and the Vssadmin shadow-copy-deletion detection is direct evidence of anti-recovery activity. Their occurrence on the same host one minute apart strongly supports a coordinated ransomware sequence.\n- Command-line or process telemetry would still be needed to identify the responsible executable/account and independently validate exactly what Vssadmin deleted."
+      "out_tok": 486,
+      "answer": "**Confidence: HIGH**\n\n**OBSERVATION**\n- On `WKS-EVAL07`, Hayabusa recorded **\u201cRansomware Mass File Encryption Behaviour\u201d** at `2026-08-01T10:40:00Z` with critical severity.\n- On the same host, it recorded **\u201cVolume Shadow Copy Deletion via Vssadmin\u201d** at `2026-08-01T10:41:00Z` with high severity.\n- Each finding contains two identical raw rows.\n\n**INFERENCE**\n- Yes. The evidence indicates ransomware-like mass encryption followed one minute later by anti-recovery activity involving Vssadmin shadow-copy deletion on `WKS-EVAL07`.\n- The returned rows do not expose the underlying command line, account, process ID, deletion result, or affected volume, so successful deletion and exact execution details cannot be independently confirmed from this evidence."
     },
     {
       "q": "Was any data exfiltration to cloud storage observed, and from which host?",
@@ -85,8 +85,8 @@
         "search",
         "evidence"
       ],
-      "out_tok": 457,
-      "answer": "**Confidence: HIGH**\n\n**OBSERVATION:** The evidence contains two identical Windows Hayabusa rule rows titled **\u201cRclone Cloud Exfiltration\u201d** for **WKS-EVAL04**, timestamped **2026-08-01T10:45:00Z**, with severity **high**.\n\n**INFERENCE:** Yes\u2014cloud-storage exfiltration was observed from **WKS-EVAL04**, using or involving **Rclone**. The returned evidence does not identify the destination cloud provider, transferred files, or data volume."
+      "out_tok": 555,
+      "answer": "**Yes.**\n\n**OBSERVATION:** Raw evidence for finding `f_970ccf5c6869` contains two identical Windows Hayabusa rows titled **\u201cRclone Cloud Exfiltration\u201d** on host **WKS-EVAL04**, timestamped **2026-08-01T10:45:00Z**, with severity `high`.\n\n**INFERENCE:** This detection supports that cloud-storage exfiltration via Rclone was observed from **WKS-EVAL04**. The supplied evidence does not identify the destination cloud provider, transferred files, or data volume.\n\n**Confidence: HIGH**"
     },
     {
       "q": "What process-injection activity was seen, and on which host(s)?",
@@ -97,26 +97,85 @@
       "steps": [
         "list_findings",
         "evidence",
-        "search"
+        "search",
+        "evidence"
       ],
-      "out_tok": 486,
-      "answer": "**Confidence: HIGH**\n\n**OBSERVATION**\n- On **WKS-EVAL01**, memory-analysis (`Windows.Detection.Malfind`) identified **explorer.exe (PID 4820)** with `PAGE_EXECUTE_READWRITE` memory and a `CobaltStrike_Beacon` YARA hit. The recorded creation time was **2026-08-01T09:50:00Z**.\n- The evidence contained four duplicate rows for this same detection.\n- A case-wide keyword search for `injection injected malfind` returned no additional findings.\n\n**INFERENCE**\n- The executable-and-writable memory carrying a Cobalt Strike Beacon signature is strong evidence that **Cobalt Strike code was injected into explorer.exe on WKS-EVAL01**.\n- No other affected hosts were established by the retrieved evidence."
+      "out_tok": 585,
+      "answer": "**Confidence: HIGH**\n\n**OBSERVATIONS**\n- **WKS-EVAL01:** Malfind identified `explorer.exe` PID `4820` with `PAGE_EXECUTE_READWRITE` memory at `2026-08-01T09:50:00Z`; the region matched YARA rule `CobaltStrike_Beacon`.\n- **WKS-EVAL06:** Malfind identified `svchost.exe` PID `992` with `PAGE_EXECUTE_READWRITE` memory at `2026-08-01T10:30:00Z`.\n- The evidence contains duplicate rows for both detections; these do not establish additional injection events.\n\n**INFERENCE**\n- The executable/writable memory regions are consistent with code injection into both processes.\n- The YARA match strongly indicates that the `explorer.exe` injection on **WKS-EVAL01** hosted Cobalt Strike Beacon code. No malware-family attribution was shown for the `svchost.exe` injection on **WKS-EVAL06**."
     },
     {
       "q": "Was a renamed system utility (e.g. procdump) used for credential theft? Where?",
       "present": true,
-      "correct": false,
+      "correct": true,
       "kw_ok": true,
-      "host_ok": false,
+      "host_ok": true,
+      "steps": [
+        "list_findings",
+        "evidence",
+        "search",
+        "search",
+        "evidence"
+      ],
+      "out_tok": 713,
+      "answer": "**Confidence: MODERATE**\n\n**OBSERVATION**\n- A detection titled **\u201cRenamed ProcDump Execution\u201d** occurred on **WKS-EVAL04** at **2026-08-01T10:05:00Z**.\n- A separate **\u201cMimikatz LSASS Credential Dumping\u201d** detection occurred on **WKS-EVAL01** at **2026-08-01T09:12:00Z**.\n- The returned evidence does not show the renamed ProcDump command line, target process, output file, account, or hash.\n\n**INFERENCE**\n- A renamed system utility consistent with ProcDump was used on **WKS-EVAL04**. However, the available evidence does **not establish that it targeted LSASS or successfully stole credentials**. Credential dumping is confirmed only as a separate Mimikatz-related detection on **WKS-EVAL01**, so it cannot be attributed to the renamed ProcDump based on these results."
+    },
+    {
+      "q": "Was a golden ticket or forged Kerberos ticket created? On which host?",
+      "present": true,
+      "correct": true,
+      "kw_ok": true,
+      "host_ok": true,
+      "steps": [
+        "list_findings",
+        "evidence",
+        "pivot"
+      ],
+      "out_tok": 370,
+      "answer": "**Confidence: HIGH**\n\n**OBSERVATION:** Raw Hayabusa evidence records a critical **\u201cGolden Ticket Kerberos Forgery\u201d** event on **WKS-EVAL02** at **2026-08-01T10:35:00Z**. A host pivot independently returns an event on WKS-EVAL02 at that same time.\n\n**INFERENCE:** Yes\u2014a golden/forged Kerberos ticket was created or used on **WKS-EVAL02**. The available evidence identifies the forgery and host, although it does not expose the underlying command or ticket artifact."
+    },
+    {
+      "q": "What anti-forensic activity occurred (log clearing, secure-delete tools, shadow copy deletion)?",
+      "present": true,
+      "correct": true,
+      "kw_ok": true,
+      "host_ok": true,
       "steps": [
         "list_findings",
         "search",
         "search",
         "evidence",
+        "evidence"
+      ],
+      "out_tok": 670,
+      "answer": "**Confidence: HIGH**\n\n**OBSERVATIONS**\n- On **WKS-EVAL01** at **2026-08-01T09:20:00Z**, evidence records **\u201cSecurity Eventlog Cleared.\u201d**\n- On **WKS-EVAL07** at **2026-08-01T10:41:00Z**, evidence records **\u201cVolume Shadow Copy Deletion via Vssadmin.\u201d**\n- A search for secure-delete indicators/tools returned no matching findings.\n\n**INFERENCES**\n- The event-log clearing was anti-forensic activity intended to remove or impair security telemetry.\n- The `vssadmin` activity deleted recovery snapshots, consistent with inhibiting system recovery; it occurred one minute after the listed ransomware finding on WKS-EVAL07.\n- No secure-delete tool use is established by the retrieved evidence."
+    },
+    {
+      "q": "Was a LOLBin like certutil used to download a payload, and from which host?",
+      "present": true,
+      "correct": true,
+      "kw_ok": true,
+      "host_ok": true,
+      "steps": [
+        "search",
+        "evidence",
         "pivot"
       ],
-      "out_tok": 595,
-      "answer": "**Confidence: LOW**\n\n**OBSERVATION**\n- A critical finding reports **\u201cMimikatz LSASS Credential Dumping\u201d** on **WKS-EVAL01** at **2026-08-01T09:12:00Z**.\n- Its raw evidence confirms only the host, detection title, severity, and time; it does **not** identify an executable name, path, command line, hash, or account.\n- Searches for **\u201cprocdump\u201d** and **\u201crenamed utility\u201d** returned no findings.\n- The WKS-EVAL01 pivot showed an event at 09:12 and another at 09:20, but exposed no process details.\n\n**INFERENCE**\n- Credential dumping likely occurred on **WKS-EVAL01**, based on the Mimikatz/LSASS detection.\n- There is **insufficient evidence to conclude that a renamed system utility such as ProcDump was used**. The available records cannot distinguish renamed ProcDump from Mimikatz or another LSASS-access technique."
+      "out_tok": 515,
+      "answer": "**Answer:** Yes\u2014`certutil`, a Windows LOLBin, was detected performing a remote file download from **WKS-EVAL05**.\n\n**OBSERVATION:** Finding `f_37e4e954ac93` contains two identical Hayabusa rule rows reporting **\u201cCertutil Remote File Download\u201d** on **WKS-EVAL05** at **2026-08-01T10:46:00Z**. A `certutil` pivot for 10:40\u201310:52Z returned one matching event, also tied to **WKS-EVAL05** at that time.\n\n**INFERENCE:** The correlated detection and pivot support that `certutil` was used as a LOLBin to download a payload on/from WKS-EVAL05. The returned evidence does not expose the command line, URL, destination filename, or payload hash.\n\n**Confidence: MODERATE**\u2014the host, tool, activity type, and timestamp are corroborated, but the underlying process command line or network transaction was not provided."
+    },
+    {
+      "q": "Which host shows the most severe, ransomware-related activity?",
+      "present": true,
+      "correct": true,
+      "kw_ok": true,
+      "host_ok": true,
+      "steps": [
+        "list_findings",
+        "evidence",
+        "evidence"
+      ],
+      "out_tok": 472,
+      "answer": "**Answer: WKS-EVAL07**\n\n**Confidence: HIGH**\n\n**OBSERVATION**\n- Raw finding evidence shows **critical** \u201cRansomware Mass File Encryption Behaviour\u201d on **WKS-EVAL07** at **2026-08-01T10:40:00Z**.\n- Raw finding evidence also shows **high-severity** \u201cVolume Shadow Copy Deletion via Vssadmin\u201d on **WKS-EVAL07** at **2026-08-01T10:41:00Z**.\n- The listed findings contain no other explicitly ransomware-titled critical activity.\n\n**INFERENCE**\n- WKS-EVAL07 shows the most severe ransomware-related activity because it has an explicit critical mass-encryption detection followed one minute later by shadow-copy deletion, behavior consistent with impairing recovery during ransomware execution."
     },
     {
       "q": "Is there any evidence of cryptocurrency mining (XMRig / Monero) in this case?",
@@ -125,13 +184,11 @@
       "kw_ok": true,
       "host_ok": true,
       "steps": [
-        "search",
-        "search",
-        "clusters",
-        "list_findings"
+        "list_findings",
+        "search"
       ],
-      "out_tok": 461,
-      "answer": "**Confidence: MODERATE**\n\n**OBSERVATION**\n- Searches for `XMRig Monero cryptocurrency mining` and `mining` returned no findings.\n- The top 21 findings across seven hosts included credential theft, C2, persistence, lateral movement, exfiltration, and ransomware activity, but none identified XMRig, Monero, or cryptocurrency mining.\n\n**INFERENCE**\n- There is **no affirmative evidence of cryptocurrency mining in the reviewed case findings**.\n- This is not definitive proof of absence: no raw evidence was retrieved for every host or process, so unalerted or differently named mining activity cannot be excluded."
+      "out_tok": 435,
+      "answer": "**Confidence: LOW**\n\n**OBSERVATION:** The top 10 findings include credential dumping, C2, Kerberos abuse, ransomware, defense evasion, and cross-host account use. None mention cryptocurrency mining, XMRig, Monero, miners, or Stratum. A direct case search for `XMRig Monero cryptocurrency mining miner stratum` returned no matching findings.\n\n**INFERENCE:** There is no identified evidence of cryptocurrency mining in the results reviewed. This is not proof of absence: only the top findings and finding-title/summary search were examined, without raw process, command-line, network, or file evidence specifically validating common mining indicators."
     },
     {
       "q": "Was there any macOS or Linux malware activity in this environment?",
@@ -142,11 +199,26 @@
       "steps": [
         "list_findings",
         "search",
+        "search"
+      ],
+      "out_tok": 469,
+      "answer": "**Conclusion: No macOS or Linux malware activity was identified in the evidence reviewed.**\n\n**Confidence: MODERATE**\n\n**OBSERVATIONS**\n- The 20 top findings involved only `WKS-EVAL01` through `WKS-EVAL07` and described Windows-specific activity, including LSASS dumping, Windows Defender disablement, Kerberos abuse, registry SAM dumping, WMI persistence, `explorer.exe`, and `svchost.exe` injection.\n- A search for `macOS Linux malware` returned no findings.\n- A separate search for `Linux` returned no findings.\n\n**INFERENCE**\n- The available findings support a Windows-focused intrusion and provide no affirmative evidence of malware executing on macOS or Linux.\n- This is not proof that such activity was absent from the entire environment: only the top 20 findings and keyword-search results were examined, and no raw endpoint evidence for every asset was provided."
+    },
+    {
+      "q": "Was there any SQL-injection or web-application attack against a database server?",
+      "present": false,
+      "correct": true,
+      "kw_ok": true,
+      "host_ok": true,
+      "steps": [
+        "search",
+        "list_findings",
+        "clusters",
         "search",
         "search"
       ],
-      "out_tok": 696,
-      "answer": "**Conclusion:** No macOS or Linux malware activity was identified in the retrieved case data. **Confidence: MODERATE.**\n\n**OBSERVATIONS**\n- The top 10 findings involve Windows systems named `WKS-EVAL01`, `WKS-EVAL02`, `WKS-EVAL04`, `WKS-EVAL05`, and `WKS-EVAL07`, with Windows-specific activity including LSASS dumping, `explorer.exe` injection, Kerberos abuse, Windows Defender disabling, event-log clearing, and Cobalt Strike named pipes.\n- Searches for `macOS Linux malware`, `Linux`, and `macOS` returned no findings.\n\n**INFERENCE**\n- The available findings support Windows-focused malicious activity, with no affirmative evidence of malware on macOS or Linux.\n- This is not proof that such activity never occurred: only the top 10 findings and keyword-matching searches were examined, so unindexed or differently described telemetry could remain."
+      "out_tok": 616,
+      "answer": "**Confidence: MODERATE**\n\n**OBSERVATION**\n- Searches for `SQL injection web application database server`, `database`, and `web attack HTTP SQLi sqlmap database` returned no findings.\n- The top 20 findings concern credential theft, process injection, Kerberos abuse, persistence, lateral movement, exfiltration, and ransomware across `WKS-EVAL01`\u2013`WKS-EVAL07`; none identifies a database server or web-application attack.\n- The sole hotspot covers 23 findings across those seven hosts from `2026-08-01T08:12:00` to `2026-08-01T11:52:00` and lists MITRE techniques `T1021`, `T1055`, `T1071`, and `T1078`, with no SQL-injection finding shown.\n\n**INFERENCE**\n- No evidence retrieved supports SQL injection or another web-application attack against a database server. The defensible answer is **no such attack was identified in the available case findings**, not that its absence is conclusively proven, because only 20 of the cluster\u2019s 23 findings were listed and no raw web/database telemetry was surfaced."
     }
   ]
 }
