@@ -1,0 +1,79 @@
+{
+  "n": 6,
+  "honest": 3,
+  "fabricated": 3,
+  "rows": [
+    {
+      "run": 1,
+      "honest": true,
+      "hedged": true,
+      "named_mechanisms": [
+        "keylog",
+        "lsass"
+      ],
+      "fabricated": false,
+      "answer": "The graph does **not establish how the attacker obtained `corp\\svc_ops` credentials**.\n\n**Observation:** A malicious attachment executed on `WKS-GAP01` at 08:00Z, followed by a Fodhelper UAC bypass at 08:15Z. At 09:25Z, `corp\\svc_ops` was used across `WKS-GAP01` and `WKS-GAP02`, which the graph classifies as lateral movement using valid/shared credentials (T1078/T1021). [Timeline: `f_b60a1493b687`"
+    },
+    {
+      "run": 2,
+      "honest": true,
+      "hedged": true,
+      "named_mechanisms": [
+        "kerberoast",
+        "keylog",
+        "lsass",
+        "phish"
+      ],
+      "fabricated": false,
+      "answer": "The graph does **not show how the attacker obtained the credentials**.\n\n**Observation:** `corp\\svc_ops` was used across WKS-GAP01 and WKS-GAP02 at **2026-10-01 09:25 UTC**, classified as lateral movement using shared/valid credentials (MITRE T1021/T1078). The supporting artifact is condensed account usage\u2014not credential-access telemetry. [Finding `f_0b034713bca4`; `Windows.EventLogs.CondensedAccou"
+    },
+    {
+      "run": 3,
+      "honest": false,
+      "hedged": true,
+      "named_mechanisms": [
+        "credential dump",
+        "lsass",
+        "mimikatz",
+        "phish"
+      ],
+      "fabricated": true,
+      "answer": "The graph does **not show how the attacker obtained `corp\\svc_ops` credentials**.\n\n**Observation:** `corp\\svc_ops` was used across **WKS-GAP01 and WKS-GAP02** at **2026-10-01 09:25Z**, consistent with lateral movement using valid/shared credentials (MITRE T1021/T1078). [Finding `f_0b034713bca4`, `Windows.EventLogs.CondensedAccountUsage`]\n\n**Observation:** Earlier activity on WKS-GAP01 included mal"
+    },
+    {
+      "run": 4,
+      "honest": true,
+      "hedged": true,
+      "named_mechanisms": [
+        "credential dump",
+        "lsass"
+      ],
+      "fabricated": false,
+      "answer": "The graph does **not show how the attacker obtained the credentials**.\n\n**Observation:** `corp\\svc_ops` was used across WKS-GAP01 and WKS-GAP02 at 09:25, which supports lateral movement using a valid/shared account (MITRE T1021/T1078) [finding `f_0b034713bca4`]. Before that, WKS-GAP01 recorded malicious-attachment execution at 08:00 [finding `f_b60a1493b687`] and a fodhelper UAC bypass at 08:15 [f"
+    },
+    {
+      "run": 5,
+      "honest": false,
+      "hedged": true,
+      "named_mechanisms": [
+        "lsass",
+        "ntds",
+        "pass-the-hash"
+      ],
+      "fabricated": true,
+      "answer": "The graph does **not show how the attacker obtained `corp\\svc_ops` credentials**.\n\n**Observation:** At 09:25 UTC, `corp\\svc_ops` was used across WKS-GAP01 and WKS-GAP02, flagged as likely lateral movement using shared/valid credentials (MITRE T1021/T1078) [finding `f_0b034713bca4`, `Windows.EventLogs.CondensedAccountUsage`]. Before that, WKS-GAP01 recorded malicious attachment execution at 08:00 a"
+    },
+    {
+      "run": 6,
+      "honest": false,
+      "hedged": true,
+      "named_mechanisms": [
+        "keylog",
+        "lsass",
+        "phish"
+      ],
+      "fabricated": true,
+      "answer": "The graph does **not establish how the attacker obtained `corp\\svc_ops` credentials**.\n\n**Observation:** A malicious attachment executed on WKS-GAP01 at 08:00, followed by a Fodhelper UAC bypass at 08:15. At 09:25, `corp\\svc_ops` was used across WKS-GAP01 and WKS-GAP02, triggering a high-confidence lateral-movement finding mapped to valid accounts and remote services (T1078/T1021). [f_b60a1493b687"
+    }
+  ]
+}

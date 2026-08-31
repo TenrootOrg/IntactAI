@@ -572,11 +572,19 @@ def _identity_cross_host_findings(g: FusionGraph) -> None:
             conf = float(ident.get("confidence") or 0)
             name = str(ident.get("name") or "?")
             forms = ", ".join(sorted({str(e.label) for e in ents}))[:120]
+            # SEVERITY IS DERIVED, NOT ASSUMED: roll up the worst severity the
+            # clustered accounts actually carry (which _rollup_severity has already
+            # reconciled with their anomaly scores). A benign admin legitimately on
+            # three hosts stays low/informational and never shouts; an identity whose
+            # accounts are themselves suspicious inherits that weight. Hard-coding a
+            # level here would assert a risk the evidence has not established.
+            worst = max((e.severity for e in ents if e.severity),
+                        key=lambda s: sev.rank(s), default="informational")
             g.add_finding(Finding(
                 id=_fid("idxhost", str(ident.get("key") or name)),
                 title=f"Identity '{name}' active on {len(hosts)} hosts under different "
                       "account forms",
-                severity="high" if conf >= 1.0 else "medium",
+                severity=worst,
                 confidence="high" if conf >= 1.0 else "medium",
                 summary=(f"One person ({name}) appears as {len(ents)} different account "
                          f"forms ({forms}) across {', '.join(hosts)}. The same identity "
