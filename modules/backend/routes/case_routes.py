@@ -531,7 +531,14 @@ def investigate_case(case_id):
         return jsonify({"error": "question required"}), 400
     from services.fusion import investigate as _inv
     rid = store._ws().create_automation_run("investigation", f"investigate {case_id}")
-    res = _inv.investigate(case_id, q, run_id=rid)
+    # investigate() already turns transport failures (A3) and tool crashes (A2) into
+    # a graceful result; this guard is defense-in-depth so any UNEXPECTED raise still
+    # returns clean JSON instead of an opaque 500.
+    try:
+        res = _inv.investigate(case_id, q, run_id=rid)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"case_id": case_id, "question": q, "steps": [],
+                        "error": f"investigation failed: {type(e).__name__}: {e}"}), 500
     # persist into the case's chat history (same cap/atomicity as a chat turn), so
     # the grounded answer survives reloads and feeds later chat turns as context
     try:

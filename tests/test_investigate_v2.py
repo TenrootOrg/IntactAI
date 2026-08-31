@@ -205,5 +205,55 @@ class PivotTool(unittest.TestCase):
         self.assertIn("error", self._pivot(self._graph(1), {}))
 
 
+class FaultHandling(unittest.TestCase):
+    """Regression for the campaign Track-A fixes: the loop must degrade gracefully
+    (never raise / never accept a 0-evidence answer)."""
+
+    def _drive(self, replies, tool=None, llm_raises=None, **kw):
+        it = iter(replies)
+        calls = {"tools": []}
+
+        def fake_llm(system, user, **_kw):
+            if llm_raises:
+                raise llm_raises
+            return next(it)
+
+        def fake_tool(case_id, name, args):
+            calls["tools"].append(name)
+            if tool == "boom":
+                raise ValueError("bad arg")
+            return [{"id": "f1", "title": "t", "severity": "high", "hosts": ["H"],
+                     "ts": "2026-01-01T00:00:00Z", "kind": "single"}]
+        with _Patched(llm_sim, _real_llm=fake_llm), \
+             _Patched(investigate, _tool=fake_tool, _mask_for_case=lambda d, g, r: None), \
+             _Patched(investigate.store, get_case=lambda c: {"id": c},
+                      load_graph=lambda c: schema.FusionGraph(case_id=c)):
+            return investigate.investigate("c", "q", **kw), calls
+
+    def test_A1_zero_step_giveup_is_forced_to_ground(self):
+        # model always tries to finalize with no tools -> guard forces list_findings
+        res, calls = self._drive(['{"final":"nothing"}'] * 6, max_steps=5)
+        self.assertIn("list_findings", calls["tools"])   # forced a lookup
+        self.assertGreaterEqual(len(res["steps"]), 1)    # never 0-evidence
+
+    def test_A2_tool_crash_does_not_raise(self):
+        res, _ = self._drive(['{"tool":"list_findings","args":{"limit":"abc"}}',
+                              '{"final":"done"}'], tool="boom", max_steps=4)
+        self.assertEqual(res["answer"], "done")          # recovered, no exception
+
+    def test_A3_transport_failure_returns_clean_message(self):
+        res, _ = self._drive(["unused"], llm_raises=RuntimeError("no credit"), max_steps=3)
+        self.assertTrue(res.get("error"))
+        self.assertIsInstance(res["answer"], str)
+        self.assertTrue(res["answer"])                   # an operator message, not a 500
+
+    def test_A7b_forced_final_never_returns_raw_json_blob(self):
+        # never finalizes; at budget still emits a tool-call blob -> must be scrubbed
+        res, _ = self._drive(['{"tool":"list_findings","args":{}}'] * 6
+                             + ['{"tool":"search","args":{"query":"x"}}'], max_steps=2)
+        self.assertFalse(res["answer"].strip().startswith("{"))
+        self.assertTrue(res["truncated"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

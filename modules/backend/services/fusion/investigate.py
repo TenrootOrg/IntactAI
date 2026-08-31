@@ -42,6 +42,10 @@ INVESTIGATE_SYSTEM = (
 
 _MAX_TOOL_RESULT_CHARS = 6000
 _MAX_ROW_CHARS = 1500
+# A model that answers with a {final} before calling any tool has looked at no
+# evidence — nudge it back this many times, then FORCE one list_findings so the
+# answer is at least grounded (never accept a 0-evidence give-up).
+_MIN_STEP_NUDGES = 2
 
 
 def _tool(case_id, name, args):
@@ -107,6 +111,16 @@ def _tool(case_id, name, args):
                  "finding_count": c["finding_count"], "severity": c["severity"],
                  "mitre": c["mitre"]} for c in cl]
     return {"error": f"unknown tool '{name}'"}
+
+
+def _safe_tool(case_id, name, args):
+    """_tool, but a crashing tool (a model-supplied bad arg — non-numeric limit,
+    malformed pivot window — or a store/render failure) becomes an {"error":...}
+    the model can recover from, NOT an exception that 500s the whole request."""
+    try:
+        return _tool(case_id, name, args)
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"tool '{name}' failed: {type(e).__name__}: {e}"}
 
 
 def _parse(raw):
@@ -183,14 +197,55 @@ def investigate(case_id, question, *, run_id=None, max_steps=6, log=None,
                 "Begin. Pull what you need with tools, then answer with a single "
                 '{"final":"..."} object.')]
     steps = []
+    nudges = 0
+
+    def _ask():
+        """One model turn. A transport failure (rejected key / no credit / timeout /
+        CLI error) is caught and classified into LLMUnavailable — so investigate
+        returns a clean operator message instead of an unhandled 500, matching the
+        report/chat paths (A3). Returns (raw, err)."""
+        try:
+            return llm_sim._real_llm(system, "\n\n".join(convo), run_id=run_id), None
+        except Exception as e:  # noqa: BLE001
+            return None, llm_sim.LLMUnavailable(llm_sim._classify_llm_error(e))
+
+    def _transport_error(err, truncated):
+        _log(f"investigation transport failure: {err}", "error")
+        return {"answer": llm_sim.llm_error_message(str(err)), "steps": steps,
+                "truncated": truncated, "error": True}
+
+    def _feed(tool, targs, result):
+        convo.append(json.dumps({"tool": tool, "args": targs}))
+        convo.append(_m(f"TOOL[{tool}] RESULT:\n"
+                        + json.dumps(result, default=str)[:_MAX_TOOL_RESULT_CHARS]))
+
     for i in range(max_steps):
-        raw = llm_sim._real_llm(system, "\n\n".join(convo), run_id=run_id)
+        raw, err = _ask()
+        if err is not None:
+            return _transport_error(err, False)
         obj = _parse(raw)
         if obj is None:
             convo.append("(your last message was not valid JSON — respond with ONE "
                          "JSON object only)")
             continue
         if "final" in obj:
+            if not steps:
+                # A1: a {final} before ANY tool call means the model answered from
+                # memory without looking. Never accept it. Nudge; if it keeps
+                # bailing, force one list_findings so the answer is grounded.
+                if nudges < _MIN_STEP_NUDGES:
+                    nudges += 1
+                    convo.append('You have not called ANY tool yet — you have seen no '
+                                 'evidence. Do not answer from memory. Call a tool first '
+                                 '(start with {"tool":"list_findings","args":{"limit":20}}) '
+                                 'and only answer after inspecting real results.')
+                    continue
+                forced = _safe_tool(case_id, "list_findings", {"limit": 20})
+                steps.append({"tool": "list_findings", "args": {"limit": 20}})
+                _feed("list_findings", {"limit": 20}, forced)
+                convo.append('Now answer, grounded ONLY in those findings, with one '
+                             '{"final":"..."} object.')
+                continue
             _log(f"investigation done in {len(steps)} tool call(s)")
             return {"answer": llm_sim._revert_mask(obj.get("final") or "", mask),
                     "steps": steps, "truncated": False}
@@ -199,17 +254,26 @@ def investigate(case_id, question, *, run_id=None, max_steps=6, log=None,
             result = {"error": "unknown tool 'pivot'"}
             real_args = targs
         else:
-            real_args = _revert_obj(targs, mask)     # model speaks pseudonyms
-            result = _tool(case_id, tool, real_args)  # tools need real values
+            real_args = _revert_obj(targs, mask)          # model speaks pseudonyms
+            result = _safe_tool(case_id, tool, real_args)  # A2: never raises
         _log(f"tool: {tool}({json.dumps(real_args)[:80]})")
         steps.append({"tool": tool, "args": real_args})   # analyst-facing trace: real
-        convo.append(json.dumps({"tool": tool, "args": targs}))
-        convo.append(_m(f"TOOL[{tool}] RESULT:\n"
-                        + json.dumps(result, default=str)[:_MAX_TOOL_RESULT_CHARS]))
+        _feed(tool, targs, result)
     # out of budget -> force a final answer from what was gathered
     convo.append('Step budget reached. Give your {"final":"..."} answer now from '
                  "what the tools have shown you.")
-    raw = llm_sim._real_llm(system, "\n\n".join(convo), run_id=run_id)
+    raw, err = _ask()
+    if err is not None:
+        return _transport_error(err, True)
     obj = _parse(raw) or {}
-    return {"answer": llm_sim._revert_mask(obj.get("final") or raw, mask),
+    final = obj.get("final")
+    if not final:
+        # A7b: never surface the raw model text (often a tool-call JSON blob) as the
+        # analyst answer. Give a clean insufficient-evidence message; include the raw
+        # only if it reads as prose, never a JSON blob.
+        looks_prose = bool(raw) and not raw.strip().lstrip("`").startswith("{")
+        final = ("The investigation reached its step budget without a conclusive, "
+                 "grounded answer" + (f": {raw.strip()[:400]}" if looks_prose else
+                 " — re-run the investigation or narrow the question."))
+    return {"answer": llm_sim._revert_mask(final, mask),
             "steps": steps, "truncated": True}
