@@ -1,0 +1,27 @@
+{
+  "case_altitude": "narrow",
+  "scores": [
+    {
+      "strategy": "S0-baseline",
+      "dfir_professionalism": 3,
+      "altitude_fit": 4,
+      "grounding": 4,
+      "actionability": 5,
+      "efficiency": 1,
+      "total": 17,
+      "rationale": "Thorough, calibrated, and highly actionable, but drastically overlong and repetitive; some narrative linkage and account-compromise conclusions exceed the direct evidence."
+    },
+    {
+      "strategy": "S3-final",
+      "dfir_professionalism": 4,
+      "altitude_fit": 5,
+      "grounding": 3,
+      "actionability": 4,
+      "efficiency": 4,
+      "total": 20,
+      "rationale": "Client-usable structure and a suitably explicit narrow-scope theory, though it overstates hostname-inferred server roles, credential compromise, operator intent, and causal linkage at HIGH confidence."
+    }
+  ],
+  "winner": "S3-final",
+  "why": "It delivers nearly the same investigative value with far better focus and readability, making it the stronger client-facing report despite several confidence-calibration defects."
+}

@@ -89,6 +89,52 @@ MACRO2_PROMPT = MACRO_PROMPT.replace(
 )
 
 
+# --- FOCUSED-TIGHT: the narrow-scope prompt, proportional instead of the 9-section
+#     template that made the baseline emit 30k chars for a 3-host / 14-finding case.
+FOCUSED_TIGHT_PROMPT = (
+    "You are a senior DFIR consultant writing the analytical body of an incident report "
+    "from a CORRELATED incident graph for a CONTAINED case — few hosts, short window. "
+    "Give ONE explicit, well-grounded theory of what happened, in concrete detail, and "
+    "stop. Length follows the evidence: a handful of hosts/findings is one to two pages, "
+    "not ten. High signal, no padding. Do not restate the deterministic tables (timeline, "
+    "hosts, IOCs, MITRE) — the system appends them after you.\n"
+    "\n"
+    "PAYLOAD (JSON) keys: assets; findings (summary, hosts[], mitre, ts, kind — "
+    "kind=='cross_host' spans hosts); timeline (real timestamps only); top_entities "
+    "(accounts/processes/IOCs + anomaly/flags); identities (one identity = one person's "
+    "accounts across hosts); host_coverage (each host once).\n"
+    "\n"
+    "Write clean markdown — ONLY the sections the evidence supports, in this order:\n"
+    "\n"
+    "## Executive Summary\n"
+    "2-5 sentences: what happened, on which hosts, as which identity, over what window, how "
+    "it began and what the adversary was after. Plain language. Overall confidence "
+    "(HIGH/MODERATE/LOW).\n"
+    "\n"
+    "## What happened\n"
+    "The single most likely intrusion story, in order, each step with the exact host, "
+    "account, process, path, hash and timestamp from the graph. Where one finding "
+    "corroborates another, say so. COMMIT to the theory and grade confidence at the "
+    "decisive steps. If the evidence genuinely supports two readings (adversary vs "
+    "authorised admin), name both and give the test that settles it.\n"
+    "\n"
+    "## Impact & Root Cause\n"
+    "What is exposed / at risk, whether access likely persists, and how it most likely "
+    "began — with the evidence, or an honest 'undetermined, missing X'.\n"
+    "\n"
+    "## Do next\n"
+    "**Contain now** and **Investigate next** — short ordered lists, each item naming the "
+    "specific host / account / artifact.\n"
+    "\n"
+    "DISCIPLINE\n"
+    "Grade every assessment HIGH/MODERATE/LOW and what drives it. Keep OBSERVATION (in the "
+    "graph) separate from INFERENCE. Cite hosts/accounts/hashes/timestamps verbatim; never "
+    "invent an entity, event, time, actor or campaign not in the payload. An honest "
+    "'undetermined, here is what's missing' beats a guess. OMIT any section with nothing "
+    "real to say rather than padding it. No preamble. Start at '## Executive Summary'."
+)
+
+
 def scope_facts(graph, d):
     window = d.get("time_window") or None
     msev = d.get("min_severity", "informational")
@@ -140,10 +186,14 @@ def run_strategy(name, graph, d, facts):
         if macro:
             return call_and_meter(MACRO2_PROMPT, build_payload(graph, d, "summary"), name)
         return call_and_meter(FOCUSED_PROMPT, build_payload(graph, d, "explicit"), name)
+    if name == "S3-final":                     # best macro (S2) + tightened focused
+        if macro:
+            return call_and_meter(MACRO2_PROMPT, build_payload(graph, d, "summary"), name)
+        return call_and_meter(FOCUSED_TIGHT_PROMPT, build_payload(graph, d, "explicit"), name)
     raise ValueError(name)
 
 
-STRATEGIES = ["S0-baseline", "S1-altitude", "S2-macro2"]
+STRATEGIES = ["S0-baseline", "S1-altitude", "S2-macro2", "S3-final"]
 GRAPH_DIR = "/app/data/fusion_graphs"
 
 
