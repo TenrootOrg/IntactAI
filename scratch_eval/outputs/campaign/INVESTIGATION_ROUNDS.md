@@ -31,3 +31,26 @@ purpose. The model correctly refuses to affirm the purpose — but in hedging it
 (host/time/artifact) separately from the unproven part of the question, rather than
 lowering the whole answer to LOW and omitting them. This is the OBSERVATION vs
 INFERENCE split the report prompts already enforce — the investigate prompt doesn't.
+
+## Fix attempt + measurement (unproven-premise weakness)
+
+Added to `INVESTIGATE_SYSTEM`: when a question assumes something the evidence does
+not prove, report the confirmed specifics (host/time/artifact/command) FIRST, then
+state which part is unsupported — "an answer that drops established facts because
+one premise is unproven is a FAILED answer."
+
+| | host retained | rate |
+|---|---|---|
+| Before fix (rounds 1-3) | 1/3 | 33% |
+| After fix (5× repeat) | **4/5** | **80%** |
+
+**Honest read: improved, NOT solved.** Run 4 reproduced the old signature exactly
+(host dropped, LOW confidence), so the instruction reduces the behaviour rather than
+eliminating it. Confidence also moved LOW -> MODERATE on the passing runs, which is
+the intended shape: still declining to affirm the unproven purpose, while keeping
+the established host.
+
+Residual: ~20% of the time the model still hedges away a fact it proved. A prompt
+alone cannot guarantee this; a deterministic guard would (e.g. if the answer cites a
+finding whose host is known, require the host to appear — or append the established
+host/time from the tool trace). Logged as a candidate fix, not applied yet.

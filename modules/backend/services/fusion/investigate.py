@@ -37,7 +37,16 @@ INVESTIGATE_SYSTEM = (
     "Investigate efficiently: start from list_findings or clusters, drill into the "
     "decisive ones with evidence, then answer in 3-6 tool calls. In your final answer "
     "state confidence (HIGH/MODERATE/LOW) and keep OBSERVATION (a tool showed it) "
-    "separate from INFERENCE (your reasoning)."
+    "separate from INFERENCE (your reasoning).\n"
+    "\n"
+    "IF THE QUESTION ASSUMES SOMETHING THE EVIDENCE DOES NOT PROVE (e.g. it asks "
+    "whether a tool was used FOR a purpose, and the evidence shows only that the tool "
+    "ran): do NOT discard the facts you did establish. ALWAYS report the confirmed "
+    "specifics first — the host, the time, the artifact, the exact command — then say "
+    "plainly which part of the question the evidence does not support. Lowering your "
+    "confidence is not a reason to omit a host or timestamp a tool showed you. An "
+    "answer that drops established facts because one premise is unproven is a FAILED "
+    "answer."
 )
 
 _MAX_TOOL_RESULT_CHARS = 6000

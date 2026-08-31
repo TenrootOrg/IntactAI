@@ -1,0 +1,42 @@
+{
+  "n": 5,
+  "ok": 4,
+  "host_kept": 4,
+  "rows": [
+    {
+      "run": 1,
+      "kw": true,
+      "host": true,
+      "ok": true,
+      "answer": "**Confidence: MODERATE**\n\n**OBSERVATION**\n- A finding titled **\u201cRenamed ProcDump Execution\u201d** was recorded on **WKS-EVAL04** at **2026-08-01T10:05:00Z** (severity: high).\n- The raw evidence contains only the host, timestamp, and detection title; it does **not** include the renamed filename, command "
+    },
+    {
+      "run": 2,
+      "kw": true,
+      "host": true,
+      "ok": true,
+      "answer": "**Confidence: MODERATE**\n\n**OBSERVATION:** A finding titled `Renamed ProcDump Execution` was recorded on **WKS-EVAL04** at **2026-08-01T10:05:00Z** in `Windows.Hayabusa.Rules`. A host pivot for 09:55\u201310:15Z returned one event at that same time. Separately, LSASS credential dumping was detected on **"
+    },
+    {
+      "run": 3,
+      "kw": true,
+      "host": true,
+      "ok": true,
+      "answer": "**Confidence: MODERATE**\n\n**OBSERVATION:** A high-severity finding titled **\u201cRenamed ProcDump Execution\u201d** was recorded on **WKS-EVAL04** at **2026-08-01T10:05:00Z**. The raw evidence identifies the artifact as `Windows.Hayabusa.Rules`; a host pivot around that time returned only this event.\n\n**INFE"
+    },
+    {
+      "run": 4,
+      "kw": true,
+      "host": false,
+      "ok": false,
+      "answer": "**Confidence: LOW**\n\n**OBSERVATION:** A critical finding reported **\u201cMimikatz LSASS Credential Dumping\u201d** on **WKS-EVAL01** at **2026-08-01T09:12:00Z**. The raw evidence confirms only the host, timestamp, and detection title. A host pivot also returned an event at that time.\n\n**INFERENCE:** Credenti"
+    },
+    {
+      "run": 5,
+      "kw": true,
+      "host": true,
+      "ok": true,
+      "answer": "**Confidence: MODERATE**\n\n**OBSERVATION:** A high-severity `Windows.Hayabusa.Rules` finding titled **\u201cRenamed ProcDump Execution\u201d** was recorded on **WKS-EVAL04** at **2026-08-01T10:05:00Z**. A host pivot for 09:55\u201310:15Z confirmed an event on that host at the same time.\n\n**INFERENCE:** A renamed Pr"
+    }
+  ]
+}
