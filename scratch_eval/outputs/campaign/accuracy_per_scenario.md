@@ -1,8 +1,8 @@
 # Attack-simulation ACCURACY — per scenario (deterministic)
 
-15 authored PowerShell attack scenarios through the REAL pipeline (map_agentic -> correlate.assemble). Recall = the planted technique surfaced as a finding on the right host.
+25 authored PowerShell attack scenarios through the REAL pipeline (map_agentic -> correlate.assemble). Recall = the planted technique surfaced as a finding on the right host.
 
-**Recall 13/15 (87%) · Host-grounded 13/15 · Severity-correct 12/15**
+**Recall 21/25 (84%) · Host-grounded 21/25 · Severity-correct 20/25**
 
 | # | Scenario | ATT&CK | Detected | Host✓ | Sev✓ | Matched finding |
 |---|---|---|:--:|:--:|:--:|---|
@@ -21,3 +21,13 @@
 | 13 | SharpHound/BloodHound AD collection | T1087.002 | ✅ | ✅ | ✅ | `sigma: sharphound bloodhound collection on wks-eval03 :: wks` |
 | 14 | Non-standard outbound RDP | T1021.001 | ✅ | ✅ | ✅ | `sigma: non-standard outbound rdp connection on wks-eval04 ::` |
 | 15 | Injected svchost (RWX, no YARA) | T1055.001 | ✅ | ✅ | — | `code injection — svchost.exe (992) on wks-eval06 :: wks-eval` |
+| 16 | Kerberos golden ticket | T1558.001 | ✅ | ✅ | ✅ | `sigma: golden ticket kerberos forgery on wks-eval02 :: wks-e` |
+| 17 | Ransomware mass file encryption | T1486 | ✅ | ✅ | ✅ | `sigma: ransomware mass file encryption behaviour on wks-eval` |
+| 18 | Shadow copy deletion | T1490 | ✅ | ✅ | ✅ | `sigma: volume shadow copy deletion via vssadmin on wks-eval0` |
+| 19 | Registry SAM hive dump | T1003.002 | ✅ | ✅ | ✅ | `sigma: registry sam hive dump on wks-eval01 :: wks-eval01` |
+| 20 | DLL sideloading | T1574.002 | ✅ | ✅ | ✅ | `sigma: dll sideloading via signed binary on wks-eval03 :: wk` |
+| 21 | AMSI bypass | T1562.001 | ✅ | ✅ | ✅ | `sigma: amsi bypass patch in memory on wks-eval03 :: wks-eval` |
+| 22 | Data exfiltration via rclone | T1567.002 | ✅ | ✅ | ✅ | `sigma: rclone cloud exfiltration on wks-eval04 :: wks-eval04` |
+| 23 | LOLBin download (certutil) | T1105 | ✅ | ✅ | ✅ | `sigma: certutil remote file download on wks-eval05 :: wks-ev` |
+| 24 | AD discovery (net group) | T1069.002 | ❌ MISS | — | — | `(none)` |
+| 25 | Unauthorized RMM tool (AnyDesk) | T1219 | ❌ MISS | — | — | `(none)` |

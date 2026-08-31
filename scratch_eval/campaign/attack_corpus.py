@@ -132,6 +132,62 @@ SCENARIOS += [
      "expect": {"find": ["svchost"], "sev": "critical"}},
 ]
 
+# Batch 3 — broaden across more tactics (mostly high/critical, a couple medium to
+# keep characterizing the finding threshold).
+SCENARIOS += [
+    {"id": "golden-ticket", "name": "Kerberos golden ticket", "tech": "T1558.001",
+     "host": "WKS-EVAL02", "activity": "forged TGT (golden ticket) for domain persistence",
+     "telemetry": {_T: _sigma("WKS-EVAL02", "Golden Ticket Kerberos Forgery", "crit",
+                              "2026-08-01T10:35:00Z")},
+     "expect": {"find": ["golden ticket"], "sev": "critical"}},
+    {"id": "ransomware", "name": "Ransomware mass file encryption", "tech": "T1486",
+     "host": "WKS-EVAL07", "activity": "mass file rename to .locked + ransom note",
+     "telemetry": {_T: _sigma("WKS-EVAL07", "Ransomware Mass File Encryption Behaviour",
+                              "crit", "2026-08-01T10:40:00Z")},
+     "expect": {"find": ["ransomware"], "sev": "critical"}},
+    {"id": "shadowcopy", "name": "Shadow copy deletion", "tech": "T1490",
+     "host": "WKS-EVAL07", "activity": "vssadmin delete shadows /all (anti-recovery)",
+     "telemetry": {_T: _sigma("WKS-EVAL07", "Volume Shadow Copy Deletion via Vssadmin",
+                              "high", "2026-08-01T10:41:00Z")},
+     "expect": {"find": ["shadow copy"], "sev": "high"}},
+    {"id": "reg-sam", "name": "Registry SAM hive dump", "tech": "T1003.002",
+     "host": "WKS-EVAL01", "activity": "reg save HKLM\\SAM for offline hash extraction",
+     "telemetry": {_T: _sigma("WKS-EVAL01", "Registry SAM Hive Dump", "high",
+                              "2026-08-01T10:42:00Z")},
+     "expect": {"find": ["sam"], "sev": "high"}},
+    {"id": "dll-sideload", "name": "DLL sideloading", "tech": "T1574.002",
+     "host": "WKS-EVAL03", "activity": "signed binary loads an attacker DLL from its dir",
+     "telemetry": {_T: _sigma("WKS-EVAL03", "DLL Sideloading via Signed Binary", "high",
+                              "2026-08-01T10:43:00Z")},
+     "expect": {"find": ["sideload"], "sev": "high"}},
+    {"id": "amsi-bypass", "name": "AMSI bypass", "tech": "T1562.001",
+     "host": "WKS-EVAL03", "activity": "in-memory AMSI patch to evade script scanning",
+     "telemetry": {_T: _sigma("WKS-EVAL03", "AMSI Bypass Patch In Memory", "high",
+                              "2026-08-01T10:44:00Z")},
+     "expect": {"find": ["amsi"], "sev": "high"}},
+    {"id": "exfil-rclone", "name": "Data exfiltration via rclone", "tech": "T1567.002",
+     "host": "WKS-EVAL04", "activity": "rclone copy to a cloud bucket (exfil)",
+     "telemetry": {_T: _sigma("WKS-EVAL04", "Rclone Cloud Exfiltration", "high",
+                              "2026-08-01T10:45:00Z")},
+     "expect": {"find": ["rclone"], "sev": "high"}},
+    {"id": "certutil-dl", "name": "LOLBin download (certutil)", "tech": "T1105",
+     "host": "WKS-EVAL05", "activity": "certutil -urlcache -f http://... payload.exe",
+     "telemetry": {_T: _sigma("WKS-EVAL05", "Certutil Remote File Download", "high",
+                              "2026-08-01T10:46:00Z")},
+     "expect": {"find": ["certutil"], "sev": "high"}},
+    # deliberately MEDIUM — discovery recon, to reconfirm the threshold boundary
+    {"id": "ad-recon", "name": "AD discovery (net group)", "tech": "T1069.002",
+     "host": "WKS-EVAL06", "activity": "net group 'Domain Admins' /domain recon",
+     "telemetry": {_T: _sigma("WKS-EVAL06", "Domain Admins Enumeration", "medium",
+                              "2026-08-01T10:47:00Z")},
+     "expect": {"find": ["domain admins"], "sev": "medium"}},
+    {"id": "rmm-abuse", "name": "Unauthorized RMM tool (AnyDesk)", "tech": "T1219",
+     "host": "WKS-EVAL05", "activity": "attacker-installed AnyDesk for remote access",
+     "telemetry": {_T: _sigma("WKS-EVAL05", "Unauthorized RMM Tool AnyDesk", "medium",
+                              "2026-08-01T10:48:00Z")},
+     "expect": {"find": ["anydesk"], "sev": "medium"}},
+]
+
 # BENIGN baseline — normal admin/IT activity that should NOT produce attack findings
 # (false-positive / precision test). Informational SIGMA + routine processes.
 BENIGN = {

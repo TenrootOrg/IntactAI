@@ -149,8 +149,108 @@
       "grounded_host": true,
       "severity_ok": false,
       "matched": "code injection \u2014 svchost.exe (992) on wks-eval06 :: wks-eval06"
+    },
+    {
+      "id": "golden-ticket",
+      "name": "Kerberos golden ticket",
+      "tech": "T1558.001",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: golden ticket kerberos forgery on wks-eval02 :: wks-eval02"
+    },
+    {
+      "id": "ransomware",
+      "name": "Ransomware mass file encryption",
+      "tech": "T1486",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: ransomware mass file encryption behaviour on wks-eval07 :: wks-eval07"
+    },
+    {
+      "id": "shadowcopy",
+      "name": "Shadow copy deletion",
+      "tech": "T1490",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: volume shadow copy deletion via vssadmin on wks-eval07 :: wks-eval07"
+    },
+    {
+      "id": "reg-sam",
+      "name": "Registry SAM hive dump",
+      "tech": "T1003.002",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: registry sam hive dump on wks-eval01 :: wks-eval01"
+    },
+    {
+      "id": "dll-sideload",
+      "name": "DLL sideloading",
+      "tech": "T1574.002",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: dll sideloading via signed binary on wks-eval03 :: wks-eval03"
+    },
+    {
+      "id": "amsi-bypass",
+      "name": "AMSI bypass",
+      "tech": "T1562.001",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: amsi bypass patch in memory on wks-eval03 :: wks-eval03"
+    },
+    {
+      "id": "exfil-rclone",
+      "name": "Data exfiltration via rclone",
+      "tech": "T1567.002",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: rclone cloud exfiltration on wks-eval04 :: wks-eval04"
+    },
+    {
+      "id": "certutil-dl",
+      "name": "LOLBin download (certutil)",
+      "tech": "T1105",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: certutil remote file download on wks-eval05 :: wks-eval05"
+    },
+    {
+      "id": "ad-recon",
+      "name": "AD discovery (net group)",
+      "tech": "T1069.002",
+      "findings": 0,
+      "recall": false,
+      "grounded_host": false,
+      "severity_ok": false,
+      "matched": "(none)"
+    },
+    {
+      "id": "rmm-abuse",
+      "name": "Unauthorized RMM tool (AnyDesk)",
+      "tech": "T1219",
+      "findings": 0,
+      "recall": false,
+      "grounded_host": false,
+      "severity_ok": false,
+      "matched": "(none)"
     }
   ],
-  "recall": 13,
-  "n": 15
+  "recall": 21,
+  "n": 25
 }

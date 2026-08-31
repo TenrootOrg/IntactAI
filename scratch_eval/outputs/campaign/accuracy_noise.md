@@ -1,8 +1,8 @@
 # Attack-simulation ACCURACY — recall under noise
 
-Attack telemetry + 20× benign volume on the same hosts (13 findings total).
+Attack telemetry + 20× benign volume on the same hosts (21 findings total).
 
-**Finding-eligible plants still detected: 13/13**
+**Finding-eligible plants still detected: 21/21**
 
 | Plant | Survived noise? |
 |---|:--:|
@@ -19,3 +19,11 @@ Attack telemetry + 20× benign volume on the same hosts (13 findings total).
 | bloodhound | ✅ |
 | rdp-lateral | ✅ |
 | malfind-svc | ✅ |
+| golden-ticket | ✅ |
+| ransomware | ✅ |
+| shadowcopy | ✅ |
+| reg-sam | ✅ |
+| dll-sideload | ✅ |
+| amsi-bypass | ✅ |
+| exfil-rclone | ✅ |
+| certutil-dl | ✅ |
