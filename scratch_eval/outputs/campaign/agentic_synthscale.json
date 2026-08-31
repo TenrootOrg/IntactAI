@@ -1,0 +1,36 @@
+{
+  "track": "E",
+  "checks": [
+    {
+      "check": "few_short: pivot resolves events",
+      "ok": true,
+      "detail": "3h/14f -> 42 event entities, pivot total_matches=42"
+    },
+    {
+      "check": "few_short: evidence resolves raw rows",
+      "ok": true,
+      "detail": "finding f_ch_0 -> 3 raw rows (e.g. ['EventTime', 'Computer', 'User', 'CommandLine', 'SHA256', 'TargetIP'])"
+    },
+    {
+      "check": "few_short: list_findings",
+      "ok": true,
+      "detail": "5 findings"
+    },
+    {
+      "check": "many_long: pivot resolves events",
+      "ok": true,
+      "detail": "100h/220f -> 660 event entities, pivot total_matches=660"
+    },
+    {
+      "check": "many_long: evidence resolves raw rows",
+      "ok": true,
+      "detail": "finding f_ch_0 -> 3 raw rows (e.g. ['EventTime', 'Computer', 'User', 'CommandLine', 'SHA256', 'TargetIP'])"
+    },
+    {
+      "check": "many_long: list_findings",
+      "ok": true,
+      "detail": "5 findings"
+    }
+  ],
+  "findings": []
+}

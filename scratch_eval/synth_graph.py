@@ -6,7 +6,7 @@ the matrix — many/few endpoints x long/short timeframe — without real collec
 Plausible SIGMA-style findings so the LLM has realistic content to reason over.
 """
 import random, datetime
-from services.fusion.schema import FusionGraph, Entity, Finding
+from services.fusion.schema import FusionGraph, Entity, Finding, EvidenceRef
 
 _TECH = [
     ("HackTool - Mimikatz Execution", ["T1003.001"], "high"),
@@ -82,6 +82,53 @@ def synth(hosts, span_days, findings, cross_host=None, seed=7):
     d = {"time_window": {"start": "2016-08-31T00:00:00", "end": "2026-08-31T00:00:00"},
          "min_severity": "informational", "max_entities": 500000}
     return g, d
+
+
+_ARTIFACT = "Windows.EventLogs.Evidence"
+_CMDS = [
+    ("mimikatz.exe sekurlsa::logonpasswords", "b" * 64),
+    ("rubeus.exe asktgt /user:svc /ptt", "c" * 64),
+    ("powershell -enc SQBFAFgA...", "d" * 64),
+    ("wevtutil cl Security", "e" * 64),
+    ("cmd.exe /c whoami /all", "f" * 64),
+]
+
+
+def add_events(g, d, *, run_id="synthrun1", per_finding=3, seed=7):
+    """Extend a synth graph with EVENT entities (ev_* attrs) + EvidenceRef locators
+    on both the events and their findings, and return the matching raw-rows source
+    {artifact: [row,...]} so evidence()/pivot() resolve. This is what lets the
+    agentic tools run at synthetic scale — synth graphs otherwise have no event
+    entities and no evidence refs (report-path only).
+
+    Returns (raw_rows, run_id). Feed raw_rows to evidence() by monkeypatching
+    store._agentic_collected_data(run_id) -> raw_rows (see agentic_synthscale.py)."""
+    rnd = random.Random(seed)
+    rows = []
+    g.note_run(run_id)
+    for f in g.findings:
+        host_ids = f.asset_ids or []
+        host_lbl = [g.entities[a].label for a in host_ids if a in g.entities]
+        for j in range(per_finding):
+            cmd, sha = rnd.choice(_CMDS)
+            acct = f"adatumlab\\svc{rnd.randrange(4)}"
+            idx = len(rows)
+            row = {"EventTime": f.ts, "Computer": (host_lbl[0] if host_lbl else "WKS000"),
+                   "User": acct, "CommandLine": cmd, "SHA256": sha,
+                   "TargetIP": f"10.0.{rnd.randrange(255)}.{rnd.randrange(255)}"}
+            rows.append(row)
+            ref = EvidenceRef(module="velociraptor", run_id=run_id,
+                              locator=f"{_ARTIFACT}/row={idx}")
+            eid = f"event:{f.id}:{j}"
+            g.entities[eid] = Entity(
+                id=eid, type="event", label=f"{cmd[:24]} on {row['Computer']}",
+                severity=f.severity, first_seen=f.ts,
+                attrs={"_assets": host_ids, "ev_user": acct, "ev_proc": cmd.split()[0],
+                       "ev_cmdline": cmd, "ev_sha256": sha, "ev_tgtip": row["TargetIP"]},
+                sources=["velociraptor"], evidence=[ref])
+            f.entity_ids = list(f.entity_ids or []) + [eid]
+            f.evidence = list(f.evidence or []) + [ref]
+    return {_ARTIFACT: rows}, run_id
 
 
 # The scope matrix: many/few endpoints x long/short timeframe (+ two middles).
