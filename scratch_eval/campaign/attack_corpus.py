@@ -210,6 +210,40 @@ SCENARIOS += [
      "expect": {"find": ["sdelete"], "sev": "high"}},   # MFT detection: characterize its severity
 ]
 
+# Batch 5 — further tactic breadth.
+SCENARIOS += [
+    {"id": "byovd", "name": "BYOVD — vulnerable driver loaded", "tech": "T1068",
+     "host": "WKS-EVAL06", "activity": "attacker loads a known-vulnerable signed driver",
+     "telemetry": {_T: _sigma("WKS-EVAL06", "Vulnerable Driver Loaded (BYOVD)", "crit",
+                              "2026-08-01T11:00:00Z")},
+     "expect": {"find": ["driver"], "sev": "critical"}},
+    {"id": "psexec-lateral", "name": "PsExec remote execution", "tech": "T1569.002",
+     "host": "WKS-EVAL05", "activity": "PsExec service created for remote execution",
+     "telemetry": {_T: _sigma("WKS-EVAL05", "PsExec Service Installation", "high",
+                              "2026-08-01T11:02:00Z")},
+     "expect": {"find": ["psexec"], "sev": "high"}},
+    {"id": "webshell", "name": "Webshell dropped on IIS", "tech": "T1505.003",
+     "host": "WKS-EVAL08", "activity": "aspx webshell written to inetpub",
+     "telemetry": {_T: _sigma("WKS-EVAL08", "Webshell Written To Web Root", "crit",
+                              "2026-08-01T11:04:00Z")},
+     "expect": {"find": ["webshell"], "sev": "critical"}},
+    {"id": "uac-bypass", "name": "UAC bypass via fodhelper", "tech": "T1548.002",
+     "host": "WKS-EVAL03", "activity": "fodhelper.exe registry hijack for elevation",
+     "telemetry": {_T: _sigma("WKS-EVAL03", "UAC Bypass via Fodhelper Registry Hijack",
+                              "high", "2026-08-01T11:06:00Z")},
+     "expect": {"find": ["uac bypass"], "sev": "high"}},
+    {"id": "asrep-roast", "name": "AS-REP roasting", "tech": "T1558.004",
+     "host": "WKS-EVAL02", "activity": "AS-REP roasting against accounts without preauth",
+     "telemetry": {_T: _sigma("WKS-EVAL02", "AS-REP Roasting Attack", "high",
+                              "2026-08-01T11:08:00Z")},
+     "expect": {"find": ["as-rep"], "sev": "high"}},
+    {"id": "c2-beacon", "name": "C2 beaconing to external IP", "tech": "T1071.001",
+     "host": "WKS-EVAL01", "activity": "periodic HTTPS beacon to attacker infrastructure",
+     "telemetry": {_T: _sigma("WKS-EVAL01", "C2 Beaconing Pattern Detected", "crit",
+                              "2026-08-01T11:10:00Z")},
+     "expect": {"find": ["beacon"], "sev": "critical"}},
+]
+
 # BENIGN baseline — normal admin/IT activity that should NOT produce attack findings
 # (false-positive / precision test). Informational SIGMA + routine processes.
 BENIGN = {

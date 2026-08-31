@@ -1,8 +1,8 @@
 # Attack-simulation ACCURACY — per scenario (deterministic)
 
-27 authored PowerShell attack scenarios through the REAL pipeline (map_agentic -> correlate.assemble). Recall = the planted technique surfaced as a finding on the right host.
+33 authored PowerShell attack scenarios through the REAL pipeline (map_agentic -> correlate.assemble). Recall = the planted technique surfaced as a finding on the right host.
 
-**Recall 23/27 (85%) · Host-grounded 23/27 · Severity-correct 21/27**
+**Recall 29/33 (88%) · Host-grounded 29/33 · Severity-correct 27/33**
 
 | # | Scenario | ATT&CK | Detected | Host✓ | Sev✓ | Matched finding |
 |---|---|---|:--:|:--:|:--:|---|
@@ -33,3 +33,9 @@
 | 25 | Unauthorized RMM tool (AnyDesk) | T1219 | ❌ MISS | — | — | `(none)` |
 | 26 | Attacker script in PowerShell ISE autosave | T1059.001 | ✅ | ✅ | — | `ise autosave: att&ck t1059.001 - encoded download cradle on ` |
 | 27 | Anti-forensic wiper in MFT (sdelete) | T1070.004 | ✅ | ✅ | ✅ | `mft: sdelete secure deletion tool on wks-eval07 :: wks-eval0` |
+| 28 | BYOVD — vulnerable driver loaded | T1068 | ✅ | ✅ | ✅ | `sigma: vulnerable driver loaded (byovd) on wks-eval06 :: wks` |
+| 29 | PsExec remote execution | T1569.002 | ✅ | ✅ | ✅ | `sigma: psexec service installation on wks-eval05 :: wks-eval` |
+| 30 | Webshell dropped on IIS | T1505.003 | ✅ | ✅ | ✅ | `sigma: webshell written to web root on wks-eval08 :: wks-eva` |
+| 31 | UAC bypass via fodhelper | T1548.002 | ✅ | ✅ | ✅ | `sigma: uac bypass via fodhelper registry hijack on wks-eval0` |
+| 32 | AS-REP roasting | T1558.004 | ✅ | ✅ | ✅ | `sigma: as-rep roasting attack on wks-eval02 :: wks-eval02` |
+| 33 | C2 beaconing to external IP | T1071.001 | ✅ | ✅ | ✅ | `sigma: c2 beaconing pattern detected on wks-eval01 :: wks-ev` |

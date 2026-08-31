@@ -269,8 +269,68 @@
       "grounded_host": true,
       "severity_ok": true,
       "matched": "mft: sdelete secure deletion tool on wks-eval07 :: wks-eval07"
+    },
+    {
+      "id": "byovd",
+      "name": "BYOVD \u2014 vulnerable driver loaded",
+      "tech": "T1068",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: vulnerable driver loaded (byovd) on wks-eval06 :: wks-eval06"
+    },
+    {
+      "id": "psexec-lateral",
+      "name": "PsExec remote execution",
+      "tech": "T1569.002",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: psexec service installation on wks-eval05 :: wks-eval05"
+    },
+    {
+      "id": "webshell",
+      "name": "Webshell dropped on IIS",
+      "tech": "T1505.003",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: webshell written to web root on wks-eval08 :: wks-eval08"
+    },
+    {
+      "id": "uac-bypass",
+      "name": "UAC bypass via fodhelper",
+      "tech": "T1548.002",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: uac bypass via fodhelper registry hijack on wks-eval03 :: wks-eval03"
+    },
+    {
+      "id": "asrep-roast",
+      "name": "AS-REP roasting",
+      "tech": "T1558.004",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: as-rep roasting attack on wks-eval02 :: wks-eval02"
+    },
+    {
+      "id": "c2-beacon",
+      "name": "C2 beaconing to external IP",
+      "tech": "T1071.001",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "sigma: c2 beaconing pattern detected on wks-eval01 :: wks-eval01"
     }
   ],
-  "recall": 23,
-  "n": 27
+  "recall": 29,
+  "n": 33
 }
