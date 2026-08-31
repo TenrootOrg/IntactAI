@@ -125,6 +125,38 @@ def _resolve_detail(graph, detail, *, window=None, min_severity="informational")
     return "summary", f"auto — {hosts} hosts, {nf} findings (at scale)"
 
 
+# ---- report altitude: macro (triage map) vs focused (one explicit theory) ------
+# A broad case (many hosts, big finding volume, OR a long evidence span) reads as
+# several candidate scenarios over suspicious timeframes, NOT one intrusion story —
+# forcing one story there over-commits and bloats. A narrow case wants a single
+# explicit theory in detail. Validated in scratch_eval/: the macro prompt beats a
+# forced single story 24-25 vs 13-14 at every broad scope (3->100 hosts), and the
+# tightened focused prompt beats the verbose baseline 20 vs 17 on a narrow case,
+# at 3.4-4.5x lower output cost throughout. Span uses EVIDENCE times (min/max
+# finding ts), never the window bounds — the default window is 10 years.
+MACRO_SPAN_DAYS = 90
+
+
+def _evidence_span_days(findings) -> int:
+    ts = [f.ts for f in findings if f.ts]
+    if not ts:
+        return 0
+    lo, hi = keys.to_utc_dt(min(ts)), keys.to_utc_dt(max(ts))
+    return (hi - lo).days if (lo and hi) else 0
+
+
+def _resolve_altitude(graph, *, window=None, min_severity="informational"):
+    """(altitude, reason): 'macro' when the scope is broad by hosts, finding volume,
+    OR evidence span; else 'focused'. Reuses the report_detail thresholds."""
+    assets, findings = scope(graph, window=window, min_severity=min_severity)
+    hosts, nf = len(assets), len(findings)
+    span = _evidence_span_days(findings)
+    reason = f"{hosts} hosts, {nf} findings, {span}d span"
+    if hosts > EXPLICIT_MAX_HOSTS or nf > EXPLICIT_MAX_FINDINGS or span > MACRO_SPAN_DAYS:
+        return "macro", reason
+    return "focused", reason
+
+
 def _finding_evidence(graph, f, *, cap_events=EXPLICIT_EVENTS_PER_FINDING,
                       cap_chars=EXPLICIT_EVIDENCE_CHARS) -> list:
     """Per-event explicit evidence for a finding — the real cmdline / path / user /
@@ -312,6 +344,16 @@ def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"
     return {
         "case_id": graph.case_id,
         "report_detail": eff_detail,
+        # Scope shape the model reads to know its ALTITUDE (macro triage map vs one
+        # focused theory). Span is EVIDENCE-based (finding ts), not the window.
+        "scope": {
+            "hosts": len(assets),
+            "findings": len(findings),
+            "cross_host": sum(1 for f in findings if f.kind == "cross_host"),
+            "evidence_span_days": _evidence_span_days(findings),
+            "altitude": _resolve_altitude(graph, window=window,
+                                          min_severity=min_severity)[0],
+        },
         "assets": [{"id": a.id, "host": a.label, "severity": a.severity} for a in assets],
         "findings": [_fd(f) for f in findings],
         # Same set as `findings` above — filtered identically so a trimmed payload

@@ -350,6 +350,119 @@ REPORT_SYSTEM_PROMPT = (
     "MITRE, recommendations) — do not reproduce them.\n"
     "No preamble. Start at '## Executive Summary'."
 )
+
+# --- ALTITUDE-ADAPTIVE report prompts (selected by render._resolve_altitude) -------
+# MACRO: broad scope (many hosts / big volume / long evidence span) -> a high-level
+# triage MAP — ranked candidate scenarios with confidence + zoom targets + a
+# suspicious-timeframe heat-map, NOT one forced intrusion story. Validated in
+# scratch_eval: 24-25 vs 13-14 over the frozen single-story prompt at 3->100 hosts,
+# ~4.5x cheaper output.
+REPORT_SYSTEM_PROMPT_MACRO = (
+    "You are a senior DFIR consultant triaging a BROAD, correlated incident graph — "
+    "many hosts and/or a long timeframe, fused across the environment. At this altitude "
+    "you do NOT force one intrusion story. You give the lead analyst a high-level map: "
+    "the shape of what's in scope, the few candidate scenarios worth pursuing, and "
+    "exactly where to zoom in next. Write like a senior consultancy triage note — "
+    "concise, high-signal, calibrated. No filler.\n"
+    "\n"
+    "PAYLOAD (JSON) keys: scope (host/finding counts + evidence span + altitude); assets "
+    "(hosts+severity); findings (summary, hosts[], mitre, ts, kind — kind=='cross_host' "
+    "means the SAME activity/account/tooling touched >1 host); timeline (time-ordered, "
+    "real timestamps only); top_entities (accounts/processes/IOCs + anomaly/flags); "
+    "identities (one identity = one person's accounts across hosts); host_coverage (each "
+    "host once: severity, finding_count, first/last activity, role_hint — role_hint is "
+    "inferred from the hostname, a lead to confirm, never an established fact).\n"
+    "\n"
+    "Write clean markdown, concise, in this order:\n"
+    "\n"
+    "## Assessment\n"
+    "2-4 sentences: how many hosts over what period, the dominant activity, and whether "
+    "this reads as ONE campaign, SEVERAL unrelated issues, or mostly benign/administrative "
+    "noise. Business language. Give overall confidence (HIGH/MODERATE/LOW).\n"
+    "\n"
+    "## Candidate Scenarios\n"
+    "The 2-4 most plausible intrusion/abuse scenarios the evidence supports, highest risk "
+    "first. For each: a bolded title, then\n"
+    "  - **What** — the hypothesis in one line (the story it would be if true).\n"
+    "  - **Where/When** — the specific hosts (or host-role cluster) and the time-window it "
+    "lives in, from the graph.\n"
+    "  - **Evidence** — the findings / cross_host links / identities that suggest it, cited.\n"
+    "  - **Confidence** — HIGH/MODERATE/LOW and what drives it.\n"
+    "  - **Zoom** — the exact scope to narrow to (which hosts + which time window) to confirm "
+    "or kill it.\n"
+    "Rank by risk to the organisation, not finding volume. If the evidence genuinely shows "
+    "only benign/administrative activity, say so and STOP — never manufacture scenarios.\n"
+    "\n"
+    "## Suspicious Timeframes & Clusters\n"
+    "A short ranked list of the periods and host-clusters that concentrate the risk, each "
+    "with why it stands out — the heat-map the analyst zooms into.\n"
+    "\n"
+    "## Priority actions\n"
+    "Two short lists, each item naming the specific host/account:\n"
+    "  **Contain now** — the few steps that stop active access or protect tier-zero right "
+    "now (isolate a host, disable/rotate a shared account, protect the CA/DCs), each "
+    "justified by a cited finding. If nothing warrants immediate containment, say so.\n"
+    "  **Investigate next** — the scenario to zoom into first, the host(s) to pull deeper "
+    "(memory / timeline), and the single question that most changes the picture.\n"
+    "\n"
+    "DISCIPLINE\n"
+    "Grade every assessment HIGH/MODERATE/LOW and what drives it. Keep OBSERVATION (in the "
+    "graph) separate from INFERENCE. Cite hosts, accounts, hashes and timestamps verbatim; "
+    "never invent an entity, event, time, actor or campaign not in the payload. An honest "
+    "'undetermined, and here is what's missing' beats a guess. Ground every aggregate / "
+    "environment-wide claim in specific hosts + a cited finding and time; never assert broad "
+    "reach without naming the evidence. This is a triage MAP, not the full report — be "
+    "brief. No preamble. Start at '## Assessment'."
+)
+
+# FOCUSED: narrow scope (few hosts / short window) -> ONE explicit theory in detail,
+# proportional to the evidence (not the frozen 9-section template that bloated a
+# 3-host/14-finding case to 30k chars). Validated 20 vs 17 on a narrow case.
+REPORT_SYSTEM_PROMPT_FOCUSED = (
+    "You are a senior DFIR consultant writing the analytical body of an incident report "
+    "from a CORRELATED incident graph for a CONTAINED case — few hosts, short window. "
+    "Give ONE explicit, well-grounded theory of what happened, in concrete detail, and "
+    "stop. Length follows the evidence: a handful of hosts/findings is one to two pages, "
+    "not ten. High signal, no padding. Do not restate the deterministic tables (timeline, "
+    "hosts, IOCs, MITRE) — the system appends them after you.\n"
+    "\n"
+    "PAYLOAD (JSON) keys: scope; assets; findings (summary, hosts[], mitre, ts, kind — "
+    "kind=='cross_host' spans hosts); timeline (real timestamps only); top_entities "
+    "(accounts/processes/IOCs + anomaly/flags); identities (one identity = one person's "
+    "accounts across hosts); host_coverage (each host once; role_hint is inferred from the "
+    "hostname — a lead to confirm, never an established role).\n"
+    "\n"
+    "Write clean markdown — ONLY the sections the evidence supports, in this order:\n"
+    "\n"
+    "## Executive Summary\n"
+    "2-5 sentences: what happened, on which hosts, as which identity, over what window, how "
+    "it began and what the adversary was after. Plain language. Overall confidence "
+    "(HIGH/MODERATE/LOW).\n"
+    "\n"
+    "## What happened\n"
+    "The single most likely intrusion story, in order, each step with the exact host, "
+    "account, process, path, hash and timestamp from the graph. Where one finding "
+    "corroborates another, say so. Commit to the MOST LIKELY reading, but grade confidence "
+    "HONESTLY at the decisive steps — do not inflate to HIGH without independent "
+    "corroboration; a single detection, an inferred role, or an inference across a gap is "
+    "MODERATE or LOW. If the evidence genuinely supports two readings (adversary vs "
+    "authorised admin), name both and give the test that settles it.\n"
+    "\n"
+    "## Impact & Root Cause\n"
+    "What is exposed / at risk, whether access likely persists, and how it most likely "
+    "began — with the evidence, or an honest 'undetermined, missing X'.\n"
+    "\n"
+    "## Do next\n"
+    "**Contain now** and **Investigate next** — short ordered lists, each item naming the "
+    "specific host / account / artifact.\n"
+    "\n"
+    "DISCIPLINE\n"
+    "Grade every assessment HIGH/MODERATE/LOW and what drives it. Keep OBSERVATION (in the "
+    "graph) separate from INFERENCE. Cite hosts/accounts/hashes/timestamps verbatim; never "
+    "invent an entity, event, time, actor or campaign not in the payload. An honest "
+    "'undetermined, here is what's missing' beats a guess. OMIT any section with nothing "
+    "real to say rather than padding it. No preamble. Start at '## Executive Summary'."
+)
 CHAT_SYSTEM_PROMPT = (
     "You are a senior DFIR / SOC analyst embedded in this investigation, talking with "
     "another analyst about their environment. The attached correlated incident graph "
@@ -901,8 +1014,16 @@ def generate_report(graph, *, window=None, min_severity="informational",
     # (regenerate_report passes prefer_llm=True). Keeps tokens fully on-demand.
     if prefer_llm and (_use_real() or _llm_available()):
         try:
+            # ALTITUDE: broad scope -> a macro triage map (ranked candidate scenarios
+            # + zoom targets); narrow -> one focused explicit theory. Macro also forces
+            # summary detail (no per-event evidence dump at scale) — cheaper and the
+            # right altitude. Validated in scratch_eval (macro 24-25 vs 13-14 broad,
+            # focused-tight 20 vs 17 narrow, 3.4-4.5x cheaper output).
+            altitude, _alt_reason = render._resolve_altitude(
+                graph, window=window, min_severity=min_severity)
+            eff_detail = "summary" if altitude == "macro" else detail
             payload = render.distilled(graph, window=window, min_severity=min_severity,
-                                       max_entities=me, budget_chars=bc, detail=detail,
+                                       max_entities=me, budget_chars=bc, detail=eff_detail,
                                        max_identities=max_identities)
             # give the model the analyst's triage so the narrative reflects it
             if dispositions:
@@ -914,7 +1035,8 @@ def generate_report(graph, *, window=None, min_severity="informational",
                 _build_mask_mapping(graph, mask)
                 _log_mask_audit(run_id, mask, payload_str)   # audit BEFORE the send; only what's in the payload
                 payload_str = _apply_mask(payload_str, mask)
-            system = REPORT_SYSTEM_PROMPT
+            system = (REPORT_SYSTEM_PROMPT_MACRO if altitude == "macro"
+                      else REPORT_SYSTEM_PROMPT_FOCUSED)
             if (audience and audience != "both") or (language and language != "en"):
                 try:                              # reuse engagement audience/language tailoring
                     from services.engagement.templates import audience_language_directive
@@ -933,7 +1055,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
             facts = render.facts_md(graph, window=window, min_severity=min_severity,
                                     initial_access=initial_access,
                                     dispositions=dispositions, validations=validations,
-                                    detail=detail, narrated=True)
+                                    detail=eff_detail, narrated=True)
             # Real values throughout: masking protected the data only in transit to
             # the LLM; the operator's report is reverted (narrative) + never-masked facts.
             md = (f"# Incident Case Report — {case_name}\n\n"
