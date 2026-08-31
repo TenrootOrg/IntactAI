@@ -48,6 +48,15 @@ _MAX_ROW_CHARS = 1500
 _MIN_STEP_NUDGES = 2
 
 
+def _role_annot(label):
+    """A6: append the hostname's role hint (domain controller / CA / config manager)
+    so tier-zero priority SURVIVES masking — the identifier 'ALDC02' is pseudonymized
+    to 'Hostname7', but '(domain controller)' is not an identifier and passes through,
+    so the model still knows which hosts matter. Role is a naming HINT, not asserted."""
+    r = render._host_role(label or "")
+    return f"{label} ({r})" if r else label
+
+
 def _tool(case_id, name, args):
     args = args or {}
     if name == "list_findings":
@@ -55,7 +64,8 @@ def _tool(case_id, name, args):
         fs = sorted(g.findings, key=lambda f: -sev.rank(f.severity))
         lim = min(40, int(args.get("limit") or 20))
         return [{"id": f.id, "title": f.title, "severity": f.severity,
-                 "hosts": [render._host_label(g, a) for a in (f.asset_ids or [])][:6],
+                 "hosts": [_role_annot(render._host_label(g, a))
+                           for a in (f.asset_ids or [])][:6],
                  "ts": f.ts, "kind": f.kind} for f in fs[:lim]]
     if name == "search":
         q = str(args.get("query") or "").lower()
@@ -96,7 +106,8 @@ def _tool(case_id, name, args):
             t = keys.to_utc_dt(e.first_seen or e.last_seen)
             if (lo and t and t < lo) or (hi and t and t > hi):
                 continue
-            hits.append((t, {"ts": e.first_seen or e.last_seen, "hosts": labels[:3],
+            hits.append((t, {"ts": e.first_seen or e.last_seen,
+                             "hosts": [_role_annot(x) for x in labels[:3]],
                              **{k: str(a[k])[:300] for k in _EV_KEYS if a.get(k)}}))
         hits.sort(key=lambda x: (x[0] is None, x[0]))
         total = len(hits)
@@ -107,9 +118,10 @@ def _tool(case_id, name, args):
         d = store.get_case(case_id) or {}
         cl = render.zoom_targets(g, window=d.get("time_window") or None,
                                  min_severity=d.get("min_severity") or "informational")
-        return [{"title": c["title"], "hosts": c["host_labels"], "window": c["window"],
-                 "finding_count": c["finding_count"], "severity": c["severity"],
-                 "mitre": c["mitre"]} for c in cl]
+        return [{"title": c["title"],
+                 "hosts": [_role_annot(lb) for lb in c["host_labels"]],
+                 "window": c["window"], "finding_count": c["finding_count"],
+                 "severity": c["severity"], "mitre": c["mitre"]} for c in cl]
     return {"error": f"unknown tool '{name}'"}
 
 
@@ -169,6 +181,59 @@ def _revert_obj(o, mask):
     if isinstance(o, list):
         return [_revert_obj(v, mask) for v in o]
     return o
+
+
+_MASK_ID_KEYS = {
+    "computer": "host", "hostname": "host", "host": "host", "machine": "host",
+    "dest_host": "host", "src_host": "host", "workstation": "host", "dnshostname": "host",
+    "user": "user", "username": "user", "account": "user", "subjectusername": "user",
+    "targetusername": "user", "ev_user": "user", "samaccountname": "user",
+    "sourceip": "ip_int", "destinationip": "ip_int", "targetip": "ip_int",
+    "ev_tgtip": "ip_int", "ipaddress": "ip_int", "srcip": "ip_int", "dstip": "ip_int",
+}
+
+
+def _enrich_mask_from_result(mask, obj):
+    """A8: register identifier-shaped VALUES found in a tool result (raw evidence /
+    pivot rows) into the mask BEFORE it is applied — so a hostname/user/ip that lives
+    ONLY in a raw row (never promoted to a graph entity, so absent from the
+    graph-derived mapping) is still pseudonymized instead of leaking to the model.
+    Best-effort; walks nested dicts/lists and parses stringified-JSON row blobs."""
+    if not mask:
+        return
+
+    def reg(v, cat):
+        v = (v or "").strip()
+        if v and v not in getattr(mask, "mapping", {}):
+            try:
+                mask._get_or_create_pseudo(v, cat)
+            except Exception:
+                pass
+
+    def walk(o, depth=0):
+        if depth > 6:
+            return
+        if isinstance(o, dict):
+            for k, v in o.items():
+                kl = str(k).lower()
+                if isinstance(v, str):
+                    if kl in _MASK_ID_KEYS:
+                        reg(v, _MASK_ID_KEYS[kl])
+                    elif v[:1] == "{":                 # a stringified raw row (evidence())
+                        try:
+                            walk(json.loads(v), depth + 1)
+                        except Exception:
+                            pass
+                else:
+                    walk(v, depth + 1)
+        elif isinstance(o, list):
+            for x in o:
+                walk(x, depth + 1)
+
+    try:
+        walk(obj)
+    except Exception:
+        pass
 
 
 def investigate(case_id, question, *, run_id=None, max_steps=6, log=None,
@@ -241,6 +306,7 @@ def investigate(case_id, question, *, run_id=None, max_steps=6, log=None,
                                  'and only answer after inspecting real results.')
                     continue
                 forced = _safe_tool(case_id, "list_findings", {"limit": 20})
+                _enrich_mask_from_result(mask, forced)   # A8: mask row-only identifiers
                 steps.append({"tool": "list_findings", "args": {"limit": 20}})
                 _feed("list_findings", {"limit": 20}, forced)
                 convo.append('Now answer, grounded ONLY in those findings, with one '
@@ -256,6 +322,7 @@ def investigate(case_id, question, *, run_id=None, max_steps=6, log=None,
         else:
             real_args = _revert_obj(targs, mask)          # model speaks pseudonyms
             result = _safe_tool(case_id, tool, real_args)  # A2: never raises
+        _enrich_mask_from_result(mask, result)            # A8: mask row-only identifiers
         _log(f"tool: {tool}({json.dumps(real_args)[:80]})")
         steps.append({"tool": tool, "args": real_args})   # analyst-facing trace: real
         _feed(tool, targs, result)

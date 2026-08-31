@@ -255,5 +255,34 @@ class FaultHandling(unittest.TestCase):
         self.assertTrue(res["truncated"])
 
 
+class RoleHintAndMaskEnrich(unittest.TestCase):
+    def test_A6_list_findings_annotates_tier_zero_role(self):
+        g = schema.FusionGraph(case_id="c")
+        g.entities["asset:dc"] = schema.Entity(id="asset:dc", type="asset", label="ALDC02")
+        g.findings = [schema.Finding(id="f1", title="t", severity="high",
+                      confidence="high", summary="s", asset_ids=["asset:dc"],
+                      ts="2026-01-01T00:00:00Z")]
+        with _Patched(investigate.store, load_graph=lambda c: g):
+            out = investigate._tool("c", "list_findings", {"limit": 5})
+        # role survives so it can pass through masking intact
+        self.assertTrue(any("domain controller" in h for h in out[0]["hosts"]),
+                        out[0]["hosts"])
+
+    def test_A8_enrich_masks_row_only_identifiers(self):
+        from services.data_anonymizer import DataAnonymizer
+        m = DataAnonymizer(custom_patterns=[])
+        result = {"events": [{"ev_user": "corp\\ceo"}],
+                  "extra": [{"row": json.dumps({"Computer": "SECRETDC01"})}]}
+        investigate._enrich_mask_from_result(m, result)
+        self.assertIn("corp\\ceo", m.mapping)          # pivot field registered
+        self.assertIn("SECRETDC01", m.mapping)         # stringified-row value registered
+        masked = llm_sim._apply_mask(json.dumps(result), m)
+        self.assertNotIn("SECRETDC01", masked)
+        self.assertNotIn("ceo", masked)
+
+    def test_A8_none_mask_is_noop(self):
+        investigate._enrich_mask_from_result(None, {"ev_user": "x"})  # must not raise
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
