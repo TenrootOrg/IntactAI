@@ -1,0 +1,8 @@
+[
+  {
+    "chars": 1100000,
+    "ok": false,
+    "in_tok": null,
+    "err": "SubscriptionCLIError: OpenAI (Subscription) CLI failed (exit 1): {\"type\":\"thread.started\",\"thread_id\":\"01a05998-7283-70a1-af66-9b9790ee831c\"}\n\nReading prompt from stdin...\nError: turn/start: turn/start failed: Input exceeds the maximum length of 1048576 characters. (code -32602), data: {\"input_error_code\":\"input_too_large\",\"max_chars\":1048576,\"actual_chars\":1100056}"
+  }
+]

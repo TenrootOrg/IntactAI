@@ -176,6 +176,34 @@ class IdentityCrossHost(unittest.TestCase):
         self.assertEqual(self._xhost([("H1", "corp\\bob")]), [])
 
 
+class TransportInputCap(unittest.TestCase):
+    """The payload budget is derived from the MODEL's context window, but the Codex
+    subscription CLI hard-rejects any request over 1 MiB of characters regardless of
+    model size. MEASURED on this box: 1,000,125 chars OK (376,564 input tokens);
+    1,100,000 chars -> 'Input exceeds the maximum length of 1048576 characters'.
+    Without the clamp, a 1M-token model computes a ~2.9 MB payload and EVERY report
+    fails."""
+
+    def test_codex_transport_is_capped_under_1mib(self):
+        from services.fusion import budget
+        cap = budget.transport_cap_chars("codex-subscription")
+        self.assertIsNotNone(cap)
+        self.assertLess(cap, 1_048_576)          # strictly under the hard limit
+        self.assertGreater(cap, 900_000)         # but not needlessly small
+
+    def test_direct_api_providers_are_uncapped(self):
+        from services.fusion import budget
+        # only the CLI transport has a stdin size limit; HTTP providers do not
+        self.assertIsNone(budget.transport_cap_chars("claude"))
+        self.assertIsNone(budget.transport_cap_chars(""))
+
+    def test_large_context_model_would_exceed_the_cli_limit(self):
+        from services.fusion import budget
+        chars, _tok = budget.adaptive_budget(1_000_000, 32_000)
+        self.assertGreater(chars, 1_048_576)     # the failure this clamp prevents
+        self.assertLess(budget.transport_cap_chars("codex-subscription"), chars)
+
+
 class TimestampComparison(unittest.TestCase):
     """F2/F2b: timestamp widening + watermark staleness must compare INSTANTS, not
     lexicographic strings (a trailing 'Z' sorts after a fractional second)."""

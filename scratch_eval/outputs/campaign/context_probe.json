@@ -1,0 +1,29 @@
+[
+  {
+    "target_tokens": 150000,
+    "chars": 600075,
+    "ok": true,
+    "seconds": 9.6,
+    "reported_input_tokens": 231669,
+    "error": "",
+    "answer": "OK"
+  },
+  {
+    "target_tokens": 250000,
+    "chars": 1000125,
+    "ok": true,
+    "seconds": 11.0,
+    "reported_input_tokens": 376564,
+    "error": "",
+    "answer": "OK"
+  },
+  {
+    "target_tokens": 350000,
+    "chars": 1400048,
+    "ok": false,
+    "seconds": 0.9,
+    "reported_input_tokens": null,
+    "error": "SubscriptionCLIError: OpenAI (Subscription) CLI failed (exit 1): {\"type\":\"thread.started\",\"thread_id\":\"01a05997-b1dd-74f0-9b11-5852883acf98\"}\n\nReading prompt from stdin...\nError: turn/start: turn/star",
+    "answer": ""
+  }
+]

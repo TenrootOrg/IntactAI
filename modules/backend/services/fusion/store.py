@@ -231,6 +231,18 @@ def _llm_payload_budget(d):
     except Exception:  # noqa: BLE001 — never break fusion over a budget hint
         pass
 
+    # TRANSPORT CEILING (measured): the model's context is not the only limit — the
+    # Codex CLI hard-rejects any request over 1 MiB of characters regardless of how
+    # large the model's window is. Clamp AFTER the adaptive raise, or selecting a
+    # large-context model computes a multi-megabyte payload and every report fails
+    # with input_too_large. See budget.transport_cap_chars.
+    try:
+        _cap = budget.transport_cap_chars(_configured_fusion_model()[1])
+        if _cap and budget_chars > _cap:
+            budget_chars = _cap
+    except Exception:  # noqa: BLE001 — a cap hint must never break fusion
+        pass
+
     safe_cap = budget_chars // _LLM_CHARS_PER_ENTITY            # entities that fit the context
     return min(n, safe_cap), budget_chars
 

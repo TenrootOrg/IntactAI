@@ -74,6 +74,32 @@ def adaptive_budget(context_length, output_cap):
     return tokens * CHARS_PER_TOKEN, tokens
 
 
+
+# TRANSPORT INPUT CAP — measured, not assumed.
+# The budget above is derived from the MODEL's context window, but a transport can
+# impose its own limit on the request itself. The Codex subscription CLI reads the
+# prompt from stdin and hard-rejects anything larger than 1 MiB:
+#     Error: turn/start failed: Input exceeds the maximum length of 1048576
+#     characters. (code -32602) data: {"input_error_code":"input_too_large",
+#                                      "max_chars":1048576,"actual_chars":1100056}
+# Measured on this box: 1,000,125 chars succeeded (376,564 input tokens reported);
+# 1,100,000 chars failed instantly. That ceiling is INDEPENDENT of the model's
+# context — a 1M-TOKEN model still cannot receive more than 1 MiB of CHARACTERS
+# through this CLI. Without this clamp, selecting a large-context model makes
+# adaptive_budget compute a multi-megabyte payload and EVERY report fails.
+TRANSPORT_MAX_INPUT_CHARS = {
+    "codex-subscription": 1_048_576,
+}
+# Leave room for the system prompt + framing the CLI adds around the payload.
+TRANSPORT_RESERVE_CHARS = 48_000
+
+
+def transport_cap_chars(provider):
+    """Hard input-size ceiling for a provider's transport, or None if unbounded."""
+    cap = TRANSPORT_MAX_INPUT_CHARS.get((provider or "").strip().lower())
+    return max(0, cap - TRANSPORT_RESERVE_CHARS) if cap else None
+
+
 def approx_tokens(text) -> int:
     """Coarse upper-bound token estimate. NOT a billed number — label any stored
     value `_approx`. Real counts come from `response.usage`."""
