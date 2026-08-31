@@ -518,6 +518,23 @@ def apply_zoom(case_id):
                     "scoped_to": sorted(keep), "window": cfg["time_window"], **res})
 
 
+@case_bp.route("/api/cases/<case_id>/investigate", methods=["POST"])
+def investigate_case(case_id):
+    """Agentic drill-down: the model investigates a QUESTION by calling retrieval
+    tools (list_findings / search / evidence / clusters) over the graph + raw
+    evidence, grounding every claim in what they return. On-demand — costs several
+    LLM calls — so it's an explicit 'dig deeper', not the default report path."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    q = (request.get_json(silent=True) or {}).get("question")
+    if not q:
+        return jsonify({"error": "question required"}), 400
+    from services.fusion import investigate as _inv
+    rid = store._ws().create_automation_run("investigation", f"investigate {case_id}")
+    res = _inv.investigate(case_id, q, run_id=rid)
+    return jsonify({"case_id": case_id, "question": q, **res})
+
+
 @case_bp.route("/api/cases/<case_id>/findings/<finding_id>/evidence", methods=["GET"])
 def finding_evidence(case_id, finding_id):
     """Drill from a finding to the RAW rows its evidence locators point at — the
