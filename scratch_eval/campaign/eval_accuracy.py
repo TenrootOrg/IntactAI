@@ -222,7 +222,93 @@ def cmd_incremental():
     print(md)
 
 
+
+def cmd_duplicate():
+    """E19 — the SAME collection imported twice (not split). Evidence/occurrence
+    inflation is the +365 bug class: entities stable, evidence silently doubling."""
+    tele = corpus.build_all_telemetry()
+    one = _fuse(tele, "dup_one")
+    ents, rels = map_agentic(tele, run_id="runX", hostnames={})
+    seed = correlate.assemble("dup_two", [(ents, rels)], ["runX"])
+    two = correlate.assemble("dup_two", [(ents, rels)], ["runX"], seed=seed)  # same run again
+
+    def ev_count(g):
+        return sum(len(e.evidence or []) for e in g.entities.values()) + \
+               sum(len(f.evidence or []) for f in g.findings)
+    e1, e2 = ev_count(one), ev_count(two)
+    f1, f2 = len(one.findings), len(two.findings)
+    n1, n2 = len(one.entities), len(two.entities)
+    ok = (e1 == e2 and f1 == f2 and n1 == n2)
+    lines = ["# Duplicate collection import (E19)", "",
+             "The same collection imported twice. Entities, findings AND evidence must "
+             "all stay constant — evidence growth is the +365 duplication bug class.", "",
+             f"| | one import | twice |", "|---|---|---|",
+             f"| entities | {n1} | {n2} |",
+             f"| findings | {f1} | {f2} |",
+             f"| evidence refs | {e1} | {e2} |", "",
+             f"**{'✅ PASS — no inflation' if ok else '❌ FAIL — duplication detected'}**"]
+    md = "\n".join(lines) + "\n"
+    open(f"{OUT}/accuracy_duplicate.md", "w").write(md)
+    json.dump({"entities": [n1, n2], "findings": [f1, f2], "evidence": [e1, e2],
+               "pass": ok}, open(f"{OUT}/accuracy_duplicate.json", "w"), indent=2)
+    print(md)
+
+
+def cmd_noise500():
+    """E20 — extreme noise: 500x benign volume on the same hosts."""
+    tele = corpus.build_all_telemetry()
+    for art, rows in corpus.BENIGN.items():
+        tele.setdefault(art, []).extend(rows * 500)
+    g = _fuse(tele, "noise500")
+    fts = _finding_texts(g)
+    key = [{"id": s["id"], "kws": [k.lower() for k in s["expect"]["find"]],
+            "host": s["host"].lower()} for s in corpus.SCENARIOS
+           if s["expect"].get("sev") in ("high", "critical")]
+    rows = [{"id": k["id"], "ok": any(all(w in t for w in k["kws"]) and k["host"] in t
+                                      for t in fts)} for k in key]
+    rec = sum(r["ok"] for r in rows)
+    lost = [r["id"] for r in rows if not r["ok"]]
+    md = ["# Extreme noise — 500x benign (E20)", "",
+          f"Attack telemetry + **500x** benign volume ({len(g.findings)} findings).", "",
+          f"**Detections surviving: {rec}/{len(key)}**",
+          f"- lost: {lost or 'none'}", "",
+          f"**{'✅ PASS' if rec == len(key) else '❌ degraded'}**"]
+    out = "\n".join(md) + "\n"
+    open(f"{OUT}/accuracy_noise500.md", "w").write(out)
+    print(out)
+
+
+def cmd_medium_boundary():
+    """E21 — quantify the medium-SIGMA coverage boundary: which planted techniques are
+    invisible because only high/critical SIGMA is promoted to a finding."""
+    rows = []
+    for s in corpus.SCENARIOS:
+        g = _fuse(s["telemetry"], s["id"])
+        fts = _finding_texts(g)
+        kws = [k.lower() for k in s["expect"]["find"]]
+        seen = any(all(k in t for k in kws) for t in fts)
+        rows.append({"id": s["id"], "name": s["name"], "tech": s["tech"],
+                     "planted_sev": s["expect"].get("sev"), "surfaced": seen})
+    invisible = [r for r in rows if not r["surfaced"]]
+    md = ["# Medium-SIGMA coverage boundary (E21)", "",
+          "Only high/critical SIGMA is promoted to a finding (correlate.py:776, "
+          "deliberate noise control). These planted techniques are therefore INVISIBLE "
+          "to the report and the analyst:", "",
+          "| Technique | ATT&CK | Planted severity |", "|---|---|---|"]
+    for r in invisible:
+        md.append(f"| {r['name']} | {r['tech']} | {r['planted_sev']} |")
+    md += ["", f"**{len(invisible)} of {len(rows)} planted techniques are invisible.**", "",
+           "Decision for the morning: promote specific high-value medium rules "
+           "(discovery, RMM) rather than lowering the threshold globally — a global "
+           "change reintroduces the medium/informational flood the gate exists to stop."]
+    out = "\n".join(md) + "\n"
+    open(f"{OUT}/medium_boundary.md", "w").write(out)
+    json.dump(rows, open(f"{OUT}/medium_boundary.json", "w"), indent=2, default=str)
+    print(out)
+
 if __name__ == "__main__":
     {"per": cmd_per, "combined": cmd_combined, "precision": cmd_precision,
-     "noise": cmd_noise, "incremental": cmd_incremental}.get(
+     "noise": cmd_noise, "incremental": cmd_incremental,
+     "duplicate": cmd_duplicate, "noise500": cmd_noise500,
+     "medium": cmd_medium_boundary}.get(
         sys.argv[1] if sys.argv[1:] else "per", cmd_per)()

@@ -1,0 +1,289 @@
+[
+  {
+    "id": "cred-lsass",
+    "name": "LSASS credential dumping (Mimikatz)",
+    "tech": "T1003.001",
+    "planted_sev": "critical",
+    "surfaced": true
+  },
+  {
+    "id": "log-clear",
+    "name": "Security event log cleared",
+    "tech": "T1070.001",
+    "planted_sev": "high",
+    "surfaced": true
+  },
+  {
+    "id": "kerberoast",
+    "name": "Kerberoasting via Rubeus",
+    "tech": "T1558.003",
+    "planted_sev": "high",
+    "surfaced": true
+  },
+  {
+    "id": "defender-off",
+    "name": "Windows Defender disabled",
+    "tech": "T1562.001",
+    "planted_sev": "high",
+    "surfaced": true
+  },
+  {
+    "id": "enc-ps",
+    "name": "Encoded PowerShell execution",
+    "tech": "T1059.001",
+    "planted_sev": "medium",
+    "surfaced": false
+  },
+  {
+    "id": "sched-task",
+    "name": "Scheduled task persistence",
+    "tech": "T1053.005",
+    "planted_sev": "medium",
+    "surfaced": false
+  },
+  {
+    "id": "inject",
+    "name": "Process injection (RWX memory, YARA hit)",
+    "tech": "T1055",
+    "planted_sev": "critical",
+    "surfaced": true
+  },
+  {
+    "id": "xhost-acct",
+    "name": "Cross-host credential reuse (service account)",
+    "tech": "T1021",
+    "planted_sev": "high",
+    "surfaced": true
+  },
+  {
+    "id": "namedpipe-c2",
+    "name": "Cobalt Strike named pipe",
+    "tech": "T1071",
+    "planted_sev": "critical",
+    "surfaced": true
+  },
+  {
+    "id": "binrename",
+    "name": "Renamed system binary (procdump)",
+    "tech": "T1036.003",
+    "planted_sev": "high",
+    "surfaced": true
+  },
+  {
+    "id": "wmi-persist",
+    "name": "WMI event consumer persistence",
+    "tech": "T1546.003",
+    "planted_sev": "high",
+    "surfaced": true
+  },
+  {
+    "id": "dcsync",
+    "name": "DCSync credential replication",
+    "tech": "T1003.006",
+    "planted_sev": "critical",
+    "surfaced": true
+  },
+  {
+    "id": "bloodhound",
+    "name": "SharpHound/BloodHound AD collection",
+    "tech": "T1087.002",
+    "planted_sev": "high",
+    "surfaced": true
+  },
+  {
+    "id": "rdp-lateral",
+    "name": "Non-standard outbound RDP",
+    "tech": "T1021.001",
+    "planted_sev": "high",
+    "surfaced": true
+  },
+  {
+    "id": "malfind-svc",
+    "name": "Injected svchost (RWX, no YARA)",
+    "tech": "T1055.001",
+    "planted_sev": "critical",
+    "surfaced": true
+  },
+  {
+    "id": "golden-ticket",
+    "name": "Kerberos golden ticket",
+    "tech": "T1558.001",
+    "planted_sev": "critical",
+    "surfaced": true
+  },
+  {
+    "id": "ransomware",
+    "name": "Ransomware mass file encryption",
+    "tech": "T1486",
+    "planted_sev": "critical",
+    "surfaced": true
+  },
+  {
+    "id": "shadowcopy",
+    "name": "Shadow copy deletion",
+    "tech": "T1490",
+    "planted_sev": "high",
+    "surfaced": true
+  },
+  {
+    "id": "reg-sam",
+    "name": "Registry SAM hive dump",
+    "tech": "T1003.002",
+    "planted_sev": "high",
+    "surfaced": true
+  },
+  {
+    "id": "dll-sideload",
+    "name": "DLL sideloading",
+    "tech": "T1574.002",
+    "planted_sev": "high",
+    "surfaced": true
+  },
+  {
+    "id": "amsi-bypass",
+    "name": "AMSI bypass",
+    "tech": "T1562.001",
+    "planted_sev": "high",
+    "surfaced": true
+  },
+  {
+    "id": "exfil-rclone",
+    "name": "Data exfiltration via rclone",
+    "tech": "T1567.002",
+    "planted_sev": "high",
+    "surfaced": true
+  },
+  {
+    "id": "certutil-dl",
+    "name": "LOLBin download (certutil)",
+    "tech": "T1105",
+    "planted_sev": "high",
+    "surfaced": true
+  },
+  {
+    "id": "ad-recon",
+    "name": "AD discovery (net group)",
+    "tech": "T1069.002",
+    "planted_sev": "medium",
+    "surfaced": false
+  },
+  {
+    "id": "rmm-abuse",
+    "name": "Unauthorized RMM tool (AnyDesk)",
+    "tech": "T1219",
+    "planted_sev": "medium",
+    "surfaced": false
+  },
+  {
+    "id": "ise-autosave",
+    "name": "Attacker script in PowerShell ISE autosave",
+    "tech": "T1059.001",
+    "planted_sev": "critical",
+    "surfaced": true
+  },
+  {
+    "id": "mft-erasing",
+    "name": "Anti-forensic wiper in MFT (sdelete)",
+    "tech": "T1070.004",
+    "planted_sev": "high",
+    "surfaced": true
+  },
+  {
+    "id": "byovd",
+    "name": "BYOVD \u2014 vulnerable driver loaded",
+    "tech": "T1068",
+    "planted_sev": "critical",
+    "surfaced": true
+  },
+  {
+    "id": "psexec-lateral",
+    "name": "PsExec remote execution",
+    "tech": "T1569.002",
+    "planted_sev": "high",
+    "surfaced": true
+  },
+  {
+    "id": "webshell",
+    "name": "Webshell dropped on IIS",
+    "tech": "T1505.003",
+    "planted_sev": "critical",
+    "surfaced": true
+  },
+  {
+    "id": "uac-bypass",
+    "name": "UAC bypass via fodhelper",
+    "tech": "T1548.002",
+    "planted_sev": "high",
+    "surfaced": true
+  },
+  {
+    "id": "asrep-roast",
+    "name": "AS-REP roasting",
+    "tech": "T1558.004",
+    "planted_sev": "high",
+    "surfaced": true
+  },
+  {
+    "id": "c2-beacon",
+    "name": "C2 beaconing to external IP",
+    "tech": "T1071.001",
+    "planted_sev": "critical",
+    "surfaced": true
+  },
+  {
+    "id": "ntds-dump",
+    "name": "NTDS.dit extraction",
+    "tech": "T1003.003",
+    "planted_sev": "critical",
+    "surfaced": true
+  },
+  {
+    "id": "adcs-abuse",
+    "name": "ADCS certificate abuse (ESC1)",
+    "tech": "T1649",
+    "planted_sev": "critical",
+    "surfaced": true
+  },
+  {
+    "id": "token-theft",
+    "name": "Access token impersonation",
+    "tech": "T1134.001",
+    "planted_sev": "high",
+    "surfaced": true
+  },
+  {
+    "id": "staging-archive",
+    "name": "Data staged in an archive",
+    "tech": "T1560.001",
+    "planted_sev": "high",
+    "surfaced": true
+  },
+  {
+    "id": "keylogger",
+    "name": "Keylogging / input capture",
+    "tech": "T1056.001",
+    "planted_sev": "high",
+    "surfaced": true
+  },
+  {
+    "id": "fw-tamper",
+    "name": "Firewall rule tampering",
+    "tech": "T1562.004",
+    "planted_sev": "high",
+    "surfaced": true
+  },
+  {
+    "id": "svc-acct-abuse",
+    "name": "Service account privilege abuse",
+    "tech": "T1078.002",
+    "planted_sev": "high",
+    "surfaced": true
+  },
+  {
+    "id": "clear-usnjrnl",
+    "name": "USN journal deletion",
+    "tech": "T1070.009",
+    "planted_sev": "high",
+    "surfaced": true
+  }
+]
