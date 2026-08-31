@@ -236,6 +236,17 @@ def _real_llm(system_prompt: str, user_message: str, *, run_id=None,
     return call_llm(user_message, system_prompt, cfg, run_id=run_id)
 
 
+import re as _re
+_SHA256_RE = _re.compile(r"\b[a-f0-9]{64}\b")
+
+
+def _ungrounded_hashes(text, src):
+    """sha256 values present in the narrative but NOT in the evidence payload — the
+    one unambiguous hallucination signal (unlike timestamps, which include legit
+    proposed zoom-window bounds). Returns a sorted list (empty = clean)."""
+    return sorted({h for h in _SHA256_RE.findall(text or "") if h not in (src or "")})
+
+
 REPORT_SYSTEM_PROMPT = (
     "You are a senior DFIR consultant writing the analytical body of an incident report "
     "from a CORRELATED incident graph — evidence already fused across every host in the "
@@ -1030,6 +1041,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
             if validations:
                 payload["analyst_validations"] = validations
             payload_str = json.dumps(payload)
+            _unmasked_payload = payload_str           # keep for the grounding guard (pre-mask)
             if mask:                                  # anonymize the LLM input too
                 _build_mask_mapping(graph, mask)
                 _log_mask_audit(run_id, mask, payload_str)   # audit BEFORE the send; only what's in the payload
@@ -1051,6 +1063,15 @@ def generate_report(graph, *, window=None, min_severity="informational",
             narrative = _real_llm(system, payload_str, run_id=run_id,
                                   max_output_tokens=max_output_tokens)
             narrative = _revert_mask(narrative, mask)   # un-mask the LLM's output
+            # GROUNDING GUARD: a report must never carry a sha256 that isn't in the
+            # evidence (an analyst would chase a nonexistent IOC). Hashes are the one
+            # unambiguous fabrication signal (timestamps include legit proposed zoom
+            # bounds). Flag, don't strip — stripping mid-sentence breaks the prose.
+            _bad_h = _ungrounded_hashes(narrative, _unmasked_payload)
+            gnote = ("\n\n> ⚠️ **Grounding note:** these hash value(s) in the narrative are "
+                     "NOT present in the case evidence and may be model artifacts — verify "
+                     "before acting: " + ", ".join(f"`{h[:16]}…`" for h in _bad_h) + "\n"
+                     if _bad_h else "")
             facts = render.facts_md(graph, window=window, min_severity=min_severity,
                                     initial_access=initial_access,
                                     dispositions=dispositions, validations=validations,
@@ -1065,6 +1086,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
             md = (f"# Incident Case Report — {case_name}\n\n"
                   f"{render.report_header(graph, window=window, min_severity=min_severity)}\n\n"
                   f"{narrative}\n\n"
+                  + gnote
                   + (heatmap + "\n" if heatmap else "")
                   + f"{facts}"
                   "\n\n---\n_Narrative by live LLM; fact tables deterministic._\n")
