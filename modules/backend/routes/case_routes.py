@@ -477,6 +477,47 @@ def get_case_risk(case_id):
                     "is_stale": bool(store.stale_member_runs(case_id, d))})
 
 
+@case_bp.route("/api/cases/<case_id>/zoom_targets", methods=["GET"])
+def get_zoom_targets(case_id):
+    """Macro->micro zoom presets: the suspicious (host-cluster, time-window) hotspots
+    an operator can one-click narrow to. Only meaningful for a MACRO-altitude case
+    (returns [] for a focused one). Deterministic — no LLM, no re-fuse."""
+    d = store.get_case(case_id)
+    if not d:
+        return jsonify({"error": "case not found"}), 404
+    g = store.load_graph(case_id)
+    win = d.get("time_window") or None
+    ms = d.get("min_severity") or "informational"
+    altitude, reason = render._resolve_altitude(g, window=win, min_severity=ms)
+    targets = render.zoom_targets(g, window=win, min_severity=ms) if altitude == "macro" else []
+    return jsonify({"case_id": case_id, "altitude": altitude, "reason": reason,
+                    "targets": targets})
+
+
+@case_bp.route("/api/cases/<case_id>/zoom", methods=["POST"])
+def apply_zoom(case_id):
+    """Apply a zoom preset from the macro report: narrow the case to a target's hosts
+    + time window and re-fuse (deterministic — the focused report renders at the new
+    altitude). The operator can then hit Rescan (LLM) for the focused narrative.
+    Body: {window:{start,end}, host_labels:[...]}."""
+    d = store.get_case(case_id)
+    if not d:
+        return jsonify({"error": "case not found"}), 404
+    body = request.get_json(silent=True) or {}
+    win = body.get("window") or {}
+    keep = {h for h in (body.get("host_labels") or []) if h}
+    if not (win.get("start") and win.get("end")) or not keep:
+        return jsonify({"error": "zoom needs window.start, window.end and host_labels"}), 400
+    g = store.load_graph(case_id)
+    all_labels = {a.label for a in g.by_type("asset")}
+    excluded = sorted(all_labels - keep)              # keep ONLY the target's hosts
+    cfg = {"time_window": {"start": win["start"], "end": win["end"]},
+           "excluded_hosts": excluded}
+    res = store.rescan(case_id, cfg, trigger=store.TRIGGER_MANUAL_REFUSION)
+    return jsonify({"case_id": case_id, "status": "zoomed",
+                    "scoped_to": sorted(keep), "window": cfg["time_window"], **res})
+
+
 @case_bp.route("/api/cases/<case_id>", methods=["DELETE"])
 def delete_case(case_id):
     """Delete a workspace and everything in it (its tagged runs + baseline). The

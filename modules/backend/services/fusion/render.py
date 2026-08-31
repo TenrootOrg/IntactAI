@@ -145,6 +145,65 @@ def _evidence_span_days(findings) -> int:
     return (hi - lo).days if (lo and hi) else 0
 
 
+def zoom_targets(graph, *, window=None, min_severity="informational", n=4, gap_days=7):
+    """Deterministic macro->micro zoom presets: cluster the in-scope findings into
+    contiguous activity WINDOWS (split where the gap between findings exceeds
+    gap_days), each a {hosts, window} the operator can one-click re-scope to and
+    re-fuse into a focused report. Ranked by risk (max severity, cross-host, volume).
+    No LLM — grounded straight from the finding timestamps, so the zoom scope is
+    always real. Returns [] for a focused case (nothing to zoom into)."""
+    _, findings = scope(graph, window=window, min_severity=min_severity)
+    dated = []
+    for f in findings:
+        t = keys.to_utc_dt(f.ts) if f.ts else None
+        if t is not None:
+            dated.append((t, f))
+    dated.sort(key=lambda x: x[0])
+    clusters, cur, last = [], [], None
+    for t, f in dated:
+        if last is not None and (t - last).days > gap_days and cur:
+            clusters.append(cur); cur = []
+        cur.append((t, f)); last = t
+    if cur:
+        clusters.append(cur)
+
+    out = []
+    for cl in clusters:
+        fs = [f for _, f in cl]
+        times = [t for t, _ in cl]
+        hosts = {}
+        for f in fs:
+            for a in (f.asset_ids or []):
+                hosts[a] = _host_label(graph, a)
+        if not hosts:
+            continue
+        top_sev = max((f.severity for f in fs), key=lambda s: sev.rank(s))
+        cross = sum(1 for f in fs if f.kind == "cross_host")
+        mitre = sorted({m for f in fs for m in (f.mitre or [])})[:6]
+        lo, hi = min(times), max(times)
+        # pad the window by an hour each side so boundary events aren't clipped
+        import datetime as _dt
+        start = (lo - _dt.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
+        end = (hi + _dt.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
+        labels = sorted(set(hosts.values()))
+        span_h = round((hi - lo).total_seconds() / 3600, 1)
+        title = (f"{lo.strftime('%Y-%m-%d')} — {len(labels)} host"
+                 f"{'' if len(labels) == 1 else 's'}, {len(fs)} finding"
+                 f"{'' if len(fs) == 1 else 's'}"
+                 + (f", {top_sev}" if top_sev not in ("informational",) else ""))
+        out.append({
+            "title": title, "severity": top_sev, "finding_count": len(fs),
+            "cross_host": cross, "mitre": mitre,
+            "hosts": sorted(hosts.keys()), "host_labels": labels,
+            "window": {"start": start, "end": end}, "span_hours": span_h,
+            "_risk": (sev.rank(top_sev) * 100 + cross * 10 + len(fs)),
+        })
+    out.sort(key=lambda z: -z["_risk"])
+    for z in out:
+        z.pop("_risk", None)
+    return out[:n]
+
+
 def _resolve_altitude(graph, *, window=None, min_severity="informational"):
     """(altitude, reason): 'macro' when the scope is broad by hosts, finding volume,
     OR evidence span; else 'focused'. Reuses the report_detail thresholds."""

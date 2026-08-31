@@ -184,6 +184,16 @@
   .seg button.on.s-real{background:var(--ok);color:#0d1117} .seg button.on.s-not_real{background:var(--sev-high,#db6d28);color:#0d1117}
   .seg button.on.s-known_it{background:var(--info);color:#0d1117} .seg button.on.s-pending{background:var(--panel2);color:var(--tx)}
   .arti{font-size:10px;color:var(--info);background:rgba(88,166,255,.08);border:1px solid var(--bd);border-radius:4px;padding:1px 5px;font-family:var(--mono,monospace)}
+  .zoomwrap{margin:0 0 16px;padding:12px 14px;border:1px solid var(--bd);border-radius:8px;background:rgba(88,166,255,.05)}
+  .zoomhdr{font-size:12px;color:var(--muted);margin-bottom:9px}
+  .zoomrow{display:flex;gap:10px;flex-wrap:wrap}
+  .zoomcard{flex:1 1 220px;min-width:200px;border:1px solid var(--bd);border-radius:7px;padding:10px 12px;background:var(--bg,#0d1117);border-left:3px solid var(--muted)}
+  .zoomcard.sev-critical{border-left-color:#f85149}.zoomcard.sev-high{border-left-color:#db6d28}
+  .zoomcard.sev-medium{border-left-color:#d29922}.zoomcard.sev-low{border-left-color:#3fb950}
+  .zt-title{font-weight:600;font-size:13px;margin-bottom:3px}
+  .zt-meta{font-size:11px;color:var(--muted)}
+  .zt-win{font-size:10px;color:var(--muted);font-family:var(--mono,monospace);margin:4px 0 8px}
+  .zt-go{cursor:pointer;font-size:12px}
   .tlmeta{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}
   .tlmeta .l2{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
   .sg-hint{font-size:10px;color:var(--med,#d29922);border:1px dashed var(--bd);border-radius:4px;padding:0 5px}
@@ -702,13 +712,48 @@ function renderReport(info){
     <button class="dlbtn" ${generating?'disabled title="A report is already being generated"':`onclick="regenReport('${id}')" title="Rebuild the report from the current case state (applies your Timeline confirmations). Generated automatically on first scan; after that only when you click here."`}>${generating?'⏳ Generating…':'↻ Regenerate report'}</button>
     ${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}
     <span style="color:var(--muted);font-size:11px;margin-left:auto">auto-generated on first scan · regenerate to apply Timeline changes</span>
-  </div><div class="md">${mdToHtml(mdBody)}</div>`;
+  </div><div id="zoomcards"></div><div class="md">${mdToHtml(mdBody)}</div>`;
   clampEvidence($('#tabc'));
+  loadZoomTargets(id);   // macro report -> clickable "Analyze this scope" presets
   // A page reload (or a tab switch back to Analysis) while a generation is
   // already running elsewhere must resume watching it, not just show a static
   // "generating" label that never updates or refreshes.
   if(generating) pollReportGen(id); else if(_genPollCase===id) stopReportGenPoll();
 }
+// Macro report -> the macro->micro loop: the backend's deterministic zoom_targets
+// (suspicious host-cluster + time-window hotspots) as one-click "Analyze this scope"
+// presets. Clicking narrows the case (time window + host subset) and re-fuses, which
+// drops the altitude to focused and yields the single explicit theory. Focused cases
+// get no cards (nothing to zoom into).
+let _zoomTargets=[];
+function loadZoomTargets(id){
+  api('/api/cases/'+id+'/zoom_targets').then(d=>{
+    const el=$('#zoomcards'); if(!el) return;
+    _zoomTargets = (d && d.altitude==='macro' && Array.isArray(d.targets)) ? d.targets : [];
+    if(!_zoomTargets.length){ el.innerHTML=''; return; }
+    el.innerHTML = `<div class="zoomwrap">
+      <div class="zoomhdr">🔎 Broad scope — zoom into a suspicious window to get the focused analysis</div>
+      <div class="zoomrow">`+ _zoomTargets.map((t,i)=>`
+        <div class="zoomcard sev-${esc(t.severity||'')}">
+          <div class="zt-title">${esc(t.title)}</div>
+          <div class="zt-meta">${(t.host_labels||[]).length} host(s) · ${t.finding_count} finding(s)${t.cross_host?` · ${t.cross_host} cross-host`:''}${(t.mitre&&t.mitre.length)?` · ${esc(t.mitre.slice(0,3).join(', '))}`:''}</div>
+          <div class="zt-win">${esc((t.window||{}).start||'')} → ${esc((t.window||{}).end||'')}</div>
+          <button class="dlbtn zt-go" onclick="applyZoom('${esc(id)}',${i})">Analyze this scope →</button>
+        </div>`).join('')+`</div></div>`;
+  }).catch(()=>{ const el=$('#zoomcards'); if(el) el.innerHTML=''; });
+}
+async function applyZoom(id,i){
+  const t=_zoomTargets[i]; if(!t) return;
+  toast('re-scoping to '+t.title+' — follow the progress in the Log…');
+  setTab('log'); if(typeof logRefresh==='function') logRefresh();
+  try{
+    await api('/api/cases/'+id+'/zoom',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({window:t.window, host_labels:t.host_labels})});
+    toast('zoomed to a focused scope — showing the analysis');
+    setTab('report'); openCase(id);
+  }catch(e){ toast('zoom failed: '+((e&&e.message)||e)); }
+}
+
 // A real case is TWO sequential LLM calls (narrative, then advisory) over the
 // full distilled graph — measured live at 5m29s for one case. The backend now
 // runs this on a background thread and answers the POST immediately; this is

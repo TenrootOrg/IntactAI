@@ -1979,11 +1979,23 @@ def _delete_graph_sidecar(case_id) -> None:
 def _counts_from_graph_dict(fg) -> dict:
     ents = fg.get("entities") or {}
     findings = fg.get("findings") or []
+    # Evidence span (EARLIEST->latest finding time) as a real number, so the UI /
+    # an altitude read doesn't need to deserialize the graph. Uses finding ts, not
+    # the 10-year default window. keys.to_utc_dt parses the mixed ts formats.
+    ts = sorted(t for t in ((f or {}).get("ts") for f in findings) if t)
+    span_days = None
+    if ts:
+        lo, hi = keys.to_utc_dt(ts[0]), keys.to_utc_dt(ts[-1])
+        if lo and hi:
+            span_days = (hi - lo).days
     return {"hosts": sum(1 for e in ents.values() if (e or {}).get("type") == "asset"),
             "entities": len(ents),
             "links": len(fg.get("relationships") or []),
             "findings": len(findings),
-            "cross_host": sum(1 for f in findings if (f or {}).get("kind") == "cross_host")}
+            "cross_host": sum(1 for f in findings if (f or {}).get("kind") == "cross_host"),
+            "evidence_first": ts[0] if ts else None,
+            "evidence_last": ts[-1] if ts else None,
+            "evidence_span_days": span_days}
 
 
 def load_graph(case_id) -> FusionGraph:
