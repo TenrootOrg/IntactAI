@@ -54,3 +54,36 @@ Residual: ~20% of the time the model still hedges away a fact it proved. A promp
 alone cannot guarantee this; a deterministic guard would (e.g. if the answer cites a
 finding whose host is known, require the host to appear — or append the established
 host/time from the tool trace). Logged as a candidate fix, not applied yet.
+
+## Correction + deterministic-guard attempt (REVERTED)
+
+I built a deterministic guard (record what each `evidence()` call proved; if the
+answer names none of those hosts, append an "Established from the evidence" block)
+and measured it. **It did not help, and the diagnosis behind it was wrong.**
+
+| Version | Host retained (n=5) |
+|---|---|
+| Baseline (no fix) | 1/3 (33%) |
+| Prompt fix only | 4/5 (80%) |
+| Prompt + deterministic guard | **2/5 (40%)** |
+
+**Two corrections to my earlier claims:**
+
+1. **The failure mode is NOT hedging — it is MIS-RETRIEVAL.** A failing answer reads:
+   *"A critical finding reported **Mimikatz LSASS Credential Dumping** on
+   **WKS-EVAL01**…"* — primed by the phrase "for credential theft", the model
+   anchored on the Mimikatz/LSASS finding instead of the renamed-procdump one. It
+   did not drop a host it had proved; it investigated the wrong finding. A grounding
+   footer cannot fix that — it faithfully appends the WRONG host.
+
+2. **n=5 is under-powered for this measurement.** The guard can only APPEND text, so
+   it is logically incapable of reducing host mentions — therefore 2/5 vs 4/5 is pure
+   run-to-run variance. Which means 1/3, 4/5 and 2/5 are all within noise of each
+   other, and my earlier "33% → 80% improvement" was **over-read**. Given the
+   documented Codex variance (no temperature control), distinguishing these needs
+   ~20-30 runs per arm, not 5.
+
+**Action:** guard reverted (unproven benefit, added complexity). The prompt fix is
+kept — it is harmless and directionally sensible — but it is NOT established as
+effective. The honest status of this weakness is UNRESOLVED, with a corrected
+understanding of its cause (question-anchoring), not fixed.
