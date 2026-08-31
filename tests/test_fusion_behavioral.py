@@ -138,6 +138,44 @@ class Filters(unittest.TestCase):
         self.assertIn("asset:c1", g.entities)
 
 
+class IdentityCrossHost(unittest.TestCase):
+    """An actor whose account is written differently per host (DOMAIN\\u, u@domain,
+    bare SAM) makes three separate account entities, so the per-entity cross-host rule
+    misses the lateral movement. It must still surface via the identity cluster — but
+    NOT when two different domains share a username stem (two different people)."""
+
+    def _graph(self, forms):
+        g = schema.FusionGraph(case_id="idxh")
+        ents = []
+        for i, (host, label) in enumerate(forms):
+            aid = f"asset:h{i}"
+            g.entities[aid] = schema.Entity(id=aid, type="asset", label=host)
+            eid = f"account:asset:{aid}:{label}"
+            g.entities[eid] = schema.Entity(
+                id=eid, type="account", label=label, severity="medium", anomaly=5,
+                first_seen=_ts(i), attrs={"_assets": [aid]}, sources=["velociraptor"])
+            ents.append(eid)
+        return g
+
+    def _xhost(self, forms):
+        g = self._graph(forms)
+        correlate._identity_cross_host_findings(g)
+        return [f for f in g.findings if f.kind == "cross_host"]
+
+    def test_same_person_different_forms_surfaces(self):
+        fs = self._xhost([("H1", "corp\\alice"), ("H2", "alice@corp.local")])
+        self.assertGreaterEqual(len(fs), 1)
+        self.assertIn("alice", fs[0].title.lower())
+
+    def test_different_domains_same_stem_does_not_merge(self):
+        # corpa\jsmith and corpb\jsmith are two DIFFERENT people — must NOT assert
+        # lateral movement (this was a real false positive, caught and guarded)
+        self.assertEqual(self._xhost([("H1", "corpa\\jsmith"), ("H2", "corpb\\jsmith")]), [])
+
+    def test_single_host_identity_does_not_fire(self):
+        self.assertEqual(self._xhost([("H1", "corp\\bob")]), [])
+
+
 class TimestampComparison(unittest.TestCase):
     """F2/F2b: timestamp widening + watermark staleness must compare INSTANTS, not
     lexicographic strings (a trailing 'Z' sorts after a fractional second)."""

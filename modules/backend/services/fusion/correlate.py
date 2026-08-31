@@ -101,6 +101,7 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     _rollup_severity(g)
     _flag_pid_reuse(g)
     _cross_host_findings(g)
+    _identity_cross_host_findings(g)
     _derive_findings(g, baseline=baseline, window=window)
     _coordinated_activity(g, window=window, baseline=baseline)
     _corroboration(g)
@@ -517,6 +518,78 @@ def _cross_host_findings(g: FusionGraph) -> None:
             id=_fid("xhost", e.id), title=title, severity=severity, confidence="high",
             summary=summ, entity_ids=[e.id], asset_ids=assets, sources=e.sources,
             evidence=list(e.evidence), mitre=mitre, ts=e.first_seen, kind="cross_host"))
+
+
+def _identity_cross_host_findings(g: FusionGraph) -> None:
+    """An actor whose account is written DIFFERENTLY on each host — `DOMAIN\\user`
+    here, `user@domain` there, a bare SAM on a third — produces three SEPARATE account
+    entities (a domain-qualified account gets a global id, bare/UPN forms get
+    asset-scoped ids), each spanning one host. So `_cross_host_findings` above, which
+    keys on ONE entity spanning >=2 assets, never fires and the lateral movement is
+    invisible as a finding — even though the Identities view already clusters them into
+    one person. Measured: 3 hosts, 1 actor, 0 cross-host findings.
+
+    Derive it from that SAME shipped clustering (identities.resolve_identities, which
+    backs the Identities page and honours analyst merges/splits) so the two views of a
+    case agree. Fires only when the cluster spans >=2 endpoint hosts AND no single
+    account entity in it already spans >=2 (which the rule above would have caught, so
+    no duplicate). Best-effort: identity resolution is optional and must never break a
+    fuse."""
+    try:
+        from .identities import resolve_identities
+        idents = resolve_identities(g) or []
+    except Exception:                                   # noqa: BLE001
+        return
+    for ident in idents:
+        try:
+            accts = ident.get("accounts") or []
+            hosts = sorted({a.get("ctx") for a in accts if a.get("ctx")})
+            ids = [a.get("id") for a in accts if a.get("id") in g.entities]
+            if len(accts) < 2 or len(hosts) < 2 or len(ids) < 2:
+                continue
+            if any(len(_assets_of(g.entities[i])) >= 2 for i in ids):
+                continue                                # already covered above
+            ents = [g.entities[i] for i in ids]
+            # AMBIGUITY GUARD (measured FP): resolve_identities clusters on the
+            # username STEM, so `corpa\jsmith` and `corpb\jsmith` — two DIFFERENT
+            # people in two domains — land in one cluster. Clustering them on the
+            # Identities page is one thing; asserting lateral movement as a
+            # high-severity FINDING is another. Emit only when the forms do not
+            # carry two DIFFERENT explicit domain roots; a bare SAM or a matching
+            # root (corp\u + u@corp.local) stays eligible.
+            roots = set()
+            for e in ents:
+                lbl = str(e.label or "").strip().lower()
+                if "\\" in lbl:
+                    roots.add(lbl.split("\\", 1)[0].split(".", 1)[0])
+                elif "@" in lbl:
+                    roots.add(lbl.split("@", 1)[1].split(".", 1)[0])
+            if len({r for r in roots if r}) > 1:
+                continue                                # ambiguous: possibly two people
+            assets = sorted({a for e in ents for a in _assets_of(e)})
+            if len(assets) < 2:
+                continue
+            conf = float(ident.get("confidence") or 0)
+            name = str(ident.get("name") or "?")
+            forms = ", ".join(sorted({str(e.label) for e in ents}))[:120]
+            g.add_finding(Finding(
+                id=_fid("idxhost", str(ident.get("key") or name)),
+                title=f"Identity '{name}' active on {len(hosts)} hosts under different "
+                      "account forms",
+                severity="high" if conf >= 1.0 else "medium",
+                confidence="high" if conf >= 1.0 else "medium",
+                summary=(f"One person ({name}) appears as {len(ents)} different account "
+                         f"forms ({forms}) across {', '.join(hosts)}. The same identity "
+                         "moving between hosts — written differently on each, so it does "
+                         "not surface as a single shared account."),
+                entity_ids=ids, asset_ids=assets,
+                sources=sorted({s for e in ents for s in (e.sources or [])}),
+                evidence=[ev for e in ents for ev in (e.evidence or [])][:6],
+                mitre=["T1021", "T1078"],
+                ts=min((e.first_seen for e in ents if e.first_seen), default=None),
+                kind="cross_host"))
+        except Exception:                               # noqa: BLE001
+            continue
 
 
 def _host_label(g: FusionGraph, asset_id: str) -> str:

@@ -1,0 +1,49 @@
+{
+  "E17": {
+    "cross_host_findings": 1,
+    "hosts_linked": [
+      "DC-CHAIN01",
+      "WKS-CHAIN01",
+      "WKS-CHAIN02"
+    ],
+    "pass": true,
+    "titles": [
+      "Account 'corp\\intruder' used across 3 hosts"
+    ]
+  },
+  "B7": {
+    "timeline_rows": 7,
+    "chronological": true,
+    "patient_zero": "WKS-CHAIN01",
+    "expected": "WKS-CHAIN01",
+    "pass": true
+  },
+  "C10": {
+    "account_entities": 1,
+    "intruder_entities": 1,
+    "hosts_spanned": [
+      "DC-CHAIN01",
+      "WKS-CHAIN01",
+      "WKS-CHAIN02"
+    ],
+    "pass": true
+  },
+  "C11": {
+    "entities_for_one_person": 3,
+    "labels": [
+      "corp\\intruder",
+      "intruder@corp.local",
+      "intruder"
+    ],
+    "hosts_spanned": [
+      "DC-CHAIN01",
+      "WKS-CHAIN01",
+      "WKS-CHAIN02"
+    ],
+    "cross_host_findings": 1,
+    "finding_titles": [
+      "Identity 'intruder' active on 3 hosts under different account forms"
+    ],
+    "pass": true
+  }
+}
