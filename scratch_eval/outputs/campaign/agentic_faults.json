@@ -1,0 +1,69 @@
+{
+  "track": "A",
+  "findings": [
+    {
+      "id": "A1",
+      "title": "turn-1 {final} give-up with 0 tool calls is not caught/retried",
+      "severity": "high",
+      "status": "FINDING",
+      "detail": "raised=False steps=0 answer='I could not find anything.' \u2014 the loop accepted a 0-tool final; nothing forces a lookup or retries.",
+      "repro": "model emits {\"final\":...} on iteration 0"
+    },
+    {
+      "id": "A2",
+      "title": "tool exception propagates out of investigate() -> HTTP 500",
+      "severity": "high",
+      "status": "FINDING",
+      "detail": "raised=True (simulated tool crash (e.g. int('abc') on limit)) \u2014 _tool() has no try/except; model-controlled args can crash the request.",
+      "repro": "tool raises (bad limit / malformed pivot.window)"
+    },
+    {
+      "id": "A3",
+      "title": "transport failure propagates -> unhandled 500 (report path catches it)",
+      "severity": "high",
+      "status": "FINDING",
+      "detail": "raised=True (_Boom) \u2014 investigate does not catch LLMUnavailable like store.chat/report do.",
+      "repro": "_real_llm raises"
+    },
+    {
+      "id": "A7a",
+      "title": "malformed-JSON storm burns budget without a separate retry counter",
+      "severity": "medium",
+      "status": "PASS",
+      "detail": "raised=False truncated=True answer='garbage' \u2014 nudges consume max_steps; no distinct retry budget.",
+      "repro": "model never emits valid JSON"
+    },
+    {
+      "id": "A7b",
+      "title": "forced-final can return raw model text as the analyst answer",
+      "severity": "medium",
+      "status": "FINDING",
+      "detail": "answer='{\"tool\":\"list_findings\",\"args\":{}}' \u2014 after budget, obj.get('final') or raw; a non-final raw blob becomes the answer.",
+      "repro": "model never returns {final}, even on the forced call"
+    },
+    {
+      "id": "A11",
+      "title": "non-final object with no 'tool' key -> bogus 'unknown tool None' step",
+      "severity": "low",
+      "status": "PASS",
+      "detail": "raised=False trace=[None] \u2014 degraded but non-fatal.",
+      "repro": "model returns an object with neither 'tool' nor 'final'"
+    },
+    {
+      "id": "A_unknown",
+      "title": "unknown tool name is handled (error fed back, not fatal)",
+      "severity": "info",
+      "status": "PASS",
+      "detail": "raised=False \u2014 _tool returns an error dict the model can recover from.",
+      "repro": "model calls a tool that doesn't exist"
+    },
+    {
+      "id": "A6c",
+      "title": "empty/None model completion degrades to malformed (no crash)",
+      "severity": "medium",
+      "status": "PASS",
+      "detail": "raised=False \u2014 '' parses to None -> treated as malformed, burns a step.",
+      "repro": "transport returns an empty string"
+    }
+  ]
+}
