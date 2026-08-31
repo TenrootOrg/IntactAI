@@ -204,6 +204,30 @@ def zoom_targets(graph, *, window=None, min_severity="informational", n=4, gap_d
     return out[:n]
 
 
+def suspicious_timeframes_md(graph, *, window=None, min_severity="informational", n=6):
+    """Deterministic 'Suspicious Timeframes & Clusters' heat-map for a macro report,
+    rendered from zoom_targets — so it is ALWAYS accurate and matches the clickable
+    zoom cards exactly (the LLM no longer writes this section; feeding it the clusters
+    made it confabulate — see scratch_eval S4). Returns '' for a focused case."""
+    zt = zoom_targets(graph, window=window, min_severity=min_severity, n=n)
+    if not zt:
+        return ""
+    rows = ["## Suspicious Timeframes & Clusters", "",
+            "_The ranked activity hotspots (deterministic). Each is a one-click "
+            "**Analyze this scope** zoom in the console._", "",
+            "| # | Window (UTC) | Hosts | Findings | Severity | ATT&CK |",
+            "|---|---|---|---|---|---|"]
+    for i, z in enumerate(zt, 1):
+        w = z["window"]
+        labels = z.get("host_labels") or []
+        hosts = ", ".join(labels[:6]) + ("…" if len(labels) > 6 else "")
+        mitre = ", ".join((z.get("mitre") or [])[:4]) or "—"
+        ch = f" ({z['cross_host']} cross-host)" if z.get("cross_host") else ""
+        rows.append(f"| {i} | {w['start']} → {w['end']} | {hosts} | "
+                    f"{z['finding_count']}{ch} | {z['severity']} | {mitre} |")
+    return "\n".join(rows) + "\n"
+
+
 def _resolve_altitude(graph, *, window=None, min_severity="informational"):
     """(altitude, reason): 'macro' when the scope is broad by hosts, finding volume,
     OR evidence span; else 'focused'. Reuses the report_detail thresholds."""

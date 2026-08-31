@@ -393,9 +393,8 @@ REPORT_SYSTEM_PROMPT_MACRO = (
     "Rank by risk to the organisation, not finding volume. If the evidence genuinely shows "
     "only benign/administrative activity, say so and STOP — never manufacture scenarios.\n"
     "\n"
-    "## Suspicious Timeframes & Clusters\n"
-    "A short ranked list of the periods and host-clusters that concentrate the risk, each "
-    "with why it stands out — the heat-map the analyst zooms into.\n"
+    "(A deterministic 'Suspicious Timeframes & Clusters' heat-map is appended after your "
+    "text — do NOT write that section yourself.)\n"
     "\n"
     "## Priority actions\n"
     "Two short lists, each item naming the specific host/account:\n"
@@ -1056,11 +1055,18 @@ def generate_report(graph, *, window=None, min_severity="informational",
                                     initial_access=initial_access,
                                     dispositions=dispositions, validations=validations,
                                     detail=eff_detail, narrated=True)
+            # Deterministic heat-map for a macro report (the LLM was told NOT to write
+            # this section) — always grounded, always matches the zoom cards.
+            heatmap = (render.suspicious_timeframes_md(graph, window=window,
+                                                       min_severity=min_severity)
+                       if altitude == "macro" else "")
             # Real values throughout: masking protected the data only in transit to
             # the LLM; the operator's report is reverted (narrative) + never-masked facts.
             md = (f"# Incident Case Report — {case_name}\n\n"
                   f"{render.report_header(graph, window=window, min_severity=min_severity)}\n\n"
-                  f"{narrative}\n\n{facts}"
+                  f"{narrative}\n\n"
+                  + (heatmap + "\n" if heatmap else "")
+                  + f"{facts}"
                   "\n\n---\n_Narrative by live LLM; fact tables deterministic._\n")
             return md
         except Exception as e:  # noqa: BLE001 — never let LLM failure break a case
