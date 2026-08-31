@@ -188,6 +188,28 @@ SCENARIOS += [
      "expect": {"find": ["anydesk"], "sev": "medium"}},
 ]
 
+# Batch 4 — NON-SIGMA artifact paths, to test derivation variety (each uses a
+# different mapper branch, not the Hayabusa/SIGMA passthrough).
+SCENARIOS += [
+    {"id": "ise-autosave", "name": "Attacker script in PowerShell ISE autosave",
+     "tech": "T1059.001", "host": "WKS-EVAL03",
+     "activity": "attacker script content recovered from ISE autosave file",
+     "telemetry": {"DetectRaptor.Windows.Detection.Powershell.IseAutoSave": [
+         {"Computer": "WKS-EVAL03",
+          "Detection": {"Name": "ATT&CK T1059.001 - Encoded Download Cradle"},
+          "FileInfo": {"OSPath": "C:\\Users\\a\\AppData\\...\\PSISE_autosave.ps1",
+                       "Mtime": "2026-08-01T10:50:00Z"}}]},
+     "expect": {"find": ["ise autosave"], "sev": "critical"}},
+    {"id": "mft-erasing", "name": "Anti-forensic wiper in MFT (sdelete)",
+     "tech": "T1070.004", "host": "WKS-EVAL07",
+     "activity": "sdelete.exe present in the MFT (secure-delete / anti-forensics)",
+     "telemetry": {"DetectRaptor.Windows.Detection.MFT.Erasing.Tools": [
+         {"Computer": "WKS-EVAL07", "OSPath": "C:\\Tools\\sdelete64.exe",
+          "Detection": {"Name": "SDelete secure deletion tool", "Criticality": "high"},
+          "FNTimestamps": {"Created0x30": "2026-08-01T10:52:00Z"}}]},
+     "expect": {"find": ["sdelete"], "sev": "high"}},   # MFT detection: characterize its severity
+]
+
 # BENIGN baseline — normal admin/IT activity that should NOT produce attack findings
 # (false-positive / precision test). Informational SIGMA + routine processes.
 BENIGN = {

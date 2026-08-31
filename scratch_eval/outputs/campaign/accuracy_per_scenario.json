@@ -249,8 +249,28 @@
       "grounded_host": false,
       "severity_ok": false,
       "matched": "(none)"
+    },
+    {
+      "id": "ise-autosave",
+      "name": "Attacker script in PowerShell ISE autosave",
+      "tech": "T1059.001",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": false,
+      "matched": "ise autosave: att&ck t1059.001 - encoded download cradle on wks-eval03 :: wks-eval03"
+    },
+    {
+      "id": "mft-erasing",
+      "name": "Anti-forensic wiper in MFT (sdelete)",
+      "tech": "T1070.004",
+      "findings": 1,
+      "recall": true,
+      "grounded_host": true,
+      "severity_ok": true,
+      "matched": "mft: sdelete secure deletion tool on wks-eval07 :: wks-eval07"
     }
   ],
-  "recall": 21,
-  "n": 25
+  "recall": 23,
+  "n": 27
 }

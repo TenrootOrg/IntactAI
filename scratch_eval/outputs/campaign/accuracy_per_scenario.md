@@ -1,8 +1,8 @@
 # Attack-simulation ACCURACY — per scenario (deterministic)
 
-25 authored PowerShell attack scenarios through the REAL pipeline (map_agentic -> correlate.assemble). Recall = the planted technique surfaced as a finding on the right host.
+27 authored PowerShell attack scenarios through the REAL pipeline (map_agentic -> correlate.assemble). Recall = the planted technique surfaced as a finding on the right host.
 
-**Recall 21/25 (84%) · Host-grounded 21/25 · Severity-correct 20/25**
+**Recall 23/27 (85%) · Host-grounded 23/27 · Severity-correct 21/27**
 
 | # | Scenario | ATT&CK | Detected | Host✓ | Sev✓ | Matched finding |
 |---|---|---|:--:|:--:|:--:|---|
@@ -31,3 +31,5 @@
 | 23 | LOLBin download (certutil) | T1105 | ✅ | ✅ | ✅ | `sigma: certutil remote file download on wks-eval05 :: wks-ev` |
 | 24 | AD discovery (net group) | T1069.002 | ❌ MISS | — | — | `(none)` |
 | 25 | Unauthorized RMM tool (AnyDesk) | T1219 | ❌ MISS | — | — | `(none)` |
+| 26 | Attacker script in PowerShell ISE autosave | T1059.001 | ✅ | ✅ | — | `ise autosave: att&ck t1059.001 - encoded download cradle on ` |
+| 27 | Anti-forensic wiper in MFT (sdelete) | T1070.004 | ✅ | ✅ | ✅ | `mft: sdelete secure deletion tool on wks-eval07 :: wks-eval0` |

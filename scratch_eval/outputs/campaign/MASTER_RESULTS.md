@@ -4,11 +4,11 @@ Every run measures our system against KNOWN simulated ground truth (authored Pow
 
 | Test | Scope | Result | Accuracy |
 |---|---|---|:--:|
-| Detection recall | 25 scenarios | 21/25 detected; all misses are medium-SIGMA (by design) | 84% |
-| Host grounding | 21 detections | 21/21 correct host | 100% |
-| Severity correct | 21 detections | 20/21 | 95% |
+| Detection recall | 27 scenarios | 23/27 detected; all misses are medium-SIGMA (by design) | 85% |
+| Host grounding | 23 detections | 23/23 correct host | 100% |
+| Severity correct | 23 detections | 21/23 | 91% |
 | Precision (benign input) | benign telemetry | 0 false positive(s) | ✅ PASS |
-| Noise robustness | attack + 20× benign | 21/21 survive | ✅ |
+| Noise robustness | attack + 20× benign | 23/23 survive | ✅ |
 | Combined report grounding | 5-host incident | 92/100 grounding | 92% |
 | **AI investigation vs simulation** | 10 questions | 7/8 plants found, 2/2 neg-controls clean | **90%** |
 
