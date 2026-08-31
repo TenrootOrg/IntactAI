@@ -1,0 +1,315 @@
+<!doctype html><meta charset=utf-8><title>eval case_1788080164853</title>
+<style>body{font:13px system-ui;margin:0;background:#0d1117;color:#e6edf3}
+header{padding:12px 16px;border-bottom:1px solid #30363d}
+.wrap{display:flex;gap:0;align-items:flex-start}
+.col{flex:1;min-width:0;border-right:1px solid #30363d;padding:12px 16px}
+.col.win{background:#0f2417} h2{margin:.2em 0}
+.meta{color:#8b949e} .scores span{display:inline-block;margin:2px 10px 2px 0;color:#adbac7}
+.rat{color:#d29922;margin:6px 0;font-style:italic}
+pre{white-space:pre-wrap;word-wrap:break-word;background:#161b22;padding:10px;border-radius:6px;max-height:70vh;overflow:auto}</style>
+<header><b>case_1788080164853</b> — scope {&quot;hosts&quot;: 9, &quot;findings&quot;: 96, &quot;entities&quot;: 6014, &quot;span_days&quot;: 757} · judge says altitude=<b>broad</b>, winner=<b>S1-altitude</b> — It matches the broad-case analytical altitude and gives responders concise, confidence-ranked hypotheses and targeted next pivots without inventing a single continuous intrusion story.</header>
+<div class=wrap>
+      <div class="col">
+        <h2>S0-baseline</h2>
+        <div class="meta">out 10135 tok · in 132120 · 38254c</div>
+        <div class="scores"><span>dfir_professionalism: <b>3</b></span><span>altitude_fit: <b>1</b></span><span>grounding: <b>3</b></span><span>actionability: <b>5</b></span><span>efficiency: <b>1</b></span><span>total: <b>13</b></span></div>
+        <div class="rat">Thorough and operationally useful, but far too long and forces a 757-day heterogeneous dataset into one campaign narrative despite repeatedly acknowledging broken chronology, ambiguous tooling, inferred roles, and unknown movement direction.</div>
+        <pre>## Executive Summary
+
+**Assessment — HIGH confidence:** A sustained, multi-host intrusion affected all nine covered systems between `2024-05-24T17:49:46Z` and `2026-06-21T13:35:13`. Independent evidence shows credential theft, security-control disabling, remote service deployment, directory discovery, Kerberos and certificate-based ticket activity, encoded PowerShell, log clearing, and Cobalt Strike indicators. The activity reached two likely domain controllers, `ALDC02` and `ALDC03`; the software-distribution server `ALMECM01`; and the likely certificate authority `ALCA01`.
+
+**Assessment — HIGH confidence:** The principal compromised identity was `srv`. Its accounts appeared on `ALClient01`, `ALClient022`, `ALClient04`, `ALClient06`, and `ALDC02`. On those systems, activity included Mimikatz, Rubeus, encoded PowerShell, event-log clearing, and an exploitation-framework alert. The identities `almogs` and `giladt` also linked multiple systems: `almogs` connected `ALClient09` and `ALClient022`, while `giladt` connected `ALDC02`, `ALMECM01`, and `ALCA01`. Whether one person controlled all three identities cannot be established.
+
+**Assessment — MODERATE confidence:** The intrusion most likely began on an endpoint and subsequently expanded through stolen or reused credentials. The earliest evidence is a shared suspicious binary on `ALClient04` and `ALClient06` at `2024-05-24T17:49:46Z`, but its source and transfer direction are unknown. Later browser-to-command-shell chains on `ALClient09`, `ALClient06`, and `ALClient04` are compatible with user-driven web or phishing execution, but they occurred in June 2026 and therefore cannot explain the beginning of the much older activity.
+
+**Assessment — HIGH confidence:** The adversary sought enterprise identity control. Password dumping, Mimikatz, Inveigh, Kerberoasting-related code, Rubeus, BloodHound/SharpHound, and a certificate-backed request for a Kerberos ticket collectively show an effort to discover privilege paths and acquire reusable authentication material.
+
+**Assessment — MODERATE confidence:** Domain-wide compromise is plausible but not proven. Malicious activity was detected on `ALDC02`, and suspicious activity reached `ALDC03`; however, the graph does not show a successful directory database theft, privileged group modification, or confirmed domain-administrator session. The likely CA host `ALCA01` was touched by `giladt` and later made an `lsass.exe` EPMAP connection to `192.168.1.17`, but the graph does not show that the certificate `ShadowMark_sac2$.pfx` was issued by, stolen from, or used on `ALCA01`. CA compromise must therefore be treated as an urgent possibility, not an established fact.
+
+## Critical Findings
+
+**Certificate-backed Kerberos ticket request on `ALClient022`**
+
+**Observation:** At `2026-06-16T08:48:32.599407911Z`, `ADATUMLAB\Srv` ran `&quot;C:\Users\srv\Desktop\New folder (2)\Rubeus.exe&quot; asktgt /user:sac2$ /certificate:ShadowMark_sac2$.pfx /password:ShadowMark /ptt /dc:192.168.1.17 /enctype:aes256` on `ALClient022`. The evidence exposes only the truncated hash `sha256=6fa…`.
+
+**Why it matters:** This is an explicit attempt to obtain and inject a Kerberos ticket for the machine account `sac2$` using a PFX certificate. It provides durable authentication potential independent of an ordinary user password. Because `ALCA01` is the likely CA, the provenance and revocation status of this certificate directly affect containment. **Assessment — HIGH confidence** that the command attempted certificate-based ticket acquisition; **LOW confidence** that it succeeded because no ticket issuance or successful authentication event is included.
+
+**Evidence:** Summary: `Hayabusa/SIGMA rule &#x27;HackTool - Rubeus Execution 2&#x27; matched 1× on ALClient022 (Microsoft-Windows-Sysmon/Operational).` MITRE: `[]`. Timestamp: `2026-06-16T08:48:32.599407911Z`. This corroborates the earlier Rubeus script block on the same host at `2025-11-05T10:36:51.057793617Z`.
+
+**Credential theft followed by security-control suppression**
+
+**Observation:** On `ALClient01`, `C:\Users\srv\Desktop\mimikatz.exe` was detected as `Behavior:Win32/Mikatz.gen!C` at `2025-09-21T11:31:49.541596889Z`; Defender threat detection and real-time protection were disabled at `2025-09-21T11:32:03.083977699Z`. On `ALClient022`, a password-dumper alert under `ADATUMLAB\AlmogS` occurred at `2025-04-27T08:37:25.537375926Z`, a hacktool alert followed at `2025-04-27T10:12:07.336577653Z`, and protection was disabled at `2025-04-27T10:14:39.145760059Z`.
+
+**Why it matters:** The close ordering shows credential-access tooling followed by reduced endpoint protection, allowing continued credential theft and later movement. The `ALClient01` Mimikatz path also connects the `srv` identity directly to the campaign’s credential-access stage. **Assessment — HIGH confidence**, based on independent binary, Defender, and PowerShell evidence.
+
+**Evidence:** Summaries: `Hayabusa/SIGMA rule &#x27;Defender Alert (Severe)&#x27; matched 1× on ALClient01 (Microsoft-Windows-Windows Defender/Operational).`; `Hayabusa/SIGMA rule &#x27;Antivirus Password Dumper Detection&#x27; matched 1× on ALClient022 (Microsoft-Windows-Windows Defender/Operational).`; and the paired Defender-disable findings. MITRE: `[]`. Timestamps: `2025-09-21T11:31:49.541596889Z`, `2025-09-21T11:32:03.083977699Z`, `2025-04-27T08:37:25.537375926Z`, and `2025-04-27T10:14:39.145760059Z`.
+
+**Compromised `srv` identity bridged endpoints and a likely domain controller**
+
+**Observation:** The graph records `adatumlab\srv` authenticating or executing across `ALDC02`, `ALClient04`, `ALClient06`, and `ALClient022` at `2025-10-05T10:01:10.748268842Z`; identity clustering additionally places `srv` on `ALClient01`. On `ALClient04`, user `Srv` cleared the Application log at `2026-06-14T10:39:49.616607904Z`, followed by `invoke-mimikatz` at `2026-06-14T10:42:32.480974435Z`.
+
+**Why it matters:** One identity linked credential theft and anti-forensics on workstations to access on `ALDC02`, a likely domain controller. This is not five unrelated local users; it is one clustered identity operating across five machines. **Assessment — HIGH confidence** that the identity moved across hosts; **MODERATE confidence** that every occurrence was adversary-controlled because authentication source details and owner confirmation are absent.
+
+**Evidence:** Summary: `The account adatumlab\srv authenticated / executed on multiple assets (ALDC02, ALClient04, ALClient06, ALClient022) — consistent with lateral movement using shared credentials. [cross-case: this indicator was seen in 2 prior case(s)]`. MITRE: `T1021`, `T1078`. Timestamp: `2025-10-05T10:01:10.748268842Z`. The log-clear and `invoke-mimikatz` findings explicitly corroborate malicious use on `ALClient04`.
+
+**Remote service deployment linked workstations to named source systems**
+
+**Observation:** `ALClient01` installed service `PAExec-14972-ALCLIENT06` as `LocalSystem`, path `%SYSTEMROOT%\PAExec-14972-ALCLIENT06.exe -service`, at `2026-01-25T09:02:49.698796749Z`. `ALClient09` installed `PAExec-5540-ALDC01`, path `%SYSTEMROOT%\PAExec-5540-ALDC01.exe -service`, as `LocalSystem` at `2026-04-09T07:01:39.286638498Z`.
+
+**Why it matters:** PAExec services provide remote, SYSTEM-level execution. Their names imply deployment jobs associated with `ALCLIENT06` and `ALDC01`, although the service name alone does not prove network direction or that `ALDC01` was compromised. **Assessment — HIGH confidence** that PAExec services executed on the destination hosts; **LOW confidence** in the implied source direction pending service-creation and network log correlation.
+
+**Evidence:** Summaries: `Hayabusa/SIGMA rule &#x27;Malicious Service Installations&#x27; matched 1× on ALClient01 (System).` and the equivalent finding on `ALClient09`. MITRE: `[]`. Timestamps: `2026-01-25T09:02:49.698796749Z` and `2026-04-09T07:01:39.286638498Z`.
+
+**Cobalt Strike indicators appeared minutes apart on two linked endpoints**
+
+**Observation:** Named-pipe detection `Cobalt Strike: trick_ryuk.profile` occurred on `ALClient022` at `2026-06-21T13:31:15Z` and on `ALClient06` at `2026-06-21T13:31:36Z`. Twenty-one seconds separated the detections. Both hosts were already linked by use of `srv`.
+
+**Why it matters:** Near-simultaneous Cobalt Strike profile indicators on credential-linked systems strongly support coordinated command-and-control or common post-exploitation tooling, rather than isolated host events. **Assessment — HIGH confidence** that the two detections belong to the same operational sequence; **MODERATE confidence** that an active Cobalt Strike session existed because named-pipe detections alone do not demonstrate a live external channel.
+
+**Evidence:** Summaries: `Detection &#x27;Cobalt Strike: trick_ryuk.profile&#x27; fired 1× on ALClient022.` and the corresponding finding for `ALClient06`. MITRE: `[]`. Timestamps: `2026-06-21T13:31:15Z` and `2026-06-21T13:31:36Z`. The cross-host `srv` finding corroborates the connection between these hosts.
+
+**Malicious execution reached a likely domain controller**
+
+**Observation:** On `ALDC02`, `NT AUTHORITY\SYSTEM` activity through `C:\Windows\System32\wbem\WmiPrvSE.exe` triggered a severe Defender alert and detection of `Trojan:Win32/Bearfoos.B!ml` at `2025-11-03T01:32:28.115953683Z`.
+
+**Why it matters:** Hostname and role hint identify `ALDC02` as a likely domain controller; malicious execution there raises the potential exposure from endpoint compromise to control of central authentication. **Assessment — HIGH confidence** that Defender detected malicious content in a WMI-hosted SYSTEM context; **MODERATE confidence** that the domain-controller role is correct because it is inferred from naming rather than independently confirmed.
+
+**Evidence:** Summaries: `Hayabusa/SIGMA rule &#x27;Defender Alert (Severe)&#x27; matched 1× on ALDC02 (Microsoft-Windows-Windows Defender/Operational).` and `Hayabusa/SIGMA rule &#x27;Windows Defender Threat Detected&#x27; matched 1× on ALDC02...`. MITRE: `[]`. Timestamp: `2025-11-03T01:32:28.115953683Z`. The `srv` cross-host finding corroborates access to this host.
+
+## Attack Narrative
+
+### Phase 1: Earliest Shared Tooling (`2024-05-24T17:49:46Z`)
+
+A suspicious binary with SHA-256 `9b455ebf6dab83b374cfd1b9c76da0f04d5f186d570e301f51923c553d959eec` was present on both `ALClient04` and `ALClient06` at `2024-05-24T17:49:46Z`. **Observation — HIGH confidence:** The same binary existed on both systems. **Inference — LOW confidence:** This may represent the earliest lateral tool transfer, but neither the originating host nor the transfer mechanism is recorded. It could also predate the principal intrusion sequence.
+
+### Phase 2: Endpoint Establishment and Credential Access (`2025-03-10T13:34:06.575939178Z`–`2025-09-21T11:32:03.083977699Z`)
+
+Suspicious service activity appeared on `ALClient022` at `2025-03-10T13:34:06.575939178Z`, followed by a renamed `pythonw.exe` on `ALClient09` at `2025-04-08T09:57:36`. The `CsInstallService` detections on `ALClient01` at `2025-04-21T22:19:15.980747222Z` point to a CrowdStrike installer path and may be legitimate security-software maintenance; **assessment — LOW confidence** that those particular service events are adversary persistence.
+
+At `2025-04-27T08:37:25.537375926Z`, `ADATUMLAB\AlmogS` was associated with severe and password-dumper alerts on `ALClient022`. The same account was correlated across `ALClient09` and `ALClient022`. A hacktool detection followed at `2025-04-27T10:12:07.336577653Z`, and Defender protection was disabled at `2025-04-27T10:14:39.145760059Z`.
+
+Four shared binaries then linked `ALClient09` and `ALClient01`:
+
+- `842737b5c36f624c9420a005239b04876990a2c4011db87fe67504fa09281031` at `2025-05-27T11:17:01.4379318Z`
+- `bd2c2cf0631d881ed382817afcce2b093f4e412ffb170a719e2762f250abfea4` at `2025-05-27T11:17:02.2609609Z`
+- `05732e84de58a3cc142535431b3aa04efbe034cc96e837f93c360a6387d8faad` at `2025-05-27T11:17:05.169739Z`
+- `16f413862efda3aba631d8a7ae2bfff6d84acd9f454a7adaa518c7a8a6f375a5` at `2025-05-27T11:17:05.171803Z`
+
+Defender was disabled on `ALClient06` at `2025-06-10T13:03:17.169064044Z`. On `ALClient01`, `C:\Users\srv\Desktop\mimikatz.exe` was detected at `2025-09-21T11:31:49.541596889Z`, immediately before Defender was disabled. **Inference — HIGH confidence:** By this point, the operators had established repeatable credential-access capability on several endpoints and were suppressing controls to preserve it.
+
+### Phase 3: Privileged Identity Expansion and Infrastructure Reach (`2025-10-05T10:01:10.748268842Z`–`2026-05-19T22:11:24.893150329Z`)
+
+At `2025-10-05T10:01:10.748268842Z`, an exploitation-framework alert on `ALClient022` coincided with the cross-host correlation of `adatumlab\srv` across `ALDC02`, `ALClient04`, `ALClient06`, and `ALClient022`. `srv` also appeared on `ALClient01` in the identity graph. **Inference — HIGH confidence:** The campaign had progressed from individual endpoint compromise to credential-enabled movement involving a likely domain controller.
+
+`ALCA01`, whose name suggests a certificate authority, recorded CrowdStrike installer services at `2025-10-08T19:44:55.991897583Z`. These paths are compatible with legitimate sensor installation and do not independently demonstrate malicious persistence. Nevertheless, the identity `giladt` is correlated across `ALDC02`, `ALMECM01`, and `ALCA01`; **assessment — MODERATE confidence** that the CA entered the same access graph, but **LOW confidence** that the CA service itself was malicious.
+
+On `ALDC02`, Defender detected `Trojan:Win32/Bearfoos.B!ml` in `WmiPrvSE.exe` under SYSTEM at `2025-11-03T01:32:28.115953683Z`. Two days later, `ALClient022` recorded `.\Rubeus.exe hash /password:&quot;KoPar1910!!&quot; /user:ALClient04 /domain:ADATUMLAB.LOCAL` at `2025-11-05T10:36:51.057793617Z`. This exposed a plaintext password in logging and shows preparation of Kerberos key material associated with `ALClient04`.
+
+In December, `ALClient09` carried renamed `AdFind.exe`, `ProcessHacker.exe`, `procdump.exe`, and `procdump64.exe`, then had Defender disabled. During January and April, PAExec services created SYSTEM-level execution on `ALClient01` and `ALClient09`.
+
+`ALMECM01`, likely the software-distribution server, showed suspicious temporary processes on `2026-05-10`: `TRAA5D2.tmp` invoked `cmtrace.exe` against `\\aldc01\c$\Windows\CCM` at `08:47:16`, and `TRAADB1.tmp` accessed `\\alclient04\c$\Windows` at `11:39:53`. **Inference — MODERATE confidence:** These events may represent administrative-share reconnaissance or software-management activity. Their status is unresolved because parent process, signer, initiating account, and change-ticket data are absent.
+
+`ALDC03`, likely another domain controller, recorded `SETDADCollector` at `2026-04-27T21:47:49.137100696Z`. This could be an authorized directory-assessment collector; **assessment — LOW confidence** that it was malicious without an engagement or change record. Its role nevertheless makes validation a priority.
+
+### Phase 4: Renewed User-Driven Execution and Credential Operations (`2026-06-03T13:19:44`–`2026-06-18T07:38:11.509862422Z`)
+
+Browser-to-shell chains appeared on `ALClient09` (`chrome.exe` PID `13188` → `cmd.exe` PID `12712`) at `2026-06-03T13:19:44`, and on `ALClient06` (`msedge.exe` PID `6232` → `cmd.exe` PID `832`) at `2026-06-04T15:25:05`. **Inference — MODERATE confidence:** These are compatible with phishing or malicious downloads, but they are too late to be the original entry point and could also reflect user-launched administrative scripts.
+
+On `ALClient04`, `Srv` cleared the Application log at `2026-06-14T10:39:49.616607904Z`; `invoke-mimikatz` followed at `2026-06-14T10:42:32.480974435Z`. **Inference — HIGH confidence:** The log clear was anti-forensic activity associated with credential theft, subject only to confirmation that no sanctioned test was underway.
+
+`ALClient022` then became the operational center:
+
+- Outbound RDP-related traffic to `192.168.1.51` at `2026-06-16T07:17:36.340745687Z`.
+- Defender registry modification by `C:\Windows\CCM\CcmExec.exe` at `2026-06-16T07:28:03.235791921Z`.
+- SYSTEM execution of `C:\Windows\System32\calc.exe`, SHA-256 `58189cbd4e6dc0c7d8e66b6a6f75652fc9f4afc7ce0eba7d67d8c3feb0d5381f`, at `2026-06-16T07:30:35.350183963Z`.
+- Rubeus certificate authentication by `ADATUMLAB\Srv` at `2026-06-16T08:48:32.599407911Z`.
+- A suspicious Edge download at `2026-06-17T07:03:20.134777545Z`.
+- Encoded PowerShell by `ADATUMLAB\Srv` at `2026-06-17T07:06:00.979510307Z`.
+- WSASS-related execution under SYSTEM through `&quot;C:\Windows\system32\WerFaultSecure.exe&quot;` at `2026-06-18T07:38:11.509862422Z`, with the graph exposing only the truncated hash `sha256=dab6a977630816a6faef19920bfde12a97b771fcaaf1b83ea45f3e9f6…`.
+
+**Inference — HIGH confidence:** These events form a continuous sequence of remote access, defense evasion, privilege validation, certificate-backed authentication, payload acquisition, and credential-access activity.
+
+### Phase 5: Environment-Wide Coordination (`2026-06-20T02:58:20.341299295Z`–`2026-06-21T13:35:13`)
+
+On `2026-06-20`, `ALDC02` produced EPMAP and outbound RDP-related detections. On `2026-06-21`, similar EPMAP detections appeared across `ALDC03`, `ALCA01`, `ALClient09`, `ALClient06`, `ALClient01`, `ALMECM01`, and `ALClient022`. Some processes—`dfsrs.exe`, `lsass.exe`, and `csfalconservice.exe`—can generate legitimate enterprise traffic; **assessment — LOW confidence** that each individual connection was malicious. The concentration within one day, amid confirmed credential and Cobalt Strike activity, makes the aggregate pattern suspicious with **MODERATE confidence**.
+
+`ALClient04` also showed `msedge.exe` PID `552` spawning `cmd.exe` PID `2460` at `2026-06-21T09:42:42`. Cobalt Strike named-pipe indicators then appeared on `ALClient022` at `2026-06-21T13:31:15Z` and `ALClient06` at `2026-06-21T13:31:36Z`. The last covered activity was suspicious `SearchProtocolHost.exe` PID `11076` on `ALClient01` at `2026-06-21T13:35:13`.
+
+**Attack Chain Summary — MODERATE confidence:** The most likely path was endpoint foothold on the `ALClient04`/`ALClient06` set → credential theft and Defender suppression on `ALClient022` and `ALClient01` → reuse of `almogs` and especially `srv` across endpoints → access to `ALDC02` and infrastructure systems → directory and Kerberos discovery → certificate-backed Rubeus ticket request from `ALClient022` → coordinated post-exploitation on `ALClient022` and `ALClient06` using Cobalt Strike-related tooling. The path is supported by multiple independent artifacts, but the first compromised host, exact movement direction, ticket success, and degree of CA compromise remain unresolved.
+
+## Cross-Host Correlation
+
+- **`adatumlab\almogs` — HIGH confidence:** The account was used across `ALClient09` and `ALClient022`, timestamped `2025-04-27T08:37:25.537375926Z`, under MITRE `T1021` and `T1078`. This coincided with password-dumper and severe Defender alerts for `ADATUMLAB\AlmogS` on `ALClient022`. It proves shared credential use across the two systems. Direction cannot be determined.
+
+- **`adatumlab\srv` — HIGH confidence:** The account connected `ALDC02`, `ALClient04`, `ALClient06`, and `ALClient022` at `2025-10-05T10:01:10.748268842Z` under `T1021` and `T1078`; identity clustering adds `ALClient01`. Later host evidence assigns Mimikatz, log clearing, encoded PowerShell, and Rubeus activity to `Srv`. This proves that one identity—not separate users—spanned five systems. The sequence supports movement from the endpoint group toward `ALDC02` with **MODERATE confidence**, but authentication source events are required to establish direction conclusively.
+
+- **`adatumlab\giladt` — HIGH confidence for shared use, LOW confidence for timing and direction:** The account connected `ALDC02`, `ALMECM01`, and `ALCA01` under `T1021` and `T1078`, with prior cross-case sightings. Its finding has `ts: null`, so it cannot be placed reliably in the attack sequence. It proves that the same credentials reached identity, management, and certificate infrastructure, but not when or in which direction.
+
+- **Shared binary on `ALClient04` and `ALClient06` — HIGH confidence:** SHA-256 `9b455ebf6dab83b374cfd1b9c76da0f04d5f186d570e301f51923c553d959eec` was present on both at `2024-05-24T17:49:46Z` (`T1570`). This proves common tooling or transfer; transfer direction is absent.
+
+- **Four shared binaries on `ALClient09` and `ALClient01` — HIGH confidence:** Hashes `842737b5c36f624c9420a005239b04876990a2c4011db87fe67504fa09281031`, `bd2c2cf0631d881ed382817afcce2b093f4e412ffb170a719e2762f250abfea4`, `05732e84de58a3cc142535431b3aa04efbe034cc96e837f93c360a6387d8faad`, and `16f413862efda3aba631d8a7ae2bfff6d84acd9f454a7adaa518c7a8a6f375a5` appeared within four seconds on `2025-05-27`. This strongly supports a common package or rapid transfer, but no source host is identified.
+
+- **Cobalt Strike profile reuse — HIGH confidence:** `trick_ryuk.profile` named-pipe detections appeared on `ALClient022` and `ALClient06` 21 seconds apart on `2026-06-21`. Combined with shared `srv` use, this proves coordinated tooling across both hosts with **HIGH confidence**.
+
+- **Repeated timing on `2026-06-21` — MODERATE confidence:** EPMAP-related alerts appeared across seven hosts, followed by the paired Cobalt Strike detections. Because several named processes can be legitimate, timing alone does not prove lateral movement, but it supports a coordinated environment-wide operational window.
+
+## Identities and Attribution
+
+- **`srv` — HIGH confidence compromised or adversary-operated:** The identity contains five accounts or representations and was seen on `ALClient01`, `ALClient022`, `ALClient04`, `ALClient06`, and `ALDC02`. `ADATUMLAB\Srv` ran certificate-based Rubeus and encoded PowerShell on `ALClient022`; `Srv` cleared a log and was followed by `invoke-mimikatz` on `ALClient04`; and `C:\Users\srv\Desktop\mimikatz.exe` ran on `ALClient01`. This behavior is inconsistent with ordinary account use. Whether `srv` was a legitimate service/administrator account that was stolen or an adversary-created account is **LOW confidence** because account-creation, owner, and directory-change records are absent.
+
+- **`almogs` — HIGH confidence compromised or used for offensive testing:** Its two account representations were seen on `ALClient022` and `ALClient09`. On `ALClient022`, `ADATUMLAB\AlmogS` was associated with password-dumper and hacktool alerts, followed by Defender shutdown. The behavior is not consistent with normal interactive use. Distinguishing compromise from authorized security testing requires owner interview, approved-test scope, logon source, and change records.
+
+- **`giladt` — MODERATE confidence suspicious, not conclusively compromised:** Its accounts were seen on `ALClient09`, `ALDC02`, and `ALMECM01`; the cross-host finding additionally lists `ALCA01`. Access across a workstation, likely domain controller, management server, and likely CA is highly privileged. However, no timestamp or directly malicious command is attached to the cross-host finding. Administrative role records, privileged-access workstation policy, and source logons would settle whether this was legitimate administration.
+
+- **`nofl` — LOW confidence of incident involvement:** Four account representations were seen on `ALClient09`, `ALDC02`, and `ALDC03`, but no critical finding directly attributes malicious execution to this identity. Review is warranted because of domain-controller reach; the present graph does not justify calling it compromised.
+
+- **`adim_std` — LOW confidence of incident involvement:** Seen on `ALCA01` and `ALClient01`, with no directly attributed malicious act. Its presence matters because one host is the likely CA, but legitimacy cannot be graded higher without logon and role data.
+
+- **`admin01` — LOW confidence of incident involvement:** Seen on `ALClient01` and `ALClient022`, both critical systems in the intrusion, but no provided event binds it to malicious tooling.
+
+- **`kobia` — LOW confidence of incident involvement:** Seen on `ALClient022` and `ALClient06`, the two systems with paired Cobalt Strike detections. The host overlap is notable, but the graph does not attribute those detections to this identity.
+
+- **`kobitst`, `eldara`, `adim`, `almognoadmin`, `adatumlab\noda`, and `adatumlab\sccm_sql` — LOW confidence of incident involvement:** Each appears on only one covered host and lacks a directly attributed malicious finding. They should be reviewed through source logons and role records but cannot presently be classified as compromised.
+
+## Impact Assessment
+
+**Shown — HIGH confidence:**
+
+- Credentials were targeted and likely exposed on `ALClient01`, `ALClient022`, `ALClient04`, and `ALClient06` through Mimikatz, password-dumper, Rubeus, and related PowerShell evidence.
+- Security controls were disabled on `ALClient022`, `ALClient01`, `ALClient06`, and `ALClient09`.
+- The `srv` identity reached five hosts, including likely domain controller `ALDC02`.
+- Malicious code was detected under SYSTEM through `WmiPrvSE.exe` on `ALDC02`.
+- Remote SYSTEM execution through PAExec occurred on `ALClient01` and `ALClient09`.
+- Logs were cleared on `ALClient04`.
+- Certificate-backed Kerberos ticket acquisition was attempted from `ALClient022`.
+- Coordinated Cobalt Strike-related artifacts existed on `ALClient022` and `ALClient06`.
+
+**Permitted but not proven — MODERATE confidence:**
+
+- Domain-wide control is plausible because a likely domain controller was affected, privileged accounts crossed infrastructure systems, and Kerberos-focused tooling was used. The evidence does not show successful DCSync, NTDS extraction, privileged-group modification, or a confirmed domain-admin token.
+- Continued adversary access at the end of coverage is plausible. The Cobalt Strike detections at `2026-06-21T13:31:15Z` and `2026-06-21T13:31:36Z` occurred minutes before the final event, and no eradication evidence follows. A live external connection is not shown.
+- Enterprise software deployment could be abused through `ALMECM01`. The server accessed administrative shares and is linked to `giladt`, but the graph does not show a malicious package or deployment.
+- Certificate-based persistence could survive password resets if `ShadowMark_sac2$.pfx` was valid and attacker-controlled. The graph does not establish its issuer, certificate serial number, template, or success.
+
+**CA reach — MODERATE confidence:** Certificate and Kerberos activity does intersect the broader access graph containing likely CA `ALCA01`: `giladt` touched `ALCA01`, and `ALCA01` later recorded `lsass.exe` connecting to `192.168.1.17` at `2026-06-21T11:32:51.444780826Z`. However, no evidence ties `ShadowMark_sac2$.pfx` directly to `ALCA01`. CA compromise is therefore unproven, but containment cannot safely assume certificates remain trustworthy until issuance and private-key records are examined.
+
+If no action is taken, **assessment — HIGH confidence**, the organisation risks repeated credential theft and workstation reinfection; **MODERATE confidence**, it risks domain takeover, malicious software distribution, and authentication persistence through certificates; and **LOW confidence**, it risks data theft because no specific collection, archive transfer, or confirmed exfiltration is included.
+
+## Root Cause and Initial Access
+
+**Assessment — LOW confidence:** Initial access is undetermined. The earliest graph evidence is the shared binary on `ALClient04` and `ALClient06` at `2024-05-24T17:49:46Z`, but it contains no download origin, parent process, account, or network source. Suspicious browser-to-`cmd.exe` chains on `ALClient09`, `ALClient06`, and `ALClient04` support phishing or malicious web execution as a later access or re-entry mechanism, not as the original cause.
+
+The evidence needed to determine initial access is:
+
+- Web proxy, DNS, browser-download, email gateway, and EDR process telemetry for `ALClient04` and `ALClient06` before and around `2024-05-24T17:49:46Z`.
+- File creation, Zone.Identifier, signer, original filename, and parent-process data for SHA-256 `9b455ebf6dab83b374cfd1b9c76da0f04d5f186d570e301f51923c553d959eec`.
+- Authentication records showing the first abnormal use of `almogs`, `srv`, and `giladt`, including source IP, logon type, workstation name, and MFA result.
+- Evidence predating the severity floor, because lower-severity precursors such as initial downloads or failed logons may have been excluded.
+
+An authorized red-team or administrative exercise is a material alternative explanation for some tooling. **Assessment — MODERATE confidence:** The total pattern reads as adversary-controlled or unauthorized activity because it combines credential theft, Defender disabling, log clearing, plaintext credential use, and cross-host Cobalt Strike indicators. Approved exercise scope, operator accounts, source infrastructure, and change tickets would settle that ambiguity.
+
+## Containment and Recovery
+
+**Immediate containment**
+
+1. Isolate `ALDC02` first while maintaining necessary directory-service resilience; block its suspicious remote-management paths and preserve memory and volatile evidence. Treat it as a potentially compromised domain controller. **Priority confidence — HIGH.**
+2. Network-isolate `ALClient022` and `ALClient06`; terminate confirmed malicious processes and block Cobalt Strike-related named-pipe activity. These hosts showed the latest coordinated tooling. **Priority confidence — HIGH.**
+3. Isolate `ALClient01`, `ALClient09`, and `ALClient04`; preserve memory before shutdown where operationally safe. They contain Mimikatz, PAExec, log-clearing, and repeated shared-tool evidence. **Priority confidence — HIGH.**
+4. Restrict `ALMECM01` from initiating deployments or administrative-share access until its jobs and packages are validated. Do not use it to push containment software to suspect hosts. **Priority confidence — MODERATE.**
+5. Restrict administrative access to `ALDC03` and preserve its BITS, service, authentication, and network evidence. **Priority confidence — MODERATE.**
+6. Place `ALCA01` in emergency protected operation: restrict enrollment and administration, preserve CA logs and memory, and do not power it off before certificate evidence is collected. **Priority confidence — HIGH** because certificate-based authentication occurred elsewhere and CA status changes the recovery scope.
+7. Disable or tightly suspend `srv` and `almogs`; revoke active sessions and tickets, then reset them from a known-clean administrative workstation. Restrict `giladt` pending validation because it spans `ALDC02`, `ALMECM01`, and `ALCA01`. **Priority confidence — HIGH** for `srv`/`almogs`, **MODERATE** for `giladt`.
+8. Block or quarantine the five complete shared hashes, SHA-256 `58189cbd4e6dc0c7d8e66b6a6f75652fc9f4afc7ce0eba7d67d8c3feb0d5381f`, the Rubeus path, PAExec service artifacts, and `ShadowMark_sac2$.pfx`. Obtain the full `6fa…` and `dab6…` hashes before enterprise blocking. **Priority confidence — HIGH.**
+9. Block unauthorized RDP and remote-service creation between the covered hosts, and investigate destinations `192.168.1.51`, `192.168.1.80`, `192.168.1.86`, `192.168.1.16`, and `192.168.1.17`. IP-to-host mappings must be verified before isolation. **Priority confidence — MODERATE.**
+
+**Eradication**
+
+1. Rebuild `ALClient022`, `ALClient01`, `ALClient09`, `ALClient06`, and `ALClient04` from trusted media. Their repeated credential tooling, control suppression, remote services, or Cobalt Strike artifacts make in-place cleaning unreliable. **Requirement confidence — HIGH.**
+2. If forensic review confirms unauthorized execution or privileged persistence on `ALDC02`, perform a controlled domain-controller rebuild and metadata cleanup rather than trusting file-level remediation. **Requirement confidence — MODERATE.**
+3. Validate and, if compromised, rebuild `ALDC03` from a trusted baseline; remove `SETDADCollector` only if no authorized assessment explains it. **Requirement confidence — LOW pending validation.**
+4. Audit every `ALMECM01` package, application, script, client-push account, distribution point, and recent deployment. Rebuild it if its site-control or signing trust was exposed. **Requirement confidence — MODERATE.**
+5. On `ALCA01`, identify the issuer, template, serial number, requester, and private-key provenance for `ShadowMark_sac2$.pfx`. Revoke the certificate and publish updated revocation information if it is enterprise-issued. If the CA private key or enrollment authority was exposed, execute CA compromise recovery and reissue affected certificates; ordinary password resets are insufficient. **Requirement confidence — HIGH for the audit, MODERATE for CA rebuild.**
+6. Rotate `srv`, `almogs`, and any credentials present in their sessions. Rotate `giladt` after validation and reset privileged credentials that logged onto the five reimaged endpoints or `ALDC02`. Purge Kerberos tickets and rotate machine-account credentials where misuse is confirmed. **Requirement confidence — HIGH.**
+7. Remove `PAExec-14972-ALCLIENT06`, `PAExec-5540-ALDC01`, unauthorized Rubeus/Mimikatz/SharpHound/Inveigh artifacts, encoded payloads, and associated services and scheduled mechanisms. **Requirement confidence — HIGH.**
+8. Restore Defender protections centrally and confirm tamper protection, exclusions, registry settings, and sensor health on every covered host. Validate CrowdStrike `CsInstallService` events against deployment records before removal because those paths may be legitimate. **Requirement confidence — HIGH.**
+
+**Investigation priorities**
+
+1. Determine whether `ShadowMark_sac2$.pfx` was issued by `ALCA01` and whether the Rubeus `asktgt` operation succeeded. Obtain CA database/audit events, certificate templates, enrollment logs, KDC events on `192.168.1.17`, and logons for `sac2$` around `2026-06-16T08:48:32.599407911Z`.
+2. Establish compromise scope on `ALDC02`. Collect memory, Defender remediation details, WMI subscriptions, process ancestry for `WmiPrvSE.exe`, Security logs, and directory-change records around `2025-11-03T01:32:28.115953683Z`.
+3. Reconstruct movement by `srv`, `almogs`, and `giladt`. Correlate events 4624/4625/4648/4672, RDP, SMB, WinRM, WMI, service creation, and KDC logs across all nine hosts, preserving exact source addresses and logon IDs.
+4. Resolve the earliest shared binary. Recover SHA-256 `9b455ebf6dab83b374cfd1b9c76da0f04d5f186d570e301f51923c553d959eec` from `ALClient04` and `ALClient06`, then examine creation times, parent processes, transfer records, Zone.Identifier, and network telemetry around `2024-05-24T17:49:46Z`.
+5. Confirm whether the June browser-to-shell chains were phishing, downloads, or approved scripts. Acquire browser history, downloads, email, proxy, DNS, and command-line ancestry for `ALClient09` at `2026-06-03T13:19:44`, `ALClient06` at `2026-06-04T15:25:05`, and `ALClient04` at `2026-06-21T09:42:42`.
+6. Determine whether Cobalt Strike was live. Acquire memory and network telemetry from `ALClient022` and `ALClient06` around `2026-06-21T13:31:15Z`–`2026-06-21T13:31:36Z`, including named-pipe owners, process trees, sockets, and destination infrastructure.
+7. Audit `ALMECM01` for distribution abuse. Resolve `TRAA5D2.tmp` and `TRAADB1.tmp`, their parents and signers, initiating accounts, and access to `\\aldc01\c$` and `\\alclient04\c$` on `2026-05-10`.
+8. Validate ambiguous enterprise-tool events. Compare `CsInstallService`, `SETDADCollector`, `CCMSETUP DOWNLOAD`, and `csfalconservice.exe` activity with approved change and security-assessment records.
+9. Determine whether data left the environment. Review proxy, firewall, DNS, cloud-storage, BITS, archive creation, and endpoint file-access evidence, including activity associated with `www.7-zip.org` and `20.77.72.232`, whose findings lack timestamps.
+
+## Limitations
+
+- **HIGH confidence:** The payload does not contain the required account-creation, identity-owner, source-logon, KDC-success, CA issuance, or network-flow detail needed to prove who first entered, the exact direction of every lateral movement, successful ticket issuance, or continuing external control.
+- **HIGH confidence:** Several findings have no timestamp, including the `giladt` cross-host link, `www.7-zip.org`, `20.77.72.232`, and `www.advanced-ip-scanner.com`. They cannot be safely placed in the narrative chronology.
+- **HIGH confidence:** Some evidence strings and hashes are truncated, including the Rubeus `sha256=6fa…` and WSASS-related `sha256=dab6…`; no full value should be inferred from them.
+- **HIGH confidence:** No explicit dispositions were supplied. CrowdStrike installer services, `SETDADCollector`, BITS-based CCM setup, and some `lsass.exe`, `dfsrs.exe`, or `csfalconservice.exe` network activity may be legitimate. They were not treated as proof of compromise without corroboration.
+- **HIGH confidence:** The graph shows detection and execution evidence but not a complete EDR process tree, packet capture, memory image, email record, or identity-provider audit trail. Absence of data theft, domain-admin changes, or successful ticket use is therefore not evidence that those actions did not occur.
+- **MODERATE confidence:** The severity floor may have excluded lower-severity precursors, including reconnaissance, failed authentication, initial downloads, and persistence setup. The true start may predate `2024-05-24T17:49:46Z`.
+- **HIGH confidence:** `ALDC02`, `ALDC03`, `ALMECM01`, and `ALCA01` roles are inferred from hostname hints. Their domain-controller, configuration-management, and certificate-authority functions must be confirmed from system configuration.
+- **HIGH confidence:** All nine covered hosts are accounted for, but the graph references `ALDC01`, which is not included in `host_coverage`. Its evidence is missing despite appearing in `PAExec-5540-ALDC01` and `\\aldc01\c$`; spread through or from that system cannot be ruled in or out.
+- **HIGH confidence:** The covered endpoint evidence ends at `2026-06-21T13:35:13`. The graph provides no post-containment telemetry, so eradication and current access status cannot be confirmed.</pre>
+      </div>
+      <div class="col win">
+        <h2>S1-altitude WINNER</h2>
+        <div class="meta">out 2237 tok · in 127593 · 7718c</div>
+        <div class="scores"><span>dfir_professionalism: <b>5</b></span><span>altitude_fit: <b>5</b></span><span>grounding: <b>4</b></span><span>actionability: <b>4</b></span><span>efficiency: <b>5</b></span><span>total: <b>23</b></span></div>
+        <div class="rat">Correctly treats the broad scope as competing ranked scenarios, calibrates uncertainty, identifies precise zoom windows, and preserves alternative authorised-activity explanations, though some aggregate infrastructure claims lack event-level citation and containment guidance is limited.</div>
+        <pre>## Assessment
+
+Nine hosts are implicated across 757 days (2024-05-24 to 2026-06-21), with credential-access tooling, encoded PowerShell, security-control impairment, suspicious services and lateral-access indicators dominating. The evidence peaks in a coordinated 2026-06-16–21 cluster spanning endpoints, both domain controllers, the certificate authority and software-distribution server; however, the 25-month spread and repeated security-testing tools support **several episodes or authorised exercises**, not one continuous campaign. Overall confidence: **MODERATE** — activity is demonstrably high risk, but operator identity, change records and source/destination telemetry are absent.
+
+## Candidate Scenarios
+
+**1. Coordinated credential theft and movement into identity infrastructure**
+
+- **What** — A foothold on `ALClient022` was used for credential access and discovery, followed by lateral activity across endpoints and tier-zero systems.
+- **Where/When** — `ALClient022`, `ALClient06`, `ALClient04`, `ALClient09`, `ALClient01`, `ALDC02`, `ALDC03`, `ALCA01`, `ALMECM01`; 2026-06-16T07:17:36Z–2026-06-21T13:35:13.
+- **Evidence** — **Observation:** `ALClient022` recorded non-standard RDP, Defender registry impairment, SYSTEM process creation and Rubeus on 2026-06-16; encoded PowerShell on 2026-06-17; WSASS on 2026-06-18. EPMAP activity then appeared across eight hosts on 2026-06-20–21, with non-standard outbound RDP on `ALDC02` and `ALDC03`, malicious PowerShell on `ALClient06`, and `Cobalt Strike: trick_ryuk.profile` on `ALClient022` and `ALClient06`. **Inference:** the sequence is consistent with credential acquisition followed by broad lateral movement; directionality is not established.
+- **Confidence** — **HIGH** that coordinated offensive tooling operated; **MODERATE** that this was an unauthorised intrusion, because no operator attribution or approved-test context is supplied.
+- **Zoom** — `ALClient022` from 2026-06-16T06:30:00Z to 2026-06-18T09:00:00Z, then all nine hosts from 2026-06-20T02:00:00Z to 2026-06-21T14:00:00Z.
+
+**2. Abuse of shared/service credentials reaching tier-zero systems**
+
+- **What** — Shared credentials may have enabled movement from client systems into domain, certificate and software-management infrastructure.
+- **Where/When** — `adatumlab\srv` across `ALClient022`, `ALClient04`, `ALClient06`, `ALDC02` around 2025-10-05T10:01:10Z; `adatumlab\giladt` across `ALDC02`, `ALMECM01`, `ALCA01` at an undetermined time.
+- **Evidence** — **Observation:** both are high-confidence `cross_host` findings mapped to T1021/T1078. The `srv` identity is seen on five hosts; `giladt` is seen on `ALClient09`, `ALDC02`, `ALMECM01`, while the finding additionally cites `ALCA01`. `ALClient022` simultaneously generated an exploitation-framework alert on 2025-10-05T10:01:10Z. **Inference:** compromised or broadly delegated accounts could bridge endpoint and tier-zero activity; legitimate administration remains plausible.
+- **Confidence** — **MODERATE** — strong identity correlation and sensitive destinations, but missing logon types, source addresses, privileges and timestamps for `adatumlab\giladt`.
+- **Zoom** — `ALClient022`, `ALClient04`, `ALClient06`, `ALDC02` from 2025-10-05T09:00:00Z to 2025-10-05T12:00:00Z; separately recover the complete timestamped logon history for `adatumlab\giladt` on `ALDC02`, `ALMECM01` and `ALCA01`.
+
+**3. Recurrent offensive-tool use on the client cluster**
+
+- **What** — Multiple client systems may have supported repeated credential theft, discovery and persistence episodes preceding the June 2026 peak.
+- **Where/When** — Primarily `ALClient022`, `ALClient01`, `ALClient09`, `ALClient06`, `ALClient04`; 2025-04-27–2026-06-14.
+- **Evidence** — **Observation:** password-dumper detection and Defender disablement on `ALClient022` on 2025-04-27; renamed `mimikatz.exe` plus Defender disablement on `ALClient01` on 2025-09-21; Rubeus on `ALClient022` on 2025-11-05; AdFind/ProcessHacker/procdump variants on `ALClient09` on 2025-12-06 and `ALClient01` on 2026-05-03; malicious services on both clients; Mimikatz/Inveigh script content on `ALClient04`/`ALClient06`; shared hashes `842737b5c36f624c9420a005239b04876990a2c4011db87fe67504fa09281031`, `bd2c2cf0631d881ed382817afcce2b093f4e412ffb170a719e2762f250abfea4`, `05732e84de58a3cc142535431b3aa04efbe034cc96e837f93c360a6387d8faad` and `16f413862efda3aba631d8a7ae2bfff6d84acd9f454a7adaa518c7a8a6f375a5` linked `ALClient09` and `ALClient01`. **Inference:** this could represent recurring compromise, but the breadth and repetition also resemble security testing.
+- **Confidence** — **MODERATE** — tooling is explicit; continuity and malicious intent are undetermined.
+- **Zoom** — Build separate ±2-hour timelines around 2025-04-27T08:37:25Z (`ALClient022`), 2025-09-21T11:31:32Z (`ALClient01`), 2025-12-06T06:29:24Z (`ALClient09`) and 2026-06-14T10:39:49Z (`ALClient04`).
+
+**4. Authorised security exercise or administrative activity generating much of the graph**
+
+- **What** — A sanctioned lab, red-team or training programme may explain repeated named offensive tools and administrative movement.
+- **Where/When** — Environment-wide, particularly `ALClient022`, `ALClient04` and `ALClient06`; 2024-05-24–2026-06-21.
+- **Evidence** — **Observation:** the domain/account namespace is `adatumlab`; script blocks include explicit Mimikatz, Inveigh, SharpHound, PowerView and PowerUp content, including help/testing-style commands and failed imports. Some activity aligns with MECM administration, including `cmtrace.exe`, `CCMSETUP DOWNLOAD` and `almecm01.adatumlab.local/ccm_client`. **Inference:** these characteristics may indicate controlled testing, but they do not make Defender impairment, log clearing or tier-zero access benign without authorisation records.
+- **Confidence** — **LOW–MODERATE** — contextual signals support the hypothesis, but the payload contains no change tickets, exercise roster or approved source systems.
+- **Zoom** — Compare the 2026-06-16–21 actors, source systems and tools against approved security-testing and MECM change records before treating separate historical detections as one breach.
+
+## Suspicious Timeframes &amp; Clusters
+
+1. **2026-06-16–21 — all nine hosts: HIGH.** Dense progression from RDP/Defender impairment/Rubeus/encoded PowerShell on `ALClient022` to EPMAP and non-standard RDP across tier-zero and client systems, plus matching Cobalt Strike pipe detections.
+2. **2025-10-05–2026-01-14 — `ALClient022`, `ALDC02`, `ALCA01`, client cluster: MODERATE-HIGH.** `adatumlab\srv` cross-host use coincides with exploitation-framework detection, followed by CA/DC suspicious services and a severe Defender alert on `ALDC02`.
+3. **2025-04-27 — `ALClient022`/`ALClient09`: MODERATE-HIGH.** Password-dumper and hacktool alerts, immediate Defender impairment, and cross-host use of `adatumlab\almogs`.
+4. **2025-09-21 and 2025-12-06–11 — `ALClient01`/`ALClient09`: MODERATE.** Credential-access utilities, shared binaries, security-control impairment and subsequent malicious-service findings; linkage between the episodes remains unproven.
+
+## What to do first
+
+1. Zoom first into Scenario 1: construct a source/destination/account process timeline for all nine hosts covering 2026-06-16T06:30:00Z–2026-06-21T14:00:00Z, anchored on `ALClient022`.
+2. Acquire memory first from `ALClient022` and `ALClient06`; pull deep endpoint and authentication timelines from `ALDC02` and `ALDC03`, preserving PowerShell 4104, Sysmon, Security, Defender, service and RDP artefacts.
+3. Resolve the decisive question: **Was the 2026-06-16–21 activity an authorised exercise, and if so, what exact accounts, source hosts and time window were approved?**</pre>
+      </div></div>
