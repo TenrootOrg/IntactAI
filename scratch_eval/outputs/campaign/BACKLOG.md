@@ -2,7 +2,7 @@
 
 Ranked findings from the fusion + agentic test campaign (Tracks A/B/C, deterministic + at-scale). Each links a repro; action is the proposed fix or feature.
 
-**Quantified at scale (Track B, 1 model runs):** turn-1 give-up (A1) **0.0%**, fabricated-host **0.0%**.
+**Quantified at scale (Track B, 14 model runs):** turn-1 give-up (A1) **0.0%**, fabricated-host **0.0%**.
 
 ## FIX (defects)
 
@@ -12,6 +12,7 @@ Ranked findings from the fusion + agentic test campaign (Tracks A/B/C, determini
 | high | A2 | A | tool exception propagates out of investigate() -> HTTP 500 | Wrap _tool dispatch in try/except; return {'error':...} to the model instead of letting a model-controlled arg raise a 500. |
 | high | A3 | A | transport failure propagates -> unhandled 500 (report path catches it) | Catch LLMUnavailable in investigate() (or the route) and return the typed operator message the report/chat paths already use. |
 | medium | A7b | A | forced-final can return raw model text as the analyst answer | On the forced-final path, if the reply still isn't {final}, return a clear 'insufficient evidence' message, never the raw tool-call blob. |
+| medium | D-hash-case_1788080164853__S0-baseline.md | D | Ungrounded sha256 in case_1788080164853__S0-baseline.md | — |
 | medium | F2 | C-probes | schema._wider string-compares timestamps (breaks on mixed Z/fractional/epoch) | Make schema._wider compare via keys.to_utc_dt instants (like in_window), not lexicographic strings — mixed Z/fractional/epoch widen wrong. |
 | low | F2b | C-probes | _wm_new_activity string-compares the watermark time half | Same for correlate._wm_new_activity's watermark time half — compare instants so a fractional-second-newer occurrence re-opens correctly. |
 
@@ -38,6 +39,8 @@ Ranked findings from the fusion + agentic test campaign (Tracks A/B/C, determini
   v1-vs-v2 judged eval: v2 scored 11 (cross-host) and 13 (timeline) vs v1's 17/20 because pseudonymizing ALDC02->Hostname7 destroys the 'domain controller' signal carried by the name. Privacy win, correctness regression on tier-zero questions.
 - **A7b** (medium): model never returns {final}, even on the forced call  
   answer='{"tool":"list_findings","args":{}}' — after budget, obj.get('final') or raw; a non-final raw blob becomes the answer.
+- **D-hash-case_1788080164853__S0-baseline.md** (medium): ground_check on case_1788080164853__S0-baseline.md  
+  hashes not in payload: ['58189cbd4e6dc0c7d8e66b6a6f75652fc9f4afc7ce0eba7d67d8c3feb0d5381f']
 - **F2** (medium): schema._wider('2026-...T12:00:00Z','2026-...T12:00:00.5Z', want_min=False)  
   mismatches vs to_utc_dt ordering: [('2026-06-16T12:00:00Z', '2026-06-16T12:00:00.500Z', 'max', '2026-06-16T12:00:00Z', '2026-06-16T12:00:00.500Z')]
 - **A8** (low): raw row contains a hostname absent from graph entities  

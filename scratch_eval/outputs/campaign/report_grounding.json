@@ -1,0 +1,75 @@
+{
+  "track": "D",
+  "rows": [
+    [
+      "case_1788080164853__S0-baseline.md",
+      {
+        "timestamps_total": 38,
+        "timestamps_ungrounded": [],
+        "hashes_total": 6,
+        "hashes_ungrounded": [
+          "58189cbd4e6dc0c7d8e66b6a6f75652fc9f4afc7ce0eba7d67d8c3feb0d5381f"
+        ]
+      }
+    ],
+    [
+      "case_1788080164853__S1-altitude.md",
+      {
+        "timestamps_total": 13,
+        "timestamps_ungrounded": [
+          "2025-10-05T09:00:00",
+          "2025-10-05T12:00:00",
+          "2026-06-16T06:30:00",
+          "2026-06-18T09:00:00",
+          "2026-06-20T02:00:00",
+          "2026-06-21T14:00:00"
+        ],
+        "hashes_total": 4,
+        "hashes_ungrounded": []
+      }
+    ],
+    [
+      "case_1788080164853__S2-macro2.md",
+      {
+        "timestamps_total": 18,
+        "timestamps_ungrounded": [
+          "2025-10-05T09:30:00",
+          "2026-06-16T07:00:00",
+          "2026-06-20T02:30:00",
+          "2026-06-21T14:00:00"
+        ],
+        "hashes_total": 0,
+        "hashes_ungrounded": []
+      }
+    ],
+    [
+      "case_1788080164853__S4-anchored.md",
+      {
+        "timestamps_total": 30,
+        "timestamps_ungrounded": [
+          "2025-04-21T21:19:15",
+          "2025-05-04T10:20:18",
+          "2025-09-21T10:31:32",
+          "2025-10-05T09:01:10",
+          "2025-10-08T20:44:55",
+          "2026-01-25T08:02:49",
+          "2026-01-26T12:51:42",
+          "2026-04-07T12:24:58",
+          "2026-06-21T14:35:13"
+        ],
+        "hashes_total": 0,
+        "hashes_ungrounded": []
+      }
+    ]
+  ],
+  "findings": [
+    {
+      "id": "D-hash-case_1788080164853__S0-baseline.md",
+      "title": "Ungrounded sha256 in case_1788080164853__S0-baseline.md",
+      "severity": "medium",
+      "status": "FINDING",
+      "detail": "hashes not in payload: ['58189cbd4e6dc0c7d8e66b6a6f75652fc9f4afc7ce0eba7d67d8c3feb0d5381f']",
+      "repro": "ground_check on case_1788080164853__S0-baseline.md"
+    }
+  ]
+}
