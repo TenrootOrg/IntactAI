@@ -1244,13 +1244,40 @@ function renderChat(id){
     <div class="chathead"><button class="ghost chatfs" onclick="clearChat('${id}')" title="Clear the conversation">Clear</button><button class="ghost chatfs" id="chatfsbtn" onclick="toggleChatFull()" title="Full screen (Esc to exit)">⛶ Full screen</button></div>
     <div class="chat"><div class="msgs" id="msgs"></div>
     <div class="chatbar"><input id="q" placeholder="ask anything about this case — risk, attack path, a host/account/IP, what to do next…"/>
-    <button id="askbtn" onclick="ask('${id}')">Ask</button></div></div></div>`;
+    <button id="askbtn" onclick="ask('${id}')">Ask</button>
+    <button id="invbtn" class="ghost" onclick="investigateAsk('${id}')" title="Agentic deep-dive: the model looks up the RAW evidence to answer, grounding every claim (slower — a few model calls)">🔬 Investigate</button></div></div></div>`;
   $('#q').addEventListener('keydown',e=>{if(e.key==='Enter')ask(id);});
   // load the persisted conversation so it survives a page refresh
   $('#msgs').innerHTML='<i style="color:var(--muted)">loading…</i>';
   api('/api/cases/'+id+'/chat').then(d=>{
     chatHist=(d.messages||[]).map(m=>({role:m.role,content:m.content}));drawMsgs();
   }).catch(_=>{chatHist=[];drawMsgs();});
+}
+// Agentic deep-dive: routes the question through /investigate — the model calls
+// retrieval tools (list_findings / search / evidence / clusters) over the raw
+// evidence and grounds its answer, then we show the tool trace. On-demand (a few
+// model calls), so this is a separate button from plain Ask.
+function investigateAsk(id){
+  if(_asking) return;
+  const q=$('#q').value.trim(); if(!q)return; $('#q').value='';
+  _asking=true;
+  const b=$('#invbtn'); if(b){b.disabled=true; b.textContent='🔬 Investigating…';}
+  chatHist.push({role:'user',content:q});
+  chatHist.push({role:'assistant',content:'_investigating — pulling raw evidence…_',pending:true});
+  drawMsgs();
+  const done=(content)=>{
+    const i=chatHist.findIndex(m=>m.pending);
+    if(i>=0) chatHist.splice(i,1,{role:'assistant',content}); else chatHist.push({role:'assistant',content});
+    _asking=false; if(b){b.disabled=false; b.textContent='🔬 Investigate';} drawMsgs();
+  };
+  fetch('/api/cases/'+id+'/investigate',{method:'POST',headers:{'Content-Type':'application/json'},
+                                         body:JSON.stringify({question:q})})
+   .then(async r=>{
+     const body=await r.text(); let d=null; try{ d=JSON.parse(body); }catch(e){}
+     if(!r.ok){ done('⚠️ Investigation failed (HTTP '+r.status+'). '+((d&&(d.error||d.message))||body.slice(0,200)||'')); return; }
+     const trace=(d.steps||[]).map(s=>s.tool).join(' → ');
+     done((d.answer||'(no answer)')+(trace?('\n\n---\n_🔧 investigated via: '+trace+(d.truncated?' · step budget reached':'')+'_'):''));
+   }).catch(e=>done('⚠️ '+((e&&e.message)||e)));
 }
 function clearChat(id){
   if(!confirm('Clear this conversation?'))return;
