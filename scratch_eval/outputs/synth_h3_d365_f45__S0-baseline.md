@@ -1,0 +1,202 @@
+## Executive Summary
+
+**Observation:** The correlated evidence shows malicious or highly unauthorized activity across all three covered hosts—DC01, DC02 and CA01—from `2025-09-08T05:39:04Z` through `2026-08-26T01:27:05Z`. The shared account `adatumlab\svc0` authenticated or executed across DC01, DC02 and CA01 at `2025-09-13T16:27:43Z`, and later across DC01 and CA01 at `2026-03-14T14:19:34Z` and `2026-03-20T03:10:26Z`. Subsequent evidence includes persistence, security-control impairment, credential theft, directory reconnaissance, Kerberos-ticket abuse, remote access and Cobalt Strike tooling.
+
+**Inference — HIGH confidence:** This is one prolonged, environment-wide intrusion rather than three unrelated host incidents. That assessment rests on the same account crossing all three systems, repeated tooling and techniques, and mutually reinforcing activity over 351 days.
+
+The first observed event was non-standard outbound RDP from DC02 at `2025-09-08T05:39:04Z`. Five days later, `adatumlab\svc0` was used across DC02, DC01 and CA01. The graph does not establish how that account or DC02 was initially compromised, so initial access remains undetermined. **Confidence: LOW** for DC02 as the entry host because chronology supports it, but there is no source-logon, endpoint, phishing, vulnerability or credential-origin evidence.
+
+The adversary appears to have sought durable control of the identity and trust infrastructure: both inferred domain controllers were subjected to credential theft and persistence, while the inferred certificate authority was reached by the shared account, hosted a Cobalt Strike named pipe, had protection disabled and logs cleared, and later received persistent access. **Confidence: HIGH** that the adversary reached all three identity-tier systems; **MODERATE** that domain-wide control was achieved, because privileged credential extraction and Kerberos abuse make it plausible but the graph does not show the privileges of `adatumlab\svc0`, successful ticket use, directory-object changes, or issuance/theft of certificates.
+
+CA01 is not peripheral. Certificate-related activity is not directly detected, but Kerberos-ticket activity occurred on DC01 and the same cross-host account reached CA01. CA01 also shows Cobalt Strike, defense evasion and persistence. **Inference — HIGH confidence:** the suspected certificate-authority host was compromised operationally. **LOW confidence** that its CA keys or certificates were abused, because the payload contains no AD CS, certificate issuance, private-key access or CA database evidence.
+
+Activity continued into August 2026, ending with outbound RDP from DC01 at `2026-08-25T09:41:17Z` and scheduled-task persistence on DC02 at `2026-08-26T01:27:05Z`. **Inference — HIGH confidence:** persistent access must be presumed active until disproved.
+
+## Critical Findings
+
+**Cobalt Strike presence on the suspected certificate authority**
+
+**Observation:** A Cobalt Strike named-pipe detection occurred on CA01 at `2026-03-14T03:01:00Z`. The graph identifies no account, process name, path or hash for this event.
+
+**Why it matters:** CA01’s hostname suggests a certificate-authority role, and its own evidence confirms deep host compromise: service persistence, disabled Defender, cleared logs, reconnaissance, encoded PowerShell and later WMI persistence. If CA01 holds an enterprise CA private key, host compromise could undermine certificate-based trust across the organisation. The evidence shows host access, but not CA-key theft or fraudulent certificate issuance. **Confidence: MODERATE**, driven by one medium-confidence Cobalt Strike detection corroborated by several independent CA01 findings.
+
+**Evidence:** Summary: “SIGMA rule 'Cobalt Strike Named Pipe' matched on CA01 at 2026-03-14T03:01:00Z.” MITRE: `C2-CobaltStrike`. Timestamp: `2026-03-14T03:01:00Z`. This is corroborated by cross-host use of `adatumlab\svc0` on CA01 and DC01 at `2026-03-14T14:19:34Z`.
+
+**Shared credentials tied all three identity-tier hosts together**
+
+**Observation:** `adatumlab\svc0` authenticated or executed on DC01, CA01 and DC02 at `2025-09-13T16:27:43Z`; it was again used across CA01 and DC01 at `2026-03-14T14:19:34Z` and `2026-03-20T03:10:26Z`. No source host, logon type, process, path or hash is supplied.
+
+**Why it matters:** This is direct evidence that a single credential or account context crossed every covered system, including two inferred domain controllers and the inferred certificate authority. It converts the case from isolated alerts into an environment-wide identity compromise. **Confidence: HIGH**, based on three high-confidence cross-host findings.
+
+**Evidence:** Summaries: “The account adatumlab\svc0 authenticated/executed on DC01, CA01, DC02 at 2025-09-13T16:27:43Z — consistent with lateral movement using shared credentials”; “…on CA01, DC01 at 2026-03-14T14:19:34Z…”; and “…on DC01, CA01 at 2026-03-20T03:10:26Z…”. MITRE: `T1021`, `T1078`.
+
+**Credential theft on both suspected domain controllers**
+
+**Observation:** DC01 recorded Mimikatz detections at `2025-12-04T21:39:37Z`, `2026-01-02T02:52:11Z` and `2026-04-19T12:22:35Z`, plus LSASS memory access at `2026-03-25T21:01:27Z`. DC02 recorded LSASS access at `2026-02-10T22:52:53Z` and `2026-06-26T00:53:28Z`, and Mimikatz at `2026-04-28T08:36:21Z`. No executing account, process path or hash is present.
+
+**Why it matters:** If DC01 and DC02 are domain controllers as their names suggest, successful memory credential theft could expose privileged domain credentials and ticket material. The repeated detections on both systems make an isolated administrative test unlikely unless formally documented. **Confidence: HIGH** that credential-access tooling operated across both hosts; **MODERATE** that reusable privileged secrets were obtained because the graph provides no tool output or subsequent credential mapping.
+
+**Evidence:** The findings’ summaries identify “HackTool - Mimikatz Execution” and “LSASS Memory Access” on DC01 and DC02 at the timestamps above, all mapped to `T1003.001`. The shared `adatumlab\svc0` findings corroborate the cross-system credential-abuse context.
+
+**Kerberos-ticket abuse and directory reconnaissance on DC01**
+
+**Observation:** Rubeus Kerberos-ticket request activity occurred on DC01 at `2026-01-09T23:27:41Z`. SharpHound/BloodHound collection occurred on DC01 at `2026-01-23T07:05:23Z` and `2026-03-29T15:25:18Z`; related collection occurred on CA01 at `2025-12-12T21:03:24Z`. No account, ticket target, service principal, process path or hash is provided.
+
+**Why it matters:** In combination with Mimikatz, this indicates deliberate mapping of directory relationships and attempted exploitation of Kerberos credentials, potentially enabling privileged movement. It does not establish successful ticket forging or domain takeover. **Confidence: HIGH** that the adversary conducted credential and directory operations; **MODERATE** that these operations enabled privilege escalation.
+
+**Evidence:** “SIGMA rule 'Rubeus Kerberos Ticket Request' matched on DC01 at 2026-01-09T23:27:41Z,” MITRE `T1558.003`; and the three SharpHound/BloodHound summaries, MITRE `T1087.002`. The earlier DC01 Mimikatz event at `2026-01-02T02:52:11Z` explicitly corroborates the ticket-abuse sequence.
+
+**Long-lived persistence and defensive impairment**
+
+**Observation:** Persistence appeared on all hosts: WMI event consumers on DC01 at `2025-10-05T13:29:30Z`; on DC02 at `2025-09-22T03:27:51Z` and `2026-07-16T10:12:16Z`; and on CA01 at `2026-08-13T21:08:16Z`. Suspicious services appeared on CA01, DC02 and DC01. Scheduled tasks appeared repeatedly on DC01 and finally on DC02 at `2026-08-26T01:27:05Z`. Defender was disabled on all three hosts, while security logs were cleared on CA01 and DC01. Names, command lines, paths and hashes of these persistence objects are absent.
+
+**Why it matters:** The adversary established multiple ways to survive account resets and attempted to reduce visibility. The latest persistence event is also the final recorded event, so access cannot safely be considered historical. **Confidence: HIGH** that durable access existed across the environment; **MODERATE** as to which mechanisms remain active because no acquisition or remediation state is supplied.
+
+**Evidence:** The findings map persistence to `T1546.003`, `T1543.003` and `T1053.005`, defensive impairment to `T1562.001`, and log clearing to `T1070.001`. These independent detections corroborate the repeated cross-host account activity.
+
+## Attack Narrative
+
+### Phase 1: Earliest access and rapid spread (`2025-09-08T05:39:04Z`–`2025-09-29T21:02:59Z`)
+
+**Observation:** The first event was non-standard outbound RDP on DC02 at `2025-09-08T05:39:04Z`. At `2025-09-13T16:27:43Z`, `adatumlab\svc0` authenticated or executed across DC01, CA01 and DC02. Encoded PowerShell followed on DC02 at `2025-09-17T00:03:51Z`, WMI persistence there at `2025-09-22T03:27:51Z`, and a suspicious service was installed on CA01 at `2025-09-29T21:02:59Z`.
+
+**Inference — MODERATE confidence:** The actor likely gained access no later than September 8, obtained or already possessed `adatumlab\svc0`, and used it to reach the other identity-tier systems before establishing persistence. The direction may have been DC02 → DC01/CA01, but this is **LOW confidence** because the cross-host finding gives no source system and the initial RDP event was outbound rather than a documented inbound session.
+
+### Phase 2: Persistence, evasion and credential acquisition (`2025-10-05T13:29:30Z`–`2026-01-31T22:04:39Z`)
+
+**Observation:** WMI persistence appeared on DC01 at `2025-10-05T13:29:30Z`. CA01’s event log was cleared at `2025-10-07T07:09:48Z`, and Defender was disabled there at `2025-10-22T15:40:28Z`. DC02 received a suspicious service at `2025-10-24T05:18:08Z`; DC01 ran encoded PowerShell at `2025-10-25T02:04:01Z` and had its security log cleared at `2025-10-30T05:04:04Z`.
+
+Mimikatz then appeared on DC01 at `2025-12-04T21:39:37Z`; SharpHound/BloodHound collection occurred on CA01 at `2025-12-12T21:03:24Z`. On `2026-01-02`, Mimikatz appeared again on DC01 at `02:52:11Z`, followed 36 minutes later by log clearing on CA01 at `03:28:18Z`. Rubeus ticket activity occurred on DC01 at `2026-01-09T23:27:41Z`. Outbound RDP and BloodHound collection followed on DC01 at `2026-01-23T05:35:01Z` and `07:05:23Z`, then scheduled-task persistence at `2026-01-31T22:04:39Z`.
+
+**Inference — HIGH confidence:** The actor shifted from access maintenance to credential harvesting, directory mapping and Kerberos abuse while suppressing evidence. **MODERATE confidence:** the January 2 proximity represents coordinated DC01-to-CA01 activity; chronology supports the link, but no session or shared process connects those individual events.
+
+### Phase 3: Control of all three strategic hosts (`2026-02-10T22:52:53Z`–`2026-04-28T08:36:21Z`)
+
+**Observation:** DC02 experienced LSASS access at `2026-02-10T22:52:53Z` and Defender disablement at `2026-02-20T01:34:00Z`. CA01 recorded a renamed procdump/adfind-like binary at `2026-02-13T16:11:56Z`, while DC01 received a suspicious service at `2026-02-22T08:15:40Z`.
+
+A Cobalt Strike named pipe appeared on CA01 at `2026-03-14T03:01:00Z`. Eleven hours later, at `2026-03-14T14:19:34Z`, `adatumlab\svc0` was used across CA01 and DC01; the same linkage recurred at `2026-03-20T03:10:26Z`. DC01 then showed a scheduled task, LSASS access, BloodHound collection, outbound RDP and another scheduled task between `2026-03-23T11:51:13Z` and `2026-03-31T06:49:02Z`.
+
+In April, Defender was disabled twice on DC01, at `2026-04-10T06:28:51Z` and `2026-04-12T00:20:18Z`, around outbound RDP events on DC01 and CA01. Mimikatz executed on DC01 at `2026-04-19T12:22:35Z` and on DC02 at `2026-04-28T08:36:21Z`.
+
+**Inference — HIGH confidence:** By this phase, the actor had operational access to CA01, DC01 and DC02, with command-and-control on CA01 and credential-access capability on both suspected domain controllers. The March 14 ordering permits CA01 → DC01 movement using `adatumlab\svc0`, but direction remains **LOW confidence** because source and destination are not recorded.
+
+### Phase 4: Continued operations and renewed persistence (`2026-06-07T09:43:15Z`–`2026-08-26T01:27:05Z`)
+
+**Observation:** Encoded PowerShell and outbound RDP occurred on CA01 at `2026-06-07T09:43:15Z` and `2026-06-10T16:31:26Z`. DC02 again experienced LSASS access at `2026-06-26T00:53:28Z` and WMI persistence at `2026-07-16T10:12:16Z`. CA01 generated outbound RDP at `2026-08-10T19:24:23Z` and WMI persistence at `2026-08-13T21:08:16Z`. DC01 generated outbound RDP at `2026-08-25T09:41:17Z`; DC02 received scheduled-task persistence at `2026-08-26T01:27:05Z`.
+
+**Inference — HIGH confidence:** The intrusion remained active or was repeatedly reactivated through August 2026. The late creation of persistence on CA01 and DC02 argues against complete prior containment. Whether the August 25–26 events represent DC01 → DC02 movement is **LOW confidence**: their proximity is suggestive, but the graph provides no shared account, endpoint or network-session linkage for those two events.
+
+**Attack Chain Summary:** The most likely path is initial access on or through DC02 → acquisition or abuse of `adatumlab\svc0` → spread to DC01 and CA01 → persistence on all three hosts → credential theft on both suspected domain controllers → directory and Kerberos reconnaissance/abuse → Cobalt Strike-enabled control of the suspected certificate authority → continued remote access and renewed persistence through August 2026. **Overall confidence: MODERATE.** Host spread and prolonged compromise are high-confidence; the initial entry point and exact direction of lateral movement remain unproven.
+
+## Cross-Host Correlation
+
+Every `kind=="cross_host"` finding concerns `adatumlab\svc0`:
+
+- **`2025-09-13T16:27:43Z` — DC01, CA01 and DC02:** The same account authenticated or executed across all three hosts. This proves a shared identity context reached the entire covered environment. It does not prove direction. **Confidence: HIGH.**
+- **`2026-03-14T14:19:34Z` — CA01 and DC01:** The account crossed CA01 and DC01 eleven hours after the Cobalt Strike named-pipe detection on CA01. This proves renewed connectivity or credential use between the two strategic hosts. CA01 → DC01 is possible but not established. **Confidence: HIGH** for the link; **LOW** for direction.
+- **`2026-03-20T03:10:26Z` — DC01 and CA01:** Repeated use six days later proves the March 14 linkage was not a single isolated event. **Confidence: HIGH.**
+
+The wider technique pattern corroborates these direct links. WMI persistence occurred on DC01, DC02 and CA01; suspicious services occurred on all three; Defender was disabled on all three; encoded PowerShell appeared on all three; and outbound RDP occurred on all three. Mimikatz or LSASS access reached both DC01 and DC02, while directory reconnaissance reached DC01 and CA01. No hashes, process paths, command lines or infrastructure indicators are available to prove that identical binaries were reused. **Inference — HIGH confidence:** the repeated technique family reflects one coordinated intrusion because it accompanies direct shared-account evidence; **LOW confidence** that identical tool builds or payloads were used.
+
+Timing strengthens—but does not independently prove—movement:
+
+- Mimikatz on DC01 at `2026-01-02T02:52:11Z` preceded CA01 log clearing at `2026-01-02T03:28:18Z`.
+- Cobalt Strike on CA01 at `2026-03-14T03:01:00Z` preceded cross-host `adatumlab\svc0` activity at `2026-03-14T14:19:34Z`.
+- DC01 outbound RDP at `2026-08-25T09:41:17Z` preceded DC02 scheduled-task persistence at `2026-08-26T01:27:05Z`.
+
+These sequences support coordination, but network-flow records, authentication source fields and remote-execution logs are needed to establish direction. **Confidence: MODERATE** for coordination and **LOW** for directional claims.
+
+## Identities and Attribution
+
+**Identity: `adatumlab\svc0`**
+
+**Observation:** The identity record contains one account, `adatumlab\svc0`, and lists `seen_on_hosts: ["DC01"]` with no `operates_hosts`. In contrast, three high-confidence cross-host findings and the top-entity record place the same account on DC01, DC02 and CA01. The account has anomaly score `10`, medium entity severity and no supplied flags.
+
+On DC01, the identity was present in all three cross-host events. On CA01, it appeared in those same events. On DC02, it appeared in the `2025-09-13T16:27:43Z` event. The graph does not bind this account directly to the individual Mimikatz, Cobalt Strike, PowerShell, persistence or RDP detections.
+
+**Inference — HIGH confidence:** This should be treated as one identity operating across three hosts, not three unrelated users. The identity record’s DC01-only `seen_on_hosts` field is inconsistent with stronger cross-host evidence and should be treated as a data-normalisation limitation.
+
+**Attribution assessment — MODERATE confidence:** `adatumlab\svc0` is more likely a compromised legitimate service account than an adversary-created identity. Its service-style name and repeated use across strategic servers support legitimate pre-existence, while its direct association with lateral movement makes its use suspicious. The evidence does not show account creation time, intended service, owner, normal logon pattern or privilege memberships, so authorized automation cannot be excluded solely from the account name. The decisive test is to compare the three timestamps against DC security logs, service configurations, approved change records, source IPs and logon types, and to establish when and by whom the account was created.
+
+No human identity or threat actor is present in the payload. Attribution beyond the `adatumlab\svc0` identity is therefore **LOW confidence and unsupported**.
+
+## Impact Assessment
+
+DC01 and DC02 are both inferred domain controllers from their names, and their own findings show credential theft, persistence, remote access and defensive impairment. CA01 is inferred to be a certificate authority, and its own findings show Cobalt Strike, persistence, PowerShell, directory reconnaissance, remote access, disabled protection and cleared logs. Thus, every covered host is materially involved; none is peripheral. **Confidence: HIGH** that all three require containment as compromised systems.
+
+The evidence **shows**:
+
+- Unauthorized or malicious tooling and persistence across all three strategic hosts. **Confidence: HIGH.**
+- Credential-access activity on DC01 and DC02. **Confidence: HIGH.**
+- Operational compromise of CA01, including command-and-control evidence. **Confidence: MODERATE to HIGH.**
+- Cross-host use of `adatumlab\svc0` across the entire environment. **Confidence: HIGH.**
+- Activity continuing through `2026-08-26T01:27:05Z`. **Confidence: HIGH.**
+
+The evidence **permits but does not prove**:
+
+- Domain-wide control through stolen privileged credentials or Kerberos material. **Confidence: MODERATE.**
+- Exposure of directory secrets, cached credentials, service-account secrets and administrative sessions resident in LSASS. **Confidence: MODERATE.**
+- Theft or misuse of CA private keys, certificate templates or issued certificates. **Confidence: LOW.**
+- Data theft or destructive action. **Confidence: LOW**, because no file-access, staging, exfiltration or destruction evidence is provided.
+- Current interactive access after the last recorded event. **Confidence: MODERATE**; persistence was created late, but no post-`2026-08-26T01:27:05Z` telemetry is included.
+
+If uncontained, the organisation risks continued impersonation of users or services, recurrence after password resets, compromise of directory administration and—if CA secrets were accessed—long-lived certificate-backed access that could survive ordinary credential rotation. **Confidence: HIGH** for the credential and persistence risk; **MODERATE** for domain-wide impact; **LOW** for certificate-backed persistence until CA artefacts are examined.
+
+## Root Cause and Initial Access
+
+**Observation:** The earliest recorded activity is non-standard outbound RDP on DC02 at `2025-09-08T05:39:04Z`. The first direct cross-host evidence is `adatumlab\svc0` activity across all three hosts at `2025-09-13T16:27:43Z`. There are no workstation, email, internet-facing service, vulnerability, source-IP, VPN, account-creation or preceding authentication records in the payload.
+
+**Inference — LOW confidence:** DC02 may have been the first covered foothold, followed by lateral movement using `adatumlab\svc0`. This is only a chronology-based hypothesis. Outbound RDP could represent movement from DC02 rather than entry into it, and the true compromise may predate the evidence period.
+
+Root cause is therefore **undetermined — HIGH confidence in that limitation**. Establishing it requires:
+
+- DC02 Security, TerminalServices, PowerShell, Sysmon and EDR telemetry before and around `2025-09-08T05:39:04Z`;
+- authentication records for `adatumlab\svc0` across all domain controllers before and around `2025-09-13T16:27:43Z`, including source address, logon type and workstation name;
+- VPN, identity-provider, firewall and RDP gateway logs covering the same period;
+- service configuration, password-change, account-creation and group-membership history for `adatumlab\svc0`;
+- telemetry from user workstations and internet-facing systems that are absent from this graph.
+
+## Containment and Recovery
+
+### Immediate containment
+
+1. Isolate CA01, DC01 and DC02 from all nonessential network paths while preserving management access and volatile evidence. Treat CA01 first because Cobalt Strike was detected there and it may hold certificate-authority keys; maintain sufficient directory services through known-clean recovery infrastructure. **Priority confidence: HIGH.**
+2. Disable `adatumlab\svc0`, terminate its sessions and block its authentication pending validation. Before rotation, capture domain-controller logons, Kerberos tickets and service dependencies so the spread path and business impact are preserved. **Priority confidence: HIGH.**
+3. Block outbound and lateral RDP from CA01, DC01 and DC02 except through a monitored emergency administration path. Investigate the sessions associated with the recorded RDP timestamps. **Priority confidence: HIGH.**
+4. Acquire memory and forensic images from CA01, DC01 and DC02 before rebooting where operationally safe, prioritising CA01’s Cobalt Strike artefacts and both domain controllers’ credential-access artefacts. **Priority confidence: HIGH.**
+5. Disable or remove only after evidence capture the unidentified WMI consumers, scheduled tasks and suspicious services on all three hosts. Their exact names and paths must be recovered from host artefacts because the graph does not provide them. **Priority confidence: HIGH.**
+6. Re-enable Defender and central logging on all three hosts, apply tamper protection, and send logs to a separate trusted collector. Verify that the attacker cannot reverse these changes through existing persistence. **Priority confidence: HIGH.**
+7. Suspend certificate enrollment and high-risk template issuance from CA01 until its integrity and key custody are assessed. Do not revoke or replace the CA impulsively; determine its hierarchy and recovery implications first. **Priority confidence: MODERATE**, reflecting confirmed host compromise but unproven CA-key misuse.
+
+### Eradication
+
+1. Rebuild CA01 from trusted media if forensic review confirms the Cobalt Strike detection or unauthorized persistence. Do not trust its operating-system state. Validate the CA database, configuration, HSM/key storage and backups before restoration. **Confidence: HIGH** that the host state is untrustworthy; **LOW** that the CA private key itself is compromised.
+2. Rebuild DC01 and DC02 from known-good media using the organisation’s domain-controller recovery procedure. Multiple credential-theft and persistence detections make in-place cleaning insufficiently trustworthy. **Confidence: HIGH.**
+3. Reset `adatumlab\svc0` to a unique, managed credential; eliminate interactive logon and restrict it to documented hosts and services. Replace the account entirely if its legitimate purpose cannot be established. **Confidence: HIGH.**
+4. Rotate credentials that could have been present on DC01 or DC02, beginning with domain administrators, service accounts and accounts used to administer the three hosts. Use staged domain recovery procedures to avoid recontamination. **Confidence: HIGH.**
+5. Plan Kerberos trust-secret rotation, including the standard controlled double reset of `krbtgt`, after domain controllers are clean and persistence is removed. **Confidence: MODERATE**, because Rubeus and domain-controller credential theft permit ticket compromise but successful forging is not shown.
+6. Remove every unauthorized WMI event consumer, service and scheduled task identified in the forensic acquisitions, and hunt for the same definitions across the wider environment. **Confidence: HIGH.**
+7. If CA private-key access cannot be disproved, execute the organisation’s CA-compromise recovery plan: replace affected keys and CA certificates, revoke impacted certificates, publish updated revocation data, and reissue dependent certificates. **Confidence: MODERATE** that this contingency must be prepared; the decision depends on key-access evidence.
+
+### Investigation priorities
+
+1. Determine whether CA01’s CA private key, CA database or issuance workflow was accessed. Review CA operational/audit logs, certificate services events, HSM logs, key-container access, template changes and issued certificates from at least `2025-09-13T16:27:43Z` through `2026-08-13T21:08:16Z`. **Priority confidence: HIGH.**
+2. Resolve the source and direction of each `adatumlab\svc0` cross-host event using DC01/DC02 Security events, NTLM/Kerberos logs, network telemetry and endpoint process ancestry at `2025-09-13T16:27:43Z`, `2026-03-14T14:19:34Z` and `2026-03-20T03:10:26Z`. **Priority confidence: HIGH.**
+3. Identify the account’s legitimate owner and purpose using account-creation history, group memberships, service-control configuration, password history and change records. This will distinguish compromise from authorized automation or an adversary-created account. **Priority confidence: HIGH.**
+4. Determine what Mimikatz, LSASS access and Rubeus obtained by examining memory captures, process creation, module loads, command lines, ticket caches and subsequent logons on DC01 and DC02. **Priority confidence: HIGH.**
+5. Recover the exact names, commands, paths, owners and creation times of all WMI consumers, scheduled tasks and suspicious services on CA01, DC01 and DC02. Compare them with software deployment and administrator change records. **Priority confidence: HIGH.**
+6. Establish the initial-access path by retrieving DC02 and perimeter telemetry before `2025-09-08T05:39:04Z`, including RDP, VPN, firewall, identity-provider, PowerShell, Sysmon and EDR data. **Priority confidence: MODERATE**, because DC02 is only the earliest observed host.
+7. Scope beyond the three covered systems using the recovered account sources, RDP destinations, Cobalt Strike pipe characteristics, persistence definitions, PowerShell content and binary hashes. **Priority confidence: HIGH**, because current coverage cannot rule out additional hosts.
+8. Validate or clear any possible administrative explanation against approved penetration tests, maintenance windows and change tickets. The repeated credential theft, Cobalt Strike and evasion pattern should remain treated as malicious unless independently documented. **Priority confidence: HIGH.**
+
+## Limitations
+
+- Coverage includes only DC01, DC02 and CA01. No workstations, application servers, email systems, perimeter devices or cloud services are represented, so the true entry host, victim count and spread beyond these systems cannot be determined. **Confidence: HIGH.**
+- Although host severity is recorded as informational for all three assets, their roles and findings make them strategically critical. The role hints—domain controller for DC01/DC02 and certificate authority for CA01—are inferred from hostnames. Their own findings support treating them as identity-tier systems, but configuration data is required to confirm the roles. **Confidence: MODERATE.**
+- The graph supplies no process names, command lines, paths, hashes, source IP addresses, destination addresses, logon types or persistence-object names for the cited events. Tool reuse and lateral-movement direction therefore cannot be proven. **Confidence: HIGH.**
+- The `identities` record lists `adatumlab\svc0` only as seen on DC01, while the cross-host findings and top-entity record place it on all three hosts. This inconsistency limits fine-grained account attribution but does not negate the explicit high-confidence cross-host evidence. **Confidence: HIGH.**
+- The graph records detections, not tool output. Credential theft, successful Kerberos-ticket use, certificate theft, data access and exfiltration cannot be confirmed from these findings alone. **Confidence: HIGH.**
+- No dispositions are supplied identifying findings as benign, known-to-IT or validated-real. This report therefore treats the correlated findings according to their stated confidence and flags administrative ambiguity where appropriate. **Confidence: HIGH.**
+- The severity floor and collection policy are not stated. Lower-severity precursor activity may have been excluded, and the intrusion may predate `2025-09-08T05:39:04Z`. Absence before that timestamp is not evidence of absence. **Confidence: HIGH.**
+- Log clearing on CA01 and DC01 creates direct visibility gaps, particularly after `2025-10-07T07:09:48Z`, `2025-10-30T05:04:04Z` and `2026-01-02T03:28:18Z`. Missing events around those periods cannot be interpreted as inactivity. **Confidence: HIGH.**
+- The final recorded event is `2026-08-26T01:27:05Z`; no later telemetry or remediation status is provided. Continued access after that point is possible but unproven. **Confidence: MODERATE.**
