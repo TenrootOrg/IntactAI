@@ -162,6 +162,46 @@ def all_case_facts():
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["matrix"]:
+        # FREE classify pass: how the altitude selector + payload react across the
+        # many/few endpoints x long/short timeframe matrix (no LLM).
+        from synth_graph import synth, MATRIX
+        print("  shape         hosts  span_d  findings  entities  altitude  payload_chars")
+        for name, (h, sp, f) in MATRIX.items():
+            g, d = synth(h, sp, f)
+            facts = scope_facts(g, d)
+            pl = build_payload(g, d, "summary" if is_macro(facts) else "explicit")
+            print(f"  {name:12s}  {facts['hosts']:5d}  {facts['span_days']:6d}  "
+                  f"{facts['findings']:8d}  {facts['entities']:8d}  "
+                  f"{'MACRO' if is_macro(facts) else 'focused':8s}  "
+                  f"{len(json.dumps(pl, default=str)):,}")
+        sys.exit(0)
+
+    if sys.argv[1:2] == ["synth"]:
+        from synth_graph import synth, MATRIX
+        shape = sys.argv[2]
+        h, sp, f = MATRIX[shape]
+        g, d = synth(h, sp, f)
+        cid = g.case_id
+        facts = scope_facts(g, d)
+        only = [s for s in os.environ.get("EVAL_ONLY", "").split(",") if s] or STRATEGIES
+        print(f"=== {shape} ({cid}) hosts={facts['hosts']} span={facts['span_days']}d "
+              f"findings={facts['findings']} macro={is_macro(facts)} ===")
+        try:
+            results = json.load(open(f"{OUT}/results.json"))
+        except Exception:
+            results = {}
+        results.setdefault(cid, {"facts": facts, "macro": is_macro(facts), "reports": {}})
+        results[cid]["facts"] = facts
+        for s in only:
+            text, m, plen = run_strategy(s, g, d, facts)
+            results[cid]["reports"][s] = {"metrics": m, "payload_chars": plen, "report_chars": len(text)}
+            open(f"{OUT}/{cid}__{s}.md", "w").write(text)
+            print(f"  {s:14s} in={m.get('input_tokens')} out={m.get('output_tokens')} "
+                  f"payload={plen}c report={len(text)}c -> {OUT}/{cid}__{s}.md")
+        json.dump(results, open(f"{OUT}/results.json", "w"), default=str)
+        sys.exit(0)
+
     if sys.argv[1:2] == ["facts"]:
         for f in all_case_facts():
             print(f"  {f.get('case')}: hosts={f.get('hosts')} findings={f.get('findings')} "
