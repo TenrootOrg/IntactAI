@@ -1043,6 +1043,47 @@ def _agentic_collected_data(rid, det, log=None):
     return {}
 
 
+def get_evidence_rows(case_id, finding_id, *, max_rows=10):
+    """RAG drill-down: resolve a finding's evidence locators ('<artifact>/row=<i>')
+    to the actual RAW rows in each contributing run's raw_results.json. The pointer
+    (EvidenceRef.locator) already exists on every mapped entity/finding; this is what
+    turns 'the graph says X' into 'here is the exact row X came from' — the retrieval
+    the analyst (and, later, the agentic loop) drills with. Loads each run's raw file
+    at most once (OOM-guarded via _agentic_collected_data). Returns a compact list
+    [{run_id, artifact, row_index, row}]."""
+    g = load_graph(case_id)
+    f = next((x for x in g.findings if x.id == finding_id), None)
+    if not f:
+        return []
+    refs = list(f.evidence or [])
+    for eid in (f.entity_ids or []):
+        e = g.entities.get(eid)
+        if e:
+            refs += list(e.evidence or [])
+    cache, out, seen = {}, [], set()
+    for ref in refs:
+        rid = getattr(ref, "run_id", None)
+        loc = getattr(ref, "locator", None)
+        if not (rid and loc) or "/row=" not in loc or (rid, loc) in seen:
+            continue
+        seen.add((rid, loc))
+        artifact, _, idx = loc.partition("/row=")
+        try:
+            idx = int(idx)
+        except ValueError:
+            continue
+        if rid not in cache:
+            run = _ws().get_automation_run(rid) or {}
+            cache[rid] = _agentic_collected_data(rid, run.get("details") or {}) or {}
+        data = cache[rid] or {}
+        rows = data.get(artifact) or data.get(artifact.split("/")[0]) or []
+        if isinstance(rows, list) and 0 <= idx < len(rows):
+            out.append({"run_id": rid, "artifact": artifact, "row_index": idx, "row": rows[idx]})
+        if len(out) >= max_rows:
+            break
+    return out
+
+
 def _relabel_source(ents, rels, frm, to):
     """Rewrite a module/source label on a contribution in place. Used so an
     offline-collector import (mapped by map_agentic for code reuse) is attributed

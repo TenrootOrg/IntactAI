@@ -518,6 +518,17 @@ def apply_zoom(case_id):
                     "scoped_to": sorted(keep), "window": cfg["time_window"], **res})
 
 
+@case_bp.route("/api/cases/<case_id>/findings/<finding_id>/evidence", methods=["GET"])
+def finding_evidence(case_id, finding_id):
+    """Drill from a finding to the RAW rows its evidence locators point at — the
+    retrieval primitive behind on-demand deepening (and the future agentic loop)."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    rows = store.get_evidence_rows(case_id, finding_id)
+    return jsonify({"case_id": case_id, "finding_id": finding_id,
+                    "count": len(rows), "rows": rows})
+
+
 @case_bp.route("/api/cases/<case_id>", methods=["DELETE"])
 def delete_case(case_id):
     """Delete a workspace and everything in it (its tagged runs + baseline). The
