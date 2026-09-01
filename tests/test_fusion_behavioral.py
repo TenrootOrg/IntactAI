@@ -204,6 +204,48 @@ class TransportInputCap(unittest.TestCase):
         self.assertLess(budget.transport_cap_chars("codex-subscription"), chars)
 
 
+class IdentitySuggestions(unittest.TestCase):
+    """Cross-name identity links (jdoe <-> john.doe) were only ever computed when a case
+    spanned >=2 infrastructure buckets — so for a Velociraptor-only engagement (one
+    `endpoint` bucket, the commonest case) the analyst was NEVER offered the link, even
+    though _match scores it 0.65. Within one bucket they must be SUGGESTIONS, never
+    auto-merges: colleagues share hosts, and a wrong identity merge is an attribution
+    error in a forensic report."""
+
+    def _graph(self, pairs):
+        g = schema.FusionGraph(case_id="idsug")
+        for i, (host, label) in enumerate(pairs):
+            aid = f"asset:h{i}"
+            if aid not in g.entities:
+                g.entities[aid] = schema.Entity(id=aid, type="asset", label=host)
+            eid = f"account:asset:{aid}:{label}"
+            g.entities[eid] = schema.Entity(
+                id=eid, type="account", label=label, severity="low",
+                first_seen=_ts(i), attrs={"_assets": [aid]}, sources=["velociraptor"])
+        return g
+
+    def _cands(self, pairs):
+        from services.fusion import identities as idf
+        g = self._graph(pairs)
+        return [c for c in (idf.compute_candidates(g) or [])
+                if c.get("kind") == "same_identity"]
+
+    def test_single_bucket_cross_name_is_suggested(self):
+        cs = self._cands([("H1", "corp\\jdoe"), ("H2", "corp\\john.doe")])
+        self.assertGreaterEqual(len(cs), 1)          # previously ZERO
+
+    def test_single_bucket_is_never_auto_merged(self):
+        # even with shared-host corroboration it stays a suggestion
+        cs = self._cands([("H1", "corp\\jdoe"), ("H1", "corp\\john.doe")])
+        self.assertGreaterEqual(len(cs), 1)
+        self.assertTrue(all(not c.get("auto") for c in cs))
+
+    def test_identical_names_are_not_re_suggested(self):
+        # same normalized name in one bucket is already handled by the account keys
+        cs = self._cands([("H1", "corp\\alice"), ("H2", "corp\\alice")])
+        self.assertEqual(cs, [])
+
+
 class TimestampComparison(unittest.TestCase):
     """F2/F2b: timestamp widening + watermark staleness must compare INSTANTS, not
     lexicographic strings (a trailing 'Z' sorts after a fractional second)."""

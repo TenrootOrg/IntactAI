@@ -230,7 +230,9 @@ def resolve_identities(graph, merges=None, splits=None, host_excludes=None) -> l
     (mirrors UEBA/identity entity pages); fuzzy/uncertain links are separate SUGGESTIONS.
 
     Analyst overrides (all persisted, survive re-fusion):
-      merges        = confirmed (name_a, name_b, score) same-person pairs -> union clusters.
+      merges        = confirmed same-person pairs as (a_id, b_id, score) — ACCOUNT
+                      ENTITY IDS, not names (store.identity_view passes
+                      c["a_id"]/c["b_id"]). Passing names is a silent no-op.
       splits        = account ids the analyst removed ("not this person") -> isolate.
       host_excludes = (name, host_id) the analyst removed from a person's operated hosts.
 
@@ -389,7 +391,14 @@ def compute_candidates(graph) -> list:
     # BLOCKING for scale: only compare accounts whose normalized name shares a first char
     # (exact/prefix/typo matches always do). auto-merge is EVIDENCE-led: a name match plus
     # a shared HOST/IP (or a strong id: email/SID) is auto; a bare name match is a suggestion.
-    if len(buckets) >= 2:
+    # Runs for SINGLE-infrastructure cases too. It used to require >=2 buckets, which
+    # silently disabled every cross-name suggestion for the commonest case of all — a
+    # Velociraptor-only engagement, where every account sits in the one `endpoint`
+    # bucket. Measured: `corp\\jdoe` vs `corp\\john.doe` scores 0.65
+    # ("first.last / flast form") in _match, yet compute_candidates returned ZERO
+    # candidates in every single-bucket configuration, so the analyst was never offered
+    # the link.
+    if buckets:
         blocks = defaultdict(list)
         for tup in info:
             if tup[2]:
@@ -399,7 +408,12 @@ def compute_candidates(graph) -> list:
                 ea, ba, _na = blk[i]
                 for j in range(i + 1, len(blk)):
                     eb, bb, _nb = blk[j]
-                    if ba and bb and ba == bb:        # same bucket -> keys already handle it
+                    # Same bucket AND the same normalized name is genuinely already
+                    # handled by the account keys / exact-name clustering. Same bucket
+                    # with DIFFERENT names is exactly what keys CANNOT do (jdoe vs
+                    # john.doe are different keys and different names), so it must still
+                    # be offered — as a SUGGESTION, never an auto-merge.
+                    if ba and bb and ba == bb and _na == _nb:
                         continue
                     m = _match(ea.label, eb.label)
                     if not m:
@@ -415,6 +429,15 @@ def compute_candidates(graph) -> list:
                         lbls = [graph.entities[x].label for x in list(sip)[:2] if x in graph.entities]
                         ev.append("shares IP " + ", ".join(lbls)); corr = max(corr, 0.2); corroborated = True
                     strong = reason in ("identical email", "email local-part == username")
+                    # SAME-BUCKET pairs are SUGGESTIONS, never auto-merges. Across
+                    # infrastructures, seeing one name in AWS and on an endpoint is
+                    # itself corroborating. WITHIN one infrastructure it is not:
+                    # colleagues share hosts and subnets routinely, so "similar name +
+                    # shared host" is weak evidence for one PERSON, and a wrong identity
+                    # merge is an attribution error in a forensic report. Surface it and
+                    # let the analyst confirm (the decision persists either way).
+                    if ba and bb and ba == bb:
+                        corroborated, strong = False, False
                     cands.append({
                         "kind": "same_identity", "a_id": ea.id, "a_label": ea.label,
                         "b_id": eb.id, "b_label": eb.label,
