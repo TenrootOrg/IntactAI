@@ -46,12 +46,22 @@ Hard-coding would have shipped 4 false high-severity findings to a customer.
 
 ## 3. Needs your decision (nothing here is broken)
 
-1. **Severity is not discriminating.** On real cases 146 of 151 findings are already
-   `high`, so the floor gives you "everything" (high) or "almost nothing" (critical) —
-   effectively two positions, not five. Triage inside a case has to happen some other way.
-2. **17 of 34 techniques appear intermittently in the summary** (1/10–9/10 runs). Partial
-   coverage is correct for a triage map, but `cred-lsass` at 9/10 and `byovd` at 8/10 are
-   *critical* and arguably should be 10/10. Any fix needs an n≥10 before/after.
+1. **Set the severity floor to `medium`, not `high`** (likely a one-setting win).
+   Measured: stepping medium→high saves **0.6%** of data (151→146 findings) and drops
+   **all 15 high-confidence findings**, every one of which is *"Shared binary seen on 2
+   hosts"* — cross-host lateral tool transfer. The informational tier is where the real
+   volume lives (the code documents 156,017 informational SIGMA rows exhausting a 15 GB
+   box) and `medium` already excludes it.
+   **Deeper issue:** severity does NOT track likelihood in your data — all 22 `critical`
+   findings carry only `medium` confidence, and confidence is 82% `medium` with just two
+   values in use. The likelihood axis carries no signal, so severity is doing double duty
+   as both impact and certainty. Cutting noise by *confidence* would be the real fix.
+2. ~~17 of 34 techniques appear intermittently~~ **RESOLVED — I was measuring the wrong
+   thing.** Your spec is "the most possible option", not an inventory. Re-measured for
+   NARRATIVE stability instead: the **leading theme is identical in 10/10 runs**
+   (`credential theft`), the top host matches in 8/10, and there are only **3 distinct
+   leading scenarios** across 10 runs. The main story is stable; only supporting detail
+   varies, which is correct for a triage summary. No action needed.
 3. **Clock skew is silent.** The timeline orders by recorded time, so a host with a wrong
    clock sits in the wrong place and the report never says so. Candidate Limitations line.
 4. **`resolve_identities(merges=…)` docstring is wrong** — says `(name_a, name_b, score)`

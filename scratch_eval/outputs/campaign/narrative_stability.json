@@ -1,0 +1,72 @@
+{
+  "n": 10,
+  "themes": {
+    "credential theft": 10
+  },
+  "hosts": {
+    "WKS-EVAL02": 8,
+    "WKS-EVAL01": 2
+  },
+  "rows": [
+    {
+      "file": "summary_run_1.md",
+      "lead": "Domain identity and certificate-services compromise",
+      "theme": "credential theft",
+      "top_host": "WKS-EVAL02"
+    },
+    {
+      "file": "summary_run_10.md",
+      "lead": "Domain identity and certificate-services compromise",
+      "theme": "credential theft",
+      "top_host": "WKS-EVAL02"
+    },
+    {
+      "file": "summary_run_2.md",
+      "lead": "Domain identity and certificate-services compromise",
+      "theme": "credential theft",
+      "top_host": "WKS-EVAL02"
+    },
+    {
+      "file": "summary_run_3.md",
+      "lead": "Domain identity and certificate infrastructure compromise",
+      "theme": "credential theft",
+      "top_host": "WKS-EVAL02"
+    },
+    {
+      "file": "summary_run_4.md",
+      "lead": "Domain identity and certificate infrastructure compromise",
+      "theme": "credential theft",
+      "top_host": "WKS-EVAL01"
+    },
+    {
+      "file": "summary_run_5.md",
+      "lead": "Domain identity compromise and durable privileged access",
+      "theme": "credential theft",
+      "top_host": "WKS-EVAL01"
+    },
+    {
+      "file": "summary_run_6.md",
+      "lead": "Domain identity and certificate-services compromise",
+      "theme": "credential theft",
+      "top_host": "WKS-EVAL02"
+    },
+    {
+      "file": "summary_run_7.md",
+      "lead": "Domain identity and certificate-services compromise",
+      "theme": "credential theft",
+      "top_host": "WKS-EVAL02"
+    },
+    {
+      "file": "summary_run_8.md",
+      "lead": "Domain identity and certificate infrastructure compromise",
+      "theme": "credential theft",
+      "top_host": "WKS-EVAL02"
+    },
+    {
+      "file": "summary_run_9.md",
+      "lead": "Domain identity and certificate-services compromise",
+      "theme": "credential theft",
+      "top_host": "WKS-EVAL02"
+    }
+  ]
+}
