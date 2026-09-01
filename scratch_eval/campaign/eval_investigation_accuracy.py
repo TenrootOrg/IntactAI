@@ -39,7 +39,9 @@ QUESTIONS = [
      "kw": ["mimikatz"], "host": "wks-eval01", "present": True},
     {"q": "Is there evidence of Kerberos abuse such as Kerberoasting or a golden ticket? Which hosts?",
      "kw": ["rubeus", "kerber", "golden"], "host": "wks-eval02", "present": True},
-    {"q": "Which single account was used across more than one host (possible lateral movement)?",
+    # CANARY: failed round 4 (6 tool calls, LOW, never named the account).
+    {"canary": True,
+     "q": "Which single account was used across more than one host (possible lateral movement)?",
      "kw": ["svc_backup"], "host": "wks-eval04", "present": True},
     {"q": "Was Windows Defender tampered with or disabled, and where?",
      "kw": ["defender"], "host": "wks-eval02", "present": True},
@@ -49,24 +51,34 @@ QUESTIONS = [
      "kw": ["rclone", "exfil"], "host": "wks-eval04", "present": True},
     {"q": "What process-injection activity was seen, and on which host(s)?",
      "kw": ["inject", "explorer", "svchost"], "host": "wks-eval01", "present": True},
-    {"q": "Was a renamed system utility (e.g. procdump) used for credential theft? Where?",
+    # CANARY: the anchoring question -- a loaded premise steered retrieval to a decoy
+    # 7/10 times in the 20-run A/B.
+    {"canary": True,
+     "q": "Was a renamed system utility (e.g. procdump) used for credential theft? Where?",
      "kw": ["procdump", "renamed"], "host": "wks-eval04", "present": True},
     {"q": "Was a golden ticket or forged Kerberos ticket created? On which host?",
      "kw": ["golden ticket", "forged"], "host": "wks-eval02", "present": True},
-    {"q": "What anti-forensic activity occurred (log clearing, secure-delete tools, shadow copy deletion)?",
+    # CANARY: answered the WRONG HOST in round 4; the failure the ranked-search fix
+    # was diagnosed from.
+    {"canary": True,
+     "q": "What anti-forensic activity occurred (log clearing, secure-delete tools, shadow copy deletion)?",
      "kw": ["log", "sdelete", "shadow", "clear"], "host": "wks-eval07", "present": True},
     {"q": "Was a LOLBin like certutil used to download a payload, and from which host?",
      "kw": ["certutil"], "host": "wks-eval05", "present": True},
     {"q": "Which host shows the most severe, ransomware-related activity?",
      "kw": ["ransomware", "wks-eval07"], "host": "wks-eval07", "present": True},
-    # NEGATIVE CONTROLS — not in the simulation; the AI must NOT invent them.
-    {"q": "Is there any evidence of cryptocurrency mining (XMRig / Monero) in this case?",
+    # NEGATIVE CONTROLS — not in the simulation; the AI must NOT invent them. ALL are
+    # canaries: a regression here is fabrication, which is never acceptable to sample out.
+    {"canary": True,
+     "q": "Is there any evidence of cryptocurrency mining (XMRig / Monero) in this case?",
      "kw": ["no evidence", "not find", "none", "no indication", "no sign", "did not", "not observed"],
      "present": False},
-    {"q": "Was there any macOS or Linux malware activity in this environment?",
+    {"canary": True,
+     "q": "Was there any macOS or Linux malware activity in this environment?",
      "kw": ["no evidence", "not find", "none", "no indication", "windows", "did not", "not observed"],
      "present": False},
-    {"q": "Was there any SQL-injection or web-application attack against a database server?",
+    {"canary": True,
+     "q": "Was there any SQL-injection or web-application attack against a database server?",
      "kw": ["no evidence", "not find", "none", "no indication", "no sign", "did not", "not observed"],
      "present": False},
 ]
@@ -139,12 +151,20 @@ def score(ans, qd):
 
 
 def main():
+    # `--canary`: only the questions that have ever DISCRIMINATED (three historical
+    # failures) plus every negative control. Measured across rounds 4-6, the other
+    # nine questions passed every time -- they confirm, they do not detect. Cuts a
+    # round from ~25 min to ~10 while keeping the fabrication guard intact.
+    # A canary run catches REGRESSIONS in what it covers; it is not a substitute for
+    # writing new probes, which is what found the truncation defects.
+    canary = "--canary" in sys.argv
+    questions = [q for q in QUESTIONS if q.get("canary")] if canary else QUESTIONS
     g, raw = _fuse()
     case = {"masking": {"enabled": False}, "time_window": None, "min_severity": "informational"}
     rows = []
     with _Patch(store, load_graph=lambda c: g, get_case=lambda c: case,
                 get_evidence_rows=_evidence_resolver(raw)):
-        for i, qd in enumerate(QUESTIONS, 1):
+        for i, qd in enumerate(questions, 1):
             rid = ws.create_automation_run("inv_acc", f"q{i}")
             try:
                 res = investigate.investigate("gt_incident", qd["q"], run_id=rid, max_steps=6)
@@ -156,7 +176,7 @@ def main():
             rows.append({"q": qd["q"], "present": qd["present"], "correct": ok,
                          "kw_ok": kw_ok, "host_ok": host_ok, "steps": steps,
                          "out_tok": m.get("output_tokens"), "answer": ans})
-            print(f"[{i}/{len(QUESTIONS)}] {'✅' if ok else '❌'} present={qd['present']} "
+            print(f"[{i}/{len(questions)}] {'✅' if ok else '❌'} present={qd['present']} "
                   f"kw={kw_ok} host={host_ok} steps={'>'.join(steps)} "
                   f":: {ans[:90].strip()}", flush=True)
 
