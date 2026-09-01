@@ -1537,10 +1537,22 @@ def _limitations_md(graph, assets, findings, *, window=None,
     if min_severity and min_severity != "informational":
         lines.append(f"- Findings **below `{min_severity}`** were excluded from this "
                      "analysis and are not represented above.")
-    if window and (window.get("start") or window.get("end")):
-        lines.append(f"- Only activity between **{window.get('start') or 'open'}** and "
-                     f"**{window.get('end') or 'now'}** (UTC) was considered; earlier or "
-                     "later activity is out of scope for this report.")
+    # A time window only CONSTRAINS the report if it actually clips the evidence. The
+    # case's default window is deliberately ~10 years wide (store.create_case) so it
+    # excludes nothing; printing "activity between 2016 and 2026 was considered" read as a
+    # real 10-year scope, which is misleading. State the TRUE evidence span, and call the
+    # window a scope limit only when it genuinely narrows the dated findings.
+    _dated = [d for d in (keys.to_utc_dt(f.ts) for f in findings if f.ts) if d]
+    _ev_lo, _ev_hi = (min(_dated), max(_dated)) if _dated else (None, None)
+    _ws = keys.to_utc_dt(window.get("start")) if window and window.get("start") else None
+    _we = keys.to_utc_dt(window.get("end")) if window and window.get("end") else None
+    if (_ws and _ev_lo and _ws > _ev_lo) or (_we and _ev_hi and _we < _ev_hi):
+        lines.append(f"- Time scope was narrowed to **{window.get('start') or 'open'}** – "
+                     f"**{window.get('end') or 'now'}** (UTC); activity outside this window "
+                     "is excluded from this report.")
+    elif _ev_lo and _ev_hi:
+        lines.append(f"- Analysed evidence spans **{_ev_lo.date()}** to **{_ev_hi.date()}** "
+                     "(range of dated findings); no narrower time filter was applied.")
     quiet = [a.label for a in assets
              if not any(a.id in (f.asset_ids or []) for f in findings)]
     if quiet:

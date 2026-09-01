@@ -394,5 +394,41 @@ class RiskTableRespectsScope(unittest.TestCase):
                                  % (host, r["risk_score"]))
 
 
+class LimitationsWindowHonesty(unittest.TestCase):
+    """A ~10-year DEFAULT window must not read as a deliberate scope.
+
+    Every live report stated "Only activity between 2016-09-01 and 2026-09-01 was
+    considered", presenting the case's non-binding wide default (store.create_case) as a
+    real 10-year cutoff. It now states the true evidence span, and calls the window a
+    scope limit only when it actually clips the dated findings.
+    """
+
+    def _g(self):
+        g = schema.FusionGraph(case_id="t")
+        g.entities["a"] = schema.Entity(id="a", type="asset", label="H1")
+        g.findings = [
+            schema.Finding(id="f1", title="x", severity="high", confidence="medium",
+                           summary="", asset_ids=["a"], ts="2026-05-03T10:00:00Z"),
+            schema.Finding(id="f2", title="y", severity="high", confidence="medium",
+                           summary="", asset_ids=["a"], ts="2026-09-01T10:00:00Z")]
+        return g
+
+    def test_wide_default_shows_evidence_span_not_a_cutoff(self):
+        g = self._g()
+        md = render._limitations_md(g, list(g.by_type("asset")), g.findings,
+                                    window={"start": "2016-09-01T00:00:00Z",
+                                            "end": "2026-09-01T12:00:00Z"})
+        self.assertIn("Analysed evidence spans", md)
+        self.assertIn("2026-05-03", md)
+        self.assertNotIn("2016", md)
+        self.assertNotIn("out of scope for this report", md)
+
+    def test_binding_window_is_stated_as_a_scope_limit(self):
+        g = self._g()
+        md = render._limitations_md(g, list(g.by_type("asset")), g.findings,
+                                    window={"start": "2026-08-01T00:00:00Z", "end": None})
+        self.assertIn("Time scope was narrowed", md)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
