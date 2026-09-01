@@ -2,24 +2,24 @@
 
 Same known incident (8 hosts, 37 findings, **37 finding-eligible planted techniques**), summary generated **10 times**. Deterministic scoring against the answer key.
 
-**Mean coverage: 25.5/37 techniques per summary (69%).**
+**Mean coverage: 33.8/37 techniques per summary (91%).**
 
-- **Always mentioned (15/37)** — reliable: kerberoast, inject, xhost-acct, namedpipe-c2, dcsync, rdp-lateral, golden-ticket, ransomware, exfil-rclone, mft-erasing, psexec-lateral, webshell, ntds-dump, adcs-abuse, clear-usnjrnl
-- **Never mentioned (3/37)** — a blind spot: log-clear, bloodhound, ise-autosave
-- **Intermittent (19/37)** — a coverage lottery: shadowcopy (1/10), svc-acct-abuse (1/10), byovd (2/10), fw-tamper (2/10), dll-sideload (3/10), amsi-bypass (3/10), certutil-dl (3/10), uac-bypass (3/10), keylogger (3/10), reg-sam (7/10), defender-off (8/10), wmi-persist (8/10), asrep-roast (8/10), token-theft (8/10), cred-lsass (9/10), binrename (9/10), malfind-svc (9/10), c2-beacon (9/10), staging-archive (9/10)
+- **Always mentioned (28/37)** — reliable: cred-lsass, kerberoast, inject, xhost-acct, namedpipe-c2, binrename, wmi-persist, dcsync, bloodhound, rdp-lateral, malfind-svc, golden-ticket, ransomware, dll-sideload, amsi-bypass, exfil-rclone, mft-erasing, byovd, psexec-lateral, webshell, uac-bypass, c2-beacon, ntds-dump, adcs-abuse, token-theft, keylogger, fw-tamper, clear-usnjrnl
+- **Never mentioned (1/37)** — a blind spot: ise-autosave
+- **Intermittent (8/37)** — a coverage lottery: svc-acct-abuse (2/10), log-clear (7/10), reg-sam (7/10), defender-off (8/10), certutil-dl (8/10), staging-archive (8/10), shadowcopy (9/10), asrep-roast (9/10)
 
 | Run | Techniques surfaced | Chars | Out tok |
 |---|:--:|---|---|
-| 1 | 29/37 | 6196 | 1719 |
-| 2 | 26/37 | 5937 | 1736 |
-| 3 | 26/37 | 5555 | 1688 |
-| 4 | 23/37 | 6154 | 1781 |
-| 5 | 25/37 | 6617 | 2072 |
-| 6 | 23/37 | 6278 | 1851 |
-| 7 | 31/37 | 6397 | 1803 |
-| 8 | 29/37 | 6434 | 1870 |
-| 9 | 22/37 | 5742 | 1763 |
-| 10 | 21/37 | 5728 | 1644 |
+| 1 | 36/37 | 6145 | 1995 |
+| 2 | 31/37 | 6107 | 1785 |
+| 3 | 35/37 | 6008 | 1956 |
+| 4 | 35/37 | 6875 | 1999 |
+| 5 | 34/37 | 5864 | 1937 |
+| 6 | 33/37 | 6488 | 1938 |
+| 7 | 33/37 | 6018 | 1787 |
+| 8 | 34/37 | 5912 | 1948 |
+| 9 | 34/37 | 6972 | 2269 |
+| 10 | 33/37 | 6037 | 1956 |
 
 ## Read
 A macro summary is a TRIAGE MAP, not an inventory — it is not expected to list every technique. What matters is (a) the mean, (b) whether the *critical* ones are in the ALWAYS set, and (c) how large the intermittent set is: an intermittent technique means two analysts running the same case get different pictures.

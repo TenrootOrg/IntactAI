@@ -46,7 +46,12 @@ SYN = {
     "amsi-bypass": ["amsi"],
     "exfil-rclone": ["rclone", "exfiltrat"],
     "certutil-dl": ["certutil"],
-    "ise-autosave": ["ise autosave", "autosave", "powershell ise"],
+    "ise-autosave": ["ise autosave", "autosave", "powershell ise",
+                     # The narrative names the TECHNIQUE ("encoded download
+                     # cradle"), not the artifact it was recovered from -- which
+                     # is the better triage description. Scoring on the artifact
+                     # name alone made this a false blind spot.
+                     "encoded download", "download cradle", "t1059"],
     "mft-erasing": ["sdelete", "erasing", "secure delete", "wiper"],
     "byovd": ["byovd", "vulnerable driver", "driver"],
     "psexec-lateral": ["psexec"],

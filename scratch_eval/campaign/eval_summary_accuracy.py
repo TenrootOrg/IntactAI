@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from services.fusion.mappers.agentic import map_agentic  # noqa: E402
 from services.fusion import correlate, render, store, llm_sim  # noqa: E402
 import attack_corpus as corpus  # noqa: E402
+from rescore_summaries import SYN as _SYN  # noqa: E402
 
 OUT = "/tmp/eval_out/campaign"
 os.makedirs(OUT, exist_ok=True)
@@ -69,7 +70,13 @@ def main():
         low = rep.lower()
         found = []
         for s in elig:
-            kws = [k.lower() for k in s["expect"]["find"]]
+            # expect.find holds DETECTION keywords (rule-title fragments like
+            # "wevtutil"). A summary is narrative prose -- it says "the security log
+            # was cleared" -- so scoring it on detection keywords under-reports the
+            # product. This was found once and fixed only in rescore_summaries.py;
+            # importing SYN from there keeps ONE source of truth so the live harness
+            # cannot drift from the re-score again.
+            kws = _SYN.get(s["id"]) or [k.lower() for k in s["expect"]["find"]]
             if any(k in low for k in kws):
                 found.append(s["id"])
                 hits[s["id"]] += 1
