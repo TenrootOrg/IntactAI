@@ -120,7 +120,7 @@ EXPLICIT_EVIDENCE_CHARS = 32000           # per evidence line, LLM payload — f
 #
 # Still capped, because a single base64 PowerShell blob can run to tens of
 # kilobytes and would swamp both the page and the PDF.
-REPORT_EVIDENCE_CHARS = 8000    # deterministic timeline raw quote (decoded version appears in the narrative)
+REPORT_EVIDENCE_CHARS = 32000   # deterministic timeline: full command / full encoded blob, not cut
 
 
 def _resolve_detail(graph, detail, *, window=None, min_severity="informational"):
