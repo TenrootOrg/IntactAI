@@ -260,6 +260,26 @@ def _resolve_altitude(graph, *, window=None, min_severity="informational"):
     return "focused", reason
 
 
+def _hash_name_map(graph):
+    """{full_hash: filename} from the ioc entities' source_name (captured at fuse time).
+    Cached on the graph so per-finding evidence lookups are O(1). Lets the narrative
+    pair a hash with the file it came from -- generic, works for any/unknown binary."""
+    m = getattr(graph, "_hash_name_cache", None)
+    if m is None:
+        m = {}
+        for e in graph.entities.values():
+            if e.type == "ioc" and (e.attrs or {}).get("ioc_kind") == "hash":
+                sn = (e.attrs or {}).get("source_name")
+                fh = (e.attrs or {}).get("full_hash") or e.label
+                if sn and fh:
+                    m[str(fh).lower()] = str(sn).replace("\\", "/").rsplit("/", 1)[-1]
+        try:
+            graph._hash_name_cache = m
+        except Exception:
+            pass
+    return m
+
+
 def _finding_evidence(graph, f, *, cap_events=EXPLICIT_EVENTS_PER_FINDING,
                       cap_chars=EXPLICIT_EVIDENCE_CHARS) -> list:
     """Per-event explicit evidence for a finding — the real cmdline / path / user /
@@ -505,6 +525,11 @@ def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"
         # This states every host once, with its weight, so no host can be skipped
         # silently and the model can see which are infrastructure.
         "host_coverage": _host_coverage(graph, assets, findings),
+        # hash -> filename, so the narrative can cite any hash it sees WITH its file
+        # (e.g. cross-host shared-binary hashes). Built from the source_name captured at
+        # fuse time; generic, resolves custom/unknown binaries too. Keeps the report
+        # actionable: a bare hash is not.
+        "file_hashes": {fh: nm for fh, nm in _hash_name_map(graph).items()},
     }
 
 
