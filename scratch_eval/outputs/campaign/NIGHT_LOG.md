@@ -141,3 +141,45 @@ The shipped `_entity_ts` fallback resolves it to `2026-03-18T20:31:06` from the 
 identity's other records; the other 7 are byte-identical. Blast radius on real data:
 1 finding changed, 7 untouched. Seeing it in the UI needs a Refusion — a write to a
 real case, left for the user to trigger.
+
+## Silent truncation — the model stated a sampled count as fact
+
+**How it surfaced (via a test that was itself wrong).** I built a scale test to
+attack my OWN ranked-search change: recall had been measured on a 37-finding graph,
+so at 3,000 findings a two-term query might match hundreds and the 15-cap would
+return whatever severity-sorts highest. The test reported top-5 dropping from 4/5 to
+3/5 at scale.
+
+**That result was an artifact.** Instrumenting it showed the synthetic haystack
+already contained 41 findings titled "Security Event Log Cleared on WKS0xx" — the
+same activity as my planted needle. So `log clearing` correctly returned 42
+genuinely relevant findings and my needle was the 42nd equally valid one. Search was
+right; the test was wrong.
+
+**A fix I did NOT ship.** I had diagnosed the (non-existent) problem as weak suffix
+trimming plus coarse score granularity, and built IDF weighting + real stemming.
+Measured against the same scale test: **top1 9/15, top5 10/15 — byte-identical to
+the unchanged code.** Discarded rather than shipped. This is the second time this
+campaign that measuring a fix before believing it prevented shipping one that does
+nothing.
+
+**The real defect, found by instrumenting the false one.** `list_findings` and
+`search` returned a capped list with no signal that more existed (`pivot` already
+returned `{total_matches, shown, events}` — the inconsistency was the tell).
+Verified by execution on 42 hosts that ALL had cleared event logs:
+
+| | before | after |
+|---|---|---|
+| "on how many hosts were event logs cleared?" | **"15 hosts"** | **"42 hosts"** |
+| confidence | MODERATE | HIGH |
+| steps | search>evidence | search>search>list_findings>clusters |
+
+A 64% understatement of incident scope, stated as fact. For a DFIR tool this is the
+most damaging error shape there is: it makes a large incident look contained.
+
+**Shipped** (`ddba63a3`): both tools return `{total_*, shown, findings:[...]}`, and
+the system prompt states that `shown < total` means a SAMPLE and the sampled count
+must never be reported as the true count. Confidence rose to HIGH *because* the
+grounding became complete — it now enumerates via `clusters` instead of stopping.
+
+Regression: investigate_v2 27 (3 new), behavioral 23, altitude 26, host 670 passed.
