@@ -104,8 +104,13 @@ RISK_TABLE_MAX_ROWS = 15
 
 EXPLICIT_MAX_HOSTS = 12
 EXPLICIT_MAX_FINDINGS = 150
-EXPLICIT_EVENTS_PER_FINDING = 5            # evidence lines surfaced per finding
-EXPLICIT_EVIDENCE_CHARS = 200             # per evidence line, LLM payload
+EXPLICIT_EVENTS_PER_FINDING = 6            # evidence lines surfaced per finding
+# Per evidence line in the LLM payload. 200 truncated the one thing the deep/focused
+# view exists to show: the exact command line and the full -EncodedCommand blob (so the
+# base64 could not be decoded past its prefix). Applies ONLY to explicit detail
+# (focused/narrow cases), so macro summary payloads are unaffected; the budget
+# stepdown still bounds the total if a narrow case turns out large.
+EXPLICIT_EVIDENCE_CHARS = 32000           # per evidence line, LLM payload — full cmd + full -EncodedCommand (so it decodes completely)
 # The SAME evidence, rendered for a human, gets far more room. 200 characters is
 # a budget number: it exists because every one of these lines is also sent to the
 # model, where five per finding across 150 findings is real money. The report is
@@ -115,7 +120,7 @@ EXPLICIT_EVIDENCE_CHARS = 200             # per evidence line, LLM payload
 #
 # Still capped, because a single base64 PowerShell blob can run to tens of
 # kilobytes and would swamp both the page and the PDF.
-REPORT_EVIDENCE_CHARS = 1200
+REPORT_EVIDENCE_CHARS = 8000    # deterministic timeline raw quote (decoded version appears in the narrative)
 
 
 def _resolve_detail(graph, detail, *, window=None, min_severity="informational"):
