@@ -424,6 +424,11 @@ def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"
     identities per host). Overflow is still bounded: distilled() shrinks this in
     lockstep with max_entities on each budget_chars stepdown."""
     assets, findings = scope(graph, window=window, min_severity=min_severity)
+    # Count BEFORE trimming: `scope` describes the case, not the payload. Reporting
+    # the trimmed count here told the model "300 hosts, 40 findings" for a case where
+    # all 300 hosts had one -- implying most machines were clean. The tool layer had
+    # the same defect and made the loop answer "15 hosts" for a 42-host incident.
+    total_findings = len(findings)
     findings = _trim_findings(findings, max_findings)
     kept_ids = {f.id for f in findings}
     eff_detail, _ = _resolve_detail(graph, detail, window=window, min_severity=min_severity)
@@ -451,7 +456,10 @@ def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"
         # focused theory). Span is EVIDENCE-based (finding ts), not the window.
         "scope": {
             "hosts": len(assets),
-            "findings": len(findings),
+            "findings": total_findings,
+            # What actually fits in this payload. When findings_shown < findings the
+            # model is reading a SAMPLE and must not state the sample as the total.
+            "findings_shown": len(findings),
             "cross_host": sum(1 for f in findings if f.kind == "cross_host"),
             "evidence_span_days": _evidence_span_days(findings),
             "altitude": _resolve_altitude(graph, window=window,

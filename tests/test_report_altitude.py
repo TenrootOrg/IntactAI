@@ -243,5 +243,57 @@ class InvestigateParse(unittest.TestCase):
         self.assertIsNone(investigate._parse(""))
 
 
+class ScopeReportsCaseNotPayload(unittest.TestCase):
+    """`scope` describes the CASE, not what fitted in the payload.
+
+    Reporting the trimmed count told the model "300 hosts, 40 findings" for a case
+    where all 300 hosts had one -- implying most machines were clean. The tool layer
+    had the identical defect and made the loop answer "15 hosts" for a 42-host
+    incident.
+    """
+
+    def _graph(self, n=300):
+        g = schema.FusionGraph(case_id="c")
+        sevs = (["informational"] * 200 + ["low"] * 60 + ["medium"] * 30 + ["high"] * 10)
+        for i in range(n):
+            hid = "asset:h%03d" % i
+            g.entities[hid] = schema.Entity(id=hid, type="asset", label="WKS-%03d" % i)
+            g.findings.append(schema.Finding(
+                id="f%03d" % i, title="Finding number %d" % i, severity=sevs[i % len(sevs)],
+                confidence="medium", summary="", asset_ids=[hid],
+                ts="2026-06-01T00:00:00Z"))
+        return g
+
+    def _scope(self, g, max_findings):
+        return render._distilled_at(g, window=None, min_severity="informational",
+                                    max_entities=60, detail="summary",
+                                    max_findings=max_findings)
+
+    def test_scope_findings_is_the_true_total_when_trimmed(self):
+        g = self._graph()
+        for mf in (150, 40, 15):
+            d = self._scope(g, mf)
+            self.assertEqual(d["scope"]["findings"], len(g.findings),
+                             "max_findings=%s reported a trimmed total" % mf)
+
+    def test_findings_shown_reflects_the_payload(self):
+        g = self._graph()
+        d = self._scope(g, 40)
+        self.assertEqual(d["scope"]["findings_shown"], len(d["findings"]))
+        self.assertLess(d["scope"]["findings_shown"], d["scope"]["findings"])
+
+    def test_untrimmed_case_reports_equal_counts(self):
+        g = self._graph()
+        d = self._scope(g, None)
+        self.assertEqual(d["scope"]["findings"], d["scope"]["findings_shown"])
+
+    def test_hosts_and_findings_stay_consistent(self):
+        """The bug's signature: truthful host count beside a trimmed finding count."""
+        g = self._graph()
+        d = self._scope(g, 15)
+        self.assertEqual(d["scope"]["hosts"], 300)
+        self.assertEqual(d["scope"]["findings"], 300)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
