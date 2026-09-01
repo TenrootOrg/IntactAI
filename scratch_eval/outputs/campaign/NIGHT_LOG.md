@@ -225,3 +225,32 @@ budget stepdown occurs.
 pipeline and reading the answer, before and after — never by asserting from the code.
 Regression after all five: investigate_v2 30, altitude 33, behavioral 23, host suite
 680 passed / 2 skipped.
+
+## Focused-path A/B — NULL RESULT (the fix does not help on this corpus)
+
+The macro fix measured 68% -> 94%. The focused path, measured properly with n=10 per
+arm (identical code; the control strips the section from the prompt at runtime):
+
+| Arm | Mean coverage | Blind spots |
+|---|---|---|
+| control (no section) | 35.8/37 (97%) | 0 |
+| fixed | 35.8/37 (97%) | 1 (log-clear) |
+
+Identical means. The fixed arm lost one technique the control always caught.
+
+**Why there is no headroom.** The focused path runs at `explicit` detail and produces a
+10-11k char report (vs ~6k on macro), which already covers ~97% of plants. The corpus
+is also 8 hosts that are ALL part of one story, so the single-story narrative has
+nothing to leave out — the exact condition the section addresses cannot occur here.
+
+**But it demonstrably helped on the real Default case**, which has a different shape:
+one dominant host (DESKTOP-566AT85) plus three peripheral hosts. The section surfaced
+ALClient04, ALClient01 and ALClient09 — none of which the single story mentioned.
+
+So the focused fix is currently justified by an n=1 observation on real data, NOT by
+the A/B. The corpus cannot test it. A case shaped like the real one (one dominant host
++ peripheral hosts carrying their own high-severity findings) is the decisive test.
+
+**Process note:** I killed the first run of this A/B myself by restarting the backend
+container while the measurement was executing inside it (died at 3/20). Re-run detached
+with nohup.
