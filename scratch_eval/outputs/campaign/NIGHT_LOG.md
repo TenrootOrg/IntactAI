@@ -71,3 +71,73 @@ reverted with the reason recorded.
 | — | Cross-case contamination (new) | ✅ PASS — 8 cases, **0 foreign-host leaks** into any case payload. 10 hosts legitimately appear in >1 case (same environment); 24 findings reference other cases via the by-design cross-case IOC note | none |
 | — | Low-and-slow 2-year campaign (new) | ✅ 4 hosts / 39 findings / **663d span** → correctly **macro** on SPAN alone (host + finding counts are both under threshold). Shared account links all 4 hosts; gap-splitting yields 4 distinct zoom windows instead of one meaningless 2-year block; 11 criticals shown | validates the span threshold for APT-style dwell |
 | — | **Chat accuracy, properly powered (n=3 rounds, 33 questions)** | ✅ **33/33** — plants 24/24, negative controls **9/9 clean**, 0 failures. Chat has NO tool loop (one distilled payload) yet never invented an attack across 9 probes for things never simulated | supersedes the earlier n=11 sample |
+
+## Search retrieval defect — found, fixed, measured (post-wake session)
+
+**How it surfaced.** Investigation round 4 (first run with the six overnight fixes
+applied) scored 13/15. Two genuine misses:
+- Q3 (cross-host account) — burned all 6 tool calls, answered LOW, never named
+  `svc_backup`. Passed in rounds 1-3, so variance.
+- Q10 (anti-forensic) — named log clearing on WKS-EVAL01 but reported that
+  "searches for shadow-copy deletion returned no findings", when
+  `SIGMA: Volume Shadow Copy Deletion via Vssadmin on WKS-EVAL07` exists as a
+  **high** finding.
+
+**Two hypotheses I tested and REJECTED before finding the real cause:**
+1. *My own `_identity_cross_host_findings` made Q3 ambiguous by adding competing
+   cross-host findings.* Measured: 1 cross-host finding with the fix, 1 without —
+   identical. The fix adds nothing on this corpus. Not the cause.
+2. *Q10 is a scorer bug (multi-part question, several valid hosts).* Partly true —
+   my keyword grep had missed "Security Eventlog Cleared" on WKS-EVAL01, so the
+   question does have two valid hosts. But that did not explain the model claiming
+   shadow-copy search returned nothing.
+
+**Real cause** — `investigate.py` `_tool("search")` was a whole-phrase substring
+match: `q in (title + summary).lower()`. Analyst phrasing almost never appears
+verbatim in a rule title.
+
+**Measured on the 41-scenario corpus, 15 realistic queries:**
+
+| matcher | right finding top-1 | top-5 | results/query |
+|---|---|---|---|
+| exact phrase (before) | 3/15 | 3/15 | 0.2 |
+| token-AND | 8/15 | 8/15 | 0.6 |
+| **ranked token overlap (shipped)** | **13/15** | **15/15** | 2.1 of 37 |
+
+The two non-top-1 cases are the answer key being wrong, not the search:
+`secure delete tool` -> "MFT: SDelete secure deletion tool"; `process injection`
+-> "Injected process with C2 - explorer.exe". Both better than what I keyed.
+
+**Shipped** (`c0da82d9`): score = fraction of query terms present (light suffix trim
+so "clearing"->"Cleared"), ties broken by SEVERITY — generic, no attack vocabulary
+encoded. Search results now also carry `hosts`, which `list_findings` already did;
+without them the model had to infer attribution from the title, the observed cause
+of Q10's wrong host. An unrelated query still returns 0.
+
+**Scope correction:** this tool is used ONLY by the agentic Investigate loop. Chat
+sends one distilled full-context payload with no tool calls, so chat and the summary
+are unaffected.
+
+**Fourth scorer bug (all four under-reported the product).** The investigation
+harness scored negative controls against a literal phrase list, so a correct refusal
+phrased "returned no findings ... does not establish" scored as a miss. Now matches
+the shape of a denial as well (literal OR regex — strictly more permissive, cannot
+regress a passing case; verified it does not match affirmative answers). Round 4
+rescored 12/15 -> 13/15: one negative control, no plant affected.
+
+**Result.** Round 5 (post-fix, same scorer): **15/15** — plants 12/12, negative
+controls 3/3. Q10, the failure the fix was diagnosed from, flipped to correct-host.
+Caveat: one round is not n>=10; the deterministic 3/15 -> 15/15 recall measurement is
+the load-bearing evidence, not the round score.
+
+Regression: investigate_v2 24 (5 new SearchRanking tests), behavioral 23,
+altitude 26, host suite 662 passed / 2 skipped.
+
+## ts:null on cross_host — verified on the REAL Default case (read-only)
+
+Loaded `case_1787641933758` without writing. Of 8 cross_host findings exactly one
+had `ts=None` — `adatumlab\giladt` used across 3 hosts, the one in the screenshot.
+The shipped `_entity_ts` fallback resolves it to `2026-03-18T20:31:06` from the same
+identity's other records; the other 7 are byte-identical. Blast radius on real data:
+1 finding changed, 7 untouched. Seeing it in the UI needs a Refusion — a write to a
+real case, left for the user to trigger.
