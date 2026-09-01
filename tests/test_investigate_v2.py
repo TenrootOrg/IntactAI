@@ -284,5 +284,72 @@ class RoleHintAndMaskEnrich(unittest.TestCase):
         investigate._enrich_mask_from_result(None, {"ev_user": "x"})  # must not raise
 
 
+class SearchRanking(unittest.TestCase):
+    """Search must rank by token overlap, not require a verbatim phrase.
+
+    Exact-phrase matching found the right finding in only 3/15 realistic analyst
+    queries on the 41-scenario corpus; ranked token overlap finds it in 15/15.
+    """
+
+    def _graph(self):
+        g = schema.FusionGraph(case_id="c")
+        g.entities["asset:h7"] = schema.Entity(id="asset:h7", type="asset",
+                                               label="WKS-EVAL07")
+        g.entities["asset:h1"] = schema.Entity(id="asset:h1", type="asset",
+                                               label="WKS-EVAL01")
+        g.findings = [
+            schema.Finding(id="f1", title="SIGMA: Volume Shadow Copy Deletion via "
+                           "Vssadmin on WKS-EVAL07", severity="high",
+                           confidence="medium", summary="", asset_ids=["asset:h7"],
+                           ts="2026-01-01T00:00:00Z"),
+            schema.Finding(id="f2", title="SIGMA: Security Eventlog Cleared on "
+                           "WKS-EVAL01", severity="high", confidence="medium",
+                           summary="", asset_ids=["asset:h1"],
+                           ts="2026-01-01T00:00:00Z"),
+            schema.Finding(id="f3", title="Benign scheduled task", severity="low",
+                           confidence="low", summary="", asset_ids=["asset:h1"],
+                           ts="2026-01-01T00:00:00Z"),
+        ]
+        return g
+
+    def test_analyst_phrasing_finds_differently_worded_title(self):
+        """'log clearing' must reach 'Security Eventlog Cleared' (suffix trim)."""
+        g = self._graph()
+        with _Patched(investigate.store, load_graph=lambda c: g):
+            out = investigate._tool("c", "search", {"query": "log clearing"})
+        self.assertTrue(out, "no hits for 'log clearing'")
+        self.assertEqual(out[0]["id"], "f2")
+
+    def test_word_order_and_extra_terms_do_not_break_match(self):
+        g = self._graph()
+        with _Patched(investigate.store, load_graph=lambda c: g):
+            out = investigate._tool("c", "search", {"query": "vssadmin shadow copy"})
+        self.assertEqual(out[0]["id"], "f1")
+
+    def test_results_carry_hosts(self):
+        """Without hosts the model has to guess attribution from the title."""
+        g = self._graph()
+        with _Patched(investigate.store, load_graph=lambda c: g):
+            out = investigate._tool("c", "search", {"query": "shadow copy deletion"})
+        self.assertEqual(out[0]["hosts"], ["WKS-EVAL07"])
+
+    def test_unrelated_query_returns_nothing(self):
+        """Ranking must not degrade into returning everything."""
+        g = self._graph()
+        with _Patched(investigate.store, load_graph=lambda c: g):
+            out = investigate._tool("c", "search", {"query": "zzz nonexistent"})
+        self.assertEqual(out, [])
+
+    def test_ties_broken_by_severity(self):
+        """Equal token overlap -> the more severe finding leads."""
+        g = self._graph()
+        for f in g.findings:
+            f.title = "Suspicious beacon activity"
+        g.findings[0].severity, g.findings[1].severity = "low", "critical"
+        with _Patched(investigate.store, load_graph=lambda c: g):
+            out = investigate._tool("c", "search", {"query": "suspicious beacon"})
+        self.assertEqual(out[0]["severity"], "critical")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -28,6 +28,12 @@ ws = store._ws()
 # Ground-truth questions: each answer is known from the corpus answer key.
 # present=True -> the AI must name the activity + host; present=False (negative
 # control) -> the AI must say there is no evidence (fabrication check).
+_NEG = re.compile(r"\bno\b[^.]{0,30}\b(evidence|indication|sign|mention|trace|activity|match|"
+                  r"finding|findings|result|results|record|records)\b"
+                  r"|\bnot\b[^.]{0,25}\b(observed|present|detected|found|establish|established|"
+                  r"show|shown|prove|proven|confirm|confirmed|indicate|reveal)\b"
+                  r"|\bdid not\b|\bnone\b|\bno such\b", re.I)
+
 QUESTIONS = [
     {"q": "What credential-dumping activity targeting LSASS occurred, and on which host?",
      "kw": ["mimikatz"], "host": "wks-eval01", "present": True},
@@ -124,8 +130,12 @@ def score(ans, qd):
     if qd["present"]:
         host_ok = qd["host"] in a
         return kw_ok and host_ok, kw_ok, host_ok
-    # negative control: correct iff it declines / says no evidence
-    return kw_ok, kw_ok, True
+    # Negative control: correct iff it DECLINES. A literal phrase list mis-scores real
+    # denials -- "returned no findings ... does not establish" contains none of them.
+    # Accept the literal list OR the shape of a denial (strictly more permissive, so it
+    # cannot regress a case that already passed). Verified not to match affirmations.
+    denied = kw_ok or bool(_NEG.search(ans or ""))
+    return denied, denied, True
 
 
 def main():

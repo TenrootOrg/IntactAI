@@ -27,9 +27,11 @@ os.makedirs(OUT, exist_ok=True)
 ws = store._ws()
 
 # Denial detector for negative controls — shape, not literal phrases.
-_NEG = re.compile(r"\bno\b[^.]{0,30}\b(evidence|indication|sign|mention|trace|activity|match)\b"
-                  r"|\bnot\b[^.]{0,20}\b(observed|present|detected|found)\b"
-                  r"|\bdid not\b|\bnone\b", re.I)
+_NEG = re.compile(r"\bno\b[^.]{0,30}\b(evidence|indication|sign|mention|trace|activity|match|"
+                  r"finding|findings|result|results|record|records)\b"
+                  r"|\bnot\b[^.]{0,25}\b(observed|present|detected|found|establish|established|"
+                  r"show|shown|prove|proven|confirm|confirmed|indicate|reveal)\b"
+                  r"|\bdid not\b|\bnone\b|\bno such\b", re.I)
 
 # Neutral phrasing throughout (the anchoring A/B proved loaded premises measure the
 # wrong thing). Mirrors the investigation set so chat vs investigate is comparable.
