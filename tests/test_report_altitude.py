@@ -342,5 +342,57 @@ class EntityAndIdentityTotals(unittest.TestCase):
         self.assertEqual(d["scope"]["identities"], d["scope"]["identities_shown"])
 
 
+class RiskTableRespectsScope(unittest.TestCase):
+    """The risk row must describe the window being analysed.
+
+    Tally and 'Why' were window-filtered while risk_score and severity were read off
+    the fusion-time asset entity, so a host whose findings all fell outside the window
+    rendered as "high, 61" beside "0/0/0 - no findings in window" (seen on the real
+    Default case: five hosts at 61-62/high with nothing in scope).
+    """
+
+    def _graph(self):
+        g = schema.FusionGraph(case_id="c")
+        for hid, lbl in (("asset:a", "IN-WINDOW"), ("asset:b", "OUT-OF-WINDOW")):
+            g.entities[hid] = schema.Entity(id=hid, type="asset", label=lbl,
+                                            severity="high", attrs={"modules": ["agentic"]})
+        # in-window high finding
+        g.findings.append(schema.Finding(
+            id="f1", title="Recent high finding on IN-WINDOW", severity="high",
+            confidence="medium", summary="", asset_ids=["asset:a"],
+            ts="2026-08-15T00:00:00Z"))
+        # the other host's only activity predates the window
+        g.findings.append(schema.Finding(
+            id="f2", title="Old high finding on OUT-OF-WINDOW", severity="high",
+            confidence="medium", summary="", asset_ids=["asset:b"],
+            ts="2024-01-01T00:00:00Z"))
+        return g
+
+    def _rows(self):
+        g = self._graph()
+        win = {"start": "2026-08-01T00:00:00Z", "end": None}
+        return {r["host"]: r for r in render.risk_table(g, window=win)}
+
+    def test_host_with_no_in_window_findings_scores_zero(self):
+        r = self._rows()["OUT-OF-WINDOW"]
+        self.assertEqual(r["finding_count"], 0)
+        self.assertEqual(r["risk_score"], 0)
+        self.assertEqual(r["severity"], "informational")
+
+    def test_host_with_in_window_findings_keeps_its_band(self):
+        r = self._rows()["IN-WINDOW"]
+        self.assertEqual(r["severity"], "high")
+        self.assertGreaterEqual(r["risk_score"], 60)
+        self.assertLessEqual(r["risk_score"], 79)
+
+    def test_no_row_claims_risk_without_findings(self):
+        """The exact contradiction the operator spotted in the UI."""
+        for host, r in self._rows().items():
+            if r["finding_count"] == 0:
+                self.assertEqual(r["risk_score"], 0,
+                                 "%s: risk %d with no in-window findings"
+                                 % (host, r["risk_score"]))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

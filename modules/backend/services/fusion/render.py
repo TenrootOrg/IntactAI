@@ -999,9 +999,16 @@ def risk_table(graph, *, window=None, min_severity="informational") -> list:
     findings) driving the score — so the table answers both 'which client' and
     'why', deterministically (no LLM). Drives the report section + /risk API."""
     assets, findings = scope(graph, window=window, min_severity=min_severity)
+    # Score against the SCOPED findings, not the entity's fusion-time attributes.
+    # Those are computed over every finding ever, so a host whose activity all falls
+    # outside the window rendered as "high, 61" on the same row as "0/0/0 - no
+    # findings in window". Same formula (correlate.score_assets_over), one definition.
+    from .correlate import score_assets_over
+    scored = score_assets_over(assets, findings, len(assets))
     rows = []
     for a in assets:
         afind = [f for f in findings if a.id in f.asset_ids]
+        sc = scored.get(a.id) or {}
         tally = {lv: 0 for lv in sev.LEVELS}
         for f in afind:
             if f.severity in tally:
@@ -1022,7 +1029,7 @@ def risk_table(graph, *, window=None, min_severity="informational") -> list:
             action = "Deep-dive now — run memory + Timesketch"
         elif deep:
             action = "Deep coverage done — review findings"
-        elif sev.at_least(a.severity, "medium"):
+        elif sev.at_least(sc.get("severity") or "informational", "medium"):
             action = "Triage / monitor"
         else:
             action = "Low priority"
@@ -1030,9 +1037,9 @@ def risk_table(graph, *, window=None, min_severity="informational") -> list:
             "client_id": a.id,
             "host": a.label,
             "hostname": a.attrs.get("hostname") or a.label,
-            "risk_score": int(a.attrs.get("risk_score") or 0),
-            "risk_intensity": float(a.attrs.get("risk_intensity") or 0),
-            "severity": a.severity,
+            "risk_score": int(sc.get("risk_score") or 0),
+            "risk_intensity": float(sc.get("risk_intensity") or 0),
+            "severity": sc.get("severity") or "informational",
             "escalate": escalate,
             "deep": deep,
             "modules": _collectors(modules),

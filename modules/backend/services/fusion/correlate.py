@@ -283,6 +283,40 @@ def _cross_host_factor(f, n_hosts: int) -> float:
     return 1.0 + min(1.0, k / max(n_hosts, 1))        # prevalence-scaled, in (1, 2]
 
 
+def score_assets_over(assets, findings, n_hosts: int) -> dict:
+    """Band-score a set of assets against a GIVEN finding set.
+
+    Extracted so the same formula serves two callers with different scopes:
+    _score_assets() scores the whole graph (what the asset entity carries), and
+    render.risk_table() scores the WINDOW/SEVERITY-FILTERED findings it is actually
+    displaying. The table used to mix the two -- tally and 'Why' were scoped, while
+    risk_score and severity were read off the fusion-time entity -- so a host whose
+    findings all fell outside the window rendered as 'high, 61' beside '0/0/0 - no
+    findings in window'. Same formula, one definition, no drift.
+
+    Returns {asset_id: {"severity", "risk_intensity", "risk_score"}}.
+    """
+    per_asset = {}
+    by_tier: dict[str, list] = {}
+    for a in assets:
+        afind = [f for f in findings if a.id in f.asset_ids]
+        intensity = sum(_RISK_W.get(f.severity, 0) * _cross_host_factor(f, n_hosts)
+                        for f in afind)
+        # Tier is the worst finding IN SCOPE -- not the entity's all-time severity.
+        tier = "informational"
+        for f in afind:
+            if f.severity in _BAND_BASE and sev.rank(f.severity) > sev.rank(tier):
+                tier = f.severity
+        per_asset[a.id] = {"severity": tier, "risk_intensity": round(intensity, 2)}
+        by_tier.setdefault(tier, []).append(intensity)
+    ref = {t: max(REF_FLOOR, _percentile(v, 0.95)) for t, v in by_tier.items()}
+    for aid, d in per_asset.items():
+        tier = d["severity"]
+        frac = min(d["risk_intensity"] / max(ref.get(tier, REF_FLOOR), 1.0), 1.0)
+        d["risk_score"] = int(round(_BAND_BASE[tier] + frac * _BAND_SPAN[tier]))
+    return per_asset
+
+
 def _score_assets(g: FusionGraph) -> None:
     """Per-host triage score (0-100) + which modules have data on it — drives
     the Phase-1 'which endpoints to deep-dive' recommendation. The score is
