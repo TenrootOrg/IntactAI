@@ -1,0 +1,48 @@
+{
+  "n": 6,
+  "one_actor": 6,
+  "rows": [
+    {
+      "run": 1,
+      "one_actor": true,
+      "names_identity": true,
+      "treats_separate": false,
+      "text": "## Assessment\n\nThree hosts show a coherent sequence over 2 hours 15 minutes on 2026-09-01: attachment execution, privilege escalation and credential theft on `WKS-CHAIN01`, followed by cross-host use of identity `intruder`, DCSync and possible exfiltration from `DC-CHAIN01`. This reads most plausibly as **one campaign**, although event-level corroboration is absent and all behavioural detections a"
+    },
+    {
+      "run": 2,
+      "one_actor": true,
+      "names_identity": true,
+      "treats_separate": false,
+      "text": "## Assessment\n\nThree hosts show a concentrated sequence over 2 hours 15 minutes on 2026-09-01, dominated by execution, privilege escalation, credential theft, cross-host identity use, directory replication abuse, and possible cloud exfiltration. The timing and identity linkage support one coordinated campaign more strongly than several unrelated issues, but the underlying detections are medium-con"
+    },
+    {
+      "run": 3,
+      "one_actor": true,
+      "names_identity": true,
+      "treats_separate": false,
+      "text": "## Assessment\n\nThree hosts show a tightly ordered sequence over 2 hours 15 minutes on 2026-09-01: attachment execution, privilege escalation and credential dumping on `WKS-CHAIN01`, followed by cross-host identity activity, possible domain replication abuse, and cloud exfiltration from `DC-CHAIN01`. This most likely represents **ONE campaign**, with `WKS-CHAIN02` potentially serving as a lateral-m"
+    },
+    {
+      "run": 4,
+      "one_actor": true,
+      "names_identity": true,
+      "treats_separate": false,
+      "text": "## Assessment\n\nThree hosts show a concentrated 2h15m sequence on 2026-09-01, dominated by execution, privilege bypass, credential theft, cross-host identity use, domain replication abuse, and possible exfiltration. This most plausibly reads as one campaign progressing from `WKS-CHAIN01` toward `DC-CHAIN01`, with `WKS-CHAIN02` potentially serving as a lateral-movement hop; however, event telemetry "
+    },
+    {
+      "run": 5,
+      "one_actor": true,
+      "names_identity": true,
+      "treats_separate": false,
+      "text": "## Assessment\n\nThree hosts show a coherent sequence over 2 hours 15 minutes on 2026-09-01: attachment execution, privilege bypass and credential dumping on `WKS-CHAIN01`, cross-host use of identity `intruder`, followed by suspected replication abuse and cloud exfiltration on `DC-CHAIN01`. This most likely represents **one campaign**, although the graph establishes correlation rather than causation"
+    },
+    {
+      "run": 6,
+      "one_actor": true,
+      "names_identity": true,
+      "treats_separate": false,
+      "text": "## Assessment\n\nThree hosts show a tightly sequenced chain over 2 hours 15 minutes on 2026-09-01: attachment execution and credential theft on `WKS-CHAIN01`, cross-host use of identity `intruder`, then replication-rights abuse and possible exfiltration on `DC-CHAIN01`. This most plausibly reads as **ONE campaign**, but linkage beyond the shared identity remains inferential because the payload conta"
+    }
+  ]
+}
