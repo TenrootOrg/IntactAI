@@ -183,3 +183,45 @@ must never be reported as the true count. Confidence rose to HIGH *because* the
 grounding became complete — it now enumerates via `clusters` instead of stopping.
 
 Regression: investigate_v2 27 (3 new), behavioral 23, altitude 26, host 670 passed.
+
+## The silent-truncation class — systematic audit (5 defects)
+
+After the third instance I stopped finding these one at a time and audited every
+truncation point in the fusion/agentic path. Five defects, all the same shape: a
+capped collection handed to the model with no indication that more existed, and the
+model counting the sample as the population.
+
+| # | surface | wrong answer | truth | commit |
+|---|---|---|---|---|
+| 1 | `search` | could not find findings by analyst phrasing (3/15 queries) | 15/15 | c0da82d9 |
+| 2 | `list_findings` | "15 hosts" had event logs cleared | 42 | ddba63a3 |
+| 3 | report `scope.findings` | "300 hosts, 40 findings" (implies 260 clean) | 300/300 | 3b95e0c8 |
+| 4 | `evidence` | "6 separate Rclone exfiltration events" (HIGH) | 50 | 195d5218 |
+| 5 | `identities` | "323 distinct user accounts" + cited name range | 400 | 7559df0e |
+
+**Why this class is dangerous.** Three of the five produced a confidently wrong
+NUMBER with supporting detail — #4 quoted the six timestamps it had seen, #5 cited
+`corp\user000-corp\user322` as its evidence. A hedged answer invites checking; a
+precise wrong one does not. #2 and #4 both understate incident scope, which is the
+direction that makes a real breach look contained.
+
+**Fix shape (uniform).** Every capped collection now reports its true size beside
+what it returned — `{total_*, shown, ...}` — mirroring the contract `pivot` already
+had. The inconsistency with `pivot` was the tell that these were oversights rather
+than design. The prompts state that `shown < total` means a SAMPLE and that "how
+many" must be answered from the total.
+
+**Costs nothing.** #4 uses the finding's evidence LOCATORS (already in the graph) and
+#5 resolves identities once before trimming, so both totals are exact with no extra
+I/O. An intermediate version of #4 probed max_rows+1 and could only say "at least 7";
+using the locator count gives the exact 50, so the answer is correct AND unhedged.
+
+**Reachability, measured honestly.** #4 needs only 7 evidence rows on one finding —
+very reachable. #2 fires at 42 hosts. #3 is LATENT on this box: none of the 8 real
+cases trim (largest is 151 findings), so it needs fleet scale. #5 fires whenever a
+budget stepdown occurs.
+
+**Verification.** Every one was confirmed by EXECUTING the question against the real
+pipeline and reading the answer, before and after — never by asserting from the code.
+Regression after all five: investigate_v2 30, altitude 33, behavioral 23, host suite
+680 passed / 2 skipped.
