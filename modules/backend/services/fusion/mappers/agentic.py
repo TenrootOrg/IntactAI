@@ -1125,11 +1125,20 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             if h and keys.classify_indicator(str(h)) == "hash":
                 h = str(h)
                 iid = keys.ioc_id("hash", h)
+                # Carry the SOURCE filename so the IOC list is actionable ("block this
+                # hash" needs a name). Generic: reads whatever name field the detection
+                # row exposes, so it works for any binary incl. custom/unknown ones.
+                _sn = F.get(r, "EntryName", "OriginalFileName", "Name", "Binary", "Image",
+                            "FilePath", "Path", "FullPath", "Executable", default=None)
+                if not _sn:
+                    _ep = F.get(r, "EntryPath", "SourceFile", default=None)
+                    _sn = str(_ep).replace("\\", "/").rsplit("/", 1)[-1] if _ep else None
+                _sa = {"source_name": str(_sn)} if _sn else {}
                 # execution-evidence hashes are benign context (anomaly 0, never
                 # auto cross-host); detection hashes (binaryrename) stay suspicious.
                 ents.append(_ent(iid, "ioc", h, asset, run_id, loc,               # full hash (IOC appendix)
                                  anomaly=0 if is_exec else 10, ioc_kind="hash",
-                                 first=ts, full_hash=h, **_hash_attrs(r), artifact=artifact))
+                                 first=ts, full_hash=h, **_hash_attrs(r), **_sa, artifact=artifact))
 
     # ---- fold the sigma occurrences into one entity per (host, rule) ----
     for (a_id, title), agg in sigma_agg.items():

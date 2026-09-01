@@ -1260,6 +1260,28 @@ def _attack_assessment(graph, assets, findings, *, window=None, initial_access=N
     return "\n".join(out)
 
 
+def _ioc_source_label(graph, ioc):
+    """The file/process NAME behind a hash IOC, so an analyst can act on it instead of a
+    bare digest. Generic: it follows the graph relationship the hash was matched from, so
+    it works for ANY binary — known or custom/unknown — because it keys on the link, not
+    on a table of tool names. Returns a short 'name' or None."""
+    if (ioc.attrs or {}).get("ioc_kind") != "hash":
+        return None
+    sn = (ioc.attrs or {}).get("source_name")
+    if sn:
+        return str(sn).replace("\\", "/").rsplit("/", 1)[-1] or str(sn)
+    for r in graph.relationships:
+        other = r.src if r.dst == ioc.id else (r.dst if r.src == ioc.id else None)
+        if not other:
+            continue
+        e = graph.entities.get(other)
+        if e and e.type in ("process", "file", "binary") and e.label:
+            lbl = str(e.label).strip()
+            # prefer a basename if the label is a path
+            return lbl.replace("\\", "/").rsplit("/", 1)[-1] or lbl
+    return None
+
+
 def _high_confidence_iocs(graph, validations=None):
     """Filter IOCs to those we can stand behind, so the IOC list is genuine indicators
     rather than an inventory of every benign hash on disk. KEEP an indicator only when:
@@ -1473,7 +1495,9 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
         out.append("|---|---|---|---|---|")
         for i, reason in kept_iocs:
             hosts = ", ".join(_host_label(graph, x) for x in _assets_of(i))
-            out.append(f"| `{i.label}` | {i.attrs.get('ioc_kind', '?')} | {reason} | {hosts} | "
+            src = _ioc_source_label(graph, i)
+            label = f"`{i.label}` ({src})" if src else f"`{i.label}`"
+            out.append(f"| {label} | {i.attrs.get('ioc_kind', '?')} | {reason} | {hosts} | "
                        f"{'⚠ YES' if 'cross_host' in i.flags else 'no'} |")
         out.append("")
 

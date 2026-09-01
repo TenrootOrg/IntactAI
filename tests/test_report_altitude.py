@@ -430,5 +430,37 @@ class LimitationsWindowHonesty(unittest.TestCase):
         self.assertIn("Time scope was narrowed", md)
 
 
+class IocHashCarriesFilename(unittest.TestCase):
+    """A hash IOC must name the file it came from, so 'block this hash' is actionable.
+
+    Generic: render._ioc_source_label reads the source_name the mapper captured from the
+    detection row (or follows the graph link) -- it works for ANY binary, including a
+    custom/unknown name, because it never consults a table of known tools.
+    """
+
+    def test_source_name_from_attrs(self):
+        g = schema.FusionGraph(case_id="c")
+        g.entities["a"] = schema.Entity(id="a", type="asset", label="H1")
+        i = schema.Entity(id="ioc:hash:abc", type="ioc", label="abc123",
+                          attrs={"ioc_kind": "hash", "source_name": "totally_custom.exe"})
+        g.entities[i.id] = i
+        self.assertEqual(render._ioc_source_label(g, i), "totally_custom.exe")
+
+    def test_path_source_name_is_basenamed(self):
+        g = schema.FusionGraph(case_id="c")
+        i = schema.Entity(id="ioc:hash:def", type="ioc", label="def",
+                          attrs={"ioc_kind": "hash",
+                                 "source_name": r"C:\Windows\Temp\x.exe"})
+        g.entities[i.id] = i
+        self.assertEqual(render._ioc_source_label(g, i), "x.exe")
+
+    def test_non_hash_ioc_returns_none(self):
+        g = schema.FusionGraph(case_id="c")
+        i = schema.Entity(id="ioc:ip:1", type="ioc", label="1.2.3.4",
+                          attrs={"ioc_kind": "ip"})
+        g.entities[i.id] = i
+        self.assertIsNone(render._ioc_source_label(g, i))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
