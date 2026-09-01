@@ -265,8 +265,9 @@ class RoleHintAndMaskEnrich(unittest.TestCase):
         with _Patched(investigate.store, load_graph=lambda c: g):
             out = investigate._tool("c", "list_findings", {"limit": 5})
         # role survives so it can pass through masking intact
-        self.assertTrue(any("domain controller" in h for h in out[0]["hosts"]),
-                        out[0]["hosts"])
+        row = out["findings"][0]
+        self.assertTrue(any("domain controller" in h for h in row["hosts"]),
+                        row["hosts"])
 
     def test_A8_enrich_masks_row_only_identifiers(self):
         from services.data_anonymizer import DataAnonymizer
@@ -317,28 +318,29 @@ class SearchRanking(unittest.TestCase):
         g = self._graph()
         with _Patched(investigate.store, load_graph=lambda c: g):
             out = investigate._tool("c", "search", {"query": "log clearing"})
-        self.assertTrue(out, "no hits for 'log clearing'")
-        self.assertEqual(out[0]["id"], "f2")
+        self.assertTrue(out["findings"], "no hits for 'log clearing'")
+        self.assertEqual(out["findings"][0]["id"], "f2")
 
     def test_word_order_and_extra_terms_do_not_break_match(self):
         g = self._graph()
         with _Patched(investigate.store, load_graph=lambda c: g):
             out = investigate._tool("c", "search", {"query": "vssadmin shadow copy"})
-        self.assertEqual(out[0]["id"], "f1")
+        self.assertEqual(out["findings"][0]["id"], "f1")
 
     def test_results_carry_hosts(self):
         """Without hosts the model has to guess attribution from the title."""
         g = self._graph()
         with _Patched(investigate.store, load_graph=lambda c: g):
             out = investigate._tool("c", "search", {"query": "shadow copy deletion"})
-        self.assertEqual(out[0]["hosts"], ["WKS-EVAL07"])
+        self.assertEqual(out["findings"][0]["hosts"], ["WKS-EVAL07"])
 
     def test_unrelated_query_returns_nothing(self):
         """Ranking must not degrade into returning everything."""
         g = self._graph()
         with _Patched(investigate.store, load_graph=lambda c: g):
             out = investigate._tool("c", "search", {"query": "zzz nonexistent"})
-        self.assertEqual(out, [])
+        self.assertEqual(out["findings"], [])
+        self.assertEqual(out["total_matches"], 0)
 
     def test_ties_broken_by_severity(self):
         """Equal token overlap -> the more severe finding leads."""
@@ -348,7 +350,50 @@ class SearchRanking(unittest.TestCase):
         g.findings[0].severity, g.findings[1].severity = "low", "critical"
         with _Patched(investigate.store, load_graph=lambda c: g):
             out = investigate._tool("c", "search", {"query": "suspicious beacon"})
-        self.assertEqual(out[0]["severity"], "critical")
+        self.assertEqual(out["findings"][0]["severity"], "critical")
+
+
+class TruncationIsVisible(unittest.TestCase):
+    """Silent truncation let the model state a sampled count as the true count.
+
+    With 42 hosts all showing cleared event logs, the loop answered "15 hosts" at
+    MODERATE confidence -- understating the incident by 64%. Tools must report the
+    true total alongside what they returned.
+    """
+
+    def _big(self, n):
+        g = schema.FusionGraph(case_id="c")
+        for i in range(n):
+            hid = "asset:h%02d" % i
+            g.entities[hid] = schema.Entity(id=hid, type="asset", label="WKS-%03d" % i)
+            g.findings.append(schema.Finding(
+                id="f%02d" % i, title="SIGMA: Security Eventlog Cleared on WKS-%03d" % i,
+                severity="high", confidence="medium", summary="", asset_ids=[hid],
+                ts="2026-06-01T00:00:00Z"))
+        return g
+
+    def test_search_reports_true_total_when_capped(self):
+        g = self._big(42)
+        with _Patched(investigate.store, load_graph=lambda c: g):
+            out = investigate._tool("c", "search", {"query": "eventlog cleared"})
+        self.assertEqual(out["total_matches"], 42)
+        self.assertEqual(out["shown"], len(out["findings"]))
+        self.assertLess(out["shown"], out["total_matches"])
+
+    def test_list_findings_reports_true_total_when_capped(self):
+        g = self._big(42)
+        with _Patched(investigate.store, load_graph=lambda c: g):
+            out = investigate._tool("c", "list_findings", {"limit": 20})
+        self.assertEqual(out["total_findings"], 42)
+        self.assertEqual(out["shown"], 20)
+
+    def test_totals_match_when_nothing_is_truncated(self):
+        g = self._big(3)
+        with _Patched(investigate.store, load_graph=lambda c: g):
+            lf = investigate._tool("c", "list_findings", {"limit": 20})
+            se = investigate._tool("c", "search", {"query": "eventlog cleared"})
+        self.assertEqual(lf["total_findings"], lf["shown"])
+        self.assertEqual(se["total_matches"], se["shown"])
 
 
 if __name__ == "__main__":

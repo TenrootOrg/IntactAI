@@ -26,14 +26,15 @@ INVESTIGATE_SYSTEM = (
     "  when finished -> {\"final\":\"<answer as markdown, grounded in tool results>\"}\n"
     "\n"
     "Tools:\n"
-    "  list_findings({\"limit\":N})      -> the case's top findings [{id,title,severity,hosts,ts,kind}].\n"
-    "  search({\"query\":\"...\"})         -> findings whose title/summary match a keyword.\n"
+    "  list_findings({\"limit\":N})      -> {total_findings,shown,findings:[{id,title,severity,hosts,ts,kind}]}.\n"
+    "  search({\"query\":\"...\"})         -> {total_matches,shown,findings:[...]} ranked by relevance.\n"
     "  evidence({\"finding_id\":\"...\"})  -> the RAW rows behind a finding (the ground truth).\n"
     "  clusters({})                    -> suspicious (host-cluster, time-window) hotspots.\n"
     "  pivot({\"value\":\"<account|host|process|ip>\",\"window\":{\"start\":\"...\",\"end\":\"...\"}}) "
     "-> raw EVENTS mentioning that value across the case (the classic investigative "
     "pivot; window optional, ISO times).\n"
     "\n"
+    "When `shown` is less than `total_matches`/`total_findings` you are seeing a SAMPLE, not the whole set: never state the sampled count as the true count, and say so if the question turns on how many.\n"
     "Investigate efficiently: start from list_findings or clusters, drill into the "
     "decisive ones with evidence, then answer in 3-6 tool calls. In your final answer "
     "state confidence (HIGH/MODERATE/LOW) and keep OBSERVATION (a tool showed it) "
@@ -96,10 +97,15 @@ def _tool(case_id, name, args):
         g = store.load_graph(case_id)
         fs = sorted(g.findings, key=lambda f: -sev.rank(f.severity))
         lim = min(40, int(args.get("limit") or 20))
-        return [{"id": f.id, "title": f.title, "severity": f.severity,
+        rows = [{"id": f.id, "title": f.title, "severity": f.severity,
                  "hosts": [_role_annot(render._host_label(g, a))
                            for a in (f.asset_ids or [])][:6],
                  "ts": f.ts, "kind": f.kind} for f in fs[:lim]]
+        # Report the TRUE total, not just what fits. Silent truncation made the model
+        # state a truncated count as fact: with 42 hosts all showing cleared event
+        # logs it answered "15 hosts" at MODERATE confidence, understating the
+        # incident by 64%. Mirrors pivot's {total_matches, shown, ...} contract.
+        return {"total_findings": len(fs), "shown": len(rows), "findings": rows}
     if name == "search":
         # Whole-phrase substring matching made this tool nearly useless: an analyst
         # phrasing ("log clearing", "kerberoasting rubeus") almost never appears
@@ -120,10 +126,11 @@ def _tool(case_id, name, args):
             if n:
                 scored.append((n / len(terms), sev.rank(f.severity), f))
         scored.sort(key=lambda x: (-x[0], -x[1]))
-        return [{"id": f.id, "title": f.title, "severity": f.severity, "ts": f.ts,
+        rows = [{"id": f.id, "title": f.title, "severity": f.severity, "ts": f.ts,
                  "hosts": [_role_annot(render._host_label(g, a))
                            for a in (f.asset_ids or [])][:6]}
                 for _, _, f in scored[:15]]
+        return {"total_matches": len(scored), "shown": len(rows), "findings": rows}
     if name == "evidence":
         rows = store.get_evidence_rows(case_id, args.get("finding_id"), max_rows=6)
         return [{"artifact": r["artifact"],
