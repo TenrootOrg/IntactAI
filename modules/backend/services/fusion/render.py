@@ -939,6 +939,33 @@ def _recommendations_md(graph, findings, assets) -> str:
     return "\n".join(out)
 
 
+
+# Collector labels shown to the operator. The graph records the INTERNAL module that
+# produced an entity, but several internal names are the same COLLECTOR from the
+# analyst's point of view — a Velociraptor collection and a Velociraptor hunt are both
+# just "velociraptor". Showing the internal split as if it were extra coverage
+# overstates what was collected. Generic map, applied wherever coverage is rendered;
+# add a line here rather than special-casing a call site.
+_COLLECTOR_LABEL = {
+    "agentic": "velociraptor",
+    "velociraptor_collection": "velociraptor",
+    "velociraptor_upload": "velociraptor",
+    "velociraptor_hunt": "velociraptor",
+    "velociraptor_offline_import": "velociraptor",
+    "velociraptor_adopt": "velociraptor",
+}
+
+
+def _collectors(modules) -> list:
+    """Canonical, de-duplicated collector names, order preserved."""
+    out = []
+    for m in (modules or []):
+        lbl = _COLLECTOR_LABEL.get(str(m).strip().lower(), str(m).strip())
+        if lbl and lbl not in out:
+            out.append(lbl)
+    return out
+
+
 def risk_table(graph, *, window=None, min_severity="informational") -> list:
     """Per-endpoint ('identity') risk rows for the 'who to focus on first + why'
     table. One row per asset, sorted by risk_score desc. Each row carries the
@@ -983,7 +1010,7 @@ def risk_table(graph, *, window=None, min_severity="informational") -> list:
             "severity": a.severity,
             "escalate": escalate,
             "deep": deep,
-            "modules": list(modules),
+            "modules": _collectors(modules),
             "finding_count": len(afind),
             "by_severity": tally,
             "cross_host": any(f.kind == "cross_host" for f in afind),
@@ -1013,9 +1040,13 @@ def risk_table_md(graph, *, window=None, min_severity="informational") -> str:
            "(critical 80-100, high 60-79, medium 40-59, low 20-39) so a 'critical' host "
            "always outranks a 'high' one; finding intensity orders hosts within the band. "
            "Cross-host findings are weighted relative to fleet size. _Why_ = the top "
-           "findings driving the score; _Next_ = the recommended action.\n",
-           "| # | Host | Risk | Severity | Findings (C/H/M) | Why | Coverage | Next |",
-           "|---|------|-----:|----------|------------------|-----|----------|------|"]
+           "findings driving the score.\n",
+           # No "Next" column: it restated the same three canned strings on every row
+           # (escalate / deep-done / triage), so it added width without information.
+           # The recommended action belongs in the narrative's Priority actions, which
+           # is case-specific.
+           "| # | Host | Risk | Severity | Findings (C/H/M) | Why | Coverage |",
+           "|---|------|-----:|----------|------------------|-----|----------|"]
     # At fleet scale this table becomes a second wall of text. Rank order already
     # puts what matters on top, so show that and COUNT the tail rather than
     # printing a page of nominal hosts (the tail is still in the console).
@@ -1027,7 +1058,7 @@ def risk_table_md(graph, *, window=None, min_severity="informational") -> str:
         chm = f"{t.get('critical',0)}/{t.get('high',0)}/{t.get('medium',0)}"
         why = (r["why"] or "").replace("|", "／")[:140]
         out.append(f"| {i} | **{r['host']}** | {r['risk_score']} | {r['severity']} | "
-                   f"{chm} | {why} | {cov} | {r['next_action']} |")
+                   f"{chm} | {why} | {cov} |")
     if len(rows) > RISK_TABLE_MAX_ROWS:
         rest = rows[RISK_TABLE_MAX_ROWS:]
         top = max((r["risk_score"] for r in rest), default=0)

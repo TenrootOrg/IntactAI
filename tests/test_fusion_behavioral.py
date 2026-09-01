@@ -18,7 +18,7 @@ for _p in ("/app", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from services.fusion import correlate, schema  # noqa: E402
+from services.fusion import correlate, render, schema  # noqa: E402
 
 _T0 = _dt.datetime(2026, 6, 16, 8, 0, 0, tzinfo=_dt.timezone.utc)
 
@@ -244,6 +244,51 @@ class IdentitySuggestions(unittest.TestCase):
         # same normalized name in one bucket is already handled by the account keys
         cs = self._cands([("H1", "corp\\alice"), ("H2", "corp\\alice")])
         self.assertEqual(cs, [])
+
+
+class ReportedFromTheUI(unittest.TestCase):
+    """Three issues reported from the live Case Analysis view."""
+
+    def test_cross_host_finding_is_dated_from_the_same_identity(self):
+        """A domain-qualified account gets a GLOBAL id and often carries no timestamp,
+        while the per-host bare-SAM records for the same person are dated. The
+        cross-host finding shipped with ts=null, which costs the analysis sequence and
+        direction ("does not prove the initiating endpoint ... because ts is null")."""
+        g = schema.FusionGraph(case_id="tsnull")
+        for i in range(2):
+            aid = f"asset:h{i}"
+            g.entities[aid] = schema.Entity(id=aid, type="asset", label=f"H{i}")
+        # undated domain-qualified account spanning both hosts
+        g.entities["account:domain:corp\\gil"] = schema.Entity(
+            id="account:domain:corp\\gil", type="account", label="corp\\gil",
+            anomaly=5, severity="high", first_seen=None,
+            attrs={"_assets": ["asset:h0", "asset:h1"]}, sources=["velociraptor"])
+        # dated bare-SAM record for the SAME person
+        g.entities["account:asset:h0:gil"] = schema.Entity(
+            id="account:asset:h0:gil", type="account", label="gil", anomaly=1,
+            first_seen="2026-03-18T20:31:06", attrs={"_assets": ["asset:h0"]},
+            sources=["velociraptor"])
+        correlate._cross_host_findings(g)
+        xh = [f for f in g.findings if f.kind == "cross_host"]
+        self.assertTrue(xh)
+        self.assertTrue(all(f.ts for f in xh), "cross-host finding must not be undated")
+
+    def test_collector_labels_are_canonical(self):
+        """A Velociraptor collection and a Velociraptor hunt are one collector to the
+        analyst; showing the internal split overstates coverage."""
+        self.assertEqual(render._collectors(["agentic", "velociraptor", "memory"]),
+                         ["velociraptor", "memory"])
+        self.assertEqual(render._collectors(["velociraptor_hunt"]), ["velociraptor"])
+        self.assertEqual(render._collectors([]), [])
+
+    def test_host_risk_table_has_no_next_column(self):
+        g = schema.FusionGraph(case_id="nx")
+        g.entities["asset:a"] = schema.Entity(id="asset:a", type="asset", label="H0",
+                                              severity="high",
+                                              attrs={"risk_score": 60, "modules": ["agentic"]})
+        md = render.risk_table_md(g)
+        self.assertNotIn("| Next |", md)
+        self.assertNotIn("_Next_", md)
 
 
 class TimestampComparison(unittest.TestCase):

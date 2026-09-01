@@ -461,6 +461,35 @@ def _flag_pid_reuse(g: FusionGraph) -> None:
                     e.flags.append("pid_reused")
 
 
+
+def _entity_ts(g: FusionGraph, e) -> "str | None":
+    """first_seen for an entity, falling back to the SAME IDENTITY's other records.
+
+    A domain-qualified account (`DOMAIN\\user`) gets a GLOBAL id and often carries no
+    timestamp — the artifact that named it (a user/SAM listing) has no event time —
+    while the per-host bare-SAM records for the same person DO carry times. The
+    cross-host finding was built with `ts=e.first_seen`, so it shipped with
+    `ts: null`, and a null ts costs the analysis the two things it most needs:
+    sequence and direction. Observed on a real case: "adatumlab\\giladt used across 3
+    hosts ... does not prove the initiating endpoint or direction because ts is null",
+    while two bare `giladt` records were dated all along.
+
+    So fall back to the earliest time recorded for the same normalized username.
+    Best-effort and read-only; returns None when nothing is dated."""
+    if e.first_seen:
+        return e.first_seen
+    try:
+        from .identities import _norm_user
+        stem = _norm_user(e.label)
+        if not stem:
+            return None
+        times = [o.first_seen for o in g.entities.values()
+                 if o.type == e.type and o.first_seen and _norm_user(o.label) == stem]
+        return min(times) if times else None
+    except Exception:                                   # noqa: BLE001
+        return None
+
+
 def _cross_host_findings(g: FusionGraph) -> None:
     for e in g.entities.values():
         assets = _assets_of(e)
@@ -502,7 +531,7 @@ def _cross_host_findings(g: FusionGraph) -> None:
                     id=_fid("xhost", e.id), title=title, severity=severity,
                     confidence="high", summary=summ, entity_ids=[e.id], asset_ids=assets,
                     sources=e.sources, evidence=list(e.evidence), mitre=mitre,
-                    ts=e.first_seen, kind="cross_host"))
+                    ts=_entity_ts(g, e), kind="cross_host"))
                 continue
             title = f"Indicator {e.label} seen on {len(assets)} hosts"
             summ = (f"The indicator {e.label} ({kind}) appears on multiple "
@@ -517,7 +546,7 @@ def _cross_host_findings(g: FusionGraph) -> None:
         g.add_finding(Finding(
             id=_fid("xhost", e.id), title=title, severity=severity, confidence="high",
             summary=summ, entity_ids=[e.id], asset_ids=assets, sources=e.sources,
-            evidence=list(e.evidence), mitre=mitre, ts=e.first_seen, kind="cross_host"))
+            evidence=list(e.evidence), mitre=mitre, ts=_entity_ts(g, e), kind="cross_host"))
 
 
 def _identity_cross_host_findings(g: FusionGraph) -> None:
