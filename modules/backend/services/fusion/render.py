@@ -432,10 +432,21 @@ def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"
     findings = _trim_findings(findings, max_findings)
     kept_ids = {f.id for f in findings}
     eff_detail, _ = _resolve_detail(graph, detail, window=window, min_severity=min_severity)
-    ents = sorted((e for e in graph.entities.values()
-                   if e.type != "asset" and sev.at_least(e.severity, min_severity)
-                   and in_window(e.first_seen, window)),
-                  key=lambda e: -e.anomaly)[:max_entities]
+    in_scope_ents = [e for e in graph.entities.values()
+                     if e.type != "asset" and sev.at_least(e.severity, min_severity)
+                     and in_window(e.first_seen, window)]
+    total_entities = len(in_scope_ents)
+    ents = sorted(in_scope_ents, key=lambda e: -e.anomaly)[:max_entities]
+
+    # Resolve identities ONCE without a cap, then trim: the true count is then free.
+    # Budget stepdowns shrink this list, and the model counted the list it received
+    # as the population -- answering "323 distinct user accounts" for a case with
+    # 400, citing the truncated name range as evidence.
+    all_identities = _known_identities(graph)
+    total_identities = len(all_identities)
+    _id_cap = (DEFAULT_MAX_IDENTITIES if max_identities is None
+               else max(0, int(max_identities)))
+    identities_shown = all_identities[:_id_cap]
 
     def _fd(f):
         fd = {"title": f.title, "severity": f.severity, "confidence": f.confidence,
@@ -460,6 +471,14 @@ def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"
             # What actually fits in this payload. When findings_shown < findings the
             # model is reading a SAMPLE and must not state the sample as the total.
             "findings_shown": len(findings),
+            # Same contract for the other trimmed collections: *_shown < * means the
+            # payload carries a SAMPLE, and the sample must never be counted as the
+            # population. top_entities is additionally ranked by anomaly, so it is a
+            # selection even when nothing was dropped.
+            "entities": total_entities,
+            "entities_shown": len(ents),
+            "identities": total_identities,
+            "identities_shown": len(identities_shown),
             "cross_host": sum(1 for f in findings if f.kind == "cross_host"),
             "evidence_span_days": _evidence_span_days(findings),
             "altitude": _resolve_altitude(graph, window=window,
@@ -478,9 +497,7 @@ def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"
         # see _known_identities(). Cheap relative to the rest of this payload;
         # keeps "who is X" answerable for every real person in the case, not only
         # the ones a finding happens to be attached to.
-        "identities": _known_identities(
-            graph, limit=DEFAULT_MAX_IDENTITIES if max_identities is None
-                         else max(0, int(max_identities))),
+        "identities": identities_shown,
         # Per-host coverage roll-up. Exists because a narrative written from
         # `findings` alone follows finding VOLUME, and volume lives on noisy
         # workstations: a domain controller with 7 findings (two of them severe)

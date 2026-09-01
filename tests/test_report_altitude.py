@@ -295,5 +295,52 @@ class ScopeReportsCaseNotPayload(unittest.TestCase):
         self.assertEqual(d["scope"]["findings"], 300)
 
 
+class EntityAndIdentityTotals(unittest.TestCase):
+    """Trimmed collections must carry their true size.
+
+    Budget stepdowns shrink `identities`, and the model counted the list it received
+    as the population -- answering "323 distinct user accounts" for a case with 400,
+    citing the truncated name range `corp\\user000-corp\\user322` as evidence.
+    """
+
+    def _graph(self, n=400):
+        g = schema.FusionGraph(case_id="c")
+        g.entities["asset:h"] = schema.Entity(id="asset:h", type="asset", label="H1")
+        for i in range(n):
+            g.entities["acct:%d" % i] = schema.Entity(
+                id="acct:%d" % i, type="account", label="corp\\user%03d" % i,
+                severity="medium", anomaly=0.5, first_seen="2026-06-01T00:00:00Z",
+                attrs={"_assets": ["asset:h"]})
+        g.findings.append(schema.Finding(
+            id="f1", title="t", severity="high", confidence="medium", summary="",
+            asset_ids=["asset:h"], ts="2026-06-01T00:00:00Z"))
+        return g
+
+    def _d(self, g, **kw):
+        kw.setdefault("max_entities", 60)
+        kw.setdefault("max_findings", None)
+        return render._distilled_at(g, window=None, min_severity="informational",
+                                    detail="summary", **kw)
+
+    def test_entities_total_survives_the_anomaly_cap(self):
+        g = self._graph()
+        d = self._d(g)
+        self.assertEqual(d["scope"]["entities"], 400)
+        self.assertEqual(d["scope"]["entities_shown"], len(d["top_entities"]))
+        self.assertLess(d["scope"]["entities_shown"], d["scope"]["entities"])
+
+    def test_identities_total_survives_a_budget_stepdown(self):
+        g = self._graph()
+        d = self._d(g, max_identities=50)
+        self.assertEqual(d["scope"]["identities"], 400)
+        self.assertEqual(d["scope"]["identities_shown"], 50)
+        self.assertEqual(len(d["identities"]), 50)
+
+    def test_untrimmed_identities_report_equal_counts(self):
+        g = self._graph(20)
+        d = self._d(g)
+        self.assertEqual(d["scope"]["identities"], d["scope"]["identities_shown"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
