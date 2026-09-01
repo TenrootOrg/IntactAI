@@ -52,7 +52,11 @@ INVESTIGATE_SYSTEM = (
 )
 
 _MAX_TOOL_RESULT_CHARS = 6000
-_MAX_ROW_CHARS = 1500
+# Evidence-row cap for the chat/investigate tool. 1500 truncated exactly what the
+# analyst drills for -- a full command line or -EncodedCommand blob -- so the model
+# could not decode it. Matches the report's explicit-evidence budget; the model's
+# large context absorbs it and the loop is bounded by max_steps.
+_MAX_ROW_CHARS = 30000
 # A model that answers with a {final} before calling any tool has looked at no
 # evidence — nudge it back this many times, then FORCE one list_findings so the
 # answer is at least grounded (never accept a 0-evidence give-up).
@@ -181,7 +185,7 @@ def _tool(case_id, name, args):
                 continue
             hits.append((t, {"ts": e.first_seen or e.last_seen,
                              "hosts": [_role_annot(x) for x in labels[:3]],
-                             **{k: str(a[k])[:300] for k in _EV_KEYS if a.get(k)}}))
+                             **{k: str(a[k])[:2000] for k in _EV_KEYS if a.get(k)}}))  # was 300: keep full cmd/path
         hits.sort(key=lambda x: (x[0] is None, x[0]))
         total = len(hits)
         rows = [h for _, h in hits[:15]]
