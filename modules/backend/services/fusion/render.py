@@ -242,7 +242,17 @@ def _resolve_altitude(graph, *, window=None, min_severity="informational"):
     """(altitude, reason): 'macro' when the scope is broad by hosts, finding volume,
     OR evidence span; else 'focused'. Reuses the report_detail thresholds."""
     assets, findings = scope(graph, window=window, min_severity=min_severity)
-    hosts, nf = len(assets), len(findings)
+    # Count hosts that are actually IN SCOPE — i.e. that carry a finding inside the
+    # window/severity filter — not every asset in the graph. scope() deliberately
+    # returns ALL assets (they anchor the graph and must never be filtered out of the
+    # report), but using that count here made the altitude ignore narrowing entirely:
+    # measured on a 30-host case, narrowing to a 3-day window cut findings 1081 -> 25
+    # and the span 199d -> 3d, yet it stayed MACRO because the host count never moved.
+    # On any fleet above the host threshold, time-narrowing could therefore NEVER reach
+    # a focused report — which is exactly what the zoom loop promises the analyst.
+    in_scope = {a for f in findings for a in (f.asset_ids or [])}
+    hosts = len(in_scope) if findings else len(assets)
+    nf = len(findings)
     span = _evidence_span_days(findings)
     reason = f"{hosts} hosts, {nf} findings, {span}d span"
     if hosts > EXPLICIT_MAX_HOSTS or nf > EXPLICIT_MAX_FINDINGS or span > MACRO_SPAN_DAYS:

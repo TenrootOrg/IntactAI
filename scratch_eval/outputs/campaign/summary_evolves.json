@@ -1,0 +1,24 @@
+{
+  "stages": [
+    [
+      "full scope",
+      "focused",
+      "8 hosts, 37 findings, 0d span",
+      "## Executive Summary\n\nBetween `2026-08-01T09:12:00Z` and `2026-08-01T11:26:00Z`, an adversary most likely compromised all eight observed hosts, stole credentials and Active Directory secrets, established multiple persistence channels, staged and likely exfiltrated data, and began ransomware impact on `WKS-EVAL07`. The only identified identity was `adatumlab\\svc_backup`, used across `WKS-EVAL04` and `WKS-EVAL05`; the graph does not attribute activity on the other hosts to a named account. The initial access method is undetermined, but the first observed action was credential dumping on `WKS-EVA"
+    ],
+    [
+      "narrow window 09:00-09:45",
+      "focused",
+      "8 hosts, 4 findings, 0d span",
+      "## Executive Summary\n\nThe most likely explanation is a credential-access operation affecting `WKS-EVAL01` and `WKS-EVAL02` between `2026-08-01T09:12:00Z` and `2026-08-01T09:35:00Z`: LSASS credentials were targeted on the first host, evidence was cleared, and Kerberos tickets were then sought on the second host before Defender protection was disabled. The apparent objective was to obtain reusable credentials or Kerberos tickets while reducing forensic visibility. No account, process path, executable hash, or cross-host event connects the two systems, so this unified intrusion theory is **MODERA"
+    ],
+    [
+      "tight window 09:10-09:20",
+      "focused",
+      "8 hosts, 2 findings, 0d span",
+      "## Executive Summary\n\nBetween `2026-08-01T09:12:00Z` and `2026-08-01T09:20:00Z`, activity on `WKS-EVAL01` most likely attempted to extract credentials from LSASS and then cleared the Security event log to conceal it. No graph evidence connects the other seven hosts or `adatumlab\\svc_backup` to this sequence, and the initial access method and operating account are undetermined. Overall confidence is **MODERATE**, based on two temporally aligned SIGMA detections without supporting process, account, path, hash, or raw-event evidence.\n\n## What happened\n\n1. **Observation \u2014 MODERATE:** At `2026-08-0"
+    ]
+  ],
+  "sim12": 0.09500922148326162,
+  "sim23": 0.11337748344370861
+}
