@@ -28,6 +28,7 @@ INVESTIGATE_SYSTEM = (
     "Tools:\n"
     "  list_findings({\"limit\":N})      -> {total_findings,shown,findings:[{id,title,severity,hosts,ts,kind}]}.\n"
     "  search({\"query\":\"...\"})         -> {total_matches,shown,findings:[...]} ranked by relevance.\n"
+    "  evidence({\"finding_id\":\"...\"})   -> {shown,total_rows,more_available,rows:[...]}; total_rows is the real count — when it exceeds `shown` you are reading a SAMPLE, so cite total_rows for how many, never the rows you saw.\n"
     "  evidence({\"finding_id\":\"...\"})  -> the RAW rows behind a finding (the ground truth).\n"
     "  clusters({})                    -> suspicious (host-cluster, time-window) hotspots.\n"
     "  pivot({\"value\":\"<account|host|process|ip>\",\"window\":{\"start\":\"...\",\"end\":\"...\"}}) "
@@ -55,6 +56,9 @@ _MAX_ROW_CHARS = 1500
 # A model that answers with a {final} before calling any tool has looked at no
 # evidence — nudge it back this many times, then FORCE one list_findings so the
 # answer is at least grounded (never accept a 0-evidence give-up).
+# Raw rows shown per evidence call. The call fetches one extra to detect that
+# more exist, so the loop can never mistake the sample for the population.
+_EVIDENCE_MAX_ROWS = 6
 _MIN_STEP_NUDGES = 2
 
 
@@ -132,9 +136,24 @@ def _tool(case_id, name, args):
                 for _, _, f in scored[:15]]
         return {"total_matches": len(scored), "shown": len(rows), "findings": rows}
     if name == "evidence":
-        rows = store.get_evidence_rows(case_id, args.get("finding_id"), max_rows=6)
-        return [{"artifact": r["artifact"],
-                 "row": json.dumps(r["row"], default=str)[:_MAX_ROW_CHARS]} for r in rows]
+        # Ask for one more than we show, purely to detect that more exist. Returning
+        # a bare capped list made the loop count the SAMPLE as the population: a
+        # finding backed by 50 raw rows was answered "6 separate Rclone exfiltration
+        # events" at HIGH confidence, quoting the six timestamps as proof.
+        fid = args.get("finding_id")
+        rows = store.get_evidence_rows(case_id, fid, max_rows=_EVIDENCE_MAX_ROWS)
+        # The finding's evidence LOCATORS give the exact population for free — no
+        # extra raw-file I/O — so report the real total rather than a "6 or more"
+        # lower bound the model would have to hedge around.
+        g = store.load_graph(case_id)
+        f = next((x for x in g.findings if x.id == fid), None)
+        total = len(f.evidence or []) if f else len(rows)
+        return {"shown": len(rows),
+                "total_rows": total,
+                "more_available": total > len(rows),
+                "rows": [{"artifact": r["artifact"],
+                          "row": json.dumps(r["row"], default=str)[:_MAX_ROW_CHARS]}
+                         for r in rows]}
     if name == "pivot":
         # The classic investigative move: every raw event that mentions a value
         # (account, host, process, ip), optionally inside a time window. Grounded

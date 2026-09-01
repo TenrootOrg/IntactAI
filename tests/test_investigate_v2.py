@@ -396,5 +396,55 @@ class TruncationIsVisible(unittest.TestCase):
         self.assertEqual(se["total_matches"], se["shown"])
 
 
+class EvidenceCountIsHonest(unittest.TestCase):
+    """A capped evidence fetch must not be mistaken for the whole population.
+
+    A finding backed by 50 raw rows was answered "6 separate Rclone exfiltration
+    events" at HIGH confidence, quoting the six timestamps as proof -- an 88%
+    undercount of an exfiltration, made to look rigorously grounded.
+    """
+
+    def _graph(self, n_refs):
+        g = schema.FusionGraph(case_id="c")
+        g.entities["asset:h"] = schema.Entity(id="asset:h", type="asset", label="H1")
+        g.findings.append(schema.Finding(
+            id="f1", title="Rclone Cloud Exfiltration on H1", severity="high",
+            confidence="medium", summary="", asset_ids=["asset:h"],
+            ts="2026-06-01T00:00:00Z",
+            evidence=[schema.EvidenceRef(module="agentic", run_id="r",
+                                         locator="A/row=%d" % i)
+                      for i in range(n_refs)]))
+        return g
+
+    def _rows(self, n):
+        return [{"artifact": "A", "row": {"i": i}} for i in range(n)]
+
+    def test_reports_true_total_not_sampled_rows(self):
+        g = self._graph(50)
+        with _Patched(investigate.store, load_graph=lambda c: g,
+                      get_evidence_rows=lambda c, f, max_rows=6: self._rows(max_rows)):
+            out = investigate._tool("c", "evidence", {"finding_id": "f1"})
+        self.assertEqual(out["total_rows"], 50)
+        self.assertEqual(out["shown"], 6)
+        self.assertTrue(out["more_available"])
+
+    def test_small_finding_is_not_flagged_as_sampled(self):
+        g = self._graph(3)
+        with _Patched(investigate.store, load_graph=lambda c: g,
+                      get_evidence_rows=lambda c, f, max_rows=6: self._rows(3)):
+            out = investigate._tool("c", "evidence", {"finding_id": "f1"})
+        self.assertEqual(out["total_rows"], 3)
+        self.assertEqual(out["shown"], 3)
+        self.assertFalse(out["more_available"])
+
+    def test_unknown_finding_does_not_raise(self):
+        g = self._graph(3)
+        with _Patched(investigate.store, load_graph=lambda c: g,
+                      get_evidence_rows=lambda c, f, max_rows=6: []):
+            out = investigate._tool("c", "evidence", {"finding_id": "nope"})
+        self.assertEqual(out["rows"], [])
+        self.assertFalse(out["more_available"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
