@@ -454,6 +454,7 @@ def get_case(case_id):
                     # refresh the body, instead of showing one undifferentiated
                     # spinner across two calls that can each take minutes.
                     "report_phase": d.get("report_phase"),
+                    "report_phase_started_at": d.get("report_phase_started_at"),
                     "report_generating_started_at": d.get("report_generating_started_at")})
 
 

@@ -708,7 +708,7 @@ function renderReport(info){
   // The report's own tail already told the story above; showing it again as a
   // raw markdown footnote would just repeat it in a smaller, unstyled font.
   const mdBody = md.replace(/\n\n---\n_(?:Deterministic report — [\s\S]*?|Narrative by live LLM[\s\S]*?)_\n\s*$/, '');
-  $('#tabc').innerHTML=`${banner}<div id="genstatus">${generating?genStatusHtml(info.report_generating_started_at, info.report_phase):''}</div><div class="row" style="gap:8px;margin-bottom:10px;align-items:center">
+  $('#tabc').innerHTML=`${banner}<div id="genstatus">${generating?genStatusHtml(info.report_generating_started_at, info.report_phase, info.report_phase_started_at):''}</div><div class="row" style="gap:8px;margin-bottom:10px;align-items:center">
     <button class="dlbtn" ${generating?'disabled title="A report is already being generated"':`onclick="regenReport('${id}')" title="Rebuild the report from the current case state (applies your Timeline confirmations). Generated automatically on first scan; after that only when you click here."`}>${generating?'⏳ Generating…':'↻ Regenerate report'}</button>
     ${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}
     <span style="color:var(--muted);font-size:11px;margin-left:auto">auto-generated on first scan · regenerate to apply Timeline changes</span>
@@ -766,13 +766,23 @@ let _genPoll=null, _genPollCase=null, _genPhase=null;
 // saved and was sitting readable on the page below still looked like a request
 // in flight -- for the entire length of the advisory, which is minutes. That
 // reads as stuck, and reasonably so.
-function genStatusHtml(startedAt, phase){
-  const started = startedAt ? new Date(startedAt+'Z') : null;
-  const mins = started ? Math.max(0, Math.round((Date.now()-started.getTime())/60000)) : 0;
-  const since = started ? (mins<1 ? 'just started' : `running ${mins} min`) : 'starting…';
+function genStatusHtml(startedAt, phase, phaseStartedAt){
+  const elapsedMin = (iso) => {
+    const t = iso ? new Date(iso+'Z') : null;
+    return t ? Math.max(0, Math.round((Date.now()-t.getTime())/60000)) : null;
+  };
+  const mins = elapsedMin(startedAt) ?? 0;
+  const since = startedAt ? (mins<1 ? 'just started' : `running ${mins} min`) : 'starting…';
   if(phase === 'advisory' || phase === 'checklist'){
+    // The PHASE's own clock, not the job's. Showing total elapsed next to
+    // "now generating the advisory" reads as the advisory's elapsed and
+    // overstates it by however long the narrative took -- live, that banner
+    // claimed 13 minutes for an advisory two minutes old.
+    const pmins = elapsedMin(phaseStartedAt);
+    const advisoryAge = (pmins===null) ? since
+      : (pmins<1 ? 'just started' : `${pmins} min`) + ` · ${mins} min total`;
     return `<div class="agbanner agbanner-live">
-      <div class="agtitle">✅ Report ready — now generating the advisory (${esc(since)})</div>
+      <div class="agtitle">✅ Report ready — now generating the advisory (${esc(advisoryAge)})</div>
       <div class="agdetail">The narrative below is finished and saved; it will not change. The advisory is a second model call over the same case and takes about as long again.</div>
       <div class="agaction">Safe to read, download or leave — the Analysis tab fills in the advisory on its own when it lands.</div>
     </div>`;
@@ -835,9 +845,10 @@ function pollReportGen(id){
       if(curInfo && curInfo.case_id===id){
         curInfo.report_generating=true;
         curInfo.report_phase=info.report_phase;
+        curInfo.report_phase_started_at=info.report_phase_started_at;
         curInfo.report_generating_started_at=info.report_generating_started_at;
         const gs=$('#genstatus');
-        if(tab==='report' && gs) gs.outerHTML=`<div id="genstatus">${genStatusHtml(info.report_generating_started_at, info.report_phase)}</div>`;
+        if(tab==='report' && gs) gs.outerHTML=`<div id="genstatus">${genStatusHtml(info.report_generating_started_at, info.report_phase, info.report_phase_started_at)}</div>`;
       }
     }).catch(()=>{});   // a blip in the poll is not a failure — just try again
   };

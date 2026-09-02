@@ -2337,7 +2337,8 @@ def regenerate_report_async(case_id, *, audience=None, use_llm=False) -> dict:
     try:
         _merge_case_details(case_id, {"report_generating": True,
                                       "report_generating_started_at": started,
-                                      "report_phase": "narrative"})
+                                      "report_phase": "narrative",
+                                      "report_phase_started_at": started})
     except Exception:
         lock.release()
         raise
@@ -2351,7 +2352,8 @@ def regenerate_report_async(case_id, *, audience=None, use_llm=False) -> dict:
             try:
                 _merge_case_details(case_id, {"report_generating": False,
                                               "report_generating_started_at": None,
-                                              "report_phase": None})
+                                              "report_phase": None,
+                                              "report_phase_started_at": None})
             except Exception:
                 pass
             lock.release()
@@ -2450,8 +2452,13 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
     # still in flight looked identical: the banner went on saying "sending case
     # data to the model" for the entire advisory, and the operator reasonably
     # read that as stuck.
+    # The phase gets its OWN clock. Reporting the job's total elapsed beside
+    # "now generating the advisory" reads as the advisory's elapsed and is wrong
+    # by however long the narrative took -- measured on a live case: the banner
+    # said the advisory was 13 minutes in when it had been running for two.
     _narrative_patch = {"report_md": report, "report_dirty": False,
-                        "report_phase": "advisory"}
+                        "report_phase": "advisory",
+                        "report_phase_started_at": _now_iso()}
     # Stamp WHICH runs this narrative describes. It was clearing report_dirty
     # and leaving report_run_ids alone, so report_stale_runs went on counting
     # every member as unreflected forever -- a report regenerated one second ago
