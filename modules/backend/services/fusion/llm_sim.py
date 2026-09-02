@@ -1221,7 +1221,14 @@ def analyze(graph, *, window=None, min_severity="informational", run_id=None,
     unmasked even when the case had masking enabled."""
     me = max_entities or budget.REPORT_MAX_ENTITIES
     bc = budget_chars or budget.REPORT_BUDGET_CHARS
-    _, findings = render.scope(graph, window=window, min_severity=min_severity)
+    # Deliberately guarded, and deliberately OUTSIDE the payload try below: a
+    # raise here used to propagate straight out of analyze() into the report
+    # path and abort the whole regeneration -- taking a finished narrative with
+    # it. Scoping is a filter; if it fails, group deterministically instead.
+    try:
+        _, findings = render.scope(graph, window=window, min_severity=min_severity)
+    except Exception:                       # noqa: BLE001
+        return _simulated_analysis(graph, list(graph.findings or []))
     if not _use_real():
         return _simulated_analysis(graph, findings)
     try:

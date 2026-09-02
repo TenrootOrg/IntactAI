@@ -191,8 +191,13 @@ def _call_openai_compatible(provider, prompt, system_prompt, api_key, model,
     rather than leaving it empty.
     """
     import openai
+    # max_retries is pinned rather than left to the SDK. The default is 2, which
+    # silently multiplies the timeout: a provider that stalls turns one 600s wait
+    # into three, ~30 minutes of a report generation that looks hung with nothing
+    # in the log. One retry absorbs a transient blip; it cannot hide a dead route.
     kwargs = {'api_key': api_key or 'not-needed',
-              'timeout': timeout or ONLINE_LLM_TIMEOUT_SECONDS}
+              'timeout': timeout or ONLINE_LLM_TIMEOUT_SECONDS,
+              'max_retries': 1}
     if base_url:
         kwargs['base_url'] = base_url
     client = openai.OpenAI(**kwargs)
@@ -201,14 +206,47 @@ def _call_openai_compatible(provider, prompt, system_prompt, api_key, model,
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
     label = provider.replace('-', ' ').title()
-    response = _wrap_decode_errors(label, lambda: client.chat.completions.create(
-        model=model,
-        messages=messages,
-        max_tokens=max_tokens,
-        temperature=0.1,
-    ))
+    body = {"model": model, "messages": messages, "max_tokens": max_tokens}
+
+    # temperature is sent, but is NOT allowed to be the reason a model fails.
+    #
+    # 0.1 is deliberate -- a DFIR narrative should be as close to reproducible as
+    # the model can manage -- so it stays the default. But a growing set of
+    # reasoning models reject the parameter outright with a 400 rather than
+    # ignoring it, and through a catalog of hundreds of routed models that
+    # presented as "this model is broken" when the model was fine and the
+    # request was not. Retry once without it instead of maintaining a hardcoded
+    # list of which models accept what: the error itself says so, and the list
+    # would be stale the week after it was written.
+    def _create(with_temperature):
+        kw = dict(body)
+        if with_temperature:
+            kw["temperature"] = 0.1
+        return client.chat.completions.create(**kw)
+
+    try:
+        response = _wrap_decode_errors(label, lambda: _create(True))
+    except Exception as e:                           # noqa: BLE001
+        if not _rejects_temperature(e):
+            raise
+        response = _wrap_decode_errors(label, lambda: _create(False))
     _record_llm_usage(run_id, provider, model, response)
     return response.choices[0].message.content
+
+
+def _rejects_temperature(exc) -> bool:
+    """Does this error say the model refused `temperature` specifically?
+
+    Narrow on purpose. A blanket "retry without temperature on any 400" would
+    quietly re-send prompts that failed for real reasons -- an over-long context,
+    a bad model id -- and double the bill for every one of them.
+    """
+    text = str(getattr(exc, "message", "") or exc).lower()
+    if "temperature" not in text:
+        return False
+    return any(w in text for w in (
+        "unsupported", "not supported", "does not support", "unsupported_value",
+        "unrecognized", "not permitted", "only the default", "invalid"))
 
 
 def _record_llm_usage(run_id, provider, model, response):

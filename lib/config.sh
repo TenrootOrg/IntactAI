@@ -153,11 +153,50 @@ _stamp_host_codex_paths() {
         done
     fi
 
+    # AN OPERATOR-DECLARED PATH BEATS ANYTHING DISCOVERED.
+    #
+    # Everything above is a heuristic run as one particular user, and no
+    # heuristic covers every install: a shared /opt tree, a second account's
+    # home, a custom prefix, a codex that is simply not on the PATH of the user
+    # who owns the appliance directory. This is the escape hatch, and it is the
+    # only thing that makes "any path" actually true — the container can see
+    # exactly what compose mounted and not one byte more, so no amount of
+    # searching on the inside can reach a directory nobody mounted.
+    #
+    # Point config.yaml's `agentic.codex_path` at the binary or at the directory
+    # holding it; both shapes resolve inside the container.
+    local override pkg_note="version stripped: an upgrade needs no re-stamp"
+    override="$(read_config "['agentic']['codex_path']" 2>/dev/null || true)"
+    if [[ -n "$override" && "$override" != "None" ]]; then
+        if [[ -e "$override" ]]; then
+            override="$(readlink -f "$override" 2>/dev/null || echo "$override")"
+            if [[ -f "$override" ]]; then pkg="$(dirname "$override")"; else pkg="$override"; fi
+            bin="$override"
+            pkg_note="declared in config.yaml"
+            log_info "  codex: agentic.codex_path overrides discovery -> ${pkg}"
+        else
+            log_warn "  codex: agentic.codex_path is set to '${override}' but nothing is there — ignoring it"
+        fi
+    fi
+
     local r
     r="$(_as_operator 'npm root -g')"
     [[ -d "$r" ]] && npmroot="$r"
 
+    # ~/.codex holds BOTH the credential and every release the official
+    # installer has ever fetched, and its path never changes across upgrades --
+    # but it does not exist until codex is first installed. An appliance
+    # installed BEFORE codex therefore stamped the empty placeholder here, and
+    # nothing ever re-stamps afterwards: the operator then installed codex
+    # exactly the documented way and the backend still could not see it, with
+    # no error anywhere to say why. Create the directory (as them, so it is
+    # theirs) and mount the real path even while it is empty — a later install
+    # then lands inside a mount that is already there, and needs no re-stamp
+    # and no container recreate to be found.
     home="$(getent passwd "$user" 2>/dev/null | cut -d: -f6)"
+    if [[ -n "$home" && -d "$home" ]]; then
+        [[ -d "${home}/.codex" ]] || _as_operator 'mkdir -p ~/.codex'
+    fi
     [[ -n "$home" && -d "${home}/.codex" ]] && home="${home}/.codex" \
         || home="${SCRIPT_DIR}/data/agentic_cli/host-home"
 
@@ -169,7 +208,7 @@ _stamp_host_codex_paths() {
     log_info "  codex (operator-installed): ${bin:-not found on the PATH}"
     log_info "    home=${home}   (version-independent)"
     log_info "    npm=${npmroot}  (version-independent)"
-    log_info "    pkg=${pkg}  (version stripped: an upgrade needs no re-stamp)"
+    log_info "    pkg=${pkg}  (${pkg_note})"
 }
 
 # Write a single pin into config.yaml's `versions:` block.

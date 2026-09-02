@@ -277,8 +277,22 @@ def _npm_vendor_globs(binary):
     #   standalone: <root>/bin/codex
     #   npm:        <root>/node_modules/@openai/codex-<arch>/vendor/<triple>/bin/codex
     yield f"{_HOST_PKG_DIR}/bin/{binary}"
+    # The mount root IS the releases dir, not its parent. lib/config.sh
+    # deliberately climbs out of the version component so that `codex upgrade`
+    # does not need a re-stamp -- which leaves INTACT_HOST_CODEX_PKG pointing at
+    #   ~/.codex/packages/standalone/releases
+    # and made the pattern below expand to .../releases/releases/*/bin/codex.
+    # Nothing could ever match it, so the whole codex-pkg mount was dead weight
+    # for the standard standalone install and discovery survived only on the
+    # separate ~/.codex home mount. This is the pattern that matches what is
+    # actually mounted; the releases/ form stays for a root stamped one level up.
+    yield f"{_HOST_PKG_DIR}/*/bin/{binary}"
     yield f"{_HOST_PKG_DIR}/releases/*/bin/{binary}"
     yield f"{_HOST_PKG_DIR}/node_modules/@openai/{binary}-*/vendor/*/bin/{binary}"
+    # An operator-declared location (config.yaml `agentic.codex_path`) is mounted
+    # at the same place, and can name a directory of any shape at all -- so the
+    # binary may sit directly at the mount root with no layout around it.
+    yield f"{_HOST_PKG_DIR}/{binary}"
     # The npm global root, asked of npm itself at stamp time rather than
     # assumed. Version-independent: the package directory keeps its name across
     # every upgrade, so this keeps working with no re-stamp.
@@ -591,6 +605,32 @@ def _run(provider, args, home, timeout, stdin_data=None):
 # detect — what the UI polls
 # ---------------------------------------------------------------------------
 
+def _mount_report() -> dict:
+    """What the three host mounts actually contain, seen from in here.
+
+    An EMPTY mount is the signature of both ways this goes wrong, and neither is
+    visible from the host — out there the paths in modules/backend/.env look
+    perfectly correct:
+      * the appliance was configured before codex was installed, so .env still
+        names the empty placeholder install.sh created; or
+      * .env was corrected afterwards but the container was never recreated, so
+        it is still running the mounts it was born with.
+    Measured on a live box: .env read /home/<op>/.codex/packages/standalone/
+    releases while /host/codex-pkg was the empty placeholder.
+    """
+    out = {}
+    for p in (_HOST_CODEX_HOME, _HOST_PKG_DIR, _HOST_NPM_DIR):
+        try:
+            if not os.path.isdir(p):
+                out[p] = "not mounted"
+                continue
+            n = len(os.listdir(p))
+            out[p] = f"{n} entr{'y' if n == 1 else 'ies'}" if n else "mounted but EMPTY"
+        except Exception as e:                       # noqa: BLE001
+            out[p] = f"unreadable ({type(e).__name__})"
+    return out
+
+
 def detect(provider) -> dict:
     """Report installed / authenticated state. Cheap: no model call, no network.
 
@@ -612,9 +652,17 @@ def detect(provider) -> dict:
         # standing they are right, because their copy is usually on the HOST and
         # this runs in a container that cannot see or execute it.
         out["searched"] = _candidate_paths(provider)
+        out["mounts"] = _mount_report()
         out["detail"] = (
             f"{spec['binary']} is not installed, or this appliance cannot see it. "
-            f"Install it on the host, then sign in with `{spec['binary']} login`.")
+            f"Install it on the host, then sign in with `{spec['binary']} login`. "
+            f"If it IS installed there and working in your own shell, this "
+            f"container's mounts are stale — run `sudo ./scripts/refresh_codex.sh` "
+            f"on the host. Restarting the backend cannot fix it: docker resolves "
+            f"bind mounts when a container is CREATED, so a restart faithfully "
+            f"reproduces the mounts it already had. For an install somewhere the "
+            f"search cannot reach, set `agentic.codex_path` in config.yaml to the "
+            f"binary (or its directory) and run that same script.")
         return out
     out["installed"] = True
     out["path"] = binary_path(provider)

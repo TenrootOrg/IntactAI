@@ -2096,10 +2096,22 @@ def _filter_graph_by_hosts(g, excluded_labels) -> FusionGraph:
 
 
 def _merge_case_details(case_id, patch) -> None:
-    """Merge a patch into the case details without disturbing its status."""
+    """Merge a patch into the case details without disturbing its status.
+
+    Raises if the write did not actually land. This whole chain used to swallow
+    failure end to end: save_workflow() catches every exception, prints to
+    stdout and returns False, and update_run_status() dropped that bool -- so a
+    database that could not be written was indistinguishable from a successful
+    save. The report path logged "Report saved" over a write that never
+    happened, and the report_generating flag-clear silently no-op'd on the way
+    out too, leaving the operator on a spinner that could never finish, with no
+    error anywhere in the UI. A persist that did not persist is an exception.
+    """
     ws = _ws()
     cur = (ws.get_automation_run(case_id) or {}).get("status") or "completed"
-    ws.update_run_status(case_id, cur, details=patch)
+    if not ws.update_run_status(case_id, cur, details=patch):
+        raise RuntimeError(f"case details write failed for {case_id} "
+                           f"(fields: {', '.join(sorted(patch))})")
 
 
 def _mutate_list_field(case_id, field, mutator) -> None:
@@ -2118,7 +2130,8 @@ def _mutate_list_field(case_id, field, mutator) -> None:
     mutate + write under ONE lock, so this can't happen."""
     def _apply(details):
         details[field] = mutator(details.get(field) or [])
-    _ws().mutate_run_details(case_id, _apply)
+    if not _ws().mutate_run_details(case_id, _apply):
+        raise RuntimeError(f"case details write failed for {case_id} (field: {field})")
 
 
 def _now_iso() -> str:
@@ -2245,6 +2258,38 @@ def _report_gen_lock(case_id):
 
 class ReportGenerationBusy(Exception):
     """A report is already being generated for this case."""
+
+
+# A generation older than this is treated as dead no matter what the flag says.
+# The worst legitimate run is three sequential model calls (narrative, advisory,
+# checklist) at ONLINE_LLM_TIMEOUT_SECONDS each -- 30 minutes -- so this leaves
+# real headroom above anything that could still be alive.
+REPORT_GEN_STALE_SECONDS = 45 * 60
+
+
+def report_generation_active(d) -> bool:
+    """Is a report genuinely being generated for this case right now?
+
+    Reads the flag but does not trust it on its own. `report_generating` is
+    cleared by the worker's `finally`, which is itself a database write -- and
+    when that write is the thing failing, the flag sticks True with nothing left
+    running that could ever clear it, so the operator watches a spinner that can
+    never finish and no error appears anywhere. The process-start sweep in
+    case_routes only catches the restart case; this catches the rest.
+    """
+    if not d.get("report_generating"):
+        return False
+    started = d.get("report_generating_started_at")
+    if not started:
+        return True                       # in flight, and no stamp to judge it by
+    from datetime import datetime, timezone
+    try:
+        ts = datetime.fromisoformat(str(started))
+    except Exception:                     # noqa: BLE001 — unparseable stamp
+        return True
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - ts).total_seconds() < REPORT_GEN_STALE_SECONDS
 
 
 def regenerate_report_async(case_id, *, audience=None, use_llm=False) -> dict:
@@ -2386,14 +2431,59 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
             else:
                 log_case_event(case_id, "Report · LLM responded", "success",
                                f"narrative generated ({len(report):,} chars)")
+    except Exception as e:
+        log_case_event(case_id, "Report generation", "error", f"LLM/render failed: {e}")
+        raise
+
+    # Persist the narrative THE MOMENT IT EXISTS, before anything else can fail.
+    # It used to live only in this local variable until a single write at the very
+    # end of the function -- behind two more LLM calls that can each run for
+    # minutes, raise, or be killed with the container. A model would return a
+    # complete report and the operator would never see it: the activity log's last
+    # line was "LLM responded", and nothing was ever written. Everything after this
+    # point is enrichment and is allowed to fail without costing the narrative.
+    _narrative_patch = {"report_md": report, "report_dirty": False}
+    # Stamp WHICH runs this narrative describes. It was clearing report_dirty
+    # and leaving report_run_ids alone, so report_stale_runs went on counting
+    # every member as unreflected forever -- a report regenerated one second ago
+    # still read as behind its own data. The graph this was rendered from is the
+    # one load_graph returned at the top of this function, so its fused member
+    # set is exactly what the report reflects. Absent on a legacy case (no
+    # tracking) -- leave it absent rather than inventing one.
+    _fused = d.get("fused_run_ids")
+    if _fused is not None:
+        _narrative_patch["report_run_ids"] = list(_fused)
+    try:
+        _merge_case_details(case_id, _narrative_patch)
+        log_case_event(case_id, "Report saved", "success",
+                       f"narrative written to the database ({len(report or ''):,} chars)")
+    except Exception as e:
+        log_case_event(case_id, "Report save", "error", f"database write failed: {e}")
+        raise
+
+    # Advisory: the SECOND model call, and the one that used to run in total
+    # silence -- no entry line, no exit line, so a long advisory looked
+    # indistinguishable from a hung backend. It is enrichment: a failure here
+    # leaves the already-saved narrative (and any previously stored advisory)
+    # exactly as it is, rather than aborting the whole regeneration.
+    analysis = None
+    if use_llm and model:
+        log_case_event(case_id, "Advisory · sending request to the LLM", "info",
+                       f"model {model} ({provider})")
+    try:
         analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
                                    dispositions=d.get("dispositions") or None,
                                    max_entities=llm_ent, budget_chars=llm_chars,
                                    max_output_tokens=llm_out, mask=mask,
                                    max_identities=llm_ident)
-    except Exception as e:
-        log_case_event(case_id, "Report generation", "error", f"LLM/render failed: {e}")
-        raise
+        log_case_event(
+            case_id, "Advisory · complete", "success",
+            f"{len((analysis or {}).get('incident_groups') or []):,} incident group(s), "
+            f"{len((analysis or {}).get('hypotheses') or []):,} hypothesis(es)")
+    except Exception as e:                       # noqa: BLE001
+        log_case_event(case_id, "Advisory", "warning",
+                       f"could not be generated ({type(e).__name__}: {e}); "
+                       f"the report is unaffected")
     # The customer-confirmation checklist moved here from fuse_case, which
     # generated it regardless of allow_llm and so made every first automatic
     # fuse a billed, blockable call. This is the narration step — the one that is
@@ -2402,33 +2492,33 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
     # waiting on one. Generated once and never regenerated: it carries the
     # operator's decisions.
     if not d.get("disposition_checklist"):
+        if use_llm and model:
+            log_case_event(case_id, "Checklist · sending request to the LLM", "info",
+                           f"model {model} ({provider})")
         try:
             fresh = llm_sim.generate_disposition_checklist(
                 gv, window=window, min_severity=min_sev, run_id=case_id, mask=mask)
             if fresh:
                 _mutate_list_field(case_id, "disposition_checklist",
                                    lambda cur: cur or fresh)
+                log_case_event(case_id, "Checklist · complete", "success",
+                               f"{len(fresh):,} item(s) generated")
         except Exception as e:                       # noqa: BLE001
             log_case_event(case_id, "Checklist", "warning",
                            f"could not be generated ({type(e).__name__}); "
                            f"the report is unaffected")
-    try:
-        patch = {"report_md": report, "analysis": analysis, "report_dirty": False}
-        # Stamp WHICH runs this narrative describes. It was clearing report_dirty
-        # and leaving report_run_ids alone, so report_stale_runs went on counting
-        # every member as unreflected forever — a report regenerated one second ago
-        # still read as behind its own data. The graph this was rendered from is the
-        # one load_graph returned at the top of this function, so its fused member
-        # set is exactly what the report reflects. Absent on a legacy case (no
-        # tracking) — leave it absent rather than inventing one.
-        _fused = d.get("fused_run_ids")
-        if _fused is not None:
-            patch["report_run_ids"] = list(_fused)
-        _merge_case_details(case_id, patch)
-        log_case_event(case_id, "Report saved", "success", "report + advisory written to the database")
-    except Exception as e:
-        log_case_event(case_id, "Report save", "error", f"database write failed: {e}")
-        raise
+    # The narrative is already durable (saved above); only the advisory is
+    # outstanding. `analysis is None` means the advisory pass failed and was
+    # logged as a warning -- keep whatever advisory the case already had rather
+    # than blanking it.
+    if analysis is not None:
+        try:
+            _merge_case_details(case_id, {"analysis": analysis})
+            log_case_event(case_id, "Advisory saved", "success",
+                           "advisory written to the database")
+        except Exception as e:
+            log_case_event(case_id, "Advisory save", "error", f"database write failed: {e}")
+            raise
     return {"report_md": report, "audience": d.get("audience", "both")}
 
 

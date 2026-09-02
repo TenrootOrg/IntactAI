@@ -448,7 +448,7 @@ def get_case(case_id):
                     # An LLM-narrated report can run for several minutes across
                     # two sequential calls — the frontend polls this to know
                     # when to stop showing "generating…" and refresh on its own.
-                    "report_generating": bool(d.get("report_generating")),
+                    "report_generating": store.report_generation_active(d),
                     "report_generating_started_at": d.get("report_generating_started_at")})
 
 

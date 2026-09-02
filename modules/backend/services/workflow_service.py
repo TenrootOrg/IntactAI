@@ -507,7 +507,7 @@ def update_run_status(run_id, status, progress=None, error=None, details=None, f
     with _get_run_log_lock(run_id):
         workflow = file_get_workflow(run_id)
         if not workflow:
-            return
+            return False
         # Cancellation is terminal: once request_stop() flips a run to
         # 'cancelled', the background worker's killed-subprocess
         # exception will try to mark it 'failed' on the way out. Silently
@@ -515,7 +515,7 @@ def update_run_status(run_id, status, progress=None, error=None, details=None, f
         # state instead of a stack trace.
         current = workflow.get("status")
         if current == "cancelled" and status != "cancelled":
-            return
+            return False
 
         # Safety net: refuse to mark a run with logged errors as
         # 'completed' unless the caller explicitly forces it.
@@ -553,7 +553,12 @@ def update_run_status(run_id, status, progress=None, error=None, details=None, f
             workflow["details"] = existing_details
         workflow["updated_at"] = datetime.now().isoformat()
 
-        save_workflow(workflow)
+        # Returned to the caller. save_workflow() catches every exception,
+        # prints to stdout and returns False, so dropping this bool made an
+        # unwritable database indistinguishable from a successful save --
+        # callers logged "saved" over nothing. Whether the row landed is the
+        # caller's business now.
+        saved = save_workflow(workflow)
 
         # A run that just reached a terminal state is new data for its case. Arm the
         # debounced auto-fuse -- ARM only. This runs inside the per-run lock, so it
@@ -570,6 +575,7 @@ def update_run_status(run_id, status, progress=None, error=None, details=None, f
                 except Exception as e:      # noqa: BLE001
                     print(f"[AUTOFUSE] could not schedule for "
                           f"{workflow.get('case_id')}: {e}", flush=True)
+        return saved
 
 
 def mutate_run_details(run_id, mutator):
@@ -582,12 +588,12 @@ def mutate_run_details(run_id, mutator):
     with _get_run_log_lock(run_id):
         workflow = file_get_workflow(run_id)
         if not workflow:
-            return
+            return False
         details = workflow.get("details") or {}
         mutator(details)
         workflow["details"] = details
         workflow["updated_at"] = datetime.now().isoformat()
-        save_workflow(workflow)
+        return save_workflow(workflow)
 
 
 def record_phase_timing(run_id, phase, seconds):
