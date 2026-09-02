@@ -220,7 +220,7 @@ def _llm_available() -> bool:
 
 
 def _real_llm(system_prompt: str, user_message: str, *, run_id=None,
-              max_output_tokens=None) -> str:
+              max_output_tokens=None, reasoning_effort=None) -> str:
     """Production path. The distilled graph is KB-sized, so this is cheap. Token
     counts land on the run's llm_metrics automatically via call_llm's recorder.
     `max_output_tokens` (the case 'Output token cap') overrides the global
@@ -233,7 +233,8 @@ def _real_llm(system_prompt: str, user_message: str, *, run_id=None,
         ag = dict(cfg.get("agentic") or {})
         ag["max_response_tokens"] = int(max_output_tokens)
         cfg["agentic"] = ag
-    return call_llm(user_message, system_prompt, cfg, run_id=run_id)
+    return call_llm(user_message, system_prompt, cfg, run_id=run_id,
+                    reasoning_effort=reasoning_effort)
 
 
 import re as _re
@@ -1157,7 +1158,16 @@ def generate_report(graph, *, window=None, min_severity="informational",
 
 
 def _parse_json(text):
-    """Tolerant extraction of the first JSON object from an LLM response."""
+    """Tolerant extraction of the first JSON object from an LLM response.
+
+    Tolerant INCLUDES no response at all. A reasoning model can return
+    `content: null` -- not "" -- when it spends its whole output allowance
+    thinking, and this crashed on None with AttributeError. analyze()'s blanket
+    except then dressed that crash up as a deterministic host-grouping, so a
+    transport-level failure arrived looking like an advisory. Measured live.
+    """
+    if not isinstance(text, str):
+        return {}
     try:
         return json.loads(text)
     except Exception:
@@ -1272,7 +1282,14 @@ def analyze(graph, *, window=None, min_severity="informational", run_id=None,
             _log_mask_audit(run_id, mask, user)
             user = _apply_mask(user, mask)
             system = _MASK_IDENTITY_LEGEND + system
-        raw = _real_llm(system, user, run_id=run_id, max_output_tokens=max_output_tokens)
+        # LOW EFFORT, deliberately. The advisory returns a small JSON document,
+        # but reasoning tokens come out of the SAME output allowance as the
+        # answer -- measured live: this call billed exactly its 32,000-token cap
+        # and returned a ONE CHARACTER reply, having never reached the answer.
+        # Every advisory on that appliance had been empty for the same reason.
+        raw = _real_llm(system, user, run_id=run_id,
+                        max_output_tokens=max_output_tokens,
+                        reasoning_effort="low")
         raw = _revert_mask(raw, mask)
         parsed = _parse_json(raw)
         out = _ground(parsed, graph)
@@ -1289,13 +1306,25 @@ def analyze(graph, *, window=None, min_severity="informational", run_id=None,
         # minutes, reduced to nothing with no record of why. Zero hypotheses had
         # been the result of every advisory on that box and nobody could tell
         # whether the model was returning none or we were dropping them all.
-        out["_diagnostic"] = _advisory_diagnostic(raw, parsed, out)
+        out["_diagnostic"] = _advisory_diagnostic(raw, parsed, out,
+                                                  budget=max_output_tokens)
         return out
-    except Exception:  # noqa: BLE001 — advisory only; never break a case
-        return _simulated_analysis(graph, findings)
+    except Exception as e:  # noqa: BLE001 — advisory only; never break a case
+        # STILL never break a case -- but never hide WHY either. This handler has
+        # been converting every failure in the advisory path into a deterministic
+        # host-grouping that looks like a real result: nine tidy "Activity on
+        # <host>" groups, no error anywhere, indistinguishable from the model
+        # having answered. It concealed at least two separate defects in one
+        # afternoon, including a TypeError raised client-side before any request
+        # was even sent. A fallback that cannot be told apart from success is how
+        # a bug survives for months.
+        out = _simulated_analysis(graph, findings)
+        out["_diagnostic"] = {"fell_back": True,
+                              "error": f"{type(e).__name__}: {e}"[:300]}
+        return out
 
 
-def _advisory_diagnostic(raw, parsed, grounded) -> dict:
+def _advisory_diagnostic(raw, parsed, grounded, budget=None) -> dict:
     """Why an advisory came back thinner than the model's reply.
 
     Counts only, plus a short head of the raw text when nothing could be parsed
@@ -1312,7 +1341,16 @@ def _advisory_diagnostic(raw, parsed, grounded) -> dict:
          "kept_groups": g_groups, "kept_hypotheses": g_hyps,
          "dropped_groups": max(0, p_groups - g_groups),
          "dropped_hypotheses": max(0, p_hyps - g_hyps)}
-    if raw.strip() and not p_groups and not p_hyps:
+    if budget:
+        d["output_budget"] = int(budget)
+    if not raw.strip():
+        # Nothing came back at all. On a reasoning model this is budget
+        # exhaustion, not silence: thinking tokens are drawn from the SAME
+        # allowance as the answer, so a large enough case consumes the whole cap
+        # before a single character of the reply is written. Measured live: 32,000
+        # output tokens billed, a one character reply.
+        d["empty_reply"] = True
+    elif not p_groups and not p_hyps:
         d["unparseable"] = True
         d["reply_head"] = raw.strip()[:300]
     return d
@@ -1327,6 +1365,17 @@ def advisory_shortfall(analysis) -> str:
     d = (analysis or {}).get("_diagnostic") or {}
     if not d:
         return ""
+    if d.get("fell_back"):
+        return (f"the model was not used — the advisory pass failed with "
+                f"{d.get('error') or 'an unknown error'}, so these groups are the "
+                f"deterministic per-host fallback, not analysis")
+    if d.get("empty_reply"):
+        cap = d.get("output_budget")
+        return ("the model returned an EMPTY reply — a reasoning model draws its "
+                "thinking from the same output allowance as its answer, so it spent "
+                + (f"the whole {cap:,}-token cap" if cap else "the whole output cap")
+                + " before writing anything. Lower the reasoning effort or raise the "
+                  "output cap for this model")
     if d.get("unparseable"):
         return (f"the model replied with {d.get('reply_chars', 0):,} characters that "
                 f"could not be read as JSON, so nothing could be used "

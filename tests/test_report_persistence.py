@@ -296,5 +296,36 @@ def _graph_with_findings(schema):
     return g
 
 
+
+
+class AnEmptyReplyMustBeNamedAsBudgetExhaustion(unittest.TestCase):
+    """The failure that actually hit production, and the one the first version of
+    the diagnostic stayed silent about.
+
+    Measured live: an advisory call billed exactly its 32,000-token output cap and
+    returned a ONE CHARACTER reply. Reasoning tokens come out of the same
+    allowance as the answer, so the model never reached the answer. It is not "the
+    model had nothing to say" and it is not an id or grounding problem -- the
+    reply is blank before any of that can matter.
+    """
+
+    def test_a_blank_reply_is_reported_as_budget_exhaustion(self):
+        d = llm_sim._advisory_diagnostic(" ", {}, {"incident_groups": [],
+                                                   "hypotheses": []}, budget=32000)
+        self.assertTrue(d["empty_reply"])
+        self.assertNotIn("unparseable", d)
+        msg = llm_sim.advisory_shortfall({"_diagnostic": d})
+        self.assertIn("EMPTY reply", msg)
+        self.assertIn("32,000-token cap", msg)
+
+    def test_prose_is_still_reported_as_unparseable_not_empty(self):
+        """The two need opposite fixes, so they must not collapse into one."""
+        d = llm_sim._advisory_diagnostic("Here is my analysis:", {},
+                                         {"incident_groups": [], "hypotheses": []})
+        self.assertTrue(d.get("unparseable"))
+        self.assertNotIn("empty_reply", d)
+        self.assertIn("could not be read as JSON", llm_sim.advisory_shortfall({"_diagnostic": d}))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -183,7 +183,8 @@ def _wrap_decode_errors(provider_name, fn):
 
 
 def _call_openai_compatible(provider, prompt, system_prompt, api_key, model,
-                            max_tokens, base_url=None, timeout=None, run_id=None):
+                            max_tokens, base_url=None, timeout=None, run_id=None,
+                            reasoning_effort=None):
     """One request path for every OpenAI chat-completions endpoint.
 
     `api_key` may be a placeholder for self-hosted servers that ignore auth —
@@ -208,6 +209,25 @@ def _call_openai_compatible(provider, prompt, system_prompt, api_key, model,
     label = provider.replace('-', ' ').title()
     body = {"model": model, "messages": messages, "max_tokens": max_tokens}
 
+    # REASONING BUDGET. A reasoning model spends output tokens thinking before it
+    # writes anything, and those come out of the SAME max_tokens allowance as the
+    # answer. Measured on a live case: an advisory call billed exactly 32,000
+    # output tokens -- the whole cap -- and returned a ONE CHARACTER reply. It
+    # never reached the answer. Every advisory on that box had been empty for the
+    # same reason, and it read as "the model found nothing to say".
+    #
+    # So a caller that needs a short STRUCTURED answer (the advisory returns a
+    # little JSON; the checklist likewise) asks for low effort, leaving the budget
+    # for the reply. Narrative prose does not pass this and is unaffected.
+    # extra_body, NOT a keyword. `reasoning` is an OpenRouter extension, and the
+    # OpenAI SDK validates its own keyword list before any request is sent:
+    # passing it directly raises TypeError("unexpected keyword argument
+    # 'reasoning'") locally, which analyze() then swallowed into the deterministic
+    # fallback -- a silent downgrade that looked exactly like the empty advisory
+    # it was meant to fix. extra_body is the documented way through.
+    if reasoning_effort:
+        body["extra_body"] = {"reasoning": {"effort": reasoning_effort}}
+
     # temperature is sent, but is NOT allowed to be the reason a model fails.
     #
     # 0.1 is deliberate -- a DFIR narrative should be as close to reproducible as
@@ -218,20 +238,53 @@ def _call_openai_compatible(provider, prompt, system_prompt, api_key, model,
     # request was not. Retry once without it instead of maintaining a hardcoded
     # list of which models accept what: the error itself says so, and the list
     # would be stale the week after it was written.
-    def _create(with_temperature):
+    def _create(with_temperature, with_reasoning=True):
         kw = dict(body)
         if with_temperature:
             kw["temperature"] = 0.1
+        if not with_reasoning:
+            kw.pop("extra_body", None)
         return client.chat.completions.create(**kw)
 
     try:
         response = _wrap_decode_errors(label, lambda: _create(True))
     except Exception as e:                           # noqa: BLE001
-        if not _rejects_temperature(e):
+        # Same narrow, error-text-driven retry as temperature: not every provider
+        # on a routed catalog accepts `reasoning`, and a model must not be
+        # reported as broken because of a parameter we chose to send.
+        if _rejects_temperature(e):
+            response = _wrap_decode_errors(label, lambda: _create(False))
+        elif _rejects_reasoning(e):
+            response = _wrap_decode_errors(label, lambda: _create(True, False))
+        else:
             raise
-        response = _wrap_decode_errors(label, lambda: _create(False))
     _record_llm_usage(run_id, provider, model, response)
-    return response.choices[0].message.content
+    # `content` is None, not "", when a reasoning model spends its entire output
+    # allowance thinking and never writes an answer. Callers reasonably treat the
+    # return as a string; handing them None turned that into an AttributeError
+    # deep in a JSON parser, which the advisory then swallowed into a fallback
+    # that looked like a real result. Return the empty string the callers expect
+    # -- "the model answered with nothing" is a legitimate outcome and is
+    # reported as one; a None is just a crash waiting to happen.
+    return response.choices[0].message.content or ""
+
+
+def _rejects_reasoning(exc) -> bool:
+    """Does this error say the provider refused the `reasoning` parameter?
+
+    Narrow, like _rejects_temperature: a blanket retry would re-send prompts that
+    failed for real reasons and bill twice for each.
+    """
+    text = str(getattr(exc, "message", "") or exc).lower()
+    if "reasoning" not in text:
+        return False
+    return any(w in text for w in (
+        "unsupported", "not supported", "does not support", "unrecognized",
+        "unknown", "invalid", "not permitted", "extra fields",
+        # A client-side rejection reads differently from a provider 400 and must
+        # trigger the same retry -- missing it turned an optional optimisation
+        # into a hard failure of the whole advisory.
+        "unexpected keyword"))
 
 
 def _rejects_temperature(exc) -> bool:
@@ -563,7 +616,8 @@ def subscription_provider_ready(provider) -> bool:
         return False
 
 
-def call_llm(prompt, system_prompt, config, run_id=None, model_override=None):
+def call_llm(prompt, system_prompt, config, run_id=None, model_override=None,
+             reasoning_effort=None):
     """Call the configured LLM provider.
 
     `run_id` is optional; when provided, per-call token usage is accumulated
@@ -602,15 +656,18 @@ def call_llm(prompt, system_prompt, config, run_id=None, model_override=None):
         provider_config = dict(agentic_config.get('online_llm', {}))
         if model_override:
             provider_config['model'] = model_override
-        return _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id)
+        return _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id,
+                                reasoning_effort=reasoning_effort)
     else:
         provider_config = dict(agentic_config.get('offline_llm', {}))
         if model_override:
             provider_config['model'] = model_override
-        return _call_llm_offline(prompt, system_prompt, provider_config, context_size, timeout, run_id)
+        return _call_llm_offline(prompt, system_prompt, provider_config, context_size, timeout,
+                                 run_id, reasoning_effort=reasoning_effort)
 
 
-def _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id=None):
+def _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id=None,
+                     reasoning_effort=None):
     """Call Claude or other online LLM"""
     provider = provider_config.get('provider', 'claude')
     api_key = provider_config.get('api_key', '')
@@ -653,7 +710,8 @@ def _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id=
     elif provider in OPENAI_COMPATIBLE_BASE_URLS:
         return _call_openai_compatible(
             provider, prompt, system_prompt, api_key, model, max_tokens,
-            base_url=OPENAI_COMPATIBLE_BASE_URLS[provider], run_id=run_id)
+            base_url=OPENAI_COMPATIBLE_BASE_URLS[provider], run_id=run_id,
+            reasoning_effort=reasoning_effort)
     elif provider == 'gemini':
         import google.generativeai as genai
         genai.configure(api_key=api_key)
@@ -703,7 +761,8 @@ def _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id=
         raise ValueError(f"Unsupported online provider: {provider}")
 
 
-def _call_llm_offline(prompt, system_prompt, provider_config, context_size, timeout, run_id=None):
+def _call_llm_offline(prompt, system_prompt, provider_config, context_size, timeout, run_id=None,
+                      reasoning_effort=None):
     """Call Ollama or other local LLM"""
     provider = provider_config.get('provider', 'ollama')
     model = provider_config.get('model', 'llama3.3:70b')
@@ -741,6 +800,7 @@ def _call_llm_offline(prompt, system_prompt, provider_config, context_size, time
         return _call_openai_compatible(
             'openai-compatible', prompt, system_prompt, api_key, model,
             max_tokens=provider_config.get('max_tokens') or MAX_LLM_TOKENS,
-            base_url=url, timeout=timeout, run_id=run_id)
+            base_url=url, timeout=timeout, run_id=run_id,
+            reasoning_effort=reasoning_effort)
     else:
         raise ValueError(f"Unsupported offline provider: {provider}")

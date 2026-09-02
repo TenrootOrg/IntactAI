@@ -1721,6 +1721,21 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         llm_ent, llm_chars = _llm_payload_budget(d)
         llm_ident = _llm_identity_budget(d)
         llm_out = _effective_output_cap(d)
+        # THIS PATH NARRATES WITHOUT GOING THROUGH regenerate_report, so it had
+        # none of its phase logging or clocks. A Refusion printed one line at 88%
+        # and then nothing at all for the ten minutes the model took -- while the
+        # banner went on showing the PREVIOUS run's phase and elapsed time,
+        # because those are stamped by regenerate_report_async and nothing here
+        # reset them. Reported live as "the timers didn't reset when I started a
+        # new fusion", and before that as the whole thing looking dead.
+        _mdl, _prov, _ = _configured_fusion_model()
+        if _narrate and _mdl:
+            _merge_case_details(case_id, {"report_phase": "narrative",
+                                          "report_phase_started_at": _now_iso(),
+                                          "report_generating_started_at": _now_iso()})
+            log_case_event(case_id, "Report · sending request to the LLM", "info",
+                           f"model {_mdl} ({_prov}); payload ≤{llm_ent:,} entities, "
+                           f"output ≤{llm_out or 'model max'} tokens")
         report = llm_sim.generate_report(
             gv, window=window, min_severity=min_sev,
             initial_access=d.get("initial_access_estimate"),
@@ -1740,6 +1755,16 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
             prefer_llm=_narrate,
             max_entities=llm_ent, budget_chars=llm_chars, max_output_tokens=llm_out,
             detail="explicit", max_identities=llm_ident)
+        if _narrate and _mdl:
+            _marker = "_Live LLM unavailable"
+            if _marker in (report or ""):
+                _why = (report.split(_marker, 1)[1].split("\n", 1)[0] or "").strip(" (_.")
+                log_case_event(case_id, "Report · LLM call failed", "warning",
+                               f"{_why or 'provider unavailable'} — deterministic "
+                               f"report used instead")
+            else:
+                log_case_event(case_id, "Report · LLM responded", "success",
+                               f"narrative generated ({len(report or ''):,} chars)")
         # ADVISORY analyst pass — incident-grouping + grounded hypotheses. Stored
         # SEPARATELY from the deterministic findings; fed prior operator dispositions.
         # The advisory is the SECOND model call in this branch. An automatic fuse
@@ -1747,11 +1772,26 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         # it keeps any advisory the operator already had, rather than replacing
         # a real one with an empty deterministic stand-in.
         if allow_llm:
+            if _mdl:
+                _merge_case_details(case_id, {"report_phase": "advisory",
+                                              "report_phase_started_at": _now_iso()})
+                log_case_event(case_id, "Advisory · sending request to the LLM", "info",
+                               f"model {_mdl} ({_prov})")
             analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
                                        dispositions=d.get("dispositions") or None,
                                        max_entities=llm_ent, budget_chars=llm_chars,
                                        max_output_tokens=llm_out, mask=mask,
                                        max_identities=llm_ident)
+            if _mdl:
+                _g = len((analysis or {}).get("incident_groups") or [])
+                _h = len((analysis or {}).get("hypotheses") or [])
+                _lost = llm_sim.advisory_shortfall(analysis)
+                log_case_event(
+                    case_id,
+                    "Advisory · complete" if (_g or _h) else "Advisory · returned nothing usable",
+                    "success" if (_g or _h) else "warning",
+                    f"{_g:,} incident group(s), {_h:,} hypothesis(es)"
+                    + (f" — {_lost}" if _lost else ""))
         else:
             analysis = d.get("analysis") or {}
         report_members = list(members)   # report now reflects exactly these members
@@ -1776,11 +1816,23 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     # in the narration step, which is the one allowed to be slow and billed.
     fresh_checklist = None
     if allow_llm and not d.get("disposition_checklist"):
+        _cmdl, _cprov, _ = _configured_fusion_model()
+        if _cmdl:
+            _merge_case_details(case_id, {"report_phase": "checklist",
+                                          "report_phase_started_at": _now_iso()})
+            log_case_event(case_id, "Checklist · sending request to the LLM", "info",
+                           f"model {_cmdl} ({_cprov})")
         try:
             fresh_checklist = llm_sim.generate_disposition_checklist(
                 gv, window=window, min_severity=min_sev, run_id=case_id, mask=mask)
-        except Exception:
+            if _cmdl:
+                log_case_event(case_id, "Checklist · complete", "success",
+                               f"{len(fresh_checklist or []):,} item(s) generated")
+        except Exception as e:                       # noqa: BLE001
             fresh_checklist = None
+            log_case_event(case_id, "Checklist", "warning",
+                           f"could not be generated ({type(e).__name__}); "
+                           f"the report is unaffected")
 
     # Token A/B: raw rows a normal run would feed vs the distilled payload the LLM
     # actually sees. raw_approx is necessarily an estimate (we never send raw), so
