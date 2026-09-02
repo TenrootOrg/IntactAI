@@ -2492,10 +2492,18 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
                                    max_entities=llm_ent, budget_chars=llm_chars,
                                    max_output_tokens=llm_out, mask=mask,
                                    max_identities=llm_ident)
+        _groups = len((analysis or {}).get('incident_groups') or [])
+        _hyps = len((analysis or {}).get('hypotheses') or [])
+        # An advisory that answered and was then entirely discarded is NOT a
+        # success, and logging it as one is how "0 incident group(s)" went
+        # unexamined for a whole day of testing. Say what was lost and why.
+        _lost = llm_sim.advisory_shortfall(analysis)
         log_case_event(
-            case_id, "Advisory · complete", "success",
-            f"{len((analysis or {}).get('incident_groups') or []):,} incident group(s), "
-            f"{len((analysis or {}).get('hypotheses') or []):,} hypothesis(es)")
+            case_id,
+            "Advisory · complete" if (_groups or _hyps) else "Advisory · returned nothing usable",
+            "success" if (_groups or _hyps) else "warning",
+            f"{_groups:,} incident group(s), {_hyps:,} hypothesis(es)"
+            + (f" — {_lost}" if _lost else ""))
     except Exception as e:                       # noqa: BLE001
         log_case_event(case_id, "Advisory", "warning",
                        f"could not be generated ({type(e).__name__}: {e}); "

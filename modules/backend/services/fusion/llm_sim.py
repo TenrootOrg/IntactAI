@@ -1261,9 +1261,72 @@ def analyze(graph, *, window=None, min_severity="informational", run_id=None,
             system = _MASK_IDENTITY_LEGEND + system
         raw = _real_llm(system, user, run_id=run_id, max_output_tokens=max_output_tokens)
         raw = _revert_mask(raw, mask)
-        return _ground(_parse_json(raw), graph)
+        parsed = _parse_json(raw)
+        out = _ground(parsed, graph)
+        # SAY WHAT WAS THROWN AWAY.
+        #
+        # Both discard paths above are silent. _parse_json returns {} for any
+        # reply it cannot read, and _ground drops a group or hypothesis whose
+        # cited ids are not in the graph -- one citing nothing real disappears
+        # with no trace. Either way analyze() returns an empty advisory that is
+        # indistinguishable from "the model had nothing to say", and the caller
+        # logs "Advisory · complete — 0 incident group(s)" as a SUCCESS.
+        #
+        # Measured live: a 13,281-token reply, paid for and waited on for seven
+        # minutes, reduced to nothing with no record of why. Zero hypotheses had
+        # been the result of every advisory on that box and nobody could tell
+        # whether the model was returning none or we were dropping them all.
+        out["_diagnostic"] = _advisory_diagnostic(raw, parsed, out)
+        return out
     except Exception:  # noqa: BLE001 — advisory only; never break a case
         return _simulated_analysis(graph, findings)
+
+
+def _advisory_diagnostic(raw, parsed, grounded) -> dict:
+    """Why an advisory came back thinner than the model's reply.
+
+    Counts only, plus a short head of the raw text when nothing could be parsed
+    at all -- enough to tell "it answered in prose" from "it cited ids we do not
+    have", which need completely different fixes.
+    """
+    raw = raw or ""
+    p_groups = len(parsed.get("incident_groups") or []) if isinstance(parsed, dict) else 0
+    p_hyps = len(parsed.get("hypotheses") or []) if isinstance(parsed, dict) else 0
+    g_groups = len(grounded.get("incident_groups") or [])
+    g_hyps = len(grounded.get("hypotheses") or [])
+    d = {"reply_chars": len(raw),
+         "parsed_groups": p_groups, "parsed_hypotheses": p_hyps,
+         "kept_groups": g_groups, "kept_hypotheses": g_hyps,
+         "dropped_groups": max(0, p_groups - g_groups),
+         "dropped_hypotheses": max(0, p_hyps - g_hyps)}
+    if raw.strip() and not p_groups and not p_hyps:
+        d["unparseable"] = True
+        d["reply_head"] = raw.strip()[:300]
+    return d
+
+
+def advisory_shortfall(analysis) -> str:
+    """One operator-readable sentence about what an advisory lost, or "".
+
+    Empty when the model's answer survived intact -- there is nothing to report
+    and a line saying so is noise.
+    """
+    d = (analysis or {}).get("_diagnostic") or {}
+    if not d:
+        return ""
+    if d.get("unparseable"):
+        return (f"the model replied with {d.get('reply_chars', 0):,} characters that "
+                f"could not be read as JSON, so nothing could be used "
+                f"(starts: {str(d.get('reply_head') or '')[:120]!r})")
+    lost = []
+    if d.get("dropped_groups"):
+        lost.append(f"{d['dropped_groups']} incident group(s)")
+    if d.get("dropped_hypotheses"):
+        lost.append(f"{d['dropped_hypotheses']} hypothesis(es)")
+    if not lost:
+        return ""
+    return (" and ".join(lost) + " were discarded because they cited findings or "
+            "entities that are not in this case's graph")
 
 
 CHECKLIST_SYSTEM_PROMPT = (

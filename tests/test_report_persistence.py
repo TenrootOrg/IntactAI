@@ -37,7 +37,7 @@ if "services" not in sys.modules:
     _svc.__path__ = [os.path.join(_BACKEND, "services")]
     sys.modules["services"] = _svc
 
-from services.fusion import store  # noqa: E402
+from services.fusion import store, llm_sim  # noqa: E402
 
 
 class _Graph:
@@ -95,7 +95,8 @@ class NarrativeSurvivesEnrichmentFailure(unittest.TestCase):
                          "a failed advisory pass overwrote the stored advisory")
 
     def test_happy_path_still_saves_both(self):
-        out, writes, logs = self._run(lambda *a, **k: {"incident_groups": [], "hypotheses": []})
+        out, writes, logs = self._run(
+            lambda *a, **k: {"incident_groups": [{"name": "g"}], "hypotheses": []})
         self.assertEqual([w for w in writes if "report_md" in w][0]["report_md"], "NARRATIVE")
         self.assertEqual(len([w for w in writes if "analysis" in w]), 1)
         self.assertEqual(out["report_md"], "NARRATIVE")
@@ -103,10 +104,19 @@ class NarrativeSurvivesEnrichmentFailure(unittest.TestCase):
     def test_the_advisory_phase_is_logged_at_both_ends(self):
         """It used to run in total silence, so a slow advisory and a hung backend
         looked identical in the activity log."""
-        _, _, logs = self._run(lambda *a, **k: {"incident_groups": [], "hypotheses": []})
+        _, _, logs = self._run(
+            lambda *a, **k: {"incident_groups": [{"name": "g"}], "hypotheses": []})
         actions = [a for a, _ in logs]
         self.assertIn("Advisory · sending request to the LLM", actions)
         self.assertIn("Advisory · complete", actions)
+
+    def test_an_advisory_that_produced_nothing_is_a_warning_not_a_success(self):
+        """Measured live: a 13,281-token reply, paid for and waited on for seven
+        minutes, was discarded whole and logged as "Advisory · complete —
+        0 incident group(s)" with a green SUCCESS. That is how it went unexamined."""
+        _, _, logs = self._run(lambda *a, **k: {"incident_groups": [], "hypotheses": []})
+        self.assertIn(("Advisory · returned nothing usable", "warning"), logs)
+        self.assertNotIn(("Advisory · complete", "success"), logs)
 
 
 class AFailedWriteIsAnError(unittest.TestCase):
@@ -162,6 +172,51 @@ class StuckSpinnerWatchdog(unittest.TestCase):
         for stamp in (None, "", "not-a-timestamp"):
             self.assertTrue(store.report_generation_active(
                 {"report_generating": True, "report_generating_started_at": stamp}), stamp)
+
+
+
+
+class AnAdvisoryMustExplainWhatItLost(unittest.TestCase):
+    """Both discard paths in analyze() are silent: _parse_json returns {} for a
+    reply it cannot read, and _ground drops anything citing ids the graph does
+    not have. Either way the advisory comes back empty and looks identical to
+    "the model had nothing to say" -- so nobody looks."""
+
+    def _diag(self, raw, parsed, grounded):
+        return llm_sim._advisory_diagnostic(raw, parsed, grounded)
+
+    def test_an_unreadable_reply_says_so_and_shows_the_start_of_it(self):
+        """'It answered in prose' and 'it cited ids we do not have' need
+        completely different fixes, so the message must tell them apart."""
+        d = self._diag("Here is my analysis of the incident: the attacker...",
+                       {}, {"incident_groups": [], "hypotheses": []})
+        self.assertTrue(d["unparseable"])
+        self.assertIn("Here is my analysis", d["reply_head"])
+        msg = llm_sim.advisory_shortfall({"_diagnostic": d})
+        self.assertIn("could not be read as JSON", msg)
+
+    def test_ungrounded_citations_are_counted_not_hidden(self):
+        parsed = {"incident_groups": [{"name": "a"}, {"name": "b"}, {"name": "c"}],
+                  "hypotheses": [{"title": "h1"}, {"title": "h2"}]}
+        grounded = {"incident_groups": [{"name": "a"}], "hypotheses": []}
+        d = self._diag('{"incident_groups": []}', parsed, grounded)
+        self.assertEqual(d["dropped_groups"], 2)
+        self.assertEqual(d["dropped_hypotheses"], 2)
+        msg = llm_sim.advisory_shortfall({"_diagnostic": d})
+        self.assertIn("2 incident group(s)", msg)
+        self.assertIn("2 hypothesis(es)", msg)
+        self.assertIn("not in this case's graph", msg)
+
+    def test_an_intact_advisory_reports_nothing(self):
+        """A line about losses that did not happen is noise."""
+        parsed = {"incident_groups": [{"name": "a"}], "hypotheses": [{"title": "h"}]}
+        d = self._diag('{"ok":1}', parsed, parsed)
+        self.assertEqual(llm_sim.advisory_shortfall({"_diagnostic": d}), "")
+
+    def test_no_diagnostic_is_silent(self):
+        """The deterministic/simulated path carries none, and must not claim loss."""
+        self.assertEqual(llm_sim.advisory_shortfall({"incident_groups": []}), "")
+        self.assertEqual(llm_sim.advisory_shortfall(None), "")
 
 
 if __name__ == "__main__":
