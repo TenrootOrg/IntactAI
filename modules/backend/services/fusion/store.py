@@ -2336,7 +2336,8 @@ def regenerate_report_async(case_id, *, audience=None, use_llm=False) -> dict:
     started = _now_iso()
     try:
         _merge_case_details(case_id, {"report_generating": True,
-                                      "report_generating_started_at": started})
+                                      "report_generating_started_at": started,
+                                      "report_phase": "narrative"})
     except Exception:
         lock.release()
         raise
@@ -2349,7 +2350,8 @@ def regenerate_report_async(case_id, *, audience=None, use_llm=False) -> dict:
         finally:
             try:
                 _merge_case_details(case_id, {"report_generating": False,
-                                              "report_generating_started_at": None})
+                                              "report_generating_started_at": None,
+                                              "report_phase": None})
             except Exception:
                 pass
             lock.release()
@@ -2442,7 +2444,14 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
     # complete report and the operator would never see it: the activity log's last
     # line was "LLM responded", and nothing was ever written. Everything after this
     # point is enrichment and is allowed to fail without costing the narrative.
-    _narrative_patch = {"report_md": report, "report_dirty": False}
+    # The phase flips here, on the write that makes the narrative durable -- no
+    # extra database round trip. Until this existed the case view could only see
+    # "generating", so a finished, saved, readable report and a first model call
+    # still in flight looked identical: the banner went on saying "sending case
+    # data to the model" for the entire advisory, and the operator reasonably
+    # read that as stuck.
+    _narrative_patch = {"report_md": report, "report_dirty": False,
+                        "report_phase": "advisory"}
     # Stamp WHICH runs this narrative describes. It was clearing report_dirty
     # and leaving report_run_ids alone, so report_stale_runs went on counting
     # every member as unreflected forever -- a report regenerated one second ago

@@ -449,6 +449,11 @@ def get_case(case_id):
                     # two sequential calls — the frontend polls this to know
                     # when to stop showing "generating…" and refresh on its own.
                     "report_generating": store.report_generation_active(d),
+                    # WHICH call is in flight. "advisory" means the narrative is
+                    # already written and readable -- the page can say so, and
+                    # refresh the body, instead of showing one undifferentiated
+                    # spinner across two calls that can each take minutes.
+                    "report_phase": d.get("report_phase"),
                     "report_generating_started_at": d.get("report_generating_started_at")})
 
 

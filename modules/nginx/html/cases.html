@@ -708,7 +708,7 @@ function renderReport(info){
   // The report's own tail already told the story above; showing it again as a
   // raw markdown footnote would just repeat it in a smaller, unstyled font.
   const mdBody = md.replace(/\n\n---\n_(?:Deterministic report — [\s\S]*?|Narrative by live LLM[\s\S]*?)_\n\s*$/, '');
-  $('#tabc').innerHTML=`${banner}<div id="genstatus">${generating?genStatusHtml(info.report_generating_started_at):''}</div><div class="row" style="gap:8px;margin-bottom:10px;align-items:center">
+  $('#tabc').innerHTML=`${banner}<div id="genstatus">${generating?genStatusHtml(info.report_generating_started_at, info.report_phase):''}</div><div class="row" style="gap:8px;margin-bottom:10px;align-items:center">
     <button class="dlbtn" ${generating?'disabled title="A report is already being generated"':`onclick="regenReport('${id}')" title="Rebuild the report from the current case state (applies your Timeline confirmations). Generated automatically on first scan; after that only when you click here."`}>${generating?'⏳ Generating…':'↻ Regenerate report'}</button>
     ${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}
     <span style="color:var(--muted);font-size:11px;margin-left:auto">auto-generated on first scan · regenerate to apply Timeline changes</span>
@@ -758,12 +758,25 @@ async function applyZoom(id,i){
 // full distilled graph — measured live at 5m29s for one case. The backend now
 // runs this on a background thread and answers the POST immediately; this is
 // the polling side that waits for it and refreshes the page on its own.
-let _genPoll=null, _genPollCase=null;
+let _genPoll=null, _genPollCase=null, _genPhase=null;
 
-function genStatusHtml(startedAt){
+// Report generation is TWO sequential model calls and this banner has to say
+// which one is running. It used to show a single "sending case data to the
+// model" for the whole job, so a narrative that had already returned, been
+// saved and was sitting readable on the page below still looked like a request
+// in flight -- for the entire length of the advisory, which is minutes. That
+// reads as stuck, and reasonably so.
+function genStatusHtml(startedAt, phase){
   const started = startedAt ? new Date(startedAt+'Z') : null;
   const mins = started ? Math.max(0, Math.round((Date.now()-started.getTime())/60000)) : 0;
   const since = started ? (mins<1 ? 'just started' : `running ${mins} min`) : 'starting…';
+  if(phase === 'advisory' || phase === 'checklist'){
+    return `<div class="agbanner agbanner-live">
+      <div class="agtitle">✅ Report ready — now generating the advisory (${esc(since)})</div>
+      <div class="agdetail">The narrative below is finished and saved; it will not change. The advisory is a second model call over the same case and takes about as long again.</div>
+      <div class="agaction">Safe to read, download or leave — the Analysis tab fills in the advisory on its own when it lands.</div>
+    </div>`;
+  }
   return `<div class="agbanner agbanner-live">
       <div class="agtitle">⏳ Sending case data to the model — ${esc(since)}</div>
       <div class="agdetail">A full case is a large payload and often two sequential model calls (narrative, then advisory) — this commonly takes several minutes, longer for a large case.</div>
@@ -773,6 +786,7 @@ function genStatusHtml(startedAt){
 
 function stopReportGenPoll(){
   if(_genPoll){ clearInterval(_genPoll); _genPoll=null; _genPollCase=null; }
+  _genPhase=null;
 }
 
 // Called on click AND on opening/redrawing a case that's already generating
@@ -802,11 +816,28 @@ function pollReportGen(id){
       // the operator might be reading, scrolling or selecting text in THAT
       // SAME report is destructive for no reason: nothing else on the tab
       // changes while generating, only this banner's elapsed-time text does.
+      // A flip out of 'narrative' means the narrative has just been WRITTEN and
+      // is readable. Pull it in at that moment -- once, on the transition -- so
+      // the operator is not left reading the PREVIOUS run's report for the whole
+      // length of the advisory, which is the second half of the job and just as
+      // slow. The every-tick redraw is still avoided (see below); this fires on
+      // a phase change only.
+      if(info.report_phase && info.report_phase!==_genPhase){
+        const firstSighting = (_genPhase===null);
+        _genPhase = info.report_phase;
+        if(!firstSighting && info.report_phase!=='narrative'
+           && curInfo && curInfo.case_id===id){
+          openCase(id);
+          toast('report ready — advisory still running');
+          return;
+        }
+      }
       if(curInfo && curInfo.case_id===id){
         curInfo.report_generating=true;
+        curInfo.report_phase=info.report_phase;
         curInfo.report_generating_started_at=info.report_generating_started_at;
         const gs=$('#genstatus');
-        if(tab==='report' && gs) gs.outerHTML=`<div id="genstatus">${genStatusHtml(info.report_generating_started_at)}</div>`;
+        if(tab==='report' && gs) gs.outerHTML=`<div id="genstatus">${genStatusHtml(info.report_generating_started_at, info.report_phase)}</div>`;
       }
     }).catch(()=>{});   // a blip in the poll is not a failure — just try again
   };
