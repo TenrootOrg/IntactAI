@@ -1281,6 +1281,12 @@ function logClear(){
 }
 
 let chatHist=[];
+// The question of the turn currently in flight. It lives ONLY here until the
+// model answers -- the backend persists the question and the answer together,
+// atomically, and only once the answer exists. So between asking and answering
+// the question exists in this tab and nowhere else, and anything that reloads
+// chatHist from the server erases it.
+let _pendingQ=null;
 // Investigate is HIDDEN for now, by request. Nothing about it is broken and
 // nothing has been deleted: the /investigate route, the agentic tool loop and
 // investigateAsk() below are all intact and still tested. It is hidden because
@@ -1298,8 +1304,14 @@ function renderChat(id){
   // load the persisted conversation so it survives a page refresh
   $('#msgs').innerHTML='<i style="color:var(--muted)">loading…</i>';
   api('/api/cases/'+id+'/chat').then(d=>{
-    chatHist=(d.messages||[]).map(m=>({role:m.role,content:m.content}));drawMsgs();
-  }).catch(_=>{chatHist=[];drawMsgs();});
+    chatHist=(d.messages||[]).map(m=>({role:m.role,content:m.content}));
+    reattachPendingTurn();
+    drawMsgs();
+  }).catch(_=>{chatHist=[];reattachPendingTurn();drawMsgs();});
+  // Leaving the tab does not cancel the request, so coming back to a fresh
+  // Ask button that silently does nothing (because _asking is still true) is
+  // worse than showing the truth: a turn is running.
+  if(_asking){ const b=$('#askbtn'); if(b){b.disabled=true; b.textContent='Asking…';} }
 }
 // Agentic deep-dive: routes the question through /investigate — the model calls
 // retrieval tools (list_findings / search / evidence / clusters) over the raw
@@ -1358,21 +1370,54 @@ function drawMsgs(){$('#msgs').innerHTML=chatHist.map(m=>`<div class="msg ${m.ro
 // question sitting in the transcript with no answer and no error, which reads as
 // "the LLM ignored me".
 let _asking=false;
+// Put the in-flight question (and its placeholder) back on screen after the
+// history has been reloaded from the server. Without this, switching tabs
+// mid-question wiped the question, and the answer then arrived with no
+// placeholder to replace -- so it was appended on its own and the operator saw
+// an answer to a question that was no longer there.
+function reattachPendingTurn(){
+  if(!_asking || !_pendingQ) return;
+  chatHist.push({role:'user',content:_pendingQ});
+  chatHist.push({role:'assistant',content:'_thinking…_',pending:true});
+}
+
 function ask(id){
   if(_asking) return;                       // no double-submit while one is in flight
   const q=$('#q').value.trim(); if(!q)return; $('#q').value='';
-  _asking=true;
-  const btn=$('#askbtn'); if(btn){btn.disabled=true; btn.textContent='Asking…';}
+  _asking=true; _pendingQ=q;
   chatHist.push({role:'user',content:q});
   chatHist.push({role:'assistant',content:'_thinking…_',pending:true});
   drawMsgs();
+  // Look the button up at the END, not here. The tab may have been re-rendered
+  // while the model was thinking, in which case the reference captured now is a
+  // detached node -- re-enabling THAT left the visible button dead forever.
   const done=(content)=>{
     const i=chatHist.findIndex(m=>m.pending);
     if(i>=0) chatHist.splice(i,1,{role:'assistant',content});
-    else chatHist.push({role:'assistant',content});
-    _asking=false; if(btn){btn.disabled=false; btn.textContent='Ask';}
+    else {
+      // No placeholder: the history was reloaded under us. Re-pair the answer
+      // with its question rather than orphaning it.
+      if(_pendingQ) chatHist.push({role:'user',content:_pendingQ});
+      chatHist.push({role:'assistant',content});
+    }
+    _asking=false; _pendingQ=null;
+    const b=$('#askbtn'); if(b){b.disabled=false; b.textContent='Ask';}
     drawMsgs();
   };
+  // On success the server has persisted the pair atomically -- adopt that as the
+  // truth rather than trusting a locally reconstructed list. Only on success:
+  // a failed turn is deliberately NOT persisted, so re-syncing would erase the
+  // error message the operator needs to read.
+  const doneSynced=(content)=>{
+    done(content);
+    api('/api/cases/'+id+'/chat').then(d=>{
+      if(d && d.messages && d.messages.length){
+        chatHist=d.messages.map(m=>({role:m.role,content:m.content}));
+        drawMsgs();
+      }
+    }).catch(()=>{});
+  };
+  const btn=$('#askbtn'); if(btn){btn.disabled=true; btn.textContent='Asking…';}
   fetch('/api/cases/'+id+'/chat',{method:'POST',headers:{'Content-Type':'application/json'},
                                   body:JSON.stringify({question:q})})
    .then(async r=>{
@@ -1385,7 +1430,7 @@ function ask(id){
      }
      if(!d){ done('⚠️ The server replied with something that is not JSON — '+
                   body.slice(0,200)); return; }
-     done(d.answer||'(the model returned an empty answer)');
+     doneSynced(d.answer||'(the model returned an empty answer)');
    })
    .catch(e=>done('⚠️ Could not reach the server: '+(e&&e.message||e)+
                   '. The question was not answered — try again.'));
