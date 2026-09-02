@@ -1598,6 +1598,22 @@ document.addEventListener('alpine:init', () => {
                 this.config?.agentic?.online_llm?.provider);
         },
 
+        // Compact a token count so a dropdown row can carry the context window
+        // AND the output cap without wrapping: 1000000 -> 1M, 128000 -> 128K.
+        //
+        // The picker used to show only max_output_tokens, labelled 'max'. On a
+        // model with a 1,000,000-token context window and a 128,000-token
+        // output cap that displayed '128,000' -- the SMALLER of the two numbers,
+        // and the one nobody chooses a model on. Operators pick for context
+        // window; showing the output cap alone under a bare 'max' reads as the
+        // model's capacity and quietly understates it eightfold.
+        fmtTokens(n) {
+            n = Number(n) || 0;
+            if (n >= 1000000) return (n / 1000000).toFixed(n % 1000000 ? 1 : 0) + 'M';
+            if (n >= 1000) return Math.round(n / 1000) + 'K';
+            return String(n);
+        },
+
         cliStatusText() {
             if (!this.cli.installed) return 'Not found on this system';
             if (this.cli.authenticated) return 'Ready' + (this.cli.version ? ' · ' + this.cli.version : '');

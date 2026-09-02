@@ -675,10 +675,22 @@
                                                 <div @mousedown.prevent="select(m)"
                                                      class="px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-700 border-b border-gray-700/50">
                                                     <div class="text-white" x-text="m.name"></div>
-                                                    <div class="flex justify-between text-xs text-gray-500">
-                                                        <span x-text="m.id"></span>
-                                                        <span x-show="m.max_output_tokens">
-                                                            max&nbsp;<span x-text="m.max_output_tokens.toLocaleString()"></span>
+                                                    <!-- BOTH numbers. This row used to show only
+                                                         max_output_tokens under a bare 'max', which on a
+                                                         model with a 1M context window and a 128K output cap
+                                                         displayed 128,000 -- the smaller number, and not the
+                                                         one a model is chosen on. Compacted (1M / 128K) so
+                                                         the pair fits; exact counts are in the title. -->
+                                                    <div class="flex justify-between gap-2 text-xs text-gray-500">
+                                                        <span class="truncate" x-text="m.id"></span>
+                                                        <span class="whitespace-nowrap">
+                                                            <span x-show="m.context_length"
+                                                                  :title="'context window: ' + (m.context_length || 0).toLocaleString() + ' tokens'">
+                                                                <span class="text-gray-400" x-text="$store.settings.fmtTokens(m.context_length)"></span>&nbsp;ctx</span><span
+                                                                  x-show="m.context_length && m.max_output_tokens"> · </span><span
+                                                                  x-show="m.max_output_tokens"
+                                                                  :title="'max output: ' + (m.max_output_tokens || 0).toLocaleString() + ' tokens'">
+                                                                <span class="text-gray-400" x-text="$store.settings.fmtTokens(m.max_output_tokens)"></span>&nbsp;out</span>
                                                         </span>
                                                     </div>
                                                 </div>
@@ -982,10 +994,22 @@
                                                 <div @mousedown.prevent="select(m)"
                                                      class="px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-700 border-b border-gray-700/50">
                                                     <div class="text-white" x-text="m.name"></div>
-                                                    <div class="flex justify-between text-xs text-gray-500">
-                                                        <span x-text="m.id"></span>
-                                                        <span x-show="m.max_output_tokens">
-                                                            max&nbsp;<span x-text="m.max_output_tokens.toLocaleString()"></span>
+                                                    <!-- BOTH numbers. This row used to show only
+                                                         max_output_tokens under a bare 'max', which on a
+                                                         model with a 1M context window and a 128K output cap
+                                                         displayed 128,000 -- the smaller number, and not the
+                                                         one a model is chosen on. Compacted (1M / 128K) so
+                                                         the pair fits; exact counts are in the title. -->
+                                                    <div class="flex justify-between gap-2 text-xs text-gray-500">
+                                                        <span class="truncate" x-text="m.id"></span>
+                                                        <span class="whitespace-nowrap">
+                                                            <span x-show="m.context_length"
+                                                                  :title="'context window: ' + (m.context_length || 0).toLocaleString() + ' tokens'">
+                                                                <span class="text-gray-400" x-text="$store.settings.fmtTokens(m.context_length)"></span>&nbsp;ctx</span><span
+                                                                  x-show="m.context_length && m.max_output_tokens"> · </span><span
+                                                                  x-show="m.max_output_tokens"
+                                                                  :title="'max output: ' + (m.max_output_tokens || 0).toLocaleString() + ' tokens'">
+                                                                <span class="text-gray-400" x-text="$store.settings.fmtTokens(m.max_output_tokens)"></span>&nbsp;out</span>
                                                         </span>
                                                     </div>
                                                 </div>
@@ -1159,10 +1183,22 @@
                                                 <div @mousedown.prevent="select(m)"
                                                      class="px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-700 border-b border-gray-700/50">
                                                     <div class="text-white" x-text="m.name"></div>
-                                                    <div class="flex justify-between text-xs text-gray-500">
-                                                        <span x-text="m.id"></span>
-                                                        <span x-show="m.max_output_tokens">
-                                                            max&nbsp;<span x-text="m.max_output_tokens.toLocaleString()"></span>
+                                                    <!-- BOTH numbers. This row used to show only
+                                                         max_output_tokens under a bare 'max', which on a
+                                                         model with a 1M context window and a 128K output cap
+                                                         displayed 128,000 -- the smaller number, and not the
+                                                         one a model is chosen on. Compacted (1M / 128K) so
+                                                         the pair fits; exact counts are in the title. -->
+                                                    <div class="flex justify-between gap-2 text-xs text-gray-500">
+                                                        <span class="truncate" x-text="m.id"></span>
+                                                        <span class="whitespace-nowrap">
+                                                            <span x-show="m.context_length"
+                                                                  :title="'context window: ' + (m.context_length || 0).toLocaleString() + ' tokens'">
+                                                                <span class="text-gray-400" x-text="$store.settings.fmtTokens(m.context_length)"></span>&nbsp;ctx</span><span
+                                                                  x-show="m.context_length && m.max_output_tokens"> · </span><span
+                                                                  x-show="m.max_output_tokens"
+                                                                  :title="'max output: ' + (m.max_output_tokens || 0).toLocaleString() + ' tokens'">
+                                                                <span class="text-gray-400" x-text="$store.settings.fmtTokens(m.max_output_tokens)"></span>&nbsp;out</span>
                                                         </span>
                                                     </div>
                                                 </div>
