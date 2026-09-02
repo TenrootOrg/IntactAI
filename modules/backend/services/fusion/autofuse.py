@@ -145,7 +145,51 @@ def schedule(case_id, reason="new data", *, delay=None, _attempt=0) -> bool:
         t.daemon = True                        # never hold up a shutdown
         _TIMERS[case_id] = t
         t.start()
+    if old is None and _attempt == 0:
+        _announce(case_id, reason, wait)       # a FRESH quiet window — say so
     return True
+
+
+def _announce(case_id, reason, wait) -> None:
+    """Tell the operator IMMEDIATELY that their data landed and a fuse is coming.
+
+    Until this existed the case log went silent for the entire quiet period:
+    a workflow finished, nothing was written anywhere, and a minute later
+    "Refusion · starting" appeared from nowhere. Reported from a live appliance
+    as "nothing happens immediately" -- which was exactly right, and made a
+    working debounce indistinguishable from a system that had missed the data.
+
+    Written from a throwaway thread, never inline. schedule() is called from
+    inside update_run_status while it holds that run's lock, and its contract is
+    explicit that it must not touch the database -- a case-log write is a
+    read-modify-write of a row, and doing it here would stall the status update
+    that carries the run's actual result.
+
+    Only on a FRESH quiet window. A multi-host hunt re-arms this timer once per
+    landing run, and the entire point of the debounce is that twenty runs
+    produce ONE rebuild -- so they produce one line, not twenty.
+    """
+    def _write():
+        try:
+            store = _store()
+            # Announce only what is really going to happen. schedule() cannot
+            # check this itself -- it runs under a lock and must not read the
+            # database -- but this thread can, and a stray or catch-up arming on
+            # a case with nothing outstanding must stay silent rather than
+            # promising a rebuild that _fire will correctly decline to do.
+            d = store.get_case(case_id)
+            if not d or not _enabled(store, case_id, d):
+                return
+            if not store.stale_member_runs(case_id, d):
+                return
+            store.log_case_event(
+                case_id, "New data landed", "info",
+                f"{reason} — fusing once the case has been quiet for "
+                f"{int(wait)}s (more data arriving restarts that wait)")
+        except Exception as e:                 # noqa: BLE001 — telemetry only
+            print(f"[AUTOFUSE] could not log arming for {case_id}: {e}", flush=True)
+    threading.Thread(target=_write, name=f"autofuse-announce-{case_id}",
+                     daemon=True).start()
 
 
 def catch_up(stagger=None) -> int:

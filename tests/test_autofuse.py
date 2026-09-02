@@ -634,6 +634,74 @@ class TestItIsANoOpWhenNothingIsNew(_Base):
                          "a quiet no-op must not write to the case activity log")
 
 
+class TestTheOperatorIsToldTheFuseIsComing(_Base):
+    """The quiet period is the whole design, but it used to be INVISIBLE.
+
+    Reported from a live appliance: a workflow finishes, the case activity log
+    says nothing at all for a minute or two, and then "Refusion · starting"
+    appears from nowhere. From where the operator stands, a debounce working
+    perfectly and a system that dropped their data look identical -- so they
+    wait, then start clicking.
+    """
+
+    def _announcements(self):
+        return [e for e in self.store.events if e[0] == "New data landed"]
+
+    def test_the_operator_is_told_as_soon_as_the_data_lands(self):
+        """Immediately -- NOT after the quiet period, which is the whole point."""
+        autofuse.QUIET_SECONDS = 5.0            # far longer than this test waits
+        autofuse.schedule("case_1", "run velociraptor_1 finished")
+        deadline = time.time() + 2.0
+        while time.time() < deadline and not self._announcements():
+            time.sleep(0.01)
+        got = self._announcements()
+        self.assertEqual(len(got), 1, f"expected one arming line, got {self.store.events}")
+        self.assertEqual(self.store.fuses, [],
+                         "announced, but must NOT have fused yet — the wait is the feature")
+        self.assertIn("velociraptor_1", got[0][2])
+        self.assertIn("quiet", got[0][2].lower())
+
+    def test_a_multi_host_burst_produces_ONE_line_not_twenty(self):
+        """Twenty landing runs collapse into one rebuild; they must collapse into
+        one log line too, or the log is worse than the silence it replaced."""
+        autofuse.QUIET_SECONDS = 5.0
+        for i in range(20):
+            autofuse.schedule("case_1", f"run {i} finished")
+        deadline = time.time() + 2.0
+        while time.time() < deadline and not self._announcements():
+            time.sleep(0.01)
+        time.sleep(0.2)                          # let any stragglers land
+        self.assertEqual(len(self._announcements()), 1,
+                         f"one burst must announce once, got {self._announcements()}")
+
+    def test_a_fresh_burst_after_a_fuse_announces_again(self):
+        """Silence on the SECOND collection would be the original complaint back."""
+        autofuse.schedule("case_1", "first collection")
+        self.settle()
+        self.assertEqual(len(self.store.fuses), 1)
+        self.store._per_case["case_1"] = ["run_2"]     # new data arrives
+        autofuse.schedule("case_1", "second collection")
+        self.settle()
+        self.assertEqual(len(self._announcements()), 2,
+                         "each quiet window is its own announcement")
+
+    def test_an_opted_out_case_stays_silent(self):
+        self.store.case = {"name": "QA case", "auto_fuse": False}
+        autofuse.schedule("case_1")
+        self.settle()
+        self.assertEqual(self._announcements(), [],
+                         "a case with automatic fusion off must not promise a fuse")
+
+    def test_a_retry_does_not_re_announce(self):
+        """Busy-retries already narrate themselves; a second arming line for the
+        same data would double-count the collection."""
+        self.store.busy_times = 1
+        autofuse.schedule("case_1", "collection finished")
+        self.settle()
+        self.assertEqual(len(self._announcements()), 1,
+                         f"retries must not re-announce: {self.store.events}")
+
+
 class TestTheOperatorCanStopIt(_Base):
 
     def test_an_explicit_opt_out_prevents_the_fuse(self):
