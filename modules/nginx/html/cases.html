@@ -1281,13 +1281,19 @@ function logClear(){
 }
 
 let chatHist=[];
+// Investigate is HIDDEN for now, by request. Nothing about it is broken and
+// nothing has been deleted: the /investigate route, the agentic tool loop and
+// investigateAsk() below are all intact and still tested. It is hidden because
+// it is a cost-and-latency call -- each step is a real model call, and on a slow
+// model that is minutes per question. Flip this to true to bring it back.
+const SHOW_INVESTIGATE = false;
 function renderChat(id){
   $('#tabc').innerHTML=`<div id="chatwrap">
     <div class="chathead"><button class="ghost chatfs" onclick="clearChat('${id}')" title="Clear the conversation">Clear</button><button class="ghost chatfs" id="chatfsbtn" onclick="toggleChatFull()" title="Full screen (Esc to exit)">⛶ Full screen</button></div>
     <div class="chat"><div class="msgs" id="msgs"></div>
     <div class="chatbar"><input id="q" placeholder="ask anything about this case — risk, attack path, a host/account/IP, what to do next…"/>
     <button id="askbtn" onclick="ask('${id}')">Ask</button>
-    <button id="invbtn" class="ghost" onclick="investigateAsk('${id}')" title="Agentic deep-dive: the model looks up the RAW evidence to answer, grounding every claim (slower — a few model calls)">🔬 Investigate</button></div></div></div>`;
+    ${SHOW_INVESTIGATE ? `<button id="invbtn" class="ghost" onclick="investigateAsk('${id}')" title="Agentic deep-dive: the model looks up the RAW evidence to answer, grounding every claim (slower — a few model calls)">🔬 Investigate</button>` : ''}</div></div></div>`;
   $('#q').addEventListener('keydown',e=>{if(e.key==='Enter')ask(id);});
   // load the persisted conversation so it survives a page refresh
   $('#msgs').innerHTML='<i style="color:var(--muted)">loading…</i>';
