@@ -538,6 +538,12 @@ ANALYST_SYSTEM_PROMPT = (
     "already contains deterministic findings. Do THREE things and return STRICT JSON:\n"
     "1) incident_groups: cluster the EXISTING findings into named campaigns. Each group "
     "cites finding_ids that appear in the graph's findings.\n"
+    "   WHERE THE IDS ARE: every entry in `findings` carries an `id` (e.g. "
+    "\"f_4fd44c312557\"); a row that collapsed several repeats of one detection "
+    "carries `ids` (a list) instead — cite every one of them. Every entry in "
+    "`top_entities` carries an `id` too. COPY THEM VERBATIM. Anything you cite that "
+    "is not one of these strings is deleted, so a paraphrased, reconstructed or "
+    "invented id costs you the whole group or hypothesis it belongs to.\n"
     "2) hypotheses: novel patterns the deterministic rules may have MISSED. Each MUST cite "
     "entity_ids that appear in the graph's top_entities, a confidence (low|medium|high), "
     "and a one-line reason. These are FOR ANALYST VERIFICATION — not confirmed.\n"
@@ -1232,9 +1238,16 @@ def analyze(graph, *, window=None, min_severity="informational", run_id=None,
     if not _use_real():
         return _simulated_analysis(graph, findings)
     try:
+        # include_ids: the ONLY caller that needs them. ANALYST_SYSTEM_PROMPT
+        # requires every group to cite finding_ids and every hypothesis to cite
+        # entity_ids, and _ground() drops whatever does not match the graph --
+        # so without the ids in the payload the model is asked to quote something
+        # it was never shown, and 100% of its answer is deleted. The report path
+        # deliberately does not pass this: it writes customer-facing prose and
+        # must not be handed ids it could print.
         payload = render.distilled(graph, window=window, min_severity=min_severity,
                                    max_entities=me, budget_chars=bc,
-                                   max_identities=max_identities)
+                                   max_identities=max_identities, include_ids=True)
         # select the curated DFIR macro playbook FROM THE GRAPH (reuse agentic skills)
         system = ANALYST_SYSTEM_PROMPT
         try:

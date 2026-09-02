@@ -219,5 +219,82 @@ class AnAdvisoryMustExplainWhatItLost(unittest.TestCase):
         self.assertEqual(llm_sim.advisory_shortfall(None), "")
 
 
+
+
+class TheAdvisoryMustBeAbleToCiteWhatItIsAskedFor(unittest.TestCase):
+    """ANALYST_SYSTEM_PROMPT requires every incident_group to cite finding_ids and
+    every hypothesis to cite entity_ids, and _ground() deletes anything citing an
+    id that is not in the graph. The payload carried NO ids at all, so the model
+    was ordered to quote identifiers it had never been shown -- and 100% of its
+    answer was deleted for not matching. Measured live: zero hypotheses on every
+    advisory ever run on a real appliance, across two different models.
+
+    The narrative payload must NOT gain ids: it writes customer-facing prose, and
+    an id in the payload is an id it can print into the report.
+    """
+
+    def setUp(self):
+        from services.fusion import render, schema
+        self.render, self.schema = render, schema
+        self.g = _graph_with_findings(schema)
+
+    def _payload(self, **kw):
+        return self.render.distilled(self.g, max_entities=50, **kw)
+
+    def test_the_narrative_payload_has_no_ids(self):
+        p = self._payload()
+        self.assertFalse(any("id" in f for f in p["findings"]))
+        self.assertFalse(any("id" in e for e in p["top_entities"]))
+
+    def test_the_advisory_payload_carries_real_finding_ids(self):
+        p = self._payload(include_ids=True)
+        real = {f.id for f in self.g.findings}
+        cited = [f.get("id") for f in p["findings"]]
+        self.assertTrue(cited, "no findings in the payload")
+        self.assertTrue(all(c in real for c in cited),
+                        "the advisory must be able to cite ids _ground() accepts")
+
+    def test_the_advisory_payload_carries_real_entity_ids(self):
+        p = self._payload(include_ids=True)
+        real = set(self.g.entities)
+        cited = [e.get("id") for e in p["top_entities"]]
+        self.assertTrue(cited, "no entities in the payload")
+        self.assertTrue(all(c in real for c in cited))
+
+    def test_ids_survive_a_budget_stepdown(self):
+        """An over-budget payload is REBUILT; dropping the flag there would
+        silently return the advisory to citing ids it was never given."""
+        p = self._payload(include_ids=True, budget_chars=400)
+        self.assertTrue(p["findings"], "stepdown removed every finding")
+        # A collapsed row is several findings, so it carries `ids`; an uncollapsed
+        # one keeps the plain `id`. Either way the advisory can cite something real.
+        real = {f.id for f in self.g.findings}
+        for f in p["findings"]:
+            cited = f.get("ids") or ([f["id"]] if f.get("id") else [])
+            self.assertTrue(cited, f"a payload row carries no citable id: {f}")
+            self.assertTrue(set(cited) <= real, f"ungroundable id in {cited}")
+
+
+def _graph_with_findings(schema):
+    """A small real FusionGraph: 2 hosts, 3 findings, entities attached."""
+    g = schema.FusionGraph(case_id="case_test")
+    for i, host in enumerate(("HOST-A", "HOST-B")):
+        a = schema.Entity(id=f"asset:endpoint:h{i}", type="asset", label=host,
+                          severity="high")
+        g.entities[a.id] = a
+    assets = list(g.entities)
+    for i in range(3):
+        g.findings.append(schema.Finding(
+            id=f"f_test{i:04d}", title=f"Finding {i}", severity="critical",
+            confidence="high", summary="s", asset_ids=[assets[i % 2]],
+            kind="sigma", ts="2026-01-01T00:00:00Z"))
+    for i in range(4):
+        e = schema.Entity(id=f"event:evt{i}", type="event", label=f"evt {i}",
+                          severity="high", anomaly=90)
+        g.entities[e.id] = e
+    g.rebuild_indexes()
+    return g
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -438,7 +438,7 @@ def _trim_findings(findings, max_findings):
 
 
 def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary",
-                  max_identities=None, max_findings=None):
+                  max_identities=None, max_findings=None, include_ids=False):
     """`max_findings` caps findings AND the timeline built from them (they are the
     same set — the timeline is one row per finding), keeping them consistent so
     the payload never cites a finding_id it did not send.
@@ -477,6 +477,17 @@ def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"
         fd = {"title": f.title, "severity": f.severity, "confidence": f.confidence,
               "hosts": [_host_label(graph, x) for x in f.asset_ids],
               "summary": f.summary, "mitre": f.mitre, "kind": f.kind, "ts": f.ts}
+        # OFF for the narrative, ON for the advisory. The advisory is REQUIRED to
+        # cite finding_ids and entity_ids, and _ground() deletes anything citing an
+        # id that is not in the graph -- but this payload carried no ids at all, so
+        # the model had nothing to quote and every group and hypothesis it produced
+        # was discarded. Measured: zero hypotheses on every advisory ever run on a
+        # live box, across two different models. No model can pass that.
+        #
+        # The narrative must NOT get them: it writes prose for a customer, and an
+        # id in the payload is an id it may print into the report.
+        if include_ids:
+            fd["id"] = f.id
         # EXPLICIT: surface real per-event evidence so the narrative can cite specifics.
         if eff_detail == "explicit" and (sev.at_least(f.severity, "high")
                                          or f.kind == "cross_host"):
@@ -515,9 +526,11 @@ def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"
         # never carries a timeline row for a finding it dropped.
         "timeline": [t for t in timeline(graph, window=window)
                      if max_findings is None or t.get("finding_id") in kept_ids],
-        "top_entities": [{"type": e.type, "label": e.label, "severity": e.severity,
-                          "anomaly": e.anomaly, "flags": e.flags,
-                          "hosts": [_host_label(graph, x) for x in _assets_of(e)]} for e in ents],
+        "top_entities": [dict({"type": e.type, "label": e.label, "severity": e.severity,
+                               "anomaly": e.anomaly, "flags": e.flags,
+                               "hosts": [_host_label(graph, x) for x in _assets_of(e)]},
+                              **({"id": e.id} if include_ids else {}))
+                         for e in ents],
         # Every identity the Identities tab shows, independent of anomaly score —
         # see _known_identities(). Cheap relative to the rest of this payload;
         # keeps "who is X" answerable for every real person in the case, not only
@@ -589,7 +602,8 @@ def _host_coverage(graph, assets, findings) -> list:
 
 
 def distilled(graph, *, window=None, min_severity="informational", max_entities=60,
-              budget_chars=None, detail="summary", max_identities=None):
+              budget_chars=None, detail="summary", max_identities=None,
+              include_ids=False):
     """Compact, in-window, high-signal payload — what a real LLM would get.
 
     If ``budget_chars`` is set and the payload exceeds it, halve ``max_entities``
@@ -600,7 +614,7 @@ def distilled(graph, *, window=None, min_severity="informational", max_entities=
     from . import budget as _b
     p = _distilled_at(graph, window=window, min_severity=min_severity,
                       max_entities=max_entities, detail=detail,
-                      max_identities=max_identities)
+                      max_identities=max_identities, include_ids=include_ids)
     if not budget_chars:
         return p
 
@@ -629,9 +643,13 @@ def distilled(graph, *, window=None, min_severity="informational", max_entities=
             eff_ident = max(10, eff_ident // 2)
         if (eff_findings, max_entities, eff_ident) == before:
             break                                    # nothing left to give
+        # include_ids must survive the stepdown too: a payload that goes over
+        # budget rebuilds here, and dropping the flag would silently return the
+        # advisory to citing ids it was never given.
         p = _distilled_at(graph, window=window, min_severity=min_severity,
                           max_entities=max_entities, detail=detail,
-                          max_identities=eff_ident, max_findings=eff_findings)
+                          max_identities=eff_ident, max_findings=eff_findings,
+                          include_ids=include_ids)
         steps += 1
     # LAST RESORT — still over budget after the stepdowns. Measured: a case with
     # thousands of findings blows through it (120 hosts / 4,321 findings produced a
@@ -693,8 +711,18 @@ def _collapse_findings(findings):
                            "mitre": f.get("mitre"), "summary": f.get("summary"),
                            "hosts": list(_hosts_of(f)), "count": 1,
                            "first_ts": f.get("ts"), "last_ts": f.get("ts")}
+            # Carry the collapsed rows' ids when the caller asked for them. Rebuilt
+            # dicts otherwise drop them, and the advisory -- which MUST cite
+            # finding_ids -- would silently go back to citing nothing on exactly the
+            # large cases that trigger a collapse and most need grouping. A list,
+            # because a collapsed row genuinely IS several findings. Absent when the
+            # source rows carry no id (the narrative payload), so nothing is invented.
+            if f.get("id"):
+                groups[key]["ids"] = [f["id"]]
             continue
         g["count"] += 1
+        if f.get("id"):
+            g.setdefault("ids", []).append(f["id"])
         for h in _hosts_of(f):
             if h not in g["hosts"]:
                 g["hosts"].append(h)
@@ -714,6 +742,11 @@ def _collapse_findings(findings):
             g.pop("count", None)
             g["ts"] = g.pop("first_ts", None)
             g.pop("last_ts", None)
+            # A row that collapsed nothing is still one finding: give it back the
+            # plain `id` the uncollapsed payload would have had, so a consumer
+            # never has to special-case the shape.
+            if len(g.get("ids") or []) == 1:
+                g["id"] = g.pop("ids")[0]
         out.append(g)
     return out
 
