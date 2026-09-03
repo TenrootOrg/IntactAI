@@ -279,3 +279,47 @@ class TheReportsMustCarryTheirDocumentContract(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheCostEstimateMustCountTheCallsWeActuallyMake(unittest.TestCase):
+    """The estimate was a flat 2, "report + advisory". Both halves went stale: the
+    advisory is gone, and a broad case is narrated PHASE BY PHASE -- one call per
+    phase, a synthesis pass, then the checklist. An operator was quoted two calls
+    and watched six fire, which is a number the product had stopped meaning."""
+
+    def test_a_segmented_case_costs_one_call_per_phase_plus_synthesis(self):
+        src = _read_source("modules/backend/services/fusion/store.py")
+        body = src.split("def _expected_llm_calls")[1].split("\ndef ")[0]
+        self.assertIn("analysable", body, "must count the ANALYSED phases")
+        self.assertIn("+ 2", body, "phases + synthesis + checklist")
+
+    def test_a_focused_case_costs_narrative_plus_checklist(self):
+        body = _read_source(
+            "modules/backend/services/fusion/store.py"
+        ).split("def _expected_llm_calls")[1].split("\ndef ")[0]
+        self.assertIn("return 2", body)
+
+    def test_the_estimate_prefers_the_measured_count(self):
+        src = _read_source("modules/backend/services/fusion/store.py")
+        self.assertIn('d.get("report_llm_calls")', src,
+                      "the estimate must quote THIS case, not an average")
+
+    def test_the_flat_constant_is_only_a_fallback(self):
+        """Before a case has ever been narrated there is nothing to measure."""
+        src = _read_source("modules/backend/services/fusion/store.py")
+        line = [l for l in src.splitlines()
+                if l.startswith("    calls = ")][0]
+        self.assertIn("or _RESCAN_LLM_CALLS", line)
+
+    def test_no_comment_still_counts_the_advisory_as_a_live_call(self):
+        """A comment may explain that the advisory WAS removed -- that is history
+        worth keeping. It may not describe it as one of the calls a run makes."""
+        src = _read_source("modules/backend/services/fusion/store.py")
+        past = ("removed", "replaced", "used to", "was ", "gone", "gone.")
+        for i, line in enumerate(src.splitlines(), 1):
+            low = line.lower()
+            if "advisory" not in low or "call" not in low:
+                continue
+            if any(w in low for w in past):
+                continue                      # describing the removal, not the present
+            self.fail(f"store.py:{i} still counts the removed advisory: {line.strip()}")

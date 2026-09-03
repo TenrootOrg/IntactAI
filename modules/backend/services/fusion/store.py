@@ -280,10 +280,35 @@ def _effective_output_cap(d):
     return min(_model_max_output(model, provider), _MAX_OUTPUT_TOKENS_PER_CALL)
 
 
-# Rescan-cost model: a rescan makes 2 LLM passes (report + advisory), each gets
-# the distilled payload (~fusion_approx tokens) + a small system prompt, and
-# writes up to the output cap. All approximate — for a pre-spend sanity number.
+# Rescan-cost model. Each call gets the distilled payload (~fusion_approx tokens)
+# + a small system prompt and writes up to the output cap. Approximate — a
+# pre-spend sanity number.
+#
+# THIS USED TO BE A FLAT 2, "report + advisory", and both halves went stale: the
+# advisory was removed, and a broad case is now narrated PHASE BY PHASE — one call
+# per phase in parallel, then a synthesis pass, then the checklist. An operator
+# watching six calls fire after being quoted two is reading a number the product
+# stopped meaning. `report_llm_calls` is stamped by whatever last narrated the
+# case, so the estimate reports what this case actually costs rather than what an
+# average case once cost; the constant is only the pre-first-narration fallback.
 _RESCAN_LLM_CALLS = 2
+
+
+def _expected_llm_calls(graph, d, window, min_sev) -> int:
+    """How many model calls narrating THIS case will make: one per analysed phase
+    plus a synthesis pass when it is segmented, else one; plus the checklist."""
+    try:
+        from . import render
+        mode = d.get("report_altitude") or "auto"
+        alt = render._resolve_altitude(graph, window=window, min_severity=min_sev,
+                                       mode=mode)[0]
+        if alt != "macro":
+            return 2                                    # narrative + checklist
+        zt = render.zoom_targets(graph, window=window, min_severity=min_sev,
+                                 force_phases=(mode == "macro"))
+        return len(render.analysable(zt)) + 2           # phases + synthesis + checklist
+    except Exception:                                   # noqa: BLE001
+        return _RESCAN_LLM_CALLS
 
 # Expected tokens the model WRITES per call, for the cost estimate only — never a
 # limit on generation. A fused report and its advisory land in the low thousands;
@@ -381,7 +406,7 @@ def estimate_rescan_cost(d):
     raw_in = int(ab.get("raw_approx") or 0)
     fused_in = int(ab.get("fusion_approx") or 0)
     model, provider, mode = _configured_fusion_model()
-    calls = _RESCAN_LLM_CALLS
+    calls = int(d.get("report_llm_calls") or _RESCAN_LLM_CALLS)
     model_max_out = _model_max_output(model, provider)
     # Estimate on EXPECTED output, not on the ceiling. _effective_output_cap is
     # now always the model max (the per-case cap was removed), and a model that
@@ -1783,7 +1808,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     # `allow_llm` GUARDS THIS TOO, and it did not, which made a documented
     # promise false. The automatic fuse passes allow_llm=False precisely so a
     # graph rebuild is fast, free and cannot be held up by a provider — the
-    # report and advisory above both honour it. This call did not, so every
+    # report narration above honours it. This call did not, so every
     # first automatic fuse of a case made a model call anyway, and with a model
     # configured but unreachable it blocked the fuse for up to
     # ONLINE_LLM_TIMEOUT_SECONDS (600) while holding the case's fuse lock, so
@@ -1851,6 +1876,9 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                                   "graph_counts": _counts_from_graph_dict(pruned),
                                   "report_md": report,
                                   "token_ab": token_ab,
+                                  "report_llm_calls": (
+                                      _expected_llm_calls(gv, d, window, min_sev)
+                                      if _narrate else 0),
                                   # Record exactly which member runs this graph was
                                   # built from, so the UI can detect when new runs
                                   # have landed since (stale_member_runs) and show a
@@ -2294,9 +2322,11 @@ class ReportGenerationBusy(Exception):
 
 
 # A generation older than this is treated as dead no matter what the flag says.
-# The worst legitimate run is three sequential model calls (narrative, advisory,
-# checklist) at ONLINE_LLM_TIMEOUT_SECONDS each -- 30 minutes -- so this leaves
-# real headroom above anything that could still be alive.
+# The worst legitimate run is the segmented path: N phase calls IN PARALLEL (so
+# they cost one timeout between them, not N), then synthesis, then the checklist --
+# three timeouts deep at ONLINE_LLM_TIMEOUT_SECONDS each, i.e. 30 minutes. Same
+# ceiling as the narrative/advisory/checklist chain it replaced, because the
+# fan-out is concurrent; this leaves real headroom above anything still alive.
 REPORT_GEN_STALE_SECONDS = 45 * 60
 
 
@@ -2329,9 +2359,11 @@ def regenerate_report_async(case_id, *, audience=None, use_llm=False) -> dict:
     """Kick off regenerate_report() on a background thread and return immediately.
 
     An LLM-narrated report used to be one synchronous request start to finish.
-    A real case is TWO sequential LLM calls (narrative, then advisory) over the
-    full distilled graph — measured live at 227K combined tokens through a
-    subscription-CLI provider, 5 minutes 29 seconds end to end. nginx's /api/
+    A real case is the narrative -- one call, or ONE CALL PER PHASE run in
+    parallel plus a synthesis pass when the case is segmented -- and then the
+    checklist, over the full distilled graph. Measured live at 227K combined
+    tokens through a subscription-CLI provider, 5 minutes 29 seconds end to end
+    back when it was two sequential calls; the fan-out is wider but concurrent. nginx's /api/
     proxy_read_timeout is 300 seconds: the browser's connection dies right as
     the FIRST call was finishing, while the backend keeps working underneath,
     invisible to the operator. That run finished and saved correctly — the
@@ -2492,7 +2524,11 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
     # said the advisory was 13 minutes in when it had been running for two.
     _narrative_patch = {"report_md": report, "report_dirty": False,
                         "report_phase": "checklist",
-                        "report_phase_started_at": _now_iso()}
+                        "report_phase_started_at": _now_iso(),
+                        # What this narration actually cost in calls, so the next
+                        # pre-spend estimate quotes THIS case (see _RESCAN_LLM_CALLS).
+                        "report_llm_calls": _expected_llm_calls(
+                            gv, d, window, min_sev) if use_llm else 0}
     # Stamp WHICH runs this narrative describes. It was clearing report_dirty
     # and leaving report_run_ids alone, so report_stale_runs went on counting
     # every member as unreflected forever -- a report regenerated one second ago
