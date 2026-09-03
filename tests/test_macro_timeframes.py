@@ -33,7 +33,7 @@ for _pkg, _rel in (("services", "services"), ("services.fusion", "services/fusio
         _m = types.ModuleType(_pkg); _m.__path__ = [os.path.join(_BACKEND, _rel)]
         sys.modules[_pkg] = _m
 
-from services.fusion import render, schema, budget  # noqa: E402
+from services.fusion import render, schema, budget, correlate  # noqa: E402
 
 _T0 = _dt.datetime(2026, 1, 1, 12, 0, 0, tzinfo=_dt.timezone.utc)
 
@@ -65,9 +65,12 @@ def _burst(prefix, day, n, sev="medium", hosts=("host000",)):
 class AltitudeFollowsTheShapeOfActivity(unittest.TestCase):
 
     def test_two_real_phases_are_macro_even_inside_ninety_days(self):
-        """Two substantial windows 30 days apart. Span alone (30 < 90) said
-        focused; there are two phases to map, so it is macro."""
-        g = _graph(3, _burst("a", 0, 4) + _burst("b", 30, 4))
+        """Two substantial windows 30 days apart, ACROSS HOSTS. Span alone (30 < 90)
+        said focused; there are two phases to map, so it is macro. The hosts matter:
+        segmentation is for a case the analyst must triage BETWEEN episodes of, and
+        a single machine's activity is one story the focused report tells better."""
+        g = _graph(3, _burst("a", 0, 4, hosts=("host000",))
+                   + _burst("b", 30, 4, hosts=("host001",)))
         alt, reason = render._resolve_altitude(g)
         self.assertEqual(alt, "macro", reason)
 
@@ -91,7 +94,8 @@ class AltitudeFollowsTheShapeOfActivity(unittest.TestCase):
     def test_zooming_into_a_window_drops_to_focused(self):
         """The loop: a macro case, narrowed to one of its own zoom windows, must come
         back focused -- or "Analyze this scope" never delivers what it promises."""
-        g = _graph(3, _burst("a", 0, 5, sev="high") + _burst("b", 40, 5, sev="high"))
+        g = _graph(3, _burst("a", 0, 5, "high", hosts=("host000",))
+                   + _burst("b", 40, 5, "high", hosts=("host001",)))
         self.assertEqual(render._resolve_altitude(g)[0], "macro")
         zt = render.zoom_targets(g)
         self.assertEqual(len(zt), 2)
@@ -350,3 +354,127 @@ class SevereActivityOutsideEveryPhaseIsAccountedFor(unittest.TestCase):
             self.assertIn(r["severity"], ("critical", "high"))
             self.assertIn("count", r)
             self.assertIn("hosts", r)
+
+
+class ASmallCaseMustNotBeSegmentedIntoStubs(unittest.TestCase):
+    """A 1-host, 31-finding case whose evidence happened to span 400 days was being
+    split into SIX phases of ONE finding each, instead of one focused narrative over
+    the whole thing -- reported as "the small scope is very underwhelming".
+
+    Cause: _substantial() counted "anything high or above" as worth a phase, and on
+    a real case high IS the norm (134 of 148 findings), so every single finding
+    qualified. Volume or a CRITICAL is the signal; a lone high is not.
+    """
+
+    def _case(self, n, span_days, hosts=1, sev_="high"):
+        fs = []
+        for i in range(n):
+            day = (span_days * i) // max(1, n - 1)
+            fs.append(_find(f"f{i}", sev=sev_, day=day, hour=i % 20,
+                            hosts=(f"host{i % hosts:03d}",)))
+        return _graph(hosts, fs)
+
+    def test_a_lone_high_finding_is_not_a_phase(self):
+        z = {"finding_count": 1, "critical_count": 0, "severity": "high"}
+        self.assertFalse(render._substantial(z))
+
+    def test_a_lone_critical_still_earns_a_phase(self):
+        """Criticals are rare -- 9 of 148 on the live case -- so one is real signal."""
+        z = {"finding_count": 1, "critical_count": 1, "severity": "critical"}
+        self.assertTrue(render._substantial(z))
+
+    def test_volume_alone_earns_a_phase(self):
+        z = {"finding_count": render.MIN_SUBSTANTIAL_FINDINGS, "critical_count": 0,
+             "severity": "medium"}
+        self.assertTrue(render._substantial(z))
+
+    def test_a_small_case_stays_focused_however_long_its_span(self):
+        """The span of the evidence must not fragment a case small enough to narrate
+        in one piece -- that is what produced six one-finding sections."""
+        for span in (30, 180, 400, 800):
+            g = self._case(31, span)
+            alt, why = render._resolve_altitude(g)
+            self.assertEqual(alt, "focused", f"span={span}: {why}")
+
+    def test_a_genuinely_broad_case_is_still_segmented(self):
+        """The fix must not stop segmenting what segmentation is for."""
+        fs = []
+        for w in range(4):
+            fs += _burst(f"w{w}", w * 40, 6, "high", hosts=(f"host{w % 3:03d}",))
+        g = _graph(3, fs)
+        alt, why = render._resolve_altitude(g)
+        self.assertEqual(alt, "macro", why)
+        self.assertGreaterEqual(len(render.analysable(render.zoom_targets(g))), 2)
+
+
+class AttackIdsAreRecoveredFromRuleNames(unittest.TestCase):
+    """SIGMA/Hayabusa rule names carry the technique id -- "Evtx: T1562.001-Win
+    Defender Disabled on HOST" -- and nothing parsed it, so `finding.mitre` was set
+    only by the handful of hand-written correlation rules. Both live cases fell under
+    MITRE_MIN_COVERAGE_PCT as a result: the ATT&CK matrix suppressed itself as "too
+    sparse" and the phase table printed a column of dashes, while the ids sat unread
+    in the titles."""
+
+    def _g(self, findings):
+        from services.fusion.schema import FusionGraph
+        g = FusionGraph(case_id="c1")
+        for f in findings:
+            g.findings.append(f)
+        return g
+
+    def _f(self, title, mitre=None, summary="", rule=""):
+        from services.fusion.schema import Finding
+        return Finding(id=f"f-{abs(hash(title)) % 99999}", title=title,
+                       severity="high", confidence="medium",
+                       mitre=list(mitre or []),
+                       summary=summary, ts="2026-01-01T00:00:00")
+
+    def test_a_technique_id_in_the_title_is_recovered(self):
+        g = self._g([self._f("Evtx: T1562.001-Win Defender Disabled on ALClient022")])
+        correlate._recover_mitre_from_text(g)
+        self.assertEqual(g.findings[0].mitre, ["T1562.001"])
+
+    def test_a_curated_mapping_is_never_overwritten(self):
+        """Hand-written correlation rules must outrank a parsed id."""
+        g = self._g([self._f("Evtx: T1562.001-Win Defender Disabled", mitre=["T1021"])])
+        correlate._recover_mitre_from_text(g)
+        self.assertEqual(g.findings[0].mitre, ["T1021"])
+
+    def test_the_same_id_in_title_and_summary_is_listed_once(self):
+        g = self._g([self._f("Evtx: T1059.001-Base64", summary="rule T1059.001 fired")])
+        correlate._recover_mitre_from_text(g)
+        self.assertEqual(g.findings[0].mitre, ["T1059.001"])
+
+    def test_hostnames_and_filenames_are_not_mistaken_for_techniques(self):
+        """The trap: 'ALClient022' and 'TRAA5D2.tmp' must not read as technique ids."""
+        for noise in ("Suspicious process on ALClient022",
+                      "Temp process TRAA5D2.tmp on ALMECM01",
+                      "Renamed binary: peview.exe"):
+            g = self._g([self._f(noise)])
+            correlate._recover_mitre_from_text(g)
+            self.assertEqual(g.findings[0].mitre, [], noise)
+
+    def test_nothing_is_invented_when_the_text_has_no_id(self):
+        g = self._g([self._f("Coordinated suspicious activity")])
+        correlate._recover_mitre_from_text(g)
+        self.assertEqual(g.findings[0].mitre, [])
+
+
+class TechniqueIdsMustReadAsNames(unittest.TestCase):
+    """Detections write SUB-technique ids ("T1562.001") but the name table was keyed
+    on base techniques ("T1562"), so every id recovered from a rule name rendered as a
+    bare number beside curated ones that had names."""
+
+    def test_a_named_subtechnique_wins(self):
+        self.assertEqual(render._mitre_name("T1562.001"), "Disable or Modify Tools")
+
+    def test_an_unnamed_subtechnique_falls_back_to_its_parent(self):
+        """The point of the fallback: an id nobody has named yet still reads."""
+        self.assertEqual(render._mitre_name("T1574.999"), "Hijack Execution Flow")
+
+    def test_a_base_technique_still_resolves(self):
+        self.assertEqual(render._mitre_name("T1021"), "Remote Services")
+
+    def test_an_unknown_technique_is_empty_not_dangling(self):
+        """Must be falsy so the caller prints the bare id, never 'T9999 — '."""
+        self.assertEqual(render._mitre_name("T9999"), "")

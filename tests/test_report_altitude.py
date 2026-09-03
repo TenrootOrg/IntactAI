@@ -64,12 +64,17 @@ class Altitude(unittest.TestCase):
         alt, reason = render._resolve_altitude(g)
         self.assertEqual(alt, "macro", reason)
 
-    def test_broad_by_evidence_span_is_macro(self):
-        # 3 hosts, 4 findings, but they span 120 days -> macro on span alone.
+    def test_a_long_span_alone_is_NOT_macro(self):
+        """Reversed deliberately. Span used to force macro on its own, and it was
+        wrong in both directions: it is driven by the oldest artifact timestamp in
+        the data -- a two-year-old registry or file time -- not by how long the
+        incident lasted. Here 4 findings over 120 days is a tiny case with nothing
+        to map; segmenting it produced sections of one finding each. Whether there
+        are DISTINCT PHASES worth mapping is the real question."""
         g = _graph(3, [_find("a", day=0), _find("b", day=40),
                        _find("c", day=80), _find("d", day=120)])
         alt, reason = render._resolve_altitude(g)
-        self.assertEqual(alt, "macro", reason)
+        self.assertEqual(alt, "focused", reason)
 
     def test_narrow_recent_is_focused(self):
         g = _graph(3, [_find(f"f{i}", day=0, hour=i) for i in range(6)])

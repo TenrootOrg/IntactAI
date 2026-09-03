@@ -1689,7 +1689,6 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     # "first scan generates it; afterwards only on rescan".
     if d.get("report_md") and not force_report:
         report = d.get("report_md")
-        analysis = d.get("analysis") or {}
         # Report reused verbatim → it still reflects whatever members it was last
         # written from, NOT the (possibly newer) graph members. Tracking this
         # separately from fused_run_ids lets the deterministic graph auto-refresh
@@ -1715,9 +1714,9 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         # route means the deterministic report, and the Analysis tab says which.
         _narrate = allow_llm and llm_sim._use_real()
         _plog("Refusion · generating report", "info",
-              ("narrated report (this waits on the model), advisory & checklist"
+              ("narrated report (this waits on the model) & checklist"
                if _narrate else
-               "deterministic report, advisory & checklist"), pct=88)
+               "deterministic report & checklist"), pct=88)
         llm_ent, llm_chars = _llm_payload_budget(d)
         llm_ident = _llm_identity_budget(d)
         llm_out = _effective_output_cap(d)
@@ -1767,15 +1766,14 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                                f"narrative generated ({len(report or ''):,} chars)")
         # ADVISORY analyst pass — incident-grouping + grounded hypotheses. Stored
         # SEPARATELY from the deterministic findings; fed prior operator dispositions.
-        # THE ADVISORY IS GONE. It was a second whole-case model call that clustered
-        # findings into "incident groups" and offered hypotheses -- and the report
-        # now analyses the case phase by phase, which is the same clustering done
-        # better and actually visible. Measured before removal: its groups
-        # duplicated the report, its output was empty or unparseable on every run
-        # but one, and its renderer was never wired to a tab, so nothing it
-        # produced was ever displayed. Any advisory a case already stored is left
-        # untouched and still rendered by the API for older cases.
-        analysis = d.get("analysis") or {}
+        # THE ADVISORY IS GONE, engine and all. It was a second whole-case model
+        # call that clustered findings into "incident groups" and offered
+        # hypotheses -- and the report now analyses the case phase by phase, which
+        # is the same clustering done better and actually visible. Measured before
+        # removal: its groups duplicated the report, its output was empty or
+        # unparseable on every run but one, and its renderer was never wired to a
+        # tab, so nothing it produced was ever displayed. It is no longer written,
+        # read, or served; a blob on an old case is simply ignored.
         report_members = list(members)   # report now reflects exactly these members
         report_dirty = False             # report freshly generated → up to date
     # customer-confirmation checklist — generate once (preserve operator decisions on
@@ -1851,7 +1849,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                          details={"fusion_graph": {},
                                   "graph_counts": _counts_from_graph_dict(pruned),
                                   "report_md": report,
-                                  "token_ab": token_ab, "analysis": analysis,
+                                  "token_ab": token_ab,
                                   # Record exactly which member runs this graph was
                                   # built from, so the UI can detect when new runs
                                   # have landed since (stale_member_runs) and show a
@@ -2491,7 +2489,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
     # by however long the narrative took -- measured on a live case: the banner
     # said the advisory was 13 minutes in when it had been running for two.
     _narrative_patch = {"report_md": report, "report_dirty": False,
-                        "report_phase": "advisory",
+                        "report_phase": "checklist",
                         "report_phase_started_at": _now_iso()}
     # Stamp WHICH runs this narrative describes. It was clearing report_dirty
     # and leaving report_run_ids alone, so report_stale_runs went on counting
@@ -2515,7 +2513,6 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
     # analyses the case phase by phase, which is the same clustering its
     # "incident groups" did, done better and actually visible. Whatever advisory a
     # case already stored is left untouched: this path simply no longer writes one.
-    analysis = None
     # The customer-confirmation checklist moved here from fuse_case, which
     # generated it regardless of allow_llm and so made every first automatic
     # fuse a billed, blockable call. This is the narration step — the one that is
@@ -2539,18 +2536,6 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
             log_case_event(case_id, "Checklist", "warning",
                            f"could not be generated ({type(e).__name__}); "
                            f"the report is unaffected")
-    # The narrative is already durable (saved above); only the advisory is
-    # outstanding. `analysis is None` means the advisory pass failed and was
-    # logged as a warning -- keep whatever advisory the case already had rather
-    # than blanking it.
-    if analysis is not None:
-        try:
-            _merge_case_details(case_id, {"analysis": analysis})
-            log_case_event(case_id, "Advisory saved", "success",
-                           "advisory written to the database")
-        except Exception as e:
-            log_case_event(case_id, "Advisory save", "error", f"database write failed: {e}")
-            raise
     return {"report_md": report, "audience": d.get("audience", "both")}
 
 

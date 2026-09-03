@@ -15,6 +15,7 @@ cross-host truth is established.
 from __future__ import annotations
 
 import hashlib
+import re
 
 from .schema import FusionGraph, Finding, EvidenceRef
 from . import severity as sev
@@ -104,6 +105,7 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     _identity_cross_host_findings(g)
     _derive_findings(g, baseline=baseline, window=window)
     _coordinated_activity(g, window=window, baseline=baseline)
+    _recover_mitre_from_text(g)               # after EVERY finding exists
     _corroboration(g)
     _stamp_finding_watermarks(g)              # occurrence watermark — before dispositions
     _apply_dispositions(g, dispositions)      # operator triage — before severity rollup
@@ -111,6 +113,38 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     _score_assets(g)
     g.findings.sort(key=lambda f: (-sev.rank(f.severity), f.ts or "9999"))
     return g
+
+
+# A SIGMA/Hayabusa rule name usually CARRIES its technique id -- "Evtx:
+# T1562.001-Win Defender Disabled on ALClient022" -- but nothing parsed it, so
+# `finding.mitre` was populated only by the handful of hand-written correlation
+# rules below. Measured on live cases: 13 of 183 findings mapped on test4 and 12 of
+# 152 on test3, which put both under MITRE_MIN_COVERAGE_PCT. The report therefore
+# suppressed its ATT&CK matrix as "too sparse" and the phase table printed a column
+# of dashes, while the technique ids sat unread in the titles all along. Recovering
+# them takes test4 to 60/183 and test3 to 56/152.
+_MITRE_RX = re.compile(r"\bT(?:1\d{3}|\d{4})(?:\.\d{3})?\b")
+
+
+def _recover_mitre_from_text(g: FusionGraph) -> None:
+    """Fill in `finding.mitre` from technique ids written into the finding's own text.
+
+    Additive and conservative: a finding that already carries ids is left alone, so a
+    curated mapping always wins over a parsed one. Nothing is invented -- an id is
+    only ever copied out of text the detection itself produced."""
+    for f in g.findings:
+        if getattr(f, "mitre", None):
+            continue
+        blob = " ".join(str(x) for x in (
+            getattr(f, "title", "") or "",
+            getattr(f, "summary", "") or "",
+            getattr(f, "rule", "") or "",
+        ))
+        # dict.fromkeys: de-duplicate (title AND rule normally both carry the id)
+        # while keeping first-seen order, so the list is stable across runs.
+        found = list(dict.fromkeys(_MITRE_RX.findall(blob)))
+        if found:
+            f.mitre = found
 
 
 def _stamp_finding_watermarks(g: FusionGraph) -> None:

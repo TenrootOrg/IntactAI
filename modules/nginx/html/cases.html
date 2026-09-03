@@ -250,7 +250,7 @@
     <div id="caselist"></div>
   </div>
   <div class="main" id="main">
-    <div class="empty">Pick a case (left) to fuse the runs tagged to it into one<br/>cross-module, cross-host graph — report, advisory, timeline + chat.</div>
+    <div class="empty">Pick a case (left) to fuse the runs tagged to it into one<br/>cross-module, cross-host graph — report, timeline + chat.</div>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -454,7 +454,7 @@ function costBadge(ce){
   const after=(ce.after&&ce.after.usd)||0, before=(ce.before&&ce.before.usd)||0;
   if(!(before>0||after>0)) return `<span class="stat" title="No pricing for ${esc(ce.model)} in the model catalog"><b style="color:var(--muted)">—</b> cost/report <span style="color:var(--muted)">(${esc(ce.model)})</span></span>`;
   const sim = (ce.mode!=='real') ? ' if live' : '';
-  return `<span class="stat" title="Cost of one report generation (LLM) with ${esc(ce.model)} — report + advisory (2 passes), driven almost entirely by the INPUT context (raw vs distilled); output tokens are the same either way. ~${(ce.output_tokens||0).toLocaleString()} output tokens. BEFORE = feeding raw rows (${((ce.before&&ce.before.input_tokens)||0).toLocaleString()} in); AFTER = the distilled fusion payload (${((ce.after&&ce.after.input_tokens)||0).toLocaleString()} in). Tune 'LLM payload' + 'Output token cap'.">
+  return `<span class="stat" title="Cost of one report generation (LLM) with ${esc(ce.model)} — one call per phase plus a synthesis, driven almost entirely by the INPUT context (raw vs distilled); output tokens are the same either way. ~${(ce.output_tokens||0).toLocaleString()} output tokens. BEFORE = feeding raw rows (${((ce.before&&ce.before.input_tokens)||0).toLocaleString()} in); AFTER = the distilled fusion payload (${((ce.after&&ce.after.input_tokens)||0).toLocaleString()} in). Tune 'LLM payload' + 'Output token cap'.">
     <span style="color:var(--muted)">${_usd(before)}</span> → <b style="color:var(--warn,#d29922)">${_usd(after)}</b> /report${sim} <span style="color:var(--muted)">(${esc(ce.model)})</span></span>`;
 }
 function render(info,md,g){
@@ -754,7 +754,7 @@ async function applyZoom(id,i){
   }catch(e){ toast('zoom failed: '+((e&&e.message)||e)); }
 }
 
-// A real case is TWO sequential LLM calls (narrative, then advisory) over the
+// A real case is several model calls (one per phase, then a synthesis) over the
 // full distilled graph — measured live at 5m29s for one case. The backend now
 // runs this on a background thread and answers the POST immediately; this is
 // the polling side that waits for it and refreshes the page on its own.
@@ -764,7 +764,7 @@ let _genPoll=null, _genPollCase=null, _genPhase=null;
 // which one is running. It used to show a single "sending case data to the
 // model" for the whole job, so a narrative that had already returned, been
 // saved and was sitting readable on the page below still looked like a request
-// in flight -- for the entire length of the advisory, which is minutes. That
+// in flight -- for the whole remaining run, which is minutes. That
 // reads as stuck, and reasonably so.
 function genStatusHtml(startedAt, phase, phaseStartedAt){
   const elapsedMin = (iso) => {
@@ -773,23 +773,23 @@ function genStatusHtml(startedAt, phase, phaseStartedAt){
   };
   const mins = elapsedMin(startedAt) ?? 0;
   const since = startedAt ? (mins<1 ? 'just started' : `running ${mins} min`) : 'starting…';
-  if(phase === 'advisory' || phase === 'checklist'){
+  if(phase === 'checklist'){
     // The PHASE's own clock, not the job's. Showing total elapsed next to
-    // "now generating the advisory" reads as the advisory's elapsed and
-    // overstates it by however long the narrative took -- live, that banner
-    // claimed 13 minutes for an advisory two minutes old.
+    // the phase's OWN elapsed, not the job's -- putting total elapsed here
+    // overstates it by however long the report took, and once claimed 13 minutes
+    // for a step two minutes old.
     const pmins = elapsedMin(phaseStartedAt);
-    const advisoryAge = (pmins===null) ? since
+    const stepAge = (pmins===null) ? since
       : (pmins<1 ? 'just started' : `${pmins} min`) + ` · ${mins} min total`;
     return `<div class="agbanner agbanner-live">
-      <div class="agtitle">✅ Report ready — now generating the advisory (${esc(advisoryAge)})</div>
-      <div class="agdetail">The narrative below is finished and saved; it will not change. The advisory is a second model call over the same case and takes about as long again.</div>
-      <div class="agaction">Safe to read, download or leave — the Analysis tab fills in the advisory on its own when it lands.</div>
+      <div class="agtitle">✅ Report ready — finishing the confirmation checklist (${esc(stepAge)})</div>
+      <div class="agdetail">The report below is finished and saved; it will not change. The checklist is a short final step and does not affect it.</div>
+      <div class="agaction">Safe to read, download or leave.</div>
     </div>`;
   }
   return `<div class="agbanner agbanner-live">
       <div class="agtitle">⏳ Sending case data to the model — ${esc(since)}</div>
-      <div class="agdetail">A full case is a large payload and often two sequential model calls (narrative, then advisory) — this commonly takes several minutes, longer for a large case.</div>
+      <div class="agdetail">A broad case is analysed phase by phase — one model call per phase, run in parallel, then a synthesis pass. This usually takes a minute or two.</div>
       <div class="agaction">No need to wait here — the report refreshes on its own the moment it's ready. Feel free to switch tabs or cases.</div>
     </div>`;
 }
@@ -829,7 +829,7 @@ function pollReportGen(id){
       // A flip out of 'narrative' means the narrative has just been WRITTEN and
       // is readable. Pull it in at that moment -- once, on the transition -- so
       // the operator is not left reading the PREVIOUS run's report for the whole
-      // length of the advisory, which is the second half of the job and just as
+      // remaining run, which is the second half of the job and just as
       // slow. The every-tick redraw is still avoided (see below); this fires on
       // a phase change only.
       if(info.report_phase && info.report_phase!==_genPhase){
@@ -838,7 +838,7 @@ function pollReportGen(id){
         if(!firstSighting && info.report_phase!=='narrative'
            && curInfo && curInfo.case_id===id){
           openCase(id);
-          toast('report ready — advisory still running');
+          toast('report ready');
           return;
         }
       }

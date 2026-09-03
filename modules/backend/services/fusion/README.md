@@ -20,7 +20,7 @@ pipeline is modified, no new database.
 | `mappers/details.py` | parses the Hayabusa `Details` KV string → links each SIGMA detection to the **process/account/IOC** it names + reconstructs short-lived processes Pstree missed |
 | `correlate.py` | assemble + PID-reuse + cross-host (lateral movement) + derived findings (injected+C2, yara, persistence) + severity rollup |
 | `render.py` | 3 altitudes: macro / **infrastructural attack timeline** / per-asset; + IOC table + MITRE |
-| `llm_sim.py` | **LLM engine — flag-gated** (`agentic.fusion_llm_mode`). `generate_report` (narrate) + `analyze` (**grounded, skill-guided analyst pass**: incident-grouping + advisory hypotheses, `_ground()`-gated, never auto-findings) + `chat` (+ `detect_disposition` FP-triage). Any failure → deterministic fallback. |
+| `llm_sim.py` | **LLM engine — flag-gated** (`agentic.fusion_llm_mode`). `generate_report` (narrate: one call per phase via `_phase_sections` + a synthesis pass when the case is segmented, otherwise a single focused call) + `generate_disposition_checklist` + `chat` (+ `detect_disposition` FP-triage). Any failure → deterministic fallback. |
 | `budget.py` | tokenizer-free `chars/4` budget guard + per-altitude caps (report/chat); `distilled()` step-down |
 | `calibrate.py` | finding-level precision/recall/F1 scorer + `build_baseline` + threshold `sweep` over the labeled fixtures |
 | `kb.py` | cross-case knowledge base on the running ES — index case entities, enrich new cases with prior sightings (**enrichment-only**, degrades silently without ES) |
@@ -86,11 +86,16 @@ Three paradigms combined, not competing:
 - **Ontology** (`correlate`) = deterministic cross-host/cross-module correlation. The
   precision core; produces detections signatures can't (cross-host campaigns, coordinated
   activity). **Never mutated by the LLM.**
-- **Grounded LLM** (`llm_sim.analyze`) = an ADVISORY pass over the *distilled* graph that adds
-  the three things rules+ontology can't — incident-grouping, grounded novel-pattern
-  *hypotheses* (`for_analyst_verification`, `_ground()`-gated so a hypothesis citing a
-  non-existent entity is rejected), and triage — reusing the curated agentic skills/playbooks.
-  Stored in `details["analysis"]`, separate from `findings`.
+- **Segmented LLM narration** (`llm_sim.generate_report`) = the incident-grouping the
+  rules+ontology can't do, done where it is actually visible. `render._resolve_altitude`
+  decides `macro` (the case splits into phases worth triaging BETWEEN) or `focused` (one
+  explicit theory); a macro run makes one model call per phase in parallel plus a synthesis
+  pass, and each phase is sized to the configured model's context independently. Stored as
+  `details["report_md"]` — the report IS the analysis.
+
+  A second whole-case "advisory" pass (`analyze`, incident_groups + grounded hypotheses)
+  used to sit here. Removed: its groups duplicated the report, its renderer was never wired
+  to a tab, and its output was empty or unparseable on every live run but one.
 
 ## Interactive FP-triage (the human-in-the-loop)
 Most domain detections are benign IT/employee activity. The chat is the disposition loop:

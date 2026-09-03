@@ -131,7 +131,10 @@ def _resolve_detail(graph, detail, *, window=None, min_severity="informational")
     if d not in ("auto", "explicit", "summary"):
         d = "auto"
     if d != "auto":
-        return d, d
+        # The reason must SAY SOMETHING. Returning `d` twice rendered the footer as
+        # "Report detail: **explicit** (explicit)", which tells the analyst nothing
+        # about why the report is as deep as it is.
+        return d, "set for this case"
     hosts = len(graph.by_type("asset"))
     _, findings = scope(graph, window=window, min_severity=min_severity)
     nf = len(findings)
@@ -141,14 +144,20 @@ def _resolve_detail(graph, detail, *, window=None, min_severity="informational")
 
 
 # ---- report altitude: macro (triage map) vs focused (one explicit theory) ------
-# A broad case (many hosts, big finding volume, OR a long evidence span) reads as
-# several candidate scenarios over suspicious timeframes, NOT one intrusion story —
-# forcing one story there over-commits and bloats. A narrow case wants a single
-# explicit theory in detail. Validated in scratch_eval/: the macro prompt beats a
-# forced single story 24-25 vs 13-14 at every broad scope (3->100 hosts), and the
-# tightened focused prompt beats the verbose baseline 20 vs 17 on a narrow case,
-# at 3.4-4.5x lower output cost throughout. Span uses EVIDENCE times (min/max
-# finding ts), never the window bounds — the default window is 10 years.
+# A case with SEVERAL SUBSTANTIAL ACTIVITY WINDOWS ACROSS SEVERAL HOSTS reads as
+# candidate scenarios to triage between, NOT one intrusion story — forcing one story
+# there over-commits and bloats. Anything narrower wants a single explicit theory in
+# depth. Validated in scratch_eval/: the macro prompt beats a forced single story
+# 24-25 vs 13-14 at every broad scope (3->100 hosts), and the tightened focused
+# prompt beats the verbose baseline 20 vs 17 on a narrow case, at 3.4-4.5x lower
+# output cost throughout.
+#
+# SPAN IS NOT A TRIGGER, and used to be. It is driven by the OLDEST ARTIFACT
+# TIMESTAMP in the data — a two-year-old registry or file time — not by how long the
+# incident lasted, so it made macro reports out of cases with nothing to map: test5
+# (one host, 31 findings) came back segmented and empty because its evidence happened
+# to reach back 120 days. Substantial windows and host count are what actually say
+# whether there is more than one story here.
 MACRO_SPAN_DAYS = 90
 # How many activity windows a macro report MAPS. One list feeds the zoom cards, the
 # deterministic timeframe table AND the model's per-timeframe sections, so all three
@@ -380,8 +389,21 @@ def zoom_targets(graph, *, window=None, min_severity="informational",
 
 
 def _substantial(z) -> bool:
+    """Is this window worth a section of its own?
+
+    Volume, or a CRITICAL. It used to be volume or "anything high or above", and
+    on a real case that is no filter at all: high IS the norm -- 134 of 148
+    findings on one live case -- so every single finding qualified as its own
+    phase. Measured consequence: a 1-host, 31-finding case whose evidence happened
+    to span 400 days was segmented into SIX phases of ONE finding each, instead of
+    one focused narrative over the whole thing. That is the "small scope is very
+    underwhelming" report.
+
+    A lone critical still earns a section (criticals are rare -- 9 of 148 there --
+    so it is a real signal); a lone high does not.
+    """
     return (z.get("finding_count", 0) >= MIN_SUBSTANTIAL_FINDINGS
-            or sev.rank(z.get("severity", "informational")) >= sev.rank("high"))
+            or z.get("critical_count", 0) >= 1)
 
 
 def analysable(zt):
@@ -631,10 +653,26 @@ def _resolve_altitude(graph, *, window=None, min_severity="informational"):
               f"({substantial} substantial), {span}d span")
     if hosts > EXPLICIT_MAX_HOSTS or nf > EXPLICIT_MAX_FINDINGS:
         return "macro", reason                      # too big to narrate explicitly
-    if substantial >= 2:
+    # ONE MACHINE IS ONE STORY. Segmentation exists because a case is too much to
+    # read as a single narrative and the analyst must triage BETWEEN episodes --
+    # which needs more than one host. A single host split into phases is the
+    # focused report's step-by-step reconstruction, done worse: measured on a live
+    # 1-host / 31-finding case, it produced three phases of 21/5/3 findings where
+    # one explicit narrative was plainly the better document. Volume alone still
+    # forces macro through the rule above.
+    if substantial >= 2 and hosts > 1:
         return "macro", reason                      # distinct phases: map them
-    if windows >= 2 and span > MACRO_SPAN_DAYS:
-        return "macro", reason                      # sparse but long: still a map
+    # NO SPAN-ONLY CLAUSE. There used to be one -- "windows >= 2 and span > 90:
+    # sparse but long, still a map" -- and it segmented cases that had nothing to
+    # map. A 1-host, 31-finding case whose evidence happened to stretch 400 days
+    # tripped it with seven windows of which ONE was substantial, and was split
+    # into six one-finding sections instead of getting a single focused narrative.
+    #
+    # Span is the wrong signal on its own and has now been wrong twice: it is
+    # driven by the oldest artifact timestamp in the data -- a two-year-old
+    # registry or file time -- not by how long the incident lasted. Whether there
+    # are DISTINCT PHASES worth mapping is the actual question, and `substantial`
+    # above answers it.
     return "focused", reason
 
 
@@ -2012,7 +2050,7 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
                    "of activity._\n")
         for t in sorted(techs):
             extra = f" (+{len(techs[t]) - 1} more)" if len(techs[t]) > 1 else ""
-            name = _MITRE_NAMES.get(t)
+            name = _mitre_name(t)
             label = f"{t} — {name}" if name else t          # no dangling '— ' when unknown
             out.append(f"- **{label}** · {techs[t][0]}{extra}")
         out.append("")
@@ -2113,4 +2151,27 @@ _MITRE_NAMES = {
     "T1027": "Obfuscated Files or Information", "T1036": "Masquerading",
     "T1112": "Modify Registry", "T1569": "System Services", "T1219": "Remote Access Software",
     "T1560": "Archive Collected Data", "T1048": "Exfiltration Over Alternative Protocol",
+    "T1197": "BITS Jobs", "T1553": "Subvert Trust Controls",
+    "T1567": "Exfiltration Over Web Service", "T1566": "Phishing",
+    # Sub-techniques worth naming in their own right: the parent name alone
+    # ("Impair Defenses") loses the part an analyst triages on ("Disable or Modify
+    # Tools"). Anything not named here still resolves through its parent below.
+    "T1059.001": "PowerShell", "T1562.001": "Disable or Modify Tools",
+    "T1543.003": "Windows Service", "T1553.005": "Mark-of-the-Web Bypass",
+    "T1567.002": "Exfiltration to Cloud Storage", "T1003.001": "LSASS Memory",
+    "T1558.003": "Kerberoasting", "T1547.001": "Registry Run Keys / Startup Folder",
+    "T1053.005": "Scheduled Task", "T1218.011": "Rundll32",
+    "T1070.001": "Clear Windows Event Logs", "T1021.001": "Remote Desktop Protocol",
+    "T1021.002": "SMB/Windows Admin Shares", "T1027.010": "Command Obfuscation",
+    "T1574.001": "DLL Search Order Hijacking", "T1036.005": "Match Legitimate Name or Location",
 }
+
+
+def _mitre_name(t: str) -> str:
+    """Technique id -> readable name, falling back to the PARENT technique.
+
+    Detections write sub-technique ids ("T1562.001"), but the table was keyed on base
+    techniques ("T1562"), so every recovered id rendered as a bare number next to
+    curated ones that had names. Resolving the parent means a sub-technique nobody has
+    named yet still reads as "T1574.002 — Hijack Execution Flow" instead of a code."""
+    return _MITRE_NAMES.get(t) or _MITRE_NAMES.get(t.split(".")[0], "")

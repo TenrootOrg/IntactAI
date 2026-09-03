@@ -389,7 +389,6 @@ def get_case(case_id):
                     "masking": d.get("masking") or {"enabled": False, "patterns": []},
                     "included_run_ids": d.get("included_run_ids"),
                     # null-guarded for cases created before these existed
-                    "analysis": d.get("analysis") or {},
                     "dispositions": d.get("dispositions") or [],
                     "token_ab": d.get("token_ab") or {},
                     "counts": store.graph_counts(case_id),
@@ -1218,16 +1217,6 @@ def chat_clear(case_id):
     if not store.get_case(case_id):
         return jsonify({"error": "case not found"}), 404
     return jsonify({"case_id": case_id, **store.clear_chat(case_id)})
-
-
-@case_bp.route("/api/cases/<case_id>/analysis", methods=["GET"])
-def analysis(case_id):
-    """The ADVISORY analyst pass (incident_groups + grounded hypotheses) — separate from
-    the deterministic findings, never a determination."""
-    d = store.get_case(case_id)
-    if not d:
-        return jsonify({"error": "case not found"}), 404
-    return jsonify({"case_id": case_id, "analysis": d.get("analysis") or {}})
 
 
 @case_bp.route("/api/cases/<case_id>/dispositions", methods=["GET"])

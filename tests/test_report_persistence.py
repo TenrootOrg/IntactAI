@@ -17,6 +17,7 @@ checkout:
 import datetime as _dt
 import os
 import sys
+import io
 import unittest
 from unittest import mock
 
@@ -38,6 +39,13 @@ if "services" not in sys.modules:
     sys.modules["services"] = _svc
 
 from services.fusion import store, llm_sim  # noqa: E402
+
+
+def _read_source(rel):
+    """Read a repo file for the source-level assertions below."""
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return io.open(os.path.join(root, rel), encoding="utf-8").read()
 
 
 class _Graph:
@@ -135,11 +143,35 @@ class NarrativeSurvivesEnrichmentFailure(unittest.TestCase):
             store.regenerate_report("case-1", use_llm=True)
         self.assertEqual(order[:2], ["SAVE", "CHECKLIST"], order)
 
-    def test_no_advisory_call_is_made_any_more(self):
-        """It was a second whole-case model call whose output was never displayed."""
-        with mock.patch.object(store.llm_sim, "analyze") as adv:
-            self._run()
-        adv.assert_not_called()
+    def test_the_advisory_engine_is_gone_entirely(self):
+        """Not merely uncalled -- removed. It was a second whole-case model call
+        whose output was never wired to a tab, so nothing it produced was ever
+        displayed, and it kept resurfacing in the UI as log lines and dead API
+        surface long after the operator asked for it to be gone. Keeping a
+        dormant `analyze()` around is how it would come back."""
+        for name in ("analyze", "_ground", "advisory_shortfall",
+                     "_advisory_diagnostic", "ANALYST_SYSTEM_PROMPT"):
+            self.assertFalse(hasattr(store.llm_sim, name),
+                             f"llm_sim.{name} is back")
+
+    def test_no_advisory_blob_is_written(self):
+        """A fuse must not persist details['analysis'] any more -- nothing reads it."""
+        src = _read_source("modules/backend/services/fusion/store.py")
+        self.assertNotIn('"analysis": analysis', src)
+
+    def test_no_operator_facing_string_says_advisory(self):
+        """The operator kept SEEING the word after the feature was removed: it
+        survived in the 88% progress line and an 'Advisory saved' event."""
+        import re
+        for rel in ("modules/backend/services/fusion/store.py",
+                    "modules/backend/services/fusion/llm_sim.py",
+                    "modules/backend/routes/case_routes.py"):
+            for i, line in enumerate(_read_source(rel).splitlines(), 1):
+                if line.strip().startswith("#") or "advisory" not in line.lower():
+                    continue
+                self.assertIsNone(
+                    re.search(r"""["'][^"']*advisory[^"']*["']""", line, re.I),
+                    f"{rel}:{i} still shows the operator the word: {line.strip()}")
 
 
 class AFailedWriteIsAnError(unittest.TestCase):
@@ -195,159 +227,6 @@ class StuckSpinnerWatchdog(unittest.TestCase):
         for stamp in (None, "", "not-a-timestamp"):
             self.assertTrue(store.report_generation_active(
                 {"report_generating": True, "report_generating_started_at": stamp}), stamp)
-
-
-
-
-class AnAdvisoryMustExplainWhatItLost(unittest.TestCase):
-    """Both discard paths in analyze() are silent: _parse_json returns {} for a
-    reply it cannot read, and _ground drops anything citing ids the graph does
-    not have. Either way the advisory comes back empty and looks identical to
-    "the model had nothing to say" -- so nobody looks."""
-
-    def _diag(self, raw, parsed, grounded):
-        return llm_sim._advisory_diagnostic(raw, parsed, grounded)
-
-    def test_an_unreadable_reply_says_so_and_shows_the_start_of_it(self):
-        """'It answered in prose' and 'it cited ids we do not have' need
-        completely different fixes, so the message must tell them apart."""
-        d = self._diag("Here is my analysis of the incident: the attacker...",
-                       {}, {"incident_groups": [], "hypotheses": []})
-        self.assertTrue(d["unparseable"])
-        self.assertIn("Here is my analysis", d["reply_head"])
-        msg = llm_sim.advisory_shortfall({"_diagnostic": d})
-        self.assertIn("could not be read as JSON", msg)
-
-    def test_ungrounded_citations_are_counted_not_hidden(self):
-        parsed = {"incident_groups": [{"name": "a"}, {"name": "b"}, {"name": "c"}],
-                  "hypotheses": [{"title": "h1"}, {"title": "h2"}]}
-        grounded = {"incident_groups": [{"name": "a"}], "hypotheses": []}
-        d = self._diag('{"incident_groups": []}', parsed, grounded)
-        self.assertEqual(d["dropped_groups"], 2)
-        self.assertEqual(d["dropped_hypotheses"], 2)
-        msg = llm_sim.advisory_shortfall({"_diagnostic": d})
-        self.assertIn("2 incident group(s)", msg)
-        self.assertIn("2 hypothesis(es)", msg)
-        self.assertIn("not in this case's graph", msg)
-
-    def test_an_intact_advisory_reports_nothing(self):
-        """A line about losses that did not happen is noise."""
-        parsed = {"incident_groups": [{"name": "a"}], "hypotheses": [{"title": "h"}]}
-        d = self._diag('{"ok":1}', parsed, parsed)
-        self.assertEqual(llm_sim.advisory_shortfall({"_diagnostic": d}), "")
-
-    def test_no_diagnostic_is_silent(self):
-        """The deterministic/simulated path carries none, and must not claim loss."""
-        self.assertEqual(llm_sim.advisory_shortfall({"incident_groups": []}), "")
-        self.assertEqual(llm_sim.advisory_shortfall(None), "")
-
-
-
-
-class TheAdvisoryMustBeAbleToCiteWhatItIsAskedFor(unittest.TestCase):
-    """ANALYST_SYSTEM_PROMPT requires every incident_group to cite finding_ids and
-    every hypothesis to cite entity_ids, and _ground() deletes anything citing an
-    id that is not in the graph. The payload carried NO ids at all, so the model
-    was ordered to quote identifiers it had never been shown -- and 100% of its
-    answer was deleted for not matching. Measured live: zero hypotheses on every
-    advisory ever run on a real appliance, across two different models.
-
-    The narrative payload must NOT gain ids: it writes customer-facing prose, and
-    an id in the payload is an id it can print into the report.
-    """
-
-    def setUp(self):
-        from services.fusion import render, schema
-        self.render, self.schema = render, schema
-        self.g = _graph_with_findings(schema)
-
-    def _payload(self, **kw):
-        return self.render.distilled(self.g, max_entities=50, **kw)
-
-    def test_the_narrative_payload_has_no_ids(self):
-        p = self._payload()
-        self.assertFalse(any("id" in f for f in p["findings"]))
-        self.assertFalse(any("id" in e for e in p["top_entities"]))
-
-    def test_the_advisory_payload_carries_real_finding_ids(self):
-        p = self._payload(include_ids=True)
-        real = {f.id for f in self.g.findings}
-        cited = [f.get("id") for f in p["findings"]]
-        self.assertTrue(cited, "no findings in the payload")
-        self.assertTrue(all(c in real for c in cited),
-                        "the advisory must be able to cite ids _ground() accepts")
-
-    def test_the_advisory_payload_carries_real_entity_ids(self):
-        p = self._payload(include_ids=True)
-        real = set(self.g.entities)
-        cited = [e.get("id") for e in p["top_entities"]]
-        self.assertTrue(cited, "no entities in the payload")
-        self.assertTrue(all(c in real for c in cited))
-
-    def test_ids_survive_a_budget_stepdown(self):
-        """An over-budget payload is REBUILT; dropping the flag there would
-        silently return the advisory to citing ids it was never given."""
-        p = self._payload(include_ids=True, budget_chars=400)
-        self.assertTrue(p["findings"], "stepdown removed every finding")
-        # A collapsed row is several findings, so it carries `ids`; an uncollapsed
-        # one keeps the plain `id`. Either way the advisory can cite something real.
-        real = {f.id for f in self.g.findings}
-        for f in p["findings"]:
-            cited = f.get("ids") or ([f["id"]] if f.get("id") else [])
-            self.assertTrue(cited, f"a payload row carries no citable id: {f}")
-            self.assertTrue(set(cited) <= real, f"ungroundable id in {cited}")
-
-
-def _graph_with_findings(schema):
-    """A small real FusionGraph: 2 hosts, 3 findings, entities attached."""
-    g = schema.FusionGraph(case_id="case_test")
-    for i, host in enumerate(("HOST-A", "HOST-B")):
-        a = schema.Entity(id=f"asset:endpoint:h{i}", type="asset", label=host,
-                          severity="high")
-        g.entities[a.id] = a
-    assets = list(g.entities)
-    for i in range(3):
-        g.findings.append(schema.Finding(
-            id=f"f_test{i:04d}", title=f"Finding {i}", severity="critical",
-            confidence="high", summary="s", asset_ids=[assets[i % 2]],
-            kind="sigma", ts="2026-01-01T00:00:00Z"))
-    for i in range(4):
-        e = schema.Entity(id=f"event:evt{i}", type="event", label=f"evt {i}",
-                          severity="high", anomaly=90)
-        g.entities[e.id] = e
-    g.rebuild_indexes()
-    return g
-
-
-
-
-class AnEmptyReplyMustBeNamedAsBudgetExhaustion(unittest.TestCase):
-    """The failure that actually hit production, and the one the first version of
-    the diagnostic stayed silent about.
-
-    Measured live: an advisory call billed exactly its 32,000-token output cap and
-    returned a ONE CHARACTER reply. Reasoning tokens come out of the same
-    allowance as the answer, so the model never reached the answer. It is not "the
-    model had nothing to say" and it is not an id or grounding problem -- the
-    reply is blank before any of that can matter.
-    """
-
-    def test_a_blank_reply_is_reported_as_budget_exhaustion(self):
-        d = llm_sim._advisory_diagnostic(" ", {}, {"incident_groups": [],
-                                                   "hypotheses": []}, budget=32000)
-        self.assertTrue(d["empty_reply"])
-        self.assertNotIn("unparseable", d)
-        msg = llm_sim.advisory_shortfall({"_diagnostic": d})
-        self.assertIn("EMPTY reply", msg)
-        self.assertIn("32,000-token cap", msg)
-
-    def test_prose_is_still_reported_as_unparseable_not_empty(self):
-        """The two need opposite fixes, so they must not collapse into one."""
-        d = llm_sim._advisory_diagnostic("Here is my analysis:", {},
-                                         {"incident_groups": [], "hypotheses": []})
-        self.assertTrue(d.get("unparseable"))
-        self.assertNotIn("empty_reply", d)
-        self.assertIn("could not be read as JSON", llm_sim.advisory_shortfall({"_diagnostic": d}))
 
 
 
