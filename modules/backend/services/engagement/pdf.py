@@ -32,6 +32,46 @@ import markdown as _markdown
 _LOGO_PATH = '/home/tenroot/intact/modules/nginx/html/img/tenroot-logo.png'
 
 
+# The wordmark ships as a 594x174 PNG that is 100% OPAQUE with a solid BLACK
+# background -- fine on the white app chrome, a visible black rectangle on the
+# cover's navy gradient, which is the first thing anyone sees on the deliverable.
+# Keying it out here rather than editing the asset: the same file is used all over
+# the UI, where the black background is doing no harm.
+_LOGO_BG_CUTOFF = 40          # a pixel this dark on every channel is background
+
+
+def _transparent_bg(png_bytes: bytes) -> bytes:
+    """Make a near-black logo background transparent. Returns the ORIGINAL bytes
+    unchanged if anything goes wrong -- a slightly ugly cover beats no logo."""
+    try:
+        from PIL import Image
+        import io as _io
+        im = Image.open(_io.BytesIO(png_bytes)).convert("RGBA")
+        px = im.load()
+        w, h = im.size
+        # Only key out pixels connected to the border, so a genuinely black glyph
+        # in the middle of the mark survives. Flood fill inward from the edges.
+        seen = set()
+        stack = [(x, y) for x in range(w) for y in (0, h - 1)]
+        stack += [(x, y) for y in range(h) for x in (0, w - 1)]
+        while stack:
+            x, y = stack.pop()
+            if (x, y) in seen or not (0 <= x < w and 0 <= y < h):
+                continue
+            seen.add((x, y))
+            r, g, b, a = px[x, y]
+            if a == 0 or max(r, g, b) > _LOGO_BG_CUTOFF:
+                continue
+            px[x, y] = (r, g, b, 0)
+            stack += [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]
+        out = _io.BytesIO()
+        im.save(out, format="PNG")
+        return out.getvalue()
+    except Exception as e:  # noqa: BLE001 — never fail a report over the logo
+        print(f"[PDF] logo background not keyed out: {e}", flush=True)
+        return png_bytes
+
+
 def _logo_data_url() -> str:
     """Return the logo as a base64 data URL so WeasyPrint embeds it
     in the PDF without needing a file fetch. Falls back to an empty
@@ -40,6 +80,7 @@ def _logo_data_url() -> str:
     try:
         with open(_LOGO_PATH, 'rb') as f:
             blob = f.read()
+        blob = _transparent_bg(blob)
         b64 = base64.b64encode(blob).decode('ascii')
         # All logo files in the project are PNG today; if that ever
         # changes, sniff the magic bytes.
@@ -150,6 +191,21 @@ def _wrap_findings_severity(html: str) -> str:
     return pattern.sub(repl, html)
 
 
+_EMPTY_THEAD_RE = re.compile(r"<thead>\s*<tr>(?:\s*<th[^>]*>\s*</th>)+\s*</tr>\s*</thead>",
+                             re.IGNORECASE)
+
+
+def _mark_empty_theads(html: str) -> str:
+    """Flag header rows whose every cell is empty, so the CSS can drop them.
+
+    The report writes its scope block as a two-column key/value grid, which in
+    markdown needs a header row -- and writes it as `| | |`. Markdown dutifully
+    emits <thead> with two empty <th>, and the PDF's dark header styling turned
+    that into a SOLID BLACK BAR across the page above the first row."""
+    return _EMPTY_THEAD_RE.sub(
+        lambda m: m.group(0).replace("<thead>", '<thead class="is-empty">', 1), html)
+
+
 def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str = '') -> str:
     """Compose the full HTML document the PDF renderer will see.
 
@@ -174,6 +230,7 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
         },
     )
     body_html = _wrap_findings_severity(body_html)
+    body_html = _mark_empty_theads(body_html)
 
     tenroot_logo = _logo_data_url()
     cust_logo = (customer_logo or '').strip()
@@ -215,21 +272,33 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
     html, body {{
         font-family: "Inter", "DejaVu Sans", "Helvetica", sans-serif;
         font-size: 9.5pt;
-        line-height: 1.55;
+        /* The whole document was set tight: 1.55 leading with 2.5mm paragraph
+           gaps and 0.8mm between list items, so sections ran together and a page
+           of findings read as one grey slab. Everything below is loosened as a
+           set -- leading, paragraph rhythm, list spacing and cell padding move
+           together or the page just looks unevenly airy. */
+        line-height: 1.62;
         color: #1f2937;
     }}
 
     /* Cover page */
     .cover {{
         page-break-after: always;
-        padding: 40mm 22mm 22mm 22mm;
-        height: 100vh;
+        /* box-sizing MATTERS here: with the default content-box, 100vh plus 62mm
+           of vertical padding is taller than the sheet, the last metadata row
+           ("PREPARED BY") collided with the footer rule, and the gradient stopped
+           short leaving a white band across the bottom of an otherwise dark cover. */
+        box-sizing: border-box;
+        /* bottom padding clears the absolutely-positioned footer rule (bottom:18mm
+           plus its own height), so the metadata grid can never run into it again. */
+        padding: 34mm 22mm 36mm 22mm;
+        height: 297mm;
         background: linear-gradient(160deg, #0f172a 0%, #1e293b 60%, #0f172a 100%);
         color: #f8fafc;
         position: relative;
     }}
     .cover .logo-wrap {{
-        margin-bottom: 18mm;
+        margin-bottom: 22mm;
         display: flex;
         align-items: center;
         gap: 10mm;
@@ -264,8 +333,9 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
     .cover h1 .accent {{ color: #38bdf8; }}
     .cover .subtitle {{
         font-size: 11pt;
+        line-height: 1.6;
         color: #cbd5e1;
-        margin-bottom: 22mm;
+        margin-bottom: 26mm;
         max-width: 130mm;
     }}
     .cover .tlp-badge {{
@@ -288,13 +358,22 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
     .cover .meta-row {{ display: table-row; }}
     .cover .meta-label {{
         display: table-cell;
-        padding: 3mm 8mm 3mm 0;
+        padding: 3.6mm 8mm 3.6mm 0;
         font-weight: 600;
         color: #94a3b8;
         text-transform: uppercase;
         font-size: 8pt;
         letter-spacing: 0.06em;
         width: 32mm;
+    }}
+    /* The engagement id is rendered as <code>, which inherits the BODY chip style
+       -- a pale grey block with dark text, dropped onto the navy cover. Invert it
+       there so it reads as part of the cover instead of a stray light rectangle. */
+    .cover code {{
+        background: rgba(148, 163, 184, 0.16);
+        color: #e2e8f0;
+        border-radius: 3px;
+        padding: 0.8mm 2mm;
     }}
     .cover .meta-value {{
         display: table-cell;
@@ -315,37 +394,48 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
     }}
 
     /* Body */
+    /* markdown baselevel=2 shifts everything down one: the report's `#` title is
+       h2, its `##` sections are h3, and `###` findings/phases are h4. The spacing
+       below follows THAT hierarchy, not the tag names. */
     h2 {{
-        font-size: 14pt;
+        font-size: 15pt;
         font-weight: 700;
         color: #0f172a;
-        margin: 8mm 0 3mm 0;
-        padding-bottom: 1.5mm;
+        margin: 11mm 0 4.5mm 0;
+        padding-bottom: 2mm;
         border-bottom: 1px solid #cbd5e1;
         page-break-after: avoid;
     }}
     h3 {{
-        font-size: 11pt;
+        font-size: 11.5pt;
         font-weight: 700;
         color: #1e3a8a;
-        margin: 5mm 0 2mm 0;
+        margin: 9mm 0 3mm 0;
+        letter-spacing: -0.005em;
         page-break-after: avoid;
     }}
     h4 {{
-        font-size: 9.5pt;
+        font-size: 10pt;
         font-weight: 700;
         color: #334155;
-        margin: 3mm 0 1.5mm 0;
+        margin: 6mm 0 2.5mm 0;
+        page-break-after: avoid;
     }}
-    p {{ margin: 0 0 2.5mm 0; }}
+    /* A heading immediately after another must not inherit the full gap -- the
+       stacked "## Section" + "### Phase" pair otherwise opens a hole. */
+    h2 + h3, h3 + h4 {{ margin-top: 3.5mm; }}
+    p {{ margin: 0 0 3.4mm 0; }}
     strong {{ color: #0f172a; }}
     code {{
         font-family: "DejaVu Sans Mono", "Consolas", monospace;
-        font-size: 8.5pt;
-        background: #f1f5f9;
-        padding: 1px 4px;
-        border-radius: 3px;
-        color: #334155;
+        font-size: 8.3pt;
+        /* Reports are dense with hostnames and account names, so most paragraphs
+           carry several of these. A heavy chip turned every such line into a row
+           of grey blocks; the tint is now barely there and the colour carries it. */
+        background: #f3f6f9;
+        padding: 0.6px 3px;
+        border-radius: 2px;
+        color: #1e3a5f;
     }}
     pre code {{
         display: block;
@@ -355,19 +445,27 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
         page-break-inside: avoid;
     }}
     ul, ol {{
-        margin: 0 0 2.5mm 0;
-        padding-left: 6mm;
+        margin: 0 0 3.4mm 0;
+        padding-left: 7mm;
     }}
     li {{
-        margin-bottom: 0.8mm;
+        margin-bottom: 2.2mm;
+        padding-left: 0.5mm;
     }}
+    li:last-child {{ margin-bottom: 0; }}
+    /* A list item holding paragraphs (the ranked "Where to start" entries) needs
+       its inner paragraphs tightened, or each item reads as its own section. */
+    li > p {{ margin-bottom: 1.6mm; }}
+    li > p:last-child {{ margin-bottom: 0; }}
+    li > ul, li > ol {{ margin-top: 1.8mm; }}
     blockquote {{
-        margin: 2mm 0 2mm 4mm;
-        padding-left: 4mm;
+        margin: 4mm 0 4mm 2mm;
+        padding: 1mm 0 1mm 5mm;
         border-left: 3px solid #cbd5e1;
         color: #475569;
         font-style: italic;
     }}
+    blockquote p:last-child {{ margin-bottom: 0; }}
     hr {{
         border: none;
         border-top: 1px dashed #cbd5e1;
@@ -379,7 +477,7 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
         width: 100%;
         border-collapse: collapse;
         font-size: 8.5pt;
-        margin: 2mm 0 4mm 0;
+        margin: 3.5mm 0 6mm 0;
         page-break-inside: avoid;
     }}
     th {{
@@ -387,16 +485,22 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
         color: #f8fafc;
         font-weight: 600;
         text-align: left;
-        padding: 1.8mm 2.5mm;
+        padding: 2.6mm 3mm;
         font-size: 8pt;
         letter-spacing: 0.04em;
         text-transform: uppercase;
     }}
     td {{
-        padding: 1.6mm 2.5mm;
+        padding: 2.4mm 3mm;
         border-bottom: 1px solid #e2e8f0;
         vertical-align: top;
+        line-height: 1.5;
     }}
+    /* A HEADER ROW WITH NOTHING IN IT is not a header. The report's scope table
+       is written as a two-column key/value grid with empty `| | |` headings, and
+       markdown still emits a <thead> -- which rendered as a solid black bar
+       across the page above the first real row. */
+    thead.is-empty {{ display: none; }}
     tr:nth-child(even) td {{ background: #f8fafc; }}
 
     /* Severity badges */
@@ -419,11 +523,18 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
     h3 + ul {{
         background: #f8fafc;
         border-left: 3px solid #1e3a8a;
-        padding: 2mm 4mm;
-        margin-left: 0;
-        list-style-position: inside;
+        /* was 2mm 4mm: the text sat hard against the accent rule */
+        padding: 4mm 5mm 4mm 9mm;
+        margin: 0 0 4mm 0;
+        /* NOT list-style-position:inside. Inside puts the marker in the text flow,
+           so every wrapped line runs back to the container edge and the bullet
+           stops meaning anything -- measured on a real report, the Key Judgements
+           block was five paragraphs of hanging-indent-less text. */
+        list-style-position: outside;
         page-break-inside: avoid;
     }}
+    h3 + ul > li {{ margin-bottom: 3mm; }}
+    h3 + ul > li:last-child {{ margin-bottom: 0; }}
 
     /* Page-break rules */
     h2 {{ page-break-before: auto; }}
