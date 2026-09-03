@@ -550,7 +550,8 @@ def _trim_findings(findings, max_findings):
 
 
 def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary",
-                  max_identities=None, max_findings=None, include_ids=False):
+                  max_identities=None, max_findings=None, include_ids=False,
+                  include_timeframes=False):
     """`max_findings` caps findings AND the timeline built from them (they are the
     same set — the timeline is one row per finding), keeping them consistent so
     the payload never cites a finding_id it did not send.
@@ -661,9 +662,15 @@ def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"
         # actionable: a bare hash is not.
         "file_hashes": {fh: nm for fh, nm in _hash_name_map(graph).items()},
     }
-    if altitude == "macro":
+    if include_timeframes and altitude == "macro":
         # Fixed, numbered windows -- the same list as the zoom cards -- so the
         # model writes one section per real window and cannot invent one.
+        #
+        # OPT-IN, because distilled() serves four callers. Adding this
+        # unconditionally handed the advisory, chat and investigate a key their
+        # prompts never describe -- payload a model has no instructions for is
+        # exactly what makes one behave oddly. Only the macro REPORT prompt
+        # documents `timeframes`, so only it asks for them.
         out["timeframes"] = timeframes_for_payload(
             zoom_targets(graph, window=window, min_severity=min_severity))
     return out
@@ -721,7 +728,7 @@ def _host_coverage(graph, assets, findings) -> list:
 
 def distilled(graph, *, window=None, min_severity="informational", max_entities=60,
               budget_chars=None, detail="summary", max_identities=None,
-              include_ids=False):
+              include_ids=False, include_timeframes=False):
     """Compact, in-window, high-signal payload — what a real LLM would get.
 
     If ``budget_chars`` is set and the payload exceeds it, halve ``max_entities``
@@ -732,7 +739,8 @@ def distilled(graph, *, window=None, min_severity="informational", max_entities=
     from . import budget as _b
     p = _distilled_at(graph, window=window, min_severity=min_severity,
                       max_entities=max_entities, detail=detail,
-                      max_identities=max_identities, include_ids=include_ids)
+                      max_identities=max_identities, include_ids=include_ids,
+                      include_timeframes=include_timeframes)
     if not budget_chars:
         return p
 
@@ -767,7 +775,8 @@ def distilled(graph, *, window=None, min_severity="informational", max_entities=
         p = _distilled_at(graph, window=window, min_severity=min_severity,
                           max_entities=max_entities, detail=detail,
                           max_identities=eff_ident, max_findings=eff_findings,
-                          include_ids=include_ids)
+                          include_ids=include_ids,
+                          include_timeframes=include_timeframes)
         steps += 1
     # LAST RESORT — still over budget after the stepdowns. Measured: a case with
     # thousands of findings blows through it (120 hosts / 4,321 findings produced a

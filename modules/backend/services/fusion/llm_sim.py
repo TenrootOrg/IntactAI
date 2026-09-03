@@ -1095,7 +1095,8 @@ def generate_report(graph, *, window=None, min_severity="informational",
             eff_detail = "summary" if altitude == "macro" else detail
             payload = render.distilled(graph, window=window, min_severity=min_severity,
                                        max_entities=me, budget_chars=bc, detail=eff_detail,
-                                       max_identities=max_identities)
+                                       max_identities=max_identities,
+                                       include_timeframes=True)
             # give the model the analyst's triage so the narrative reflects it
             if dispositions:
                 payload["operator_dispositions"] = dispositions
@@ -1122,8 +1123,23 @@ def generate_report(graph, *, window=None, min_severity="informational",
             if mask:                              # teach the model the identity-number key
                 system = _MASK_IDENTITY_LEGEND + system
             narrative = _real_llm(system, payload_str, run_id=run_id,
-                                  max_output_tokens=max_output_tokens)
+                                  max_output_tokens=max_output_tokens,
+                                  reasoning_effort="low")
             narrative = _revert_mask(narrative, mask)   # un-mask the LLM's output
+            # AN EMPTY NARRATIVE IS A FAILED CALL, NOT A REPORT.
+            #
+            # A reasoning model draws its thinking from the same output allowance as
+            # its answer, so on a large payload it can spend the whole budget and
+            # return nothing. Measured live: 54,051 output tokens billed, zero
+            # characters back. Nothing below noticed -- the deterministic tables are
+            # appended regardless, so the operator got a report with no narrative in
+            # it, logged as "LLM responded — narrative generated (12,046 chars)"
+            # because that count measures the whole markdown, tables included.
+            #
+            # Raise instead: the except below already renders the deterministic
+            # report AND names the reason, which is exactly the right outcome.
+            if not (narrative or "").strip():
+                raise LLMUnavailable("empty_reply")
             # GROUNDING GUARD: a report must never carry a sha256 that isn't in the
             # evidence (an analyst would chase a nonexistent IOC). Hashes are the one
             # unambiguous fabrication signal (timestamps include legit proposed zoom

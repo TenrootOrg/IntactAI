@@ -117,7 +117,7 @@ class OneListFeedsCardsTableAndModel(unittest.TestCase):
                              "host tail must be stripped so one rule is one title")
 
     def test_macro_payload_carries_the_same_windows(self):
-        p = render.distilled(self.g, max_entities=50)
+        p = render.distilled(self.g, max_entities=50, include_timeframes=True)
         self.assertEqual(p["scope"]["altitude"], "macro")
         zt = render.zoom_targets(self.g)
         self.assertEqual([t["n"] for t in p["timeframes"]], [z["n"] for z in zt])
@@ -126,9 +126,24 @@ class OneListFeedsCardsTableAndModel(unittest.TestCase):
 
     def test_focused_payload_has_no_timeframes(self):
         g = _graph(1, _burst("a", 0, 3))
-        p = render.distilled(g, max_entities=50)
+        p = render.distilled(g, max_entities=50, include_timeframes=True)
         self.assertEqual(p["scope"]["altitude"], "focused")
         self.assertNotIn("timeframes", p)
+
+    def test_only_the_report_asks_for_timeframes(self):
+        """distilled() serves the report, the advisory, chat and investigate. Only
+        the macro REPORT prompt documents `timeframes`; handing the others a key
+        their prompts never describe is payload they have no instructions for."""
+        p = render.distilled(self.g, max_entities=50)          # advisory/chat default
+        self.assertEqual(p["scope"]["altitude"], "macro")
+        self.assertNotIn("timeframes", p)
+        self.assertIn("timeframes",
+                      render.distilled(self.g, max_entities=50, include_timeframes=True))
+
+    def test_timeframes_survive_a_budget_stepdown(self):
+        p = render.distilled(self.g, max_entities=50, budget_chars=400,
+                             include_timeframes=True)
+        self.assertTrue(p.get("timeframes"), "the over-budget rebuild lost them")
 
     def test_table_rows_match_the_cards(self):
         zt = render.zoom_targets(self.g)
