@@ -109,6 +109,25 @@ services:
       nofile:
         soft: 65536
         hard: 65536
+    # The subscription CLIs (codex) get a private credential home on tmpfs so the
+    # token exists only in RAM (services/agentic/subscription_cli.py). Docker's
+    # DEFAULT /dev/shm IS 64MB, and each materialised home runs ~15MB, so only
+    # about four fit. That was invisible while report narration made one model
+    # call at a time. It stopped being invisible when the report started analysing
+    # a case phase by phase: six CLIs launch in the same second, the fifth and
+    # sixth get ENOSPC, and the CLI reports it as
+    #   "failed to initialize in-process app-server client:
+    #    No space left on device (os error 28)"
+    # on a box with 43GB free — so the message sends you looking at the disk,
+    # which is fine. Two cases narrating at once needs ~12. 1GB is ~66 homes.
+    shm_size: 1gb
+    # PID 1 here is `python app.py`, which does not reap orphans. codex leaves a
+    # background app-server child behind; when its parent exits that child is
+    # re-parented to PID 1 and becomes a zombie holding its credential dir open,
+    # so the rmtree in _release_home cannot remove it and ~15MB of tmpfs leaks per
+    # run. Measured on a live box: 3 stale homes holding 47MB of the 64MB, which
+    # is what pushed the fan-out over the edge. tini as PID 1 reaps them.
+    init: true
     networks:
       - intact_network
     healthcheck:

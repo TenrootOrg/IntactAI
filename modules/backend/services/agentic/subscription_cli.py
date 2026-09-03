@@ -470,6 +470,41 @@ def has_credentials(provider) -> bool:
     return bool(get_secret(_spec(provider)["secret_key"])) or bool(_read_host_credential(provider))
 
 
+# tmpfs is SMALL (64MB by default in Docker) and these homes are ~15MB each, so a
+# leaked one is not a tidiness problem -- four of them wedge every model call on the
+# box with "No space left on device" while df reports tens of GB free. They leak
+# because codex leaves a background child holding the dir open, so the rmtree in
+# _release_home fails; it used to fail SILENTLY under ignore_errors=True.
+_HOME_PREFIX = "intact-cli-home-"
+_HOME_ABANDONED_SECONDS = 30 * 60
+
+
+def _sweep_abandoned_homes(parent):
+    """Remove homes no live call owns. Never touches one still registered in
+    _HOME_SOURCE, so a long-running call in another thread is safe."""
+    if not parent:
+        return
+    now = time.time()
+    try:
+        names = os.listdir(parent)
+    except OSError:
+        return
+    for name in names:
+        if not name.startswith(_HOME_PREFIX):
+            continue
+        path = os.path.join(parent, name)
+        if path in _HOME_SOURCE:
+            continue                      # a live call owns it
+        try:
+            if now - os.stat(path).st_mtime < _HOME_ABANDONED_SECONDS:
+                continue                  # young enough to belong to a call in flight
+        except OSError:
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        print(f"[SUB-CLI] swept abandoned credential home {name} "
+              f"(tmpfs is small; a leaked home wedges every later call)", flush=True)
+
+
 def _materialize_home(provider):
     """Write the stored credential into a fresh private dir and return its path.
 
@@ -481,6 +516,7 @@ def _materialize_home(provider):
     # avoids the CLI's own refusal to use a "/tmp" path as its home ("Refusing
     # to create helper binaries under temporary dir"), which /tmp triggers.
     parent = "/dev/shm" if os.path.isdir("/dev/shm") else None
+    _sweep_abandoned_homes(parent)
     home = tempfile.mkdtemp(prefix="intact-cli-home-", dir=parent)
     os.chmod(home, 0o700)
     blob = get_secret(spec["secret_key"])
@@ -522,7 +558,17 @@ def _release_home(provider, home, persist=True):
     except Exception as e:  # noqa: BLE001 — never fail a request over this
         print(f"[SUB-CLI] token write-back failed: {e}", flush=True)
     finally:
+        # NOT ignore_errors: this is exactly where the leak was invisible. A child
+        # the CLI left running holds the dir open, rmtree fails, and 15MB of a 64MB
+        # tmpfs is gone with nothing said. Retry once, then say so -- the sweeper
+        # above will collect it later, but the log has to show it happened.
         shutil.rmtree(home, ignore_errors=True)
+        if os.path.isdir(home):
+            try:
+                shutil.rmtree(home)
+            except OSError as e:
+                print(f"[SUB-CLI] could not remove credential home {home}: {e} "
+                      f"-- tmpfs leak; will be swept on a later call", flush=True)
 
 
 # Where the "do it manually" escape hatch tells the operator to point the CLI.
