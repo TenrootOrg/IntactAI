@@ -1767,33 +1767,15 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                                f"narrative generated ({len(report or ''):,} chars)")
         # ADVISORY analyst pass — incident-grouping + grounded hypotheses. Stored
         # SEPARATELY from the deterministic findings; fed prior operator dispositions.
-        # The advisory is the SECOND model call in this branch. An automatic fuse
-        # must skip it for the same reason it skips the narrative — and skipping
-        # it keeps any advisory the operator already had, rather than replacing
-        # a real one with an empty deterministic stand-in.
-        if allow_llm:
-            if _mdl:
-                _merge_case_details(case_id, {"report_phase": "advisory",
-                                              "report_phase_started_at": _now_iso()})
-                log_case_event(case_id, "Advisory · sending request to the LLM", "info",
-                               f"model {_mdl} ({_prov})")
-            analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
-                                       dispositions=d.get("dispositions") or None,
-                                       max_entities=llm_ent, budget_chars=llm_chars,
-                                       max_output_tokens=llm_out, mask=mask,
-                                       max_identities=llm_ident)
-            if _mdl:
-                _g = len((analysis or {}).get("incident_groups") or [])
-                _h = len((analysis or {}).get("hypotheses") or [])
-                _lost = llm_sim.advisory_shortfall(analysis)
-                log_case_event(
-                    case_id,
-                    "Advisory · complete" if (_g or _h) else "Advisory · returned nothing usable",
-                    "success" if (_g or _h) else "warning",
-                    f"{_g:,} incident group(s), {_h:,} hypothesis(es)"
-                    + (f" — {_lost}" if _lost else ""))
-        else:
-            analysis = d.get("analysis") or {}
+        # THE ADVISORY IS GONE. It was a second whole-case model call that clustered
+        # findings into "incident groups" and offered hypotheses -- and the report
+        # now analyses the case phase by phase, which is the same clustering done
+        # better and actually visible. Measured before removal: its groups
+        # duplicated the report, its output was empty or unparseable on every run
+        # but one, and its renderer was never wired to a tab, so nothing it
+        # produced was ever displayed. Any advisory a case already stored is left
+        # untouched and still rendered by the API for older cases.
+        analysis = d.get("analysis") or {}
         report_members = list(members)   # report now reflects exactly these members
         report_dirty = False             # report freshly generated → up to date
     # customer-confirmation checklist — generate once (preserve operator decisions on
@@ -2529,37 +2511,11 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
         log_case_event(case_id, "Report save", "error", f"database write failed: {e}")
         raise
 
-    # Advisory: the SECOND model call, and the one that used to run in total
-    # silence -- no entry line, no exit line, so a long advisory looked
-    # indistinguishable from a hung backend. It is enrichment: a failure here
-    # leaves the already-saved narrative (and any previously stored advisory)
-    # exactly as it is, rather than aborting the whole regeneration.
+    # THE ADVISORY IS GONE -- see the note in _fuse_case_locked. The report now
+    # analyses the case phase by phase, which is the same clustering its
+    # "incident groups" did, done better and actually visible. Whatever advisory a
+    # case already stored is left untouched: this path simply no longer writes one.
     analysis = None
-    if use_llm and model:
-        log_case_event(case_id, "Advisory · sending request to the LLM", "info",
-                       f"model {model} ({provider})")
-    try:
-        analysis = llm_sim.analyze(gv, window=window, min_severity=min_sev, run_id=case_id,
-                                   dispositions=d.get("dispositions") or None,
-                                   max_entities=llm_ent, budget_chars=llm_chars,
-                                   max_output_tokens=llm_out, mask=mask,
-                                   max_identities=llm_ident)
-        _groups = len((analysis or {}).get('incident_groups') or [])
-        _hyps = len((analysis or {}).get('hypotheses') or [])
-        # An advisory that answered and was then entirely discarded is NOT a
-        # success, and logging it as one is how "0 incident group(s)" went
-        # unexamined for a whole day of testing. Say what was lost and why.
-        _lost = llm_sim.advisory_shortfall(analysis)
-        log_case_event(
-            case_id,
-            "Advisory · complete" if (_groups or _hyps) else "Advisory · returned nothing usable",
-            "success" if (_groups or _hyps) else "warning",
-            f"{_groups:,} incident group(s), {_hyps:,} hypothesis(es)"
-            + (f" — {_lost}" if _lost else ""))
-    except Exception as e:                       # noqa: BLE001
-        log_case_event(case_id, "Advisory", "warning",
-                       f"could not be generated ({type(e).__name__}: {e}); "
-                       f"the report is unaffected")
     # The customer-confirmation checklist moved here from fuse_case, which
     # generated it regardless of allow_llm and so made every first automatic
     # fuse a billed, blockable call. This is the narration step — the one that is

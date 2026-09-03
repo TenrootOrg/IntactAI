@@ -54,13 +54,25 @@ def _case():
 
 
 class NarrativeSurvivesEnrichmentFailure(unittest.TestCase):
-    """The advisory and the checklist run AFTER the narrative exists. Neither may
-    be able to destroy it -- that is what made a finished report invisible."""
+    """The checklist runs AFTER the narrative exists. It must not be able to destroy
+    it -- that is what once made a finished report invisible: the narrative lived in
+    a local variable until a single write at the very end, behind model calls that
+    could each run for minutes and raise.
 
-    def _run(self, analyze_side_effect):
+    The advisory used to sit here too and is gone: the report now analyses the case
+    phase by phase, which is the same clustering its "incident groups" did, done
+    better and actually rendered. These tests therefore assert the guarantee that
+    remains -- persist the narrative the moment it exists.
+    """
+
+    def _run(self, checklist_side_effect=None, has_checklist=True):
         writes, logs = [], []
         g = _Graph()
-        with mock.patch.object(store, "get_case", return_value=_case()), \
+        case = _case()
+        if not has_checklist:
+            case.pop("disposition_checklist", None)
+        cl = checklist_side_effect or (lambda *a, **k: [{"q": "x"}])
+        with mock.patch.object(store, "get_case", return_value=case), \
              mock.patch.object(store, "load_graph", return_value=g), \
              mock.patch.object(store, "_filter_graph_by_hosts", return_value=g), \
              mock.patch.object(store, "_llm_payload_budget", return_value=(100, 1000)), \
@@ -70,53 +82,64 @@ class NarrativeSurvivesEnrichmentFailure(unittest.TestCase):
                                return_value=("gpt-x", "openrouter", "online")), \
              mock.patch.object(store, "_merge_case_details",
                                side_effect=lambda cid, patch: writes.append(patch)), \
+             mock.patch.object(store, "_mutate_list_field",
+                               side_effect=lambda *a, **k: None), \
              mock.patch.object(store, "log_case_event",
                                side_effect=lambda cid, a, s="ok", d="", **k: logs.append((a, s))), \
              mock.patch.object(store.llm_sim, "generate_report", return_value="NARRATIVE"), \
-             mock.patch.object(store.llm_sim, "analyze", side_effect=analyze_side_effect):
+             mock.patch.object(store.llm_sim, "generate_disposition_checklist",
+                               side_effect=cl):
             out = store.regenerate_report("case-1", use_llm=True)
         return out, writes, logs
 
-    def test_narrative_is_saved_before_the_advisory_runs(self):
-        """A raising advisory must not take the report down with it."""
-        out, writes, logs = self._run(RuntimeError("provider 502"))
+    def test_the_narrative_is_persisted_the_moment_it_exists(self):
+        out, writes, _ = self._run()
         saved = [w for w in writes if "report_md" in w]
         self.assertEqual(len(saved), 1, f"narrative not persisted; writes={writes}")
         self.assertEqual(saved[0]["report_md"], "NARRATIVE")
         self.assertEqual(saved[0]["report_run_ids"], ["run-1"])
         self.assertFalse(saved[0]["report_dirty"])
         self.assertEqual(out["report_md"], "NARRATIVE")
-        # ...and the operator is told the advisory failed, not left guessing.
-        self.assertIn(("Advisory", "warning"), logs)
 
-    def test_a_failed_advisory_does_not_blank_the_stored_one(self):
-        _, writes, _ = self._run(RuntimeError("boom"))
-        self.assertEqual([w for w in writes if "analysis" in w], [],
-                         "a failed advisory pass overwrote the stored advisory")
-
-    def test_happy_path_still_saves_both(self):
+    def test_a_failing_checklist_does_not_cost_the_narrative(self):
+        """The checklist is the remaining enrichment that runs after the report."""
         out, writes, logs = self._run(
-            lambda *a, **k: {"incident_groups": [{"name": "g"}], "hypotheses": []})
-        self.assertEqual([w for w in writes if "report_md" in w][0]["report_md"], "NARRATIVE")
-        self.assertEqual(len([w for w in writes if "analysis" in w]), 1)
+            checklist_side_effect=RuntimeError("provider 502"), has_checklist=False)
+        saved = [w for w in writes if "report_md" in w]
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["report_md"], "NARRATIVE")
         self.assertEqual(out["report_md"], "NARRATIVE")
+        self.assertIn(("Checklist", "warning"), logs)
 
-    def test_the_advisory_phase_is_logged_at_both_ends(self):
-        """It used to run in total silence, so a slow advisory and a hung backend
-        looked identical in the activity log."""
-        _, _, logs = self._run(
-            lambda *a, **k: {"incident_groups": [{"name": "g"}], "hypotheses": []})
-        actions = [a for a, _ in logs]
-        self.assertIn("Advisory · sending request to the LLM", actions)
-        self.assertIn("Advisory · complete", actions)
+    def test_the_report_is_saved_before_the_checklist_is_asked_for(self):
+        """Ordering is the whole point: everything after the save is expendable."""
+        order = []
+        g = _Graph()
+        case = _case(); case.pop("disposition_checklist", None)
+        with mock.patch.object(store, "get_case", return_value=case), \
+             mock.patch.object(store, "load_graph", return_value=g), \
+             mock.patch.object(store, "_filter_graph_by_hosts", return_value=g), \
+             mock.patch.object(store, "_llm_payload_budget", return_value=(100, 1000)), \
+             mock.patch.object(store, "_llm_identity_budget", return_value=10), \
+             mock.patch.object(store, "_effective_output_cap", return_value=4096), \
+             mock.patch.object(store, "_configured_fusion_model",
+                               return_value=("gpt-x", "openrouter", "online")), \
+             mock.patch.object(store, "_merge_case_details",
+                               side_effect=lambda cid, p: order.append("SAVE")
+                               if "report_md" in p else None), \
+             mock.patch.object(store, "_mutate_list_field", side_effect=lambda *a, **k: None), \
+             mock.patch.object(store, "log_case_event", side_effect=lambda *a, **k: None), \
+             mock.patch.object(store.llm_sim, "generate_report", return_value="NARRATIVE"), \
+             mock.patch.object(store.llm_sim, "generate_disposition_checklist",
+                               side_effect=lambda *a, **k: order.append("CHECKLIST") or []):
+            store.regenerate_report("case-1", use_llm=True)
+        self.assertEqual(order[:2], ["SAVE", "CHECKLIST"], order)
 
-    def test_an_advisory_that_produced_nothing_is_a_warning_not_a_success(self):
-        """Measured live: a 13,281-token reply, paid for and waited on for seven
-        minutes, was discarded whole and logged as "Advisory · complete —
-        0 incident group(s)" with a green SUCCESS. That is how it went unexamined."""
-        _, _, logs = self._run(lambda *a, **k: {"incident_groups": [], "hypotheses": []})
-        self.assertIn(("Advisory · returned nothing usable", "warning"), logs)
-        self.assertNotIn(("Advisory · complete", "success"), logs)
+    def test_no_advisory_call_is_made_any_more(self):
+        """It was a second whole-case model call whose output was never displayed."""
+        with mock.patch.object(store.llm_sim, "analyze") as adv:
+            self._run()
+        adv.assert_not_called()
 
 
 class AFailedWriteIsAnError(unittest.TestCase):
@@ -325,6 +348,54 @@ class AnEmptyReplyMustBeNamedAsBudgetExhaustion(unittest.TestCase):
         self.assertTrue(d.get("unparseable"))
         self.assertNotIn("empty_reply", d)
         self.assertIn("could not be read as JSON", llm_sim.advisory_shortfall({"_diagnostic": d}))
+
+
+
+
+class TheReportsMustCarryTheirDocumentContract(unittest.TestCase):
+    """Both reports are deliverables, and the PDF renderer keys off their shape:
+    an `###` heading followed by a bullet list becomes a bordered card, and the
+    literal `- **Severity:** <Level>` is colour-coded (engagement/pdf.py). A prompt
+    that stops asking for that shape silently loses the styling."""
+
+    def test_the_focused_report_asks_for_F_N_blocks_the_pdf_can_style(self):
+        p = llm_sim.REPORT_SYSTEM_PROMPT_FOCUSED
+        self.assertIn("### F-N:", p)
+        self.assertIn("- **Severity:** Critical / High / Medium / Low", p)
+        self.assertIn("- **Confidence:**", p)
+        self.assertIn("*(Responds to: F-N", p)
+
+    def test_the_focused_report_has_the_three_action_horizons(self):
+        p = llm_sim.REPORT_SYSTEM_PROMPT_FOCUSED
+        for horizon in ("Immediate (next 24 hours)", "Short-term (next week)",
+                        "Long-term (next quarter)"):
+            self.assertIn(horizon, p)
+
+    def test_the_macro_leads_with_the_executive_layer(self):
+        """Priority actions used to sit ABOVE the phases, so the reader was told to
+        open Phase 3 before learning what Phase 3 was."""
+        p = llm_sim.SYNTHESIS_SYSTEM_PROMPT
+        for s in ("## Executive Summary", "## Key Judgements", "## Where to start",
+                  "## Recommended Next Steps"):
+            self.assertIn(s, p)
+        self.assertLess(p.index("## Executive Summary"), p.index("## Where to start"))
+        self.assertLess(p.index("## Where to start"), p.index("## Recommended Next Steps"))
+
+    def test_where_to_start_must_rank_every_phase(self):
+        p = llm_sim.SYNTHESIS_SYSTEM_PROMPT
+        self.assertIn("RANK EVERY PHASE", p)
+        self.assertIn("PHASE NUMBERS", p)          # the invented-number guard
+
+    def test_both_reports_state_a_justified_risk_level(self):
+        for p in (llm_sim.SYNTHESIS_SYSTEM_PROMPT, llm_sim.REPORT_SYSTEM_PROMPT_FOCUSED):
+            self.assertIn("**Risk: CRITICAL|HIGH|MEDIUM|LOW**", p)
+            self.assertIn("Reserve CRITICAL", p)
+
+    def test_the_phase_prompt_asks_for_the_card_bullets(self):
+        p = llm_sim.PHASE_SYSTEM_PROMPT
+        self.assertIn("- **Severity:**", p)
+        self.assertIn("- **Confidence:**", p)
+        self.assertIn("**Investigate:**", p)
 
 
 if __name__ == "__main__":

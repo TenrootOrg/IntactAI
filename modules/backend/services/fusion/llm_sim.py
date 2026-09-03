@@ -484,7 +484,11 @@ REPORT_SYSTEM_PROMPT_FOCUSED = (
     "## Executive Summary\n"
     "2-5 sentences: what happened, on which hosts, as which identity, over what window, how "
     "it began and what the adversary was after. Plain language. Overall confidence "
-    "(HIGH/MODERATE/LOW).\n"
+    "(HIGH/MODERATE/LOW). End with a line of exactly this form:\n"
+    "  **Risk: CRITICAL|HIGH|MEDIUM|LOW** — one clause saying what drives it.\n"
+    "Choose that level from the evidence and justify it. Reserve CRITICAL for active "
+    "adversary access or tier-zero compromise; do not inflate it on finding volume, and "
+    "do not deflate it because the evidence is partial — state the uncertainty instead.\n"
     "\n"
     "## What happened\n"
     "The single most likely intrusion story, reconstructed STEP BY STEP in order — deeper "
@@ -500,24 +504,40 @@ REPORT_SYSTEM_PROMPT_FOCUSED = (
     "MODERATE or LOW. If the evidence genuinely supports two readings (adversary vs "
     "authorised admin), name both and give the test that settles it.\n"
     "\n"
+    "## Key Findings\n"
+    "Every finding at high severity or above, as a structured BLOCK so the reader can "
+    "scan and grep them. Order by severity (Critical first). Number F-1, F-2, F-3. "
+    "Format EXACTLY — the renderer styles this shape, so the bullets and their labels "
+    "are not optional:\n"
+    "\n"
+    "### F-N: <one-line title>\n"
+    "- **Severity:** Critical / High / Medium / Low\n"
+    "- **Confidence:** High / Medium / Low\n"
+    "- **Detected:** ISO timestamp (or '-' when undated)\n"
+    "- **Source:** the detection / SIGMA rule name behind it\n"
+    "\n"
+    "**Description.** One or two sentences — what was seen.\n"
+    "**Evidence.** The concrete artifacts: file names as `name.exe` (`<hash>`), command "
+    "lines, event IDs, accounts, hosts, timestamps. Be specific.\n"
+    "**Impact.** One sentence — what the adversary gains, or what it puts at risk.\n"
+    "**Recommendation.** One sentence — the remediation that would close it. Do NOT "
+    "cross-reference the next-steps section from here; the citation runs one way, from "
+    "the actions back to the findings.\n"
+    "\n"
     "## Impact & Root Cause\n"
     "What is exposed / at risk, whether access likely persists, and how it most likely "
     "began — with the evidence, or an honest 'undetermined, missing X'.\n"
     "\n"
-    "## Other severe findings\n"
-    "Account for EVERY finding whose severity is high or above that the story above "
-    "did not already cover. Group them — one line per technique or per host, naming "
-    "the host(s) — rather than restating each finding. If the story already covered "
-    "them all, say so in one line. This section exists because committing to ONE "
-    "intrusion story silently drops severe activity that does not fit it: measured on "
-    "the macro path, the narrative alone carried 95% of critical findings but only "
-    "57% of high ones. Severity decides what belongs here — never a fixed list of "
-    "techniques. Do NOT include anything below high. This is the one section NOT to "
-    "omit when it has content.\n"
-    "\n"
-    "## Do next\n"
-    "**Contain now** and **Investigate next** — short ordered lists, each item naming the "
-    "specific host / account / artifact.\n"
+    "## Recommended Next Steps\n"
+    "Three bulleted subsections. Each action starts with a bold label, then one sentence "
+    "naming the specific host / account / artifact, then the findings it answers as "
+    "`*(Responds to: F-N, F-M)*`:\n"
+    "  - **Immediate (next 24 hours)** — what stops active access or protects tier-zero "
+    "today. If nothing warrants it, say so plainly.\n"
+    "  - **Short-term (next week)** — investigative or remediation work that benefits "
+    "from a few days' planning.\n"
+    "  - **Long-term (next quarter)** — structural, policy or monitoring changes this "
+    "incident argues for.\n"
     "\n"
     "DISCIPLINE\n"
     "Grade every assessment HIGH/MODERATE/LOW and what drives it. Keep OBSERVATION (in the "
@@ -1063,12 +1083,230 @@ def _log_mask_audit(run_id, mask, text=None):
         pass
 
 
+PHASE_SYSTEM_PROMPT = (
+    "You are a senior DFIR analyst describing ONE PHASE of a larger incident. You are "
+    "given only this phase's evidence — a contiguous slice of the case — and you write "
+    "only about it. Another pass writes the case-wide assessment; do not attempt it.\n"
+    "\n"
+    "PAYLOAD (JSON): scope (counts for THIS phase); findings (title, severity, hosts[], "
+    "mitre, ts, summary); timeline; top_entities (accounts/processes/IOCs); assets. "
+    "Where `scope.*_shown` is below `scope.*`, you hold a SAMPLE — cite the total, "
+    "never the length of the list you were given.\n"
+    "\n"
+    "Return EXACTLY this markdown, nothing before or after. The two bullets come "
+    "FIRST, on their own lines, because the report renders them as a labelled card:\n"
+    "\n"
+    "**Name:** a 3-7 word label for what this phase IS (e.g. 'Credential theft on the "
+    "workstation fleet', 'Toolkit staged on ALClient01'). Not a date, not a count.\n"
+    "- **Severity:** Critical / High / Medium / Low — the worst thing actually "
+    "evidenced in THIS phase. Write one of those four words exactly.\n"
+    "- **Confidence:** High / Medium / Low — in your reading of this phase. A single "
+    "detection with no corroboration is not High.\n"
+    "\n"
+    "**What happened:** name the hosts, accounts, tools and times from the evidence "
+    "and say what was done here, in order. Go as far as the evidence supports — "
+    "decode any -EncodedCommand or base64 it gives you, follow parent->child process "
+    "ancestry where present, and say out loud where a link is inferred across a gap. "
+    "Do not pad, and do not stop short of what the evidence shows.\n"
+    "**Why it matters:** what it would mean if confirmed, and what it puts at risk.\n"
+    "**Investigate:** YES or NO, then the single question a deeper look at this phase "
+    "should answer. Say NO when the evidence is thin or already conclusive, and say why "
+    "in the same line. Be decisive — this is what the analyst acts on.\n"
+    "\n"
+    "DISCIPLINE: cite only hosts, accounts, hashes and timestamps present in the "
+    "payload; never invent one. When you cite a hash, pair it with its filename. Keep "
+    "OBSERVATION (in the evidence) separate from INFERENCE. Grade honestly — a single "
+    "detection is not HIGH confidence. No preamble, no headings of your own."
+)
+
+SYNTHESIS_SYSTEM_PROMPT = (
+    "You are a senior DFIR consultant writing the EXECUTIVE LAYER of an incident "
+    "report. The case has already been split into PHASES and each analysed; you are "
+    "given those phase summaries plus the case totals, not the raw evidence. Your job "
+    "is what no single phase can see: the shape of the whole, and where to start.\n"
+    "\n"
+    "Your reader is the LEAD ANALYST who has to decide where to spend today. Name "
+    "hosts, accounts and tooling directly — they know what Mimikatz is. Do not write "
+    "for a boardroom.\n"
+    "\n"
+    "Write clean markdown, exactly these four sections, in this order:\n"
+    "\n"
+    "## Executive Summary\n"
+    "Two or three short paragraphs. What happened, across how many hosts, over what "
+    "period, as which accounts, with what tooling; what it reached that matters "
+    "(domain controllers, certificate services, management infrastructure); and "
+    "whether this reads as ONE campaign, SEVERAL unrelated issues, or mostly benign "
+    "administrative activity. End with a line of exactly this form:\n"
+    "  **Risk: CRITICAL|HIGH|MEDIUM|LOW** — one clause saying what drives it.\n"
+    "Choose that level yourself from the evidence and JUSTIFY it. Reserve CRITICAL "
+    "for active adversary access or tier-zero compromise; do not inflate it because "
+    "the finding counts are large, and do not deflate it because the evidence is "
+    "partial — say the uncertainty instead.\n"
+    "\n"
+    "## Key Judgements\n"
+    "Three to five bullets: the things that would change what the reader does. Each "
+    "is one sentence, names the specific hosts/accounts, cites the phase number(s) it "
+    "rests on, and ends with a confidence in parentheses — (HIGH), (MODERATE) or "
+    "(LOW). These are judgements, not a finding list: 'credentials for `srv` must be "
+    "treated as compromised' is a judgement; 'mimikatz was detected' is a finding.\n"
+    "\n"
+    "## Where to start\n"
+    "RANK EVERY PHASE you were given, best first, as a numbered list. For each: the "
+    "phase number and name in bold, one line of why it earns that rank, and the "
+    "single question that opening it would answer. Rank on what most changes the "
+    "picture — active access, tier-zero reach, and unresolved questions outrank "
+    "volume. It is correct and useful to rank a phase last and say it only "
+    "corroborates what another already establishes. This section is why the report "
+    "exists: commit.\n"
+    "\n"
+    "## Other severe findings\n"
+    "The payload's `outside_phases` list is high-severity-or-above activity that NO "
+    "phase above covers — it fell outside every analysed window. Account for ALL of "
+    "it. GROUP it: one line per technique or per host, naming the host(s) and the "
+    "count, not a restatement of each finding. If the list is empty, write a single "
+    "line saying every severe finding is covered by a phase and move on. This section "
+    "exists because narrating only the phases silently drops severe activity that "
+    "sits between them — measured on a live case, that was 40% of the findings, "
+    "including renamed AdFind, procdump and procdump64 drops that appeared nowhere in "
+    "the prose. Severity decides what belongs here, never a fixed technique list.\n"
+    "\n"
+    "## Leads for verification\n"
+    "Two to four patterns the deterministic rules did NOT produce as findings but "
+    "that the phase evidence suggests — tooling used in an unusual way, a technique "
+    "implied by what is present, an account behaving unlike its peers. Each is one "
+    "line, names the specific hosts, and is explicitly UNCONFIRMED. Write nothing "
+    "here rather than padding: if the evidence supports no such lead, say so in one "
+    "line. These are for an analyst to verify, never a determination.\n"
+    "\n"
+    "## Recommended Next Steps\n"
+    "Three bulleted subsections. Each action starts with a bold label, then one "
+    "sentence, then the phase(s) it answers in parentheses — EVERY action carries a "
+    "`(Phase N)`, and an action with no phase behind it does not belong here:\n"
+    "  - **Immediate (next 24 hours)** — what stops active access or protects "
+    "tier-zero today. If nothing warrants immediate action, say so plainly.\n"
+    "  - **Short-term (next week)** — investigative or remediation work that benefits "
+    "from a few days' planning.\n"
+    "  - **Long-term (next quarter)** — structural, policy or monitoring changes this "
+    "incident argues for.\n"
+    "\n"
+    "DISCIPLINE: reference only hosts, accounts and PHASE NUMBERS you were actually "
+    "given — a phase number that does not exist is the one unrecoverable error here. "
+    "Do not re-describe each phase; the reader has the phase sections below. Keep "
+    "OBSERVATION separate from INFERENCE. An honest 'undetermined, and here is what "
+    "is missing' beats a guess. No preamble. Start at '## Executive Summary'."
+)
+
+
+def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
+                    eff_detail, run_id, max_output_tokens, mask, master_prompt,
+                    log=None):
+    """One LLM call PER PHASE, in parallel, each over that phase's evidence only.
+
+    Why not one call for the whole case (what this replaces): the payload was 258K
+    tokens and the model had to narrate every window plus scenarios plus actions in
+    one response. Measured live, it billed 54,051 output tokens and returned NOTHING
+    -- the operator got a report with no narrative in it. Per phase, 5 of 6 payloads
+    are 1-3% of that (3K-10K tokens), total input across all calls is 0.89x the
+    single call, and they run concurrently so wall-clock is the slowest phase.
+
+    Failure is isolated: a phase whose call fails renders as failed and the rest of
+    the report is unaffected. Returns {n: {"name", "body"} or {"error"}}.
+    """
+    import concurrent.futures as _cf
+    from . import budget as _b
+
+    def _one(z):
+        # FILL THE WINDOW. Splitting the case into phases turned one whole-case call
+        # into N independent calls -- each of which has the model's ENTIRE context
+        # available to it. Inheriting the whole-case `detail` threw that away:
+        # measured on a live case, five of six phases at full explicit detail were
+        # under 11K tokens, against a 272K window, yet all six were sent the
+        # collapsed summary. `explicit` is what carries the real command lines,
+        # decoded -EncodedCommand and per-event evidence into a phase section.
+        #
+        # So: richest detail that FITS, decided per phase. `bc` is already the
+        # per-call ceiling derived from this model's context window
+        # (store._llm_payload_budget -> budget.adaptive_budget, clamped by
+        # budget.transport_cap_chars), so this is model-agnostic by construction --
+        # a 1M-context model takes explicit everywhere, a 128K one falls back only
+        # on the phase that genuinely does not fit.
+        # RICHEST DETAIL THAT FITS THIS MODEL'S WINDOW, decided per phase.
+        #
+        # `bc` is already the per-CALL ceiling derived from the configured model
+        # (store._llm_payload_budget -> budget.adaptive_budget, clamped by
+        # budget.transport_cap_chars), and a phase IS one call -- so this is
+        # model-agnostic: a big-context model takes explicit everywhere, a small one
+        # falls back only where it genuinely does not fit.
+        #
+        # Two things measured on a live 49-finding phase, both of which shaped this:
+        #   * `findings_shown` is useless as a fit test -- _trim_findings never drops
+        #     anything >= high, so it reads 52/52 at every budget.
+        #   * when the payload is over budget the LAST-RESORT collapse dominates and
+        #     explicit/summary come out within ONE character of each other, so the
+        #     choice is moot there. Where there IS room, explicit costs ~23% more and
+        #     buys the per-event evidence -- real command lines, decoded
+        #     -EncodedCommand -- that a phase section lives on.
+        def _build(det):
+            return render.distilled(graph, window=z["window"],
+                                    min_severity=min_severity, max_entities=me,
+                                    budget_chars=bc, detail=det,
+                                    max_identities=max_identities)
+
+        p, chosen = _build("explicit"), "explicit"
+        if _b.over_budget(p, bc) and eff_detail != "explicit":
+            alt = _build(eff_detail)
+            if len(json.dumps(alt)) < len(json.dumps(p)):
+                p, chosen = alt, eff_detail
+        z["_detail"] = chosen          # reported, so a thin section is never ambiguous
+        body = json.dumps(p)
+        if mask:
+            body = _apply_mask(body, mask)
+        sys_p = PHASE_SYSTEM_PROMPT
+        if master_prompt:
+            sys_p = ("## OPERATOR CONTEXT — treat as ground truth:\n"
+                     f"{master_prompt.strip()}\n\n---\n\n") + sys_p
+        if mask:
+            sys_p = _MASK_IDENTITY_LEGEND + sys_p
+        # A phase answer is short by construction, so cap it low: the budget is
+        # shared with the model's own reasoning, and an unbounded cap is what let a
+        # reasoning model spend everything thinking and return an empty string.
+        out = _real_llm(sys_p, body, run_id=run_id,
+                        max_output_tokens=min(max_output_tokens or 4000, 4000),
+                        reasoning_effort="low")
+        out = _revert_mask(out, mask)
+        if not (out or "").strip():
+            raise LLMUnavailable("empty_reply")
+        return out.strip()
+
+    phases = render.analysable(zt)
+    results = {}
+    if not phases:
+        return results
+    with _cf.ThreadPoolExecutor(max_workers=min(6, len(phases))) as pool:
+        futs = {pool.submit(_one, z): z for z in phases}
+        for fut in _cf.as_completed(futs):
+            z = futs[fut]
+            try:
+                text = fut.result()
+                name = ""
+                m = _re.search(r"\*\*Name:\*\*\s*(.+)", text)
+                if m:
+                    name = m.group(1).strip().strip("*").strip()
+                    text = text[:m.start()] + text[m.end():]
+                results[z["n"]] = {"name": name, "body": text.strip()}
+            except Exception as e:                       # noqa: BLE001
+                results[z["n"]] = {"error": f"{type(e).__name__}: {e}"[:200]}
+                if log:
+                    log(f"phase {z['n']} failed: {type(e).__name__}")
+    return results
+
+
 def generate_report(graph, *, window=None, min_severity="informational",
                     initial_access=None, case_name="Case", run_id=None,
                     audience="both", language="en", master_prompt=None, mask=None,
                     dispositions=None, validations=None, prefer_llm=True,
                     max_entities=None, budget_chars=None, max_output_tokens=None,
-                    detail="auto", max_identities=None) -> str:
+                    detail="auto", max_identities=None, grouping="time", log=None) -> str:
     """Case report. Real path = LLM narrative over distilled() + deterministic
     fact tables appended verbatim. `audience` (exec/technical/both) + `language`
     tailor the narrative (reusing the engagement directive); `master_prompt` is the
@@ -1108,7 +1346,35 @@ def generate_report(graph, *, window=None, min_severity="informational",
                 _build_mask_mapping(graph, mask)
                 _log_mask_audit(run_id, mask, payload_str)   # audit BEFORE the send; only what's in the payload
                 payload_str = _apply_mask(payload_str, mask)
-            system = (REPORT_SYSTEM_PROMPT_MACRO if altitude == "macro"
+            # SEGMENTED PATH: a broad case is analysed phase by phase, then
+            # synthesised -- instead of one call trying to narrate everything, which
+            # measured live returned an empty narrative on a 258K-token payload.
+            _zt, _phase_out, _mode = [], {}, (grouping or "time")
+            if altitude == "macro":
+                _zt = render.zoom_targets(graph, window=window,
+                                          min_severity=min_severity, mode=_mode)
+                _phase_out = _phase_sections(
+                    graph, _zt, window=window, min_severity=min_severity, me=me, bc=bc,
+                    max_identities=max_identities, eff_detail=eff_detail, run_id=run_id,
+                    max_output_tokens=max_output_tokens, mask=mask,
+                    master_prompt=master_prompt, log=log)
+                _outside = render.outside_phases(graph, _zt, window=window,
+                                                 min_severity=min_severity)
+                payload = {"case_totals": payload.get("scope", {}),
+                           "phases": [{"n": z["n"], "window": z["window"],
+                                       "hosts": z.get("host_labels") or [],
+                                       "findings": z["finding_count"],
+                                       "critical": z.get("critical_count", 0),
+                                       "analysis": _phase_out.get(z["n"], {}).get("body", "")}
+                                      for z in render.analysable(_zt)],
+                           # High+ activity NO phase covers. Without this the
+                           # synthesis cannot mention it, and 40% of the case went
+                           # unnarrated on a live run.
+                           "outside_phases": render.outside_phases_digest(graph, _outside)}
+                payload_str = json.dumps(payload)
+                if mask:
+                    payload_str = _apply_mask(payload_str, mask)
+            system = (SYNTHESIS_SYSTEM_PROMPT if altitude == "macro"
                       else REPORT_SYSTEM_PROMPT_FOCUSED)
             if (audience and audience != "both") or (language and language != "en"):
                 try:                              # reuse engagement audience/language tailoring
@@ -1149,27 +1415,83 @@ def generate_report(graph, *, window=None, min_severity="informational",
                      "NOT present in the case evidence and may be model artifacts — verify "
                      "before acting: " + ", ".join(f"`{h[:16]}…`" for h in _bad_h) + "\n"
                      if _bad_h else "")
+            # In a segmented report the phases carry their own timelines, so the
+            # case-wide one is scoped to what they did NOT cover.
+            _tl_kw = {}
+            if altitude == "macro" and _zt:
+                _rest = render.outside_phases(graph, _zt, window=window,
+                                              min_severity=min_severity)
+                _tl_kw = {"timeline_findings": _rest,
+                          "timeline_heading": "## Activity outside the analysed phases",
+                          "timeline_note": (f"{len(_rest)} finding(s) that fall outside "
+                                            f"every phase above, in order")}
             facts = render.facts_md(graph, window=window, min_severity=min_severity,
                                     initial_access=initial_access,
                                     dispositions=dispositions, validations=validations,
-                                    detail=eff_detail, narrated=True)
+                                    detail=eff_detail, narrated=True, **_tl_kw)
             # Deterministic heat-map for a macro report (the LLM was told NOT to write
             # this section) — always grounded, always matches the zoom cards.
-            heatmap, _tf_dropped = "", []
+            heatmap, tfnote = "", ""
             if altitude == "macro":
-                _zt = render.zoom_targets(graph, window=window, min_severity=min_severity)
-                heatmap = render.suspicious_timeframes_md(graph, window=window,
-                                                          min_severity=min_severity, zt=_zt)
-                # The model wrote one section per numbered window; put the facts
-                # (our table) under its heading, and drop any number it invented.
-                narrative, _tf_dropped, _ins = render.merge_timeframes_section(
-                    narrative, heatmap, {z["n"] for z in _zt})
-                if _ins:
-                    heatmap = ""              # already inside the narrative
-            tfnote = ("\n\n> ⚠️ **Grounding note:** the narrative referenced timeframe(s) "
-                      + ", ".join(str(n) for n in _tf_dropped)
-                      + " that do not exist in this case; those sections were removed.\n"
-                      if _tf_dropped else "")
+                _, _all_f = render.scope(graph, window=window, min_severity=min_severity)
+                banner = render.report_mode_banner(altitude, _zt, mode=_mode,
+                                                   total_findings=len(_all_f))
+                # ORDER IS THE DESIGN. The executive layer (Executive Summary, Key
+                # Judgements, Where to start) comes first, then the glance table, then
+                # the phases it refers to. The old order put "Priority actions" ABOVE
+                # the phases, so the reader was told to open Phase 3 before learning
+                # what Phase 3 was.
+                _names = {z["n"]: (_phase_out.get(z["n"]) or {}).get("name") or ""
+                          for z in render.analysable(_zt)}
+                parts = [banner, "", narrative.strip(), "",
+                         render.phases_at_a_glance_md(_zt, _names)]
+                for z in render.analysable(_zt):
+                    got = _phase_out.get(z["n"]) or {}
+                    nm = got.get("name") or z.get("title") or f"Phase {z['n']}"
+                    parts.append(f"### Phase {z['n']} — {nm}\n")
+                    # Deterministic facts as BULLETS immediately under the heading:
+                    # that shape is what the PDF renderer turns into a bordered card,
+                    # and it is where the model's own Severity/Confidence lines land.
+                    hs = ", ".join((z.get("host_labels") or [])[:6])
+                    parts.append(
+                        f"- **Window:** `{z['window']['start']}` → `{z['window']['end']}`\n"
+                        f"- **Hosts:** {hs or '—'}\n"
+                        f"- **Findings:** {z['finding_count']} "
+                        f"({z.get('critical_count', 0)} critical)")
+                    if got.get("error"):
+                        parts.append(f"> ⚠️ This phase could not be analysed "
+                                     f"({got['error']}). Its evidence is below and in "
+                                     f"the case timeline — the rest of the report is "
+                                     f"unaffected.\n")
+                    else:
+                        parts.append(got.get("body", "") + "\n")
+                    # THIS PHASE'S timeline, not the whole case's -- the operator's
+                    # "the timeline of events should be separate to each timeframe".
+                    _, _pf = render.scope(graph, window=z["window"],
+                                          min_severity=min_severity)
+                    parts.append(render.timeline_md(
+                        graph, _pf, window=z["window"], eff_detail=eff_detail,
+                        # No divisor. Dividing the cap by phase count traded value
+                        # for length -- "I don't wanna lose value because of static
+                        # length". Each phase gets the same budget; the collapse
+                        # already states repeats once, so a quiet phase costs little.
+                        max_groups=render.TIMELINE_MAX_GROUPS,
+                        heading="**Timeline — this phase**",
+                        note=f"{len(_pf)} finding(s) in this phase, in order"))
+                pa = render.persistent_activities_md(graph, window=window,
+                                                     min_severity=min_severity)
+                if pa:
+                    parts.append(pa)
+                # The old "Suspicious Timeframes & Clusters" table is NOT appended:
+                # it is the same rows, windows and counts as "Phases at a glance",
+                # which now carries its ATT&CK column too. Printing both was the same
+                # table twice -- exactly the padding the repo's own report rubric
+                # marks down under efficiency.
+                narrative = "\n".join(parts)
+                heatmap = ""                      # already placed inside the narrative
+            else:
+                narrative = (render.report_mode_banner(altitude, [], mode=_mode)
+                             + "\n\n" + narrative)
             # Real values throughout: masking protected the data only in transit to
             # the LLM; the operator's report is reverted (narrative) + never-masked facts.
             md = (f"# Incident Case Report — {case_name}\n\n"

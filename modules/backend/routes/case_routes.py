@@ -495,7 +495,11 @@ def get_zoom_targets(case_id):
     win = d.get("time_window") or None
     ms = d.get("min_severity") or "informational"
     altitude, reason = render._resolve_altitude(g, window=win, min_severity=ms)
-    targets = render.zoom_targets(g, window=win, min_severity=ms) if altitude == "macro" else []
+    # analysable() drops the coverage rollup and any window too small to be a scope;
+    # the rollup is appended back as a non-clickable accounting row so the operator
+    # can still see what was left out.
+    _zt = render.zoom_targets(g, window=win, min_severity=ms) if altitude == "macro" else []
+    targets = render.analysable(_zt) + [z for z in _zt if z.get("rollup")]
     if targets:
         # The model named each window in the report ("### Timeframe 3 — Ransomware
         # prep & C2"); carry that onto the card so it says what the window IS, not

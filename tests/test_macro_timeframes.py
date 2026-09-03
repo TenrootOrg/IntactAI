@@ -17,6 +17,7 @@ Design constraints this pins down:
       'PYTHONPATH=/app python3 -m pytest /app/tests/test_macro_timeframes.py -q'
 """
 import datetime as _dt
+import json
 import os
 import sys
 import types
@@ -32,7 +33,7 @@ for _pkg, _rel in (("services", "services"), ("services.fusion", "services/fusio
         _m = types.ModuleType(_pkg); _m.__path__ = [os.path.join(_BACKEND, _rel)]
         sys.modules[_pkg] = _m
 
-from services.fusion import render, schema  # noqa: E402
+from services.fusion import render, schema, budget  # noqa: E402
 
 _T0 = _dt.datetime(2026, 1, 1, 12, 0, 0, tzinfo=_dt.timezone.utc)
 
@@ -194,3 +195,158 @@ class TheModelNarratesOurWindowsAndCannotInventOne(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScopesOfferedMustBeWorthOpening(unittest.TestCase):
+    """"Analyze this scope" has to lead somewhere. Measured on a narrowed graph, four
+    of the six offered cards were a SINGLE finding each -- _substantial() already
+    encoded what is worth an analyst's time and simply was not applied here."""
+
+    def _mixed(self):
+        # two real phases, plus three trivial one-finding blips far apart
+        fs = _burst("a", 0, 5, "high") + _burst("b", 40, 5, "high")
+        fs += [_find("t1", day=90), _find("t2", day=140), _find("t3", day=190)]
+        return _graph(3, fs)
+
+    def test_trivial_windows_are_not_offered_as_scopes(self):
+        zt = render.zoom_targets(self._mixed())
+        offered = render.analysable(zt)
+        self.assertTrue(offered)
+        for z in offered:
+            self.assertTrue(render._substantial(z),
+                            f"offered a scope of {z['finding_count']} finding(s)")
+
+    def test_the_primitive_still_returns_every_cluster(self):
+        """analysable() filters for PRESENTATION. zoom_targets stays the primitive the
+        altitude rule counts from -- filtering there made it count its own output."""
+        zt = render.zoom_targets(self._mixed())
+        self.assertGreater(len(zt), len(render.analysable(zt)))
+
+    def test_nothing_is_lost_by_the_filter(self):
+        """A window not offered is still accounted for, or the map lies."""
+        g = self._mixed()
+        _, allf = render.scope(g)
+        zt = render.zoom_targets(g)
+        self.assertEqual(sum(z["finding_count"] for z in zt), len(allf))
+
+
+class TheGlanceTableLetsYouChooseBeforeReading(unittest.TestCase):
+
+    def setUp(self):
+        self.g = _graph(3, _burst("a", 0, 5, "critical") + _burst("b", 40, 4, "high"))
+        self.zt = render.zoom_targets(self.g)
+
+    def test_a_row_per_phase_plus_the_rollup(self):
+        md = render.phases_at_a_glance_md(self.zt, {1: "Credential theft", 2: "C2"})
+        self.assertIn("## Phases at a glance", md)
+        self.assertIn("| 1 | Credential theft |", md)
+        self.assertIn("| 2 | C2 |", md)
+
+    def test_it_falls_back_to_the_detection_name_when_unnamed(self):
+        """A deterministic report has no model names; the table must still say what
+        each phase holds rather than printing an empty column."""
+        md = render.phases_at_a_glance_md(self.zt)
+        for line in md.splitlines():
+            if line.startswith("| 1 |"):
+                self.assertNotIn("|  |", line, line)
+
+    def test_empty_when_there_is_nothing_to_choose_between(self):
+        self.assertEqual(render.phases_at_a_glance_md([]), "")
+
+
+class EveryPhaseCallShouldFillTheModelsWindow(unittest.TestCase):
+    """Splitting the case into phases turned ONE whole-case call into N independent
+    calls, each with the model's entire context available. Inheriting the whole-case
+    `detail` threw that away: measured live, five of six phases at full explicit
+    detail were under 11K tokens against a 272K window, yet all six were sent the
+    collapsed summary.
+
+    Two traps this pins, both of which produced a wrong fit test first time:
+      * `findings_shown` cannot detect the squeeze -- _trim_findings never drops
+        anything >= high, so it reads N/N at every budget;
+      * render.distilled() step-downs internally, so it does NOT raise or truncate
+        to the ceiling -- when it cannot fit it collapses and ships over budget.
+    """
+
+    def setUp(self):
+        # one phase small enough for explicit, one far too big for a small ceiling
+        self.g = _graph(4, _burst("a", 0, 4, "high")
+                        + [_find(f"b{i}", sev="high", day=40, hour=i % 24,
+                                 hosts=(f"host{i % 4:03d}",)) for i in range(60)])
+        self.zt = render.analysable(render.zoom_targets(self.g))
+
+    def _payload(self, z, detail, budget_chars):
+        return render.distilled(self.g, window=z["window"], max_entities=200,
+                                budget_chars=budget_chars, detail=detail)
+
+    def test_findings_shown_is_not_a_usable_fit_test(self):
+        """The trap: it reads full at every budget because high+ is exempt from
+        trimming, so a fit test built on it always says 'explicit fits'."""
+        z = max(self.zt, key=lambda x: x["finding_count"])
+        for bc in (2_000, 2_000_000):
+            sc = self._payload(z, "explicit", bc).get("scope") or {}
+            self.assertGreaterEqual(sc.get("findings_shown", 0), sc.get("findings", 0))
+
+    def test_a_small_phase_gets_explicit_with_room_to_spare(self):
+        z = min(self.zt, key=lambda x: x["finding_count"])
+        p = self._payload(z, "explicit", 2_000_000)
+        self.assertFalse(budget.over_budget(p, 2_000_000))
+
+    def test_a_generous_ceiling_makes_explicit_strictly_richer(self):
+        """If explicit were not bigger there would be nothing to choose between."""
+        z = max(self.zt, key=lambda x: x["finding_count"])
+        big = 20_000_000
+        self.assertGreater(len(json.dumps(self._payload(z, "explicit", big))),
+                           len(json.dumps(self._payload(z, "summary", big))))
+
+    def test_distilled_ships_over_budget_rather_than_dropping_severe_findings(self):
+        """Documents the real behaviour the fit rule has to live with: a tiny
+        ceiling does not truncate, it collapses -- so 'is it over budget' is the
+        only honest signal, and being over is survivable."""
+        z = max(self.zt, key=lambda x: x["finding_count"])
+        p = self._payload(z, "explicit", 1_000)
+        sc = p.get("scope") or {}
+        self.assertGreaterEqual(sc.get("findings_shown", 0), sc.get("findings", 0))
+
+
+class SevereActivityOutsideEveryPhaseIsAccountedFor(unittest.TestCase):
+    """Measured live: 61 findings across 15 windows fell into the rollup and were
+    narrated nowhere -- 40% of the case, including renamed AdFind/procdump drops."""
+
+    def setUp(self):
+        # MORE substantial phases than the report shows: the ones past
+        # MACRO_TIMEFRAMES are pushed into the rollup and analysed by nobody. That
+        # is exactly how 61 findings went unnarrated on the live case -- not because
+        # they were trivial, but because they ranked below the cut.
+        fs = []
+        for i in range(render.MACRO_TIMEFRAMES + 3):
+            fs += _burst(f"p{i}", i * 40, 4, "high", hosts=(f"host{i % 3:03d}",))
+        fs += [_find("orphan", sev="critical", day=999, hosts=("host002",))]
+        self.g = _graph(3, fs)
+        self.zt = render.zoom_targets(self.g)
+
+    def test_phases_past_the_cut_are_reported_as_outside(self):
+        shown = len(render.analysable(self.zt))
+        self.assertEqual(shown, render.MACRO_TIMEFRAMES, "expected the cut to bite")
+        out = render.outside_phases(self.g, self.zt)
+        self.assertTrue(out, "phases past the cut were narrated by nobody and "
+                             "reported by nobody")
+        _, allf = render.scope(self.g)
+        self.assertLess(len(out), len(allf))
+
+    def test_findings_inside_a_phase_are_not_reported_as_outside(self):
+        out = render.outside_phases(self.g, self.zt)
+        ids = {f.id for f in out}
+        for z in render.analysable(self.zt):
+            for f in self.g.findings:
+                if f.ts and z["window"]["start"] <= f.ts <= z["window"]["end"]:
+                    self.assertNotIn(f.id, ids, f"{f.id} is inside phase {z['n']}")
+
+    def test_the_digest_keeps_only_severe_rows_and_groups_repeats(self):
+        out = render.outside_phases(self.g, self.zt)
+        rows = render.outside_phases_digest(self.g, out)
+        self.assertTrue(rows)
+        for r in rows:
+            self.assertIn(r["severity"], ("critical", "high"))
+            self.assertIn("count", r)
+            self.assertIn("hosts", r)

@@ -155,6 +155,18 @@ MACRO_SPAN_DAYS = 90
 # agree by construction. The cards used to take 4 and the table 6, so rows 5-6 of the
 # table had no card to click.
 MACRO_TIMEFRAMES = 6
+# A phase carrying more than this is not a phase, it is a second case: split it at
+# its widest internal seam. Measured on a live 757-day case, the 7-day gap rule
+# produced one window of 78 findings over 75 days (half the case) next to one of 2.
+SPLIT_MAX_FINDINGS = 25
+SPLIT_MAX_SPAN_DAYS = 21
+SPLIT_MIN_KEEP = 2
+# A seam must stand out against the group's own rhythm, or it is not a seam.
+SPLIT_SEAM_RATIO = 3.0
+SPLIT_MIN_SEAM_SECONDS = 2 * 24 * 3600
+# ACTIVITY mode clusters on when a behaviour is FIRST seen, so a wider gap is right:
+# it is spacing between *new* techniques appearing, not between every repeat.
+ACTIVITY_GAP_DAYS = 14
 # A window is worth a section of its own -- and counts toward "this case has distinct
 # phases" -- only when it holds real material: a few findings, or anything high or
 # above. Two single-medium blips ten days apart are not a campaign map.
@@ -169,13 +181,68 @@ def _evidence_span_days(findings) -> int:
     return (hi - lo).days if (lo and hi) else 0
 
 
-def zoom_targets(graph, *, window=None, min_severity="informational", n=MACRO_TIMEFRAMES, gap_days=7):
-    """Deterministic macro->micro zoom presets: cluster the in-scope findings into
-    contiguous activity WINDOWS (split where the gap between findings exceeds
-    gap_days), each a {hosts, window} the operator can one-click re-scope to and
-    re-fuse into a focused report. Ranked by risk (max severity, cross-host, volume).
-    No LLM — grounded straight from the finding timestamps, so the zoom scope is
-    always real. Returns [] for a focused case (nothing to zoom into)."""
+def _title_normaliser(graph):
+    """`SIGMA: X on ALDC02` -> `SIGMA: X`, so the same detection across hosts is ONE
+    activity. The same rule the timeline collapse uses; hoisted here because the
+    activity grouping needs it too."""
+    labels = {a.label for a in graph.by_type("asset") if a.label}
+
+    def norm(t):
+        for lb in labels:
+            if (t or "").endswith(f" on {lb}"):
+                return t[: -(len(lb) + 4)]
+        return t or ""
+    return norm
+
+
+def _split_oversized(cl):
+    """Recursively cut a cluster at its WIDEST internal gap until each part is a
+    plausible phase. The widest gap is the most natural seam the data offers -- far
+    better than a second fixed threshold, which just moves the arbitrariness."""
+    span = (cl[-1][0] - cl[0][0]).days
+    if len(cl) <= SPLIT_MAX_FINDINGS and span <= SPLIT_MAX_SPAN_DAYS:
+        return [cl]
+    if len(cl) < 2 * SPLIT_MIN_KEEP:
+        return [cl]
+    gaps = [((cl[i + 1][0] - cl[i][0]).total_seconds(), i)
+            for i in range(SPLIT_MIN_KEEP - 1, len(cl) - SPLIT_MIN_KEEP)]
+    if not gaps:
+        return [cl]
+    widest, i = max(gaps)
+    # ONLY SPLIT AT A REAL SEAM. On evenly-spaced activity -- a steady drip, one
+    # finding every few days for months -- every gap is the same size, so "cut at
+    # the widest" cuts at nothing: it just relocates the arbitrariness it was meant
+    # to remove. That IS one continuous phase and must stay one. Require the seam
+    # to stand out against the group's own rhythm before believing in it.
+    allg = sorted(g for g, _ in gaps)
+    median = allg[len(allg) // 2]
+    if widest < max(SPLIT_MIN_SEAM_SECONDS, median * SPLIT_SEAM_RATIO):
+        return [cl]
+    return _split_oversized(cl[:i + 1]) + _split_oversized(cl[i + 1:])
+
+
+def zoom_targets(graph, *, window=None, min_severity="informational",
+                 n=MACRO_TIMEFRAMES, gap_days=7, mode="time"):
+    """Deterministic phases of the case: contiguous groups of findings, each a
+    {hosts, window} the operator can one-click re-scope to. No LLM — grounded
+    straight from the finding timestamps, so the scope is always real.
+
+    TWO GROUPINGS, same output shape, so the report, the cards, the table and the
+    payload are untouched by the choice:
+
+      mode="time"     — split wherever findings go quiet for `gap_days`, then split
+                        any oversized result at its widest internal seam.
+      mode="activity" — split on when a behaviour is FIRST seen. Later hits of the
+                        same detection are that behaviour PERSISTING, not a new
+                        event, so they no longer start a window of their own.
+
+    Why the second mode exists: measured on a live 757-day case, 148 findings were
+    only 63 distinct activities, and 32 recurring ones carried 114 of them (77%).
+    Time-gap splitting scattered `Suspicious Service Path` -- 8 hits over 413 days
+    across 8 hosts -- through six separate windows, so no window held anything
+    coherent and none could be described. Grouping on first appearance instead
+    yields phases that mean "new tooling entered the environment here".
+    """
     _, findings = scope(graph, window=window, min_severity=min_severity)
     dated = []
     for f in findings:
@@ -183,13 +250,44 @@ def zoom_targets(graph, *, window=None, min_severity="informational", n=MACRO_TI
         if t is not None:
             dated.append((t, f))
     dated.sort(key=lambda x: x[0])
-    clusters, cur, last = [], [], None
-    for t, f in dated:
-        if last is not None and (t - last).days > gap_days and cur:
-            clusters.append(cur); cur = []
-        cur.append((t, f)); last = t
-    if cur:
-        clusters.append(cur)
+
+    if mode == "activity":
+        # Cluster the FIRST sighting of each distinct activity; every later hit of
+        # that activity is carried along with its own group.
+        norm = _title_normaliser(graph)
+        acts = {}
+        for t, f in dated:
+            acts.setdefault(norm(f.title), []).append((t, f))
+        firsts = sorted(((v[0][0], k) for k, v in acts.items()), key=lambda r: r[0])
+        buckets, cur, last = [], [], None
+        for t, key in firsts:
+            if last is not None and (t - last).days > ACTIVITY_GAP_DAYS and cur:
+                buckets.append(cur); cur = []
+            cur.append((t, key)); last = t
+        if cur:
+            buckets.append(cur)
+        # A PHASE IS THE MOMENT OF APPEARANCE, not the whole life of what appeared.
+        # Carrying every later recurrence into its phase made phase 1 span fourteen
+        # months and swallow phases that started inside it -- overlapping windows,
+        # which breaks "click this window to zoom" outright. Keep only the hits
+        # inside the appearance period; the recurrences are stated once in
+        # persistent_activities(), which is the whole point of separating them.
+        clusters = []
+        for b in buckets:
+            lo, hi = b[0][0], b[-1][0]
+            hits = [(t, f) for _, key in b for (t, f) in acts[key] if lo <= t <= hi]
+            if hits:
+                clusters.append(sorted(hits, key=lambda x: x[0]))
+    else:
+        clusters, cur, last = [], [], None
+        for t, f in dated:
+            if last is not None and (t - last).days > gap_days and cur:
+                clusters.append(cur); cur = []
+            cur.append((t, f)); last = t
+        if cur:
+            clusters.append(cur)
+        # One 78-finding / 75-day window next to one of 2 findings is not a map.
+        clusters = [part for cl in clusters for part in _split_oversized(cl)]
 
     out = []
     for cl in clusters:
@@ -237,16 +335,45 @@ def zoom_targets(graph, *, window=None, min_severity="informational", n=MACRO_TI
             "hosts": sorted(hosts.keys()), "host_labels": labels,
             "window": {"start": start, "end": end}, "span_hours": span_h,
             "top_titles": titles,
-            "_risk": (sev.rank(top_sev) * 100 + cross * 10 + len(fs)),
+            "critical_count": sum(1 for f in fs if f.severity == "critical"),
+            # Rank on what DISCRIMINATES. `severity` is the max in the group, so on a
+            # real case every group reads "critical" off a handful of criticals and
+            # the column sorts nothing -- measured: all six windows identical. The
+            # count of criticals, the cross-host links and the host spread do vary.
+            "_risk": (sum(1 for f in fs if f.severity == "critical") * 1000
+                      + cross * 100 + len(labels) * 25 + len(fs)),
         })
     out.sort(key=lambda z: -z["_risk"])
     for z in out:
         z.pop("_risk", None)
+    # COVERAGE. The tail used to be truncated away: 17 clusters existed and 6 were
+    # shown, so 11 windows of evidence appeared in no window, no table and no
+    # section -- invisible rather than deprioritised. Report the remainder as one
+    # explicit rollup so every finding is accounted for somewhere.
+    rest = out[n:]
     out = out[:n]
+    if rest:
+        rf = sum(z["finding_count"] for z in rest)
+        rc = sum(z.get("critical_count", 0) for z in rest)
+        rh = sorted({h for z in rest for h in (z.get("host_labels") or [])})
+        rest.sort(key=lambda z: z["window"]["start"])
+        lo = min(z["window"]["start"] for z in rest)
+        hi = max(z["window"]["end"] for z in rest)
+        out.append({"title": f"{len(rest)} further window(s) — {rf} finding(s)",
+                    "severity": max((z["severity"] for z in rest),
+                                    key=lambda x: sev.rank(x)),
+                    "finding_count": rf, "critical_count": rc, "cross_host": 0,
+                    "mitre": [], "hosts": [], "host_labels": rh,
+                    "window": {"start": lo, "end": hi}, "span_hours": 0.0,
+                    "top_titles": [], "rollup": True, "rollup_windows": len(rest)})
     # Numbered AFTER ranking and truncation: "Timeframe 3" means the same window on
     # the card, in the table and in the narrative, or the analyst zooms into the
     # wrong one.
-    for i, z in enumerate(out, 1):
+    i = 0
+    for z in out:
+        if z.get("rollup"):
+            continue          # an accounting row, not a zoomable phase -- no number
+        i += 1
         z["n"] = i
     return out
 
@@ -256,14 +383,196 @@ def _substantial(z) -> bool:
             or sev.rank(z.get("severity", "informational")) >= sev.rank("high"))
 
 
+def analysable(zt):
+    """The phases worth an analyst's time -- what the model narrates and what the
+    console offers as a clickable scope.
+
+    Excludes two things. The coverage rollup is a tally of what was NOT reported in
+    its own right; it has no story to tell and must not be handed to the model as if
+    it did. And a window below _substantial() is not a scope: measured on a narrowed
+    graph, four of six offered cards were a SINGLE finding each, so "Analyze this
+    scope" led almost nowhere. Both still have every finding accounted for in the
+    rollup and in the timeline.
+
+    Deliberately NOT applied inside zoom_targets(): that is the primitive the
+    altitude rule counts substantial windows from, and filtering there would make it
+    count its own filtered output -- which broke both the altitude and the
+    cluster-splitting tests.
+    """
+    return [z for z in zt if not z.get("rollup") and _substantial(z)]
+
+
+def persistent_activities(graph, *, window=None, min_severity="informational",
+                          min_repeats=2, limit=15):
+    """Behaviours that RECUR, stated once with their span, count and host spread.
+
+    On a live 757-day case, 148 findings were only 63 distinct activities and 32
+    recurring ones carried 114 of them -- 77%. Whatever the phase grouping, a
+    behaviour seen 8 times over 413 days on 8 hosts belongs to several phases at
+    once, and repeating it in each is how the report drowned. State it here once;
+    the phases then carry what was NEW.
+    """
+    _, findings = scope(graph, window=window, min_severity=min_severity)
+    norm = _title_normaliser(graph)
+    acts = {}
+    for f in findings:
+        if f.ts:
+            acts.setdefault(norm(f.title), []).append(f)
+    rows = []
+    for title, fs in acts.items():
+        if len(fs) < min_repeats:
+            continue
+        ts = sorted(keys.to_utc_dt(x.ts) for x in fs)
+        hosts = sorted({_host_label(graph, a) for x in fs for a in (x.asset_ids or [])})
+        rows.append({"title": title, "count": len(fs), "hosts": hosts,
+                     "span_days": (ts[-1] - ts[0]).days,
+                     "first": ts[0].strftime("%Y-%m-%dT%H:%M:%SZ"),
+                     "last": ts[-1].strftime("%Y-%m-%dT%H:%M:%SZ"),
+                     "severity": max((x.severity for x in fs), key=lambda v: sev.rank(v))})
+    rows.sort(key=lambda r: -(r["span_days"] * 2 + r["count"] * 5 + len(r["hosts"]) * 10))
+    return rows[:limit]
+
+
+def persistent_activities_md(graph, *, window=None, min_severity="informational",
+                             rows=None) -> str:
+    """The persistence table. Empty string when nothing recurs — a table of one-offs
+    says nothing a phase section has not already said."""
+    rows = persistent_activities(graph, window=window,
+                                 min_severity=min_severity) if rows is None else rows
+    if not rows:
+        return ""
+    out = ["## Persistent activity", "",
+           "_Behaviours that RECUR across the case, each stated once. A long span "
+           "here means the activity was present throughout, not that it happened "
+           "once — these are the campaign's constants, while the phases above carry "
+           "what was new._", "",
+           "| Activity | Times | Span | Hosts | Severity | First → Last |",
+           "|---|---|---|---|---|---|"]
+    for r in rows:
+        hs = ", ".join(r["hosts"][:4]) + ("…" if len(r["hosts"]) > 4 else "")
+        out.append(f"| {r['title']} | ×{r['count']} | {r['span_days']}d | {hs} | "
+                   f"{r['severity']} | {r['first'][:10]} → {r['last'][:10]} |")
+    return "\n".join(out) + "\n"
+
+
+def phases_at_a_glance_md(zt, names=None) -> str:
+    """Every phase on one screen, so the reader can choose before reading any of them.
+
+    Deterministic: the counts, hosts and windows are ours. The NAME column is the
+    model's label for the phase when the report carried one -- the whole value of the
+    table is being able to compare "what each phase IS" side by side, which a window
+    and a count cannot express.
+    """
+    rows = analysable(zt)
+    if not rows:
+        return ""
+    names = names or {}
+    out = ["## Phases at a glance", "",
+           "_Every phase, ranked by risk. The window and counts are deterministic; "
+           "open a phase below, or one-click **Analyze this scope** in the console to "
+           "re-scope the case to it._", "",
+           "| # | Phase | Window (UTC) | Hosts | Findings | Crit | ATT&CK |",
+           "|---|---|---|---|---|---|---|"]
+    for z in rows:
+        w, hs = z["window"], (z.get("host_labels") or [])
+        hosts = ", ".join(hs[:4]) + ("…" if len(hs) > 4 else "")
+        nm = names.get(z["n"]) or (z.get("top_titles") or ["—"])[0][:48]
+        mitre = ", ".join((z.get("mitre") or [])[:4]) or "—"
+        out.append(f"| {z['n']} | {nm} | {w['start'][:16]} → {w['end'][:16]} | "
+                   f"{hosts} | {z['finding_count']} | {z.get('critical_count', 0)} | "
+                   f"{mitre} |")
+    roll = [z for z in zt if z.get("rollup")]
+    if roll:
+        r = roll[0]
+        out.append(f"| — | _{r['rollup_windows']} further window(s), not analysed "
+                   f"individually_ | {r['window']['start'][:16]} → "
+                   f"{r['window']['end'][:16]} | | {r['finding_count']} | "
+                   f"{r.get('critical_count', 0)} | — |")
+    return "\n".join(out) + "\n"
+
+
+def report_mode_banner(altitude, zt, *, mode="time", total_findings=None) -> str:
+    """Say WHICH report this is, at the top, in the operator's words.
+
+    Asked for directly: "we do need to know if its macro or segmented report".
+    A segmented report covering six phases and a focused report on one scope read
+    completely differently, and nothing distinguished them.
+    """
+    if altitude != "macro":
+        return ("_**Focused report** — one scope, analysed in depth. "
+                "Every finding below is inside this window._")
+    phases = len(analysable(zt))
+    roll = [z for z in zt if z.get("rollup")]
+    extra = (f" A further {roll[0]['rollup_windows']} window(s) covering "
+             f"{roll[0]['finding_count']} finding(s) are summarised in the phase "
+             f"table but not analysed individually." if roll else "")
+    grouped = ("grouped by when a behaviour FIRST appeared" if mode == "activity"
+               else "grouped by periods of continuous activity")
+    # ACTIVITY mode deliberately leaves later recurrences OUT of the phases -- a
+    # phase is the moment something appeared. Those findings are not lost, they are
+    # in Persistent activity, but the banner must say so instead of implying the
+    # phases account for everything. Measured: 89 of 145 in phases, 56 recurrences.
+    if total_findings:
+        inphase = sum(z["finding_count"] for z in zt)
+        rec = total_findings - inphase
+        if rec > 0:
+            extra += (f" {rec} further finding(s) are later repeats of behaviours that "
+                      f"first appeared in these phases — see **Persistent activity**.")
+    return (f"_**Segmented report** — broad scope, split into {phases} phase(s) "
+            f"{grouped}. Each phase below is analysed on its own and carries its own "
+            f"timeline; open one to go deeper.{extra}_")
+
+
+def outside_phases(graph, zt, *, window=None, min_severity="informational"):
+    """The in-scope findings that NO analysed phase covers.
+
+    Measured on a live case: 61 findings across 15 windows fell into the coverage
+    rollup, appearing as table rows and timeline bullets with no prose anywhere --
+    40% of the case, including renamed-tool drops (AdFind, procdump, procdump64).
+    The macro prompt used to carry an "Other severe findings" section for exactly
+    this, noting that scenarios alone covered 95% of critical findings but only 57%
+    of high ones. This is the set that section needs.
+    """
+    _, findings = scope(graph, window=window, min_severity=min_severity)
+    wins = [(z["window"]["start"], z["window"]["end"]) for z in analysable(zt)]
+    out = []
+    for f in findings:
+        ts = f.ts or ""
+        if not any(lo <= ts <= hi for lo, hi in wins):
+            out.append(f)
+    return out
+
+
+def outside_phases_digest(graph, findings, limit=40):
+    """Compact {title, severity, hosts, ts} rows for the synthesis payload -- enough
+    to group and name them, without re-sending evidence the phases already carry."""
+    norm = _title_normaliser(graph)
+    seen, rows = {}, []
+    for f in sorted(findings, key=lambda x: -sev.rank(x.severity)):
+        if not sev.at_least(f.severity, "high"):
+            continue
+        t = norm(f.title)
+        if t in seen:
+            seen[t]["count"] += 1
+            continue
+        seen[t] = {"title": t, "severity": f.severity, "count": 1,
+                   "hosts": sorted({_host_label(graph, a) for a in (f.asset_ids or [])}),
+                   "first": f.ts}
+        rows.append(seen[t])
+        if len(rows) >= limit:
+            break
+    return rows
+
+
 def timeframes_for_payload(zt):
     """The fixed, numbered anchors the macro model narrates from. Compact on purpose:
     the findings themselves are already in the payload; this is the index that says
     which of them belong to which window."""
     return [{"n": z["n"], "window": z["window"], "hosts": z.get("host_labels") or [],
+             "critical_count": z.get("critical_count", 0),
              "finding_count": z["finding_count"], "cross_host": z.get("cross_host", 0),
              "severity": z["severity"], "mitre": z.get("mitre") or [],
-             "findings": z.get("top_titles") or []} for z in zt]
+             "findings": z.get("top_titles") or []} for z in analysable(zt)]
 
 
 def suspicious_timeframes_md(graph, *, window=None, min_severity="informational",
@@ -294,7 +603,10 @@ def suspicious_timeframes_md(graph, *, window=None, min_severity="informational"
 
 
 import re as _tf_re
-_TF_HEADING = _tf_re.compile(r"^###\s*Timeframe\s+(\d+)\s*[—–\-:]\s*(.+?)\s*$", _tf_re.M)
+# "Phase" is what the segmented report writes; "Timeframe" is kept so a report
+# generated before the rename still yields its names instead of blank cards.
+_TF_HEADING = _tf_re.compile(
+    r"^###\s*(?:Phase|Timeframe)\s+(\d+)\s*[—–\-:]\s*(.+?)\s*$", _tf_re.M)
 
 
 def timeframe_names_from_report(md) -> dict:
@@ -1547,8 +1859,100 @@ def report_header(graph, *, window=None, min_severity="informational") -> str:
     return "\n".join(rows) + "\n"
 
 
+def timeline_md(graph, findings, *, window=None, eff_detail="summary",
+                max_groups=None, heading="## Timeline of Events", note=None) -> str:
+    """The chronological timeline for ONE scope, as markdown.
+
+    Extracted verbatim from facts_md so a SEGMENTED report can render one timeline
+    per phase instead of a single flat list for the whole case -- the operator's
+    "the timeline of events should be separate to each timeframe". `findings` is
+    already scoped by the caller; `window` re-filters defensively as before.
+
+    `eff_detail` is passed IN, never re-resolved: _resolve_detail() consults the
+    scope it is given, so calling it per narrow phase would flip a macro case to
+    `explicit` inside every section and blow the report up. `max_groups` budgets
+    the collapse cap across phases -- TIMELINE_MAX_GROUPS is per-invocation, so N
+    phases would otherwise allow 40xN groups.
+    """
+    cap = TIMELINE_MAX_GROUPS if max_groups is None else max(1, int(max_groups))
+    out = []
+    tally = _sev_tally(findings)
+    out.append(heading + "\n")
+    out.append("_" + (note or (", ".join(f"{tally[lv]} {lv}"
+               for lv in reversed(sev.LEVELS) if tally[lv])
+               + " — high/critical events in chronological order (host in each entry)"))
+               + "._\n")
+    tl = sorted((f for f in findings
+                 if f.ts and in_window(f.ts, window)
+                 and f.kind != "cross_host"                         # in Cross-Host Correlation
+                 and not f.title.startswith("Coordinated suspicious activity")  # vacuous rollup
+                 and sev.at_least(f.severity, "high")),
+                key=lambda f: (f.ts, -sev.rank(f.severity)))
+    if not tl:
+        out.append("_No time-anchored high/critical activity in window._\n")
+    elif eff_detail == "summary":
+        # AT SCALE the flat list is the single largest block in the report and most
+        # of it is the SAME detection repeating — a senior report states a recurring
+        # detection once, with its span and count, not forty times. Collapse on
+        # (title, severity); criticals are never collapsed away, only grouped.
+        from collections import OrderedDict
+        # Finding titles embed the host ("SIGMA: Suspicious Service Path on ALDC02"),
+        # so grouping on the raw title collapses NOTHING. Strip the trailing
+        # " on <known-host>" so the SAME detection across hosts groups into one row
+        # with its host list — which is the whole point of the collapse.
+        _labels = {a.label for a in graph.by_type("asset") if a.label}
+
+        def _norm_title(t):
+            for lb in _labels:
+                if t.endswith(f" on {lb}"):
+                    return t[: -(len(lb) + 4)]
+            return t
+
+        groups: "OrderedDict[tuple, list]" = OrderedDict()
+        for f in tl:
+            groups.setdefault((_norm_title(f.title), f.severity,
+                               tuple(f.mitre or [])), []).append(f)
+        # The cap must NEVER be able to drop a critical: groups are in chronological
+        # order, so a plain head-slice silently hid late criticals behind earlier
+        # high-severity noise. Keep every critical group, then fill the remaining
+        # budget chronologically, then restore chronological order for display.
+        _ordered = list(groups.items())
+        _crit = [kv for kv in _ordered if kv[0][1] == "critical"]
+        _rest = [kv for kv in _ordered if kv[0][1] != "critical"]
+        _keep = _crit + _rest[: max(0, cap - len(_crit))]
+        _keep.sort(key=lambda kv: min((x.ts for x in kv[1] if x.ts), default=""))
+        _omitted = len(_ordered) - len(_keep)
+        for (title, sv, mit), fs in _keep:
+            ts_all = sorted(x.ts for x in fs if x.ts)
+            when = fmt_ts(ts_all[0])
+            if len(ts_all) > 1 and ts_all[-1] != ts_all[0]:
+                when += f" → {fmt_ts(ts_all[-1])}"
+            hosts = sorted({_host_label(graph, a) for f2 in fs for a in (f2.asset_ids or [])})
+            hs = (f" · {', '.join(hosts[:4])}" + ("…" if len(hosts) > 4 else "")) if hosts else ""
+            mitre = f" `[{', '.join(mit)}]`" if mit else ""
+            times = f" · ×{len(fs)}" if len(fs) > 1 else ""
+            out.append(f"- `{when}` · **[{sv}]** {title}{mitre}{times}{hs}")
+        if _omitted:
+            out.append(f"- _… {_omitted} further **non-critical** recurring detection "
+                       "group(s) omitted at this altitude — every critical group is "
+                       "shown above; narrow the scope for the full timeline._")
+        out.append(f"\n_{len(tl)} event(s) collapsed into {len(groups)} recurring "
+                   "detection group(s); a repeated detection is stated once with its "
+                   f"span and count. All {len(_crit)} critical group(s) are shown._\n")
+    else:
+        for f in tl:
+            mitre = f" `[{', '.join(f.mitre)}]`" if f.mitre else ""
+            out.append(f"- `{fmt_ts(f.ts)}` · **[{f.severity}]** {f.title}{mitre}")
+            if eff_detail == "explicit":           # real per-event evidence inline
+                for ev in _finding_evidence(graph, f,
+                                            cap_chars=REPORT_EVIDENCE_CHARS):
+                    out.append(f"    - `{ev}`")
+    return "\n".join(out)
+
+
 def facts_md(graph, *, window=None, min_severity="informational", initial_access=None,
-             dispositions=None, validations=None, detail="auto", narrated=False) -> str:
+             dispositions=None, validations=None, detail="auto", narrated=False,
+             timeline_findings=None, timeline_heading=None, timeline_note=None) -> str:
     """DETERMINISTIC report body — Priority Hosts table, cross-host correlation,
     analyst validations, ONE flat chronological timeline, IOC appendix, MITRE,
     recommendations. Appended verbatim to every report; NEVER sent to the LLM.
@@ -1601,77 +2005,20 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
     if av:
         out.append(av)
 
-    # ---- ONE flat chronological timeline — what happened, in order ----
-    tally = _sev_tally(findings)
-    out.append("## Timeline of Events\n")
-    out.append("_" + ", ".join(f"{tally[lv]} {lv}" for lv in reversed(sev.LEVELS) if tally[lv])
-               + " — high/critical events in chronological order (host in each entry)._\n")
-    tl = sorted((f for f in findings
-                 if f.ts and in_window(f.ts, window)
-                 and f.kind != "cross_host"                         # in Cross-Host Correlation
-                 and not f.title.startswith("Coordinated suspicious activity")  # vacuous rollup
-                 and sev.at_least(f.severity, "high")),
-                key=lambda f: (f.ts, -sev.rank(f.severity)))
-    if not tl:
-        out.append("_No time-anchored high/critical activity in window._\n")
-    elif eff_detail == "summary":
-        # AT SCALE the flat list is the single largest block in the report and most
-        # of it is the SAME detection repeating — a senior report states a recurring
-        # detection once, with its span and count, not forty times. Collapse on
-        # (title, severity); criticals are never collapsed away, only grouped.
-        from collections import OrderedDict
-        # Finding titles embed the host ("SIGMA: Suspicious Service Path on ALDC02"),
-        # so grouping on the raw title collapses NOTHING. Strip the trailing
-        # " on <known-host>" so the SAME detection across hosts groups into one row
-        # with its host list — which is the whole point of the collapse.
-        _labels = {a.label for a in graph.by_type("asset") if a.label}
-
-        def _norm_title(t):
-            for lb in _labels:
-                if t.endswith(f" on {lb}"):
-                    return t[: -(len(lb) + 4)]
-            return t
-
-        groups: "OrderedDict[tuple, list]" = OrderedDict()
-        for f in tl:
-            groups.setdefault((_norm_title(f.title), f.severity,
-                               tuple(f.mitre or [])), []).append(f)
-        # The cap must NEVER be able to drop a critical: groups are in chronological
-        # order, so a plain head-slice silently hid late criticals behind earlier
-        # high-severity noise. Keep every critical group, then fill the remaining
-        # budget chronologically, then restore chronological order for display.
-        _ordered = list(groups.items())
-        _crit = [kv for kv in _ordered if kv[0][1] == "critical"]
-        _rest = [kv for kv in _ordered if kv[0][1] != "critical"]
-        _keep = _crit + _rest[: max(0, TIMELINE_MAX_GROUPS - len(_crit))]
-        _keep.sort(key=lambda kv: min((x.ts for x in kv[1] if x.ts), default=""))
-        _omitted = len(_ordered) - len(_keep)
-        for (title, sv, mit), fs in _keep:
-            ts_all = sorted(x.ts for x in fs if x.ts)
-            when = fmt_ts(ts_all[0])
-            if len(ts_all) > 1 and ts_all[-1] != ts_all[0]:
-                when += f" → {fmt_ts(ts_all[-1])}"
-            hosts = sorted({_host_label(graph, a) for f2 in fs for a in (f2.asset_ids or [])})
-            hs = (f" · {', '.join(hosts[:4])}" + ("…" if len(hosts) > 4 else "")) if hosts else ""
-            mitre = f" `[{', '.join(mit)}]`" if mit else ""
-            times = f" · ×{len(fs)}" if len(fs) > 1 else ""
-            out.append(f"- `{when}` · **[{sv}]** {title}{mitre}{times}{hs}")
-        if _omitted:
-            out.append(f"- _… {_omitted} further **non-critical** recurring detection "
-                       "group(s) omitted at this altitude — every critical group is "
-                       "shown above; narrow the scope for the full timeline._")
-        out.append(f"\n_{len(tl)} event(s) collapsed into {len(groups)} recurring "
-                   "detection group(s); a repeated detection is stated once with its "
-                   f"span and count. All {len(_crit)} critical group(s) are shown._\n")
-    else:
-        for f in tl:
-            mitre = f" `[{', '.join(f.mitre)}]`" if f.mitre else ""
-            out.append(f"- `{fmt_ts(f.ts)}` · **[{f.severity}]** {f.title}{mitre}")
-            if eff_detail == "explicit":           # real per-event evidence inline
-                for ev in _finding_evidence(graph, f,
-                                            cap_chars=REPORT_EVIDENCE_CHARS):
-                    out.append(f"    - `{ev}`")
-    out.append("")
+    # ---- chronological timeline — extracted so a SEGMENTED report can render
+    # one per phase. It was ~70 lines inline here with no seam, which is why the
+    # macro report could only ever carry ONE flat timeline for the whole case.
+    # A SEGMENTED report already printed a timeline under every phase, so repeating
+    # the whole case here is mostly re-reading: measured at 72% overlap, 29 of 40
+    # detections. The caller passes only the findings NO phase covered, which turns
+    # a redundant block into the answer to "what is not covered above". A focused
+    # report passes nothing and keeps the full timeline -- it has no phases, and this
+    # is its primary evidence.
+    _tl = findings if timeline_findings is None else timeline_findings
+    if _tl or timeline_findings is None:
+        out.append(timeline_md(graph, _tl, window=window, eff_detail=eff_detail,
+                               heading=timeline_heading or "## Timeline of Events",
+                               note=timeline_note))
 
     # ---- 4. Key Indicators (IOCs) — high-confidence / validated only --------
     kept_iocs, suppressed = _high_confidence_iocs(graph, validations)

@@ -480,7 +480,6 @@ function render(info,md,g){
              Purely presentational: setTab/drawTab dispatch on data-tab, never on
              position, so this list can be reordered freely. -->
         <div class="tab ${tab==='report'?'on':''}" data-tab="report" onclick="setTab('report')">Analysis</div>
-        <div class="tab ${tab==='advisory'?'on':''}" data-tab="advisory" onclick="setTab('advisory')">Advisory</div>
         <div class="tab ${tab==='chat'?'on':''}" data-tab="chat" onclick="setTab('chat')">Chat</div>
         <div class="tab ${tab==='timeline'?'on':''}" data-tab="timeline" onclick="setTab('timeline')">Timeline</div>
         <div class="tab ${tab==='identities'?'on':''}" data-tab="identities" onclick="setTab('identities')">Identities</div>
@@ -530,7 +529,6 @@ function drawTab(md){
   else if(tab==='log') renderLog(info.case_id);
   else if(tab==='config') renderConfig(info);
   else if(tab==='risk') renderRisk(info);
-  else if(tab==='advisory') renderAdvisory(info);
   else renderReport(info);
 }
 // Same duplication as the timeline, one level down: the host is already the
@@ -737,10 +735,10 @@ function loadZoomTargets(id){
       <div class="zoomhdr">🔎 Broad scope — zoom into a suspicious window to get the focused analysis</div>
       <div class="zoomrow">`+ _zoomTargets.map((t,i)=>`
         <div class="zoomcard sev-${esc(t.severity||'')}">
-          <div class="zt-title">${t.name ? esc('Timeframe '+t.n+' — '+t.name) : esc(t.title)}</div>
+          <div class="zt-title">${t.name ? esc('Phase '+t.n+' — '+t.name) : esc(t.title)}</div>
           <div class="zt-meta">${(t.host_labels||[]).length} host(s) · ${t.finding_count} finding(s)${t.cross_host?` · ${t.cross_host} cross-host`:''}${(t.mitre&&t.mitre.length)?` · ${esc(t.mitre.slice(0,3).join(', '))}`:''}</div>
           <div class="zt-win">${esc((t.window||{}).start||'')} → ${esc((t.window||{}).end||'')}</div>
-          <button class="dlbtn zt-go" onclick="applyZoom('${esc(id)}',${i})">Analyze this scope →</button>
+          ${t.rollup ? '<div class="zt-meta" style="margin-top:6px">Accounting row — the windows not analysed individually. Not a scope.</div>' : `<button class="dlbtn zt-go" onclick="applyZoom('${esc(id)}',${i})">Analyze this scope →</button>`}
         </div>`).join('')+`</div></div>`;
   }).catch(()=>{ const el=$('#zoomcards'); if(el) el.innerHTML=''; });
 }
@@ -989,41 +987,6 @@ function synthFromChat(id){toast('synthesizing from chat…');
     const d=await r.json().catch(()=>({}));
     if(!r.ok){toast(d.error||'needs chat + real LLM');return;}
     const el=$('#cf-mp'); if(el)el.value=d.master_prompt||''; toast('steering drafted from chat');});
-}
-function renderAdvisory(info){
-  const a=info.analysis||{}, ig=a.incident_groups||[], hy=a.hypotheses||[];
-  const d=a._diagnostic||{};
-  // This renderer was DEAD CODE: defined once, called from nowhere, wired to no
-  // tab, unreachable for the entire life of the feature. So every report has
-  // been paying for a second full-payload model call whose output had no
-  // surface to appear on. esc() rather than the file's local escape() only
-  // because esc() is what every other renderer here uses; the two are the same
-  // function.
-  let h='';
-  // The advisory is the SECOND model call on every report. When it produced
-  // nothing, or fell back, say so here -- the operator is looking at this tab to
-  // find out what it gave them, and an empty page cannot answer that.
-  if(d.fell_back){
-    h+=`<p class="agbanner" style="color:var(--med)">⚠ The model was not used for this advisory — the pass failed with <code>${esc(d.error||'an unknown error')}</code>. The groups below are the deterministic per-host fallback, not analysis.</p>`;
-  } else if(d.empty_reply){
-    h+=`<p class="agbanner" style="color:var(--med)">⚠ The model returned an empty reply — it spent its whole ${(d.output_budget||0).toLocaleString()}-token output budget before writing an answer. Lower the reasoning effort or raise the output cap.</p>`;
-  } else if(d.unparseable){
-    h+=`<p class="agbanner" style="color:var(--med)">⚠ The model's ${(d.reply_chars||0).toLocaleString()}-character reply could not be read as JSON, so none of it could be used.</p>`;
-  } else if(d.dropped_groups||d.dropped_hypotheses){
-    h+=`<p class="agbanner" style="color:var(--med)">⚠ ${d.dropped_groups||0} group(s) and ${d.dropped_hypotheses||0} hypothesis(es) were discarded for citing findings or entities that are not in this case.</p>`;
-  }
-  if(a.simulated && !ig.length && !hy.length){
-    $('#tabc').innerHTML=h+`<p style="color:var(--muted)">No LLM advisory for this case. The deterministic Report is authoritative.</p>`;
-    return;
-  }
-  h+=`<p style="color:var(--med)">⚠ Advisory — analyst verification required. NOT a determination; the deterministic findings in the Report are authoritative.</p>`;
-  h+=`<h2 style="text-transform:none;color:var(--tx)">Incident groups</h2>`;
-  h+=`<p style="color:var(--muted);font-size:12px;margin-top:-6px">The model's clustering of the existing findings into campaigns. Overlaps what the Report narrates.</p>`;
-  h+= ig.length? ig.map(x=>`<div class="caseitem"><div class="nm">${esc(x.name||'group')}</div><div class="meta">${(x.finding_ids||[]).length} findings — ${esc(x.rationale||'')}</div></div>`).join('') : '<i style="color:var(--muted)">none</i>';
-  h+=`<h2 style="text-transform:none;color:var(--tx)">Hypotheses (for verification)</h2>`;
-  h+=`<p style="color:var(--muted);font-size:12px;margin-top:-6px">Patterns the deterministic rules did NOT produce — the part of the advisory that is not already in the Report. Unconfirmed by construction.</p>`;
-  h+= hy.length? hy.map(x=>`<div class="caseitem"><div class="nm">${esc(x.title||'')} <span class="chip c-${(x.confidence||'low')==='high'?'high':'low'}">${esc(x.confidence||'low')}</span></div><div class="meta">${esc(x.reason||'')} · cites ${(x.entity_ids||[]).length} entities</div></div>`).join('') : '<i style="color:var(--muted)">none</i>';
-  $('#tabc').innerHTML=h;
 }
 // ---- Unified timeline (findings + manual events; validate with the IT team) ----
 const TL_SEV_RANK={informational:0,info:0,low:1,medium:2,high:3,critical:4};
