@@ -326,7 +326,49 @@ def _delete_runs_preserve_cases(c, run_id, include_system=False):
             _delete_graph_sidecar(cid)
         except Exception:
             pass
+        # ...AND the case's entries in the cross-case knowledge base. delete_case()
+        # already does this, with a comment saying why: entities left indexed keep
+        # resurfacing as "prior sightings" in unrelated future cases. THIS path
+        # stripped the graph and the report and left the KB, so a purged box went on
+        # enriching new cases from evidence the operator believed they had deleted.
+        try:
+            from services.fusion import kb
+            kb.delete_case_entities(cid)
+        except Exception:
+            pass
+    _purge_kb_orphans()
     return max(0, before - after), cases
+
+
+def _purge_kb_orphans() -> int:
+    """Drop KB entities whose case no longer exists at all.
+
+    Measured on a live appliance: 32 entities from two long-deleted cases, which
+    no section could reach -- delete_case() cleans up as it goes, but anything
+    removed before that existed, or by a path that missed it, stayed indexed
+    forever. Self-healing, so a box already carrying orphans recovers."""
+    try:
+        import sqlite3
+        from services.fusion import kb
+        es = kb._es()
+        if es is None:
+            return 0
+        conn = sqlite3.connect("/app/data/intact.db")
+        live = {r[0] for r in conn.execute(
+            "SELECT run_id FROM workflows WHERE automation_type = 'case'")}
+        conn.close()
+        r = es.search(index=kb.INDEX, size=0,
+                      aggs={"by_case": {"terms": {"field": "case_id", "size": 1000}}})
+        gone = [b["key"] for b in r["aggregations"]["by_case"]["buckets"]
+                if b["key"] not in live]
+        for cid in gone:
+            kb.delete_case_entities(cid)
+        if gone:
+            print(f"[PURGE] dropped KB entities for {len(gone)} deleted case(s)",
+                  flush=True)
+        return len(gone)
+    except Exception:
+        return 0
 
 
 @maintenance_bp.route('/api/maintenance/purge', methods=['POST'])
@@ -550,32 +592,39 @@ def run_system_purge():
             else:
                 try:
                     import requests as req
-                    # Get size before
-                    es_resp = req.get("http://intact_elasticsearch:9200/_cat/indices?h=index,store.size&bytes=b", timeout=5)
-                    es_size_before = 0
-                    es_index_count = 0
-                    if es_resp.status_code == 200:
-                        for line in es_resp.text.strip().split('\n'):
-                            parts = line.split()
-                            if len(parts) >= 2 and parts[0].startswith('artifact_'):
-                                es_size_before += int(parts[1])
-                                es_index_count += 1
-
-                    add_log_to_run(run_id, f"  Found {es_index_count} artifact indices ({fmt(es_size_before)})", "info")
-
-                    if es_index_count > 0:
-                        # Delete each index individually (wildcard delete is disabled by default)
-                        deleted = 0
-                        for line in es_resp.text.strip().split('\n'):
-                            parts = line.split()
-                            if len(parts) >= 2 and parts[0].startswith('artifact_'):
-                                del_resp = req.delete(f"http://intact_elasticsearch:9200/{parts[0]}", timeout=10)
-                                if del_resp.status_code == 200:
-                                    deleted += 1
-                        add_log_to_run(run_id, f"  Deleted {deleted}/{es_index_count} indices", "info")
-                        total_freed += es_size_before
-
-                    add_log_to_run(run_id, f"  Freed: {fmt(es_size_before)}", "success")
+                    # AUTHENTICATED. This asked without credentials, ES answered 401,
+                    # and the status!=200 branch left the counts at zero -- so the log
+                    # said "Found 0 artifact indices" and "Freed: 0 B" on a box with
+                    # indices, and reported success. Same bug as the section-based
+                    # _scan/_purge_elk_artifacts below; both use _es_indices() now.
+                    idx = _es_indices()
+                    if idx is None:
+                        add_log_to_run(run_id, "  Skipped: Elasticsearch did not answer "
+                                               "(check ELASTICSEARCH_USER/PASSWORD)", "warning")
+                        skipped_sections.append("elk")
+                    else:
+                        rows = [(n, b) for n, b in idx if _elk_purgeable(n)]
+                        es_size_before = sum(b for _, b in rows)
+                        add_log_to_run(run_id, f"  Found {len(rows)} artifact indices ({fmt(es_size_before)})", "info")
+                        deleted = freed = 0
+                        # Individually: wildcard delete is disabled by default.
+                        for name, nbytes in rows:
+                            del_resp = req.delete(f"{_es_base()}/{name}",
+                                                  auth=_es_auth(), timeout=10)
+                            if del_resp.status_code == 200:
+                                deleted += 1
+                                freed += nbytes
+                        if rows:
+                            add_log_to_run(run_id, f"  Deleted {deleted}/{len(rows)} indices", "info")
+                        total_freed += freed
+                        # The cross-case knowledge base is fusion data about cases whose
+                        # evidence is being deleted here. Left indexed, its entities keep
+                        # resurfacing as "prior sightings" in unrelated future cases.
+                        gone = _purge_kb_orphans()
+                        if gone:
+                            add_log_to_run(run_id, f"  Cleared knowledge-base entities for "
+                                                   f"{gone} deleted case(s)", "info")
+                        add_log_to_run(run_id, f"  Freed: {fmt(freed)}", "success")
                 except Exception as e:
                     add_log_to_run(run_id, f"  ELK cleanup error: {e}", "warning")
 
@@ -749,7 +798,13 @@ def _scan_workflows():
     # cleanly attribute size to the wf+report rows alone, but a workflow
     # row averages ~5-50 KB (logs as JSON). Estimate: 25 KB × wf_count.
     estimated = wf_count * 25 * 1024 + rp_count * 50 * 1024
-    return min(estimated, db_size), f"{wf_count} investigation runs, {rp_count} reports"
+    # The fused-graph sidecars are deleted by this section's purge but were counted
+    # by nothing, so the dialog under-reported what it would free. They are not an
+    # estimate -- they are files, and on a real case they dwarf the row estimate
+    # above (measured: 16MB of sidecars beside a 2.2MB estimate).
+    sidecars = _scan_dir("/app/data/fusion_graphs")
+    return min(estimated, db_size) + sidecars, \
+        f"{wf_count} investigation runs, {rp_count} reports"
 
 
 def _scan_system_workflows():
@@ -820,25 +875,56 @@ def _scan_velociraptor():
     return size, "hunts + flows + uploads + notebooks (excludes /var./public tools)"
 
 
-def _scan_elk_artifacts():
+def _es_base() -> str:
+    """The Elasticsearch URL, from the same env the rest of the backend uses."""
+    import os
+    host = os.environ.get("ELASTICSEARCH_HOST", "intact_elasticsearch")
+    port = os.environ.get("ELASTICSEARCH_PORT", "9200")
+    return f"http://{host}:{port}"
+
+
+def _es_auth():
+    """ES ON THIS APPLIANCE REQUIRES AUTH, and these two sections were asking
+    without it: the probe came back 401, the `!= 200` branch reported
+    'elasticsearch unreachable', and the ELK row silently scanned and purged
+    NOTHING while looking like it worked. Measured on a live box."""
+    import os
+    return (os.environ.get("ELASTICSEARCH_USER", "elastic"),
+            os.environ.get("ELASTICSEARCH_PASSWORD", ""))
+
+
+def _es_indices():
+    """[(name, size_bytes)] or None when ES genuinely cannot be reached."""
     import requests as req
     try:
-        r = req.get(
-            "http://intact_elasticsearch:9200/_cat/indices?h=index,store.size&bytes=b",
-            timeout=5,
-        )
+        r = req.get(f"{_es_base()}/_cat/indices?h=index,store.size&bytes=b",
+                    auth=_es_auth(), timeout=5)
         if r.status_code != 200:
-            return 0, "elasticsearch unreachable"
-        size = 0
-        n = 0
-        for line in r.text.strip().split("\n"):
+            return None
+        out = []
+        for line in r.text.strip().splitlines():
             parts = line.split()
-            if len(parts) >= 2 and parts[0].startswith("artifact_"):
-                size += int(parts[1])
-                n += 1
-        return size, f"{n} artifact_* indices"
+            if len(parts) >= 2 and parts[1].isdigit():
+                out.append((parts[0], int(parts[1])))
+        return out
     except Exception:
+        return None
+
+
+def _elk_purgeable(name: str) -> bool:
+    """Indices this section owns. `artifact_*` is the collected evidence; the
+    cross-case knowledge base is ours too and was reachable by NO section, so a
+    purged box kept re-surfacing entities from cases whose data was gone (see
+    _purge_kb_orphans)."""
+    return name.startswith("artifact_")
+
+
+def _scan_elk_artifacts():
+    idx = _es_indices()
+    if idx is None:
         return 0, "elasticsearch unreachable"
+    rows = [(n, b) for n, b in idx if _elk_purgeable(n)]
+    return sum(b for _, b in rows), f"{len(rows)} artifact_* indices"
 
 
 def _scan_timesketch():
@@ -1177,25 +1263,21 @@ def _purge_velociraptor(run_id):
 
 def _purge_elk_artifacts(_):
     import requests as req
-    try:
-        r = req.get(
-            "http://intact_elasticsearch:9200/_cat/indices?h=index,store.size&bytes=b",
-            timeout=5,
-        )
-        if r.status_code != 200:
-            return 0, "elasticsearch unreachable"
-        size = 0
-        deleted = 0
-        for line in r.text.strip().split("\n"):
-            parts = line.split()
-            if len(parts) >= 2 and parts[0].startswith("artifact_"):
-                size += int(parts[1])
-                d = req.delete(f"http://intact_elasticsearch:9200/{parts[0]}", timeout=10)
-                if d.status_code == 200:
-                    deleted += 1
-        return size, f"{deleted} indices"
-    except Exception as e:
-        return 0, f"error: {e}"
+    idx = _es_indices()
+    if idx is None:
+        return 0, "elasticsearch unreachable"
+    size = deleted = 0
+    for name, nbytes in idx:
+        if not _elk_purgeable(name):
+            continue
+        try:
+            d = req.delete(f"{_es_base()}/{name}", auth=_es_auth(), timeout=10)
+        except Exception:
+            continue
+        if d.status_code == 200:
+            size += nbytes
+            deleted += 1
+    return size, f"{deleted} indices"
 
 
 def _purge_timesketch(_):
