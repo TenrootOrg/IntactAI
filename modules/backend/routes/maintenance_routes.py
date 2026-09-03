@@ -862,17 +862,34 @@ def _scan_report_downloads():
     return _scan_dir("/data/downloads"), ""
 
 
+# What _purge_velociraptor ACTUALLY removes. The scan used to `du` the whole
+# datastore minus /public, which promised disk the purge never frees: it deletes
+# collected hunt/flow/monitoring data through Velociraptor's own primitives and
+# KEEPS EVERY CLIENT by design. Measured on a live box -- estimate 6.8GB, freed
+# 4.5GB, and 2.3GB still showing afterwards, of which 1.3GB was
+# server_artifacts/Custom.Elastic.Flows.Upload (server-side output no section
+# touches) and 1.1GB was one client's own directory. An estimate that counts what
+# will still be there after the run is worse than no estimate.
+_VELO_PURGED_PATHS = ("hunts", "clients")
+
+
 def _scan_velociraptor():
     from services.proc import run_command
+    # `clients` holds each client's collections -- which the flow deletion does
+    # remove -- alongside the client record it keeps, so this is still an upper
+    # bound, but a far tighter one than the whole datastore.
+    paths = " ".join(f"/var./{p}" for p in _VELO_PURGED_PATHS)
     r = run_command(
-        "docker exec intact_velociraptor sh -c 'du -sb --exclude=public /var./ 2>/dev/null || echo 0'",
+        f"docker exec intact_velociraptor sh -c 'du -sb {paths} 2>/dev/null || echo 0'",
         logger=None,
     )
-    try:
-        size = int((r.get("stdout") or "0").split()[0])
-    except Exception:
-        size = 0
-    return size, "hunts + flows + uploads + notebooks (excludes /var./public tools)"
+    size = 0
+    for line in (r.get("stdout") or "").splitlines():
+        try:
+            size += int(line.split()[0])
+        except (ValueError, IndexError):
+            continue
+    return size, "hunts + flows + monitoring (clients and server artifacts are kept)"
 
 
 def _es_base() -> str:
@@ -1607,6 +1624,20 @@ def _purge_system_journal(_):
 # blanket "purge everything" must never sweep it away by accident.
 _EXCLUDE_FROM_ALL = {"system_workflows", "containerd_orphans"}
 
+# Sections whose bytes are ALREADY COUNTED by another section. The dialog summed
+# every ticked row, so selecting all of them promised the same disk twice: measured
+# on a live purge, the estimate said ~41GB and 24GB came back. Docker Deep Prune
+# scans Images + Build Cache reclaimable -- literally the same numbers those two
+# rows show (screenshot: "Docker Images 185.2 MB" beside "Docker Deep Prune
+# 185.2 MB") -- and then frees 0 B when it runs after them, because they already
+# took it. It does NOT cover volumes: deep prune leaves them alone by design.
+#
+# Declared here rather than in the frontend so the sum and the purge agree, and so
+# a new overlapping section is one line rather than a UI change.
+_SECTION_COVERS = {
+    "docker_deep": ("docker_images", "docker_build_cache"),
+}
+
 _PURGE_SECTIONS = (
     # System operation history first — but excluded from "Select all" (above).
     ("system_workflows",   "System Operation History (upgrades, purges, …)", _scan_system_workflows, _purge_system_workflows),
@@ -1662,6 +1693,8 @@ def list_purge_sections():
             "size_label": _fmt_size(int(size or 0)),
             "detail": detail,
             "exclude_from_all": sid in _EXCLUDE_FROM_ALL,
+            # ids whose size this row already includes — the UI must not add both
+            "covers": list(_SECTION_COVERS.get(sid, ())),
         })
         total += int(size or 0)
     return jsonify({

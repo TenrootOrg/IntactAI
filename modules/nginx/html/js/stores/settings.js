@@ -460,10 +460,28 @@ document.addEventListener('alpine:init', () => {
         },
 
         /** Sum of currently-checked sections — shown live in the footer. */
+        /** Ids already accounted for by another SELECTED section. Docker Deep
+         *  Prune reports Images + Build Cache reclaimable — the same bytes those
+         *  two rows show — so ticking all three promised the same disk twice. A
+         *  live purge estimated ~41GB and freed 24GB, and Deep Prune's own line
+         *  read "Freed 0 B" because the rows above it had already taken it. */
+        _purgeCovered(selectedOnly) {
+            const covered = new Set();
+            for (const s of (this.purgeSections || [])) {
+                if (selectedOnly && !this.purgeSelected[s.id]) continue;
+                for (const id of (s.covers || [])) covered.add(id);
+            }
+            return covered;
+        },
+
+        _purgeSum(rows, covered) {
+            return rows.reduce(
+                (acc, s) => acc + (covered.has(s.id) ? 0 : (s.size_bytes || 0)), 0);
+        },
+
         purgeSelectedTotalBytes() {
-            return (this.purgeSections || [])
-                .filter(s => this.purgeSelected[s.id])
-                .reduce((acc, s) => acc + (s.size_bytes || 0), 0);
+            const rows = (this.purgeSections || []).filter(s => this.purgeSelected[s.id]);
+            return this._purgeSum(rows, this._purgeCovered(true));
         },
 
         _fmtBytes(b) {
@@ -481,9 +499,10 @@ document.addEventListener('alpine:init', () => {
          *  header strip so the operator sees the "if I purge
          *  everything" number before they tick anything. */
         purgeGrandTotalLabel() {
-            const total = (this.purgeSections || [])
-                .reduce((acc, s) => acc + (s.size_bytes || 0), 0);
-            return this._fmtBytes(total);
+            // Same de-duplication as the selected total: this is the "if I purge
+            // everything" number, so every overlap applies.
+            return this._fmtBytes(
+                this._purgeSum(this.purgeSections || [], this._purgeCovered(false)));
         },
 
         purgeSelectedCount() {

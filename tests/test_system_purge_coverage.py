@@ -106,3 +106,61 @@ class TheDialogMustNotUnderreportWhatItFrees(unittest.TestCase):
         self.assertIn("fusion_graphs", body,
                       "the workflows purge deletes the sidecars but nothing "
                       "counted them, so the dialog under-reported")
+
+
+class TheEstimateMustNotPromiseTheSameDiskTwice(unittest.TestCase):
+    """Measured on a live purge: the dialog said ~41 GB and 24 GB came back.
+
+    Docker Deep Prune scans Images + Build Cache reclaimable -- literally the same
+    numbers those two rows display (a screenshot showed "Docker Images 185.2 MB"
+    beside "Docker Deep Prune 185.2 MB") -- and the modal summed every ticked row.
+    Deep Prune's own log line then read "Freed 0 B", because the rows above it had
+    already taken the bytes it was counting.
+    """
+
+    def test_the_overlap_is_declared_in_one_place(self):
+        s = _src()
+        self.assertIn("_SECTION_COVERS", s)
+        body = s.split("_SECTION_COVERS = {")[1].split("}")[0]
+        self.assertIn("docker_deep", body)
+        self.assertIn("docker_images", body)
+        self.assertIn("docker_build_cache", body)
+
+    def test_deep_prune_does_not_claim_volumes(self):
+        """Its own UI text says it leaves volumes alone; the scan agrees, so
+        listing them as covered would under-report instead."""
+        body = _src().split("_SECTION_COVERS = {")[1].split("}")[0]
+        self.assertNotIn("docker_volumes", body)
+
+    def test_the_api_tells_the_ui_about_the_overlap(self):
+        self.assertIn('"covers"', _src())
+
+    def test_the_ui_subtracts_covered_rows_from_both_totals(self):
+        js = _src(os.path.join(ROOT, "modules/nginx/html/js/stores/settings.js"))
+        self.assertIn("_purgeCovered", js)
+        for fn in ("purgeSelectedTotalBytes", "purgeGrandTotalLabel"):
+            body = js.split(fn)[1][:400]
+            self.assertIn("_purgeSum", body, f"{fn} still sums naively")
+
+
+class TheVelociraptorEstimateMustMatchWhatIsRemoved(unittest.TestCase):
+    """It `du`-ed the whole datastore minus /public, but the purge removes
+    collected hunt/flow/monitoring data and KEEPS EVERY CLIENT by design. Live:
+    estimated 6.8 GB, freed 4.5 GB, and 2.3 GB was still listed afterwards --
+    1.3 GB of it server_artifacts/Custom.Elastic.Flows.Upload, which no section
+    touches at all."""
+
+    def test_the_scan_no_longer_measures_the_whole_datastore(self):
+        body = _src().split("def _scan_velociraptor")[1].split("\ndef ")[0]
+        self.assertNotIn("--exclude=public", body,
+                         "back to du-ing everything, which counts server_artifacts "
+                         "and client records the purge never deletes")
+
+    def test_server_artifacts_are_not_counted(self):
+        body = _src().split("def _scan_velociraptor")[1].split("\ndef ")[0]
+        self.assertNotIn("server_artifacts", body.split('"""')[-1])
+
+    def test_the_detail_string_says_what_is_kept(self):
+        body = _src().split("def _scan_velociraptor")[1].split("\ndef ")[0]
+        self.assertIn("kept", body,
+                      "the operator must be told clients/server artifacts survive")
