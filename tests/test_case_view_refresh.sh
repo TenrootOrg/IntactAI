@@ -163,7 +163,7 @@ const build = (lookup, all) => {
 
   // Mounted -- the normal path must be untouched by that guard.
   const vals = {'#cf-logo':{files:[]},'#cf-start':{value:'2026-08-01'},'#cf-end':{value:''},
-    '#cf-sev':{value:'high'},'#cf-aud':{value:'both'},'#cf-cust':{value:'Acme'},
+    '#cf-sev':{value:'high'},'#cf-alt':{value:'macro'},'#cf-cust':{value:'Acme'},
     '#cf-tlp':{value:'AMBER'},'#cf-mp':{value:'steer'},'#cf-maxent':{value:'500000'},
     '#cf-maxident':{value:''},
     '#cf-mask':{checked:false},'#cf-maskpat':{value:''}};
@@ -174,6 +174,11 @@ const build = (lookup, all) => {
     else if (cfg.master_prompt !== 'steer') fail('a mounted rail is read in full', 'master_prompt lost');
     else if ('air_gap_analysis' in cfg) fail('the rail no longer posts removed settings', 'air_gap_analysis is back');
     else if ('auto_check_new_data' in cfg) fail('the rail no longer posts removed settings', 'auto_check_new_data is back');
+    // Audience was removed (every report is written for both readers now) and the
+    // report-type override took its place in the same column. This test caught the
+    // swap by throwing on the missing input, which is what it is for.
+    else if ('audience' in cfg) fail('the rail no longer posts removed settings', 'audience is back');
+    else if (cfg.report_altitude !== 'macro') fail('a mounted rail is read in full', 'report_altitude=' + cfg.report_altitude);
     else ok('a mounted rail is still read in full, and posts no removed settings');
   } catch (e) {
     fail('a mounted rail is still read in full', 'threw ' + e.message);
