@@ -271,7 +271,8 @@ def zoom_targets(graph, *, window=None, min_severity="informational",
         # months and swallow phases that started inside it -- overlapping windows,
         # which breaks "click this window to zoom" outright. Keep only the hits
         # inside the appearance period; the recurrences are stated once in
-        # persistent_activities(), which is the whole point of separating them.
+        # the "Activity outside the analysed phases" timeline, which is where
+        # everything no phase covers is accounted for.
         clusters = []
         for b in buckets:
             lo, hi = b[0][0], b[-1][0]
@@ -402,59 +403,6 @@ def analysable(zt):
     return [z for z in zt if not z.get("rollup") and _substantial(z)]
 
 
-def persistent_activities(graph, *, window=None, min_severity="informational",
-                          min_repeats=2, limit=15):
-    """Behaviours that RECUR, stated once with their span, count and host spread.
-
-    On a live 757-day case, 148 findings were only 63 distinct activities and 32
-    recurring ones carried 114 of them -- 77%. Whatever the phase grouping, a
-    behaviour seen 8 times over 413 days on 8 hosts belongs to several phases at
-    once, and repeating it in each is how the report drowned. State it here once;
-    the phases then carry what was NEW.
-    """
-    _, findings = scope(graph, window=window, min_severity=min_severity)
-    norm = _title_normaliser(graph)
-    acts = {}
-    for f in findings:
-        if f.ts:
-            acts.setdefault(norm(f.title), []).append(f)
-    rows = []
-    for title, fs in acts.items():
-        if len(fs) < min_repeats:
-            continue
-        ts = sorted(keys.to_utc_dt(x.ts) for x in fs)
-        hosts = sorted({_host_label(graph, a) for x in fs for a in (x.asset_ids or [])})
-        rows.append({"title": title, "count": len(fs), "hosts": hosts,
-                     "span_days": (ts[-1] - ts[0]).days,
-                     "first": ts[0].strftime("%Y-%m-%dT%H:%M:%SZ"),
-                     "last": ts[-1].strftime("%Y-%m-%dT%H:%M:%SZ"),
-                     "severity": max((x.severity for x in fs), key=lambda v: sev.rank(v))})
-    rows.sort(key=lambda r: -(r["span_days"] * 2 + r["count"] * 5 + len(r["hosts"]) * 10))
-    return rows[:limit]
-
-
-def persistent_activities_md(graph, *, window=None, min_severity="informational",
-                             rows=None) -> str:
-    """The persistence table. Empty string when nothing recurs — a table of one-offs
-    says nothing a phase section has not already said."""
-    rows = persistent_activities(graph, window=window,
-                                 min_severity=min_severity) if rows is None else rows
-    if not rows:
-        return ""
-    out = ["## Persistent activity", "",
-           "_Behaviours that RECUR across the case, each stated once. A long span "
-           "here means the activity was present throughout, not that it happened "
-           "once — these are the campaign's constants, while the phases above carry "
-           "what was new._", "",
-           "| Activity | Times | Span | Hosts | Severity | First → Last |",
-           "|---|---|---|---|---|---|"]
-    for r in rows:
-        hs = ", ".join(r["hosts"][:4]) + ("…" if len(r["hosts"]) > 4 else "")
-        out.append(f"| {r['title']} | ×{r['count']} | {r['span_days']}d | {hs} | "
-                   f"{r['severity']} | {r['first'][:10]} → {r['last'][:10]} |")
-    return "\n".join(out) + "\n"
-
-
 def phases_at_a_glance_md(zt, names=None) -> str:
     """Every phase on one screen, so the reader can choose before reading any of them.
 
@@ -510,14 +458,15 @@ def report_mode_banner(altitude, zt, *, mode="time", total_findings=None) -> str
                else "grouped by periods of continuous activity")
     # ACTIVITY mode deliberately leaves later recurrences OUT of the phases -- a
     # phase is the moment something appeared. Those findings are not lost, they are
-    # in Persistent activity, but the banner must say so instead of implying the
-    # phases account for everything. Measured: 89 of 145 in phases, 56 recurrences.
+    # in "Activity outside the analysed phases", but the banner must say so instead
+    # of implying the phases account for everything.
     if total_findings:
         inphase = sum(z["finding_count"] for z in zt)
         rec = total_findings - inphase
         if rec > 0:
             extra += (f" {rec} further finding(s) are later repeats of behaviours that "
-                      f"first appeared in these phases — see **Persistent activity**.")
+                      f"first appeared in these phases — see **Activity outside the "
+                      f"analysed phases**.")
     return (f"_**Segmented report** — broad scope, split into {phases} phase(s) "
             f"{grouped}. Each phase below is analysed on its own and carries its own "
             f"timeline; open one to go deeper.{extra}_")

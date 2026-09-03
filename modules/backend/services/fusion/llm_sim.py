@@ -1478,10 +1478,6 @@ def generate_report(graph, *, window=None, min_severity="informational",
                         max_groups=render.TIMELINE_MAX_GROUPS,
                         heading="**Timeline — this phase**",
                         note=f"{len(_pf)} finding(s) in this phase, in order"))
-                pa = render.persistent_activities_md(graph, window=window,
-                                                     min_severity=min_severity)
-                if pa:
-                    parts.append(pa)
                 # The old "Suspicious Timeframes & Clusters" table is NOT appended:
                 # it is the same rows, windows and counts as "Phases at a glance",
                 # which now carries its ATT&CK column too. Printing both was the same
