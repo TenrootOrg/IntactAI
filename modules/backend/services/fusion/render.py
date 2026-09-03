@@ -1939,7 +1939,8 @@ def timeline_md(graph, findings, *, window=None, eff_detail="summary",
 
 def facts_md(graph, *, window=None, min_severity="informational", initial_access=None,
              dispositions=None, validations=None, detail="auto", narrated=False,
-             timeline_findings=None, timeline_heading=None, timeline_note=None) -> str:
+             timeline_findings=None, timeline_heading=None, timeline_note=None,
+             detail_reason=None) -> str:
     """DETERMINISTIC report body — Priority Hosts table, cross-host correlation,
     analyst validations, ONE flat chronological timeline, IOC appendix, MITRE,
     recommendations. Appended verbatim to every report; NEVER sent to the LLM.
@@ -1950,8 +1951,12 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
     assets, findings = scope(graph, window=window, min_severity=min_severity)
     eff_detail, reason = _resolve_detail(graph, detail, window=window,
                                          min_severity=min_severity)
+    # A CALLER THAT FORCED THE LEVEL MUST SAY SO. A segmented report overrides detail
+    # to "summary" for this shared body (the depth lives in the per-phase sections),
+    # and _resolve_detail cannot tell that apart from an operator setting it, so the
+    # footer credited the operator with a choice they never made.
     out: list[str] = []
-    out.append(f"_Report detail: **{eff_detail}** ({reason})._\n")
+    out.append(f"_Report detail: **{eff_detail}** ({detail_reason or reason})._\n")
 
     # ---- Attack Assessment (infrastructure-wide story from the timeline) ----
     # Suppressed when the model wrote the narrative: it reconstructs the same

@@ -478,3 +478,31 @@ class TechniqueIdsMustReadAsNames(unittest.TestCase):
     def test_an_unknown_technique_is_empty_not_dangling(self):
         """Must be falsy so the caller prints the bare id, never 'T9999 — '."""
         self.assertEqual(render._mitre_name("T9999"), "")
+
+
+class TheDetailFooterMustNotInventProvenance(unittest.TestCase):
+    """The footer states how deep the report is. It used to render
+    "Report detail: **explicit** (explicit)", and on a segmented report it credited
+    the operator with a "set for this case" choice they never made -- the macro path
+    forces summary for the shared body because the depth lives in the phase sections."""
+
+    def _g(self):
+        g = _graph(2, _burst("a", 0, 3))
+        return g
+
+    def test_an_explicit_setting_gives_a_reason_not_the_word_again(self):
+        eff, reason = render._resolve_detail(self._g(), "explicit")
+        self.assertEqual(eff, "explicit")
+        self.assertNotEqual(reason, "explicit", "the reason must say something")
+
+    def test_a_caller_supplied_reason_wins(self):
+        md = render.facts_md(self._g(), detail="summary",
+                             detail_reason="segmented report — depth is in the "
+                                           "per-phase sections above")
+        self.assertIn("segmented report — depth is in the per-phase sections", md)
+        self.assertNotIn("(set for this case)", md)
+
+    def test_without_one_the_resolved_reason_is_used(self):
+        md = render.facts_md(self._g(), detail="auto")
+        self.assertIn("Report detail:", md)
+        self.assertIn("auto —", md)

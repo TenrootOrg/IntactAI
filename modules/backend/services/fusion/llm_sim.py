@@ -1406,7 +1406,11 @@ def generate_report(graph, *, window=None, min_severity="informational",
             facts = render.facts_md(graph, window=window, min_severity=min_severity,
                                     initial_access=initial_access,
                                     dispositions=dispositions, validations=validations,
-                                    detail=eff_detail, narrated=True, **_tl_kw)
+                                    detail=eff_detail, narrated=True,
+                                    detail_reason=("segmented report — depth is in "
+                                                   "the per-phase sections above"
+                                                   if altitude == "macro" else None),
+                                    **_tl_kw)
             # Deterministic heat-map for a macro report (the LLM was told NOT to write
             # this section) — always grounded, always matches the zoom cards.
             heatmap, tfnote = "", ""
