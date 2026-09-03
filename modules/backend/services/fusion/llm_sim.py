@@ -394,12 +394,28 @@ REPORT_SYSTEM_PROMPT_MACRO = (
     "this reads as ONE campaign, SEVERAL unrelated issues, or mostly benign/administrative "
     "noise. Business language. Give overall confidence (HIGH/MODERATE/LOW).\n"
     "\n"
+    "## Timeframes\n"
+    "The payload's `timeframes` list is the case's distinct activity windows: NUMBERED, "
+    "ranked by risk, each with its window, hosts, finding count and the finding titles "
+    "inside it. These windows are FIXED. Write one section per entry, in the given order "
+    "and no others, each headed EXACTLY `### Timeframe N — <short name for what this "
+    "window IS>` with N copied from the payload. Under each:\n"
+    "  - **What happened** — 1-3 sentences on the activity in THIS window only, from the "
+    "findings listed under it. Name the hosts and accounts.\n"
+    "  - **Why it matters** — one line: what it would mean if confirmed.\n"
+    "  - **Investigate?** — YES or NO, and the single question a focused analysis of "
+    "this window should answer.\n"
+    "Do NOT put dates in the heading and do NOT write a table: the deterministic "
+    "timeframe table (window, hosts, counts) is inserted under this section for you. "
+    "Never write a Timeframe number that is not in the payload; never merge or split "
+    "windows. This is how the analyst decides where to zoom — be decisive.\n"
+    "\n"
     "## Candidate Scenarios\n"
     "The 2-4 most plausible intrusion/abuse scenarios the evidence supports, highest risk "
     "first. For each: a bolded title, then\n"
     "  - **What** — the hypothesis in one line (the story it would be if true).\n"
-    "  - **Where/When** — the specific hosts (or host-role cluster) and the time-window it "
-    "lives in, from the graph.\n"
+    "  - **Where/When** — the specific hosts (or host-role cluster) and the Timeframe "
+    "number(s) it lives in.\n"
     "  - **Evidence** — the findings / cross_host links / identities that suggest it, cited.\n"
     "  - **Confidence** — HIGH/MODERATE/LOW and what drives it.\n"
     "  - **Zoom** — the exact scope to narrow to (which hosts + which time window) to confirm "
@@ -407,8 +423,8 @@ REPORT_SYSTEM_PROMPT_MACRO = (
     "Rank by risk to the organisation, not finding volume. If the evidence genuinely shows "
     "only benign/administrative activity, say so and STOP — never manufacture scenarios.\n"
     "\n"
-    "(A deterministic 'Suspicious Timeframes & Clusters' heat-map is appended after your "
-    "text — do NOT write that section yourself.)\n"
+    "(The deterministic timeframe table is inserted under ## Timeframes for you — do "
+    "NOT write a table or a 'Suspicious Timeframes' section yourself.)\n"
     "\n"
     "## Other severe findings\n"
     "Account for EVERY finding whose severity is high or above that the scenarios "
@@ -1123,15 +1139,27 @@ def generate_report(graph, *, window=None, min_severity="informational",
                                     detail=eff_detail, narrated=True)
             # Deterministic heat-map for a macro report (the LLM was told NOT to write
             # this section) — always grounded, always matches the zoom cards.
-            heatmap = (render.suspicious_timeframes_md(graph, window=window,
-                                                       min_severity=min_severity)
-                       if altitude == "macro" else "")
+            heatmap, _tf_dropped = "", []
+            if altitude == "macro":
+                _zt = render.zoom_targets(graph, window=window, min_severity=min_severity)
+                heatmap = render.suspicious_timeframes_md(graph, window=window,
+                                                          min_severity=min_severity, zt=_zt)
+                # The model wrote one section per numbered window; put the facts
+                # (our table) under its heading, and drop any number it invented.
+                narrative, _tf_dropped, _ins = render.merge_timeframes_section(
+                    narrative, heatmap, {z["n"] for z in _zt})
+                if _ins:
+                    heatmap = ""              # already inside the narrative
+            tfnote = ("\n\n> ⚠️ **Grounding note:** the narrative referenced timeframe(s) "
+                      + ", ".join(str(n) for n in _tf_dropped)
+                      + " that do not exist in this case; those sections were removed.\n"
+                      if _tf_dropped else "")
             # Real values throughout: masking protected the data only in transit to
             # the LLM; the operator's report is reverted (narrative) + never-masked facts.
             md = (f"# Incident Case Report — {case_name}\n\n"
                   f"{render.report_header(graph, window=window, min_severity=min_severity)}\n\n"
                   f"{narrative}\n\n"
-                  + gnote
+                  + gnote + tfnote
                   + (heatmap + "\n" if heatmap else "")
                   + f"{facts}"
                   "\n\n---\n_Narrative by live LLM; fact tables deterministic._\n")

@@ -496,6 +496,14 @@ def get_zoom_targets(case_id):
     ms = d.get("min_severity") or "informational"
     altitude, reason = render._resolve_altitude(g, window=win, min_severity=ms)
     targets = render.zoom_targets(g, window=win, min_severity=ms) if altitude == "macro" else []
+    if targets:
+        # The model named each window in the report ("### Timeframe 3 — Ransomware
+        # prep & C2"); carry that onto the card so it says what the window IS, not
+        # only when it was. Absent (deterministic report, or not yet narrated) the
+        # card keeps its date/count title.
+        names = render.timeframe_names_from_report(d.get("report_md") or "")
+        for z in targets:
+            z["name"] = names.get(z.get("n"))
     return jsonify({"case_id": case_id, "altitude": altitude, "reason": reason,
                     "targets": targets})
 

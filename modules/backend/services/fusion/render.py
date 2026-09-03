@@ -150,6 +150,15 @@ def _resolve_detail(graph, detail, *, window=None, min_severity="informational")
 # at 3.4-4.5x lower output cost throughout. Span uses EVIDENCE times (min/max
 # finding ts), never the window bounds — the default window is 10 years.
 MACRO_SPAN_DAYS = 90
+# How many activity windows a macro report MAPS. One list feeds the zoom cards, the
+# deterministic timeframe table AND the model's per-timeframe sections, so all three
+# agree by construction. The cards used to take 4 and the table 6, so rows 5-6 of the
+# table had no card to click.
+MACRO_TIMEFRAMES = 6
+# A window is worth a section of its own -- and counts toward "this case has distinct
+# phases" -- only when it holds real material: a few findings, or anything high or
+# above. Two single-medium blips ten days apart are not a campaign map.
+MIN_SUBSTANTIAL_FINDINGS = 3
 
 
 def _evidence_span_days(findings) -> int:
@@ -160,7 +169,7 @@ def _evidence_span_days(findings) -> int:
     return (hi - lo).days if (lo and hi) else 0
 
 
-def zoom_targets(graph, *, window=None, min_severity="informational", n=4, gap_days=7):
+def zoom_targets(graph, *, window=None, min_severity="informational", n=MACRO_TIMEFRAMES, gap_days=7):
     """Deterministic macro->micro zoom presets: cluster the in-scope findings into
     contiguous activity WINDOWS (split where the gap between findings exceeds
     gap_days), each a {hosts, window} the operator can one-click re-scope to and
@@ -202,6 +211,22 @@ def zoom_targets(graph, *, window=None, min_severity="informational", n=4, gap_d
         end = (hi + _dt.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
         labels = sorted(set(hosts.values()))
         span_h = round((hi - lo).total_seconds() / 3600, 1)
+        # The distinct detections inside this window, highest severity first, with
+        # the "on <host>" tail stripped so one rule across hosts is one title. This
+        # is what the model narrates a window FROM: it gets the window as a fixed,
+        # numbered anchor plus what is in it, and can describe but never invent one.
+        def _bare(t):
+            for h in labels:
+                if t.endswith(f" on {h}"):
+                    return t[: -(len(h) + 4)]
+            return t
+        seen_t, titles = set(), []
+        for f in sorted(fs, key=lambda x: -sev.rank(x.severity)):
+            t = _bare(f.title or "")
+            if t and t not in seen_t:
+                seen_t.add(t); titles.append(t)
+            if len(titles) >= 10:
+                break
         title = (f"{lo.strftime('%Y-%m-%d')} — {len(labels)} host"
                  f"{'' if len(labels) == 1 else 's'}, {len(fs)} finding"
                  f"{'' if len(fs) == 1 else 's'}"
@@ -211,20 +236,44 @@ def zoom_targets(graph, *, window=None, min_severity="informational", n=4, gap_d
             "cross_host": cross, "mitre": mitre,
             "hosts": sorted(hosts.keys()), "host_labels": labels,
             "window": {"start": start, "end": end}, "span_hours": span_h,
+            "top_titles": titles,
             "_risk": (sev.rank(top_sev) * 100 + cross * 10 + len(fs)),
         })
     out.sort(key=lambda z: -z["_risk"])
     for z in out:
         z.pop("_risk", None)
-    return out[:n]
+    out = out[:n]
+    # Numbered AFTER ranking and truncation: "Timeframe 3" means the same window on
+    # the card, in the table and in the narrative, or the analyst zooms into the
+    # wrong one.
+    for i, z in enumerate(out, 1):
+        z["n"] = i
+    return out
 
 
-def suspicious_timeframes_md(graph, *, window=None, min_severity="informational", n=6):
+def _substantial(z) -> bool:
+    return (z.get("finding_count", 0) >= MIN_SUBSTANTIAL_FINDINGS
+            or sev.rank(z.get("severity", "informational")) >= sev.rank("high"))
+
+
+def timeframes_for_payload(zt):
+    """The fixed, numbered anchors the macro model narrates from. Compact on purpose:
+    the findings themselves are already in the payload; this is the index that says
+    which of them belong to which window."""
+    return [{"n": z["n"], "window": z["window"], "hosts": z.get("host_labels") or [],
+             "finding_count": z["finding_count"], "cross_host": z.get("cross_host", 0),
+             "severity": z["severity"], "mitre": z.get("mitre") or [],
+             "findings": z.get("top_titles") or []} for z in zt]
+
+
+def suspicious_timeframes_md(graph, *, window=None, min_severity="informational",
+                             n=MACRO_TIMEFRAMES, zt=None):
     """Deterministic 'Suspicious Timeframes & Clusters' heat-map for a macro report,
     rendered from zoom_targets — so it is ALWAYS accurate and matches the clickable
     zoom cards exactly (the LLM no longer writes this section; feeding it the clusters
     made it confabulate — see scratch_eval S4). Returns '' for a focused case."""
-    zt = zoom_targets(graph, window=window, min_severity=min_severity, n=n)
+    if zt is None:
+        zt = zoom_targets(graph, window=window, min_severity=min_severity, n=n)
     if not zt:
         return ""
     rows = ["## Suspicious Timeframes & Clusters", "",
@@ -233,6 +282,7 @@ def suspicious_timeframes_md(graph, *, window=None, min_severity="informational"
             "| # | Window (UTC) | Hosts | Findings | Severity | ATT&CK |",
             "|---|---|---|---|---|---|"]
     for i, z in enumerate(zt, 1):
+        i = z.get("n", i)
         w = z["window"]
         labels = z.get("host_labels") or []
         hosts = ", ".join(labels[:6]) + ("…" if len(labels) > 6 else "")
@@ -241,6 +291,52 @@ def suspicious_timeframes_md(graph, *, window=None, min_severity="informational"
         rows.append(f"| {i} | {w['start']} → {w['end']} | {hosts} | "
                     f"{z['finding_count']}{ch} | {z['severity']} | {mitre} |")
     return "\n".join(rows) + "\n"
+
+
+import re as _tf_re
+_TF_HEADING = _tf_re.compile(r"^###\s*Timeframe\s+(\d+)\s*[—–\-:]\s*(.+?)\s*$", _tf_re.M)
+
+
+def timeframe_names_from_report(md) -> dict:
+    """{n: name} for every `### Timeframe N — name` heading the model wrote. The
+    zoom cards use it so a card says what its window IS, not just when it was."""
+    return {int(n): name.strip().strip("*").strip()
+            for n, name in _TF_HEADING.findall(md or "")}
+
+
+def merge_timeframes_section(narrative, table_md, valid_ns):
+    """Put the deterministic timeframe table under the model's `## Timeframes`
+    heading, and drop any `### Timeframe N` block whose N is not a real window.
+
+    The windows are OURS (zoom_targets); only the words are the model's. Feeding a
+    model the clusters and letting it write the table made it confabulate dates
+    (scratch_eval S4), which is why the table stayed deterministic. Numbered
+    anchors let it narrate each window without owning the facts -- and a number
+    that matches nothing is exactly the confabulation this guards against.
+
+    Returns (markdown, dropped_numbers, table_was_inserted)."""
+    lines = (narrative or "").split("\n")
+    kept, dropped, skipping = [], [], False
+    for ln in lines:
+        m = _TF_HEADING.match(ln)
+        if m:
+            n = int(m.group(1))
+            if n not in valid_ns:
+                skipping = True; dropped.append(n); continue
+            skipping = False
+        elif ln.startswith("## ") or ln.startswith("### "):
+            skipping = False
+        if not skipping:
+            kept.append(ln)
+    md = "\n".join(kept)
+    inserted = False
+    if table_md:
+        h = _tf_re.search(r"^##\s*Timeframes\s*$", md, _tf_re.M)
+        if h:
+            body = table_md.split("\n", 1)[1] if table_md.startswith("## ") else table_md
+            md = md[:h.end()] + "\n\n" + body.strip("\n") + "\n" + md[h.end():]
+            inserted = True
+    return md, dropped, inserted
 
 
 def _resolve_altitude(graph, *, window=None, min_severity="informational"):
@@ -259,9 +355,25 @@ def _resolve_altitude(graph, *, window=None, min_severity="informational"):
     hosts = len(in_scope) if findings else len(assets)
     nf = len(findings)
     span = _evidence_span_days(findings)
-    reason = f"{hosts} hosts, {nf} findings, {span}d span"
-    if hosts > EXPLICIT_MAX_HOSTS or nf > EXPLICIT_MAX_FINDINGS or span > MACRO_SPAN_DAYS:
-        return "macro", reason
+    # The SHAPE of the activity in time, not just its length. A macro report is a
+    # map of distinct phases; it is the right altitude when there ARE distinct
+    # phases. Span alone got this wrong in both directions: a two-year case whose
+    # findings form one continuous cluster was forced to macro (nothing to map, and
+    # the operator had to override to explicit by hand), while two real phases 60
+    # days apart stayed focused because 60 < 90. Clustering answers the actual
+    # question -- and it is the same clustering the zoom cards use, so narrowing to
+    # any one window yields one cluster and drops to focused: the loop closes.
+    zt = zoom_targets(graph, window=window, min_severity=min_severity)
+    windows = len(zt)
+    substantial = sum(1 for z in zt if _substantial(z))
+    reason = (f"{hosts} hosts, {nf} findings, {windows} activity window(s) "
+              f"({substantial} substantial), {span}d span")
+    if hosts > EXPLICIT_MAX_HOSTS or nf > EXPLICIT_MAX_FINDINGS:
+        return "macro", reason                      # too big to narrate explicitly
+    if substantial >= 2:
+        return "macro", reason                      # distinct phases: map them
+    if windows >= 2 and span > MACRO_SPAN_DAYS:
+        return "macro", reason                      # sparse but long: still a map
     return "focused", reason
 
 
@@ -496,7 +608,8 @@ def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"
                 fd["evidence"] = ev
         return fd
 
-    return {
+    altitude = _resolve_altitude(graph, window=window, min_severity=min_severity)[0]
+    out = {
         "case_id": graph.case_id,
         "report_detail": eff_detail,
         # Scope shape the model reads to know its ALTITUDE (macro triage map vs one
@@ -517,8 +630,7 @@ def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"
             "identities_shown": len(identities_shown),
             "cross_host": sum(1 for f in findings if f.kind == "cross_host"),
             "evidence_span_days": _evidence_span_days(findings),
-            "altitude": _resolve_altitude(graph, window=window,
-                                          min_severity=min_severity)[0],
+            "altitude": altitude,
         },
         "assets": [{"id": a.id, "host": a.label, "severity": a.severity} for a in assets],
         "findings": [_fd(f) for f in findings],
@@ -549,6 +661,12 @@ def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"
         # actionable: a bare hash is not.
         "file_hashes": {fh: nm for fh, nm in _hash_name_map(graph).items()},
     }
+    if altitude == "macro":
+        # Fixed, numbered windows -- the same list as the zoom cards -- so the
+        # model writes one section per real window and cannot invent one.
+        out["timeframes"] = timeframes_for_payload(
+            zoom_targets(graph, window=window, min_severity=min_severity))
+    return out
 
 
 # Hosts whose ROLE matters more than their finding count. A CA or DC with a
