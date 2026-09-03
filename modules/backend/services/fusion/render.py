@@ -204,12 +204,20 @@ def _title_normaliser(graph):
     return norm
 
 
-def _split_oversized(cl):
+def _split_oversized(cl, *, scale_free=False):
     """Recursively cut a cluster at its WIDEST internal gap until each part is a
     plausible phase. The widest gap is the most natural seam the data offers -- far
-    better than a second fixed threshold, which just moves the arbitrariness."""
+    better than a second fixed threshold, which just moves the arbitrariness.
+
+    `scale_free` drops the ABSOLUTE size and seam floors and keeps only the relative
+    seam test. Those floors are all calibrated in days, which is right for a case
+    spanning months and meaningless inside a two-minute burst: on a 19-finding,
+    2-minute window they returned one cluster, so forcing Macro produced a "map" of a
+    single phase -- strictly worse than the focused report it replaced. The ratio test
+    is the part that actually distinguishes a seam from a rhythm, and it works at any
+    scale, so forced segmentation keeps it and discards the rest."""
     span = (cl[-1][0] - cl[0][0]).days
-    if len(cl) <= SPLIT_MAX_FINDINGS and span <= SPLIT_MAX_SPAN_DAYS:
+    if not scale_free and len(cl) <= SPLIT_MAX_FINDINGS and span <= SPLIT_MAX_SPAN_DAYS:
         return [cl]
     if len(cl) < 2 * SPLIT_MIN_KEEP:
         return [cl]
@@ -225,13 +233,17 @@ def _split_oversized(cl):
     # to stand out against the group's own rhythm before believing in it.
     allg = sorted(g for g, _ in gaps)
     median = allg[len(allg) // 2]
-    if widest < max(SPLIT_MIN_SEAM_SECONDS, median * SPLIT_SEAM_RATIO):
+    floor = median * SPLIT_SEAM_RATIO
+    if not scale_free:
+        floor = max(SPLIT_MIN_SEAM_SECONDS, floor)
+    if widest < floor or widest <= 0:
         return [cl]
-    return _split_oversized(cl[:i + 1]) + _split_oversized(cl[i + 1:])
+    return (_split_oversized(cl[:i + 1], scale_free=scale_free)
+            + _split_oversized(cl[i + 1:], scale_free=scale_free))
 
 
 def zoom_targets(graph, *, window=None, min_severity="informational",
-                 n=MACRO_TIMEFRAMES, gap_days=7, mode="time"):
+                 n=MACRO_TIMEFRAMES, gap_days=7, mode="time", force_phases=False):
     """Deterministic phases of the case: contiguous groups of findings, each a
     {hosts, window} the operator can one-click re-scope to. No LLM — grounded
     straight from the finding timestamps, so the scope is always real.
@@ -297,7 +309,10 @@ def zoom_targets(graph, *, window=None, min_severity="informational",
         if cur:
             clusters.append(cur)
         # One 78-finding / 75-day window next to one of 2 findings is not a map.
-        clusters = [part for cl in clusters for part in _split_oversized(cl)]
+        # Forcing Macro asks for the map at whatever scale the data actually has, so
+        # the day-calibrated floors come off (see _split_oversized).
+        clusters = [part for cl in clusters
+                    for part in _split_oversized(cl, scale_free=force_phases)]
 
     out = []
     for cl in clusters:
@@ -313,10 +328,18 @@ def zoom_targets(graph, *, window=None, min_severity="informational",
         cross = sum(1 for f in fs if f.kind == "cross_host")
         mitre = sorted({m for f in fs for m in (f.mitre or [])})[:6]
         lo, hi = min(times), max(times)
-        # pad the window by an hour each side so boundary events aren't clipped
+        # Pad the window so re-scoping to it cannot clip its own boundary events --
+        # but PROPORTIONALLY. A flat hour each side is nothing next to a phase
+        # spanning days, and 3600x the span of one measured in seconds: on a
+        # 2-minute burst split into five phases, every window grew to two hours and
+        # they all overlapped, so "Analyze this scope" on any card pulled in all the
+        # others. Quarter of the phase's own span, floored at 5s so a same-second
+        # cluster still has a window, capped at the original hour.
         import datetime as _dt
-        start = (lo - _dt.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
-        end = (hi + _dt.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
+        pad = _dt.timedelta(seconds=min(3600.0,
+                                        max(5.0, (hi - lo).total_seconds() * 0.25)))
+        start = (lo - pad).strftime("%Y-%m-%dT%H:%M:%S")
+        end = (hi + pad).strftime("%Y-%m-%dT%H:%M:%S")
         labels = sorted(set(hosts.values()))
         span_h = round((hi - lo).total_seconds() / 3600, 1)
         # The distinct detections inside this window, highest severity first, with
@@ -385,6 +408,8 @@ def zoom_targets(graph, *, window=None, min_severity="informational",
             continue          # an accounting row, not a zoomable phase -- no number
         i += 1
         z["n"] = i
+        if force_phases:
+            z["forced_phase"] = True    # see _substantial(): relax the volume floor
     return out
 
 
@@ -402,6 +427,12 @@ def _substantial(z) -> bool:
     A lone critical still earns a section (criticals are rare -- 9 of 148 there --
     so it is a real signal); a lone high does not.
     """
+    # An operator who forced Macro asked for the map regardless of volume; a window
+    # they cannot see is not a map. zoom_targets stamps this, so the report, the
+    # glance table and the console's zoom cards all relax together -- they read the
+    # same list, which is the property that keeps them agreeing.
+    if z.get("forced_phase"):
+        return True
     return (z.get("finding_count", 0) >= MIN_SUBSTANTIAL_FINDINGS
             or z.get("critical_count", 0) >= 1)
 
@@ -425,6 +456,18 @@ def analysable(zt):
     return [z for z in zt if not z.get("rollup") and _substantial(z)]
 
 
+def _win_precision(zt) -> int:
+    """How many characters of an ISO timestamp the phase table should show.
+
+    Minutes are right for phases measured in days. They are useless for phases
+    measured in seconds: a 2-minute burst split into five phases printed three rows
+    reading "11:10 → 11:11", so the table could not tell them apart. Seconds when the
+    tightest phase is under an hour; the whole table uses ONE precision so the rows
+    stay comparable."""
+    spans = [z.get("span_hours") or 0.0 for z in zt if not z.get("rollup")]
+    return 19 if spans and min(spans) < 1.0 else 16
+
+
 def phases_at_a_glance_md(zt, names=None) -> str:
     """Every phase on one screen, so the reader can choose before reading any of them.
 
@@ -443,34 +486,42 @@ def phases_at_a_glance_md(zt, names=None) -> str:
            "re-scope the case to it._", "",
            "| # | Phase | Window (UTC) | Hosts | Findings | Crit | ATT&CK |",
            "|---|---|---|---|---|---|---|"]
+    _p = _win_precision(rows)
     for z in rows:
         w, hs = z["window"], (z.get("host_labels") or [])
         hosts = ", ".join(hs[:4]) + ("…" if len(hs) > 4 else "")
         nm = names.get(z["n"]) or (z.get("top_titles") or ["—"])[0][:48]
         mitre = ", ".join((z.get("mitre") or [])[:4]) or "—"
-        out.append(f"| {z['n']} | {nm} | {w['start'][:16]} → {w['end'][:16]} | "
+        out.append(f"| {z['n']} | {nm} | {w['start'][:_p]} → {w['end'][:_p]} | "
                    f"{hosts} | {z['finding_count']} | {z.get('critical_count', 0)} | "
                    f"{mitre} |")
     roll = [z for z in zt if z.get("rollup")]
     if roll:
         r = roll[0]
         out.append(f"| — | _{r['rollup_windows']} further window(s), not analysed "
-                   f"individually_ | {r['window']['start'][:16]} → "
-                   f"{r['window']['end'][:16]} | | {r['finding_count']} | "
+                   f"individually_ | {r['window']['start'][:_p]} → "
+                   f"{r['window']['end'][:_p]} | | {r['finding_count']} | "
                    f"{r.get('critical_count', 0)} | — |")
     return "\n".join(out) + "\n"
 
 
-def report_mode_banner(altitude, zt, *, mode="time", total_findings=None) -> str:
+def report_mode_banner(altitude, zt, *, mode="time", total_findings=None,
+                       altitude_mode="auto") -> str:
     """Say WHICH report this is, at the top, in the operator's words.
 
     Asked for directly: "we do need to know if its macro or segmented report".
     A segmented report covering six phases and a focused report on one scope read
     completely differently, and nothing distinguished them.
     """
+    # WHY this altitude, when the operator chose it. The banner used to assert
+    # "broad scope" unconditionally, which is a claim about the DATA -- and it is
+    # plainly false on a one-host case someone deliberately asked to segment.
+    forced = (altitude_mode or "auto").lower() in ("macro", "focused")
     if altitude != "macro":
         return ("_**Focused report** — one scope, analysed in depth. "
-                "Every finding below is inside this window._")
+                "Every finding below is inside this window."
+                + (" Report type is set to **Scope** for this case." if forced else "")
+                + "_")
     phases = len(analysable(zt))
     roll = [z for z in zt if z.get("rollup")]
     extra = (f" A further {roll[0]['rollup_windows']} window(s) covering "
@@ -489,7 +540,9 @@ def report_mode_banner(altitude, zt, *, mode="time", total_findings=None) -> str
             extra += (f" {rec} further finding(s) are later repeats of behaviours that "
                       f"first appeared in these phases — see **Activity outside the "
                       f"analysed phases**.")
-    return (f"_**Segmented report** — broad scope, split into {phases} phase(s) "
+    scope_note = ("report type is set to **Macro** for this case" if forced
+                  else "broad scope")
+    return (f"_**Segmented report** — {scope_note}, split into {phases} phase(s) "
             f"{grouped}. Each phase below is analysed on its own and carries its own "
             f"timeline; open one to go deeper.{extra}_")
 
@@ -622,9 +675,30 @@ def merge_timeframes_section(narrative, table_md, valid_ns):
     return md, dropped, inserted
 
 
-def _resolve_altitude(graph, *, window=None, min_severity="informational"):
-    """(altitude, reason): 'macro' when the scope is broad by hosts, finding volume,
-    OR evidence span; else 'focused'. Reuses the report_detail thresholds."""
+# The operator's override of the altitude decision, as stored on the case.
+# "auto" reads the shape of the data (below); the other two are a deliberate choice
+# and must be obeyed even where the heuristic disagrees -- an analyst who asks for a
+# phase map of a quiet week, or for one explicit narrative of a broad case, has a
+# reason the graph cannot see.
+ALTITUDE_MODES = ("auto", "macro", "focused")
+
+
+def _forced_altitude(mode):
+    """(altitude, reason) when the operator pinned one, else None."""
+    m = (mode or "auto").lower()
+    if m == "macro":
+        return "macro", "Macro selected for this case (segmentation forced)"
+    if m == "focused":
+        return "focused", "Scope selected for this case (one explicit narrative)"
+    return None
+
+
+def _resolve_altitude(graph, *, window=None, min_severity="informational", mode="auto"):
+    """(altitude, reason): 'macro' when the case splits into phases worth triaging
+    between, else 'focused'. `mode` is the operator's override and wins outright."""
+    forced = _forced_altitude(mode)
+    if forced:
+        return forced
     assets, findings = scope(graph, window=window, min_severity=min_severity)
     # Count hosts that are actually IN SCOPE — i.e. that carry a finding inside the
     # window/severity filter — not every asset in the graph. scope() deliberately
@@ -850,7 +924,7 @@ def _trim_findings(findings, max_findings):
 
 def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary",
                   max_identities=None, max_findings=None, include_ids=False,
-                  include_timeframes=False):
+                  include_timeframes=False, altitude_mode="auto"):
     """`max_findings` caps findings AND the timeline built from them (they are the
     same set — the timeline is one row per finding), keeping them consistent so
     the payload never cites a finding_id it did not send.
@@ -908,7 +982,11 @@ def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"
                 fd["evidence"] = ev
         return fd
 
-    altitude = _resolve_altitude(graph, window=window, min_severity=min_severity)[0]
+    # The payload TELLS THE MODEL its altitude, so a forced one has to reach here too
+    # -- otherwise the operator picks Macro, gets the macro prompt, and the payload
+    # inside it still says "focused".
+    altitude = _resolve_altitude(graph, window=window, min_severity=min_severity,
+                                 mode=altitude_mode)[0]
     out = {
         "case_id": graph.case_id,
         "report_detail": eff_detail,
@@ -1027,7 +1105,7 @@ def _host_coverage(graph, assets, findings) -> list:
 
 def distilled(graph, *, window=None, min_severity="informational", max_entities=60,
               budget_chars=None, detail="summary", max_identities=None,
-              include_ids=False, include_timeframes=False):
+              include_ids=False, include_timeframes=False, altitude_mode="auto"):
     """Compact, in-window, high-signal payload — what a real LLM would get.
 
     If ``budget_chars`` is set and the payload exceeds it, halve ``max_entities``
@@ -1039,7 +1117,8 @@ def distilled(graph, *, window=None, min_severity="informational", max_entities=
     p = _distilled_at(graph, window=window, min_severity=min_severity,
                       max_entities=max_entities, detail=detail,
                       max_identities=max_identities, include_ids=include_ids,
-                      include_timeframes=include_timeframes)
+                      include_timeframes=include_timeframes,
+                      altitude_mode=altitude_mode)
     if not budget_chars:
         return p
 
@@ -1075,7 +1154,8 @@ def distilled(graph, *, window=None, min_severity="informational", max_entities=
                           max_entities=max_entities, detail=detail,
                           max_identities=eff_ident, max_findings=eff_findings,
                           include_ids=include_ids,
-                          include_timeframes=include_timeframes)
+                          include_timeframes=include_timeframes,
+                          altitude_mode=altitude_mode)
         steps += 1
     # LAST RESORT — still over budget after the stepdowns. Measured: a case with
     # thousands of findings blows through it (120 hosts / 4,321 findings produced a

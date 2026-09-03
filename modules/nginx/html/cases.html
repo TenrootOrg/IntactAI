@@ -407,8 +407,10 @@ function openCase(id){
   // load on every open.
   Promise.all([api('/api/cases/'+id),api('/api/cases/'+id+'/report')])
    .then(([info,rep])=>{
-     // fold the report meta (audience/branding/master-prompt) into info for the controls
-     info.audience=rep.audience||'both'; info.customer_name=rep.customer_name||'';
+     // fold the report meta (branding/master-prompt) into info for the controls.
+     // Audience is NOT among them any more: the report is always written for both
+     // an executive and a technical reader, so there is nothing to choose.
+     info.customer_name=rep.customer_name||'';
      info.tlp=rep.tlp||'AMBER'; info.has_logo=!!rep.has_logo; info.master_prompt=rep.master_prompt||'';
      render(info,rep.report_md||'',info.counts||{});
      // Only the Analysis tab shows this banner, and `tab` can carry over from
@@ -460,7 +462,7 @@ function costBadge(ce){
 function render(info,md,g){
   curInfo=info; curGraph=g;
   $('#llmbadge').textContent='LLM: '+(info.llm_enabled?'real':'simulated (no key)');
-  const aud=info.audience||'both', mk=info.masking||{};
+  const mk=info.masking||{};
   const opt=(v,l,cur)=>`<option value="${v}" ${cur===v?'selected':''}>${l}</option>`;
   const tw=info.time_window||{};
   $('#main').innerHTML=`
@@ -582,7 +584,7 @@ function renderRisk(info){
 // fusion ontology saves -- the same subject as the model line they now sit
 // under, and configuration rather than a headline.
 function renderConfig(info){
-  const aud=info.audience||'both', mk=info.masking||{}, tw=info.time_window||{};
+  const alt=info.report_altitude||'auto', mk=info.masking||{}, tw=info.time_window||{};
   const opt=(v,l,cur)=>`<option value="${v}" ${cur===v?'selected':''}>${l}</option>`;
   $('#tabc').innerHTML=`
     <div class="cfgwrap">
@@ -621,8 +623,8 @@ function renderConfig(info){
       </div>
       <div class="cfgcol">
         <h4>Report</h4>
-        <label>Audience</label>
-        <select id="cf-aud">${opt('both','Both (exec + technical)',aud)}${opt('executive','Executive',aud)}${opt('technical','Technical',aud)}</select>
+        <label>Type <span class="info" title="Automatic reads the shape of the case: several substantial bursts of activity across several hosts get a segmented map, anything narrower gets one explicit narrative.&#10;&#10;Macro forces the segmented map — one model call per phase, run in parallel, then a synthesis pass — even on a short or quiet window.&#10;&#10;Scope forces a single explicit narrative of everything in the window, with per-finding evidence. Pair it with a time window to drill into one period.">i</span></label>
+        <select id="cf-alt">${opt('auto','Automatic (decide from the data)',alt)}${opt('macro','Macro — always segment into phases',alt)}${opt('focused','Scope — one explicit narrative',alt)}</select>
         <label>Customer</label><input id="cf-cust" value="${esc(info.customer_name||'')}" placeholder="Acme Corp"/>
         <label>TLP</label>
         <select id="cf-tlp">${['CLEAR','GREEN','AMBER','AMBER+STRICT','RED'].map(t=>`<option ${info.tlp===t?'selected':''}>${t}</option>`).join('')}</select>
@@ -927,7 +929,7 @@ async function _railCfg(){
   const logo=await _fileToDataUrl($('#cf-logo')?.files?.[0]);
   const cfg={
     time_window:{start:$('#cf-start').value||null,end:$('#cf-end').value||null},
-    min_severity:$('#cf-sev').value, audience:$('#cf-aud').value,
+    min_severity:$('#cf-sev').value, report_altitude:$('#cf-alt').value,
     customer_name:$('#cf-cust').value, tlp:$('#cf-tlp').value,
     master_prompt:$('#cf-mp').value,
     max_entities:parseInt($('#cf-maxent')?.value)||500000,

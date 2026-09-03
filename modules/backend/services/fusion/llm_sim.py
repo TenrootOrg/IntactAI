@@ -1282,6 +1282,7 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
 def generate_report(graph, *, window=None, min_severity="informational",
                     initial_access=None, case_name="Case", run_id=None,
                     audience="both", language="en", master_prompt=None, mask=None,
+                    altitude_mode="auto",
                     dispositions=None, validations=None, prefer_llm=True,
                     max_entities=None, budget_chars=None, max_output_tokens=None,
                     detail="auto", max_identities=None, grouping="time", log=None) -> str:
@@ -1307,12 +1308,16 @@ def generate_report(graph, *, window=None, min_severity="informational",
             # right altitude. Validated in scratch_eval (macro 24-25 vs 13-14 broad,
             # focused-tight 20 vs 17 narrow, 3.4-4.5x cheaper output).
             altitude, _alt_reason = render._resolve_altitude(
-                graph, window=window, min_severity=min_severity)
+                graph, window=window, min_severity=min_severity, mode=altitude_mode)
+            # Forcing Macro means "map this anyway": relax the per-window volume floor
+            # so a quiet or short case still yields phases instead of a map of nothing.
+            _force_ph = (altitude == "macro" and (altitude_mode or "auto") == "macro")
             eff_detail = "summary" if altitude == "macro" else detail
             payload = render.distilled(graph, window=window, min_severity=min_severity,
                                        max_entities=me, budget_chars=bc, detail=eff_detail,
                                        max_identities=max_identities,
-                                       include_timeframes=True)
+                                       include_timeframes=True,
+                                       altitude_mode=altitude_mode)
             # give the model the analyst's triage so the narrative reflects it
             if dispositions:
                 payload["operator_dispositions"] = dispositions
@@ -1330,7 +1335,8 @@ def generate_report(graph, *, window=None, min_severity="informational",
             _zt, _phase_out, _mode = [], {}, (grouping or "time")
             if altitude == "macro":
                 _zt = render.zoom_targets(graph, window=window,
-                                          min_severity=min_severity, mode=_mode)
+                                          min_severity=min_severity, mode=_mode,
+                                          force_phases=_force_ph)
                 _phase_out = _phase_sections(
                     graph, _zt, window=window, min_severity=min_severity, me=me, bc=bc,
                     max_identities=max_identities, eff_detail=eff_detail, run_id=run_id,
@@ -1417,7 +1423,8 @@ def generate_report(graph, *, window=None, min_severity="informational",
             if altitude == "macro":
                 _, _all_f = render.scope(graph, window=window, min_severity=min_severity)
                 banner = render.report_mode_banner(altitude, _zt, mode=_mode,
-                                                   total_findings=len(_all_f))
+                                                   total_findings=len(_all_f),
+                                                   altitude_mode=altitude_mode)
                 # ORDER IS THE DESIGN. The executive layer (Executive Summary, Key
                 # Judgements, Where to start) comes first, then the glance table, then
                 # the phases it refers to. The old order put "Priority actions" ABOVE
@@ -1468,7 +1475,8 @@ def generate_report(graph, *, window=None, min_severity="informational",
                 narrative = "\n".join(parts)
                 heatmap = ""                      # already placed inside the narrative
             else:
-                narrative = (render.report_mode_banner(altitude, [], mode=_mode)
+                narrative = (render.report_mode_banner(altitude, [], mode=_mode,
+                                                       altitude_mode=altitude_mode)
                              + "\n\n" + narrative)
             # Real values throughout: masking protected the data only in transit to
             # the LLM; the operator's report is reverted (narrative) + never-masked facts.

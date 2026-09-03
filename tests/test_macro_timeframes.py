@@ -506,3 +506,163 @@ class TheDetailFooterMustNotInventProvenance(unittest.TestCase):
         md = render.facts_md(self._g(), detail="auto")
         self.assertIn("Report detail:", md)
         self.assertIn("auto —", md)
+
+
+class TheOperatorCanForceTheReportType(unittest.TestCase):
+    """Automatic / Macro / Scope. The heuristic reads the shape of the data, but an
+    analyst who wants a phase map of a quiet week -- or one explicit narrative of a
+    broad case -- has a reason the graph cannot see, so a pinned mode wins outright."""
+
+    def _big(self):     # would resolve macro on its own
+        return _graph(4, _burst("a", 0, 5, hosts=("host000",))
+                      + _burst("b", 40, 5, hosts=("host001",)))
+
+    def _small(self):   # would resolve focused on its own
+        return _graph(1, _burst("a", 0, 2, hosts=("host000",)))
+
+    def test_auto_is_the_default_and_unchanged(self):
+        self.assertEqual(render._resolve_altitude(self._big())[0], "macro")
+        self.assertEqual(render._resolve_altitude(self._small())[0], "focused")
+        # explicitly passing "auto" must be identical to passing nothing
+        for g in (self._big(), self._small()):
+            self.assertEqual(render._resolve_altitude(g, mode="auto"),
+                             render._resolve_altitude(g))
+
+    def test_macro_is_forced_on_a_case_the_heuristic_calls_focused(self):
+        alt, why = render._resolve_altitude(self._small(), mode="macro")
+        self.assertEqual(alt, "macro")
+        self.assertIn("Macro selected", why)
+
+    def test_scope_is_forced_on_a_case_the_heuristic_calls_macro(self):
+        alt, why = render._resolve_altitude(self._big(), mode="focused")
+        self.assertEqual(alt, "focused")
+        self.assertIn("Scope selected", why)
+
+    def test_forcing_macro_must_actually_yield_phases(self):
+        """The trap: forcing macro without relaxing the volume floor gives a
+        segmented report with NO sections -- a map of nothing, which is exactly the
+        empty report this whole change set set out to remove."""
+        g = self._small()
+        plain = render.zoom_targets(g)
+        self.assertEqual(render.analysable(plain), [],
+                         "fixture must be too small to phase on its own")
+        forced = render.zoom_targets(g, force_phases=True)
+        self.assertTrue(render.analysable(forced),
+                        "forcing Macro produced no analysable phase")
+
+    def test_the_rollup_is_never_promoted_to_a_phase(self):
+        """force_phases relaxes the VOLUME floor, not the rule that an accounting
+        row has no story to tell."""
+        g = _graph(4, [_find(str(i), day=i * 30) for i in range(12)])
+        for z in render.zoom_targets(g, force_phases=True):
+            if z.get("rollup"):
+                self.assertNotIn(z, render.analysable(render.zoom_targets(
+                    g, force_phases=True)))
+                self.assertIsNone(z.get("n"), "a rollup must not be numbered")
+
+    def test_an_unknown_mode_falls_back_to_auto_rather_than_breaking(self):
+        g = self._big()
+        self.assertEqual(render._resolve_altitude(g, mode="nonsense"),
+                         render._resolve_altitude(g))
+
+    def test_the_payload_tells_the_model_the_forced_altitude(self):
+        """Picking Macro but shipping a payload that says "focused" would give the
+        model the macro prompt over a payload contradicting it."""
+        g = self._small()
+        p = render.distilled(g, altitude_mode="macro")
+        self.assertEqual(p["scope"]["altitude"], "macro")
+        p = render.distilled(self._big(), altitude_mode="focused")
+        self.assertEqual(p["scope"]["altitude"], "focused")
+
+
+class TheBannerMustNotClaimBroadScopeWhenItWasForced(unittest.TestCase):
+    """The banner asserted "broad scope" for every segmented report. On a one-host
+    case the operator deliberately asked to segment, that is a false claim about the
+    data -- the reason is the setting, not the shape of the evidence."""
+
+    def _zt(self):
+        g = _graph(1, _burst("a", 0, 2, hosts=("host000",)))
+        return render.zoom_targets(g, force_phases=True)
+
+    def test_a_forced_macro_banner_names_the_setting(self):
+        b = render.report_mode_banner("macro", self._zt(), altitude_mode="macro")
+        self.assertIn("set to **Macro**", b)
+        self.assertNotIn("broad scope", b)
+
+    def test_an_automatic_macro_banner_still_says_broad_scope(self):
+        b = render.report_mode_banner("macro", self._zt(), altitude_mode="auto")
+        self.assertIn("broad scope", b)
+        self.assertNotIn("set to **Macro**", b)
+
+    def test_a_forced_scope_banner_names_the_setting(self):
+        b = render.report_mode_banner("focused", [], altitude_mode="focused")
+        self.assertIn("set to **Scope**", b)
+
+    def test_an_automatic_focused_banner_is_unchanged(self):
+        b = render.report_mode_banner("focused", [], altitude_mode="auto")
+        self.assertNotIn("set to", b)
+        self.assertIn("Focused report", b)
+
+
+class PhaseWindowsMustNotSwallowEachOther(unittest.TestCase):
+    """Each phase window was padded by a flat hour each side so re-scoping to it
+    could not clip its own boundary events. That is nothing next to a phase spanning
+    days -- and 3600x the span of one measured in seconds. On a 2-minute burst split
+    into five phases every window grew to two hours and they all overlapped, so
+    "Analyze this scope" on any card pulled in all the others."""
+
+    def _seconds_apart_case(self):
+        """Three tight bursts seconds apart, with clear seams between them --
+        the shape of the real 33-second sequence this came from."""
+        fs = []
+        for i in range(12):
+            f = _find(f"b{i}")
+            off = (i // 4) * 40 + (i % 4)          # 0-3s, 40-43s, 80-83s
+            f.ts = (_T0 + _dt.timedelta(seconds=off)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            fs.append(f)
+        return _graph(2, fs)
+
+    def test_second_scale_phases_do_not_overlap(self):
+        zt = render.analysable(render.zoom_targets(self._seconds_apart_case(),
+                                                   force_phases=True))
+        self.assertGreater(len(zt), 1, "fixture should split into several phases")
+        wins = sorted((z["window"]["start"], z["window"]["end"]) for z in zt)
+        for (s1, e1), (s2, e2) in zip(wins, wins[1:]):
+            self.assertLessEqual(e1, s2,
+                                 f"phase windows overlap: {e1} > {s2}")
+
+    def test_a_day_scale_phase_still_gets_a_generous_pad(self):
+        """The cap must keep the original behaviour where it was already right."""
+        g = _graph(2, _burst("a", 0, 6))
+        z = render.zoom_targets(g)[0]
+        import datetime as dt
+        w = z["window"]
+        lo = dt.datetime.fromisoformat(w["start"])
+        hi = dt.datetime.fromisoformat(w["end"])
+        self.assertGreaterEqual((hi - lo).total_seconds(), 3600,
+                                "a multi-hour phase should keep a real pad")
+
+
+class ThePhaseTableMustDistinguishItsRows(unittest.TestCase):
+    """Minute precision is right for phases measured in days and useless for phases
+    measured in seconds: forcing Macro on a 2-minute burst printed three rows all
+    reading "11:10 → 11:11"."""
+
+    def test_second_scale_phases_show_seconds(self):
+        zt = [{"n": 1, "window": {"start": "2026-09-01T11:10:42",
+                                  "end": "2026-09-01T11:10:56"},
+               "span_hours": 0.004, "finding_count": 3, "critical_count": 0},
+              {"n": 2, "window": {"start": "2026-09-01T11:10:51",
+                                  "end": "2026-09-01T11:11:01"},
+               "span_hours": 0.003, "finding_count": 4, "critical_count": 0}]
+        md = render.phases_at_a_glance_md(zt)
+        self.assertIn("11:10:42", md)
+        self.assertIn("11:10:51", md)
+
+    def test_day_scale_phases_stay_at_minutes(self):
+        zt = [{"n": 1, "window": {"start": "2026-04-07T12:24:58",
+                                  "end": "2026-04-20T15:17:08"},
+               "span_hours": 314.0, "finding_count": 10, "critical_count": 2}]
+        md = render.phases_at_a_glance_md(zt)
+        self.assertIn("2026-04-07T12:24", md)
+        self.assertNotIn("12:24:58", md)

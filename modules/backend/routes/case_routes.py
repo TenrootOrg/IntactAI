@@ -493,11 +493,14 @@ def get_zoom_targets(case_id):
     g = store.load_graph(case_id)
     win = d.get("time_window") or None
     ms = d.get("min_severity") or "informational"
-    altitude, reason = render._resolve_altitude(g, window=win, min_severity=ms)
+    _mode = d.get("report_altitude") or "auto"
+    altitude, reason = render._resolve_altitude(g, window=win, min_severity=ms, mode=_mode)
     # analysable() drops the coverage rollup and any window too small to be a scope;
     # the rollup is appended back as a non-clickable accounting row so the operator
     # can still see what was left out.
-    _zt = render.zoom_targets(g, window=win, min_severity=ms) if altitude == "macro" else []
+    _zt = (render.zoom_targets(g, window=win, min_severity=ms,
+                               force_phases=(_mode == "macro"))
+           if altitude == "macro" else [])
     targets = render.analysable(_zt) + [z for z in _zt if z.get("rollup")]
     if targets:
         # The model named each window in the report ("### Timeframe 3 — Ransomware
@@ -994,6 +997,7 @@ def report(case_id):
         return jsonify({"error": "case not found"}), 404
     return jsonify({"case_id": case_id, "report_md": d.get("report_md") or "",
                     "audience": d.get("audience", "both"),
+                    "report_altitude": d.get("report_altitude") or "auto",
                     "customer_name": d.get("customer_name", ""), "tlp": d.get("tlp", "AMBER"),
                     "has_logo": bool(d.get("customer_logo_b64")),
                     "master_prompt": d.get("master_prompt", "")})

@@ -1740,6 +1740,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
             initial_access=d.get("initial_access_estimate"),
             case_name=d.get("name", "Case"), run_id=case_id,
             audience=d.get("audience", "both"), language=d.get("language", "en"),
+            altitude_mode=d.get("report_altitude") or "auto",
             master_prompt=d.get("master_prompt"), mask=mask,
             dispositions=d.get("dispositions") or None,
             validations=d.get("timeline_validations") or None,
@@ -2446,6 +2447,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
             gv, window=window, min_severity=min_sev,
             initial_access=d.get("initial_access_estimate"), case_name=d.get("name", "Case"),
             run_id=case_id, audience=d.get("audience", "both"), language=d.get("language", "en"),
+            altitude_mode=d.get("report_altitude") or "auto",
             master_prompt=d.get("master_prompt"), mask=mask,
             dispositions=d.get("dispositions") or None,
             validations=d.get("timeline_validations") or None,
@@ -2570,6 +2572,7 @@ _CONFIG_LABELS = {
     "fusion_modules": "Fusion modules", "masking": "Masking",
     "excluded_hosts": "Excluded hosts", "included_run_ids": "Included runs",
     "audience": "Report audience", "language": "Report language", "tlp": "TLP",
+    "report_altitude": "Report type",
     "customer_name": "Customer name", "master_prompt": "Master prompt",
     "customer_logo_b64": "Customer logo", "report_detail": "Report detail",
 }
@@ -2621,7 +2624,7 @@ def set_analysis_config(case_id, cfg) -> dict:
             start = _default_window(_case_created_dt(case_id))["start"]
         patch["time_window"] = {"start": start, "end": tw.get("end")}
     for k in ("min_severity", "audience", "language", "tlp", "customer_name",
-              "customer_logo_b64", "master_prompt"):
+              "customer_logo_b64", "master_prompt", "report_altitude"):
         if cfg.get(k) is not None:
             patch[k] = cfg[k]
     if "masking" in cfg:
