@@ -4,26 +4,28 @@ name: test
 # and tests/run_tests.sh (plain bash + stdlib python3, nothing to install).
 # Runs on the same triggers as secret-scan.yml.
 
-# TEMPORARY (2026-08-12) — auto-triggers off at the operator's request while
-# the 0726 -> 0811 customer failure is being worked. Every push to main was
-# spending a CI run on the suite and reporting red in the middle of release
-# work; neither release workflow depends on this one, so nothing is gated on it.
+# RESTORED 2026-09-06, per the note this replaces. The triggers were turned off
+# on 2026-08-12 "while the 0726 -> 0811 customer failure is being worked",
+# because the suite was reporting red during release work, and that note asked
+# for them back "when the release work settles -- a suite nobody runs stops being
+# true within about a week". It was three and a half weeks, and the suite is
+# green (864 passing).
 #
-# The suite itself is untouched and currently GREEN -- run it by hand any time
-# with `bash tests/run_tests.sh`, or dispatch this workflow. Restore the two
-# trigger lines below when the release work settles; a suite nobody runs stops
-# being true within about a week.
+# It mattered: for those weeks the ONLY automatic check on a push was
+# secret-scan, so every green tick proved that no credential leaked and nothing
+# else. `development` is dropped from the branch list -- that branch no longer
+# exists.
 on:
   workflow_dispatch:
-  # push:
-  #   branches: ["main", "development"]
-  # pull_request:
+  push:
+    branches: ["main"]
+  pull_request:
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Syntax-check every shell script
         run: |

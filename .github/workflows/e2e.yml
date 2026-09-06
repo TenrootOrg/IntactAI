@@ -228,7 +228,7 @@ jobs:
           if (Test-Path -LiteralPath $img) { Move-Item $img $out -Force }
           Get-ChildItem $out | Format-Table Name, Length
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: windows-evidence
           path: ${{ runner.temp }}/bundle
@@ -247,7 +247,7 @@ jobs:
       matrix: ${{ steps.pick.outputs.matrix }}
       count:  ${{ steps.pick.outputs.count }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with: { ref: '${{ github.event.inputs.ref || github.ref_name }}', fetch-depth: 1 }
       - id: pick
         env:
@@ -399,7 +399,7 @@ jobs:
 
     steps:
       # ------------------------------------------------------------------ 1 --
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.inputs.ref || github.ref_name }}
           fetch-depth: 1
@@ -763,7 +763,7 @@ jobs:
           sudo rm -f /etc/intact-initialized
 
       - name: Fetch the Windows evidence bundle
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         continue-on-error: true      # absent bundle -> honest skip, not a failure
         with:
           name: windows-evidence
@@ -902,7 +902,7 @@ jobs:
 
       - name: Upload the run directory
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: e2e-${{ matrix.scenario }}-${{ github.run_id }}
           path: _artifacts
@@ -955,10 +955,19 @@ jobs:
               for chk in ph.get("checks", []):
                   if chk.get("ok"):
                       continue
-                  # "phase", not "name": PhaseResult.to_dict() spells the phase's own
-          # key "phase" while each check inside it uses "name". Reading the
-          # wrong one annotates every failure with a literal None.
-          print(f"::error title={ph.get('phase')}::{chk.get('name')} "
+                  # "phase", not "name": PhaseResult.to_dict() spells the phase's
+                  # own key "phase" while each check inside it uses "name".
+                  # Reading the wrong one annotates every failure with a literal
+                  # None.
+                  #
+                  # AND THE INDENTATION IS LOAD-BEARING. This print used to sit
+                  # at module level, outside BOTH loops, so it ran exactly once
+                  # on whatever ph/chk were still bound when the loops ended --
+                  # the last check of the last phase, pass or fail. Every real
+                  # failure went un-annotated, and a PASSING check ("report
+                  # written") was posted as an ::error on every run. A signal
+                  # that lies is worse than no signal.
+                  print(f"::error title={ph.get('phase')}::{chk.get('name')} "
                         f"expected={chk.get('expected')} actual={chk.get('actual')}")
           c = data.get("counts", {})
           print(f"::notice title=e2e verdict::{c.get('pass',0)} passed, "
@@ -1007,7 +1016,7 @@ jobs:
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         continue-on-error: true
         with:
           pattern: e2e-*
