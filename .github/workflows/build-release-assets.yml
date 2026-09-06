@@ -117,7 +117,7 @@ jobs:
 
       # fetch-depth: 0 because the builder resolves the tag to a commit, and a
       # shallow single-ref checkout has no tag objects to resolve against.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.release.tag_name || github.event.inputs.tag }}
           fetch-depth: 0
@@ -220,7 +220,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.commit }}
           fetch-depth: 0
@@ -245,7 +245,7 @@ jobs:
           ls -lh /tmp/docker-images/
 
       - name: Upload packager image
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: docker-image-packager
           path: /tmp/docker-images/intact-backend-ci-packager.tar
@@ -266,7 +266,7 @@ jobs:
       # THE SHA, not the tag -- see the header. This is what makes the
       # coherence assertion in `index` structurally satisfiable rather than
       # hopeful.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.commit }}
           fetch-depth: 0
@@ -277,7 +277,7 @@ jobs:
           cd /tmp/docker-images
 
       - name: Download packager image
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: docker-image-packager
           path: /tmp/docker-images
@@ -452,7 +452,7 @@ jobs:
 
       - name: Upload gitleaks report
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: gitleaks-report-${{ matrix.module }}
           path: ${{ github.workspace }}/gitleaks-*.json
@@ -509,7 +509,7 @@ jobs:
       # purpose: `index` needs only the description, and download-artifact has
       # no way to fetch part of an artifact. Bundled together, the index job
       # would pull every gigabyte of every asset to read a few KB of JSON.
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: asset-${{ matrix.module }}
           path: |
@@ -534,7 +534,7 @@ jobs:
       # .meta.json + .manifest.json. The per-asset `.manifest.json` the builder
       # writes stays in CI only — not on the release page — but the index job
       # needs it to check for collisions across modules.
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: meta-${{ matrix.module }}
           path: |
@@ -584,7 +584,7 @@ jobs:
     needs: resolve
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.commit }}
 
@@ -628,7 +628,7 @@ jobs:
           grep -q -- '--handoff' "$probe/lib/upgrade/args.sh"
           echo "engine asset OK: checksum verifies, flat layout, --handoff accepted"
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: bootstrap
           path: out/*
@@ -689,7 +689,7 @@ jobs:
           sha256sum "$GITHUB_WORKSPACE/${TAG}-system-bundle.tar" > "$GITHUB_WORKSPACE/${TAG}-system-bundle.tar.sha256"
           ls -lh "$GITHUB_WORKSPACE/${TAG}-system-bundle.tar"
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: system-bundle
           path: |
@@ -704,7 +704,7 @@ jobs:
     needs: [resolve, build]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           path: meta
           pattern: meta-*
@@ -863,7 +863,7 @@ jobs:
       # authoritative build lives in bootstrap-asset, and publish attaches it
       # from that job's `bootstrap` artifact. This job publishes only the index
       # and the merged manifest.
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: release-index
           path: out/*
@@ -888,11 +888,11 @@ jobs:
     needs: [resolve, build, index]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.commit }}
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           path: all
           pattern: asset-*
@@ -931,7 +931,7 @@ jobs:
       # runners. Folding it in removes one full download and one full copy of
       # the release off a runner the publish job notes has ~21 GB free.
       #
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           path: all
           pattern: release-index
@@ -1000,7 +1000,7 @@ jobs:
     needs: [resolve, build, index, system-bundle, bootstrap-asset, verify-assets]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.commit }}
           fetch-depth: 0
@@ -1010,22 +1010,22 @@ jobs:
       # container, a CI implementation detail -- and the upload step below then
       # attached it to the release as `intact-backend-ci-packager.tar.gz`,
       # where it looked like something a customer was meant to install.
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           path: all
           pattern: asset-*
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           path: all
           pattern: release-index
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           path: all
           pattern: system-bundle
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           path: all
           pattern: bootstrap
