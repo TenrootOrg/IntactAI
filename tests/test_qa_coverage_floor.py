@@ -131,3 +131,28 @@ class TheStrongestAssertionMustNotBeOptionalInCI(unittest.TestCase):
         self.assertIn("the detection assertion ran", src,
                       "a missing check is indistinguishable from a passing one; "
                       "the run must state that it did not assert")
+
+
+class TheAuditMustNotFailOnItself(unittest.TestCase):
+    """The audit runs INSIDE the report phase, so `report` has no status yet.
+    Requiring it to have passed made the check fail on itself and reported
+    "report (never registered)" on an otherwise clean run of 20 passing phases."""
+
+    def setUp(self):
+        self.cov = _mod("coverage")
+
+    def test_report_is_not_required_of_itself(self):
+        self.assertNotIn("report", self.cov.required_for("cli"))
+
+    def test_a_phase_still_running_is_not_counted_as_missing(self):
+        results = {n: _Res("pass") for n in self.cov.required_for("cli")}
+        results["report"] = _Res(None)          # mid-flight, as it really is
+        gaps, unexpected = self.cov.audit(results, "cli")
+        self.assertEqual((gaps, unexpected), ([], []))
+
+    def test_a_genuinely_absent_phase_is_still_caught(self):
+        """The fix must not blunt the check it was protecting."""
+        results = {n: _Res("pass") for n in self.cov.required_for("cli")}
+        del results["pipelines"]
+        gaps, _ = self.cov.audit(results, "cli")
+        self.assertIn("pipelines", [n for n, _ in gaps])

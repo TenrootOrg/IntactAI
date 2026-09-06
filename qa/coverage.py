@@ -44,7 +44,10 @@ REQUIRED_ALWAYS = (
     "purge_scan",       # a section cannot honestly scan zero on a filled box
     "purge_run",        # the bytes actually go
     "collect",
-    "report",
+    # NOT "report". The audit runs INSIDE the report phase, so at that moment
+    # report has no status yet and requiring it to have passed reports it as
+    # "never registered" -- the check failing on itself. Its outcome is the
+    # run's exit code anyway: a failed report phase fails the job.
 )
 
 # route -> the phases that route must run. A scenario claiming to test an
@@ -95,6 +98,10 @@ def audit(results, route):
     missing, unexpected = [], []
     for name in required_for(route):
         res = results.get(name)
+        # A phase still RUNNING has no status. Only the phase performing the
+        # audit can be in that state, and it cannot have finished by definition.
+        if res is not None and getattr(res, "status", None) is None:
+            continue
         status = getattr(res, "status", None) if res is not None else None
         if status != "pass":
             missing.append((name, status or "never registered"))
