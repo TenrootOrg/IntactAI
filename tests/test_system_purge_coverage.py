@@ -164,3 +164,29 @@ class TheVelociraptorEstimateMustMatchWhatIsRemoved(unittest.TestCase):
         body = _src().split("def _scan_velociraptor")[1].split("\ndef ")[0]
         self.assertIn("kept", body,
                       "the operator must be told clients/server artifacts survive")
+
+
+class EverySectionHoldingDataMustSayWhat(unittest.TestCase):
+    """The dialog is a decision surface: an operator ticks a row and loses what
+    is in it. Most rows explain themselves -- "441 investigation runs",
+    "63 artifact_* indices" -- but uploads and report downloads hardcoded "", so
+    a live box showed "1.1 GB" and "3.6 KB" beside a dash with no way to judge
+    whether purging was safe. Found by the e2e's purge_scan phase."""
+
+    def test_no_scanner_returns_a_hardcoded_empty_detail(self):
+        src = _src()
+        for m in re.finditer(r"def (_scan_\w+)\(\):(.*?)(?=\ndef )", src, re.S):
+            name, body = m.group(1), m.group(2)
+            self.assertNotRegex(
+                body, r"return [^\n]*,\s*\"\"\s*$",
+                f"{name} reports a size with no explanation")
+
+    def test_the_two_that_were_blank_now_describe_themselves(self):
+        src = _src()
+        self.assertIn("_dir_detail(p, \"uploaded file\")", src)
+        self.assertIn('_dir_detail("/data/downloads", "export")', src)
+
+    def test_a_missing_directory_is_described_not_counted_as_zero_files(self):
+        """'nothing staged' and '0 files' mean different things to an operator."""
+        body = _src().split("def _dir_detail")[1].split("\ndef ")[0]
+        self.assertIn("nothing staged", body)

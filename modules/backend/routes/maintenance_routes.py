@@ -730,6 +730,20 @@ def _fmt_size(b: int) -> str:
     return f"{b} B"
 
 
+def _dir_detail(path: str, noun: str = "item") -> str:
+    """"N file(s)" for a directory, so a size in the dialog is not unexplained.
+
+    Every other section says what it holds -- "441 investigation runs",
+    "63 artifact_* indices" -- and these two returned "". An operator saw
+    "1.1 GB" beside a dash and had no way to judge whether purging it was safe.
+    """
+    import os
+    if not os.path.isdir(path):
+        return "nothing staged"
+    n = sum(len(files) for _, _, files in os.walk(path))
+    return f"{n:,} {noun}{'' if n == 1 else 's'}"
+
+
 def _scan_dir(path: str) -> int:
     import os
     if not os.path.exists(path):
@@ -827,12 +841,12 @@ def _scan_system_workflows():
 
 def _scan_azure_runs():
     p = "/data/db/azure_runs"
-    return _scan_dir(p), ""
+    return _scan_dir(p), _dir_detail(p, "scan result")
 
 
 def _scan_uploads():
     p = "/data/uploads"
-    return _scan_dir(p), ""
+    return _scan_dir(p), _dir_detail(p, "uploaded file")
 
 
 def _scan_upgrade_packages():
@@ -841,7 +855,9 @@ def _scan_upgrade_packages():
     for f in ("/data/db/prepared_package.json", "/data/db/prepared_packages.json"):
         if os.path.exists(f):
             s += os.path.getsize(f)
-    return s, ""
+    n = sum(len(files) for _, _, files in os.walk("/data/upgrade_packages")) \
+        if os.path.isdir("/data/upgrade_packages") else 0
+    return s, (f"{n:,} package file(s)" if n else "no package staged")
 
 
 def _scan_temp_files():
@@ -849,9 +865,11 @@ def _scan_temp_files():
     s = 0
     for d in ("/app/data/tmp", "/data/tmp", "/tmp/plaso", "/tmp/azure_uploads"):
         s += _scan_dir(d)
-    for d in glob.glob("/app/data/tmp/intact-upgrade-*") + glob.glob("/tmp/intact-upgrade-*"):
+    stale = glob.glob("/app/data/tmp/intact-upgrade-*") + glob.glob("/tmp/intact-upgrade-*")
+    for d in stale:
         s += _scan_dir(d)
-    return s, ""
+    return s, (f"{len(stale)} abandoned upgrade workspace(s) + scratch"
+               if stale else "scratch space")
 
 
 def _scan_report_downloads():
@@ -859,7 +877,7 @@ def _scan_report_downloads():
     # that's the nginx-mounted install-artifact dir (Velociraptor legacy/musl
     # client installers + offline collector + tools, fetched by install.sh).
     # Purging it deletes the client downloads and greys out the Downloads page.
-    return _scan_dir("/data/downloads"), ""
+    return _scan_dir("/data/downloads"), _dir_detail("/data/downloads", "export")
 
 
 # What _purge_velociraptor ACTUALLY removes. The scan used to `du` the whole
