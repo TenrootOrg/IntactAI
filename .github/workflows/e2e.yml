@@ -647,6 +647,7 @@ jobs:
           MODULE_SET: ${{ matrix.modules || github.event.inputs.module_set || 'all' }}
           BACKEND_TAG: ${{ steps.build.outputs.backend_tag }}
           INSTALL_FROM: ${{ matrix.install_from || '' }}
+          IMAGES_TAG: ${{ steps.images.outputs.tag }}
         run: |
           set -euo pipefail
           # TWO TREES when a scenario installs an OLD release.
@@ -709,6 +710,32 @@ jobs:
             sudo rsync -a --exclude .git ./ "${APPLIANCE}/"
           fi
           cd "${APPLIANCE}"
+
+          # PIN THE APPLIANCE'S VERSION TO THE RELEASE WE RESOLVED.
+          #
+          # `version_override` is documented as "the release tag supplying the
+          # upstream images", and it was not: the resolved tag reached
+          # QA_UPGRADE_TO and the job summary, but nothing ever wrote it into the
+          # tree, and lib/deps.sh:573 takes the dependency bundle from
+          # `cat ${SCRIPT_DIR}/VERSION`. So install.sh used the REF's VERSION no
+          # matter what the input said.
+          #
+          # That is fine until the ref names a release that is not published
+          # yet -- which is the normal state between stamping VERSION for the
+          # next release and cutting it, because the release workflow refuses a
+          # tag whose tree does not already name it. In that window every
+          # install died half a second in with
+          #   "Could not parse GitHub's release metadata for intact-20260906"
+          # and 0 containers, which reads like a network fault rather than a
+          # tag that does not exist.
+          #
+          # ONLY when installing this ref's own tree: an upgrade scenario has
+          # already rsynced the OLD release over the appliance, and its VERSION
+          # is correct for the box it is pretending to be.
+          if [ -z "${INSTALL_FROM:-}" ] && [ -n "${IMAGES_TAG:-}" ]; then
+            echo "${IMAGES_TAG}" | sudo tee VERSION >/dev/null
+            echo "::notice::appliance VERSION pinned to ${IMAGES_TAG} (install.sh takes its bundle from it)"
+          fi
 
           # A routable address, never 127.0.0.1. It becomes the TLS CN and the
           # address the Velociraptor client calls back to -- and loopback would

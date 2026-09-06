@@ -335,3 +335,42 @@ class PreviousMustBeEarlierThanTheTarget(unittest.TestCase):
                           "PREVIOUS is resolved at run time, not pinned")
         self.assertEqual(scenarios.BY_NAME["ui-online-full"]["install_from"],
                          "PREVIOUS")
+
+
+class VersionOverrideMustActuallyControlTheInstall(unittest.TestCase):
+    """`version_override` is documented as "the release tag supplying the
+    upstream images". It was not.
+
+    The resolved tag reached QA_UPGRADE_TO and the job summary, but nothing wrote
+    it into the tree -- and lib/deps.sh takes the dependency bundle from
+    `cat ${SCRIPT_DIR}/VERSION`. So install.sh used the REF's VERSION whatever the
+    input said.
+
+    Harmless until the ref names a release that is not published yet, which is
+    the NORMAL state between stamping VERSION for the next release and cutting
+    it (the release workflow refuses a tag whose tree does not already name it).
+    In that window every install died half a second in with "Could not parse
+    GitHub's release metadata for intact-20260906" and 0 containers -- which
+    reads like a network fault, not a tag that does not exist.
+    """
+
+    def _host_step(self):
+        src = _read_workflow()
+        return src.split("id: host")[1].split("\n      - name:")[0]
+
+    def test_the_resolved_tag_is_written_into_the_appliance_version(self):
+        step = self._host_step()
+        self.assertIn("IMAGES_TAG:", step, "the step cannot pin what it is not told")
+        self.assertIn("sudo tee VERSION", step)
+
+    def test_it_only_pins_when_installing_this_refs_own_tree(self):
+        """An upgrade scenario has already rsynced the OLD release over the
+        appliance; its VERSION is correct for the box it is pretending to be."""
+        step = self._host_step()
+        self.assertIn('if [ -z "${INSTALL_FROM:-}" ]', step)
+
+    def test_deps_still_reads_VERSION_for_the_bundle(self):
+        """If this ever stops being true the pin above is pointless — and the
+        failure would be silent again."""
+        deps = io.open(os.path.join(ROOT, "lib/deps.sh"), encoding="utf-8").read()
+        self.assertRegex(deps, r'_bundle_tag=.*cat "\$\{SCRIPT_DIR\}/VERSION"')
