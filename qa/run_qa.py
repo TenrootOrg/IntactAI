@@ -69,8 +69,9 @@ def build_runner(ctx, cfg):
     """
     runner = runner_lib.Runner(ctx)
 
-    from phases import (endpoint, endpoint_linux, features, pipelines,
-                        platform, upgrade, workflows, wrapup)
+    from phases import (analysis, endpoint, endpoint_linux, features, hunts,
+                        maintenance, memory_plumbing, pipelines, platform,
+                        upgrade, workflows, wrapup)
     platform.register(runner, cfg)
     endpoint.register(runner, cfg)
     # The Linux profile: enrol the appliance itself as an endpoint, then drive
@@ -85,6 +86,17 @@ def build_runner(ctx, cfg):
     # upgrade route, so an install-only scenario carries no upgrade phases.
     upgrade.register(runner, cfg)
     workflows.register(runner, cfg)
+    # After the pipelines have produced a fused case and a filled box: the
+    # Case Analysis surface, a fleet hunt, and the memory plumbing. Each is its
+    # own phase rather than more checks inside `pipelines`, so the coverage
+    # floor in qa/coverage.py tracks them individually and a silent skip fails.
+    hunts.register(runner, cfg)
+    memory_plumbing.register(runner, cfg)
+    analysis.register(runner, cfg)
+    # LAST of the asserting phases. purge_run deletes the evidence every phase
+    # above depends on, so it must come after all of them -- and before wrapup,
+    # which still has to collect logs and write the report out of the box.
+    maintenance.register(runner, cfg)
     # Collection and teardown are registered last so they run after the
     # workflows: collect BEFORE teardown so nothing needed for the report is
     # destroyed, teardown BEFORE the report so its problems appear in it.
@@ -109,7 +121,22 @@ def build_runner(ctx, cfg):
         # against the box an upgrade STARTS from reported nine failures that
         # are simply what that release was. The hardening that matters is the
         # box you end up with.
-        moving = ["security", "enrol_linux", "features", "pipelines"]
+        # Everything that must run against the box the upgrade LEFT BEHIND,
+        # in dependency order -- _reorder inserts each before `collect`, so this
+        # list IS the resulting order.
+        #
+        # The analysis, hunt, memory and purge phases move WITH pipelines rather
+        # than staying where they register: they depend on `features` and
+        # `pipelines`, and this reorder puts those after the upgrade. Leaving
+        # them behind is not a crash -- their needs are simply never met, so
+        # they skip, and a skip is not a failure. tests/test_qa_harness.py
+        # caught exactly that, which is what it is for.
+        moving = ["security", "enrol_linux", "features", "pipelines",
+                  "hunt_linux", "memory_plumbing",
+                  "case_read", "case_report", "case_pdf", "case_mutations",
+                  "purge_scan",
+                  # LAST: it deletes the evidence every phase above asserts on.
+                  "purge_run"]
 
         # `auth` moves ONLY for the shell routes. intact-20260615 has no auth
         # system at all, so on those the dashboard can only be claimed once the

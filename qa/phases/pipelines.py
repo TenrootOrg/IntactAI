@@ -438,6 +438,14 @@ def _fusion(ctx, c, detail):
         ctx.check("Fusion: the case fused", False, actual=str(exc)[:180])
         return
 
+    # Remember it. The analysis phases drive an analyst's real loop against a
+    # case that has a graph, findings and a report -- and this is the only one
+    # in the run that does.
+    fused_id = (body or {}).get("case_id") or (body or {}).get("id")
+    if fused_id:
+        ctx.set(fused_case_id=fused_id)
+        ctx.tl.ids(fused_case_id=fused_id)
+
     ents = (body or {}).get("entities")
     rels = (body or {}).get("relationships")
     finds = (body or {}).get("findings")

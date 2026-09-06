@@ -1,0 +1,103 @@
+"""A green scenario that skipped the phases it exists to prove is worse than a red one.
+
+Run 34018978136 reported TWELVE successes while every scenario silently skipped
+seven phases -- kape, kape_gate, hunt, timesketch, volweb and fusion all
+cascading from "activity did not run" -- and refuse-and-repeat additionally
+skipped the downgrade half it is named after, because its tag resolved empty.
+`run_end pass=15 fail=0 skip=7` was reported as success.
+
+The skips were invisible precisely because they were CONSTANT: seven every time,
+in every scenario, so nothing stood out and a genuinely new one would have looked
+identical.
+"""
+
+import importlib.util
+import os
+import unittest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _mod(name):
+    spec = importlib.util.spec_from_file_location(
+        f"qa_{name}", os.path.join(ROOT, "qa", f"{name}.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+class _Res:
+    def __init__(self, status, because=None):
+        self.status, self.skipped_because = status, because
+
+
+def _all_passing(cov, route):
+    return {n: _Res("pass") for n in cov.required_for(route)}
+
+
+class ARequiredPhaseMayNotSkip(unittest.TestCase):
+    def setUp(self):
+        self.cov = _mod("coverage")
+
+    def test_a_clean_run_reports_nothing(self):
+        gaps, unexpected = self.cov.audit(_all_passing(self.cov, "cli"), "cli")
+        self.assertEqual((gaps, unexpected), ([], []))
+
+    def test_a_skipped_required_phase_is_reported(self):
+        results = _all_passing(self.cov, "cli")
+        results["pipelines"] = _Res("skip", "activity did not run")
+        gaps, _ = self.cov.audit(results, "cli")
+        self.assertIn("pipelines", [n for n, _ in gaps])
+
+    def test_a_phase_that_never_registered_is_not_a_pass(self):
+        """The worst shape: a scenario the harness does not recognise registers
+        no upgrade phases at all and reports a clean install."""
+        results = _all_passing(self.cov, "cli")
+        del results["upgrade"]
+        gaps, _ = self.cov.audit(results, "cli")
+        self.assertIn("upgrade", [n for n, _ in gaps])
+        self.assertIn("never registered", [st for _, st in gaps])
+
+    def test_every_upgrade_route_must_prove_the_upgrade_landed(self):
+        for route in ("bootstrap", "cli", "ui_online", "ui_import"):
+            self.assertIn("upgrade", self.cov.required_for(route), route)
+            self.assertIn("verify_upgrade", self.cov.required_for(route), route)
+
+    def test_the_linux_pipeline_is_required(self):
+        """`pipelines` is what plants Linux evidence, collects it and FUSES it --
+        the only place fusion is exercised in CI."""
+        self.assertIn("pipelines", self.cov.required_for(""))
+
+
+class AnUndocumentedSkipFailsTheRun(unittest.TestCase):
+    def setUp(self):
+        self.cov = _mod("coverage")
+
+    def test_a_new_skip_is_unexpected(self):
+        results = _all_passing(self.cov, "cli")
+        results["some_new_phase"] = _Res("skip", "because=something broke")
+        _, unexpected = self.cov.audit(results, "cli")
+        self.assertEqual([n for n, _ in unexpected], ["some_new_phase"])
+
+    def test_a_documented_gap_is_not_unexpected(self):
+        results = _all_passing(self.cov, "cli")
+        results["timesketch"] = _Res("skip", "needs the Windows endpoint")
+        _, unexpected = self.cov.audit(results, "cli")
+        self.assertEqual(unexpected, [])
+
+    def test_every_known_gap_carries_a_reason(self):
+        """The list is documentation of coverage we do NOT have; an entry with
+        no reason is just a silenced failure."""
+        for name, why in self.cov.KNOWN_GAPS.items():
+            self.assertTrue(why and len(why) > 10, name)
+
+    def test_a_known_gap_may_not_also_be_required(self):
+        """Contradictory declarations would let a required phase skip silently."""
+        for route in ("", "cli", "ui_online"):
+            for name in self.cov.required_for(route):
+                self.assertNotIn(name, self.cov.KNOWN_GAPS, name)
+
+    def test_the_windows_chain_is_recorded_as_not_exercised(self):
+        """Stated plainly because the workflow header claims otherwise."""
+        for name in ("kape", "timesketch", "volweb"):
+            self.assertIn(name, self.cov.KNOWN_GAPS)

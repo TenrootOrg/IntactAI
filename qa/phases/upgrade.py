@@ -435,6 +435,15 @@ def _post_upgrade(ctx, cfg, root, detail, rc):
         before = appliance.version_facts(root)
         older = cfg.downgrade_tag
         detail["downgrade_tag"] = older
+        # ASSERT, do not skip. `if older:` alone meant an unresolved PREVIOUS
+        # turned the refusal half into a no-op and the scenario still passed --
+        # measured: QA_DOWNGRADE_TAG empty, run_end pass=15 fail=0 skip=7, and
+        # the one property this scenario is named for was never tested.
+        ctx.check("the downgrade tag resolved", bool(older),
+                  expected="a published release older than the target",
+                  actual=older or "(empty)",
+                  note="PREVIOUS is read from `gh release list`; with no tag "
+                       "there is nothing to refuse and the check below is a lie")
         if older:
             r = up.run_cli(shell, cfg, root, tag=older, tl=ctx.tl,
                            pin_engine=True)

@@ -364,8 +364,11 @@ def register(runner, cfg):
         ctx.check("every container is running and healthy", not unhealthy,
                   actual=", ".join(unhealthy[:8]) or "all healthy")
 
+        runtime = _runtime_config_drift(ctx)
+
         return {"containers": len(names), "unhealthy": unhealthy,
-                "install_rc": r.rc, "images_vanished": detail_vanished}
+                "install_rc": r.rc, "images_vanished": detail_vanished,
+                "runtime_config": runtime}
 
     # ---------------------------------------------------------------- 0b --
     # ------------------------------------------------------------------ C.5 --
@@ -772,6 +775,73 @@ def _reset_first_login(tl, path=None):
         tl.warn("first_login_reset_failed", detail=str(exc)[:200])
         return False
 
+
+
+# Runtime settings a compose file can declare that a HEALTHY container can still
+# be missing, because they only take effect on a recreate.
+#
+# THE OUTAGE THIS EXISTS FOR. The backend runs the subscription CLI with its
+# credential home on tmpfs, and Docker's default /dev/shm is 64MB. That was
+# invisible while report narration made one model call at a time; when narration
+# started fanning out one call per phase, the fifth and sixth died with "No space
+# left on device" on a box with 43GB free. The fix is `shm_size: 1gb` plus
+# `init: true` in modules/backend/docker-compose.yaml -- and BOTH are inert
+# unless the container is actually recreated, which an upgrade may or may not do.
+# Every container was "healthy" throughout.
+#
+# Declared-vs-running rather than hardcoded values, so this cannot rot when the
+# numbers change.
+_RUNTIME_KEYS = {
+    "shm_size": ("{{.HostConfig.ShmSize}}", "tmpfs for the CLI credential homes"),
+    "init":     ("{{.HostConfig.Init}}", "reaps orphaned CLI children"),
+}
+
+
+def _compose_declares(path):
+    """{key: value} for the runtime keys a compose file sets on `backend`."""
+    try:
+        import yaml
+        with open(path, encoding="utf-8") as fh:
+            svc = (yaml.safe_load(fh) or {}).get("services", {}).get("backend", {})
+        return {k: svc[k] for k in _RUNTIME_KEYS if k in svc}
+    except Exception:
+        return {}
+
+
+def _as_bytes(value):
+    """'1gb' -> 1073741824. Docker reports ShmSize in bytes."""
+    text = str(value).strip().lower().replace("b", "")
+    mult = {"k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}
+    if text and text[-1] in mult:
+        return int(float(text[:-1]) * mult[text[-1]])
+    return int(float(text))
+
+
+def _runtime_config_drift(ctx):
+    """Assert the RUNNING backend carries what its compose file declares."""
+    compose = os.path.join(REPO_DIR, "modules/backend/docker-compose.yaml")
+    declared = _compose_declares(compose)
+    if not declared:
+        return {}                      # nothing declared: nothing to enforce
+    out = {}
+    for key, value in sorted(declared.items()):
+        tmpl, why = _RUNTIME_KEYS[key]
+        r = shell.docker(["inspect", "-f", tmpl, "intact_backend"])
+        actual = (r.out or "").strip() if r.ok else "(inspect failed)"
+        if key == "shm_size":
+            ok = r.ok and actual.isdigit() and int(actual) >= _as_bytes(value)
+            shown = f"{int(actual) // 1024 ** 2}MB" if actual.isdigit() else actual
+            want = f">={_as_bytes(value) // 1024 ** 2}MB"
+        else:
+            ok = r.ok and actual.lower() == str(value).lower()
+            shown, want = actual, str(value)
+        out[key] = shown
+        ctx.check(f"the running backend has the {key} its compose declares", ok,
+                  expected=want, actual=shown,
+                  note=f"{why}; a compose key only takes effect on a recreate, "
+                       "so an upgrade that restarts instead of recreating leaves "
+                       "a healthy container without it")
+    return out
 
 def _glob_logs(repo_dir):
     import glob

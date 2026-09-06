@@ -193,6 +193,38 @@ def register(runner, cfg):
                   note="if this fails, treat every artifact in this run "
                        "directory as containing live credentials")
 
+        # COVERAGE. A green scenario that skipped the phases it exists to prove
+        # is worse than a red one: run 34018978136 reported twelve successes
+        # while every scenario silently skipped seven phases, and
+        # refuse-and-repeat skipped the downgrade half it is named after.
+        import coverage as coverage_lib
+        import scenarios as scenarios_lib
+        route = scenarios_lib.route_for(cfg.scenario) or ""
+        gaps, unexpected = coverage_lib.audit(ctx.results, route)
+        ctx.check("every phase this run had to exercise actually ran",
+                  not gaps,
+                  expected="all required phases pass",
+                  actual=", ".join(f"{n} ({st})" for n, st in gaps) or "all ran",
+                  note="a required phase that skipped means this run proved "
+                       "less than the scenario claims; see qa/coverage.py")
+        ctx.check("no phase skipped for an undocumented reason",
+                  not unexpected,
+                  expected="skips are either required-and-reported above or "
+                           "listed in coverage.KNOWN_GAPS",
+                  actual=", ".join(f"{n}: {why}" for n, why in unexpected)
+                         or "none",
+                  note="an unrecorded skip is how a disabled pipeline hides "
+                       "inside a passing board")
+        # Not a failure, but it must be SAID: these are the things a green run
+        # does not prove.
+        known = sorted(n for n, r in ctx.results.items()
+                       if getattr(r, "status", None) == "skip"
+                       and n in coverage_lib.KNOWN_GAPS)
+        if known:
+            ctx.tl.warn("coverage_gaps", stage="report", detail={
+                "not_exercised": known,
+                "why": {n: coverage_lib.KNOWN_GAPS[n] for n in known}})
+
         # Everything the harness writes goes through ctx.redact on the way in.
         # The engine's own logs do not: run_bootstrap and run_cli pass `--log
         # <path>` INTO the run directory, so the product writes there directly

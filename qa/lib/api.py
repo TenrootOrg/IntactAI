@@ -61,6 +61,20 @@ class Client:
     def post(self, path, payload=None, **kw):
         return self.request("POST", path, json=payload or {}, **kw)
 
+    def raw(self, path, expect=(200,), **kw):
+        """Response BYTES. `request` decodes to JSON or text, which mangles a
+        PDF — and a PDF that arrives as a str is indistinguishable from an
+        error page once it has been through .text."""
+        kw.setdefault("timeout", self.timeout)
+        r = self.s.get(self.base + path, **kw)
+        if self.tl:
+            self.tl.event("api", status="ok" if r.status_code in expect else "fail",
+                          detail={"method": "GET", "path": path,
+                                  "status": r.status_code, "bytes": len(r.content)})
+        if expect and r.status_code not in expect:
+            raise APIError("GET", path, r.status_code, r.text[:200])
+        return r.content
+
     def status_of(self, path):
         """Status code only — for probing that an endpoint is guarded."""
         try:
