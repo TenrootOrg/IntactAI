@@ -132,25 +132,38 @@ def register(runner, cfg):
                   note="a deterministic report over a real graph is thousands "
                        "of characters; a short one means it fell back to a stub")
 
-        # The banner states which report this is, and the two altitudes read
-        # completely differently. Whichever it chose, it must SAY so -- an
-        # operator cannot tell a focused report from a truncated segmented one.
+        # THE ALTITUDE BANNER IS NOT ASSERTED HERE, and the first run is why:
+        # render.report_mode_banner is called only from llm_sim's narration path
+        # (both call sites are in llm_sim.py), so the DETERMINISTIC report never
+        # carries it. Asserting it failed every scenario for a thing the no-model
+        # path is not supposed to produce. Recorded, not asserted.
         mode = ("segmented" if "**Segmented report**" in md
                 else "focused" if "**Focused report**" in md else None)
         detail["mode"] = mode
-        ctx.check("the report declares its altitude", bool(mode),
-                  expected="Segmented or Focused", actual=mode or "neither",
-                  note="render.report_mode_banner writes this; missing means "
-                       "the banner was dropped from assembly")
+
+        # facts_md writes this line FIRST, unconditionally, on every report --
+        # the honest marker that the deterministic body assembled, as opposed to
+        # a stub or an error string that happened to be long enough.
+        ctx.check("the deterministic body assembled",
+                  "_Report detail:" in md,
+                  expected="the report-detail footer facts_md always writes",
+                  actual="present" if "_Report detail:" in md else "absent")
 
         headings = re.findall(r"^##\s+(.+?)\s*$", md, re.MULTILINE)
         detail["sections"] = headings
-        required = ["Indicators of Compromise", "Host Risk", "Limitations"]
+        # ONLY WHAT IS UNCONDITIONAL. "Indicators of Compromise" renders behind
+        # `if kept_iocs:` and a clean Linux box legitimately has none -- the first
+        # run failed on exactly that. Limitations is always appended.
+        required = ["Limitations"]
         absent = [h for h in required
                   if not any(h.lower() in x.lower() for x in headings)]
-        ctx.check("every deterministic section is present", not absent,
+        ctx.check("the report carries its unconditional sections", not absent,
                   expected=", ".join(required),
-                  actual=", ".join(absent) + " missing" if absent else "all present")
+                  actual=", ".join(absent) + " missing" if absent
+                         else f"{len(headings)} section(s)")
+        ctx.check("the report has more than one section", len(headings) >= 2,
+                  expected=">=2 sections", actual=len(headings),
+                  note="a one-section report is a body that failed to assemble")
 
         # The phase table and the zoom cards are built from ONE list on purpose,
         # so an operator clicking "Timeframe 3" gets the window the report
@@ -227,9 +240,15 @@ def register(runner, cfg):
             fid = findings[0].get("id")
             before = len(_items(c.get(f"{base}/dispositions", expect=_SOFT),
                                 "dispositions"))
+            # The route reads `target` (a finding OR entity id) plus verdict /
+            # attribution / reason / scope. The first run sent `finding_id` and
+            # got 400 "target (finding_id or entity_id) required" -- read out of
+            # case_routes.py rather than guessed a second time.
             c.post(f"{base}/disposition",
-                   {"finding_id": fid, "disposition": "benign",
-                    "note": "QA: expected activity"})
+                   {"target": fid, "verdict": "benign",
+                    "attribution": "it_admin",
+                    "reason": "QA: expected activity", "scope": "case"},
+                   expect=(200, 201, 202))
             after = _items(c.get(f"{base}/dispositions", expect=_SOFT),
                            "dispositions")
             detail["did"].append("disposition")

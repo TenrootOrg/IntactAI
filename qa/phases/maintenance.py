@@ -26,6 +26,10 @@ the state everything else depends on.
 
 SECTIONS_PATH = "/api/maintenance/purge/sections"
 
+# The scan shells out to `docker system df`, du's the Velociraptor datastore and
+# queries Elasticsearch. Measured: longer than the client's 60s default.
+SCAN_TIMEOUT_S = 300
+
 # What `purge_run` actually removes. DATA sections only, and the docker_* rows
 # are excluded on purpose: they prune images, and the suite still has to collect
 # logs and write a report out of the containers afterwards. Pruning "unused"
@@ -55,7 +59,12 @@ def register(runner, cfg):
                   needs=("pipelines",))
     def purge_scan(ctx):
         c = ctx.get("client")
-        body = c.get(SECTIONS_PATH)
+        # A LONG TIMEOUT, because the scan is genuinely slow: it shells out to
+        # `docker system df`, du's the Velociraptor datastore and queries
+        # Elasticsearch. The first run died on the client's 60s default with a
+        # read timeout, which reads as "the endpoint is broken" rather than
+        # "this honestly takes a while".
+        body = c.get(SECTIONS_PATH, timeout=SCAN_TIMEOUT_S)
         rows = _rows(body)
         detail = {"sections": len(rows),
                   "sizes": {s.get("id"): s.get("size_bytes") for s in rows
@@ -109,7 +118,7 @@ def register(runner, cfg):
                   needs=("purge_scan",))
     def purge_run(ctx):
         c = ctx.get("client")
-        before = _by_id(c.get(SECTIONS_PATH))
+        before = _by_id(c.get(SECTIONS_PATH, timeout=SCAN_TIMEOUT_S))
         wanted = [s for s in PURGE_SECTIONS if s in before]
         detail = {"requested": wanted,
                   "before": {k: before[k].get("size_bytes") for k in wanted}}
@@ -134,7 +143,7 @@ def register(runner, cfg):
         ctx.check("the purge completed", status == "completed",
                   expected="completed", actual=status)
 
-        after = _by_id(c.get(SECTIONS_PATH))
+        after = _by_id(c.get(SECTIONS_PATH, timeout=SCAN_TIMEOUT_S))
         detail["after"] = {k: (after.get(k) or {}).get("size_bytes") for k in wanted}
 
         # The point of the whole feature: bytes an operator was promised are

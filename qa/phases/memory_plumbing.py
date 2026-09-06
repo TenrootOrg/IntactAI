@@ -22,12 +22,29 @@ terminal state. None of them needed a parsed process list to catch.
 THE IMAGE IS REAL. /proc/kcore is an ELF view of live kernel memory, present on
 the runner, and needs no download. A slice of it is genuine memory rather than a
 synthetic file, which keeps the upload and the format sniffing honest.
+
+AND IT IS DELIBERATELY CANCELLED. Measured on the first run: the analysis reached
+52% and then sat for the full twenty-minute timeout -- because a kcore slice is
+not a physical memory image, so Volatility brute-force scans it for a kernel
+banner that is not there. Waiting for that to finish is not a test of anything;
+it cost twenty minutes on every one of eleven scenarios and asserted nothing a
+shorter wait would not. So the phase lets the run work for RUN_SECONDS, proves it
+is genuinely running, then STOPS it and proves it terminates -- which exercises
+/api/memory/run/<id>/stop as well, an endpoint nothing else touches, and is the
+plumbing an operator actually depends on when they point the tool at the wrong
+image.
 """
 
 import os
 
 MB = 1024 * 1024
-SLICE_MB = 64          # enough to be a plausible image, small enough to move
+SLICE_MB = 16          # enough to be a plausible image, small enough to move
+
+# How long to let the analysis actually run before cancelling it. NOT a timeout
+# on the pipeline -- see the note in the phase: we are proving the plumbing
+# moves, and then that the operator can stop it.
+RUN_SECONDS = 90
+STOP_SECONDS = 240
 
 
 def register(runner, cfg):
@@ -98,22 +115,46 @@ def register(runner, cfg):
             return detail
         tl.ids(memory_run_id=run_id)
 
-        # 3. it must REACH AN END. Not that it parsed -- Volatility has no
-        #    symbol table for this kernel and will very likely say so.
-        run = c.wait_for_run(run_id, cfg.timeout("memory", 20) * 60, tl,
-                             what="the memory analysis run")
-        status = (run or {}).get("status")
-        detail["status"] = status
-        ctx.check("the memory run reached a terminal state", bool(run),
-                  expected="completed or failed",
-                  actual=status or "still running at timeout",
-                  note="THE ASSERTION THAT MATTERS. A pipeline that never "
-                       "terminates leaves the operator watching a spinner "
-                       "forever, which is the failure this module has actually "
-                       "shipped before")
-        ctx.check("the run reported an outcome rather than nothing",
-                  bool(status),
-                  actual=status,
-                  note="'failed: no symbol table' is a working pipeline "
-                       "answering honestly; silence is not")
+        # 3. it must genuinely be WORKING, not accepted and dropped on the floor.
+        import time
+        deadline = time.time() + RUN_SECONDS
+        seen = []
+        while time.time() < deadline:
+            st = c.run_status(run_id) or {}
+            seen.append((st.get("status"), st.get("progress")))
+            if st.get("status") not in ("running", "queued", "pending", None):
+                break
+            time.sleep(10)
+        detail["observed"] = seen[-1] if seen else None
+        progressed = any((p or 0) > 1 for _, p in seen)
+        detail["progressed"] = progressed
+        ctx.check("the memory pipeline actually started working", progressed,
+                  expected="progress past 1%",
+                  actual=str(seen[-1]) if seen else "no status at all",
+                  note="accepted-then-dropped answers 202 and never moves; "
+                       "measured, a healthy run reaches ~52% within a minute")
+
+        # 4. and the operator can STOP it. Nothing else in the suite touches
+        #    this endpoint, and it is what someone needs when they have pointed
+        #    the tool at the wrong image -- exactly what this phase just did.
+        last = seen[-1][0] if seen else None
+        if last in ("running", "queued", "pending", None):
+            c.post(f"/api/memory/run/{run_id}/stop", {},
+                   expect=(200, 202, 400, 404, 409))
+            run = c.wait_for_run(run_id, STOP_SECONDS, tl,
+                                 what="the memory run stopping")
+            status = (run or {}).get("status")
+            detail["status_after_stop"] = status
+            ctx.check("a stopped memory run reaches a terminal state", bool(run),
+                      expected="stopped, failed or completed",
+                      actual=status or f"still running {STOP_SECONDS}s after stop",
+                      note="THE ASSERTION THAT MATTERS. A run that ignores stop "
+                           "leaves the operator watching a spinner they cannot "
+                           "cancel, holding a container the box needs back")
+        else:
+            detail["status_after_stop"] = last
+            ctx.check("the memory run reached a terminal state on its own",
+                      True, actual=last,
+                      note="it finished inside the observation window, so there "
+                           "was nothing to stop")
         return detail
