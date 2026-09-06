@@ -12,6 +12,7 @@ identical.
 """
 
 import importlib.util
+import io
 import os
 import unittest
 
@@ -101,3 +102,32 @@ class AnUndocumentedSkipFailsTheRun(unittest.TestCase):
         """Stated plainly because the workflow header claims otherwise."""
         for name in ("kape", "timesketch", "volweb"):
             self.assertIn(name, self.cov.KNOWN_GAPS)
+
+
+class TheStrongestAssertionMustNotBeOptionalInCI(unittest.TestCase):
+    """`Fusion: the planted evidence was detected` is the only check in the suite
+    that proves the detection engine RECOGNISED something rather than merely
+    built a graph. It is guarded by `cfg.plant_evidence`, which defaults to
+    FALSE — and when it is off the check does not run, the phase still passes,
+    and the remaining fusion checks fall back to `relationships > 0`, which the
+    process tree satisfies on any Linux box, working or not.
+
+    Operators may legitimately disable planting: it writes to /etc/cron.d and
+    /etc/passwd. CI may not, and that is what this pins.
+    """
+
+    def _workflow(self):
+        return io.open(os.path.join(ROOT, ".github/workflows/e2e.yml"),
+                       encoding="utf-8").read()
+
+    def test_ci_enables_evidence_planting(self):
+        self.assertIn("QA_PLANT_EVIDENCE: '1'", self._workflow(),
+                      "with this off the suite loses its primary detection "
+                      "assertion and still reports green")
+
+    def test_a_run_without_planting_says_so(self):
+        src = io.open(os.path.join(ROOT, "qa/phases/pipelines.py"),
+                      encoding="utf-8").read()
+        self.assertIn("the detection assertion ran", src,
+                      "a missing check is indistinguishable from a passing one; "
+                      "the run must state that it did not assert")

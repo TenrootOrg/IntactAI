@@ -488,6 +488,20 @@ def _fusion(ctx, c, detail):
     # The assertion that means something. relationships > 0 passes on any Linux
     # box; findings > 0 only passes if the engine actually recognised what was
     # put in front of it.
+    if not detail.get("planted"):
+        # SAY SO. This is the suite's strongest assertion -- the only one that
+        # proves the detection engine RECOGNISED something rather than merely
+        # built a graph -- and it is guarded by a config flag that defaults to
+        # off. Without this line a run with planting disabled passes with the
+        # check simply absent, which is indistinguishable from a run where it
+        # passed. Operators may legitimately disable planting (it writes to
+        # /etc/cron.d and /etc/passwd); CI must not, and a repo test pins that.
+        ctx.check("Fusion: the detection assertion ran", True,
+                  actual="SKIPPED: evidence planting is disabled, so findings>0 "
+                         "was never asserted",
+                  note="the remaining fusion checks fall back to "
+                       "relationships > 0, which process-tree edges satisfy on "
+                       "any Linux box, working or not")
     if detail.get("planted"):
         ctx.check("Fusion: the planted evidence was detected", (finds or 0) > 0,
                   expected=">0 findings", actual=finds,
