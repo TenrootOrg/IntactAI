@@ -86,3 +86,37 @@ class AnnotationsMustNameTheChecksThatFailed(unittest.TestCase):
 
     def test_the_verdict_notice_still_reports_the_counts(self):
         self.assertIn("2 passed, 2 failed, 0 errored, 1 skipped", self.out)
+
+
+class TheTestSuiteMustRunStandalone(unittest.TestCase):
+    """tests/run_tests.sh executes each suite as `python3 <file>`, not under
+    pytest. Three suites died at import with ModuleNotFoundError because
+    importing anything under `services.` pulls in services/__init__.py ->
+    velociraptor_service -> `import grpc`, which is a backend-container
+    dependency the runner deliberately does not install.
+
+    Under pytest they passed, because an earlier test in the same process had
+    already stubbed grpc. A suite whose result depends on what ran before it is
+    not telling you anything -- and these had been failing in the shell runner
+    for weeks with nothing running them to notice."""
+
+    def _standalone(self, name):
+        import subprocess
+        return subprocess.run([sys.executable, os.path.join(ROOT, "tests", name)],
+                              capture_output=True, text=True, timeout=300,
+                              cwd=os.path.join(ROOT, "tests"))
+
+    def test_the_suites_that_import_services_run_standalone(self):
+        for name in ("test_fusion_behavioral.py", "test_investigate_v2.py",
+                     "test_report_altitude.py"):
+            r = self._standalone(name)
+            self.assertEqual(r.returncode, 0,
+                             f"{name} fails standalone:\n{r.stderr[-600:]}")
+
+    def test_the_stub_only_covers_absent_modules(self):
+        """It must never shadow a real dependency that IS installed."""
+        sys.path.insert(0, os.path.join(ROOT, "tests"))
+        import _optional_deps
+        for name in _optional_deps.MISSING:
+            self.assertNotIn(name, ("json", "os", "sys", "re"),
+                             "a stdlib module was stubbed")

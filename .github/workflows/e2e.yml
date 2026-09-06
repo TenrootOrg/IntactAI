@@ -130,13 +130,26 @@ permissions:
   contents: read
 
 concurrency:
-  # Per ref, and queued rather than cancelled: killing a run halfway leaves a
+  # Per ref, and the superseded run is CANCELLED rather than queued.
+  #
+  # This used to queue, on the reasoning that "killing a run halfway leaves a
   # half-installed appliance and a half-written report, which is worse than
-  # waiting.
+  # waiting". That holds for a persistent box and not for this: every scenario
+  # runs on its own hosted VM that is destroyed when the job ends, so there is
+  # no appliance left half-installed and no report anyone will read -- the run
+  # was superseded precisely because its result no longer matters.
+  #
+  # Measured on 2026-09-06, which is what changed it: two superseded runs
+  # ignored `gh run cancel` and held twelve VMs each for 40+ minutes, and a
+  # fresh dispatch sat `pending` with no jobs for eleven minutes behind them.
+  # Waiting was the expensive option.
+  #
+  # build-release-assets.yml is the opposite case and correctly keeps `false`:
+  # a publish must never be cancelled by a later one.
   group: e2e-${{ github.event.inputs.ref || github.ref_name }}
   # Per REF, not per scenario: the matrix jobs are on separate VMs and
   # must run concurrently. Two dispatches of the same ref still queue.
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   # ------------------------------------------------------------------------

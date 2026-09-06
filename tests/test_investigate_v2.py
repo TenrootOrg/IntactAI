@@ -27,6 +27,12 @@ for _p in ("/app", os.path.join(_ROOT, "modules/backend"), _ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+# grpc is a backend-container dependency, not a test one, and importing
+# anything under `services.` pulls it in via services/__init__.py. Stub it
+# before that import or this file cannot be run standalone -- which is exactly
+# how tests/run_tests.sh runs it.
+import _optional_deps  # noqa: F401,E402
+
 from services.fusion import investigate, llm_sim, schema  # noqa: E402
 
 _T0 = _dt.datetime(2026, 1, 1, 12, 0, 0, tzinfo=_dt.timezone.utc)
