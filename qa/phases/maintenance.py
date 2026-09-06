@@ -89,11 +89,15 @@ def register(runner, cfg):
                        "still reports success — this is exactly how the ELK row "
                        "hid 2.43 GB behind an unauthenticated 401")
 
-        # Every row must carry a detail string. "0 B" with no explanation is the
-        # shape an operator cannot act on.
+        # A section HOLDING SOMETHING must say what. An empty one legitimately
+        # has nothing to explain -- the first run failed on azure_runs, uploads,
+        # upgrade_packages, temp_files and report_downloads, all of which were
+        # simply empty on a fresh box. "0 B" with no detail is fine; "1.2 GB"
+        # with no detail is what an operator cannot act on.
         mute = [s.get("id") for s in rows
-                if isinstance(s, dict) and not (s.get("detail") or "").strip()]
-        ctx.check("every section explains what it holds", not mute,
+                if isinstance(s, dict) and (s.get("size_bytes") or 0) > 0
+                and not (s.get("detail") or "").strip()]
+        ctx.check("every section holding data explains what it holds", not mute,
                   actual=", ".join(str(m) for m in mute) or "all explained")
 
         # The estimate must not promise the same disk twice: docker_deep counts

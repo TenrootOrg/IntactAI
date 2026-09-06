@@ -1714,6 +1714,15 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     # "first scan generates it; afterwards only on rescan".
     if d.get("report_md") and not force_report:
         report = d.get("report_md")
+        # NO NARRATION ON THIS PATH -- the report is reused verbatim. Bound here
+        # because the patch below reads it: it was assigned ONLY in the else
+        # branch, so every re-fuse of a case that already had a report raised
+        # UnboundLocalError and answered 500. That is the ordinary path for a
+        # disposition, a timeline edit or a host exclusion, all of which re-fuse.
+        # Caught by the e2e's new case_mutations phase on the first run that
+        # reached it: POST /disposition -> 500 "cannot access local variable
+        # '_narrate' where it is not associated with a value".
+        _narrate = False
         # Report reused verbatim → it still reflects whatever members it was last
         # written from, NOT the (possibly newer) graph members. Tracking this
         # separately from fused_run_ids lets the deterministic graph auto-refresh
@@ -1876,9 +1885,14 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                                   "graph_counts": _counts_from_graph_dict(pruned),
                                   "report_md": report,
                                   "token_ab": token_ab,
+                                  # Reusing a report must not zero the cost the
+                                  # LAST narration actually paid -- the estimate
+                                  # reads this, and a re-fuse would otherwise
+                                  # make every case quote the flat fallback.
                                   "report_llm_calls": (
                                       _expected_llm_calls(gv, d, window, min_sev)
-                                      if _narrate else 0),
+                                      if _narrate
+                                      else (d.get("report_llm_calls") or 0)),
                                   # Record exactly which member runs this graph was
                                   # built from, so the UI can detect when new runs
                                   # have landed since (stale_member_runs) and show a

@@ -323,3 +323,34 @@ class TheCostEstimateMustCountTheCallsWeActuallyMake(unittest.TestCase):
             if any(w in low for w in past):
                 continue                      # describing the removal, not the present
             self.fail(f"store.py:{i} still counts the removed advisory: {line.strip()}")
+
+
+class ARefuseThatReusesItsReportMustNotCrash(unittest.TestCase):
+    """A re-fuse of a case that ALREADY has a report answered 500.
+
+    `_narrate` was assigned only in the branch that generates a report, but the
+    details patch at the end read it unconditionally. So the reuse path -- the
+    ordinary one for a disposition, a timeline edit or a host exclusion, all of
+    which re-fuse the graph and deliberately leave the narrative frozen -- raised
+    UnboundLocalError:
+
+        cannot access local variable '_narrate' where it is not associated
+        with a value
+
+    Introduced by the cost-model change (report_llm_calls) and caught by the
+    e2e's new case_mutations phase the first run that reached it.
+    """
+
+    def test_narrate_is_bound_on_the_reuse_path(self):
+        src = _read_source("modules/backend/services/fusion/store.py")
+        reuse = src.split('if d.get("report_md") and not force_report:')[1]
+        reuse = reuse.split("\n    else:")[0]
+        self.assertIn("_narrate = False", reuse,
+                      "the patch below reads _narrate; leaving it unbound on "
+                      "this path is a 500 on every triage re-fuse")
+
+    def test_reusing_a_report_keeps_the_call_count_it_paid(self):
+        """Zeroing it would make the next estimate quote the flat fallback for a
+        case whose real cost is known."""
+        src = _read_source("modules/backend/services/fusion/store.py")
+        self.assertIn('else (d.get("report_llm_calls") or 0)', src)
