@@ -61,13 +61,21 @@ OLDEST_WITHOUT_ENGINE = "intact-20260726"
 # mechanism is understood, confirmed, and permanent.
 FIRST_WITH_ENGINE = "intact-20260811"
 
-# The first release where a genuinely-online dashboard upgrade can work end to
-# end: it carries both the engine (bootstrap_upgrade.sh) and the scoped-
-# verification fix FIRST_WITH_ENGINE (2026-08-13) predates. This is what
-# ui-online-full and ui-import-full actually hop through -- proving the
-# dashboard route works from the oldest release it CAN work from, rather than
-# re-proving the permanent 0811 gap documented above on every run.
-FIRST_WITH_SCOPED_FETCH = "intact-20260818"
+# The oldest STILL-PUBLISHED release where a genuinely-online dashboard upgrade
+# can work end to end: it carries both the engine (bootstrap_upgrade.sh) and the
+# scoped-verification fix FIRST_WITH_ENGINE (2026-08-13) predates. This is what
+# ui-online-full hops through -- proving the dashboard route works from the
+# oldest release it CAN work from, rather than re-proving the permanent 0811 gap
+# documented above on every run.
+#
+# WAS intact-20260818, AND THAT RELEASE HAS BEEN DELETED. The pin is a fact about
+# code history, but the harness has to DOWNLOAD the release to use it, so an
+# untagged release makes the fact unreachable. The failure was ugly: curl 404'd,
+# the tarball never unpacked, and the check reported "no scripts/upgrade.sh" --
+# which reads as "that release shipped no engine" rather than "that release is
+# gone". Nine minutes of install ran first. _assert_tags_published() below now
+# catches this at resolve time instead; see its note.
+FIRST_WITH_SCOPED_FETCH = "intact-20260825"
 
 # Roles a scenario may name instead of a tag. The workflow resolves these at
 # dispatch time; PREVIOUS comes from the release list, the rest are the pins
@@ -116,7 +124,7 @@ SCENARIOS = [
      "modules": "all", "route": "bootstrap",
      "proves": "a box too old to have an engine can still be moved"},
 
-    # Hops via FIRST_SCOPED_FETCH (intact-20260818), not FIRST_ENGINE
+    # Hops via FIRST_SCOPED_FETCH, not FIRST_ENGINE
     # (intact-20260811) — see FIRST_WITH_ENGINE's own comment above for why
     # 0811 specifically can never pass this route, permanently, by design of
     # what a frozen release is. This scenario proves the dashboard route
@@ -126,7 +134,7 @@ SCENARIOS = [
      "install_mode": "online", "modules": "shipped", "route": "ui_online",
      "hop_via": "FIRST_SCOPED_FETCH",
      "proves": "the dashboard upgrade works end to end from the oldest "
-               "release that can actually run it (intact-20260818 forward) "
+               "release that can actually run it (FIRST_WITH_SCOPED_FETCH forward) "
                "to the latest — every currently-supported box is covered"},
 
     {"name": "ui-import-full", "install_from": "OLDEST_NO_ENGINE",
@@ -210,3 +218,27 @@ def resolve(names, previous_tag=None):
             "downgrade_tag": tag(spec.get("downgrade_from")),
         })
     return rows
+
+
+def assert_tags_published(rows, published):
+    """Raise if any resolved tag is not among `published`.
+
+    THE PINS ARE FACTS ABOUT CODE HISTORY, BUT THE HARNESS DOWNLOADS THEM. When
+    intact-20260818 was deleted, ui-online-full still resolved to it, curl 404'd,
+    and the hop check reported "no scripts/upgrade.sh" -- indistinguishable from
+    "that release shipped no engine", and only after a nine-minute install had
+    already run. Checking here costs nothing and names the real problem.
+
+    `published` empty means the release list could not be read; that is a
+    different failure and must not masquerade as a missing tag.
+    """
+    if not published:
+        return []
+    known = set(published)
+    missing = []
+    for row in rows:
+        for field in ("install_from", "hop_via", "downgrade_tag"):
+            tag = (row.get(field) or "").strip()
+            if tag and tag not in known:
+                missing.append((row["scenario"], field, tag))
+    return missing

@@ -216,3 +216,53 @@ class TestScenarioCatalogue(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+def _scenarios():
+    """Import qa/scenarios.py as a module. The tests above read it as TEXT (they
+    assert on how the workflow references it); these need the resolver itself."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "qa_scenarios", os.path.join(ROOT, "qa", "scenarios.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class EveryPinnedReleaseMustStillBePublished(unittest.TestCase):
+    """A scenario pin is a fact about code history -- "which release first carried
+    an on-disk engine" -- but the harness has to DOWNLOAD that release to use it.
+
+    intact-20260818 was pinned as FIRST_SCOPED_FETCH and the release was later
+    deleted. ui-online-full still resolved to it, curl 404'd, the tarball never
+    unpacked, and the hop check reported "no scripts/upgrade.sh" -- which reads as
+    "that release shipped no engine" rather than "that release is gone". It cost a
+    nine-minute install before saying anything.
+    """
+
+    def test_a_deleted_pin_is_reported_with_its_scenario(self):
+        scenarios = _scenarios()
+        rows = scenarios.resolve(["ui-online-full"], previous_tag="")
+        missing = scenarios.assert_tags_published(rows, ["intact-20260726"])
+        self.assertTrue(missing, "a tag absent from the release list must be named")
+        names = {m[0] for m in missing}
+        self.assertIn("ui-online-full", names)
+
+    def test_a_published_pin_passes(self):
+        scenarios = _scenarios()
+        rows = scenarios.resolve(["ui-online-full"], previous_tag="")
+        tags = {r.get(f) for r in rows for f in
+                ("install_from", "hop_via", "downgrade_tag") if r.get(f)}
+        self.assertEqual(scenarios.assert_tags_published(rows, sorted(tags)), [])
+
+    def test_an_unreadable_release_list_is_not_a_missing_tag(self):
+        """`gh release list` failing is a DIFFERENT failure and must not
+        masquerade as every pin having been deleted."""
+        scenarios = _scenarios()
+        rows = scenarios.resolve(["ui-online-full"], previous_tag="")
+        self.assertEqual(scenarios.assert_tags_published(rows, []), [])
+
+    def test_the_scoped_fetch_pin_is_not_the_deleted_release(self):
+        scenarios = _scenarios()
+        self.assertNotEqual(scenarios.FIRST_WITH_SCOPED_FETCH, "intact-20260818",
+                            "repointed after that release was deleted")

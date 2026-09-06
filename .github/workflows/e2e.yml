@@ -270,6 +270,7 @@ jobs:
           # on-disk engine -- and those are facts, not dates.
           target = os.environ.get("IMAGES_TAG") or ""
           previous = ""
+          tags = []          # empty = the list could not be read, NOT "no releases"
           try:
               out = subprocess.run(["gh", "release", "list", "--limit", "30",
                                     "--json", "tagName"], capture_output=True,
@@ -296,6 +297,21 @@ jobs:
                       f"Known: {', '.join(sorted(S.BY_NAME))}")
           
           rows = S.resolve(names, previous_tag=previous)
+          
+          # A pin naming a DELETED release must fail here, in seconds, not after a
+          # nine-minute install. intact-20260818 was pinned as FIRST_SCOPED_FETCH,
+          # the release was deleted, and ui-online-full spent the whole install
+          # before curl 404'd and the hop reported "no scripts/upgrade.sh" -- which
+          # reads as "that release shipped no engine", not "that release is gone".
+          missing = S.assert_tags_published(rows, tags)
+          if missing:
+              lines = "\n".join(f"    {sc}: {field} = {tag}" for sc, field, tag in missing)
+              raise SystemExit(
+                  "::error title=A scenario pins a release that is not published::"
+                  f"these tags are not in the release list:\n{lines}\n"
+                  "  Either the release was deleted, or the pin is a typo. "
+                  "Repoint the constant in qa/scenarios.py to a published release.")
+          
           print("matrix=" + json.dumps({"include": rows}))
           print("count=%d" % len(rows))
           print(f"::notice::PREVIOUS resolved to {previous or '(none)'}", file=sys.stderr)
