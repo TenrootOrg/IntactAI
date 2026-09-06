@@ -240,17 +240,27 @@ class EveryPinnedReleaseMustStillBePublished(unittest.TestCase):
     nine-minute install before saying anything.
     """
 
+    def _pinned(self, scenarios):
+        """A scenario that still resolves to a literal tag, whatever it is called
+        today -- the test must not re-break when one is renamed."""
+        for spec in scenarios.SCENARIOS:
+            rows = scenarios.resolve([spec["name"]], previous_tag="")
+            if (rows[0].get("install_from") or "").startswith("intact-"):
+                return rows
+        self.fail("no scenario resolves to a literal tag any more")
+
     def test_a_deleted_pin_is_reported_with_its_scenario(self):
         scenarios = _scenarios()
-        rows = scenarios.resolve(["ui-online-full"], previous_tag="")
-        missing = scenarios.assert_tags_published(rows, ["intact-20260726"])
+        rows = self._pinned(scenarios)
+        missing = scenarios.assert_tags_published(rows, ["intact-does-not-exist"])
         self.assertTrue(missing, "a tag absent from the release list must be named")
-        names = {m[0] for m in missing}
-        self.assertIn("ui-online-full", names)
+        sc, field, tag = missing[0]
+        self.assertEqual(sc, rows[0]["scenario"])
+        self.assertTrue(tag.startswith("intact-"))
 
     def test_a_published_pin_passes(self):
         scenarios = _scenarios()
-        rows = scenarios.resolve(["ui-online-full"], previous_tag="")
+        rows = self._pinned(scenarios)
         tags = {r.get(f) for r in rows for f in
                 ("install_from", "hop_via", "downgrade_tag") if r.get(f)}
         self.assertEqual(scenarios.assert_tags_published(rows, sorted(tags)), [])
@@ -259,10 +269,25 @@ class EveryPinnedReleaseMustStillBePublished(unittest.TestCase):
         """`gh release list` failing is a DIFFERENT failure and must not
         masquerade as every pin having been deleted."""
         scenarios = _scenarios()
-        rows = scenarios.resolve(["ui-online-full"], previous_tag="")
+        rows = self._pinned(scenarios)
         self.assertEqual(scenarios.assert_tags_published(rows, []), [])
 
-    def test_the_scoped_fetch_pin_is_not_the_deleted_release(self):
+    def test_ui_online_full_upgrades_from_the_previous_release(self):
+        """One hop is all the product supports, so this is the shape a real
+        operator is in. It used to install a 0726 box and hop through a PINNED
+        intermediate -- a path no supported box is on, and the pin was a release
+        that later got deleted."""
         scenarios = _scenarios()
-        self.assertNotEqual(scenarios.FIRST_WITH_SCOPED_FETCH, "intact-20260818",
-                            "repointed after that release was deleted")
+        spec = scenarios.BY_NAME["ui-online-full"]
+        self.assertEqual(spec["install_from"], "PREVIOUS")
+        self.assertNotIn("hop_via", spec, "a second hop is not supported")
+
+    def test_no_scenario_hops_through_a_pinned_intermediate(self):
+        """The whole class of bug: a frozen tag the harness must DOWNLOAD."""
+        scenarios = _scenarios()
+        for spec in scenarios.SCENARIOS:
+            hop = spec.get("hop_via")
+            if not hop:
+                continue
+            self.assertIn(hop, scenarios.ROLES,
+                          f"{spec['name']} hops via a literal tag ({hop}); use a role")

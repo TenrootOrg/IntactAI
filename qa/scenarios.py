@@ -37,8 +37,8 @@ OLDEST_WITHOUT_ENGINE = "intact-20260726"
 # the box, so reaching it is what lets the UI routes be tested from a version
 # that has one.
 #
-# NOT used as ui-online-full's hop target (see FIRST_WITH_SCOPED_FETCH below)
-# even though it sounds like the obvious choice. intact-20260811 predates BOTH
+# NOT used as any scenario's hop target even though it sounds like the obvious
+# choice, and the reason is permanent rather than a version away from being fixed. intact-20260811 predates BOTH
 # the scoped-verification fix (fba50cb6, 2026-08-15) and
 # scripts/bootstrap_upgrade.sh itself (2026-08-16) -- its own
 # lib/upgrade/package.sh runs before any hop reaches the target release's
@@ -61,21 +61,13 @@ OLDEST_WITHOUT_ENGINE = "intact-20260726"
 # mechanism is understood, confirmed, and permanent.
 FIRST_WITH_ENGINE = "intact-20260811"
 
-# The oldest STILL-PUBLISHED release where a genuinely-online dashboard upgrade
-# can work end to end: it carries both the engine (bootstrap_upgrade.sh) and the
-# scoped-verification fix FIRST_WITH_ENGINE (2026-08-13) predates. This is what
-# ui-online-full hops through -- proving the dashboard route works from the
-# oldest release it CAN work from, rather than re-proving the permanent 0811 gap
-# documented above on every run.
-#
-# WAS intact-20260818, AND THAT RELEASE HAS BEEN DELETED. The pin is a fact about
-# code history, but the harness has to DOWNLOAD the release to use it, so an
-# untagged release makes the fact unreachable. The failure was ugly: curl 404'd,
-# the tarball never unpacked, and the check reported "no scripts/upgrade.sh" --
-# which reads as "that release shipped no engine" rather than "that release is
-# gone". Nine minutes of install ran first. _assert_tags_published() below now
-# catches this at resolve time instead; see its note.
-FIRST_WITH_SCOPED_FETCH = "intact-20260825"
+# NO "FIRST_WITH_SCOPED_FETCH" PIN ANY MORE. There used to be one -- the first
+# release whose dashboard upgrade could work end to end -- so ui-online-full could
+# install an ancient box and hop through it. Two things killed it: the product
+# supports ONE hop (previous -> current), so the multi-hop path it tested was not
+# a path any supported box is on; and the release it named was deleted, which
+# turned the scenario into a 404 reported as "no scripts/upgrade.sh". PREVIOUS is
+# resolved live and cannot go stale.
 
 # Roles a scenario may name instead of a tag. The workflow resolves these at
 # dispatch time; PREVIOUS comes from the release list, the rest are the pins
@@ -84,7 +76,6 @@ ROLES = {
     "OLDEST": OLDEST_INSTALLABLE,
     "OLDEST_NO_ENGINE": OLDEST_WITHOUT_ENGINE,
     "FIRST_ENGINE": FIRST_WITH_ENGINE,
-    "FIRST_SCOPED_FETCH": FIRST_WITH_SCOPED_FETCH,
     "PREVIOUS": None,          # resolved from the releases list at run time
 }
 
@@ -124,18 +115,21 @@ SCENARIOS = [
      "modules": "all", "route": "bootstrap",
      "proves": "a box too old to have an engine can still be moved"},
 
-    # Hops via FIRST_SCOPED_FETCH, not FIRST_ENGINE
-    # (intact-20260811) — see FIRST_WITH_ENGINE's own comment above for why
-    # 0811 specifically can never pass this route, permanently, by design of
-    # what a frozen release is. This scenario proves the dashboard route
-    # works from the oldest release it CAN work from, not the oldest release
-    # that merely has some form of engine.
-    {"name": "ui-online-full", "install_from": "OLDEST_NO_ENGINE",
+    # ONE HOP IS ALL THE PRODUCT SUPPORTS, so this is what a real operator does:
+    # take the release before this one and upgrade it from the dashboard. It used
+    # to install OLDEST_NO_ENGINE (0726) and hop through a pinned intermediate to
+    # reach a version that could run the route -- which tested a path no supported
+    # box is on, and pinned a release that was later deleted (see the note on
+    # FIRST_WITH_ENGINE for why 0811 specifically can never pass this route).
+    #
+    # PREVIOUS is resolved from the live release list, so this needs no edit when a
+    # release is cut -- and resolve refuses to build a matrix where it came back
+    # empty, because a scenario silently installing "" is how refuse-and-repeat
+    # passed for months while skipping the half it exists to prove.
+    {"name": "ui-online-full", "install_from": "PREVIOUS",
      "install_mode": "online", "modules": "shipped", "route": "ui_online",
-     "hop_via": "FIRST_SCOPED_FETCH",
-     "proves": "the dashboard upgrade works end to end from the oldest "
-               "release that can actually run it (FIRST_WITH_SCOPED_FETCH forward) "
-               "to the latest — every currently-supported box is covered"},
+     "proves": "the dashboard upgrade works from the previous release to this "
+               "one — the single hop the product supports"},
 
     {"name": "ui-import-full", "install_from": "OLDEST_NO_ENGINE",
      "install_mode": "online", "modules": "shipped", "route": "ui_import",

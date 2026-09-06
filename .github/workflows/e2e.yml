@@ -257,12 +257,25 @@ jobs:
           # actually runs. They disagreed once and the run silently tested one
           # scenario instead of three, which looks exactly like a pass.
           WANTED: ${{ github.event.inputs.scenarios || 'all' }}
+          # `gh release list` NEEDS THIS AND DID NOT HAVE IT. Without a token the
+          # call fails, the except branch logs a warning nobody reads, `tags` stays
+          # empty and PREVIOUS resolves to "" -- which is not an error anywhere
+          # downstream. refuse-and-repeat ran its whole install with
+          # QA_DOWNGRADE_TAG empty and reported success with 7 phases skipped,
+          # never testing the refusal it exists to prove.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json, os, subprocess, sys
           sys.path.insert(0, "qa")
           import scenarios as S
+          
+          # matrix field -> the spec key it came from, so "the scenario asked for
+          # this and got nothing" is distinguishable from "the scenario never
+          # asked for it" (most scenarios have no hop or downgrade at all).
+          _SPEC_KEY = {"install_from": "install_from", "hop_via": "hop_via",
+                       "downgrade_tag": "downgrade_from"}
           
           # PREVIOUS is resolved from the live release list, so nothing here needs an
           # edit when a release is cut. The other roles are pins about code history --
@@ -303,6 +316,21 @@ jobs:
           # the release was deleted, and ui-online-full spent the whole install
           # before curl 404'd and the hop reported "no scripts/upgrade.sh" -- which
           # reads as "that release shipped no engine", not "that release is gone".
+          # An UNRESOLVED role is not an empty string to pass along. Every scenario
+          # naming PREVIOUS needs a real tag, and a matrix carrying "" runs a
+          # weaker test that looks identical to a passing one.
+          blank = [(r["scenario"], f) for r in rows
+                   for f in ("install_from", "hop_via", "downgrade_tag")
+                   if S.BY_NAME[r["scenario"]].get(_SPEC_KEY[f]) and not (r.get(f) or "").strip()]
+          if blank:
+              lines = "\n".join(f"    {sc}: {field}" for sc, field in blank)
+              raise SystemExit(
+                  "::error title=A scenario role could not be resolved::"
+                  f"these fields came back empty:\n{lines}\n"
+                  "  PREVIOUS is read from `gh release list`; if that call failed "
+                  "the warning above says so. Running anyway silently skips the "
+                  "phases those tags drive.")
+          
           missing = S.assert_tags_published(rows, tags)
           if missing:
               lines = "\n".join(f"    {sc}: {field} = {tag}" for sc, field, tag in missing)
