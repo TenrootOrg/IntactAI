@@ -264,6 +264,13 @@ jobs:
           # QA_DOWNGRADE_TAG empty and reported success with 7 phases skipped,
           # never testing the refusal it exists to prove.
           GH_TOKEN: ${{ github.token }}
+          # The release PREVIOUS is measured back from. This job never set it,
+          # so `target` was always "" and PREVIOUS resolved to the NEWEST
+          # release -- i.e. the target itself. Harmless while nothing used
+          # PREVIOUS for install_from; now ui-online-full does, and without this
+          # it would install intact-20260903 and "upgrade" it to
+          # intact-20260903: a no-op that reports a clean pass.
+          IMAGES_TAG: ${{ github.event.inputs.version_override || '' }}
         run: |
           set -euo pipefail
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
@@ -281,7 +288,16 @@ jobs:
           # edit when a release is cut. The other roles are pins about code history --
           # which release still installs from registries, which first carried an
           # on-disk engine -- and those are facts, not dates.
-          target = os.environ.get("IMAGES_TAG") or ""
+          target = (os.environ.get("IMAGES_TAG") or "").strip()
+          if not target:
+              # Empty version_override means "the ref's own VERSION", which is
+              # what the per-scenario job resolves to as well. The tree is
+              # checked out above, so read the same file rather than guessing.
+              try:
+                  with open("VERSION", encoding="utf-8") as fh:
+                      target = fh.read().strip()
+              except OSError:
+                  target = ""
           previous = ""
           tags = []          # empty = the list could not be read, NOT "no releases"
           try:
@@ -330,6 +346,19 @@ jobs:
                   "  PREVIOUS is read from `gh release list`; if that call failed "
                   "the warning above says so. Running anyway silently skips the "
                   "phases those tags drive.")
+          
+          # PREVIOUS must be genuinely EARLIER than the target. Resolving to the
+          # target itself turns "upgrade from the previous release" into
+          # "upgrade to the version already installed", which passes without
+          # testing an upgrade at all.
+          same = [r["scenario"] for r in rows
+                  if target and r.get("install_from") == target
+                  and S.BY_NAME[r["scenario"]].get("install_from") == "PREVIOUS"]
+          if same:
+              raise SystemExit(
+                  "::error title=PREVIOUS resolved to the target release::"
+                  f"{', '.join(same)} would install {target} and upgrade to "
+                  f"{target}.\n  Resolved from: {', '.join(tags[:6]) or '(no releases read)'}")
           
           missing = S.assert_tags_published(rows, tags)
           if missing:

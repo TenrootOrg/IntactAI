@@ -14,6 +14,7 @@ the file advertised three.
 """
 
 import ast
+import io
 import os
 import re
 import unittest
@@ -218,6 +219,12 @@ if __name__ == "__main__":
     unittest.main(verbosity=2)
 
 
+
+def _read_workflow():
+    return io.open(os.path.join(ROOT, ".github/workflows/e2e.yml"),
+                   encoding="utf-8").read()
+
+
 def _scenarios():
     """Import qa/scenarios.py as a module. The tests above read it as TEXT (they
     assert on how the workflow references it); these need the resolver itself."""
@@ -291,3 +298,40 @@ class EveryPinnedReleaseMustStillBePublished(unittest.TestCase):
                 continue
             self.assertIn(hop, scenarios.ROLES,
                           f"{spec['name']} hops via a literal tag ({hop}); use a role")
+
+
+class PreviousMustBeEarlierThanTheTarget(unittest.TestCase):
+    """PREVIOUS resolved to the TARGET release on every run.
+
+    `gh release list` gave the resolve step the tags, but the step never set
+    IMAGES_TAG, so `target` was "" and the `t < target` filter passed
+    everything -- leaving the newest release, which is the target. Harmless
+    while nothing installed from PREVIOUS; the moment ui-online-full did, it
+    meant installing intact-20260903 and "upgrading" it to intact-20260903 and
+    reporting a clean pass.
+    """
+
+    def test_the_resolve_step_is_told_which_release_is_the_target(self):
+        src = _read_workflow()
+        block = src.split("resolve-scenarios:")[1].split("\n  e2e:")[0]
+        self.assertIn("IMAGES_TAG:", block,
+                      "without it, target is empty and PREVIOUS is the newest "
+                      "release — the target itself")
+
+    def test_it_falls_back_to_the_refs_own_VERSION(self):
+        """An empty version_override means 'the ref's own VERSION', which is
+        what the per-scenario job resolves to; both must agree."""
+        block = _read_workflow().split("resolve-scenarios:")[1].split("\n  e2e:")[0]
+        self.assertIn('open("VERSION"', block)
+
+    def test_a_no_op_upgrade_is_refused(self):
+        block = _read_workflow().split("resolve-scenarios:")[1].split("\n  e2e:")[0]
+        self.assertIn("PREVIOUS resolved to the target release", block)
+
+    def test_previous_is_still_resolved_from_the_live_release_list(self):
+        """It must not become another hardcoded pin."""
+        scenarios = _scenarios()
+        self.assertIsNone(scenarios.ROLES["PREVIOUS"],
+                          "PREVIOUS is resolved at run time, not pinned")
+        self.assertEqual(scenarios.BY_NAME["ui-online-full"]["install_from"],
+                         "PREVIOUS")
