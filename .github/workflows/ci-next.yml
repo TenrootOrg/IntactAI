@@ -1,0 +1,210 @@
+name: ci-next
+
+# A SECOND, PARALLEL CI. It does not replace `test` or `secret-scan`, does not
+# modify them, and cannot block anything. Both keep running exactly as they do
+# today. This exists so a set of improvements can be proven stable on real
+# pushes before any of it is folded back into the workflows that matter.
+#
+# WHAT THIS DOES THAT THE CURRENT CI DOES NOT
+#
+# 1. Runs `pytest tests/`. Nothing in any existing workflow does — `grep -rn
+#    pytest .github/` finds nothing. `tests/run_tests.sh` executes each Python
+#    file as `python3 <file> -v`, which runs tests ONLY if that file calls
+#    unittest.main(). Twelve files do not, so 136 test methods have never run
+#    in CI — and each of those files is counted as a PASSING suite. Measured:
+#    `python3 tests/test_qa_coverage_floor.py -v` prints nothing and exits 0,
+#    while pytest runs 15 tests in it. Among the invisible ones are the guards
+#    for the e2e coverage floor and the test for the e2e workflow's own
+#    annotation script.
+#
+# 2. Fails if pytest stops COLLECTING a test file, so that class of silent loss
+#    cannot come back by another route (a bad import, a renamed class).
+#
+# 3. Says what gitleaks found. The current scan prints "leaks found: N" and no
+#    file, rule or commit, so a failure cannot be acted on — which is why one
+#    sat red across ten commits.
+#
+# 4. Verifies the gitleaks download against upstream's published checksums
+#    before running it. Today it is `curl … | sudo tar -xz -C /usr/local/bin`
+#    with no verification, writing an unverified binary into a root path.
+#
+# 5. Declares least-privilege `permissions`, a `concurrency` group and per-job
+#    `timeout-minutes`. The two PR-facing workflows have none of the three, so
+#    they inherit the default token scope, stack up on rapid pushes, and would
+#    burn a runner for six hours if one ever hung.
+#
+# HOW THIS GOES AWAY: once it has been green for long enough to trust, fold the
+# gitleaks path exemption into .gitleaks.toml, move these steps into test.yml
+# and secret-scan.yml, and delete this file.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+  pull_request:
+
+# The old workflows declare none. Neither job here writes anything.
+permissions:
+  contents: read
+
+# The old workflows declare none, so three quick pushes run three full-history
+# gitleaks scans at once.
+concurrency:
+  group: ci-next-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------- tests --
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20        # measured: the current `test` job takes 2.2 min
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the test dependencies
+        # Determined empirically in a clean venv rather than guessed: with only
+        # these three, `pytest tests/` is 896 passed / 2 skipped. Without
+        # `requests` collection dies on test_llm_temperature_fallback.py.
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --upgrade pip
+          python3 -m pip install --quiet pytest requests pyyaml
+          python3 -m pytest --version
+
+      - name: The shell suite (same as the current `test` job)
+        run: bash tests/run_tests.sh
+
+      - name: Every test file still contributes tests
+        # THE GUARD FOR THE BUG THIS WORKFLOW EXISTS FOR. A file that stops
+        # being collected — renamed class, broken import, a stray syntax error
+        # — silently reduces coverage while everything stays green. Compare
+        # what is on disk with what pytest actually collects.
+        run: |
+          set -euo pipefail
+          declared=$(ls tests/test_*.py | wc -l)
+          collected=$(python3 -m pytest tests/ --collect-only -q 2>/dev/null \
+                      | grep -oE '^tests/test_[A-Za-z_0-9]+\.py' | sort -u | wc -l)
+          echo "test files on disk: $declared   collected by pytest: $collected"
+          if [ "$collected" -lt "$declared" ]; then
+            comm -13 \
+              <(python3 -m pytest tests/ --collect-only -q 2>/dev/null \
+                | grep -oE '^tests/test_[A-Za-z_0-9]+\.py' | sort -u) \
+              <(ls tests/test_*.py | sort) \
+              | sed 's/^/::error::contributes no tests: /'
+            exit 1
+          fi
+
+      - name: The Python suite (RUNS NOWHERE ELSE)
+        run: |
+          set -euo pipefail
+          python3 -m pytest tests/ -q --tb=short
+
+  # -------------------------------------------------------------- secrets --
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20        # measured: the current scan takes 0.8 min
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0       # full history, as the current scan does
+
+      - name: Install gitleaks (checksum-verified)
+        run: |
+          set -euo pipefail
+          VERSION="8.21.2"
+          BASE="https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}"
+          curl -fsSL -o /tmp/gitleaks.tgz "${BASE}/gitleaks_${VERSION}_linux_x64.tar.gz"
+          curl -fsSL -o /tmp/gitleaks.sums "${BASE}/gitleaks_${VERSION}_checksums.txt"
+          # Verify against UPSTREAM's published list rather than a value pasted
+          # in here, so bumping the version does not mean hand-copying a hash.
+          want=$(grep "gitleaks_${VERSION}_linux_x64.tar.gz" /tmp/gitleaks.sums | awk '{print $1}')
+          got=$(sha256sum /tmp/gitleaks.tgz | awk '{print $1}')
+          [ -n "$want" ] || { echo "::error::no checksum published for this asset"; exit 1; }
+          [ "$want" = "$got" ] || { echo "::error::gitleaks checksum mismatch"; exit 1; }
+          mkdir -p /tmp/bin && tar -xzf /tmp/gitleaks.tgz -C /tmp/bin gitleaks
+          /tmp/bin/gitleaks version
+
+      - name: Build the scan config
+        # The repo's .gitleaks.toml is the source of truth and is NOT modified:
+        # it is shared with the local pre-commit hook, scripts/scan-secrets.sh
+        # and the existing secret-scan workflow. This copy adds two path
+        # exemptions for synthetic test fixtures whose "key" bodies are the
+        # literal strings FAKEKEY and FAKECA — gitleaks' private-key rule
+        # matches the PEM header, not what sits between the delimiters. When
+        # this workflow is promoted, these two lines move into the real file.
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          src = open(".gitleaks.toml", encoding="utf-8").read()
+          anchor = "paths = [\n"
+          extra = (
+              "  # Synthetic Velociraptor config fixtures. The private_key /\n"
+              "  # ca_certificate values are literally FAKEKEY and FAKECA; the\n"
+              "  # default private-key rule matches the PEM header alone.\n"
+              "  '''tests/test_transform_config\\.py$''',\n"
+              "  '''tests/test_adopt_velo_identity\\.sh$''',\n"
+          )
+          assert anchor in src, "the allowlist paths array moved — update this step"
+          open("/tmp/gitleaks-ci.toml", "w", encoding="utf-8").write(
+              src.replace(anchor, anchor + extra, 1))
+          print("scan config written with 2 fixture exemptions")
+          PY
+
+      - name: Scan history
+        id: scan
+        run: |
+          set -uo pipefail          # NOT -e: the report must be read on a hit
+          /tmp/bin/gitleaks detect \
+            --no-banner \
+            --redact \
+            --config /tmp/gitleaks-ci.toml \
+            --report-format json \
+            --report-path /tmp/gitleaks.json
+          echo "rc=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Say what was found
+        # THE POINT. Today a failure is the single line "leaks found: 2" — no
+        # file, no rule, no commit — so nobody can act on it, and one sat red
+        # across ten commits. Values stay redacted; locations do not.
+        if: always()
+        run: |
+          set -uo pipefail
+          [ -s /tmp/gitleaks.json ] || { echo "no findings"; exit 0; }
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          rows = json.load(open("/tmp/gitleaks.json"))
+          if not rows:
+              print("### gitleaks: clean\n"); raise SystemExit
+          print(f"### gitleaks: {len(rows)} finding(s)\n")
+          print("| file | line | rule | commit |")
+          print("|---|---|---|---|")
+          for r in rows:
+              print(f"| `{r.get('File')}` | {r.get('StartLine')} | "
+                    f"{r.get('RuleID')} | `{(r.get('Commit') or '')[:8]}` |")
+          print("\nValues are redacted by `--redact`; locations are not.")
+          PY
+          python3 -c "
+          import json;rows=json.load(open('/tmp/gitleaks.json'))
+          [print(f\"::error file={r.get('File')},line={r.get('StartLine')}::gitleaks {r.get('RuleID')}\") for r in rows]"
+
+      - name: Upload the findings report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gitleaks-report-ci-next
+          path: /tmp/gitleaks.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Fail if anything leaked
+        # Separate from the scan step so the report above is always produced
+        # first — the old workflow fails at the scan and prints nothing after.
+        if: always()
+        run: |
+          set -euo pipefail
+          n=$(python3 -c "
+          import json,os
+          p='/tmp/gitleaks.json'
+          print(len(json.load(open(p))) if os.path.exists(p) and os.path.getsize(p) else 0)")
+          echo "findings: $n"
+          [ "$n" -eq 0 ] || { echo "::error::gitleaks found $n secret(s) — see the job summary"; exit 1; }
