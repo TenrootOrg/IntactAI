@@ -42,6 +42,7 @@ REQUIRED_ALWAYS = (
     "case_report",      # the DETERMINISTIC report assembles
     "case_pdf",         # the branded deliverable renders
     "case_mutations",   # triage actually persists
+    "concurrency",      # a second fuse is refused, and costs no report
     "case_surfaces",    # the per-click drill-downs resolve
     "case_timeline_edit",  # an out-of-band fact can be added AND removed
     "case_zoom",        # the macro drill-down re-fuses without erroring

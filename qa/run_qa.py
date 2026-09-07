@@ -70,10 +70,10 @@ def build_runner(ctx, cfg):
     runner = runner_lib.Runner(ctx)
 
     from phases import (analysis, blueprints, case_editing, cloud,
-                        endpoint, endpoint_linux, features, frontend,
-                        hunts, maintenance, memory_plumbing, pipelines,
-                        platform, restart, scheduler, support, upgrade,
-                        workflows, wrapup)
+                        concurrency, endpoint, endpoint_linux, features,
+                        frontend, hunts, maintenance, memory_plumbing,
+                        pipelines, platform, restart, scheduler, support,
+                        upgrade, workflows, wrapup)
     platform.register(runner, cfg)
     endpoint.register(runner, cfg)
     # The Linux profile: enrol the appliance itself as an endpoint, then drive
@@ -99,6 +99,9 @@ def build_runner(ctx, cfg):
     hunts.register(runner, cfg)
     memory_plumbing.register(runner, cfg)
     analysis.register(runner, cfg)
+    # Before case_editing, whose zoom re-scopes the case: this needs the
+    # report intact to prove a collision does not eat it.
+    concurrency.register(runner, cfg)
     # The EDITING half of Case Analysis, after the reading half: the drill-
     # downs, manual timeline facts, and the zoom that re-scopes the case.
     # case_zoom is destructive by design, so it must come after every phase
@@ -162,6 +165,7 @@ def build_runner(ctx, cfg):
                   "pipelines",
                   "hunt_linux", "memory_plumbing",
                   "case_read", "case_report", "case_pdf", "case_mutations",
+                  "concurrency",
                   "case_surfaces", "case_timeline_edit", "case_zoom",
                   "scheduler", "cloud_offline", "cloud_azure",
                   "blueprints", "restart_survival", "support_bundle",
