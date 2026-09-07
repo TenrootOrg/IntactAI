@@ -61,6 +61,12 @@ class Client:
     def post(self, path, payload=None, **kw):
         return self.request("POST", path, json=payload or {}, **kw)
 
+    def delete(self, path, **kw):
+        """DELETE, which several surfaces need to prove a thing can be taken
+        back out again: a manual timeline event, a scheduled job, a blueprint.
+        A suite that can only create leaves the half that removes untested."""
+        return self.request("DELETE", path, **kw)
+
     def raw(self, path, expect=(200,), **kw):
         """Response BYTES. `request` decodes to JSON or text, which mangles a
         PDF — and a PDF that arrives as a str is indistinguishable from an

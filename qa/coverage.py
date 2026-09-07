@@ -41,6 +41,10 @@ REQUIRED_ALWAYS = (
     "case_report",      # the DETERMINISTIC report assembles
     "case_pdf",         # the branded deliverable renders
     "case_mutations",   # triage actually persists
+    "case_surfaces",    # the per-click drill-downs resolve
+    "case_timeline_edit",  # an out-of-band fact can be added AND removed
+    "case_zoom",        # the macro drill-down re-fuses without erroring
+    "scheduler",        # recurring collection survives being written
     "purge_scan",       # a section cannot honestly scan zero on a filled box
     "purge_run",        # the bytes actually go
     "collect",

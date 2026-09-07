@@ -276,34 +276,66 @@ def register(runner, cfg):
                       note="the fused case produced none, so the triage loop "
                            "could not be exercised at all")
 
-        # --- identities: group, then undo ---------------------------------
-        people = _items(c.get(f"{base}/identities", expect=_SOFT), "identities")
-        if len(people) >= 2:
-            ids = [p.get("id") or p.get("identity_id") for p in people[:2]]
-            c.post(f"{base}/identities/group", {"identity_ids": ids},
-                   expect=(200, 201, 400, 409))
-            regrouped = _items(c.get(f"{base}/identities", expect=_SOFT),
-                               "identities")
-            c.post(f"{base}/identities/undo", {}, expect=(200, 201, 400, 404))
-            restored = _items(c.get(f"{base}/identities", expect=_SOFT),
-                              "identities")
-            detail["did"].append("identity group/undo")
-            ctx.check("undo restores the identity list",
-                      len(restored) == len(people),
-                      expected=f"{len(people)} identities",
-                      actual=f"{len(restored)} after undo "
-                             f"({len(regrouped)} while grouped)",
-                      note="an undo that does not restore leaves the analyst "
-                           "with a merge they cannot take back")
+        # --- identities: link two entities, then undo the link -------------
+        # REWRITTEN. This used to POST {"identity_ids": [...]} to
+        # /identities/group, which reads `members` -- so the body was empty, the
+        # call was a no-op, and "undo restores the identity list" then compared
+        # two identical lists and passed. A green check that could not fail.
+        #
+        # /identities/link is the better probe anyway: it returns the id of the
+        # decision it stored, so the undo can name it and the round trip is
+        # verifiable instead of inferred.
+        # entities is a DICT keyed by id in the graph envelope, not a list --
+        # `_items` returns [] for it, which would have quietly skipped this
+        # whole block. Handle both shapes rather than trusting either.
+        _fg = (graph or {}).get("fusion_graph") or {}
+        _e = _fg.get("entities")
+        if isinstance(_e, dict):
+            ents = list(_e.keys())[:2]
         else:
-            detail["did"].append("identity group/undo: fewer than 2 identities")
+            ents = [x.get("id") for x in _items(_fg, "entities")][:2]
+        if len(ents) == 2 and all(ents):
+            linked = c.post(f"{base}/identities/link",
+                            {"a_id": ents[0], "b_id": ents[1],
+                             "kind": "same_identity"}, expect=(200, 201))
+            lid = (linked or {}).get("id")
+            detail["did"].append("identity link")
+            ctx.check("a manual identity link is stored and returns its id",
+                      bool(lid), actual=linked,
+                      note="the analyst asserting 'these two are the same "
+                           "person' is the one judgement fusion cannot make")
+            if lid:
+                undone = c.post(f"{base}/identities/undo", {"id": lid},
+                                expect=(200, 201))
+                detail["did"].append("identity undo")
+                ctx.check("undo removes exactly that link",
+                          (undone or {}).get("removed") == lid,
+                          expected=f"removed {lid}", actual=undone,
+                          note="an undo that does not remove leaves the analyst "
+                               "with a merge they cannot take back")
+        else:
+            detail["did"].append("identity link/undo: fewer than 2 entities")
 
-        # --- timeline: validate an event ----------------------------------
+        # --- timeline: triage a REAL graph finding -------------------------
+        # ALSO REWRITTEN, same defect: the route requires `finding_id` and
+        # answers 400 without it. This sent `event_id` + `validated`, took the
+        # 400 as acceptable, and asserted nothing at all.
         events = _items(c.get(f"{base}/timeline", expect=_SOFT), "timeline")
         if events:
-            eid = events[0].get("id") or events[0].get("event_id")
+            eid = events[0].get("finding_id")
+            was = events[0].get("status")
+            want = "known_it" if was != "known_it" else "real"
             c.post(f"{base}/timeline/validate",
-                   {"event_id": eid, "validated": True, "note": "QA"},
-                   expect=(200, 201, 400, 404))
+                   {"finding_id": eid, "status": want, "notes": "QA"},
+                   expect=(200, 201))
+            rows = _items(c.get(f"{base}/timeline", expect=_SOFT), "timeline")
+            now = next((r.get("status") for r in rows
+                        if r.get("finding_id") == eid), None)
             detail["did"].append("timeline validate")
+            ctx.check("triaging a timeline row changes its status",
+                      now == want, expected=want,
+                      actual=f"{now} (was {was})",
+                      note="not_real/known_it also SUPPRESS the row from the "
+                           "report, so a status that does not move means the "
+                           "analyst cannot take a false positive out")
         return detail
