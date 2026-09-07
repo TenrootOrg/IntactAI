@@ -29,6 +29,9 @@ _WANT_BLUEPRINT = "velociraptor_best_practice"
 _JOB_NAME = "QA-CI-scheduled-job"
 
 
+from lib import probe
+
+
 def _jobs(body):
     if isinstance(body, list):
         return body
@@ -144,9 +147,11 @@ def register(runner, cfg):
             ctx.check("an unknown job id is refused, not accepted",
                       code == 404, expected=404, actual=code)
         finally:
-            # ALWAYS remove it, even if an assertion above failed: a leftover
-            # enabled job would fire against a later scenario on the same box.
-            c.delete(f"/api/scheduler/jobs/{jid}", expect=(200, 202, 204, 404))
+            # ALWAYS remove it, even if an assertion above failed OR the phase
+            # raised: a leftover ENABLED job fires on its own schedule against a
+            # box that later phases are asserting about. probe.cleanup never
+            # raises, so a teardown problem cannot replace the real diagnosis.
+            probe.cleanup(c, [f"/api/scheduler/jobs/{jid}"])
 
         gone = c.status_of(f"/api/scheduler/jobs/{jid}")
         detail["after_delete"] = gone

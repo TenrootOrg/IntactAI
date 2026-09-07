@@ -41,7 +41,7 @@ every phase after it would then fail for the wrong reason.
 
 import time
 
-from lib import shell
+from lib import probe, shell
 
 BACKEND = "intact_backend"
 
@@ -111,6 +111,25 @@ def register(runner, cfg):
         if not bp:
             return detail
 
+        try:
+            return _run(ctx, c, cid, bp, detail)
+        finally:
+            # ALWAYS, on every path including an exception. A leftover ENABLED
+            # scheduled job fires on its own schedule against a box that later
+            # phases are asserting about; a leftover blueprint changes the
+            # counts `blueprints` checks.
+            detail["torn_down"] = probe.cleanup(c, [
+                detail.get("wrote", {}).get("job")
+                and f"/api/scheduler/jobs/{detail['wrote']['job']}",
+                detail.get("wrote", {}).get("blueprint")
+                and f"/api/blueprints/velociraptor/{detail['wrote']['blueprint']}",
+                f"/api/aws/rules/custom/{detail.get('wrote', {}).get('rule')}"
+                if detail.get("wrote", {}).get("rule") else None,
+                detail.get("aws_run") and f"/api/aws/runs/{detail['aws_run']}",
+            ])
+
+    def _run(ctx, c, cid, bp, detail):
+        """The body, so the caller's `finally` owns teardown on every path."""
         job = c.post("/api/scheduler/jobs",
                      {"name": "QA-CI-restart-survival", "blueprint_id": bp.get("id"),
                       "blueprint_type": "velociraptor", "interval_value": 1,
@@ -140,7 +159,6 @@ def register(runner, cfg):
         before = {
             "cases": _case_ids(c),
             "jobs": len(_items(c.get("/api/scheduler/jobs"), "jobs")),
-            "blueprints": len(items) + 1,
             # NOT /api/dashboard/automations: that list is filtered to the
             # active workspace by the X-Case-Id header, so an API client that
             # sends no header reads 0 and the comparison below is vacuous.
@@ -369,15 +387,5 @@ def register(runner, cfg):
             "collection running across a restart becomes uncancellable.")
         detail["recorded_divergences"] = notes
 
-        # ---------------------------------------------------------- 7 ----
-        for path in ((f"/api/scheduler/jobs/{job_id}" if job_id else None),
-                     (f"/api/blueprints/velociraptor/{bp_id}" if bp_id else None),
-                     f"/api/aws/rules/custom/{rule_name}",
-                     (f"/api/aws/runs/{aws_run}" if aws_run else None)):
-            if path:
-                try:
-                    c.delete(path, expect=(200, 202, 204, 404))
-                except Exception:                                 # noqa: BLE001
-                    pass
-        tl.ids(restarted_backend=BACKEND)
+        # Teardown is the caller's `finally` — see the top of this phase.
         return detail

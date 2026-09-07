@@ -34,6 +34,9 @@ _FAMILIES = (
 )
 
 
+from lib import probe
+
+
 def _list(c, fam):
     body = c.get(f"/api/blueprints/{fam}")
     if isinstance(body, list):
@@ -93,8 +96,7 @@ def register(runner, cfg):
                           (after or {}).get("name") == "QA CI renamed",
                           expected="QA CI renamed", actual=(after or {}).get("name"))
             finally:
-                c.delete(f"/api/blueprints/{fam}/{bid}",
-                         expect=(200, 202, 204, 404))
+                probe.cleanup(c, [f"/api/blueprints/{fam}/{bid}"])
 
             gone = c.status_of(f"/api/blueprints/{fam}/{bid}")
             ctx.check(f"a deleted {fam} blueprint is gone", gone == 404,

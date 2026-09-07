@@ -20,10 +20,14 @@ payload with the wrong key for weeks and answered 400, which the old check
 accepted. So every mutation here reads the state back and compares.
 
 ORDER. `case_zoom` runs last and is deliberately destructive — it narrows the
-case to one target's hosts and window. It restores the previous scope afterwards
-through the config rail (which is itself untested otherwise), but a phase that
-re-scopes a case has no business running before the ones that read it whole.
+case to one target's hosts and window. It puts the scope back afterwards, and
+that takes TWO steps rather than one: saving the config rail persists the
+settings but deliberately does not re-fuse, so the stored graph would stay
+narrowed. Both run in a `finally`, so a failure part-way through the zoom cannot
+leave the case scoped to a single host for every phase that follows.
 """
+
+from lib import probe
 
 # Endpoints that legitimately answer 404 when the case has none of that thing.
 _SOFT = (200, 201, 202, 404)
@@ -221,6 +225,36 @@ def register(runner, cfg):
                 "excluded_hosts": acfg.get("excluded_hosts") or []}
         detail["scope_before"] = {"excluded": len(prev["excluded_hosts"])}
 
+        # From here the case gets NARROWED. Everything below runs under a
+        # `finally` that puts the scope back, because a phase that dies partway
+        # would otherwise leave the case scoped to one host — and case_pdf,
+        # purge_scan and the run report all read that case afterwards. A failed
+        # assertion is a finding; a mangled case is a corrupted run.
+        try:
+            return _zoom_body(ctx, c, base, targets, prev, detail)
+        finally:
+            # TWO steps, because the first alone is not a restore. Saving the
+            # config rail persists the scope but deliberately does NOT re-fuse
+            # (that is the difference between Save and Rescan), so the stored
+            # GRAPH would stay narrowed to one host until something else fused
+            # it — and the phases after this one read that graph. Put the
+            # settings back, then fuse once at the restored scope.
+            restored = probe.attempt(
+                ctx, "the case scope was restored after the zoom",
+                lambda: c.post(f"{base}/config", prev, expect=(200, 201)),
+                note="the zoom narrows the case to one target; leaving it that "
+                     "way would silently change what every later phase sees")
+            detail["restored"] = (restored or {}).get("status")
+            refused = probe.attempt(
+                ctx, "the case was re-fused back to its full scope",
+                lambda: c.post(f"{base}/fuse", {}, expect=(200, 201, 202, 409)),
+                note="Save persists settings without fusing, so without this "
+                     "the graph stays at the zoomed scope. 409 is accepted: a "
+                     "fuse already running will land on the restored config "
+                     "anyway")
+            detail["refused_entities"] = (refused or {}).get("entities")
+
+    def _zoom_body(ctx, c, base, targets, prev, detail):
         t = targets[0]
         labels = t.get("host_labels") or []
         win = t.get("window") or {}
@@ -245,16 +279,23 @@ def register(runner, cfg):
                        "that already has a report is what raised 500 in "
                        "intact-20260903; every door into that path needs one")
 
+        # ASSERT ON WHAT THE SERVER CONFIRMS, not on a config field. The first
+        # version compared excluded_hosts before and after with `>=`, which is
+        # 0 >= 0 on a case that had no exclusions — it passed without the zoom
+        # having done anything, and measured on a live box the field stayed 0
+        # even after a zoom that demonstrably re-scoped the case. The route
+        # echoes `scoped_to`, which is the set it actually kept.
+        scoped = sorted((res or {}).get("scoped_to") or [])
+        detail["scoped_to_labels"] = scoped
+        ctx.check("the zoom scoped the case to exactly the target's hosts",
+                  scoped == sorted(labels),
+                  expected=sorted(labels), actual=scoped,
+                  note="a zoom that keeps everything re-rendered the same "
+                       "report and told the analyst nothing new")
+
         after = c.get(base, expect=_SOFT) or {}
         cfg_after = after.get("analysis_config") or {}
         detail["excluded_after"] = len(cfg_after.get("excluded_hosts") or [])
-        ctx.check("the zoom narrowed the case to the target's hosts",
-                  detail["excluded_after"] >= len(prev["excluded_hosts"]),
-                  expected="hosts outside the target excluded",
-                  actual=f"{detail['excluded_after']} excluded "
-                         f"(was {len(prev['excluded_hosts'])})",
-                  note="a zoom that changes no scope re-rendered the same "
-                       "report and told the analyst nothing new")
 
         # The report must still be readable at the new altitude -- a zoom that
         # leaves the case unrenderable has traded one view for none.
@@ -264,12 +305,8 @@ def register(runner, cfg):
         ctx.check("the case still renders a report after zooming",
                   len(md) > 500, expected=">500 chars", actual=len(md))
 
-        # --- put it back ---------------------------------------------------
-        # Also the only coverage of the plain Save on the config rail.
-        saved = c.post(f"{base}/config", prev, expect=(200, 201))
-        detail["restored"] = (saved or {}).get("status")
-        ctx.check("the config rail saves the scope back without re-fusing",
-                  (saved or {}).get("status") == "saved", actual=saved,
-                  note="Save is a separate route from Rescan on purpose; it "
-                       "persists settings and must NOT trigger a fuse")
+        # The restore itself is in the caller's `finally` — it has to happen on
+        # every path, not just this one. It is also the only coverage of the
+        # plain Save on the config rail, which is a separate route from Rescan
+        # on purpose: it persists settings and must NOT trigger a fuse.
         return detail

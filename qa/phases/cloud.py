@@ -30,6 +30,8 @@ SHAPES VERIFIED against a live backend, because two of them are traps:
 import json
 import time
 
+from lib import probe
+
 # The shipped rule this phase proves is live, and the record that trips it.
 _RULE_SUBSTR = "CloudTrail_Important_Change"
 _EVENT = {"Records": [{
@@ -105,6 +107,7 @@ def register(runner, cfg):
         # Operator-added detections. A responder who cannot add a rule during
         # an engagement is stuck with what shipped.
         fname = "qa_ci_custom_rule.yml"
+        detail["cleanup"] = [f"/api/aws/rules/custom/{fname}"]
         c.post("/api/aws/rules/custom",
                {"filename": fname, "content": _CUSTOM_RULE},
                expect=(200, 201))
@@ -214,7 +217,11 @@ def register(runner, cfg):
                       note="empty is correct here -- CI configures no model, so "
                            "there is no narrative, but the envelope must exist")
         finally:
-            c.delete(f"/api/aws/runs/{run_id}", expect=(200, 202, 204, 404))
+            # Everything this phase created, on every path including an
+            # exception — a leftover custom rule changes what the NEXT run of
+            # this phase counts, and a leftover run blob is evidence the box
+            # was never asked to hold.
+            probe.cleanup(c, [f"/api/aws/runs/{run_id}"])
 
         # What deletion actually guarantees, measured on a live backend: the
         # run leaves the LISTING. Its status and findings still answer 200,
