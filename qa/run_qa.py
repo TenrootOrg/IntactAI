@@ -69,10 +69,10 @@ def build_runner(ctx, cfg):
     """
     runner = runner_lib.Runner(ctx)
 
-    from phases import (analysis, case_editing, endpoint, endpoint_linux,
-                        features, hunts, maintenance, memory_plumbing,
-                        pipelines, platform, scheduler, upgrade,
-                        workflows, wrapup)
+    from phases import (analysis, blueprints, case_editing, cloud,
+                        endpoint, endpoint_linux, features, hunts,
+                        maintenance, memory_plumbing, pipelines, platform,
+                        scheduler, upgrade, workflows, wrapup)
     platform.register(runner, cfg)
     endpoint.register(runner, cfg)
     # The Linux profile: enrol the appliance itself as an endpoint, then drive
@@ -102,6 +102,12 @@ def build_runner(ctx, cfg):
     # Recurring collection: the automation nobody watches, whose
     # failure mode is silence rather than an error.
     scheduler.register(runner, cfg)
+    # The cloud modules' OFFLINE path: no credentials, no network, and
+    # the only coverage AWS/Azure have ever had.
+    cloud.register(runner, cfg)
+    # The unit of work everything else dispatches: an operator's own
+    # blueprint must round-trip, and a shipped one must be undeletable.
+    blueprints.register(runner, cfg)
     # LAST of the asserting phases. purge_run deletes the evidence every phase
     # above depends on, so it must come after all of them -- and before wrapup,
     # which still has to collect logs and write the report out of the box.
@@ -144,7 +150,8 @@ def build_runner(ctx, cfg):
                   "hunt_linux", "memory_plumbing",
                   "case_read", "case_report", "case_pdf", "case_mutations",
                   "case_surfaces", "case_timeline_edit", "case_zoom",
-                  "scheduler",
+                  "scheduler", "cloud_offline", "cloud_azure",
+                  "blueprints",
                   "purge_scan",
                   # LAST: it deletes the evidence every phase above asserts on.
                   "purge_run"]
