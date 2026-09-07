@@ -58,6 +58,61 @@ SECRET_FILES_0600 = [
     "data/auth/audit.jsonl",
 ]
 
+# lib/permissions.sh hardens ~15 paths; the list above covered eight of them.
+# These are the rest, and the first one is the most sensitive file on the box:
+# config.yaml carries options.github_token (a real GitHub PAT), the dashboard
+# login and every module password, and permissions.sh's own comment records it
+# "was landing at 664/644 — readable by every local account on the box".
+SECRET_FILES_0600_EXTRA = [
+    "config.yaml",
+    "modules/iris/config/certificates/rootCA/irisRootCAKey.pem",
+    "modules/portainer/secrets/admin_password",
+]
+
+# Files with an EXACT intended mode rather than a "not world readable" floor.
+# nginx-cert.key is 640 on purpose so the worker can read it.
+MODE_EXACT = [
+    ("modules/nginx/ssl/nginx-cert.key", 0o640),
+]
+
+# The deliberate 644 EXCEPTION, and the reason it needs a test of its own.
+# generate_iris_secrets() creates these at the default umask; a blanket 600
+# sweep reverted them and intact_iris_app then crash-looped -- but only on the
+# NEXT recreate, not at first boot, which is why it went unnoticed. Confirmed
+# live 2026-08-05. An over-eager future hardening pass that "fixes" these to
+# 600 breaks IRIS on the following upgrade, so the assertion is that they are
+# still readable, not that they are locked down.
+IRIS_SECRETS_644 = [
+    "modules/iris/secrets/IRIS_ADM_PASSWORD",
+    "modules/iris/secrets/IRIS_SECRET_KEY",
+    "modules/iris/secrets/IRIS_SECURITY_PASSWORD_SALT",
+    "modules/iris/secrets/POSTGRES_ADMIN_PASSWORD",
+]
+
+# Ports the compose files deliberately bind to 127.0.0.1 only. Each comment in
+# the tree says what publishing it would mean; 8889 is the sharpest -- it was
+# "a direct bypass of nginx's TLS AND its Basic Auth, for a service that holds
+# case data and can task endpoints". Only 9300 was ever probed.
+LOOPBACK_ONLY = [
+    (8889, "the Velociraptor GUI — bypasses nginx TLS and auth entirely"),
+    (8001, "the Velociraptor gRPC API"),
+    (5001, "the backend, which every /api/ gate lives in front of"),
+    (5044, "logstash beats input — no TLS, no auth, forgeable evidence"),
+    (9600, "logstash monitoring"),
+    (50000, "logstash tcp input"),
+]
+
+# Ports that ARE published to the LAN on purpose and therefore have to defend
+# themselves. 9300 (the Elasticsearch transport port) is asserted CLOSED
+# elsewhere; 9200 is its HTTP API and is deliberately open — so the assertion
+# for it is that it demands credentials. Measured: an unauthenticated
+# /_cat/indices answers 401 security_exception. This is the check that fails the
+# day someone disables ES security "to debug something", on a store that holds
+# every forensic document the appliance has ingested.
+LAN_OPEN_MUST_AUTH = [
+    (9200, "/_cat/indices", "Elasticsearch — every forensic document on the box"),
+]
+
 # Services that must NOT be reachable from another container on the box. Each
 # was an actual finding: an unauthenticated Portainer agent is a container-to-
 # host-root path, and OpenSearch held 146k forensic documents with no auth.
@@ -585,6 +640,85 @@ def register(runner, cfg):
         code_9300 = _tcp_open(cfg.platform_host, 9300)
         ctx.check("Elasticsearch 9300 is closed from the LAN", not code_9300,
                   expected="closed", actual="open" if code_9300 else "closed")
+
+        # --- the rest of what lib/permissions.sh hardens -------------------
+        for rel in SECRET_FILES_0600_EXTRA:
+            path = os.path.join(REPO_DIR, rel)
+            if not os.path.exists(path):
+                detail.setdefault("absent", []).append(rel)
+                continue
+            mode = os.stat(path).st_mode & 0o777
+            detail["modes"][rel] = oct(mode)
+            ctx.check(f"{rel} is not group/world readable", not (mode & 0o077),
+                      expected="0600", actual=oct(mode),
+                      note="config.yaml holds a real GitHub PAT, the dashboard "
+                           "login and every module password; it was landing at "
+                           "664 because the sweep treated it as ordinary source"
+                      if rel == "config.yaml" else None)
+
+        for rel, want in MODE_EXACT:
+            path = os.path.join(REPO_DIR, rel)
+            if not os.path.exists(path):
+                detail.setdefault("absent", []).append(rel)
+                continue
+            mode = os.stat(path).st_mode & 0o777
+            detail["modes"][rel] = oct(mode)
+            ctx.check(f"{rel} is exactly {oct(want)}", mode == want,
+                      expected=oct(want), actual=oct(mode),
+                      note="640 on purpose: the nginx worker has to read it, so "
+                           "this is neither a floor nor a ceiling")
+
+        # THE OPPOSITE ASSERTION, and it is not a mistake. See IRIS_SECRETS_644.
+        for rel in IRIS_SECRETS_644:
+            path = os.path.join(REPO_DIR, rel)
+            if not os.path.exists(path):
+                detail.setdefault("absent", []).append(rel)
+                continue
+            mode = os.stat(path).st_mode & 0o777
+            detail["modes"][rel] = oct(mode)
+            ctx.check(f"{os.path.basename(rel)} is still readable (644, on purpose)",
+                      bool(mode & 0o044),
+                      expected="group/other readable", actual=oct(mode),
+                      note="an over-eager hardening pass that sets these to 600 "
+                           "does not break the box now — it breaks intact_iris_app "
+                           "on the NEXT recreate, which is why it shipped once "
+                           "already")
+
+        # --- ports that must stay on loopback ------------------------------
+        exposed = []
+        for port, why in LOOPBACK_ONLY:
+            if _tcp_open(cfg.platform_host, port):
+                exposed.append(f"{port} ({why})")
+        detail["loopback_only_exposed"] = exposed
+        ctx.check("every loopback-only port is closed from the LAN", not exposed,
+                  expected=f"{len(LOOPBACK_ONLY)} ports closed",
+                  actual="; ".join(exposed) or "all closed",
+                  note="these are bound to 127.0.0.1 in the compose files. A "
+                       "published 8889 is a direct bypass of nginx's TLS and "
+                       "auth for a service that holds case data and can task "
+                       "every endpoint on the network")
+
+        # --- and the ports that ARE open must defend themselves -------------
+        for port, probe_path, why in LAN_OPEN_MUST_AUTH:
+            if not _tcp_open(cfg.platform_host, port):
+                detail.setdefault("lan_open", {})[port] = "closed"
+                continue
+            try:
+                import requests as _rq
+                r = _rq.get(f"http://{cfg.platform_host}:{port}{probe_path}",
+                            timeout=15)
+                code = r.status_code
+            except Exception as exc:                          # noqa: BLE001
+                code = f"error: {str(exc)[:60]}"
+            detail.setdefault("lan_open", {})[port] = code
+            ctx.check(f"port {port} is reachable from the LAN but demands "
+                      f"credentials",
+                      code in (401, 403),
+                      expected="401/403", actual=code,
+                      note=f"{why}. This port is published on purpose, so the "
+                           f"only thing standing in front of it is its own "
+                           f"authentication — and that is exactly what a "
+                           f"'temporarily disable security' change removes")
 
         return detail
 
