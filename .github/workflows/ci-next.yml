@@ -95,9 +95,14 @@ jobs:
           fi
 
       - name: The Python suite (RUNS NOWHERE ELSE)
+        # -rs prints the REASON for every skip. A test that quietly starts
+        # skipping is coverage lost without a failure anywhere — the same shape
+        # as the twelve files run_tests.sh was silently not running. The count
+        # differing between a laptop and the runner is worth seeing, not
+        # worth guessing at.
         run: |
           set -euo pipefail
-          python3 -m pytest tests/ -q --tb=short
+          python3 -m pytest tests/ -q -rs --tb=short
 
   # -------------------------------------------------------------- secrets --
   secrets:
