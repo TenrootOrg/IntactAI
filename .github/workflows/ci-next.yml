@@ -80,6 +80,33 @@ jobs:
           python3 -m pip install --quiet pytest requests pyyaml
           python3 -m pytest --version
 
+      # --- PARITY WITH test.yml -------------------------------------------
+      # Byte-for-byte the same gates the current `test` job runs. They are here
+      # so this workflow is a SUPERSET of the one it is meant to replace: until
+      # it does everything test.yml does, swapping them would lose coverage,
+      # which is the exact failure this whole exercise is about.
+      - name: Syntax-check every shell script
+        run: |
+          set -euo pipefail
+          bash -n install.sh
+          bash -n scripts/upgrade.sh
+          for f in lib/*.sh lib/upgrade/*.sh scripts/*.sh scripts/dev/*.sh; do
+            bash -n "$f"
+          done
+
+      - name: shellcheck (informational)
+        # NOT the gate. ~125 pre-existing warning/info/style findings, 104 of
+        # them SC2155, across code that predates the workflow. The next step is
+        # what blocks.
+        run: |
+          shellcheck install.sh lib/*.sh lib/upgrade/*.sh \
+                     scripts/prepare_package.sh scripts/*.sh || true
+
+      - name: "shellcheck (gate: errors only)"
+        run: |
+          shellcheck --severity=error install.sh lib/*.sh lib/upgrade/*.sh \
+                     scripts/prepare_package.sh scripts/*.sh
+
       - name: The shell suite (same as the current `test` job)
         run: bash tests/run_tests.sh
 
@@ -165,16 +192,19 @@ jobs:
           PY
 
       - name: Scan history
-        id: scan
         run: |
-          set -uo pipefail          # NOT -e: the report must be read on a hit
+          # NOT -e, and no `id:`/output: this step deliberately does not decide
+          # the outcome. gitleaks exits 1 on a finding; the report has to be
+          # rendered and uploaded first, and "Fail if anything leaked" below is
+          # what actually fails the job. The current workflow fails HERE, which
+          # is why nothing after it ever printed.
+          set -uo pipefail
           /tmp/bin/gitleaks detect \
             --no-banner \
             --redact \
             --config /tmp/gitleaks-ci.toml \
             --report-format json \
-            --report-path /tmp/gitleaks.json
-          echo "rc=$?" >> "$GITHUB_OUTPUT"
+            --report-path /tmp/gitleaks.json || true
 
       - name: Say what was found
         # THE POINT. Today a failure is the single line "leaks found: 2" — no
