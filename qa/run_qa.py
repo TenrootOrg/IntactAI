@@ -72,8 +72,8 @@ def build_runner(ctx, cfg):
     from phases import (analysis, blueprints, case_editing, cloud,
                         endpoint, endpoint_linux, features, frontend,
                         hunts, maintenance, memory_plumbing, pipelines,
-                        platform, restart, scheduler, upgrade, workflows,
-                        wrapup)
+                        platform, restart, scheduler, support, upgrade,
+                        workflows, wrapup)
     platform.register(runner, cfg)
     endpoint.register(runner, cfg)
     # The Linux profile: enrol the appliance itself as an endpoint, then drive
@@ -117,6 +117,9 @@ def build_runner(ctx, cfg):
     # written above. It needs that state to exist, and it is disruptive,
     # so nothing that asserts on a steady box may follow it.
     restart.register(runner, cfg)
+    # The artifact operators send to vendors. wrapup already collected it
+    # and asserted nothing about it.
+    support.register(runner, cfg)
     # LAST of the asserting phases. purge_run deletes the evidence every phase
     # above depends on, so it must come after all of them -- and before wrapup,
     # which still has to collect logs and write the report out of the box.
@@ -161,7 +164,7 @@ def build_runner(ctx, cfg):
                   "case_read", "case_report", "case_pdf", "case_mutations",
                   "case_surfaces", "case_timeline_edit", "case_zoom",
                   "scheduler", "cloud_offline", "cloud_azure",
-                  "blueprints", "restart_survival",
+                  "blueprints", "restart_survival", "support_bundle",
                   "purge_scan",
                   # LAST: it deletes the evidence every phase above asserts on.
                   "purge_run"]

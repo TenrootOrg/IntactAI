@@ -50,6 +50,7 @@ REQUIRED_ALWAYS = (
     "cloud_azure",      # the Azure module has its detection content
     "blueprints",       # custom ones round-trip, shipped ones are safe
     "restart_survival", # the box does not forget when it restarts
+    "support_bundle",   # the artifact sent to vendors carries no secret
     "purge_scan",       # a section cannot honestly scan zero on a filled box
     "purge_run",        # the bytes actually go
     "collect",
