@@ -75,6 +75,97 @@ but the backup then IS live data), `--skip-remove` (leave risx stopped on
 disk; needs 3× disk), `--backup-dir` (reuse a previous run's backup after a
 failure — re-runs are cheap).
 
+## The other shape: adopting a fleet onto a box that is *already* installed
+
+`migrate_from_risx.sh` above replaces a risx box in place, and it seeds the
+Velociraptor config **before the first install** — which is the only moment
+that works, because `lib/modules/velociraptor.sh` short-circuits
+`deploy_velociraptor` when the container is already running.
+
+That leaves the far more common ask uncovered: *the new Intact appliance is
+already built and running; make the old fleet talk to it.* That is
+`scripts/adopt_velociraptor_identity.sh`.
+
+```bash
+sudo ./scripts/adopt_velociraptor_identity.sh --from /path/to/old/server.config.yaml --dry-run
+sudo ./scripts/adopt_velociraptor_identity.sh --from /path/to/old/server.config.yaml
+```
+
+`--dry-run` needs no root and changes nothing — run it first, always.
+
+### What to take off the old box
+
+Everything lives in one directory on the risx machine:
+
+```
+/home/<user>/setup_platform/workdir/velociraptor/velociraptor/
+├── server.config.yaml      ← THE ONLY FILE YOU NEED
+├── client.config.yaml         derived; intact regenerates it every boot
+├── clients/{linux,mac,windows}/   repacked installers — not needed
+└── <the datastore and filestore, in the same directory>
+```
+
+There is **no `api.config.yaml`** on a risx box — it creates an `api` *user*
+instead — and nothing needs migrating there: intact's entrypoint mints its own
+from whichever CA `server.config.yaml` holds.
+
+Copy `server.config.yaml` off (`scp`, USB, anything). It contains the CA
+private key and the client nonce: treat it as a credential, and delete the copy
+afterwards.
+
+### The one thing no script can fix
+
+Deployed clients dial `Client.server_urls` **verbatim** — normally
+`https://<old-host>:8000/`. The Intact box has to answer at that address on
+port 8000, by taking the old box's IP/DNS or by repointing DNS at the new one.
+Nothing inside the config changes where a client already in the field looks.
+
+The script checks this, prints the mismatch in the loudest terms it has, and
+**refuses by default** when the address does not resolve here. `-y` proceeds
+anyway — correct when you are cutting DNS over separately, wrong every other
+time.
+
+### What it does, in order
+
+1. Guards: root (real runs), an Intact checkout, the velociraptor module, the
+   container present.
+2. Prints both identities — the incoming CA fingerprint and this box's — plus
+   the address clients dial. Already running that identity ⇒ exits 0, no-op.
+3. Reachability verdict; destructive-change warning (adopting a foreign CA
+   orphans anything enrolled under the current one, and the incoming
+   `obfuscation_nonce` makes this box's existing Velociraptor datastore files
+   unreadable); confirmation.
+4. Transforms via `scripts/migrate/transform_config.py` — **before** stopping
+   anything, so a config it refuses costs zero downtime.
+5. Stops the container, backs the current configs up to
+   `data/tmp/velo-before-adopt-<timestamp>/`, writes the new
+   `server.config.yaml` at `0600`, and **deletes** `client.config.yaml` and
+   `api.config.yaml` so the entrypoint re-derives them from the adopted CA. A
+   stale `api.config.yaml` is signed by a CA the server no longer has, and the
+   backend's gRPC channel then fails naming neither file.
+6. `--datastore <dir>` optionally seeds the old datastore into intact's volume.
+   Skip it if you only care about clients reconnecting — they will, without it.
+7. Restarts with `--no-build --pull never` (air-gap safe), verifies the live CA
+   and the regenerated client config's trust material, and **rolls back** to the
+   backup on any failure.
+
+The nonce is never printed and never written to the log.
+
+### Afterwards
+
+```bash
+docker exec intact_velociraptor ./velociraptor --config /velociraptor/server.config.yaml \
+    query "SELECT client_id, os_info.hostname, last_seen_at FROM clients()"
+```
+
+Clients re-enrol keeping their existing `client_id` — no reinstall, no touch on
+the endpoint. A large fleet trickles in over its polling interval rather than
+arriving at once.
+
+Scope note: this script only rewrites Velociraptor's own config and restarts
+that one container. It does not touch any other module, the database, or
+anything the installer manages.
+
 ## Client compatibility (lab-verified 2026-07-26)
 
 Old clients vs a **0.77.1** server, real processes, loopback lab:
