@@ -193,18 +193,32 @@ jobs:
 
       - name: Scan history
         run: |
-          # NOT -e, and no `id:`/output: this step deliberately does not decide
-          # the outcome. gitleaks exits 1 on a finding; the report has to be
-          # rendered and uploaded first, and "Fail if anything leaked" below is
-          # what actually fails the job. The current workflow fails HERE, which
-          # is why nothing after it ever printed.
+          # NOT -e: this step deliberately does not decide the outcome. gitleaks
+          # exits 1 on a finding, the report has to be rendered and uploaded
+          # first, and "Fail if anything leaked" below is what fails the job.
+          # The current workflow fails HERE, which is why nothing after it ever
+          # printed.
           set -uo pipefail
+          rc=0
           /tmp/bin/gitleaks detect \
             --no-banner \
             --redact \
             --config /tmp/gitleaks-ci.toml \
             --report-format json \
-            --report-path /tmp/gitleaks.json || true
+            --report-path /tmp/gitleaks.json || rc=$?
+          echo "gitleaks exit code: $rc"
+
+          # THE HOLE THIS CLOSES, measured rather than reasoned about: gitleaks
+          # returns 1 BOTH for "leaks found" and for "I could not run" (a
+          # malformed config, an unreadable repo), and in the error case it
+          # writes NO report. A bare `|| true` plus a gate that reads a missing
+          # report as zero findings is a job that goes green having scanned
+          # nothing at all — the exact silent-pass this workflow exists to
+          # remove. The report file is the discriminator.
+          if [ ! -f /tmp/gitleaks.json ]; then
+            echo "::error::gitleaks exited $rc and produced no report — the scan did not run"
+            exit 1
+          fi
 
       - name: Say what was found
         # THE POINT. Today a failure is the single line "leaks found: 2" — no
@@ -246,9 +260,15 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
+          # Belt and braces with the scan step: an absent report here means
+          # the scan never produced one, which must never read as "clean".
+          if [ ! -f /tmp/gitleaks.json ]; then
+            echo "::error::no gitleaks report — refusing to report this as clean"
+            exit 1
+          fi
           n=$(python3 -c "
           import json,os
           p='/tmp/gitleaks.json'
-          print(len(json.load(open(p))) if os.path.exists(p) and os.path.getsize(p) else 0)")
+          print(len(json.load(open(p))) if os.path.getsize(p) else 0)")
           echo "findings: $n"
           [ "$n" -eq 0 ] || { echo "::error::gitleaks found $n secret(s) — see the job summary"; exit 1; }
