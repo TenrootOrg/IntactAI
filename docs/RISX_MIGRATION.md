@@ -151,6 +151,29 @@ time.
 
 The nonce is never printed and never written to the log.
 
+### What has actually been proven (2026-09-07)
+
+End-to-end, with no part of it simulated:
+
+1. A **real risx server config** was produced by running the `config generate
+   --merge {...}` line out of Risx-MSSP's own
+   `setup_platform/resources/velociraptor/entrypoint`, under a genuine
+   Velociraptor **0.74.1** binary — the version risx pins.
+2. `transform_config.py` accepted it and changed exactly the seven things it
+   should: Datastore rebased, Logging replaced, `public_path` and
+   `Custom.Elastic.Flows.Upload` removed, the kibana reverse proxy removed, the
+   GUI URL rewritten. `Monitoring`, `api_config` and `defaults` passed through
+   untouched, and the CA, nonce and certificates byte-for-byte.
+3. A **0.77.2 server** was started on that transformed config.
+4. A **0.74.1 client**, using the `client.config.yaml` risx's entrypoint ships
+   to endpoints, connected to it: `406 Please Enrol` → `200`, enrolled as
+   `C.d28a125c7185393b`, and completed its `Generic.Client.Info` interrogation.
+   The new server stored the endpoint's hostname, platform and architecture.
+
+So the old-client/new-server combination is verified, not assumed. What remains
+untested is the address handover itself, which is infrastructure rather than
+software — see the precondition above.
+
 ### Afterwards
 
 ```bash

@@ -27,22 +27,35 @@ TRANSFORM = os.path.join(ROOT, "scripts/migrate/transform_config.py")
 
 
 def _legacy(**over):
-    """A config shaped like risx-mssp's entrypoint produces one."""
+    """A config in the shape risx-mssp's entrypoint actually produces.
+
+    NOT invented. Reproduced on 2026-09-07 by running the `config generate
+    --merge {...}` line out of Risx-MSSP's own
+    setup_platform/resources/velociraptor/entrypoint under a real Velociraptor
+    0.74.1 binary, and diffing the result against this fixture. That exercise
+    corrected four things this file previously asserted wrongly: risx binds the
+    API and GUI on 0.0.0.0 (not loopback), its Datastore paths are "./" (not
+    "."), and it carries `Monitoring`, `api_config` and `defaults` sections that
+    were absent here entirely.
+    """
     cfg = {
-        "version": {"name": "velociraptor", "version": "0.74"},
+        "version": {"name": "velociraptor", "version": "0.74.1"},
         "Client": {
             "server_urls": ["https://10.9.8.7:8000/"],
             "ca_certificate": "-----BEGIN CERTIFICATE-----\nFAKECA\n-----END CERTIFICATE-----",
             "nonce": "AAAAAAAAAAA=",
             "use_self_signed_ssl": True,
         },
-        "API": {"bind_address": "127.0.0.1", "bind_port": 8001},
+        "API": {"bind_address": "0.0.0.0", "bind_port": 8001, "bind_scheme": "tcp"},
         "GUI": {
-            "bind_address": "127.0.0.1", "bind_port": 8889,
+            "bind_address": "0.0.0.0", "bind_port": 8889,
+            "base_path": "/velociraptor",
             "public_url": "https://10.9.8.7/velociraptor/app/index.html",
+            "use_plain_http": True,
             "reverse_proxy": [{"route": "/velociraptor/kibana/",
                                "url": "http://kibana:5601/", "require_auth": True}],
             "gw_certificate": "GWCERT", "gw_private_key": "GWKEY",
+            "authenticator": {"type": "Basic"},
         },
         "CA": {"private_key": "-----BEGIN RSA PRIVATE KEY-----\nFAKEKEY\n-----END RSA PRIVATE KEY-----"},
         "Frontend": {
@@ -50,8 +63,16 @@ def _legacy(**over):
             "certificate": "FECERT", "private_key": "FEKEY",
             "public_path": "public",
             "default_server_monitoring_artifacts": ["Custom.Elastic.Flows.Upload"],
+            "GRPC_pool_max_size": 100,
         },
-        "Datastore": {"location": ".", "filestore_directory": "."},
+        # risx never overrides these, so they arrive exactly as 0.74 generated
+        # them. A transform that silently dropped them would be changing server
+        # behaviour nobody asked it to change.
+        "Monitoring": {"bind_address": "0.0.0.0", "bind_port": 8003},
+        "api_config": {},
+        "defaults": {"hunt_expiry_hours": 168, "notebook_cell_timeout_min": 10},
+        "Datastore": {"implementation": "FileBaseDataStore",
+                      "location": "./", "filestore_directory": "./"},
         "Logging": {"output_directory": ".", "separate_logs_per_component": True},
         "obfuscation_nonce": "OBFUSCATE",
     }
@@ -141,6 +162,16 @@ class TheTransform(unittest.TestCase):
         self.assertTrue(out["GUI"]["use_plain_http"])
         self.assertEqual(out["GUI"]["public_url"],
                          "http://192.168.1.5/velociraptor/app/index.html")
+
+    def test_sections_the_transform_has_no_opinion_on_pass_through_untouched(self):
+        """Monitoring, api_config and defaults are none of the transform's
+        business. Dropping them would quietly change how the adopted server
+        behaves, in ways that surface nowhere near this code."""
+        cfg = _legacy()
+        r, out = self._run(cfg)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for key in ("Monitoring", "api_config", "defaults", "version"):
+            self.assertEqual(out.get(key), cfg[key], f"{key} was not passed through")
 
     # --- the shape gate --------------------------------------------------
     def test_a_deviating_port_is_refused_because_compose_publishes_fixed_ones(self):
