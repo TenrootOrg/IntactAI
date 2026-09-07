@@ -60,6 +60,15 @@ jobs:
     timeout-minutes: 20        # measured: the current `test` job takes 2.2 min
     steps:
       - uses: actions/checkout@v7
+        with:
+          # TAGS, not just the tip. actions/checkout does a shallow clone by
+          # default, so `git tag` is empty on the runner — and
+          # test_real_intact_20260811_needs_full_fetch then skips itself with
+          # "intact-20260811 tag not available locally". That is a real test of
+          # upgrade fetch-scoping quietly not running in CI while passing on
+          # every laptop. Found by adding -rs to the pytest step, which is the
+          # entire argument for printing skip reasons.
+          fetch-depth: 0
 
       - name: Install the test dependencies
         # Determined empirically in a clean venv rather than guessed: with only
