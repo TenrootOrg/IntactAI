@@ -70,9 +70,10 @@ def build_runner(ctx, cfg):
     runner = runner_lib.Runner(ctx)
 
     from phases import (analysis, blueprints, case_editing, cloud,
-                        endpoint, endpoint_linux, features, hunts,
-                        maintenance, memory_plumbing, pipelines, platform,
-                        restart, scheduler, upgrade, workflows, wrapup)
+                        endpoint, endpoint_linux, features, frontend,
+                        hunts, maintenance, memory_plumbing, pipelines,
+                        platform, restart, scheduler, upgrade, workflows,
+                        wrapup)
     platform.register(runner, cfg)
     endpoint.register(runner, cfg)
     # The Linux profile: enrol the appliance itself as an endpoint, then drive
@@ -80,6 +81,10 @@ def build_runner(ctx, cfg):
     # config flag is on, so an operator's existing Windows run is unchanged.
     endpoint_linux.register(runner, cfg)
     features.register(runner, cfg)
+    # The page an operator actually opens. Cheap, needs no browser, and
+    # catches the entire class where the API is perfect and the
+    # dashboard is blank.
+    frontend.register(runner, cfg)
     # After the sweep: pipelines dispatch real collections and detection runs,
     # so they need the client enrolled and the API already proven to answer.
     pipelines.register(runner, cfg)
@@ -150,7 +155,8 @@ def build_runner(ctx, cfg):
         # them behind is not a crash -- their needs are simply never met, so
         # they skip, and a skip is not a failure. tests/test_qa_harness.py
         # caught exactly that, which is what it is for.
-        moving = ["security", "enrol_linux", "features", "pipelines",
+        moving = ["security", "enrol_linux", "features", "frontend_smoke",
+                  "pipelines",
                   "hunt_linux", "memory_plumbing",
                   "case_read", "case_report", "case_pdf", "case_mutations",
                   "case_surfaces", "case_timeline_edit", "case_zoom",

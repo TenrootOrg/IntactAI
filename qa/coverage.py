@@ -34,6 +34,7 @@ REQUIRED_ALWAYS = (
     "auth",             # the dashboard is reachable and a session works
     "enrol_linux",      # a real client checked in
     "features",         # the API sweep
+    "frontend_smoke",   # the dashboard can actually assemble
     "pipelines",        # plants Linux evidence, collects it, and FUSES it
     "hunt_linux",       # a fleet hunt, not just a per-client collection
     "memory_plumbing",  # the memory module's only coverage
