@@ -71,9 +71,9 @@ def build_runner(ctx, cfg):
 
     from phases import (analysis, blueprints, case_editing, cloud,
                         concurrency, endpoint, endpoint_linux, features,
-                        frontend, hunts, maintenance, memory_plumbing,
-                        pipelines, platform, restart, scheduler, support,
-                        upgrade, workflows, wrapup)
+                        frontend, guards, hunts, maintenance,
+                        memory_plumbing, pipelines, platform, restart,
+                        scheduler, support, upgrade, workflows, wrapup)
     platform.register(runner, cfg)
     endpoint.register(runner, cfg)
     # The Linux profile: enrol the appliance itself as an endpoint, then drive
@@ -85,6 +85,9 @@ def build_runner(ctx, cfg):
     # catches the entire class where the API is perfect and the
     # dashboard is blank.
     frontend.register(runner, cfg)
+    # The validators the product added after real incidents. Cheap, and
+    # they sit on paths that were exploitable.
+    guards.register(runner, cfg)
     # After the sweep: pipelines dispatch real collections and detection runs,
     # so they need the client enrolled and the API already proven to answer.
     pipelines.register(runner, cfg)
@@ -162,6 +165,7 @@ def build_runner(ctx, cfg):
         # they skip, and a skip is not a failure. tests/test_qa_harness.py
         # caught exactly that, which is what it is for.
         moving = ["security", "enrol_linux", "features", "frontend_smoke",
+                  "guards",
                   "pipelines",
                   "hunt_linux", "memory_plumbing",
                   "case_read", "case_report", "case_pdf", "case_mutations",
