@@ -88,13 +88,23 @@ _elapsed() {
 # Watching the file size costs a stat every few seconds and prints whole lines.
 _dl_watch() {
     local f="$1" total="$2" label="$3" pid="$4"
-    local started prev=0 now delta rate pct
+    local started prev=0 now delta rate pct i
+    local tick="${_DL_TICK:-15}"
     started=$(date +%s)
     while kill -0 "$pid" 2>/dev/null; do
-        sleep "${_DL_TICK:-15}"
+        # Poll every second, report every $tick. Sleeping the whole tick first
+        # meant a transfer that finished in 0.1s still pinned this loop for the
+        # full 15s -- and the legacy multi-part path above calls this ONCE PER
+        # PART, so a 6-part package paid up to 90s of pure waiting after the
+        # bytes had already landed. Measured against a 0.2s transfer: this loop
+        # now returns in 1.00s where it took 15.00s.
+        for (( i = 0; i < tick; i++ )); do
+            sleep 1
+            kill -0 "$pid" 2>/dev/null || break
+        done
         kill -0 "$pid" 2>/dev/null || break
         now=$(stat -c%s "$f" 2>/dev/null || echo 0)
-        delta=$(( (now - prev) / ${_DL_TICK:-15} ))
+        delta=$(( (now - prev) / tick ))
         prev="$now"
         if [ "${total:-0}" -gt 0 ] 2>/dev/null; then
             pct=$(( now * 100 / total ))
@@ -660,7 +670,15 @@ export GITHUB_TOKEN
                 "$(( got * 100 / TOTAL_BYTES ))"
         fi
     done
-) &
+# >&2 on the SUBSHELL, not on the printf. This background job inherits fd 1,
+# and a caller doing `wrapper=$(prepare_package.sh ...)` cannot return from the
+# command substitution until every writer closes that pipe. `kill "$WATCHER"`
+# kills the subshell but NOT the `sleep 20` it is blocked in, and that orphan
+# keeps fd 1 open to the end of its nap. Measured: a captured run took 20.2s
+# against 0.2s uncaptured, all of it after the work was done. Redirecting the
+# subshell moves its fd 1 off the pipe entirely; redirecting only the printf
+# does not, because holding the descriptor is what blocks, not writing to it.
+) >&2 &
 WATCHER=$!
 trap 'kill "$WATCHER" 2>/dev/null; _cleanup' EXIT INT TERM HUP
 
