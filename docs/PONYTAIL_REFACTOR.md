@@ -236,3 +236,48 @@ it.
   and Codex is not HTTP at all. Folding the remainder saves ~50 lines and needs
   ~80 lines of new test to be safe, so the line count goes up. Rejected on its
   own metric.
+
+## Regression evidence
+
+A full end-to-end run on this branch, backend image built from the branch,
+against `main`'s run of the same two scenarios:
+
+| scenario | main | ponytail | failing phases |
+|---|---|---|---|
+| install-online | 31 pass / 2 fail / 7 skip | 31 / 2 / 7 | restart_survival, report |
+| install-package | 30 / 3 / 7 | 30 / 3 / 7 | cloud_azure, restart_survival, report |
+
+Identical, phase for phase and count for count. The failures are pre-existing
+and were recorded before this campaign began: an AWS run returns 404 after a
+backend restart, Azure has no run persistence at all, and the `report` phase
+fails by design when a required phase failed. Zero new red phases from the
+deletions.
+
+Note the first attempt failed before the harness even started, because `VERSION`
+on both `main` and this branch names `intact-20260906`, a release that was never
+published. The run needs `version_override=intact-20260903`. That is not a
+regression, but it will bite the next person too.
+
+## Parallel phase
+
+Once the mechanical work was done, the remainder was split into file-disjoint
+partitions worked by agents in parallel, each in its own git worktree and
+branch:
+
+| partition | owns | 
+|---|---|
+| settings | `partials/settings.html`, `js/stores/settings.js` |
+| cloud | `partials/aws.html`, `partials/azure.html`, `js/components/cloud-datepickers.js` |
+| collectors | `js/upload.js`, `js/timesketch.js`, `js/velociraptor.js` |
+
+Why partitions and not just parallel agents: the union-find of source files
+linked by a shared test has ONE connected component of 80 files spanning
+backend, frontend, shell and qa, joined by 56 tests, and 22 of the 87 test files
+reference more than one area. No partition can make the tests independent. So
+the split is by files an agent may WRITE, the gate is the whole suite, and
+integration is serial, rebase then gate then fast-forward, one branch at a time.
+
+`tests/**` is read-only to every agent. An agent that wants a test changed must
+stop and report it, because wanting to change a test is nearly always a symptom
+that behaviour changed. Every deletion requires three greps and one sentence of
+positive evidence, a protocol built specifically from the two reverts above.
