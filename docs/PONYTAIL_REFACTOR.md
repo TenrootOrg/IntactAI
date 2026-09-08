@@ -175,7 +175,14 @@ Test wall time, this box:
 |---|---|---|
 | test_prepare_package.sh | 20.52 s | 0.62 s |
 | test_core_deps.sh | 22.18 s | 6.51 s |
-| shell suite, all 85 | 95.5 s | ~60 s |
+| shell suite, all 85, local | 95.5 s | ~60 s |
+| shell suite, CI | 81.0 s | 55.8 s |
+| Python suite, CI | 17.7 s | 20.0 s |
+
+CI figures are the `ci-next` steps "The shell suite" and "The Python suite",
+run 34210576845 on `main` against run 34215878168 on `ponytail`. The Python
+suite is 2.3 s slower because it now runs one more test, the import smoke,
+which starts a second interpreter and imports 147 modules in it.
 
 ### What was removed
 
