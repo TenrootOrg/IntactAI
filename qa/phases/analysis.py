@@ -40,6 +40,19 @@ def _items(body, key):
     return []
 
 
+def _tl_state(row):
+    """The triage state of a timeline row, whichever field carries it.
+
+    A GRAPH finding exposes it as `validation`; a MANUAL event carries its own
+    `status`. Reading only `status` returns None for every graph row — which is
+    exactly what this check did on the first real CI run: expected "known_it",
+    got "None (was None)", on a case whose rows were all graph findings.
+    Measured on a live appliance: a graph row has `validation` and no `status`
+    at all.
+    """
+    return (row or {}).get("validation") or (row or {}).get("status")
+
+
 # Endpoints that legitimately answer 404 on a case with none of that thing yet.
 # The client RAISES on an unexpected status, so a bare get() would fail the
 # phase for an empty checklist rather than for a broken one.
@@ -323,13 +336,13 @@ def register(runner, cfg):
         events = _items(c.get(f"{base}/timeline", expect=_SOFT), "timeline")
         if events:
             eid = events[0].get("finding_id")
-            was = events[0].get("status")
+            was = _tl_state(events[0])
             want = "known_it" if was != "known_it" else "real"
             c.post(f"{base}/timeline/validate",
                    {"finding_id": eid, "status": want, "notes": "QA"},
                    expect=(200, 201))
             rows = _items(c.get(f"{base}/timeline", expect=_SOFT), "timeline")
-            now = next((r.get("status") for r in rows
+            now = next((_tl_state(r) for r in rows
                         if r.get("finding_id") == eid), None)
             detail["did"].append("timeline validate")
             ctx.check("triaging a timeline row changes its status",

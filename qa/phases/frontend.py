@@ -250,8 +250,13 @@ def register(runner, cfg):
         except Exception as exc:                              # noqa: BLE001
             code_anon = f"error: {str(exc)[:60]}"
         detail["velociraptor_gate"] = {"authed": code_auth, "anon": code_anon}
+        # ANY of 200/301/302/307/308 — measured 302 locally and 307 in CI, and
+        # which redirect nginx picks is not what this asserts. The assertion is
+        # that an authenticated caller is not turned away.
         ctx.check("the Velociraptor proxy is reachable with a session",
-                  code_auth in (200, 302), expected="200/302", actual=code_auth)
+                  code_auth == 200 or (isinstance(code_auth, int)
+                                       and 300 <= code_auth < 400),
+                  expected="200 or a redirect", actual=code_auth)
         ctx.check("the Velociraptor proxy refuses an unauthenticated caller",
                   code_anon in (302, 401, 403),
                   expected="redirect or refusal", actual=code_anon,

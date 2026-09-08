@@ -132,7 +132,29 @@ def register(runner, cfg):
         # a false leak report on a bundle that was in fact clean. Requiring the
         # match not to sit inside a longer run of digits keeps the detection and
         # drops the collision.
-        secrets = [s for s in (cfg.secrets() or []) if len(s) >= 6]
+        # PASSWORDS ONLY, and this is the fix for a false positive that failed
+        # the first real CI run in five separate files. cfg.secrets() is built
+        # for REDACTION, so it deliberately includes identity fields as well as
+        # credentials: platform.host, platform.sudo_user, windows.host,
+        # windows.username. Scrubbing those from a log is harmless; asserting
+        # they never appear in a product artifact is not, because CI sets
+        # QA_SUDO_USER=runner and every path in every workflow row reads
+        # /home/runner/... . Five "leaks", none of them a credential.
+        #
+        # A leak assertion needs the things that would actually be a
+        # disclosure, so this filters SECRET_FIELDS down to the password ones.
+        creds = []
+        try:
+            from lib import config as _qa_config
+            for section, key in getattr(_qa_config, "SECRET_FIELDS", ()):
+                if "pass" not in key.lower():
+                    continue
+                v = cfg.get(section, key)
+                if isinstance(v, str) and len(v.strip()) >= 6:
+                    creds.append(v.strip())
+        except Exception:                                     # noqa: BLE001
+            creds = []
+        secrets = creds or [s for s in (cfg.secrets() or []) if len(s) >= 8]
         matchers = []
         for sec in secrets:
             if sec.isdigit():
@@ -157,6 +179,7 @@ def register(runner, cfg):
                     offenders.append(f"{n} (a configured credential)")
                     break
         detail["scanned_members"] = scanned
+        detail["secret_values_scanned"] = len(secrets)
         detail["redaction_markers"] = redaction_markers
         detail["offenders"] = offenders
         ctx.check("no configured credential appears in the support bundle",

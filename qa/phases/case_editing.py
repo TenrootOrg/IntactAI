@@ -37,6 +37,14 @@ def _case(ctx):
     return ctx.get("fused_case_id")
 
 
+def _tl_state(row):
+    """A graph finding exposes its triage as `validation`, a manual event as
+    `status`. This phase creates manual events, so `status` is the live field —
+    but read both, because a row that changed shape should fail on the
+    assertion, not on the lookup."""
+    return (row or {}).get("status") or (row or {}).get("validation")
+
+
 def _items(body, key):
     if isinstance(body, list):
         return body
@@ -168,7 +176,7 @@ def register(runner, cfg):
                expect=(200, 201))
         rows2 = _items(c.get(f"{base}/timeline", expect=_SOFT), "timeline")
         mine2 = [r for r in rows2 if r.get("finding_id") == eid]
-        got = mine2[0].get("status") if mine2 else None
+        got = _tl_state(mine2[0]) if mine2 else None
         detail["status_after_validate"] = got
         ctx.check("triaging the event actually changes its status",
                   got == "not_real", expected="not_real", actual=got,
