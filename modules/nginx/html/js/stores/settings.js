@@ -550,24 +550,6 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
-        // Kept for backwards compat — old callsites (if any) still work.
-        // The button itself now invokes `openPurgeModal`.
-        async runPurge() { await this.openPurgeModal(); },
-
-        // Fresh install flags (per module) - removes DB volumes for new schema
-        dbOverwriteTimesketch: false,
-        dbOverwriteIris: false,
-        dbOverwriteElk: false,
-
-        // Helper to get db_overwrite object
-        getDbOverwrite() {
-            return {
-                timesketch: this.dbOverwriteTimesketch,
-                iris: this.dbOverwriteIris,
-                elk: this.dbOverwriteElk
-            };
-        },
-
         // ===== PREPARE UPGRADE PACKAGE =====
         showPreparePackageModal: false,
         prepareLoading: false,
@@ -579,11 +561,8 @@ document.addEventListener('alpine:init', () => {
         prepareModalMode: 'prepare',
 
         // ─── Apply Uploaded Package state ────────────────────────────
-        // Lists pending tarballs from /api/upgrade/list-packages.
-        // Clicking one opens a review modal that lets the operator
+        // An imported package opens a review modal that lets the operator
         // pick which modules from the manifest to actually apply.
-        uploadedPackages: [],
-        loadingPackages: false,
         showApplyPackageModal: false,
         applyPackage: null,         // {path, name, size_bytes, mtime, source}
         applyPackageFiles: [],      // all selected local assets (per-module import)
@@ -600,22 +579,6 @@ document.addEventListener('alpine:init', () => {
         // anything before clicking Apply (2026-06-15 incident: operator
         // re-applied an identical-versions package by mistake).
         applyCurrentVersions: {},
-
-        async loadUploadedPackages() {
-            this.loadingPackages = true;
-            try {
-                const r = await fetch('/api/upgrade/list-packages', {method: 'POST'});
-                const d = await r.json();
-                if (d && d.success) {
-                    this.uploadedPackages = d.packages || [];
-                } else {
-                    this.showMessage('List packages failed: ' + (d.error || 'unknown'), 'error');
-                }
-            } catch (e) {
-                this.showMessage('List packages request failed: ' + e.message, 'error');
-            }
-            this.loadingPackages = false;
-        },
 
         async openApplyPackageModal(pkg) {
             this.applyPackage = pkg;
@@ -706,19 +669,6 @@ document.addEventListener('alpine:init', () => {
                 }
             }
             return curStr < tgtStr ? 'upgrade' : 'downgrade';
-        },
-
-        // Count of ticked modules that would actually do work. Used to
-        // warn the operator when they're about to apply a package that
-        // changes nothing (the 2026-06-15 same-version mishap).
-        applyChangingCount() {
-            const versions = (this.applyManifest?.versions) || {};
-            let n = 0;
-            for (const mod of this.applySelectedModules) {
-                const action = this.applyModuleAction(mod, versions[mod]);
-                if (action === 'upgrade' || action === 'install') n++;
-            }
-            return n;
         },
 
         closeApplyPackageModal() {
@@ -961,7 +911,6 @@ document.addEventListener('alpine:init', () => {
         optedInReinstall: [],       // ONLINE mode: no-change module IDs ticked to FORCE a reinstall (bug recovery)
         fetchingRefs: false,
         computingPlan: false,
-        showingPrepareModules: false,
         // Current installed Intact tag, fetched on modal open. Used
         // by the dropdown filter so older releases are NOT selectable
         // — prevents the operator from accidentally picking a
@@ -1369,22 +1318,6 @@ document.addEventListener('alpine:init', () => {
             this.prepareRunId = null;
         },
 
-        async downloadPreparedPackage() {
-            if (!this.prepareRunId) {
-                this.showMessage('No package ready for download', 'error');
-                return;
-            }
-
-            // Trigger download via new window/tab
-            window.open(`/api/upgrade/prepare/${this.prepareRunId}/download`, '_blank');
-
-            // Close modal after download initiated
-            setTimeout(() => {
-                this.closePreparePackageModal();
-                this.showMessage('Package download started', 'success');
-            }, 1000);
-        },
-
         // ===== OFFLINE UPGRADE =====
         async importUpgradePackage(event) {
             const files = event.target.files;
@@ -1711,12 +1644,6 @@ document.addEventListener('alpine:init', () => {
                     : 'codex still not visible to the appliance', 
                     this.cli.authenticated ? 'success' : 'info');
             } finally { this.cliBusy = false; }
-        },
-
-        cliCopy(text, what) {
-            navigator.clipboard.writeText(text)
-                .then(() => this.showMessage((what || 'Copied') + ' copied', 'success'))
-                .catch(() => this.showMessage('Could not copy — select it manually', 'error'));
         },
 
         // Test runs as a `settings` workflow so its full log — the exact failure,

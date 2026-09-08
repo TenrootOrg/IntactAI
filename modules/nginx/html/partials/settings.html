@@ -1568,7 +1568,7 @@
                             </div>
 
                             <!-- Spinner while plan/modules auto-load -->
-                            <div x-show="$store.settings.selectedRef && ($store.settings.computingPlan || $store.settings.showingPrepareModules)"
+                            <div x-show="$store.settings.selectedRef && $store.settings.computingPlan"
                                  class="flex items-center justify-center py-4 text-sm text-gray-400">
                                 <svg class="animate-spin h-4 w-4 mr-2 text-blue-500" fill="none" viewBox="0 0 24 24">
                                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
