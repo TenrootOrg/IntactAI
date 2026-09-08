@@ -1808,4 +1808,114 @@ document.addEventListener('alpine:init', () => {
             }
         }
     });
+
+    // ─── Model-search combobox ───────────────────────────────────────────
+    // One component behind the three catalog pickers in partials/settings.html
+    // (Agentic → online_llm, Timesketch → Google AI Studio, Timesketch →
+    // OpenRouter), which were three near-identical inline x-data blocks.
+    // Each hits /api/config/<route>/models?q=… and offers the 10 closest
+    // matches. Only the BEHAVIOUR is shared: the per-picker markup — pricing
+    // row, un-enriched count, placeholder wording — genuinely differs and
+    // stays in the template.
+    //
+    //   modelPath — dot-path under $store.settings.config holding the chosen id
+    //   provider  — a fixed catalog route ('gemini'), or, when the operator can
+    //               switch provider, a dot-path under config pointing at it.
+    //               A '.' in the string is what tells the two apart.
+    Alpine.data('modelPicker', (modelPath, provider) => ({
+        selectedModel: null,
+        results: [],
+        total: 0,
+        open: false,
+        loading: false,
+        unenriched: 0,
+
+        // [owner, key] for a dot-path, resolved fresh every time so it still
+        // points at the live object after the store replaces `config`.
+        _ref(path) {
+            const keys = path.split('.');
+            const key = keys.pop();
+            return [keys.reduce((o, k) => o[k], Alpine.store('settings').config), key];
+        },
+        get modelId() {
+            const [o, k] = this._ref(modelPath);
+            return o[k] || '';
+        },
+        // The name the UI uses. This is also what saveAgentic() and friends put
+        // in the llm-catalog-refreshed event detail, so compare against it —
+        // NOT against the route.
+        get providerName() {
+            if (!provider.includes('.')) return provider;
+            const [o, k] = this._ref(provider);
+            return o[k];
+        },
+        // The UI names (`claude`, `codex-subscription`) don't all match the
+        // catalog route names on the backend (anthropic; codex, whose catalog
+        // comes from the CLI itself). Translate so /api/config/<route>/models
+        // resolves. See services/llm_catalogs/__init__.py.
+        get route() {
+            const p = this.providerName;
+            if (p === 'claude') return 'anthropic';
+            if (p === 'codex-subscription') return 'codex';
+            return p;
+        },
+
+        async _fetch(q) {
+            const url = '/api/config/' + this.route + '/models?limit=10&q=' + encodeURIComponent(q);
+            return await (await fetch(url)).json();
+        },
+        async query() {
+            this.loading = true;
+            try {
+                const data = await this._fetch(this.modelId);
+                this.results = data.models || [];
+                this.total = data.total || 0;
+                this.unenriched = data.unenriched_count || 0;
+            } catch (e) { this.results = []; this.total = 0; }
+            this.loading = false;
+        },
+        // Look up the currently-saved model so its metadata (context / max
+        // output / pricing) can render below the input.
+        async loadSelected() {
+            const id = this.modelId;
+            if (!id) { this.selectedModel = null; return; }
+            try {
+                const list = (await this._fetch(id)).models || [];
+                this.selectedModel = list.find(m => m.id === id)
+                    || list.find(m => m.canonical_id === id)
+                    || null;
+            } catch (e) { this.selectedModel = null; }
+        },
+        select(model) {
+            this.selectedModel = model;
+            const [o, k] = this._ref(modelPath);
+            o[k] = model.id;
+            this.open = false;
+        },
+        _requery() {
+            this.results = [];
+            this.total = 0;
+            this.query();
+            this.loadSelected();
+        },
+        init() {
+            this.loadSelected();
+            this.query();
+            this.$watch('$store.settings.config.' + modelPath, () => this.loadSelected());
+            // Re-query when the provider switches so the dropdown reflects the
+            // active provider's catalog, and drop the old provider's selection.
+            if (provider.includes('.')) {
+                this.$watch('$store.settings.config.' + provider, () => {
+                    this.selectedModel = null;
+                    this._requery();
+                });
+            }
+            // After Save, the store fires a background catalog refresh and
+            // dispatches this — re-query so freshly-fetched models appear
+            // without a page reload.
+            window.addEventListener('llm-catalog-refreshed', (ev) => {
+                if (ev.detail?.provider === this.providerName) this._requery();
+            });
+        },
+    }));
 });
