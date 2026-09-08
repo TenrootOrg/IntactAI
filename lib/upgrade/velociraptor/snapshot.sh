@@ -13,17 +13,12 @@
 # certificate, which changes in lockstep. Empty output means "could not read",
 # which is deliberately different from "changed".
 velo_ca_fp() {
-    python3 - "$(_VELO_DATA)/server.config.yaml" <<'PY' 2>/dev/null
-import hashlib, sys
-try:
-    import yaml
-    d = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
-except Exception:
-    print(""); raise SystemExit(0)
-ca = (d.get("CA") or {}).get("private_key") \
-     or (d.get("Client") or {}).get("ca_certificate") or ""
-print(hashlib.sha256(ca.encode()).hexdigest()[:16] if ca else "")
-PY
+    # The live config, through the same implementation _velo_ca_fp_of uses.
+    # This body used to be a byte-identical copy of that heredoc; the two
+    # differed only in which path they were handed, and a fingerprint the
+    # upgrade compares against restore_velociraptor_ca.sh is the last thing
+    # that should be able to drift between two copies.
+    _velo_ca_fp_of "$(_VELO_DATA)/server.config.yaml"
 }
 
 # ---------------------------------------------------------------------------
