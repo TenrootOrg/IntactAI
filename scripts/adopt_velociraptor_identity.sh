@@ -380,6 +380,63 @@ else
     exit 1
 fi
 
+# --- WAIT FOR THE FRONTEND TO ACTUALLY LISTEN ---------------------------------
+#
+# "Up" is not "serving", and everything above is satisfied roughly a MINUTE
+# before a client could connect. entrypoint.sh writes client.config.yaml (:110)
+# and api.config.yaml (:114), then REPACKS the Linux, Mac and Windows client
+# binaries (:135-210, measured 63s on a real box), and only then execs the
+# frontend (:225). The service has no healthcheck, so `docker ps` says Up the
+# moment the container starts.
+#
+# Without this wait the script printed "Adopted … clients will reconnect" while
+# nothing was listening on 8000. Reported from a real migration: the operator
+# saw no clients, restarted containers, and the restart took the credit for the
+# time that had simply passed. Waiting here is the fix; the restart was not.
+log_info "Waiting for the Velociraptor frontend to accept connections…"
+FRONTEND_UP=0
+for _ in $(seq 1 90); do          # 90 x 2s = 180s, against an observed 8-63s
+    # The PUBLISHED port, probed from the host — exactly the socket a deployed
+    # client dials. Checked from outside rather than inside the container on
+    # purpose: the velociraptor image ships neither `ss` nor `netstat`, so an
+    # in-container probe silently never succeeds (measured).
+    if timeout 3 bash -c "</dev/tcp/127.0.0.1/8000" 2>/dev/null; then
+        FRONTEND_UP=1; break
+    fi
+    # Belt and braces for a box that publishes 8000 somewhere other than
+    # loopback: the line the frontend prints once it is serving.
+    if "$DOCKER_BIN" logs --tail 200 intact_velociraptor 2>&1 \
+            | grep -q 'Frontend is ready to handle client TLS requests'; then
+        FRONTEND_UP=1; break
+    fi
+    sleep 2
+done
+if (( FRONTEND_UP )); then
+    log_success "  the frontend is listening — clients can connect"
+else
+    log_warn "  the frontend is still not listening after 180s."
+    log_warn "  It repacks client installers before serving, which is slow on a"
+    log_warn "  small box. Watch it finish:  docker logs -f intact_velociraptor"
+    log_warn "  Do NOT restart the container — that starts the repack over."
+fi
+
+# Belt and braces, and deliberately NOT load-bearing: nginx already re-resolves
+# a moved container by itself (modules/nginx/config/nginx.conf:16 sets
+# `resolver 127.0.0.11 valid=30s` and :149-150 uses the variable proxy_pass
+# idiom, so there is no pinned upstream to go stale — fixed in 87c30ce8). This
+# only drops any upgraded/WebSocket connections a dashboard was holding to the
+# container we just stopped, so the Velociraptor tab does not sit on a dead
+# socket. Cheap, and it cannot make anything worse.
+#
+# intact_velociraptor is deliberately NOT restarted here: it would re-run the
+# 60-second client repack and undo the wait above.
+if "$DOCKER_BIN" ps --filter 'name=^intact_nginx$' --format '{{.Names}}' 2>/dev/null \
+        | grep -q .; then
+    "$DOCKER_BIN" restart intact_nginx >>"$LOG_FILE" 2>&1 \
+        && log_success "  intact_nginx restarted (drops stale proxied connections)" \
+        || log_warn "  could not restart intact_nginx; harmless — see ${LOG_FILE}"
+fi
+
 echo
 log_success "Adopted Velociraptor identity ${IN_FP}."
 log_info "  Clients dialling ${IN_HOST} will reconnect with their existing client_id."

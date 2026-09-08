@@ -47,7 +47,7 @@ first, the files below are gone and the fleet cannot be recovered.
 Everything is in one directory on the risx box:
 
 ```
-/home/<user>/setup_platform/workdir/velociraptor/velociraptor/
+<risx home>/setup_platform/workdir/velociraptor/velociraptor/
 ├── server.config.yaml      ← THE ONLY FILE YOU ACTUALLY NEED
 ├── client.config.yaml         derived; Intact regenerates it on every boot
 ├── clients/{linux,mac,windows}/   repacked installers — not needed
@@ -56,7 +56,7 @@ Everything is in one directory on the risx box:
 
 Find it without guessing the username:
 
-```bash
+```
 ls -d /home/*/setup_platform/workdir/velociraptor/velociraptor/
 ```
 
@@ -77,7 +77,7 @@ Everything is embedded as PEM text inside `server.config.yaml`:
 Confirm it for yourself on the risx box — no `.pem`, `.crt` or `.key` files
 exist in that directory:
 
-```bash
+```
 ls -la "$VELO" | grep -iE '\.pem|\.crt|\.key' || echo "none — it is all inside server.config.yaml"
 ```
 
@@ -100,16 +100,16 @@ used only where it is needed).
 
 #### 1. Make the backup folder
 
-```bash
+```
 mkdir -p ~/velociraptor_backup
 chmod 700 ~/velociraptor_backup          # only you can read it — it will hold a private key
 cd ~/velociraptor_backup
-pwd                                      # expect: /home/<user>/velociraptor_backup
+pwd                                      # expect: ~/velociraptor_backup
 ```
 
 #### 2. Copy the files into it
 
-```bash
+```
 # Locate the risx Velociraptor directory (no need to know the username).
 VELO=$(ls -d /home/*/setup_platform/workdir/velociraptor/velociraptor)
 echo "Found: $VELO"
@@ -136,7 +136,7 @@ chmod 600 ~/velociraptor_backup/velociraptor-full-$STAMP.tar.gz
 
 #### 3. Check what you got
 
-```bash
+```
 ls -lh ~/velociraptor_backup/
 ```
 
@@ -152,7 +152,7 @@ Now prove the important file is intact and says what you expect — **before** y
 touch anything else. This prints the CA fingerprint and the address your clients
 dial; write both down, you will compare them after the migration:
 
-```bash
+```
 python3 -c "
 import hashlib, yaml
 d = yaml.safe_load(open('$HOME/velociraptor_backup/server.config.yaml'))
@@ -169,16 +169,16 @@ you have copied the wrong file — stop and find the right one.
 
 A backup that only exists on the box you are about to wipe is not a backup.
 
-```bash
+```
 # From your laptop (not the risx box):
-scp -r <user>@<risx-host>:~/velociraptor_backup ./
+scp -r RISX_BOX:~/velociraptor_backup ./          # RISX_BOX = your ssh target, e.g. ops@10.0.0.5
 ls -lh velociraptor_backup/
 ```
 
 Then verify the copy on your laptop opens and shows the **same** CA fingerprint
 as above:
 
-```bash
+```
 python3 -c "
 import hashlib, yaml
 d = yaml.safe_load(open('velociraptor_backup/server.config.yaml'))
@@ -208,8 +208,8 @@ Do **nothing** to the old box yet. Leave it running until the new appliance is
 up and clients are checking in (Step 5). Then:
 
 1. Stop risx so the two cannot both answer on 8000:
-   ```bash
-   cd /home/<user>/setup_platform/scripts && bash cleanup.sh    # or simply: sudo poweroff
+   ```
+   cd "$(ls -d /home/*/setup_platform)/scripts" && bash cleanup.sh   # or simply: sudo poweroff
    ```
 2. Move the address over — give the Intact box the old machine's IP, or repoint
    the DNS name the clients use.
@@ -221,15 +221,15 @@ up and clients are checking in (Step 5). Then:
 The address never moves, which is the one thing this path makes easy. Everything
 else is harder, so confirm before you start:
 
-```bash
+```
 ls -lh ~/velociraptor_backup/   # the backup exists HERE
 # ...and has been copied OFF this machine. Check on the other end, not this one.
 ```
 
 Then remove risx:
 
-```bash
-cd /home/<user>/setup_platform/scripts
+```
+cd "$(ls -d /home/*/setup_platform)/scripts"
 
 # The supported teardown: stops every app in .env, removes its volumes and dirs.
 bash cleanup.sh
@@ -246,7 +246,7 @@ bash cleanup.sh --force
 
 Confirm the machine is clean:
 
-```bash
+```
 docker ps -a          # expect: nothing, or nothing risx
 docker volume ls      # expect: nothing risx
 ls /home/*/setup_platform/workdir 2>/dev/null   # expect: empty or absent
@@ -262,9 +262,19 @@ state that `cleanup.sh` restarts the daemon to fix.
 Requirements: Ubuntu, **16 GB RAM** (32 recommended), 4+ cores, 100 GB+ disk, a
 static IP.
 
-```bash
-# 1. Clone
-git clone https://github.com/TenrootOrg/IntactAI.git intact
+> **Budget for the download.** The installer fetches and extracts the complete
+> module set **regardless of which modules you enable in `config.yaml`** — the
+> enabled flags decide what gets loaded and deployed, not what gets downloaded.
+> Expect roughly **6 GB pulled**, ~13 GB extracted and up to **22 GB of scratch
+> space** in use partway through, even on a trimmed-down install. On a metered
+> or slow link, plan for it.
+
+```
+# 1. Clone the LATEST RELEASE (resolved from GitHub, so this never goes stale)
+LATEST=$(curl -fsSL https://api.github.com/repos/TenrootOrg/IntactAI/releases/latest \
+         | python3 -c "import sys,json;print(json.load(sys.stdin)['tag_name'])")
+echo "Installing $LATEST"
+git clone --branch "$LATEST" https://github.com/TenrootOrg/IntactAI.git intact
 cd intact
 
 # 2. Configure
@@ -275,7 +285,7 @@ nano config.yaml
 `Client.server_urls` from the config you backed up. Getting this right now saves
 re-running things later. Set the module passwords while you are in there.
 
-```bash
+```
 # 3. Install
 sudo bash install.sh
 ```
@@ -292,14 +302,14 @@ setup. Do not migrate before the appliance is healthy on its own.
 
 Copy the backup folder onto the Intact box first:
 
-```bash
+```
 # From your laptop, onto the NEW appliance:
-scp -r velociraptor_backup <user>@<intact-host>:~/
+scp -r velociraptor_backup INTACT_BOX:~/          # INTACT_BOX = your ssh target for the new appliance
 ```
 
 Then, on the Intact box, **from the install root**:
 
-```bash
+```
 cd /path/to/intact
 
 # ALWAYS dry-run first. Needs no root, changes nothing.
@@ -312,7 +322,7 @@ box, the address the clients dial, and whether that address resolves here. If it
 says the address diverges, **stop and fix the address** — proceeding gets you a
 healthy server that no client ever reaches.
 
-```bash
+```
 # For real.
 sudo ./scripts/adopt_velociraptor_identity.sh \
      --from ~/velociraptor_backup/server.config.yaml
@@ -340,7 +350,7 @@ failure**.
 
 ## Step 5 — Verify the fleet
 
-```bash
+```
 docker exec intact_velociraptor ./velociraptor \
   --config /velociraptor/server.config.yaml \
   query "SELECT client_id, os_info.hostname AS host, last_seen_at FROM clients()"
@@ -355,13 +365,35 @@ one returning client before you call it done.
 
 ### If clients do not come back
 
+0. **Give it a minute — this is the usual answer.** The Velociraptor container
+   repacks the Linux, Mac and Windows client installers *before* it starts
+   serving (measured at 8-63 seconds, longer on a small box). Until that
+   finishes, nothing is listening on 8000 even though `docker ps` says `Up` and
+   the migration script has printed success. Watch for the moment it is ready:
+
+   ```
+   docker logs -f intact_velociraptor | grep -m1 'Frontend is ready'
+   ```
+
+   The script now waits for this itself, so you should not see it — but if you
+   ever adopt with an older copy, that is what is happening. **Do not restart
+   the container to hurry it**: a restart starts the repack over.
+
+   If you have already waited and the dashboard still looks stale, these are
+   safe and clear any connection the browser was holding to the old container:
+
+   ```
+   sudo docker restart intact_velociraptor    # only if the frontend is truly stuck
+   sudo docker restart intact_nginx           # drops stale proxied connections
+   ```
+
 1. **Address.** From an endpoint: `curl -vk https://<the-address-in-server_urls>:8000/`
    — it must reach the Intact box. This is the cause the overwhelming majority of
    the time.
 2. **Port.** `ss -ltnp | grep 8000` on the appliance; `8000` must be open to the
    endpoints through any firewall in between.
 3. **Identity.** Compare fingerprints — the adopted CA must match the backup:
-   ```bash
+   ```
    sudo python3 -c "import hashlib,yaml; d=yaml.safe_load(open('data/velociraptor/server.config.yaml')); \
    print(hashlib.sha256(d['CA']['private_key'].encode()).hexdigest()[:16])"
    ```
@@ -377,7 +409,7 @@ one returning client before you call it done.
 - Delete every working copy of `server.config.yaml` that is not the appliance's
   own — your laptop, `~/velociraptor_backup/server.config.yaml` on the Intact
   box, and any USB stick used to carry it:
-  ```bash
+  ```
   shred -u ~/velociraptor_backup/server.config.yaml   # on the Intact box
   ```
 - **Keep** `~/velociraptor_backup/velociraptor-full-<stamp>.tar.gz` somewhere
@@ -391,3 +423,95 @@ The adoption script rewrites Velociraptor's own config and restarts that one
 container. It does not touch any other module, the database, or anything else the
 installer manages. Everything from risx other than Velociraptor — Timesketch,
 IRIS, ELK, MISP — is not migrated and starts fresh in Intact.
+
+---
+
+## Appendix — the backup, in one paste
+
+Everything in Step 1, as a single block that stops for a **y/N** before each
+step that costs anything, and shows you what it is about to act on first.
+
+> **Paste this into a terminal. Do not pipe it into `bash`** — the prompts read
+> from standard input, so piping would feed the script to itself and answer its
+> own questions.
+
+Run it **on the risx box**, as the normal login user.
+
+```
+# ---------------------------------------------------------------------------
+# risx-mssp -> Intact.AI : back up the Velociraptor identity
+# Stops before every step that writes or reads a credential. Nothing is
+# deleted by this block, ever.
+# ---------------------------------------------------------------------------
+confirm() {
+    printf '\n%s [y/N] ' "$1"
+    read -r ans || ans=""
+    case "$ans" in
+        [Yy]*) return 0 ;;
+        *) printf '  stopped — nothing further was done.\n'; return 1 ;;
+    esac
+}
+
+# --- 1. find the risx Velociraptor directory -------------------------------
+VELO=$(ls -d /home/*/setup_platform/workdir/velociraptor/velociraptor 2>/dev/null | head -1)
+if [ -z "$VELO" ]; then
+    echo "No risx install found under /home/*/setup_platform — is this the right box?"
+else
+    echo "Found: $VELO"
+    echo
+    ls -la "$VELO" | head -20
+
+    confirm "Is that the Velociraptor directory you want to back up?" && {
+
+    # --- 2. make the backup folder ------------------------------------------
+    mkdir -p ~/velociraptor_backup && chmod 700 ~/velociraptor_backup
+    echo "  created ~/velociraptor_backup (mode 700)"
+
+    # --- 3. copy the config (this is the migration) -------------------------
+    sudo install -m 600 -o "$USER" -g "$USER" \
+         "$VELO/server.config.yaml" ~/velociraptor_backup/server.config.yaml
+    sudo install -m 600 -o "$USER" -g "$USER" \
+         "$VELO/client.config.yaml" ~/velociraptor_backup/client.config.yaml 2>/dev/null \
+         || echo "  no client.config.yaml — fine, Intact regenerates it"
+    echo "  copied:"
+    ls -lh ~/velociraptor_backup/
+
+    # --- 4. prove the file is the right one ---------------------------------
+    echo
+    echo "  This is the identity your whole fleet is pinned to:"
+    python3 -c "
+import hashlib, yaml, os
+d = yaml.safe_load(open(os.path.expanduser('~/velociraptor_backup/server.config.yaml')))
+print('   CA fingerprint :', hashlib.sha256(d['CA']['private_key'].encode()).hexdigest()[:16])
+print('   clients dial   :', d['Client']['server_urls'])
+print('   nonce present  :', bool(d['Client'].get('nonce')))
+"
+    echo
+    echo "  Write the CA fingerprint down — you will compare it after the migration."
+
+    confirm "Do all three look right (fingerprint, address, nonce=True)?" && {
+
+    # --- 5. full archive, including the datastore ---------------------------
+    STAMP=$(date +%Y%m%d-%H%M%S)
+    echo "  archiving the whole directory (this can take a few minutes)…"
+    sudo tar -czf ~/velociraptor_backup/velociraptor-full-$STAMP.tar.gz \
+         -C "$(dirname "$VELO")" velociraptor
+    sudo chown "$USER":"$USER" ~/velociraptor_backup/velociraptor-full-$STAMP.tar.gz
+    chmod 600 ~/velociraptor_backup/velociraptor-full-$STAMP.tar.gz
+    echo
+    ls -lh ~/velociraptor_backup/
+    echo
+    echo "  DONE. Now copy this folder OFF the machine before you touch anything:"
+    echo "     scp -r RISX_BOX:~/velociraptor_backup ./"
+    echo
+    echo "  Then verify the copy on the other end shows the SAME fingerprint."
+    echo "  Only then start Step 2."
+    }
+    }
+fi
+```
+
+After it finishes, continue from **Step 2** above. The teardown, the Intact
+install and the adoption stay as separate deliberate steps on purpose — one
+mistyped answer in a paste-and-go block should never be able to wipe a
+customer's box.
