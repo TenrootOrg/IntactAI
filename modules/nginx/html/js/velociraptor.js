@@ -79,10 +79,6 @@ async function loadOfflineBlueprints() {
     }
 }
 
-function getSelectedOfflineArtifacts() {
-    return Array.from(document.querySelectorAll('.offline-artifact-checkbox:checked')).map(cb => cb.value);
-}
-
 // Toggle the encryption inputs + explainer based on the selected scheme.
 function onOfflineEncSchemeChange(scheme) {
     const pwWrap = document.getElementById('offline-enc-password-wrap');
