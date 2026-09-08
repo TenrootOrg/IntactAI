@@ -399,16 +399,6 @@ wait_for_dpkg_lock() {
     done
 }
 
-# Wait for HTTP endpoint to respond
-# Usage: wait_for_http "url" timeout_seconds
-wait_for_http() {
-    local url="$1"
-    local timeout="${2:-60}"
-
-    wait_for_condition "HTTP endpoint ${url}" "$timeout" \
-        "curl -sf --max-time 5 '${url}'"
-}
-
 # Run a command (e.g. `docker compose build`) with heartbeat logging and a
 # hard timeout. Catches the failure mode we hit on 2026-04-29 where install.sh
 # stopped writing to the log mid-Backend-build at 08:39 with no error and no
@@ -599,51 +589,3 @@ create_initialization_marker() {
     echo "Domain: $domain" >> "$marker"
     log_info "Created initialization marker: $marker"
 }
-
-# ============================================================================
-# Config Template Rendering
-# ============================================================================
-#
-# render_config_from_template — copy <template> -> <out> on first install,
-# substituting __PLACEHOLDER__ tokens with values pulled from the env. Used
-# for tracked config files that need to hold a secret at runtime but must
-# not have the secret committed to git.
-#
-# Idempotent: skips render when <out> already exists. The operator can
-# hand-edit <out> after install — re-running the script will not clobber
-# their changes.
-#
-# Args:
-#   $1 — template path (must end in .template)
-#   $2 — output path (the runtime config the container reads)
-#   $3 — placeholder token (e.g. __TIMESKETCH_GOOGLE_AI_STUDIO_KEY__)
-#   $4 — env var to substitute in (the value), defaulting to empty if unset
-#
-# Empty substitution is intentional: a missing API key disables that
-# specific provider in timesketch but everything else still works.
-render_config_from_template() {
-    local template="$1"
-    local out="$2"
-    local placeholder="$3"
-    local env_var="$4"
-
-    if [[ ! -f "$template" ]]; then
-        log_warn "Config template missing: $template — skipping render"
-        return 1
-    fi
-
-    if [[ -f "$out" ]]; then
-        log_info "  Config already rendered: $out (skipping; edit by hand to update)"
-        return 0
-    fi
-
-    local value="${!env_var:-}"
-    cp "$template" "$out"
-    sed -i "s|${placeholder}|${value}|g" "$out"
-    if [[ -n "$value" ]]; then
-        log_success "  Rendered $out from template (with ${env_var})"
-    else
-        log_info "  Rendered $out from template (placeholder for ${env_var} left empty — provider disabled)"
-    fi
-}
-

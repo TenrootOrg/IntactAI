@@ -125,12 +125,11 @@ def get_rules_info():
                 'counts': counts,
                 'custom_rules_count': custom_count,
             })
-        else:
-            return jsonify({
-                'available': False,
-                'message': rules_msg,
-                'custom_rules_count': custom_count,
-            })
+        return jsonify({
+            'available': False,
+            'message': rules_msg,
+            'custom_rules_count': custom_count,
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

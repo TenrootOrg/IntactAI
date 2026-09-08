@@ -296,7 +296,7 @@ def handle_tus_hook():
             print(f"[TUS HOOK] Validated upload: {filename} for {purpose}", flush=True)
             return jsonify({"ok": True})
 
-        elif event_type == 'post-create':
+        if event_type == 'post-create':
             # Upload created - ID is now assigned, create workflow
             upload_id = upload_info.get('ID', '')
             purpose = metadata.get('purpose', '')
@@ -390,7 +390,7 @@ def handle_tus_hook():
             print(f"[TUS HOOK] Created workflow for upload: {upload_id} -> run_id: {run_id}", flush=True)
             return jsonify({"ok": True})
 
-        elif event_type == 'post-receive':
+        if event_type == 'post-receive':
             # Upload progress - called after each chunk is received
             upload_id = upload_info.get('ID', '')
             offset = upload_info.get('Offset', 0)
@@ -424,7 +424,7 @@ def handle_tus_hook():
 
             return jsonify({"ok": True})
 
-        elif event_type == 'post-finish':
+        if event_type == 'post-finish':
             # Upload complete - trigger processing
             upload_id = upload_info.get('ID', '')
             file_path = f"/data/uploads/{upload_id}"
@@ -612,7 +612,7 @@ def handle_tus_hook():
 
             return jsonify({"ok": True})
 
-        elif event_type == 'post-terminate':
+        if event_type == 'post-terminate':
             # Upload was cancelled/terminated
             upload_id = upload_info.get('ID', '')
             run_id = _resolve_upload_run(upload_id, pop=True)
@@ -636,10 +636,9 @@ def handle_tus_hook():
 
             return jsonify({"ok": True})
 
-        else:
-            # Unknown event type - just acknowledge
-            print(f"[TUS HOOK] Unhandled event type: {event_type}", flush=True)
-            return jsonify({"ok": True})
+        # Unknown event type - just acknowledge
+        print(f"[TUS HOOK] Unhandled event type: {event_type}", flush=True)
+        return jsonify({"ok": True})
 
     except Exception as e:
         print(f"[TUS HOOK] Error handling webhook: {e}", flush=True)
@@ -662,5 +661,4 @@ def get_upload_status(upload_id):
             "size": size,
             "size_mb": size / (1024 * 1024)
         })
-    else:
-        return jsonify({"exists": False})
+    return jsonify({"exists": False})

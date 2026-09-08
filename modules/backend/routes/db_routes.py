@@ -92,8 +92,7 @@ def import_database():
         success = import_db(data)
         if success:
             return jsonify({"status": "ok", "message": "Database imported successfully"})
-        else:
-            return jsonify({"error": "Import failed"}), 500
+        return jsonify({"error": "Import failed"}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

@@ -365,9 +365,9 @@ class DataAnonymizer:
         ip_type = self._classify_ip(ip)
         if ip_type == "safe":
             return ip
-        elif ip_type == "internal":
+        if ip_type == "internal":
             return self._get_or_create_pseudo(ip, "ip_int")
-        elif ip_type == "external":
+        if ip_type == "external":
             return self._get_or_create_pseudo(ip, "ip_ext")
         return ip  # invalid, leave as-is
 

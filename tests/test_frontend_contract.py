@@ -39,7 +39,12 @@ VENDOR = ("alpine.min.js", "/vendor/")
 # Attributes whose value Alpine evaluates as JavaScript.
 ATTR = re.compile(
     r'(?:x-on:[a-zA-Z0-9.\-]+|@[a-zA-Z0-9.\-]+|x-show|x-if|x-model|x-init|'
-    r'x-data|x-text|x-html|x-effect|x-bind:[a-zA-Z0-9.\-]+|:[a-zA-Z][a-zA-Z0-9.\-]*)'
+    r'x-data|x-text|x-html|x-effect|x-bind:[a-zA-Z0-9.\-]+|:[a-zA-Z][a-zA-Z0-9.\-]*|'
+    # Plain inline handlers. This codebase mixes them with Alpine, and leaving
+    # them out left a real hole: index.html's offline-config modal called
+    # closeConfigModal() and saveOfflineConfig() through onclick=, so deleting
+    # both functions kept the board green.
+    r'on[a-z]+)'
     r'\s*=\s*"([^"]*)"')
 CALL = re.compile(r'\b([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(')
 
@@ -65,7 +70,15 @@ decodeURIComponent decodeURI encodeURI setTimeout setInterval clearTimeout
 clearInterval fetch alert confirm prompt localStorage sessionStorage
 String Symbol BigInt structuredClone URLSearchParams URL FormData Blob
 Intl Number toFixed if for while switch return typeof instanceof new
+async await function class delete void do else try catch finally throw yield
+of in isFinite isNaN Infinity NaN undefined null true false this super
+flatpickr tus Uint8Array ArrayBuffer TextEncoder TextDecoder AbortController
+Element HTMLElement Event CustomEvent MutationObserver IntersectionObserver
+navigator location history requestAnimationFrame queueMicrotask crypto
 """.split())
+
+# Globals supplied by vendored libraries that are loaded before our scripts.
+# Not defined by us, so they would otherwise read as missing.
 
 
 def _files(*exts):
@@ -140,6 +153,76 @@ class TestEveryNameTheHtmlCallsExists(unittest.TestCase):
         self.assertEqual(
             {}, {k: sorted(v) for k, v in missing.items()},
             "these names are called from an HTML attribute but defined nowhere")
+
+
+class TestEveryNameTheJavaScriptCallsExists(unittest.TestCase):
+    """The other direction: JS -> JS.
+
+    Added after it caught a real break during the ponytail campaign. The
+    HTML->JS check above was green while `populateConfigDropdown` had just been
+    deleted, because its two callers are both JavaScript:
+
+        js/stores/app.js:209   loadOfflineBlueprints().then(() => populateConfigDropdown())
+        js/velociraptor.js:44  populateConfigDropdown()
+
+    and the <select id="offline-gen-config"> it fills is live in
+    partials/velociraptor.html. A green board, and the offline-collector
+    dropdown would have shipped empty.
+
+    Same over-approximation as above: a name counts as defined if it is bound
+    anywhere. Only bare calls are checked -- `foo()`, never `x.foo()` -- because
+    a method belongs to its receiver.
+    """
+
+    def test_it(self):
+        js_files = _files(".js")
+        haystack = "\n".join(_read(f) for f in js_files)
+        html = "\n".join(_read(f) for f in _files(".html"))
+        haystack += "\n" + "\n".join(
+            re.findall(r"<script[^>]*>(.*?)</script>", html, re.S))
+
+        defined = set(BUILTIN)
+        for pat in DEFS:
+            defined.update(pat.findall(haystack))
+        # A parameter is a local binding, not a missing global: `initDropzone(
+        # id, input, onFileSelected)` then calls `onFileSelected(...)`. Same for
+        # a catch binding and a Promise executor's `resolve`/`reject`.
+        for grp in re.findall(r'\(([^)]*)\)\s*(?:=>|\{)', haystack):
+            for part in grp.split(","):
+                # strip( "()" too: `new Promise((resolve) => {` leaves the
+                # capture as "(resolve" because ( is legal inside the group.
+                nm = part.strip().split("=")[0].strip("() \t.")
+                if re.fullmatch(r'[a-zA-Z_$][\w$]*', nm or ""):
+                    defined.add(nm)
+        defined.update(re.findall(r'\bcatch\s*\(\s*([a-zA-Z_$][\w$]*)', haystack))
+
+        missing = {}
+        for rel in js_files:
+            src = _read(rel)
+            src = re.sub(r'(?m)//.*$', '', src)
+            src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+            src = re.sub(r"'[^'\n]*'|\"[^\"\n]*\"", "''", src)
+            # Template literals are text; `${...}` inside them is code. Without
+            # this, `${n} plugin(s)` reports `plugin` as an undefined function.
+            src = re.sub(r'`[^`]*`',
+                         lambda m: " ".join(re.findall(r'\$\{(.*?)\}',
+                                                       m.group(0), re.S)),
+                         src)
+            for m in CALL.finditer(src):
+                name = m.group(1)
+                if name in defined:
+                    continue
+                before = src[:m.start(1)].rstrip()
+                if before.endswith(".") or before.endswith("$"):
+                    continue
+                # `function foo(`, `new Foo(`, `catch (e)` are not calls
+                if re.search(r'\b(function|new|class)\s*$', before):
+                    continue
+                missing.setdefault(name, set()).add(rel)
+
+        self.assertEqual(
+            {}, {k: sorted(v) for k, v in missing.items()},
+            "these names are called from JavaScript but defined nowhere")
 
 
 class TestEveryFirstPartyScriptParses(unittest.TestCase):

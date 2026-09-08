@@ -826,28 +826,6 @@ async function deleteBlueprintById(blueprintId, type) {
     }
 }
 
-// ============================================================================
-// Velociraptor Tab - Blueprint Info Display
-// ============================================================================
-
-async function onVelociraptorBlueprintChange(blueprintId) {
-    const infoDiv = document.getElementById('bestpractice-blueprint-info');
-    if (!blueprintId) {
-        if (infoDiv) infoDiv.classList.add('hidden');
-        return;
-    }
-
-    const bp = await getBlueprintById(blueprintId, 'velociraptor');
-    if (!bp) return;
-
-    document.getElementById('bestpractice-bp-name').textContent = bp.name;
-    document.getElementById('bestpractice-bp-description').textContent = bp.description || '';
-    document.getElementById('bestpractice-bp-artifact-count').textContent = (bp.artifacts?.length || 0) + ' artifacts';
-    document.getElementById('bestpractice-bp-expiry').textContent = (bp.settings?.hunt_expiry || 120) + ' min';
-    document.getElementById('bestpractice-bp-timeout').textContent = (bp.settings?.timeout || 3600) + 's';
-    document.getElementById('bestpractice-bp-cpu').textContent = (bp.settings?.cpu_limit || 50) + '%';
-    if (infoDiv) infoDiv.classList.remove('hidden');
-}
 
 // ============================================================================
 // Offline Collectors Tab

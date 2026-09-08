@@ -280,10 +280,10 @@ def _wait_for_timeline_ready(api, sketch_id, timeline_name, timeout_seconds=1000
             if status == "ready":
                 log(f"✓ Timeline '{timeline_name}' is ready!", "success")
                 return (True, status, timeline.id)
-            elif status == "fail":
+            if status == "fail":
                 log(f"✗ Timeline '{timeline_name}' processing failed", "error")
                 return (False, status, timeline.id)
-            elif status in ["processing", "pending"]:
+            if status in ["processing", "pending"]:
                 if _wait_or_cancel():
                     log("Stop requested by user — abandoning indexing wait", "warning")
                     return (False, "cancelled", None)

@@ -500,7 +500,7 @@ def generate_collector(config_id, os_type="windows",
                             output_path = os.path.join(COLLECTOR_OUTPUT_DIR, f"OfflineCollector_{file_id}.zip")
                             return create_collection_script(config, file_id, os_type, output_path)
                         return {"success": False, "error": f"Collector creation failed: {flow_status}"}
-                    elif flow_state == "FINISHED":
+                    if flow_state == "FINISHED":
                         print(f"[OFFLINE] Flow completed successfully", flush=True)
                         break
                 except json.JSONDecodeError:

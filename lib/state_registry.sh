@@ -138,14 +138,9 @@ STATE_PATHS=(
 #       Already persistent and outside the source tree. It holds the hunt/flow
 #       datastore (mounted at /var.), NOT the CA -- see the correction in the
 #       header above. Moving it to a host path would be a regression.
-STATE_INPLACE=(
-    "modules/volweb/.env"
-    "modules/elk/.env"
-    "modules/iris/.env"
-    "modules/timesketch/.env"
-    "modules/portainer/.env"
-    "modules/backend/.env"
-)
+# The array that used to live here (STATE_INPLACE) was assigned and never
+# read, anywhere in the repo. The reasoning above is the valuable part and
+# is kept; the dead list is in git history.
 
 # Where a registered path is stored. modules/ is stripped so the tree reads
 # data/state/<module>/... rather than data/state/modules/<module>/...

@@ -310,10 +310,9 @@ def _get_source_fix(source: str) -> str:
         status = dfir_available()
         if not status['has_image']:
             return 'DFIR-O365RC not installed. Run: docker pull anssi/dfir-o365rc:latest'
-        elif not status['has_certificate']:
+        if not status['has_certificate']:
             return 'Certificate not generated. Run install.sh or go to Settings → Cloud → Azure.'
-        else:
-            return 'Certificate not uploaded to Azure App Registration. Go to Settings → Cloud → Azure for instructions.'
+        return 'Certificate not uploaded to Azure App Registration. Go to Settings → Cloud → Azure for instructions.'
 
     return fixes.get(source, 'Source not available with current license or API permissions.')
 
@@ -778,7 +777,7 @@ def parse_json_file(file_path: str) -> List[Dict]:
 
     if isinstance(data, list):
         return data
-    elif isinstance(data, dict):
+    if isinstance(data, dict):
         for key in ['value', 'data', 'results', 'records', 'events']:
             if key in data and isinstance(data[key], list):
                 return data[key]

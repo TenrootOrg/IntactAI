@@ -534,7 +534,7 @@ def test_llm_connection():
 
     overlay = request.get_json(silent=True) or {}
     cfg = _load_config()
-    agentic = dict((cfg.get('agentic') or {}))
+    agentic = dict(cfg.get('agentic') or {})
     for k, v in (overlay.get('agentic') or {}).items():
         if isinstance(v, dict) and isinstance(agentic.get(k), dict):
             merged = dict(agentic[k]); merged.update(v); agentic[k] = merged

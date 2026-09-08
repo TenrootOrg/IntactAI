@@ -656,12 +656,11 @@ def call_llm(prompt, system_prompt, config, run_id=None, model_override=None,
             provider_config['model'] = model_override
         return _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id,
                                 reasoning_effort=reasoning_effort)
-    else:
-        provider_config = dict(agentic_config.get('offline_llm', {}))
-        if model_override:
-            provider_config['model'] = model_override
-        return _call_llm_offline(prompt, system_prompt, provider_config, context_size, timeout,
-                                 run_id, reasoning_effort=reasoning_effort)
+    provider_config = dict(agentic_config.get('offline_llm', {}))
+    if model_override:
+        provider_config['model'] = model_override
+    return _call_llm_offline(prompt, system_prompt, provider_config, context_size, timeout,
+                             run_id, reasoning_effort=reasoning_effort)
 
 
 def _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id=None,
@@ -705,12 +704,12 @@ def _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id=
         ))
         _record_llm_usage(run_id, 'claude', model, response)
         return response.content[0].text
-    elif provider in OPENAI_COMPATIBLE_BASE_URLS:
+    if provider in OPENAI_COMPATIBLE_BASE_URLS:
         return _call_openai_compatible(
             provider, prompt, system_prompt, api_key, model, max_tokens,
             base_url=OPENAI_COMPATIBLE_BASE_URLS[provider], run_id=run_id,
             reasoning_effort=reasoning_effort)
-    elif provider == 'gemini':
+    if provider == 'gemini':
         import google.generativeai as genai
         genai.configure(api_key=api_key)
         gemini_model = genai.GenerativeModel(model)
@@ -725,7 +724,7 @@ def _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id=
         ))
         _record_llm_usage(run_id, 'gemini', model, response)
         return response.text
-    elif _is_subscription:
+    if _is_subscription:
         # Spend the operator's subscription via the vendor CLI instead of a
         # metered API key. The connection outcome is logged to the case's
         # activity log so an analyst can see, in the Case Analysis Log, whether
@@ -755,8 +754,7 @@ def _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id=
                   f"{result.get('out_tokens', 0):,} out tokens")
         _record_llm_usage(run_id, provider, model, result)
         return result['text']
-    else:
-        raise ValueError(f"Unsupported online provider: {provider}")
+    raise ValueError(f"Unsupported online provider: {provider}")
 
 
 def _call_llm_offline(prompt, system_prompt, provider_config, context_size, timeout, run_id=None,
@@ -784,7 +782,7 @@ def _call_llm_offline(prompt, system_prompt, provider_config, context_size, time
         body = response.json()
         _record_llm_usage(run_id, 'ollama', model, body)
         return body.get('response', '')
-    elif provider == 'openai-compatible':
+    if provider == 'openai-compatible':
         # LiteLLM proxy / vLLM / LM Studio / Ollama's own /v1 — all speak the
         # OpenAI wire format, so they are one provider distinguished by URL
         # rather than one integration each. "Offline" here means self-hosted,
@@ -800,5 +798,4 @@ def _call_llm_offline(prompt, system_prompt, provider_config, context_size, time
             max_tokens=provider_config.get('max_tokens') or MAX_LLM_TOKENS,
             base_url=url, timeout=timeout, run_id=run_id,
             reasoning_effort=reasoning_effort)
-    else:
-        raise ValueError(f"Unsupported offline provider: {provider}")
+    raise ValueError(f"Unsupported offline provider: {provider}")

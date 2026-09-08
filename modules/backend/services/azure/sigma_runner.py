@@ -350,7 +350,7 @@ def evaluate_selection(record: Dict, criteria: Any) -> bool:
                 return False
         return True
 
-    elif isinstance(criteria, list):
+    if isinstance(criteria, list):
         # Any item in list can match (OR)
         for item in criteria:
             if isinstance(item, dict):
@@ -364,7 +364,7 @@ def evaluate_selection(record: Dict, criteria: Any) -> bool:
                     return True
         return False
 
-    elif isinstance(criteria, str):
+    if isinstance(criteria, str):
         # Single keyword search
         criteria_lower = criteria.lower()
         record_str = json.dumps(record, default=str).lower()

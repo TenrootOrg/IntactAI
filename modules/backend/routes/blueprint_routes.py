@@ -351,8 +351,7 @@ def create_velociraptor_blueprint():
         result = save_velociraptor_blueprint(blueprint)
         if result:
             return jsonify({"success": True, "blueprint": blueprint}), 201
-        else:
-            return jsonify({"error": "Failed to save blueprint"}), 500
+        return jsonify({"error": "Failed to save blueprint"}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -388,8 +387,7 @@ def update_velociraptor_blueprint_route(blueprint_id):
         result = save_velociraptor_blueprint(data)
         if result:
             return jsonify({"success": True, "blueprint": data})
-        else:
-            return jsonify({"error": "Failed to update blueprint"}), 500
+        return jsonify({"error": "Failed to update blueprint"}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -407,8 +405,7 @@ def delete_velociraptor_blueprint_route(blueprint_id):
         result = delete_velociraptor_blueprint(blueprint_id)
         if result:
             return jsonify({"success": True})
-        else:
-            return jsonify({"error": "Failed to delete blueprint"}), 500
+        return jsonify({"error": "Failed to delete blueprint"}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -507,8 +504,7 @@ def create_timesketch_blueprint():
         result = save_timesketch_blueprint(blueprint)
         if result:
             return jsonify({"success": True, "blueprint": blueprint}), 201
-        else:
-            return jsonify({"error": "Failed to save blueprint"}), 500
+        return jsonify({"error": "Failed to save blueprint"}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -544,8 +540,7 @@ def update_timesketch_blueprint_route(blueprint_id):
         result = save_timesketch_blueprint(data)
         if result:
             return jsonify({"success": True, "blueprint": data})
-        else:
-            return jsonify({"error": "Failed to update blueprint"}), 500
+        return jsonify({"error": "Failed to update blueprint"}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -563,8 +558,7 @@ def delete_timesketch_blueprint_route(blueprint_id):
         result = delete_timesketch_blueprint(blueprint_id)
         if result:
             return jsonify({"success": True})
-        else:
-            return jsonify({"error": "Failed to delete blueprint"}), 500
+        return jsonify({"error": "Failed to delete blueprint"}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
