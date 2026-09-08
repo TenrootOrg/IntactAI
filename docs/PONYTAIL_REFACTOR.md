@@ -157,17 +157,26 @@ the `.env` files, and the live appliance.
 
 ## Results
 
-Line delta against `main`, measured with `git diff main --numstat`:
+Whole codebase, every tracked source file, counted the same way on both trees:
 
-| area | added | removed | net |
+| | main | ponytail | change |
 |---|---|---|---|
-| modules/backend | 39 | 316 | -277 |
-| qa | 0 | 64 | -64 |
-| scripts | 22 | 7 | +15 |
-| **product total** | **61** | **387** | **-326** |
-| tests (the safety net) | 161 | 1 | +160 |
-| docs (this file) | 156 | 0 | +156 |
-| **repo total** | | | **-10** |
+| total rows | 149,701 | 149,158 | **-543** |
+| shipped product code | 110,642 | 109,412 | **-1,230** |
+| tests | 21,125 | 21,833 | +708 |
+
+Product code by area:
+
+| area | before | after | change |
+|---|---|---|---|
+| frontend | 15,240 | 14,462 | **-778** |
+| backend | 63,491 | 63,126 | -365 |
+| qa harness | 11,821 | 11,757 | -64 |
+| installer / shell | 30,081 | 30,037 | -44 |
+
+The 708 added test rows are the three safety nets plus two behaviour tests
+written before the backend folds. Without them none of the 1,230 removed
+product rows could have been touched safely.
 
 Test wall time, this box:
 
@@ -281,3 +290,33 @@ integration is serial, rebase then gate then fast-forward, one branch at a time.
 stop and report it, because wanting to change a test is nearly always a symptom
 that behaviour changed. Every deletion requires three greps and one sentence of
 positive evidence, a protocol built specifically from the two reverts above.
+
+## What the parallel phase actually found
+
+Four things the agents caught that a line-count metric would never show:
+
+1. `partials/velociraptor.html` wires an inline `onchange`, so folding the three
+   dropzones naively would have bound a second listener and fired the handler
+   twice -- a duplicate alert on every non-ZIP pick.
+2. `build-tailwind.sh` regenerates the committed stylesheet by scanning
+   JavaScript as TEXT, and the safelist covers `border-purple-500` but not the
+   `/10` opacity variants. An interpolated class name would have passed every
+   test and then been purged from the stylesheet on the next rebuild, so the
+   drag highlight would silently stop painting.
+3. User-facing provider names (`claude`, `codex-subscription`) map to catalogue
+   routes (`anthropic`, `codex`), but the catalogue-refresh event must still be
+   matched on the USER-FACING name. Matching the route would have broken
+   catalogue refresh for two providers with the board green.
+4. `preparePackageReady` was called a likely regression by an earlier audit.
+   `git log --all -G "preparePackageReady\s*=\s*true"` returns nothing: it has
+   never been set true in any commit in this repository's history. Not a
+   regression, just dead. Deleted.
+
+## Known flaky test
+
+`tests/test_autofuse.py::test_several_cases_are_staggered_not_simultaneous`
+failed once under load and passed on a re-run plus three standalone runs. It
+drives real timing (`QUIET_SECONDS = 0.05`, eleven sleeps down to 5 ms) and
+`autofuse.py` imports only `threading` at module scope, so it shares nothing
+with the code changed here. Pre-existing and load-sensitive; expect it to
+redden CI occasionally with nobody at fault.
