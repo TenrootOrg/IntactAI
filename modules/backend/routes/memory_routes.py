@@ -91,12 +91,6 @@ def _run_visible_in_active_workspace(run: dict) -> bool:
     return run.get("case_id") == case_id
 
 
-def _llm_config() -> dict:
-    """Reuse the agentic LLM config block (the chat module reads from
-    ``cfg['agentic']`` already)."""
-    cfg = load_frontend_config() or {}
-    return cfg
-
 
 def _spawn_pipeline(run_id: str, **kwargs: Any) -> None:
     """Start the pipeline on a daemon thread so the route returns

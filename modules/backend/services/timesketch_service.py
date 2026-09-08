@@ -10,7 +10,6 @@ import os
 import sys
 import time
 import traceback
-import warnings
 
 from services.workflow_service import get_cancel_event
 

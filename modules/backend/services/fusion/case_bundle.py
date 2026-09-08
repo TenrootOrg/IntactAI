@@ -348,27 +348,6 @@ def _zip_doc(zf, arc, obj):
     return {"path": arc, "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
 
 
-def _zip_file(zf, arc, src, on_bytes=None):
-    """Stream a file into the archive, hashing it in the same pass.
-
-    Never reads the file whole: a raw_results.json is ~547 MB and several may be
-    in one bundle. If fusion replaces the graph sidecar mid-export the open fd
-    keeps the old inode, so the archive stays a consistent snapshot either way.
-    """
-    h = hashlib.sha256()
-    total = 0
-    with open(src, "rb") as fh, zf.open(arc, "w") as dst:
-        while True:
-            buf = fh.read(_CHUNK)
-            if not buf:
-                break
-            h.update(buf)
-            dst.write(buf)
-            total += len(buf)
-            if on_bytes:
-                on_bytes(len(buf))
-    return {"path": arc, "sha256": h.hexdigest(), "bytes": total}
-
 
 def export_case_bundle(case_id, *, run_id=None, cancel=None) -> dict:
     """Build the bundle for one case. Returns the details of the finished file.

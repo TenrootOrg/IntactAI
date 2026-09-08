@@ -50,31 +50,6 @@ def _resolve_upload_run(upload_id, *, pop=False):
     return None
 
 
-def decode_tus_metadata(metadata_str):
-    """Decode tus metadata from base64-encoded key-value pairs
-
-    Format: "key1 base64value1,key2 base64value2"
-    """
-    if not metadata_str:
-        return {}
-
-    result = {}
-    pairs = metadata_str.split(',')
-    for pair in pairs:
-        parts = pair.strip().split(' ', 1)
-        if len(parts) == 2:
-            key = parts[0]
-            try:
-                # Decode base64 value
-                value = base64.b64decode(parts[1]).decode('utf-8')
-                result[key] = value
-            except Exception:
-                result[key] = parts[1]
-        elif len(parts) == 1 and parts[0]:
-            result[parts[0]] = ''
-
-    return result
-
 
 def _fuse_offline_import(import_result, upload_run_id):
     """After an offline-collector ZIP is imported into Velociraptor, fuse the

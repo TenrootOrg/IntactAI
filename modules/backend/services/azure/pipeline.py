@@ -7,16 +7,13 @@ Collection → SIGMA Detection → LLM Analysis → Report
 Supports both online (live API) and offline (uploaded logs) modes.
 """
 
-import os
-import json
 import traceback
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any, Tuple
-from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List, Any
 
 # Local imports
-from .collectors import collect_azure_logs, parse_uploaded_logs, LOG_SOURCES
-from .sigma_runner import run_sigma_rules, load_azure_rules, validate_rules_directory
+from .collectors import collect_azure_logs, LOG_SOURCES
+from .sigma_runner import run_sigma_rules, validate_rules_directory
 
 # Reuse existing agentic components
 from services.agentic.utils import (
@@ -98,7 +95,7 @@ def _run_post_collection_phases(
     reports, has_report, status. Returned for callers that want to
     chain.
     """
-    from services.workflow_service import is_cancelled, record_sigma_rule_tally, update_run_status
+    from services.workflow_service import is_cancelled, record_sigma_rule_tally
 
     # Apply timestamp normalisation right at the entry — every downstream
     # phase (SIGMA matching, LLM prompt, report writer) sees one canonical

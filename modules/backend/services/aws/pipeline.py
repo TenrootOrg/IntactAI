@@ -11,13 +11,11 @@ real machinery the Azure pipeline uses.
 
 from __future__ import annotations
 
-import json
-import os
 import traceback
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from datetime import datetime
+from typing import Any, Dict, List
 
-from .collectors import LOG_SOURCES, collect_aws_logs, parse_uploaded_logs
+from .collectors import LOG_SOURCES, collect_aws_logs
 from .sigma_runner import load_aws_rules, run_sigma_rules, validate_rules_directory
 
 from services.agentic.utils import (

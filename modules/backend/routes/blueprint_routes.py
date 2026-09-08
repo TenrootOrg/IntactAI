@@ -28,7 +28,7 @@ from services.file_storage_service import (
     get_memory_blueprint,
     delete_memory_blueprint,
 )
-from services.blueprint_loader_service import get_all_blueprints, get_artifact_lists
+from services.blueprint_loader_service import get_all_blueprints
 
 blueprint_bp = Blueprint('blueprints', __name__)
 

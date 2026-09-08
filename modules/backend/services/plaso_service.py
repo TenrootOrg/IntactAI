@@ -27,7 +27,7 @@ import os
 import shlex
 import time
 
-from config import PLASO_OUTPUT_DIR, get_plaso_image, PLASO_CPUS, PLASO_MEMORY
+from config import PLASO_OUTPUT_DIR, get_plaso_image
 from services.workflow_service import (
     get_cancel_event,
     register_cleanup,

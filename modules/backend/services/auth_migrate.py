@@ -6,11 +6,9 @@ was only ever in that file because that is where it was written.
 """
 
 import os
-import shutil
-import subprocess
 from typing import Callable
 
-from services.proc import WORKDIR, HOST_PATH, run_command
+from services.proc import WORKDIR
 
 def migrate_basic_auth_to_app_login(logger: Callable = None) -> None:
     """Move a pre-auth box onto the new session login, landing the operator on

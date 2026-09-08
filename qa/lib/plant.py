@@ -28,7 +28,6 @@ and unacceptable on anyone's real machine, so nothing happens unless a run asks
 for it explicitly.
 """
 
-import os
 
 MARKER = "qa-e2e-probe"
 

@@ -9,7 +9,7 @@ import sqlite3
 import threading
 import glob as glob_module
 from datetime import datetime
-from typing import Dict, List, Any, Optional
+from typing import Dict, Any
 
 # Storage paths. STORAGE_BASE defaults to the production data dir but can be
 # redirected via INTACT_STORAGE_BASE so test harnesses run against a throwaway

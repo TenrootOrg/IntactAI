@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import re
 
-from .schema import FusionGraph, Finding, EvidenceRef
+from .schema import FusionGraph, Finding
 from . import severity as sev
 from . import keys
 

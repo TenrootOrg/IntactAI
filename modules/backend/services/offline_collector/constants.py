@@ -25,7 +25,6 @@ VELOCIRAPTOR_CONTAINER = "intact_velociraptor"
 # discovers whatever's there — no edits to this file are needed when
 # the version bumps, just a backend restart.
 import glob
-import os
 import re
 
 _DOWNLOADS_DIR = "/app/downloads"

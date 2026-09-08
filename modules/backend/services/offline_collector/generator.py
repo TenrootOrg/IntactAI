@@ -20,9 +20,7 @@ from services.offline_collector.constants import (
     DEFAULT_COLLECTOR_CONCURRENCY,
     DEFAULT_COLLECTOR_PROGRESS_TIMEOUT,
     artifacts_for_os,
-    ONLINE_REQUIRED_ARTIFACTS,
-    EMBEDDABLE_TOOLS,
-    TOOL_DEPENDENT_ARTIFACTS
+    ONLINE_REQUIRED_ARTIFACTS
 )
 from services.offline_collector.config import get_config
 

@@ -154,3 +154,78 @@ provably about spelling does it get updated, in the same commit.
 layers, only two JS functions have executed tests), vendored JavaScript,
 `scratch_eval/`, `.github/workflows` (it is the yardstick), `config.yaml` and
 the `.env` files, and the live appliance.
+
+## Results
+
+Line delta against `main`, measured with `git diff main --numstat`:
+
+| area | added | removed | net |
+|---|---|---|---|
+| modules/backend | 39 | 316 | -277 |
+| qa | 0 | 64 | -64 |
+| scripts | 22 | 7 | +15 |
+| **product total** | **61** | **387** | **-326** |
+| tests (the safety net) | 161 | 1 | +160 |
+| docs (this file) | 156 | 0 | +156 |
+| **repo total** | | | **-10** |
+
+Test wall time, this box:
+
+| suite | before | after |
+|---|---|---|
+| test_prepare_package.sh | 20.52 s | 0.62 s |
+| test_core_deps.sh | 22.18 s | 6.51 s |
+| shell suite, all 85 | 95.5 s | ~60 s |
+
+### What was removed
+
+- 106 unused imports across 48 files, excluding the four backwards-compatibility
+  re-export wrappers whose "unused" imports are the entire point of the file.
+- Four unused exception bindings and one duplicate `import os`.
+- Ten unreferenced functions in the backend (221 lines) and four in the qa
+  harness (57 lines). Each was checked three ways before deletion: no reference
+  anywhere in the tree including quoted strings, no decorator that could route
+  to it, and absent from every `__all__`.
+
+`services/data_anonymizer.py` lost `unmask_text`, `get_mapping_summary` and
+`get_masking_log_lines`. Flagging that deliberately: `unmask_text` was the only
+way to reverse a masking, so this is a product decision, not just cleanup. It
+had no callers and is recoverable from git history.
+
+### Three stalls fixed
+
+All three were found by tracing executed commands with a timestamped `PS4`,
+after the planned cause turned out to be wrong. The plan blamed a `sleep` in
+the GPG retry loop of `lib/deps.sh`; that suite stubs `install_docker`, so the
+loop never runs.
+
+| where | cause | measured |
+|---|---|---|
+| `tests/helpers.sh` `path_without()` | forked `basename` per binary, ~3,500 forks per call | 22.18 s to 6.51 s |
+| `scripts/prepare_package.sh` watcher | background subshell held the stdout pipe, so any `$(...)` caller waited for its orphaned `sleep` | 20.19 s to 0.37 s |
+| `scripts/prepare_package.sh` `_dl_watch` | slept a full tick before its first liveness check, once per part | 15.00 s to 1.00 s |
+
+The second is a defect in shipped code. The README documents
+`wrapper=$(prepare_package.sh ...)`, and every such caller paid ~20 s after the
+work had finished. Redirecting the `printf` changes nothing, which was measured
+before it was believed: holding the descriptor is what blocks, not writing to
+it.
+
+### Left alone, with reasons
+
+- 113 unused imports remain, essentially all in `__init__.py` re-export
+  facades where the import IS the public interface.
+- 13 unused locals remain. Each has a function call on the right-hand side, so
+  removing the assignment could drop a side effect. Two of them,
+  `cancel_event = register_cancel_event(run_id)` in `azure_routes.py` and
+  `maintenance_routes.py`, are safe but not worth a line: the call registers
+  into a run-keyed registry and cancellation is read back with
+  `is_cancelled(run_id)`. Sibling call sites already discard the return.
+- The malformed shellcheck directive at `tests/helpers.sh:85` predates this
+  branch and sits outside the file list CI gates.
+- The five model-catalogue modules were the largest planned dedupe, ~400 lines.
+  Reading them killed it: only two of the five share a shape. Gemini carries
+  extra token-preservation logic, OpenRouter has neither key nor enrichment,
+  and Codex is not HTTP at all. Folding the remainder saves ~50 lines and needs
+  ~80 lines of new test to be safe, so the line count goes up. Rejected on its
+  own metric.

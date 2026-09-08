@@ -11,8 +11,6 @@ correctly installed box. Nothing here is on an untrusted network: the harness
 runs on the appliance and talks to its own address.
 """
 
-import json
-import time
 
 import requests
 import urllib3

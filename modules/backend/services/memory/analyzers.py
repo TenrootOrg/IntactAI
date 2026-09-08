@@ -26,7 +26,6 @@ The three entry points share their input/output contract:
 from __future__ import annotations
 
 import json
-import sys
 from typing import Any, Callable
 
 from .defaults import (

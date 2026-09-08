@@ -14,8 +14,8 @@ from services.file_storage_service import _get_connection as get_db_connection
 def run_scheduled_blueprint(job_id: str):
     """Execute a scheduled blueprint run. This is the main APScheduler callback."""
     from services.agentic import run_agentic_pipeline
-    from services.file_storage_service import get_velociraptor_blueprint, get_agentic_blueprint
-    from services.workflow_service import create_automation_run, add_log_to_run, update_run_status
+    from services.file_storage_service import get_agentic_blueprint
+    from services.workflow_service import create_automation_run
     from .jobs import get_scheduled_job
     import json
 

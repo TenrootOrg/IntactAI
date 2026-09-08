@@ -8,7 +8,6 @@ supposed to do — collect, detect, ingest, analyse — goes through the product
 """
 
 import os
-import posixpath
 import time
 
 from lib import clients as clients_lib, winssh

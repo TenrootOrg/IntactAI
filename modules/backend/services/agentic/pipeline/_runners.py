@@ -2,16 +2,13 @@
 """
 Agentic Pipeline - Main orchestration for forensics analysis pipeline
 """
-import threading
 import traceback
-from datetime import datetime
 
 from services.workflow_service import (
     add_log_to_run,
     update_run_status,
     is_cancelled,
     unregister_cancel,
-    request_stop,
 )
 
 
@@ -32,7 +29,7 @@ from services.agentic.collectors import (
 # timeout branch below. The only remaining canceller is the cleanup callback
 # _stream.py registers for a user-requested Stop.
 from services.agentic.pipeline._helpers import *  # noqa: F401,F403
-from services.agentic.pipeline._helpers import (_start_watchdog, _update_phase, _PIPELINE_SYNTHESIS_GRACE_SECONDS)  # underscore members
+from services.agentic.pipeline._helpers import (_start_watchdog, _update_phase)  # underscore members
 
 def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, cancel_event=None):
     """Background thread: full agentic forensics pipeline (collection-only —

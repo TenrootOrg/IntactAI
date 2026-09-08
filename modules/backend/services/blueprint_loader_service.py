@@ -14,7 +14,7 @@ Directory structure:
 
 import os
 import yaml
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Optional
 from copy import deepcopy
 
 # Paths

@@ -6,8 +6,6 @@ Main Flask application with modular structure
 
 import threading
 import time
-import os
-import sys
 import faulthandler
 import signal
 # Diagnostics: `docker exec intact_backend kill -USR1 1` dumps EVERY thread's

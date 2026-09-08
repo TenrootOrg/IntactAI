@@ -8,7 +8,6 @@ Automatic license tier detection (Free/P1/P2).
 import os
 import json
 import time
-import tempfile
 import requests
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
@@ -582,7 +581,7 @@ def collect_azure_logs(
             else:
                 log(f"No records found for {source_name}", "info")
 
-        except ValueError as e:
+        except ValueError:
             raise  # Re-raise auth errors
         except Exception as e:
             error_msg = f"Failed to collect {source_name}: {str(e)}"

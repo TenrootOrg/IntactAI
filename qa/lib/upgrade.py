@@ -27,7 +27,6 @@ anything · 3 applied but degraded · 130/143 interrupted.
 
 import json
 import os
-import time
 
 RC_CLEAN = 0
 RC_ROLLED_BACK = 1
@@ -224,19 +223,6 @@ def wait_for_upgrade(c, run_id, tl, timeout_s=TIMEOUT_UPGRADE_S, what=None):
     return run, (int(rc) if isinstance(rc, (int, str)) and str(rc).lstrip("-").isdigit()
                  else None)
 
-
-def stage_package_into_backend(shell, cfg, host_path, tl=None):
-    """Put a package where /api/upgrade/offline will accept it.
-
-    /data/upgrade_packages is a docker volume mounted only into intact_backend,
-    so `docker cp` is the volume-agnostic way in — no need to find a mountpoint
-    on the host.
-    """
-    name = os.path.basename(host_path)
-    dest = f"/data/upgrade_packages/{name}"
-    r = shell.sudo(["docker", "cp", host_path, f"intact_backend:{dest}"],
-                   cfg.sudo_password, timeout=1800, tl=tl, stage="upgrade")
-    return dest if r.ok else None
 
 
 def describe_rc(rc):

@@ -4,12 +4,10 @@ Agentic Analyzers - LLM analysis functions for forensic data
 """
 
 import json
-import re
 import requests
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from services.agentic.constants import (
-    TRUNCATE_TOKEN_LIMIT, MAX_LLM_TOKENS,
+    MAX_LLM_TOKENS,
     OLLAMA_CONTEXT_SIZE, OLLAMA_TIMEOUT_SECONDS,
     ONLINE_LLM_TIMEOUT_SECONDS,
 )
