@@ -13,8 +13,6 @@ from services import (
     add_log_to_run,
     update_run_status
 )
-from services.velociraptor_init_service import initialize_velociraptor_artifacts
-from config import is_module_enabled
 
 maintenance_bp = Blueprint('maintenance', __name__)
 
@@ -416,9 +414,9 @@ def run_system_purge():
         def fmt(size_bytes):
             if size_bytes >= 1024**3:
                 return f"{size_bytes / 1024**3:.1f} GB"
-            elif size_bytes >= 1024**2:
+            if size_bytes >= 1024**2:
                 return f"{size_bytes / 1024**2:.1f} MB"
-            elif size_bytes >= 1024:
+            if size_bytes >= 1024:
                 return f"{size_bytes / 1024:.1f} KB"
             return f"{size_bytes} B"
 
@@ -822,7 +820,7 @@ def _scan_workflows():
 
 
 def _scan_system_workflows():
-    import os, sqlite3
+    import sqlite3
     from services.workflow_service import SYSTEM_TYPES
     p = "/app/data/intact.db"
     cnt = 0
@@ -986,7 +984,6 @@ def _scan_timesketch():
 def _scan_memory_dumps():
     """Memory module residue — host .raw + VolWeb media + Velociraptor
     flow uploads. All three are independent of the normal purge sweep."""
-    import os
     sizes = {
         "host_raw": _scan_dir("/data/memory_dumps"),
         "volweb_media": 0,
@@ -1835,8 +1832,6 @@ def refresh_yara_rulesets():
     operator polls the resulting run_id via the dashboard's
     standard workflow polling.
     """
-    import subprocess
-    import requests
     from services.workflow_service import (
         create_automation_run, update_run_status, add_log_to_run,
         register_cancel_event, unregister_cancel, is_cancelled,

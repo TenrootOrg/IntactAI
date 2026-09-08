@@ -23,7 +23,6 @@ import subprocess
 from pathlib import Path
 from typing import Callable
 
-from config import VELOCIRAPTOR_CONTAINER
 
 from .acquire import cleanup_velociraptor_flow
 from .volweb_client import VolWebClient, VolWebError, _config_value

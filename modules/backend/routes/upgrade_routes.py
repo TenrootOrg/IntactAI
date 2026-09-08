@@ -58,11 +58,9 @@ from services.workflow_service import (
     create_automation_run,
     add_log_to_run,
     update_run_status,
-    get_automation_run,
     get_all_automation_runs,
     register_cancel_event,
     register_cleanup,
-    is_cancelled,
     get_cancel_event,
     terminate_subprocess,
 )

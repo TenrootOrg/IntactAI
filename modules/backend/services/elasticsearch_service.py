@@ -65,9 +65,8 @@ def init_elasticsearch(host='elasticsearch', port=9200, user=None, password=None
                 print(f"[ELASTICSEARCH] ✓ Index already exists: {index_name}", flush=True)
 
             return True
-        else:
-            print("[ELASTICSEARCH] ✗ Failed to ping Elasticsearch", flush=True)
-            return False
+        print("[ELASTICSEARCH] ✗ Failed to ping Elasticsearch", flush=True)
+        return False
 
     except Exception as e:
         print(f"[ELASTICSEARCH] ✗ Connection failed: {e}", flush=True)

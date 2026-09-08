@@ -282,12 +282,10 @@ def download_client_installer(platform):
         if file_size > 0:
             print(f"[CLIENT-DL] ✓ Serving {filename} ({file_size} bytes)", flush=True)
             return file_path
-        else:
-            print(f"[CLIENT-DL] ✗ File is empty: {filename}", flush=True)
-            return None
-    else:
-        print(f"[CLIENT-DL] ✗ File not found: {filename}", flush=True)
+        print(f"[CLIENT-DL] ✗ File is empty: {filename}", flush=True)
         return None
+    print(f"[CLIENT-DL] ✗ File not found: {filename}", flush=True)
+    return None
 
 
 # Legacy function stubs (for backwards compatibility)
@@ -335,13 +333,12 @@ def generate_all_client_installers(logger_func=None):
             "results": results,
             "message": f"{success_count}/3 clients available"
         }
-    else:
-        log("No pre-generated clients found!", "error")
-        return {
-            "success": False,
-            "error": "No clients available",
-            "results": results
-        }
+    log("No pre-generated clients found!", "error")
+    return {
+        "success": False,
+        "error": "No clients available",
+        "results": results
+    }
 
 
 # Backwards compatibility alias

@@ -110,8 +110,7 @@ def save_config(config_data, config_id=None):
 
         if result:
             return {"success": True, "config_id": config_id}
-        else:
-            return {"success": False, "error": "Failed to save configuration"}
+        return {"success": False, "error": "Failed to save configuration"}
     except Exception as e:
         print(f"[OFFLINE] Error saving config: {e}", flush=True)
         return {"success": False, "error": str(e)}

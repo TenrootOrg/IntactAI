@@ -12,7 +12,6 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 
-from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.date import DateTrigger
 from dateutil.relativedelta import relativedelta
@@ -305,7 +304,6 @@ def list_scheduled_jobs(enabled_only: bool = False) -> list:
 
 def update_scheduled_job(job_id: str, updates: dict) -> Optional[dict]:
     """Update a scheduled job."""
-    from .executor import run_scheduled_blueprint
 
     job = get_scheduled_job(job_id)
     if not job:
@@ -425,7 +423,6 @@ def run_job_now(job_id: str) -> bool:
 
 def restore_jobs_on_startup():
     """Restore all enabled jobs to APScheduler. Called lazily on first scheduler access."""
-    from .executor import run_scheduled_blueprint
 
     restore_lock = get_restore_lock()
 

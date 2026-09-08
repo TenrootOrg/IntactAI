@@ -31,7 +31,7 @@ import tempfile
 import time
 import urllib.request
 import urllib.error
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 # Project layout — INTACT_HOST_PATH is bind-mounted into the backend
 # container at the same path, so this works from inside the container too.

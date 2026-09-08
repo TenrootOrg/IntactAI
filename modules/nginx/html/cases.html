@@ -226,7 +226,7 @@
 <script src="vendor/flatpickr/flatpickr.min.js"></script>
 <!-- resumable chunked upload, for importing a case bundle (multi-GB) -->
 <script src="vendor/tus/tus.min.js"></script>
-<script src="js/upload.js?v=3"></script>
+<script src="js/upload.js?v=4"></script>
 </head>
 <body>
 <header>
@@ -975,7 +975,6 @@ async function doRefusion(id){
   }catch(e){ toast('✗ Refusion failed — see the Log for details'); }
   if(typeof logRefresh==='function') logRefresh();   // pull the final rows at once
 }
-// Rescan (LLM) = SAVE config → re-fuse → regenerate report + chat narrative with the LLM.
 async function doRescanLLM(id){
   toast('saving + rescanning (LLM) — refusing + regenerating report…');
   const cfg = await _railCfg(); cfg.trigger = 'rescan_llm';
@@ -984,6 +983,7 @@ async function doRescanLLM(id){
   await api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({use_llm:true})});
   toast('✓ Rescan complete — report & chat regenerated'); tab='report'; openCase(id);
 }
+
 function synthFromChat(id){toast('synthesizing from chat…');
   fetch('/api/cases/'+id+'/synthesize',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(async r=>{
     const d=await r.json().catch(()=>({}));

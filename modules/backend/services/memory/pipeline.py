@@ -35,22 +35,20 @@ from typing import Any, Callable
 
 from services.workflow_service import (
     add_log_to_run,
-    is_cancelled,
     mutate_run_details,
     register_cancel_event,
     register_cleanup,
     unregister_cancel,
     update_run_status,
 )
-from .acquire import acquire_memory_dump, AcquisitionError
+from .acquire import acquire_memory_dump
 from .cleanup import cleanup_after_run
 from .defaults import (
-    ACQUISITION_DEFAULTS,
     CURATED_PLUGINS,
     DISK_PREFLIGHT_MULTIPLIER,
     YARA_CATEGORY_KEYWORDS,
 )
-from .volweb_client import VolWebClient, VolWebError
+from .volweb_client import VolWebClient
 
 
 def _resolve_plugin_set(blueprint: dict | None, client: "VolWebClient",

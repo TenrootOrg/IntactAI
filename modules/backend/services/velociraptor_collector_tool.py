@@ -11,11 +11,10 @@ registers the tool with the server over VQL rather than gRPC.
 """
 
 import os
-import shutil
 import subprocess
 from typing import Callable, Dict, Optional
 
-from services.proc import WORKDIR, run_command
+from services.proc import run_command
 
 def _velociraptor_collector_url(clean_version: str) -> str:
     """Build the upstream URL for the velociraptor-collector binary

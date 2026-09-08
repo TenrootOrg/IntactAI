@@ -29,7 +29,6 @@ would OOM-kill the worker).
 from __future__ import annotations
 
 import os
-import shutil
 import zipfile
 from typing import Callable, Optional
 

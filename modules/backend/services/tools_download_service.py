@@ -15,7 +15,7 @@ import time
 import yaml
 import requests
 import subprocess
-from typing import Dict, List, Optional, Callable
+from typing import Dict, Optional, Callable
 from urllib.parse import urlparse
 
 # Import Velociraptor gRPC components

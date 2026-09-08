@@ -18,12 +18,18 @@ import to succeed. Anything genuinely exercising a stubbed module would get an
 attribute that does nothing and should be stubbing it deliberately itself.
 """
 
+import importlib.util
 import sys
 import types
 
 
 class _Anything(types.ModuleType):
     """A module that answers any attribute with another one of itself."""
+
+    # Marks the stub as a PACKAGE. Without it, `import apscheduler.schedulers`
+    # fails at the parent lookup with "'apscheduler' is not a package" before
+    # sys.meta_path is ever consulted, so _SubmoduleFinder never gets a turn.
+    __path__ = []
 
     def __getattr__(self, name):
         if name.startswith("__"):
@@ -36,6 +42,39 @@ class _Anything(types.ModuleType):
         return self
 
 
+_STUBBED_ROOTS = set()
+
+
+class _SubmoduleFinder:
+    """Resolve any submodule of a stubbed root to another permissive stub.
+
+    Without this, `import grpc` succeeds while `from apscheduler.schedulers.background
+    import BackgroundScheduler` still raises: Python looks the dotted name up in
+    sys.modules and asks the parent for a __path__, and a bare ModuleType has
+    neither. Stubbing every dotted spelling by hand is the alternative, and it
+    rots the moment the backend imports one more submodule.
+
+    Appended to sys.meta_path, never prepended, so a genuinely installed package
+    always wins over a stub of the same name.
+    """
+
+    @staticmethod
+    def find_spec(name, path=None, target=None):
+        if name.split(".")[0] not in _STUBBED_ROOTS:
+            return None
+        return importlib.util.spec_from_loader(name, _SubmoduleLoader())
+
+
+class _SubmoduleLoader:
+    @staticmethod
+    def create_module(spec):
+        return _Anything(spec.name)
+
+    @staticmethod
+    def exec_module(module):
+        pass
+
+
 def stub(*names):
     """Insert a permissive stub for each module that is not importable."""
     stubbed = []
@@ -44,7 +83,10 @@ def stub(*names):
             __import__(name)
         except ImportError:
             sys.modules[name] = _Anything(name)
+            _STUBBED_ROOTS.add(name)
             stubbed.append(name)
+    if stubbed and _SubmoduleFinder not in sys.meta_path:
+        sys.meta_path.append(_SubmoduleFinder)
     return stubbed
 
 

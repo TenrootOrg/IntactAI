@@ -50,31 +50,6 @@ def _resolve_upload_run(upload_id, *, pop=False):
     return None
 
 
-def decode_tus_metadata(metadata_str):
-    """Decode tus metadata from base64-encoded key-value pairs
-
-    Format: "key1 base64value1,key2 base64value2"
-    """
-    if not metadata_str:
-        return {}
-
-    result = {}
-    pairs = metadata_str.split(',')
-    for pair in pairs:
-        parts = pair.strip().split(' ', 1)
-        if len(parts) == 2:
-            key = parts[0]
-            try:
-                # Decode base64 value
-                value = base64.b64decode(parts[1]).decode('utf-8')
-                result[key] = value
-            except Exception:
-                result[key] = parts[1]
-        elif len(parts) == 1 and parts[0]:
-            result[parts[0]] = ''
-
-    return result
-
 
 def _fuse_offline_import(import_result, upload_run_id):
     """After an offline-collector ZIP is imported into Velociraptor, fuse the
@@ -321,7 +296,7 @@ def handle_tus_hook():
             print(f"[TUS HOOK] Validated upload: {filename} for {purpose}", flush=True)
             return jsonify({"ok": True})
 
-        elif event_type == 'post-create':
+        if event_type == 'post-create':
             # Upload created - ID is now assigned, create workflow
             upload_id = upload_info.get('ID', '')
             purpose = metadata.get('purpose', '')
@@ -415,7 +390,7 @@ def handle_tus_hook():
             print(f"[TUS HOOK] Created workflow for upload: {upload_id} -> run_id: {run_id}", flush=True)
             return jsonify({"ok": True})
 
-        elif event_type == 'post-receive':
+        if event_type == 'post-receive':
             # Upload progress - called after each chunk is received
             upload_id = upload_info.get('ID', '')
             offset = upload_info.get('Offset', 0)
@@ -449,7 +424,7 @@ def handle_tus_hook():
 
             return jsonify({"ok": True})
 
-        elif event_type == 'post-finish':
+        if event_type == 'post-finish':
             # Upload complete - trigger processing
             upload_id = upload_info.get('ID', '')
             file_path = f"/data/uploads/{upload_id}"
@@ -637,7 +612,7 @@ def handle_tus_hook():
 
             return jsonify({"ok": True})
 
-        elif event_type == 'post-terminate':
+        if event_type == 'post-terminate':
             # Upload was cancelled/terminated
             upload_id = upload_info.get('ID', '')
             run_id = _resolve_upload_run(upload_id, pop=True)
@@ -661,10 +636,9 @@ def handle_tus_hook():
 
             return jsonify({"ok": True})
 
-        else:
-            # Unknown event type - just acknowledge
-            print(f"[TUS HOOK] Unhandled event type: {event_type}", flush=True)
-            return jsonify({"ok": True})
+        # Unknown event type - just acknowledge
+        print(f"[TUS HOOK] Unhandled event type: {event_type}", flush=True)
+        return jsonify({"ok": True})
 
     except Exception as e:
         print(f"[TUS HOOK] Error handling webhook: {e}", flush=True)
@@ -687,5 +661,4 @@ def get_upload_status(upload_id):
             "size": size,
             "size_mb": size / (1024 * 1024)
         })
-    else:
-        return jsonify({"exists": False})
+    return jsonify({"exists": False})

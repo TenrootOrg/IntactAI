@@ -7,7 +7,6 @@ import json
 import os
 import time
 import traceback
-import sys
 import zipfile
 import tempfile
 from pyvelociraptor import api_pb2
@@ -472,7 +471,7 @@ def import_custom_artifact(yaml_content, logger_func=None):
                         result = data[0].get("Result", {})
                         if isinstance(result, dict):
                             artifact_name = result.get("name")
-                except (json.JSONDecodeError, KeyError) as e:
+                except (json.JSONDecodeError, KeyError):
                     pass
             # An artifact already loaded from the baked --definitions bundle is
             # read-only ("built in"), so artifact_set refuses to overwrite it.

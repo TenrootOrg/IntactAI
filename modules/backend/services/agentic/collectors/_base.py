@@ -6,9 +6,7 @@ Agentic Collectors - Velociraptor artifact collection logic
 import json
 import logging
 import os
-import time
 from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from pyvelociraptor import api_pb2
 from pyvelociraptor import api_pb2_grpc
@@ -92,7 +90,7 @@ def check_flow_status(stub, client_id, flow_id):
                         state_upper = str(state).upper()
                         if state_upper == 'FINISHED':
                             return 'FINISHED', None
-                        elif state_upper in ('ERROR', 'CANCELLED', 'FAILED'):
+                        if state_upper in ('ERROR', 'CANCELLED', 'FAILED'):
                             # Extract error info for logging
                             backtrace = row.get('backtrace', '')
                             context = row.get('context', {})
@@ -128,7 +126,7 @@ def check_flow_status(stub, client_id, flow_id):
                                 'error_reason': error_reason
                             }
                             return 'ERROR', error_info
-                        elif state_upper in ('RUNNING', 'IN_PROGRESS', 'WAITING'):
+                        if state_upper in ('RUNNING', 'IN_PROGRESS', 'WAITING'):
                             return 'RUNNING', None
                 except Exception as e:
                     print(f"[AGENTIC] Flow status parse error: {e}", flush=True)

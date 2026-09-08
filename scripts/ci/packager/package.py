@@ -19,7 +19,6 @@ import os
 import json
 import shutil
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Dict, Callable, List, Optional, Tuple
@@ -65,7 +64,6 @@ _IMAGE_PROGRESS_SECONDS = 30
 # path never needs to reach this far.
 from services.image_map import (
     PRIMARY_IMAGES, TRANSITIVE_IMAGES,
-    module_image_repos, image_owner_prefixes, images_by_module,
 )
 
 

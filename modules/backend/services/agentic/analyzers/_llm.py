@@ -4,12 +4,10 @@ Agentic Analyzers - LLM analysis functions for forensic data
 """
 
 import json
-import re
 import requests
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from services.agentic.constants import (
-    TRUNCATE_TOKEN_LIMIT, MAX_LLM_TOKENS,
+    MAX_LLM_TOKENS,
     OLLAMA_CONTEXT_SIZE, OLLAMA_TIMEOUT_SECONDS,
     ONLINE_LLM_TIMEOUT_SECONDS,
 )
@@ -412,24 +410,27 @@ MODEL_ALIASES = {
 }
 
 
-def get_model_max_output_tokens(model_input: str, provider: str):
-    """Resolve the max output tokens for a given model id + provider.
+def _catalog_field(model_input: str, provider: str, field: str):
+    """Resolve `field` for a model id + provider, or None.
+
+    ONE implementation for max_output_tokens and context_length. They used to be
+    two functions whose bodies were identical apart from the field name, and the
+    `codex-subscription` comment below records what that cost: the branch was
+    present in one copy and missing from the other, so subscription models got
+    the constant default output cap and long reports were silently truncated.
 
     Walk order:
-        1. Friendly alias table (`MODEL_ALIASES[model_input].max_output_tokens`)
-        2. The provider's catalog file (looks up the resolved native id
-           or canonical id and reads `max_output_tokens` off the entry)
-        3. None — caller falls back to the constant default
-
-    Used by the resolver to honor the user's "just always use the max"
-    directive when the operator hasn't explicitly overridden it.
+        1. friendly alias table
+        2. the provider's catalog (native id, raw input, or canonical id)
+        3. the OpenRouter mirror, for direct-SDK ids of claude/openai/gemini
+        4. None -- caller falls back to its constant default
     """
     if not model_input:
         return None
     # Step 1: alias table
     alias_entry = MODEL_ALIASES.get(model_input)
-    if alias_entry and alias_entry.get("max_output_tokens"):
-        return alias_entry["max_output_tokens"]
+    if alias_entry and alias_entry.get(field):
+        return alias_entry[field]
 
     # Step 2: per-provider catalog. Local imports to avoid module-load
     # ordering issues — the catalog package imports analyzers' siblings
@@ -462,8 +463,8 @@ def get_model_max_output_tokens(model_input: str, provider: str):
             for m in models:
                 if m.get("id") == resolved or m.get("id") == model_input \
                         or m.get("canonical_id") == resolved:
-                    if m.get("max_output_tokens"):
-                        return m["max_output_tokens"]
+                    if m.get(field):
+                        return m[field]
         except Exception:
             pass
 
@@ -471,7 +472,7 @@ def get_model_max_output_tokens(model_input: str, provider: str):
     # from the dropdown's OpenRouter-fallback section, the saved value
     # is in direct-SDK form (e.g. `claude-opus-4-6`). Convert back to
     # canonical (`anthropic/claude-opus-4.6`) and look in the OpenRouter
-    # catalog so max_output_tokens / context_length stay accurate.
+    # catalog so the requested field stay accurate.
     if provider in ("claude", "openai", "gemini"):
         try:
             from routes.config_routes import _canonical_from_direct_sdk_id
@@ -481,68 +482,22 @@ def get_model_max_output_tokens(model_input: str, provider: str):
                 for m in or_catalog.load_catalog():
                     cid = m.get("id") or ""
                     bare = cid[1:] if cid.startswith("~") else cid
-                    if bare == canonical and m.get("max_output_tokens"):
-                        return m["max_output_tokens"]
+                    if bare == canonical and m.get(field):
+                        return m[field]
         except Exception:
             pass
 
     return None
+
+
+def get_model_max_output_tokens(model_input: str, provider: str):
+    """Max output tokens for a model id + provider, or None."""
+    return _catalog_field(model_input, provider, "max_output_tokens")
+
 
 def get_model_context_length(model_input: str, provider: str):
-    """Resolve the model's CONTEXT WINDOW (input+output ceiling), or None.
-
-    Same walk as get_model_max_output_tokens — alias table, then the provider's
-    catalog, then the OpenRouter mirror — but reading `context_length`. Exists so
-    the payload budget can be derived from the model actually selected instead of
-    a constant written for a hypothetical one (services/fusion/budget.py).
-    """
-    if not model_input:
-        return None
-    alias_entry = MODEL_ALIASES.get(model_input)
-    if alias_entry and alias_entry.get("context_length"):
-        return alias_entry["context_length"]
-
-    catalog_module = None
-    try:
-        if provider == "openrouter":
-            from services.llm_catalogs import openrouter as catalog_module
-        elif provider == "claude":
-            from services.llm_catalogs import anthropic as catalog_module
-        elif provider == "openai":
-            from services.llm_catalogs import openai as catalog_module
-        elif provider == "gemini":
-            from services.llm_catalogs import gemini as catalog_module
-        elif provider == "codex-subscription":
-            from services.llm_catalogs import codex as catalog_module
-    except Exception:
-        catalog_module = None
-
-    if catalog_module:
-        try:
-            models = catalog_module.load_catalog()
-            resolved = resolve_model_alias(model_input, provider)
-            for m in models:
-                if m.get("id") == resolved or m.get("id") == model_input \
-                        or m.get("canonical_id") == resolved:
-                    if m.get("context_length"):
-                        return m["context_length"]
-        except Exception:
-            pass
-
-    if provider in ("claude", "openai", "gemini"):
-        try:
-            from routes.config_routes import _canonical_from_direct_sdk_id
-            from services.llm_catalogs import openrouter as or_catalog
-            canonical = _canonical_from_direct_sdk_id(model_input, provider)
-            if canonical:
-                for m in or_catalog.load_catalog():
-                    cid = m.get("id") or ""
-                    bare = cid[1:] if cid.startswith("~") else cid
-                    if bare == canonical and m.get("context_length"):
-                        return m["context_length"]
-        except Exception:
-            pass
-    return None
+    """The model's CONTEXT WINDOW (input+output ceiling), or None."""
+    return _catalog_field(model_input, provider, "context_length")
 
 
 def resolve_model_alias(model_name: str, provider: str) -> str:
@@ -658,12 +613,11 @@ def call_llm(prompt, system_prompt, config, run_id=None, model_override=None,
             provider_config['model'] = model_override
         return _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id,
                                 reasoning_effort=reasoning_effort)
-    else:
-        provider_config = dict(agentic_config.get('offline_llm', {}))
-        if model_override:
-            provider_config['model'] = model_override
-        return _call_llm_offline(prompt, system_prompt, provider_config, context_size, timeout,
-                                 run_id, reasoning_effort=reasoning_effort)
+    provider_config = dict(agentic_config.get('offline_llm', {}))
+    if model_override:
+        provider_config['model'] = model_override
+    return _call_llm_offline(prompt, system_prompt, provider_config, context_size, timeout,
+                             run_id, reasoning_effort=reasoning_effort)
 
 
 def _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id=None,
@@ -707,12 +661,12 @@ def _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id=
         ))
         _record_llm_usage(run_id, 'claude', model, response)
         return response.content[0].text
-    elif provider in OPENAI_COMPATIBLE_BASE_URLS:
+    if provider in OPENAI_COMPATIBLE_BASE_URLS:
         return _call_openai_compatible(
             provider, prompt, system_prompt, api_key, model, max_tokens,
             base_url=OPENAI_COMPATIBLE_BASE_URLS[provider], run_id=run_id,
             reasoning_effort=reasoning_effort)
-    elif provider == 'gemini':
+    if provider == 'gemini':
         import google.generativeai as genai
         genai.configure(api_key=api_key)
         gemini_model = genai.GenerativeModel(model)
@@ -727,7 +681,7 @@ def _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id=
         ))
         _record_llm_usage(run_id, 'gemini', model, response)
         return response.text
-    elif _is_subscription:
+    if _is_subscription:
         # Spend the operator's subscription via the vendor CLI instead of a
         # metered API key. The connection outcome is logged to the case's
         # activity log so an analyst can see, in the Case Analysis Log, whether
@@ -757,8 +711,7 @@ def _call_llm_online(prompt, system_prompt, provider_config, max_tokens, run_id=
                   f"{result.get('out_tokens', 0):,} out tokens")
         _record_llm_usage(run_id, provider, model, result)
         return result['text']
-    else:
-        raise ValueError(f"Unsupported online provider: {provider}")
+    raise ValueError(f"Unsupported online provider: {provider}")
 
 
 def _call_llm_offline(prompt, system_prompt, provider_config, context_size, timeout, run_id=None,
@@ -786,7 +739,7 @@ def _call_llm_offline(prompt, system_prompt, provider_config, context_size, time
         body = response.json()
         _record_llm_usage(run_id, 'ollama', model, body)
         return body.get('response', '')
-    elif provider == 'openai-compatible':
+    if provider == 'openai-compatible':
         # LiteLLM proxy / vLLM / LM Studio / Ollama's own /v1 — all speak the
         # OpenAI wire format, so they are one provider distinguished by URL
         # rather than one integration each. "Offline" here means self-hosted,
@@ -802,5 +755,4 @@ def _call_llm_offline(prompt, system_prompt, provider_config, context_size, time
             max_tokens=provider_config.get('max_tokens') or MAX_LLM_TOKENS,
             base_url=url, timeout=timeout, run_id=run_id,
             reasoning_effort=reasoning_effort)
-    else:
-        raise ValueError(f"Unsupported offline provider: {provider}")
+    raise ValueError(f"Unsupported offline provider: {provider}")

@@ -9,7 +9,6 @@ from flask import Blueprint, jsonify, request
 from services.agentic import run_agentic_pipeline
 from services.file_storage_service import get_agentic_blueprint, get_velociraptor_blueprint
 from services.workflow_service import create_automation_run
-from config import is_module_enabled
 
 agentic_bp = Blueprint('agentic', __name__)
 

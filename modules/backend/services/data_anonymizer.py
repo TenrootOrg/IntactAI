@@ -176,6 +176,22 @@ IDENTITY_FIELDS = {
 }
 
 
+
+# category -> pool. This was an eight-branch if/elif whose arms were identical
+# apart from the constant, while `category` was already the parameter. self.counters
+# is pre-seeded with exactly these keys, so the lookup cannot KeyError for any
+# category that reaches it; anything else falls through to <REDACTED>.
+_POOLS = {
+    "ip_ext": PSEUDO_EXTERNAL_IPS,
+    "ip_int": PSEUDO_INTERNAL_IPS,
+    "user": PSEUDO_USERS,
+    "host": PSEUDO_HOSTS,
+    "email": PSEUDO_EMAILS,
+    "domain": PSEUDO_DOMAINS,
+    "guid": PSEUDO_GUIDS,
+    "credential": PSEUDO_CREDENTIALS,
+}
+
 class DataAnonymizer:
     """Masks sensitive data before LLM, reverts after."""
 
@@ -253,38 +269,10 @@ class DataAnonymizer:
         if original in self.mapping:
             return self.mapping[original]
 
-        if category == "ip_ext":
-            idx = self.counters["ip_ext"] % len(PSEUDO_EXTERNAL_IPS)
-            pseudo = PSEUDO_EXTERNAL_IPS[idx]
-            self.counters["ip_ext"] += 1
-        elif category == "ip_int":
-            idx = self.counters["ip_int"] % len(PSEUDO_INTERNAL_IPS)
-            pseudo = PSEUDO_INTERNAL_IPS[idx]
-            self.counters["ip_int"] += 1
-        elif category == "user":
-            idx = self.counters["user"] % len(PSEUDO_USERS)
-            pseudo = PSEUDO_USERS[idx]
-            self.counters["user"] += 1
-        elif category == "host":
-            idx = self.counters["host"] % len(PSEUDO_HOSTS)
-            pseudo = PSEUDO_HOSTS[idx]
-            self.counters["host"] += 1
-        elif category == "email":
-            idx = self.counters["email"] % len(PSEUDO_EMAILS)
-            pseudo = PSEUDO_EMAILS[idx]
-            self.counters["email"] += 1
-        elif category == "domain":
-            idx = self.counters["domain"] % len(PSEUDO_DOMAINS)
-            pseudo = PSEUDO_DOMAINS[idx]
-            self.counters["domain"] += 1
-        elif category == "guid":
-            idx = self.counters["guid"] % len(PSEUDO_GUIDS)
-            pseudo = PSEUDO_GUIDS[idx]
-            self.counters["guid"] += 1
-        elif category == "credential":
-            idx = self.counters["credential"] % len(PSEUDO_CREDENTIALS)
-            pseudo = PSEUDO_CREDENTIALS[idx]
-            self.counters["credential"] += 1
+        pool = _POOLS.get(category)
+        if pool:
+            pseudo = pool[self.counters[category] % len(pool)]
+            self.counters[category] += 1
         else:
             pseudo = "<REDACTED>"
 
@@ -365,9 +353,9 @@ class DataAnonymizer:
         ip_type = self._classify_ip(ip)
         if ip_type == "safe":
             return ip
-        elif ip_type == "internal":
+        if ip_type == "internal":
             return self._get_or_create_pseudo(ip, "ip_int")
-        elif ip_type == "external":
+        if ip_type == "external":
             return self._get_or_create_pseudo(ip, "ip_ext")
         return ip  # invalid, leave as-is
 
@@ -679,63 +667,3 @@ class DataAnonymizer:
     def mask_data(self, rows: list[dict]) -> list[dict]:
         """Mask sensitive fields in artifact rows."""
         return [self.mask_row(row) for row in rows]
-
-    def unmask_text(self, text: str) -> str:
-        """Restore original values in report text."""
-        if not text:
-            return text
-
-        result = text
-
-        # Sort by length descending to replace longer strings first
-        # This prevents partial replacements
-        sorted_mappings = sorted(
-            self.reverse_mapping.items(),
-            key=lambda x: len(x[0]),
-            reverse=True
-        )
-
-        for masked, original in sorted_mappings:
-            result = result.replace(masked, original)
-
-        return result
-
-    def get_mapping_summary(self) -> dict:
-        """Return summary of all mappings for debugging."""
-        return {
-            "total_mappings": len(self.mapping),
-            "counters": self.counters,
-            "sample_mappings": dict(list(self.mapping.items())[:10])
-        }
-
-    def get_masking_log_lines(self) -> list[str]:
-        """Return detailed log lines showing only atomic masked values (individual IPs, users, etc.), grouped by category."""
-        if not self._atomic_mappings:
-            return ["[Masking] No values were masked"]
-
-        CATEGORY_LABELS = {
-            "ip_ext": "External IPs",
-            "ip_int": "Internal IPs",
-            "email": "Emails",
-            "user": "Users",
-            "host": "Hosts",
-            "domain": "Domains",
-            "guid": "GUIDs",
-            "credential": "Credentials",
-        }
-
-        # Group by category
-        grouped: dict[str, list[tuple[str, str]]] = {}
-        for original, (masked, category) in self._atomic_mappings.items():
-            label = CATEGORY_LABELS.get(category, category)
-            grouped.setdefault(label, []).append((original, masked))
-
-        lines = ["[Masking] === Data Masking Summary ==="]
-        for label, mappings in grouped.items():
-            lines.append(f"[Masking] {label} ({len(mappings)}):")
-            for original, masked in mappings:
-                lines.append(f"[Masking]   {original} -> {masked}")
-
-        total = len(self._atomic_mappings)
-        lines.append(f"[Masking] Total: {total} values masked across {len(grouped)} categories")
-        return lines

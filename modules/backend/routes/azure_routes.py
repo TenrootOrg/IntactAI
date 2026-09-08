@@ -11,7 +11,7 @@ import json
 import uuid
 import traceback
 from datetime import datetime
-from flask import Blueprint, jsonify, request, current_app, Response
+from flask import Blueprint, jsonify, request, Response
 from werkzeug.utils import secure_filename
 
 from services.azure.pipeline import (
@@ -31,8 +31,7 @@ from services.azure.sigma_runner import (
 from services.workflow_logger import add_log_to_run
 from routes.config_routes import _load_cloud_config
 from config import is_module_enabled
-from services.workflow_service import update_run_status, get_automation_run
-import threading
+from services.workflow_service import get_automation_run
 
 azure_bp = Blueprint('azure', __name__)
 
@@ -126,12 +125,11 @@ def get_rules_info():
                 'counts': counts,
                 'custom_rules_count': custom_count,
             })
-        else:
-            return jsonify({
-                'available': False,
-                'message': rules_msg,
-                'custom_rules_count': custom_count,
-            })
+        return jsonify({
+            'available': False,
+            'message': rules_msg,
+            'custom_rules_count': custom_count,
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

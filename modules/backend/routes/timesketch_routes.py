@@ -15,7 +15,7 @@ from datetime import datetime
 
 import queue
 
-from config import TIMESKETCH_CONFIG, VELOCIRAPTOR_CONTAINER, PLASO_IMAGE, PLASO_OUTPUT_DIR
+from config import TIMESKETCH_CONFIG, VELOCIRAPTOR_CONTAINER, PLASO_OUTPUT_DIR
 from services import (
     get_job,
     add_job,
@@ -24,8 +24,6 @@ from services import (
     add_log_to_run,
     update_run_status,
     monitor_flow_completion,
-    run_pinfo,
-    import_to_timesketch,
     get_jobs,
     run_kape_collection_grpc,
 )
@@ -582,7 +580,7 @@ def start_multi_client_timesketch():
             return jsonify({"run_id": run_id, "error": "No KAPE collections could be started"}), 500
 
         # Register cancel event so the Stop button affects this run.
-        from services.workflow_service import register_cancel_event, unregister_cancel, is_cancelled
+        from services.workflow_service import register_cancel_event, unregister_cancel
         cancel_event = register_cancel_event(run_id)
 
         # --- The orchestrator -----------------------------------------------

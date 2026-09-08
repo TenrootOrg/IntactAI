@@ -1353,7 +1353,7 @@ def chat_subgraph(graph, question, *, window=None, min_severity="informational",
 
 
 def _sev_tally(findings):
-    t = {lv: 0 for lv in sev.LEVELS}
+    t = dict.fromkeys(sev.LEVELS, 0)
     for f in findings:
         t[f.severity] = t.get(f.severity, 0) + 1
     return t
@@ -1578,7 +1578,7 @@ def risk_table(graph, *, window=None, min_severity="informational") -> list:
     for a in assets:
         afind = [f for f in findings if a.id in f.asset_ids]
         sc = scored.get(a.id) or {}
-        tally = {lv: 0 for lv in sev.LEVELS}
+        tally = dict.fromkeys(sev.LEVELS, 0)
         for f in afind:
             if f.severity in tally:
                 tally[f.severity] += 1

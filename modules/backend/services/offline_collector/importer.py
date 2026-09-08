@@ -666,19 +666,18 @@ def import_results(zip_file_path, original_filename="import.zip", run_id=None, p
                 "artifacts": artifacts,
                 "message": f"Successfully imported to Velociraptor. Client: {hostname} ({client_id}). {detail_msg}. View in Velociraptor UI for full details."
             }
-        else:
-            # Import may have worked but we couldn't get the IDs
-            add_log_to_run(run_id, "Import completed but could not retrieve client/flow IDs")
-            update_run_status(run_id, "completed" if finalize else "running",
-                              progress=100 if finalize else 90)
+        # Import may have worked but we couldn't get the IDs
+        add_log_to_run(run_id, "Import completed but could not retrieve client/flow IDs")
+        update_run_status(run_id, "completed" if finalize else "running",
+                          progress=100 if finalize else 90)
 
-            return {
-                "success": True,
-                "run_id": run_id,
-                "hunt_id": imported_hunt_id,
-                "hostname": hostname,
-                "message": "Import sent to Velociraptor. Check Velociraptor UI for results."
-            }
+        return {
+            "success": True,
+            "run_id": run_id,
+            "hunt_id": imported_hunt_id,
+            "hostname": hostname,
+            "message": "Import sent to Velociraptor. Check Velociraptor UI for results."
+        }
 
     except grpc.RpcError as e:
         error_msg = f"gRPC error: {e.details() if hasattr(e, 'details') else str(e)}"

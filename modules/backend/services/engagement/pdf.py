@@ -18,10 +18,8 @@ from __future__ import annotations
 
 import base64
 import io
-import os
 import re
 from datetime import datetime
-from typing import Optional
 
 import markdown as _markdown
 

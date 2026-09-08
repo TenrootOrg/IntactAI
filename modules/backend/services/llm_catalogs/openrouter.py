@@ -7,7 +7,6 @@ canonical join key), and `enriched_from = "native"` since OpenRouter's
 own response carries every metadata field we need.
 """
 
-import os
 from typing import Callable, Dict, Optional
 
 import requests

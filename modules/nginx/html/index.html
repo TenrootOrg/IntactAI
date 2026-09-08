@@ -357,70 +357,6 @@
             <div data-partial="velociraptor"></div>
 
             <!-- Offline Config Modal -->
-            <div id="offline-config-modal" class="fixed inset-0 bg-black/90 backdrop-blur-sm z-50 hidden flex items-center justify-center">
-                <div class="rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto border border-gray-700" style="background:#161b22;">
-                    <div class="flex justify-between items-center mb-4">
-                        <h3 class="text-xl font-semibold text-white" id="config-modal-title">New Configuration</h3>
-                        <button onclick="closeConfigModal()" class="text-gray-400 hover:text-white">
-                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                            </svg>
-                        </button>
-                    </div>
-
-                    <div class="space-y-4">
-                        <div>
-                            <label class="block text-sm font-medium text-gray-300 mb-2">Configuration Name:</label>
-                            <input type="text" id="config-name" placeholder="My Collection" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm focus:border-purple-500 focus:outline-none">
-                        </div>
-
-                        <div>
-                            <label class="block text-sm font-medium text-gray-300 mb-2">Description:</label>
-                            <textarea id="config-description" placeholder="Description of this configuration" rows="2" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm focus:border-purple-500 focus:outline-none"></textarea>
-                        </div>
-
-                        <div>
-                            <div class="flex justify-between items-center mb-2">
-                                <label class="block text-sm font-medium text-gray-300">Artifacts:</label>
-                                <div class="flex gap-2">
-                                    <button onclick="toggleAllOfflineArtifacts(true)" class="text-xs bg-purple-700 hover:bg-purple-600 px-2 py-1 rounded">Check All</button>
-                                    <button onclick="toggleAllOfflineArtifacts(false)" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Uncheck All</button>
-                                </div>
-                            </div>
-                            <div id="offline-artifact-list" class="max-h-48 overflow-y-auto bg-gray-900 rounded-lg p-3 border border-gray-700 grid grid-cols-2 gap-2">
-                                <!-- Populated by JS -->
-                            </div>
-                        </div>
-
-                        <div class="grid grid-cols-3 gap-4">
-                            <div>
-                                <label class="block text-sm font-medium text-gray-300 mb-2">CPU Limit (%):</label>
-                                <input type="number" id="config-cpu-limit" value="50" min="10" max="100" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm focus:border-purple-500 focus:outline-none">
-                            </div>
-                            <div>
-                                <label class="block text-sm font-medium text-gray-300 mb-2">Timeout (sec):</label>
-                                <input type="number" id="config-max-time" value="3600" min="300" max="86400" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm focus:border-purple-500 focus:outline-none">
-                            </div>
-                            <div>
-                                <label class="block text-sm font-medium text-gray-300 mb-2">Idle Timeout:</label>
-                                <input type="number" id="config-idle-time" value="600" min="60" max="3600" class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-3 text-sm focus:border-purple-500 focus:outline-none">
-                            </div>
-                        </div>
-
-                        <input type="hidden" id="config-edit-id" value="">
-
-                        <div class="flex gap-3 pt-4">
-                            <button onclick="saveOfflineConfig()" class="flex-1 bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors">
-                                Save Configuration
-                            </button>
-                            <button onclick="closeConfigModal()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm font-medium transition-colors">
-                                Cancel
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
             <!-- TimeSketch Tab -->
             <div data-partial="timesketch"></div>
 
@@ -642,14 +578,13 @@
     </div>
 
     <!-- JavaScript - Alpine app + module-specific scripts -->
-    <script src="js/api-client.js"></script>
     <!-- App stores (split from the former monolithic app.js) -->
     <script src="js/stores/app.js?v=1"></script>
     <script src="js/stores/services.js?v=1"></script>
     <script src="js/stores/workflows.js?v=4"></script>
-    <script src="js/stores/settings.js?v=22"></script>
+    <script src="js/stores/settings.js?v=23"></script>
     <script src="js/legacy/handlers.js?v=1"></script>
-    <script src="js/velociraptor.js?v=8"></script>
+    <script src="js/velociraptor.js?v=9"></script>
     <script src="js/blueprints.js?v=4"></script>
     <!-- Shared client picker — must load BEFORE any module that instantiates
          ClientManager at script scope (blueprints-forensics, scheduler, ...). -->
@@ -657,8 +592,8 @@
     <script src="js/blueprints-forensics.js?v=7"></script>
     <!-- tus resumable upload protocol (local) -->
     <script src="vendor/tus/tus.min.js"></script>
-    <script src="js/upload.js?v=3"></script>
-    <script src="js/timesketch.js?v=3"></script>
+    <script src="js/upload.js?v=4"></script>
+    <script src="js/timesketch.js?v=4"></script>
     <!-- Must load before the stores/partials that call TabReset.arm(). -->
     <script src="js/components/tab-reset.js?v=1"></script>
     <script src="js/memory.js?v=11"></script>
@@ -667,9 +602,9 @@
          active-case bar, AWS/Azure flatpickr pickers. -->
     <script src="js/components/downloads.js?v=1"></script>
     <script src="js/components/workspace-bar.js?v=3"></script>
-    <script src="js/components/cloud-datepickers.js?v=2"></script>
+    <script src="js/components/cloud-datepickers.js?v=3"></script>
     <!-- MUST be last: injects partials/*.html then starts Alpine over the full DOM. -->
-    <script src="js/bootstrap/partial-loader.js?v=15"></script>
+    <script src="js/bootstrap/partial-loader.js?v=16"></script>
 
     <!-- ======================================================================
          Workflow Log Viewer Modal (body-level placement).

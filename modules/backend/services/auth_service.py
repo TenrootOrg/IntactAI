@@ -26,7 +26,7 @@ import shutil
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Optional, Tuple
+from typing import Optional
 
 import yaml
 from werkzeug.security import check_password_hash, generate_password_hash

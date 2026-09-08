@@ -3,13 +3,8 @@
 Agentic Collectors - Velociraptor artifact collection logic
 """
 
-import json
-import logging
-import os
 import time
-from datetime import datetime, timedelta
 
-from pyvelociraptor import api_pb2
 from pyvelociraptor import api_pb2_grpc
 
 from services.velociraptor_service import setup_velociraptor_connection

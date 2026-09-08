@@ -564,101 +564,13 @@
                                          search endpoint is per-provider:
                                            /api/config/<provider>/models?q=…&limit=10
                                          Each keystroke fires a debounced fetch
-                                         and the operator sees the 10 closest
-                                         matches. Picking a model auto-fills
-                                         max_response_tokens from the entry's
-                                         max_output_tokens field; the operator
-                                         can still override the value below. -->
-                                    <div x-data="{
-                                             selectedModel: null,
-                                             results: [],
-                                             total: 0,
-                                             open: false,
-                                             loading: false,
-                                             fetchedAt: '',
-                                             unenriched: 0,
-                                             _debounce: null,
-                                             // The provider names used in the UI (`claude`, `openai`,
-                                             // `gemini`, `openrouter`) don't all match the catalog
-                                             // route names on the backend (anthropic, openai, gemini,
-                                             // openrouter — the vendor convention OpenRouter uses).
-                                             // Translate here so /api/config/<route>/models resolves.
-                                             routeFor(provider) {
-                                                 if (provider === 'claude') return 'anthropic';
-                                                 // subscription catalog comes from the CLI itself
-                                                 if (provider === 'codex-subscription') return 'codex';
-                                                 return provider;
-                                             },
-                                             async query() {
-                                                 const p = $store.settings.config.agentic.online_llm.provider;
-                                                 const q = $store.settings.config.agentic.online_llm.model || '';
-                                                 // NOTE: never use a double quote anywhere in this block
-                                                 // — it lives inside an x-data attribute and one would
-                                                 // terminate it, dumping the script onto the page.
-                                                 this.loading = true;
-                                                 try {
-                                                     const url = '/api/config/' + this.routeFor(p) + '/models?limit=10&q=' + encodeURIComponent(q);
-                                                     const resp = await fetch(url);
-                                                     const data = await resp.json();
-                                                     this.results = data.models || [];
-                                                     this.total = data.total || 0;
-                                                     this.fetchedAt = data.fetched_at || '';
-                                                     this.unenriched = data.unenriched_count || 0;
-                                                 } catch(e) { this.results = []; this.total = 0; }
-                                                 this.loading = false;
-                                             },
-                                             // Look up the currently-saved model so we can render its
-                                             // metadata (Context / Max output / Pricing) below the input.
-                                             async loadSelected() {
-                                                 const p = $store.settings.config.agentic.online_llm.provider;
-                                                 const id = $store.settings.config.agentic.online_llm.model;
-                                                 if (!id) { this.selectedModel = null; return; }
-                                                 try {
-                                                     const url = '/api/config/' + this.routeFor(p) + '/models?limit=10&q=' + encodeURIComponent(id);
-                                                     const resp = await fetch(url);
-                                                     const data = await resp.json();
-                                                     const list = data.models || [];
-                                                     this.selectedModel = list.find(m => m.id === id)
-                                                         || list.find(m => m.canonical_id === id)
-                                                         || null;
-                                                 } catch(e) { this.selectedModel = null; }
-                                             },
-                                             schedule() {
-                                                 clearTimeout(this._debounce);
-                                                 this._debounce = setTimeout(() => this.query(), 150);
-                                             },
-                                             select(model) {
-                                                 this.selectedModel = model;
-                                                 $store.settings.config.agentic.online_llm.model = model.id;
-                                                 // (max_response_tokens removed — the per-case Output token cap
-                                                 //  in Case Analysis defaults to the model's max output.)
-                                                 this.open = false;
-                                             }
-                                         }"
-                                         x-init="loadSelected(); query();
-                                                 // Re-query when the provider switches so the dropdown
-                                                 // reflects the active provider's catalog.
-                                                 $watch('$store.settings.config.agentic.online_llm.provider', () => {
-                                                     selectedModel = null; results = []; total = 0;
-                                                     query(); loadSelected();
-                                                 });
-                                                 $watch('$store.settings.config.agentic.online_llm.model', () => {
-                                                     loadSelected();
-                                                 });
-                                                 // After Save, app.js fires a background catalog refresh
-                                                 // and dispatches this event — re-query so freshly-
-                                                 // fetched models appear without a page reload.
-                                                 window.addEventListener('llm-catalog-refreshed', (ev) => {
-                                                     if (ev.detail?.provider === $store.settings.config.agentic.online_llm.provider) {
-                                                         results = []; total = 0;
-                                                         query(); loadSelected();
-                                                     }
-                                                 });"
+                                         and the operator sees the 10 closest matches. -->
+                                    <div x-data="modelPicker('agentic.online_llm.model', 'agentic.online_llm.provider')"
                                          class="relative">
                                         <input type="text"
                                                x-model="$store.settings.config.agentic.online_llm.model"
                                                @focus="query(); open = true"
-                                               @input="open = true; schedule()"
+                                               @input.debounce.150ms="open = true; query()"
                                                @click.away="open = false"
                                                @keydown.escape="open = false"
                                                class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm"
@@ -936,53 +848,13 @@
                                          generateContent-capable models, which is exactly the set
                                          Timesketch's aistudio provider can use: it passes `model`
                                          straight to client.models.generate_content(), so there is
-                                         no Timesketch-side restriction to model against.
-                                         NOTE: no double quotes anywhere inside x-data. -->
-                                    <div x-data="{
-                                             selectedModel: null, results: [], total: 0,
-                                             open: false, loading: false, _debounce: null,
-                                             async query() {
-                                                 const q = $store.settings.config.timesketch.google_ai_model || '';
-                                                 this.loading = true;
-                                                 try {
-                                                     const resp = await fetch('/api/config/gemini/models?limit=10&q=' + encodeURIComponent(q));
-                                                     const data = await resp.json();
-                                                     this.results = data.models || [];
-                                                     this.total = data.total || 0;
-                                                 } catch(e) { this.results = []; this.total = 0; }
-                                                 this.loading = false;
-                                             },
-                                             async loadSelected() {
-                                                 const id = $store.settings.config.timesketch.google_ai_model;
-                                                 if (!id) { this.selectedModel = null; return; }
-                                                 try {
-                                                     const resp = await fetch('/api/config/gemini/models?limit=10&q=' + encodeURIComponent(id));
-                                                     const data = await resp.json();
-                                                     const list = data.models || [];
-                                                     this.selectedModel = list.find(m => m.id === id)
-                                                         || list.find(m => m.canonical_id === id) || null;
-                                                 } catch(e) { this.selectedModel = null; }
-                                             },
-                                             schedule() {
-                                                 clearTimeout(this._debounce);
-                                                 this._debounce = setTimeout(() => this.query(), 150);
-                                             },
-                                             select(model) {
-                                                 this.selectedModel = model;
-                                                 $store.settings.config.timesketch.google_ai_model = model.id;
-                                                 this.open = false;
-                                             }
-                                         }"
-                                         x-init="loadSelected(); query();
-                                                 $watch('$store.settings.config.timesketch.google_ai_model', () => { loadSelected(); });
-                                                 window.addEventListener('llm-catalog-refreshed', (ev) => {
-                                                     if (ev.detail?.provider === 'gemini') { results = []; total = 0; query(); loadSelected(); }
-                                                 });"
+                                         no Timesketch-side restriction to model against. -->
+                                    <div x-data="modelPicker('timesketch.google_ai_model', 'gemini')"
                                          class="relative">
                                         <input type="text"
                                                x-model="$store.settings.config.timesketch.google_ai_model"
                                                @focus="query(); open = true"
-                                               @input="open = true; schedule()"
+                                               @input.debounce.150ms="open = true; query()"
                                                @click.away="open = false"
                                                @keydown.escape="open = false"
                                                class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm"
@@ -1110,68 +982,13 @@
                                          the same /api/config/openrouter/models endpoint. Typing a raw id
                                          by hand is how you end up with a model OpenRouter renamed six
                                          months ago and a 404 at request time; the catalog is the list
-                                         that is actually servable.
-
-                                         Simpler than the Agentic one on purpose: the provider here is
-                                         always openrouter, so there is no route translation, no
-                                         subscription branch and no token autofill.
-
-                                         NOTE: never use a double quote anywhere in this x-data block —
-                                         it lives inside an attribute and one would terminate it,
-                                         dumping the script onto the page. -->
-                                    <div x-data="{
-                                             selectedModel: null,
-                                             results: [],
-                                             total: 0,
-                                             open: false,
-                                             loading: false,
-                                             _debounce: null,
-                                             async query() {
-                                                 const q = $store.settings.config.timesketch.openrouter_model || '';
-                                                 this.loading = true;
-                                                 try {
-                                                     const resp = await fetch('/api/config/openrouter/models?limit=10&q=' + encodeURIComponent(q));
-                                                     const data = await resp.json();
-                                                     this.results = data.models || [];
-                                                     this.total = data.total || 0;
-                                                 } catch(e) { this.results = []; this.total = 0; }
-                                                 this.loading = false;
-                                             },
-                                             async loadSelected() {
-                                                 const id = $store.settings.config.timesketch.openrouter_model;
-                                                 if (!id) { this.selectedModel = null; return; }
-                                                 try {
-                                                     const resp = await fetch('/api/config/openrouter/models?limit=10&q=' + encodeURIComponent(id));
-                                                     const data = await resp.json();
-                                                     const list = data.models || [];
-                                                     this.selectedModel = list.find(m => m.id === id)
-                                                         || list.find(m => m.canonical_id === id)
-                                                         || null;
-                                                 } catch(e) { this.selectedModel = null; }
-                                             },
-                                             schedule() {
-                                                 clearTimeout(this._debounce);
-                                                 this._debounce = setTimeout(() => this.query(), 150);
-                                             },
-                                             select(model) {
-                                                 this.selectedModel = model;
-                                                 $store.settings.config.timesketch.openrouter_model = model.id;
-                                                 this.open = false;
-                                             }
-                                         }"
-                                         x-init="loadSelected(); query();
-                                                 $watch('$store.settings.config.timesketch.openrouter_model', () => { loadSelected(); });
-                                                 window.addEventListener('llm-catalog-refreshed', (ev) => {
-                                                     if (ev.detail?.provider === 'openrouter') {
-                                                         results = []; total = 0;
-                                                         query(); loadSelected();
-                                                     }
-                                                 });"
+                                         that is actually servable. -->
+                                    <div x-data="modelPicker('timesketch.openrouter_model', 'openrouter')"
                                          class="relative">
                                         <input type="text"
                                                x-model="$store.settings.config.timesketch.openrouter_model"
                                                @focus="query(); open = true"
-                                               @input="open = true; schedule()"
+                                               @input.debounce.150ms="open = true; query()"
                                                @click.away="open = false"
                                                @keydown.escape="open = false"
                                                class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm"
@@ -1459,7 +1276,7 @@
                              Releases" / "Compute Plan" / "Show Modules" buttons;
                              selecting a different release re-runs the next step
                              automatically. -->
-                        <div x-show="!$store.settings.prepareLoading && !$store.settings.preparePackageReady" class="space-y-4 max-h-96 overflow-y-auto">
+                        <div x-show="!$store.settings.prepareLoading" class="space-y-4 max-h-96 overflow-y-auto">
 
                             <!-- GitHub quota banner -->
                             <div x-show="$store.settings.githubQuota && $store.settings.githubQuota.success"
@@ -1568,7 +1385,7 @@
                             </div>
 
                             <!-- Spinner while plan/modules auto-load -->
-                            <div x-show="$store.settings.selectedRef && ($store.settings.computingPlan || $store.settings.showingPrepareModules)"
+                            <div x-show="$store.settings.selectedRef && $store.settings.computingPlan"
                                  class="flex items-center justify-center py-4 text-sm text-gray-400">
                                 <svg class="animate-spin h-4 w-4 mr-2 text-blue-500" fill="none" viewBox="0 0 24 24">
                                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -1674,23 +1491,6 @@
 
                         </div>
 
-                        <!-- Package Ready -->
-                        <div x-show="$store.settings.preparePackageReady" class="text-center py-6">
-                            <svg class="w-16 h-16 text-green-500 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                            </svg>
-                            <h4 class="text-white font-medium mb-2">Package Ready!</h4>
-                            <p class="text-gray-400 text-sm mb-2" x-text="'Size: ' + $store.settings.preparePackageSize"></p>
-                            <p class="text-gray-500 text-xs mb-4">Available for 24 hours</p>
-                            <button @click="$store.workflows.downloadPackage($store.settings.prepareRunId)"
-                               class="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded text-sm font-medium inline-flex items-center gap-2">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
-                                </svg>
-                                Download Package
-                            </button>
-                        </div>
-
                         <!-- Manual fallback — ALWAYS visible, not behind a disclosure.
                              The operator who needs this is the one whose appliance
                              cannot fetch the package: no route to GitHub, a wedged
@@ -1700,7 +1500,7 @@
                              which is exactly the assumption that fails. Shown without
                              a release picked too — the tag is a placeholder until
                              one is chosen. -->
-                        <div x-show="$store.settings.prepareModalMode === 'prepare' && !$store.settings.prepareLoading && !$store.settings.preparePackageReady"
+                        <div x-show="$store.settings.prepareModalMode === 'prepare' && !$store.settings.prepareLoading"
                              x-data="{ open: false }"
                              class="bg-gray-900 rounded border border-gray-700 p-3 mt-4">
                             <!-- Collapsed by default. This is the escape hatch for building the
@@ -1747,7 +1547,7 @@
                         </div>
 
                         <!-- Warning -->
-                        <div x-show="!$store.settings.prepareLoading && !$store.settings.preparePackageReady" class="bg-yellow-900/30 border border-yellow-700/50 rounded p-3 mt-4">
+                        <div x-show="!$store.settings.prepareLoading" class="bg-yellow-900/30 border border-yellow-700/50 rounded p-3 mt-4">
                             <p class="text-yellow-400 text-xs">
                                 <strong>Note:</strong> Downloads the prebuilt package for the selected release and verifies its checksum — nothing is built here. Expect several minutes and a few GB of free space.
                             </p>
@@ -1757,7 +1557,7 @@
                         <!-- /scroll wrapper — Actions below stay pinned on small monitors -->
 
                         <!-- Actions -->
-                        <div x-show="!$store.settings.preparePackageReady" class="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-700">
+                        <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-700">
                             <button @click="$store.settings.closePreparePackageModal()" class="px-4 py-2 text-gray-400 hover:text-white transition-colors">
                                 Cancel
                             </button>
@@ -1776,12 +1576,6 @@
                             </button>
                         </div>
 
-                        <!-- Close when done -->
-                        <div x-show="$store.settings.preparePackageReady" class="flex justify-end mt-6 pt-4 border-t border-gray-700">
-                            <button @click="$store.settings.closePreparePackageModal()" class="px-4 py-2 text-gray-400 hover:text-white transition-colors">
-                                Close
-                            </button>
-                        </div>
                     </div>
                 </div>
 

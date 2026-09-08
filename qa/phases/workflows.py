@@ -515,18 +515,6 @@ def _pick_blueprint(c, path, by_id=None, prefer=()):
     return items[0]
 
 
-def _finding_count(run):
-    if not isinstance(run, dict):
-        return None
-    det = run.get("details") or {}
-    for key in ("findings", "finding_count", "results", "hits"):
-        val = det.get(key)
-        if isinstance(val, int):
-            return val
-        if isinstance(val, list):
-            return len(val)
-    return None
-
 
 def _run_log_text(c, run_id):
     run = c.run_status(run_id) or {}
@@ -561,33 +549,6 @@ def _sketch_from_logs(c, run_id):
             timeline.group(1) if timeline else None, done)
 
 
-def _sketch_with_events(c):
-    """The sketch with the most events, as (sketch_id, event_count, keys).
-
-    The third element is the item's key names. Sketch payload shape is not
-    pinned anywhere, so if the count is under a name this does not know, the
-    failure message can say which names exist instead of just reporting zero.
-    """
-    body = _safe_get(c, "/api/timesketch/sketches")
-    if body is None:
-        return None, None, []
-    items = body.get("sketches", body) if isinstance(body, dict) else body
-    items = [it for it in (items or []) if isinstance(it, dict)]
-    if not items:
-        return None, 0, []
-
-    def count(it):
-        for key in ("event_count", "events", "num_events", "total_events"):
-            try:
-                return int(it.get(key) or 0)
-            except (TypeError, ValueError):
-                continue
-        return 0
-
-    best = max(items, key=count)
-    return (best.get("id") or best.get("sketch_id"), count(best),
-            sorted(best.keys())[:12])
-
 
 def _plugins_from_report(report_md):
     """{plugin: has_results} parsed from the extraction report's markdown table.
@@ -602,11 +563,6 @@ def _plugins_from_report(report_md):
         out[name] = status.startswith("\u2713")
     return out
 
-
-def _case_run_ids(c, case_id):
-    """Run ids already tagged into the case, for scaling per-run expectations."""
-    g = _safe_get(c, f"/api/cases/{case_id}/graph") or {}
-    return ((g.get("fusion_graph") or {}).get("run_ids")) or []
 
 
 def _sources_in(graph):

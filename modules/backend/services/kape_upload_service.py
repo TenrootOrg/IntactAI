@@ -358,12 +358,10 @@ def process_local_with_plaso(source_dir, client_name, logger=None, parser=None, 
                 size_mb = os.path.getsize(plaso_file) / (1024 * 1024)
                 log(f"Output file: {plaso_file} ({size_mb:.2f} MB)")
                 return plaso_file
-            else:
-                log("Output file not created", "error")
-                return None
-        else:
-            log(f"Plaso failed with return code: {return_code}", "error")
+            log("Output file not created", "error")
             return None
+        log(f"Plaso failed with return code: {return_code}", "error")
+        return None
 
     except Exception as e:
         log(f"Plaso error: {e}", "error")
@@ -550,7 +548,7 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
                 add_log_to_run(run_id, "Tip: Try using 'Auto (All Parsers)' or 'win7' for broader coverage", "info")
                 _status("completed", progress=100)
                 return {"run_id": run_id, "status": "no_events"}
-            elif event_count == 0:
+            if event_count == 0:
                 add_log_to_run(run_id, "pinfo event count is unreliable (parser breakdown not found) — "
                                        "proceeding to import anyway rather than risk discarding real data",
                                "warning")
@@ -591,8 +589,7 @@ def process_kape_upload(zip_path, original_filename, settings, run_id=None, clea
                 "timeline_id": result.get('timeline_id'),
                 "client_name": client_name
             }
-        else:
-            raise Exception("Timesketch import failed")
+        raise Exception("Timesketch import failed")
 
     except Exception as e:
         error_msg = str(e)

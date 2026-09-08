@@ -104,44 +104,6 @@ function filterTimesketchClients(searchTerm) { timesketchClientManager.filter(se
 function selectAllTimeSketchClients() { timesketchClientManager.selectAll(true); }
 function deselectAllTimeSketchClients() { timesketchClientManager.selectAll(false); }
 
-// Sketch mode toggle
-function toggleSketchMode() {
-    const mode = document.querySelector('input[name="sketch-mode"]:checked').value;
-    const newSketchDiv = document.getElementById('new-sketch-input');
-    const existingSketchDiv = document.getElementById('existing-sketch-select');
-
-    if (mode === 'new') {
-        newSketchDiv.classList.remove('hidden');
-        existingSketchDiv.classList.add('hidden');
-    } else {
-        newSketchDiv.classList.add('hidden');
-        existingSketchDiv.classList.remove('hidden');
-        loadExistingSketches();
-    }
-}
-
-async function loadExistingSketches() {
-    const select = document.getElementById('sketch-id');
-    select.innerHTML = '<option value="">Loading sketches...</option>';
-
-    try {
-        const response = await fetch('/api/timesketch/sketches');
-        const data = await response.json();
-
-        if (data.sketches && data.sketches.length > 0) {
-            select.innerHTML = '<option value="">-- Select a sketch --</option>' +
-                data.sketches.map(s =>
-                    `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)} (ID: ${escapeHtml(s.id)})</option>`
-                ).join('');
-        } else {
-            select.innerHTML = '<option value="">No sketches found</option>';
-        }
-    } catch (error) {
-        select.innerHTML = '<option value="">Error loading sketches</option>';
-        console.error('Error loading sketches:', error);
-    }
-}
-
 // Run TimeSketch workflow
 async function runTimeSketchWorkflow() {
     const selectedClients = Array.from(document.querySelectorAll('.timesketch-client-checkbox:checked'));
@@ -253,49 +215,8 @@ function toggleTimesketchMode() {
 
 // Initialize upload dropzone
 function initTimesketchUploadDropzone() {
-    const dropzone = document.getElementById('ts-upload-dropzone');
-    const fileInput = document.getElementById('ts-kape-file');
-    const dropzoneText = document.getElementById('ts-dropzone-text');
-
-    if (!dropzone || !fileInput) return;
-
-    // Only initialize once
-    if (dropzone.dataset.initialized) return;
-    dropzone.dataset.initialized = 'true';
-
-    // Click to browse
-    dropzone.addEventListener('click', () => fileInput.click());
-
-    // Drag events
-    dropzone.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        dropzone.classList.add('border-purple-500', 'bg-purple-500/10');
-    });
-
-    dropzone.addEventListener('dragleave', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        dropzone.classList.remove('border-purple-500', 'bg-purple-500/10');
-    });
-
-    dropzone.addEventListener('drop', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        dropzone.classList.remove('border-purple-500', 'bg-purple-500/10');
-
-        const files = e.dataTransfer.files;
-        if (files.length > 0) {
-            handleTimesketchFileSelect(files[0]);
-        }
-    });
-
-    // File input change
-    fileInput.addEventListener('change', (e) => {
-        if (e.target.files.length > 0) {
-            handleTimesketchFileSelect(e.target.files[0]);
-        }
-    });
+    initDropzone('ts-upload-dropzone', 'ts-kape-file', handleTimesketchFileSelect,
+                 { highlight: ['border-purple-500', 'bg-purple-500/10'] });
 }
 
 // Handle file selection

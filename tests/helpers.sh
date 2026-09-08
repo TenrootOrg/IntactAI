@@ -117,7 +117,7 @@ path_without() {
     local bin base skip hidden
     for bin in /usr/local/sbin/* /usr/local/bin/* /usr/sbin/* /usr/bin/* /sbin/* /bin/*; do
         [[ -f "$bin" && -x "$bin" ]] || continue
-        base="$(basename "$bin")"
+        base="${bin##*/}"      # not basename: one fork per binary, ~3.5k per call
         [[ -e "${shim_dir}/${base}" ]] && continue
         skip=0
         for hidden in "$@"; do [[ "$base" == "$hidden" ]] && { skip=1; break; }; done

@@ -228,9 +228,8 @@ def load_velociraptor_api_config():
             print(f"[CONFIG] Has client_private_key: {bool(velociraptor_api_config.get('client_private_key'))}")
             print(f"[CONFIG] Has ca_certificate: {bool(velociraptor_api_config.get('ca_certificate'))}")
             return velociraptor_api_config
-        else:
-            print(f"[CONFIG] ✗ Failed to load API config: {result.stderr}")
-            return None
+        print(f"[CONFIG] ✗ Failed to load API config: {result.stderr}")
+        return None
     except Exception as e:
         print(f"[CONFIG] ✗ Exception loading API config: {e}")
         traceback.print_exc()
@@ -487,10 +486,9 @@ LET collection = hunt(
         if hunt_id:
             print("=" * 80)
             return hunt_id
-        else:
-            print("[HUNT] ✗ No HuntId returned from server")
-            print("=" * 80)
-            return None
+        print("[HUNT] ✗ No HuntId returned from server")
+        print("=" * 80)
+        return None
 
     except grpc.RpcError as e:
         if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:

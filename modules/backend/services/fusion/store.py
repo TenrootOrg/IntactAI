@@ -795,10 +795,6 @@ def ensure_system_case() -> str:
     return create_case(SYSTEM_CASE_NAME, is_system=True)
 
 
-def is_default_case(case_id) -> bool:
-    d = get_case(case_id)
-    return bool(d.get("is_default") or d.get("name") == DEFAULT_CASE_NAME)
-
 
 def is_system_case(case_id) -> bool:
     d = get_case(case_id)
@@ -1160,7 +1156,7 @@ def _velo_hunt_contribution(rid, det, log=None):
     # unreachable.
     cd = {}
     try:
-        from services.agentic.collectors import get_existing_collection_results, persist_pipeline_artifacts
+        from services.agentic.collectors import get_existing_collection_results
         cd, _arts, client_info = get_existing_collection_results(
             rid, flow_id=(None if hunt_id else flow_id),
             hunt_id=hunt_id, client_ids=(None if hunt_id else [client_id]),

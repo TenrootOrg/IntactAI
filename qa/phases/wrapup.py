@@ -6,7 +6,6 @@ first. The report runs LAST so teardown problems appear in it.
 
 import json
 import os
-import shutil
 
 from lib import api as api_lib
 from lib import redact as redact_lib

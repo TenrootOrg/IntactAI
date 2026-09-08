@@ -59,7 +59,7 @@ dashboard:
 | **Azure app-auth credentials** (tenant_id, client_id, client_secret) | `data/frontend_data.db` under `frontend_config` key `cloud.azure` | Saved via `POST /api/config/cloud`. Read at run time by `routes/config_routes.py:_load_cloud_config`. The `client_secret` is masked as `••••••••` on `GET /api/config/cloud`. |
 | **Azure app-auth certificate** (private key + public PEM) | `data/azure_cert.pfx`, `data/azure_cert_public.pem` (both gitignored) | Generated at install. Path constants live in `services/azure/dfir_o365rc.py`. Operator uploads the public key to Azure portal. |
 | **TimeSketch Google AI Studio key** (used by `timesketch.conf` for nl2q / summarize / synthesize) | Either: <br>(a) `${TIMESKETCH_GOOGLE_AI_STUDIO_KEY}` env var, baked in at install time by the template-render step, OR <br>(b) hand-edited into `modules/timesketch/config/timesketch.conf` after install (the rendered file is gitignored). | The `.template` file is tracked; the rendered `.conf` is not. |
-| **IRIS / Postgres / TimeSketch user passwords** | `config.yaml` (operator-managed) → propagated by `install.sh` (via `lib/config.sh` + `lib/modules.sh`) into per-module `.env` and secrets dirs (`modules/iris/secrets/`, `modules/portainer/secrets/`) — all gitignored. | The default values in `config.yaml` are placeholders meant to be overwritten before install. |
+| **IRIS / Postgres / TimeSketch user passwords** | `config.yaml` (operator-managed) → propagated by `install.sh` (via `lib/config.sh` + `lib/modules/*.sh`) into per-module `.env` and secrets dirs (`modules/iris/secrets/`, `modules/portainer/secrets/`) — all gitignored. | The default values in `config.yaml` are placeholders meant to be overwritten before install. |
 
 ## Rules for adding a new secret
 
@@ -76,8 +76,7 @@ dashboard:
    - Commit `config.template` with a `__PLACEHOLDER__` token.
    - Add `config` (the rendered output) to `.gitignore`.
    - Render at install time via
-     `lib/common.sh:render_config_from_template` (used by
-     `lib/modules.sh`).
+     `lib/modules/timesketch.sh:render_timesketch_conf_templates`.
    - The render reads the value from an environment variable; absent
      env var = empty substitution = the consuming service sees an
      empty / disabled config.

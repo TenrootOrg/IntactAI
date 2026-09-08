@@ -37,8 +37,7 @@ from services.aws.sigma_runner import (
     delete_custom_rule,
 )
 from services.workflow_logger import add_log_to_run
-from services.workflow_service import update_run_status, get_automation_run
-import threading
+from services.workflow_service import get_automation_run
 
 
 aws_bp = Blueprint('aws', __name__)

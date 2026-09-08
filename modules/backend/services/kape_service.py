@@ -157,10 +157,9 @@ SELECT * FROM collection
             print("[KAPE] Step 4/4: Collection initiated successfully", flush=True)
             print("=" * 80, flush=True)
             return flow_id
-        else:
-            print("[KAPE] ✗ No flow_id returned from server", flush=True)
-            print("=" * 80, flush=True)
-            return None
+        print("[KAPE] ✗ No flow_id returned from server", flush=True)
+        print("=" * 80, flush=True)
+        return None
 
     except grpc.RpcError as e:
         if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
@@ -316,7 +315,7 @@ def monitor_flow_completion(client_id, flow_id, timeout_seconds=10000, logger=No
                 log(f"Total rows collected: {total_rows}", "success")
                 return "FINISHED"
 
-            elif state in ("ERROR", "FAILED", "CANCELLED"):
+            if state in ("ERROR", "FAILED", "CANCELLED"):
                 log(f"✗ Flow failed/cancelled with state: {state}", "error")
                 if error_msg:
                     log(f"Error details: {error_msg}", "error")

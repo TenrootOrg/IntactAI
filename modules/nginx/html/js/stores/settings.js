@@ -550,40 +550,17 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
-        // Kept for backwards compat — old callsites (if any) still work.
-        // The button itself now invokes `openPurgeModal`.
-        async runPurge() { await this.openPurgeModal(); },
-
-        // Fresh install flags (per module) - removes DB volumes for new schema
-        dbOverwriteTimesketch: false,
-        dbOverwriteIris: false,
-        dbOverwriteElk: false,
-
-        // Helper to get db_overwrite object
-        getDbOverwrite() {
-            return {
-                timesketch: this.dbOverwriteTimesketch,
-                iris: this.dbOverwriteIris,
-                elk: this.dbOverwriteElk
-            };
-        },
-
         // ===== PREPARE UPGRADE PACKAGE =====
         showPreparePackageModal: false,
         prepareLoading: false,
         prepareRunId: null,
-        preparePackageReady: false,
-        preparePackageSize: '',
         // 'prepare' → POST /api/upgrade/prepare (offline flow, produces tar.gz)
         // 'online'  → POST /api/upgrade/online (combined prepare + apply)
         prepareModalMode: 'prepare',
 
         // ─── Apply Uploaded Package state ────────────────────────────
-        // Lists pending tarballs from /api/upgrade/list-packages.
-        // Clicking one opens a review modal that lets the operator
+        // An imported package opens a review modal that lets the operator
         // pick which modules from the manifest to actually apply.
-        uploadedPackages: [],
-        loadingPackages: false,
         showApplyPackageModal: false,
         applyPackage: null,         // {path, name, size_bytes, mtime, source}
         applyPackageFiles: [],      // all selected local assets (per-module import)
@@ -600,22 +577,6 @@ document.addEventListener('alpine:init', () => {
         // anything before clicking Apply (2026-06-15 incident: operator
         // re-applied an identical-versions package by mistake).
         applyCurrentVersions: {},
-
-        async loadUploadedPackages() {
-            this.loadingPackages = true;
-            try {
-                const r = await fetch('/api/upgrade/list-packages', {method: 'POST'});
-                const d = await r.json();
-                if (d && d.success) {
-                    this.uploadedPackages = d.packages || [];
-                } else {
-                    this.showMessage('List packages failed: ' + (d.error || 'unknown'), 'error');
-                }
-            } catch (e) {
-                this.showMessage('List packages request failed: ' + e.message, 'error');
-            }
-            this.loadingPackages = false;
-        },
 
         async openApplyPackageModal(pkg) {
             this.applyPackage = pkg;
@@ -706,19 +667,6 @@ document.addEventListener('alpine:init', () => {
                 }
             }
             return curStr < tgtStr ? 'upgrade' : 'downgrade';
-        },
-
-        // Count of ticked modules that would actually do work. Used to
-        // warn the operator when they're about to apply a package that
-        // changes nothing (the 2026-06-15 same-version mishap).
-        applyChangingCount() {
-            const versions = (this.applyManifest?.versions) || {};
-            let n = 0;
-            for (const mod of this.applySelectedModules) {
-                const action = this.applyModuleAction(mod, versions[mod]);
-                if (action === 'upgrade' || action === 'install') n++;
-            }
-            return n;
         },
 
         closeApplyPackageModal() {
@@ -961,7 +909,6 @@ document.addEventListener('alpine:init', () => {
         optedInReinstall: [],       // ONLINE mode: no-change module IDs ticked to FORCE a reinstall (bug recovery)
         fetchingRefs: false,
         computingPlan: false,
-        showingPrepareModules: false,
         // Current installed Intact tag, fetched on modal open. Used
         // by the dropdown filter so older releases are NOT selectable
         // — prevents the operator from accidentally picking a
@@ -1318,8 +1265,6 @@ document.addEventListener('alpine:init', () => {
             this.showPreparePackageModal = true;
             this.prepareLoading = false;
             this.prepareRunId = null;
-            this.preparePackageReady = false;
-            this.preparePackageSize = '';
             this.upgradeRefs = [];
             this.selectedRef = '';
             this.upgradePlan = null;
@@ -1365,24 +1310,7 @@ document.addEventListener('alpine:init', () => {
 
         closePreparePackageModal() {
             this.showPreparePackageModal = false;
-            this.preparePackageReady = false;
             this.prepareRunId = null;
-        },
-
-        async downloadPreparedPackage() {
-            if (!this.prepareRunId) {
-                this.showMessage('No package ready for download', 'error');
-                return;
-            }
-
-            // Trigger download via new window/tab
-            window.open(`/api/upgrade/prepare/${this.prepareRunId}/download`, '_blank');
-
-            // Close modal after download initiated
-            setTimeout(() => {
-                this.closePreparePackageModal();
-                this.showMessage('Package download started', 'success');
-            }, 1000);
         },
 
         // ===== OFFLINE UPGRADE =====
@@ -1713,12 +1641,6 @@ document.addEventListener('alpine:init', () => {
             } finally { this.cliBusy = false; }
         },
 
-        cliCopy(text, what) {
-            navigator.clipboard.writeText(text)
-                .then(() => this.showMessage((what || 'Copied') + ' copied', 'success'))
-                .catch(() => this.showMessage('Could not copy — select it manually', 'error'));
-        },
-
         // Test runs as a `settings` workflow so its full log — the exact failure,
         // no internet, blocked proxy, expired login — is inspectable in
         // Settings → Actions like every other system operation.
@@ -1881,4 +1803,114 @@ document.addEventListener('alpine:init', () => {
             }
         }
     });
+
+    // ─── Model-search combobox ───────────────────────────────────────────
+    // One component behind the three catalog pickers in partials/settings.html
+    // (Agentic → online_llm, Timesketch → Google AI Studio, Timesketch →
+    // OpenRouter), which were three near-identical inline x-data blocks.
+    // Each hits /api/config/<route>/models?q=… and offers the 10 closest
+    // matches. Only the BEHAVIOUR is shared: the per-picker markup — pricing
+    // row, un-enriched count, placeholder wording — genuinely differs and
+    // stays in the template.
+    //
+    //   modelPath — dot-path under $store.settings.config holding the chosen id
+    //   provider  — a fixed catalog route ('gemini'), or, when the operator can
+    //               switch provider, a dot-path under config pointing at it.
+    //               A '.' in the string is what tells the two apart.
+    Alpine.data('modelPicker', (modelPath, provider) => ({
+        selectedModel: null,
+        results: [],
+        total: 0,
+        open: false,
+        loading: false,
+        unenriched: 0,
+
+        // [owner, key] for a dot-path, resolved fresh every time so it still
+        // points at the live object after the store replaces `config`.
+        _ref(path) {
+            const keys = path.split('.');
+            const key = keys.pop();
+            return [keys.reduce((o, k) => o[k], Alpine.store('settings').config), key];
+        },
+        get modelId() {
+            const [o, k] = this._ref(modelPath);
+            return o[k] || '';
+        },
+        // The name the UI uses. This is also what saveAgentic() and friends put
+        // in the llm-catalog-refreshed event detail, so compare against it —
+        // NOT against the route.
+        get providerName() {
+            if (!provider.includes('.')) return provider;
+            const [o, k] = this._ref(provider);
+            return o[k];
+        },
+        // The UI names (`claude`, `codex-subscription`) don't all match the
+        // catalog route names on the backend (anthropic; codex, whose catalog
+        // comes from the CLI itself). Translate so /api/config/<route>/models
+        // resolves. See services/llm_catalogs/__init__.py.
+        get route() {
+            const p = this.providerName;
+            if (p === 'claude') return 'anthropic';
+            if (p === 'codex-subscription') return 'codex';
+            return p;
+        },
+
+        async _fetch(q) {
+            const url = '/api/config/' + this.route + '/models?limit=10&q=' + encodeURIComponent(q);
+            return await (await fetch(url)).json();
+        },
+        async query() {
+            this.loading = true;
+            try {
+                const data = await this._fetch(this.modelId);
+                this.results = data.models || [];
+                this.total = data.total || 0;
+                this.unenriched = data.unenriched_count || 0;
+            } catch (e) { this.results = []; this.total = 0; }
+            this.loading = false;
+        },
+        // Look up the currently-saved model so its metadata (context / max
+        // output / pricing) can render below the input.
+        async loadSelected() {
+            const id = this.modelId;
+            if (!id) { this.selectedModel = null; return; }
+            try {
+                const list = (await this._fetch(id)).models || [];
+                this.selectedModel = list.find(m => m.id === id)
+                    || list.find(m => m.canonical_id === id)
+                    || null;
+            } catch (e) { this.selectedModel = null; }
+        },
+        select(model) {
+            this.selectedModel = model;
+            const [o, k] = this._ref(modelPath);
+            o[k] = model.id;
+            this.open = false;
+        },
+        _requery() {
+            this.results = [];
+            this.total = 0;
+            this.query();
+            this.loadSelected();
+        },
+        init() {
+            this.loadSelected();
+            this.query();
+            this.$watch('$store.settings.config.' + modelPath, () => this.loadSelected());
+            // Re-query when the provider switches so the dropdown reflects the
+            // active provider's catalog, and drop the old provider's selection.
+            if (provider.includes('.')) {
+                this.$watch('$store.settings.config.' + provider, () => {
+                    this.selectedModel = null;
+                    this._requery();
+                });
+            }
+            // After Save, the store fires a background catalog refresh and
+            // dispatches this — re-query so freshly-fetched models appear
+            // without a page reload.
+            window.addEventListener('llm-catalog-refreshed', (ev) => {
+                if (ev.detail?.provider === this.providerName) this._requery();
+            });
+        },
+    }));
 });

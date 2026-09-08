@@ -20,7 +20,6 @@ from services import (
     update_run_status
 )
 from services.velociraptor_service import setup_velociraptor_connection, get_artifact_definitions
-from services.velociraptor_init_service import initialize_velociraptor_artifacts
 
 velociraptor_bp = Blueprint('velociraptor', __name__)
 

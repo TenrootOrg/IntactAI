@@ -21,7 +21,6 @@ nothing for 20 minutes is indistinguishable from a hung one.
 
 import json
 import os
-import sys
 import threading
 import time
 from datetime import datetime, timezone

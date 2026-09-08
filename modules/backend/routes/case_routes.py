@@ -13,7 +13,6 @@ import re
 from flask import Blueprint, jsonify, request, Response
 
 from services.fusion import store, render
-from services.fusion.schema import FusionGraph
 
 case_bp = Blueprint("case", __name__)
 

@@ -139,7 +139,7 @@ def require_free_space(dest_dir, needed_bytes, headroom=FREE_SPACE_HEADROOM):
     try:
         os.makedirs(dest_dir, exist_ok=True)
         free = shutil.disk_usage(dest_dir).free
-    except OSError as e:
+    except OSError:
         # Can't tell — don't invent a reason to block a legitimate upload.
         return None
     required = int(needed_bytes * headroom)

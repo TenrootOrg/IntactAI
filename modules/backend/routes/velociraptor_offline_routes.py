@@ -56,8 +56,7 @@ def create_offline_config():
 
         if result.get('success'):
             return jsonify(result), 201
-        else:
-            return jsonify(result), 500
+        return jsonify(result), 500
     except Exception as e:
         print(f"[OFFLINE] Error creating config: {e}", flush=True)
         return jsonify({"error": str(e)}), 500
@@ -93,8 +92,7 @@ def update_offline_config(config_id):
 
         if result.get('success'):
             return jsonify(result)
-        else:
-            return jsonify(result), 500
+        return jsonify(result), 500
     except Exception as e:
         print(f"[OFFLINE] Error updating config: {e}", flush=True)
         return jsonify({"error": str(e)}), 500
