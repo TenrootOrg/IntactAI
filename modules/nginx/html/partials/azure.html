@@ -5,13 +5,8 @@
                      azureBlueprints: [],
                      azureBlueprint: 'azure_account_investigation',
                      azureTimeFilter: '24h',
-                     azureCustomStart: '',
-                     azureCustomEnd: '',
                      azureMinSeverity: 'high',
                      azureRunning: false,
-                     azureRunId: null,
-                     azureResults: null,
-                     azureUploadedFiles: [],
                      azureTargetUsers: '',
                      azureTargetIPs: '',
                      azurePivotMode: false,
@@ -84,7 +79,6 @@
                      },
                      async startAzureScan() {
                          this.azureRunning = true;
-                         this.azureResults = null;
                          try {
                              let timeFilter;
                              if (this.azureTimeFilter === 'custom') {
@@ -119,11 +113,8 @@
                                  })
                              });
                              const data = await res.json();
-                             if (data.run_id) {
-                                 this.azureRunId = data.run_id;
-                                 // Always redirect to workflows - all status/errors visible in log
-                                 $store.app.switchTab('workflows');
-                             }
+                             // Always redirect to workflows - all status/errors visible in log
+                             if (data.run_id) $store.app.switchTab('workflows');
                          } catch(e) { console.error(e); }
                          this.azureRunning = false;
                      },
@@ -169,18 +160,6 @@
                          // Same handoff timesketch uses — switch to the
                          // workflows tab where the run is already visible.
                          this.$store.app.switchTab('workflows');
-                     },
-                     async loadAzureResults(runId) {
-                         try {
-                             const [statusRes, findingsRes] = await Promise.all([
-                                 fetch('/api/azure/status/' + runId),
-                                 fetch('/api/azure/findings/' + runId)
-                             ]);
-                             this.azureResults = {
-                                 status: await statusRes.json(),
-                                 findings: await findingsRes.json()
-                             };
-                         } catch(e) { console.error(e); }
                      }
                  }"
                  x-init="TabReset.arm($data, 'cloud-azure', { keep: ['azureBlueprints', 'azureStatus', 'azureRunning'] }); checkAzureStatus(); loadCustomRules()">
