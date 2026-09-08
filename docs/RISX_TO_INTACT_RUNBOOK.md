@@ -60,6 +60,36 @@ Find it without guessing the username:
 ls -d /home/*/setup_platform/workdir/velociraptor/velociraptor/
 ```
 
+### "Don't we need the certificate?"
+
+Yes — and you already have it. **There are no separate certificate files.**
+Everything is embedded as PEM text inside `server.config.yaml`:
+
+| field | what it is |
+|---|---|
+| `CA.private_key` | the CA that signs everything — *this* is the fleet's identity |
+| `Client.ca_certificate` | the CA cert each client pins. Velociraptor's own docs say of it: **"Do not change this!"** |
+| `Client.nonce` | a shared secret; the server refuses clients presenting the wrong one |
+| `Client.server_urls` | the address clients dial, used verbatim |
+| `Frontend.certificate` / `Frontend.private_key` | the TLS cert clients validate against the CA |
+| `GUI.gw_certificate` / `GUI.gw_private_key` | the GUI gateway pair |
+
+Confirm it for yourself on the risx box — no `.pem`, `.crt` or `.key` files
+exist in that directory:
+
+```bash
+ls -la "$VELO" | grep -iE '\.pem|\.crt|\.key' || echo "none — it is all inside server.config.yaml"
+```
+
+That is why one file is the whole migration, and why it has to be handled like a
+credential: anyone holding it can impersonate the server to every endpoint.
+
+All eight fields above are carried through **byte-for-byte** by the migration —
+asserted by `tests/test_transform_config.py`, and proven end-to-end by running a
+real Velociraptor 0.74.1 client against a 0.77.2 server on the transformed
+config: it enrolled and completed its interrogation. See
+[RISX_MIGRATION.md](RISX_MIGRATION.md) for that evidence.
+
 There is **no `api.config.yaml`** on a risx box — it creates an `api` *user*
 instead — and nothing needs migrating there. Intact mints its own.
 
