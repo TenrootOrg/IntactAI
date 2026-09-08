@@ -1276,7 +1276,7 @@
                              Releases" / "Compute Plan" / "Show Modules" buttons;
                              selecting a different release re-runs the next step
                              automatically. -->
-                        <div x-show="!$store.settings.prepareLoading && !$store.settings.preparePackageReady" class="space-y-4 max-h-96 overflow-y-auto">
+                        <div x-show="!$store.settings.prepareLoading" class="space-y-4 max-h-96 overflow-y-auto">
 
                             <!-- GitHub quota banner -->
                             <div x-show="$store.settings.githubQuota && $store.settings.githubQuota.success"
@@ -1491,23 +1491,6 @@
 
                         </div>
 
-                        <!-- Package Ready -->
-                        <div x-show="$store.settings.preparePackageReady" class="text-center py-6">
-                            <svg class="w-16 h-16 text-green-500 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                            </svg>
-                            <h4 class="text-white font-medium mb-2">Package Ready!</h4>
-                            <p class="text-gray-400 text-sm mb-2" x-text="'Size: ' + $store.settings.preparePackageSize"></p>
-                            <p class="text-gray-500 text-xs mb-4">Available for 24 hours</p>
-                            <button @click="$store.workflows.downloadPackage($store.settings.prepareRunId)"
-                               class="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded text-sm font-medium inline-flex items-center gap-2">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
-                                </svg>
-                                Download Package
-                            </button>
-                        </div>
-
                         <!-- Manual fallback — ALWAYS visible, not behind a disclosure.
                              The operator who needs this is the one whose appliance
                              cannot fetch the package: no route to GitHub, a wedged
@@ -1517,7 +1500,7 @@
                              which is exactly the assumption that fails. Shown without
                              a release picked too — the tag is a placeholder until
                              one is chosen. -->
-                        <div x-show="$store.settings.prepareModalMode === 'prepare' && !$store.settings.prepareLoading && !$store.settings.preparePackageReady"
+                        <div x-show="$store.settings.prepareModalMode === 'prepare' && !$store.settings.prepareLoading"
                              x-data="{ open: false }"
                              class="bg-gray-900 rounded border border-gray-700 p-3 mt-4">
                             <!-- Collapsed by default. This is the escape hatch for building the
@@ -1564,7 +1547,7 @@
                         </div>
 
                         <!-- Warning -->
-                        <div x-show="!$store.settings.prepareLoading && !$store.settings.preparePackageReady" class="bg-yellow-900/30 border border-yellow-700/50 rounded p-3 mt-4">
+                        <div x-show="!$store.settings.prepareLoading" class="bg-yellow-900/30 border border-yellow-700/50 rounded p-3 mt-4">
                             <p class="text-yellow-400 text-xs">
                                 <strong>Note:</strong> Downloads the prebuilt package for the selected release and verifies its checksum — nothing is built here. Expect several minutes and a few GB of free space.
                             </p>
@@ -1574,7 +1557,7 @@
                         <!-- /scroll wrapper — Actions below stay pinned on small monitors -->
 
                         <!-- Actions -->
-                        <div x-show="!$store.settings.preparePackageReady" class="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-700">
+                        <div class="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-700">
                             <button @click="$store.settings.closePreparePackageModal()" class="px-4 py-2 text-gray-400 hover:text-white transition-colors">
                                 Cancel
                             </button>
@@ -1593,12 +1576,6 @@
                             </button>
                         </div>
 
-                        <!-- Close when done -->
-                        <div x-show="$store.settings.preparePackageReady" class="flex justify-end mt-6 pt-4 border-t border-gray-700">
-                            <button @click="$store.settings.closePreparePackageModal()" class="px-4 py-2 text-gray-400 hover:text-white transition-colors">
-                                Close
-                            </button>
-                        </div>
                     </div>
                 </div>
 

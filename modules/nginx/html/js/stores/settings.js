@@ -554,8 +554,6 @@ document.addEventListener('alpine:init', () => {
         showPreparePackageModal: false,
         prepareLoading: false,
         prepareRunId: null,
-        preparePackageReady: false,
-        preparePackageSize: '',
         // 'prepare' → POST /api/upgrade/prepare (offline flow, produces tar.gz)
         // 'online'  → POST /api/upgrade/online (combined prepare + apply)
         prepareModalMode: 'prepare',
@@ -1267,8 +1265,6 @@ document.addEventListener('alpine:init', () => {
             this.showPreparePackageModal = true;
             this.prepareLoading = false;
             this.prepareRunId = null;
-            this.preparePackageReady = false;
-            this.preparePackageSize = '';
             this.upgradeRefs = [];
             this.selectedRef = '';
             this.upgradePlan = null;
@@ -1314,7 +1310,6 @@ document.addEventListener('alpine:init', () => {
 
         closePreparePackageModal() {
             this.showPreparePackageModal = false;
-            this.preparePackageReady = false;
             this.prepareRunId = null;
         },
 
