@@ -1,113 +1,71 @@
 /* AWS + Azure date-range pickers (flatpickr) — extracted from inline <script>
  * in index.html. These stay window-global: the cloud tabs call the init,
- * update and getAzureCustomDates functions from x-init / @change / their
+ * sync and getCloudCustomDates functions from x-init / onchange / their
  * Alpine startScan methods.
+ *
+ * Both tabs render the same widget — a readonly date input, an hour <select>,
+ * and a hidden input holding the combined UTC value — under a `<cloud>-` id
+ * prefix. Everything below is therefore written once and takes the prefix as
+ * an argument; only two flatpickr options actually differ per cloud.
  */
 
-// ---- Azure date pickers --------------------------------------------------
-let azureFpStart = null, azureFpEnd = null;
+const cloudFp = { aws: {}, azure: {} };
 
-function initAzureDatePickers() {
+/** Write "<date>T<hour>:00:00Z" into the hidden field for one edge of a range. */
+function syncCloudDateTime(cloud, edge) {
+    const dateEl = document.getElementById(`${cloud}-date-${edge}`);
+    const hourEl = document.getElementById(`${cloud}-time-${edge}-hour`);
+    const hiddenEl = document.getElementById(`${cloud}-time-${edge}`);
+    if (dateEl?.value && hourEl && hiddenEl) {
+        hiddenEl.value = `${dateEl.value}T${hourEl.value}:00:00Z`;
+    }
+}
+
+function initCloudDatePickers(cloud) {
     if (typeof flatpickr === 'undefined') return;
-    const startEl = document.getElementById('azure-date-start');
-    const endEl = document.getElementById('azure-date-end');
+    const startEl = document.getElementById(`${cloud}-date-start`);
+    const endEl = document.getElementById(`${cloud}-date-end`);
     if (!startEl || !endEl) return;
 
-    if (azureFpStart) { azureFpStart.destroy(); azureFpStart = null; }
-    if (azureFpEnd) { azureFpEnd.destroy(); azureFpEnd = null; }
+    // Destroy-and-recreate rather than "skip if already made": the pickers are
+    // built inside the setTimeout below, so a second call within 50ms would
+    // otherwise slip past an "already initialised" guard and double-bind.
+    const fp = cloudFp[cloud];
+    fp.start?.destroy();
+    fp.end?.destroy();
+    fp.start = fp.end = null;
 
     const config = {
         dateFormat: 'Y-m-d',
-        disableMobile: true,
         allowInput: false,
-        clickOpens: true,
-        appendTo: document.body,
+        // `document.body` is read here, not at load time, so this file stays
+        // safe to include from <head>.
+        ...(cloud === 'aws'
+            ? { maxDate: 'today', theme: 'dark' }
+            : { disableMobile: true, clickOpens: true, appendTo: document.body }),
     };
 
     setTimeout(() => {
-        azureFpStart = flatpickr(startEl, {
+        fp.start = flatpickr(startEl, {
             ...config,
             onChange: (dates) => {
-                updateAzureStartDateTime();
-                if (azureFpEnd && dates[0]) azureFpEnd.set('minDate', dates[0]);
+                syncCloudDateTime(cloud, 'start');
+                if (fp.end && dates[0]) fp.end.set('minDate', dates[0]);
             },
         });
-        azureFpEnd = flatpickr(endEl, {
+        fp.end = flatpickr(endEl, {
             ...config,
             onChange: (dates) => {
-                updateAzureEndDateTime();
-                if (azureFpStart && dates[0]) azureFpStart.set('maxDate', dates[0]);
+                syncCloudDateTime(cloud, 'end');
+                if (fp.start && dates[0]) fp.start.set('maxDate', dates[0]);
             },
         });
     }, 50);
 }
 
-function updateAzureStartDateTime() {
-    const dateEl = document.getElementById('azure-date-start');
-    const hourEl = document.getElementById('azure-time-start-hour');
-    const hiddenEl = document.getElementById('azure-time-start');
-    if (dateEl?.value && hourEl && hiddenEl) {
-        hiddenEl.value = dateEl.value + 'T' + hourEl.value + ':00:00Z';
-    }
-}
-
-function updateAzureEndDateTime() {
-    const dateEl = document.getElementById('azure-date-end');
-    const hourEl = document.getElementById('azure-time-end-hour');
-    const hiddenEl = document.getElementById('azure-time-end');
-    if (dateEl?.value && hourEl && hiddenEl) {
-        hiddenEl.value = dateEl.value + 'T' + hourEl.value + ':00:00Z';
-    }
-}
-
-function getAzureCustomDates() {
+function getCloudCustomDates(cloud) {
     return {
-        start: document.getElementById('azure-time-start')?.value || '',
-        end: document.getElementById('azure-time-end')?.value || '',
+        start: document.getElementById(`${cloud}-time-start`)?.value || '',
+        end: document.getElementById(`${cloud}-time-end`)?.value || '',
     };
-}
-
-// ---- AWS date pickers (mirror of the Azure pair) -------------------------
-let awsFpStart = null, awsFpEnd = null;
-
-function initAwsDatePickers() {
-    const startEl = document.getElementById('aws-date-start');
-    const endEl = document.getElementById('aws-date-end');
-    if (!startEl || !endEl || typeof flatpickr === 'undefined') return;
-    if (awsFpStart && awsFpEnd) return; // already initialised
-
-    const config = {
-        dateFormat: 'Y-m-d',
-        allowInput: false,
-        maxDate: 'today',
-        theme: 'dark',
-    };
-    setTimeout(() => {
-        awsFpStart = flatpickr(startEl, {
-            ...config,
-            onChange: (dates) => { updateAwsStartDateTime(); if (awsFpEnd && dates[0]) awsFpEnd.set('minDate', dates[0]); },
-        });
-        awsFpEnd = flatpickr(endEl, {
-            ...config,
-            onChange: (dates) => { updateAwsEndDateTime(); if (awsFpStart && dates[0]) awsFpStart.set('maxDate', dates[0]); },
-        });
-    }, 50);
-}
-
-function updateAwsStartDateTime() {
-    const dateEl = document.getElementById('aws-date-start');
-    const hourEl = document.getElementById('aws-time-start-hour');
-    const hiddenEl = document.getElementById('aws-time-start');
-    if (dateEl?.value && hourEl && hiddenEl) {
-        hiddenEl.value = dateEl.value + 'T' + hourEl.value + ':00:00Z';
-    }
-}
-
-function updateAwsEndDateTime() {
-    const dateEl = document.getElementById('aws-date-end');
-    const hourEl = document.getElementById('aws-time-end-hour');
-    const hiddenEl = document.getElementById('aws-time-end');
-    if (dateEl?.value && hourEl && hiddenEl) {
-        hiddenEl.value = dateEl.value + 'T' + hourEl.value + ':00:00Z';
-    }
 }
