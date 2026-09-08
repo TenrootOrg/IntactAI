@@ -176,6 +176,22 @@ IDENTITY_FIELDS = {
 }
 
 
+
+# category -> pool. This was an eight-branch if/elif whose arms were identical
+# apart from the constant, while `category` was already the parameter. self.counters
+# is pre-seeded with exactly these keys, so the lookup cannot KeyError for any
+# category that reaches it; anything else falls through to <REDACTED>.
+_POOLS = {
+    "ip_ext": PSEUDO_EXTERNAL_IPS,
+    "ip_int": PSEUDO_INTERNAL_IPS,
+    "user": PSEUDO_USERS,
+    "host": PSEUDO_HOSTS,
+    "email": PSEUDO_EMAILS,
+    "domain": PSEUDO_DOMAINS,
+    "guid": PSEUDO_GUIDS,
+    "credential": PSEUDO_CREDENTIALS,
+}
+
 class DataAnonymizer:
     """Masks sensitive data before LLM, reverts after."""
 
@@ -253,38 +269,10 @@ class DataAnonymizer:
         if original in self.mapping:
             return self.mapping[original]
 
-        if category == "ip_ext":
-            idx = self.counters["ip_ext"] % len(PSEUDO_EXTERNAL_IPS)
-            pseudo = PSEUDO_EXTERNAL_IPS[idx]
-            self.counters["ip_ext"] += 1
-        elif category == "ip_int":
-            idx = self.counters["ip_int"] % len(PSEUDO_INTERNAL_IPS)
-            pseudo = PSEUDO_INTERNAL_IPS[idx]
-            self.counters["ip_int"] += 1
-        elif category == "user":
-            idx = self.counters["user"] % len(PSEUDO_USERS)
-            pseudo = PSEUDO_USERS[idx]
-            self.counters["user"] += 1
-        elif category == "host":
-            idx = self.counters["host"] % len(PSEUDO_HOSTS)
-            pseudo = PSEUDO_HOSTS[idx]
-            self.counters["host"] += 1
-        elif category == "email":
-            idx = self.counters["email"] % len(PSEUDO_EMAILS)
-            pseudo = PSEUDO_EMAILS[idx]
-            self.counters["email"] += 1
-        elif category == "domain":
-            idx = self.counters["domain"] % len(PSEUDO_DOMAINS)
-            pseudo = PSEUDO_DOMAINS[idx]
-            self.counters["domain"] += 1
-        elif category == "guid":
-            idx = self.counters["guid"] % len(PSEUDO_GUIDS)
-            pseudo = PSEUDO_GUIDS[idx]
-            self.counters["guid"] += 1
-        elif category == "credential":
-            idx = self.counters["credential"] % len(PSEUDO_CREDENTIALS)
-            pseudo = PSEUDO_CREDENTIALS[idx]
-            self.counters["credential"] += 1
+        pool = _POOLS.get(category)
+        if pool:
+            pseudo = pool[self.counters[category] % len(pool)]
+            self.counters[category] += 1
         else:
             pseudo = "<REDACTED>"
 

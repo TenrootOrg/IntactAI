@@ -400,6 +400,31 @@ def _rollup_asset_severity(g: FusionGraph) -> None:
         a.severity = best
 
 
+def _apply_remap(g, remap: dict) -> None:
+    """Repoint edges through `remap`, dedup, rebuild indexes.
+
+    The dedup is not optional: merging two entities makes their edges identical,
+    and without it every consumer counts the same link twice. Sources are unioned
+    so a link found by two modules still records both.
+    """
+    for r in g.relationships:                       # remap edge endpoints
+        r.src, r.dst = remap.get(r.src, r.src), remap.get(r.dst, r.dst)
+    seen: dict = {}                                 # dedup (src,dst,kind) after remap
+    fresh: list = []
+    for r in g.relationships:
+        k = r.key()
+        if k in seen:
+            cur = fresh[seen[k]]
+            for s in r.sources:
+                if s not in cur.sources:
+                    cur.sources.append(s)
+        else:
+            seen[k] = len(fresh)
+            fresh.append(r)
+    g.relationships = fresh
+    g.rebuild_indexes()                             # refresh src/dst/key indexes
+
+
 def _resolve_host_assets(g: FusionGraph) -> None:
     """Merge hostname-keyed assets (e.g. from CVE rows that only have a
     Hostname) into the canonical client_id asset when the hostname matches —
@@ -431,22 +456,7 @@ def _resolve_host_assets(g: FusionGraph) -> None:
         al = e.attrs.get("_assets")
         if al:
             e.attrs["_assets"] = list(dict.fromkeys(remap.get(x, x) for x in al))
-    for r in g.relationships:                       # remap edge endpoints
-        r.src, r.dst = remap.get(r.src, r.src), remap.get(r.dst, r.dst)
-    seen: dict = {}                                 # dedup (src,dst,kind) after remap
-    fresh: list = []
-    for r in g.relationships:
-        k = r.key()
-        if k in seen:
-            cur = fresh[seen[k]]
-            for s in r.sources:
-                if s not in cur.sources:
-                    cur.sources.append(s)
-        else:
-            seen[k] = len(fresh)
-            fresh.append(r)
-    g.relationships = fresh
-    g.rebuild_indexes()                             # refresh src/dst/key indexes
+    _apply_remap(g, remap)
 
 
 def _bridge_hashes(g: FusionGraph) -> None:
@@ -486,22 +496,7 @@ def _bridge_hashes(g: FusionGraph) -> None:
             e = g.entities.pop(old)
             e.id = new
             g.upsert(e)                             # merges sources/flags/_assets/evidence
-    for r in g.relationships:
-        r.src, r.dst = remap.get(r.src, r.src), remap.get(r.dst, r.dst)
-    seen: dict = {}
-    fresh: list = []
-    for r in g.relationships:
-        k = r.key()
-        if k in seen:
-            cur = fresh[seen[k]]
-            for s in r.sources:
-                if s not in cur.sources:
-                    cur.sources.append(s)
-        else:
-            seen[k] = len(fresh)
-            fresh.append(r)
-    g.relationships = fresh
-    g.rebuild_indexes()
+    _apply_remap(g, remap)
 
 
 def _rollup_severity(g: FusionGraph) -> None:
