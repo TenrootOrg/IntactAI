@@ -291,8 +291,16 @@ function formatBytes(bytes) {
  * @param {string} dropzoneId ID of the dropzone element
  * @param {string} fileInputId ID of the hidden file input
  * @param {Function} onFileSelected Callback when file is selected: (file) => {}
+ * @param {Object} [opts]
+ * @param {string[]} [opts.highlight] Classes toggled while a file is dragged over.
+ *   Pass WHOLE class-name literals, never names assembled from parts: the Tailwind
+ *   build (modules/nginx/build-tailwind.sh) scans html/js/**\/*.js as text, and the
+ *   safelist in tailwind.config.js does not cover the `/10` opacity variants — an
+ *   interpolated name would be purged out of the stylesheet and the drag highlight
+ *   would silently stop painting.
  */
-function initDropzone(dropzoneId, fileInputId, onFileSelected) {
+function initDropzone(dropzoneId, fileInputId, onFileSelected,
+                      { highlight = ['border-purple-500', 'bg-purple-500/10'] } = {}) {
     const dropzone = document.getElementById(dropzoneId);
     const fileInput = document.getElementById(fileInputId);
 
@@ -301,6 +309,10 @@ function initDropzone(dropzoneId, fileInputId, onFileSelected) {
         return;
     }
 
+    // Callers re-init on every tab switch / partial load, so bind exactly once.
+    if (dropzone.dataset.initialized) return;
+    dropzone.dataset.initialized = 'true';
+
     // Click to browse
     dropzone.addEventListener('click', () => fileInput.click());
 
@@ -308,19 +320,19 @@ function initDropzone(dropzoneId, fileInputId, onFileSelected) {
     dropzone.addEventListener('dragover', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        dropzone.classList.add('border-purple-500', 'bg-purple-500/10');
+        dropzone.classList.add(...highlight);
     });
 
     dropzone.addEventListener('dragleave', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        dropzone.classList.remove('border-purple-500', 'bg-purple-500/10');
+        dropzone.classList.remove(...highlight);
     });
 
     dropzone.addEventListener('drop', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        dropzone.classList.remove('border-purple-500', 'bg-purple-500/10');
+        dropzone.classList.remove(...highlight);
 
         const files = e.dataTransfer.files;
         if (files.length > 0) {
@@ -331,14 +343,19 @@ function initDropzone(dropzoneId, fileInputId, onFileSelected) {
         }
     });
 
-    // File input change
-    fileInput.addEventListener('change', (e) => {
-        if (e.target.files.length > 0) {
-            if (onFileSelected) {
-                onFileSelected(e.target.files[0]);
+    // File input change. Skipped when the markup already wires an inline
+    // onchange= (partials/velociraptor.html does that for offline-import-file):
+    // binding both would run the handler twice, which shows the "Please select a
+    // ZIP file" alert twice when the operator browses to a non-ZIP.
+    if (!fileInput.hasAttribute('onchange')) {
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                if (onFileSelected) {
+                    onFileSelected(e.target.files[0]);
+                }
             }
-        }
-    });
+        });
+    }
 }
 
 // Export for use in other modules

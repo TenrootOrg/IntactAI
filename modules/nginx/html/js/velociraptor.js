@@ -197,45 +197,11 @@ function handleOfflineFileSelect(event) {
 
 // Initialize offline import dropzone with drag & drop
 function initOfflineImportDropzone() {
-    const dropzone = document.getElementById('offline-dropzone');
-    const fileInput = document.getElementById('offline-import-file');
-
-    if (!dropzone || !fileInput) return;
-
-    // Only initialize once
-    if (dropzone.dataset.initialized) return;
-    dropzone.dataset.initialized = 'true';
-
-    // Click to browse
-    dropzone.addEventListener('click', () => fileInput.click());
-
-    // Drag events
-    dropzone.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        dropzone.classList.add('border-blue-500', 'bg-blue-500/10');
-    });
-
-    dropzone.addEventListener('dragleave', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        dropzone.classList.remove('border-blue-500', 'bg-blue-500/10');
-    });
-
-    dropzone.addEventListener('drop', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        dropzone.classList.remove('border-blue-500', 'bg-blue-500/10');
-
-        const files = e.dataTransfer.files;
-        if (files.length > 0) {
-            // Set file input and trigger handler
-            const dataTransfer = new DataTransfer();
-            dataTransfer.items.add(files[0]);
-            fileInput.files = dataTransfer.files;
-            handleOfflineFileSelect({ target: { files: [files[0]] } });
-        }
-    });
+    // handleOfflineFileSelect is also wired as an inline onchange= in
+    // partials/velociraptor.html, so it takes an event, not a File.
+    initDropzone('offline-dropzone', 'offline-import-file',
+                 (file) => handleOfflineFileSelect({ target: { files: [file] } }),
+                 { highlight: ['border-blue-500', 'bg-blue-500/10'] });
 }
 
 // Import offline collector results using tus protocol

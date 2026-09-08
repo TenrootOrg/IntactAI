@@ -215,49 +215,8 @@ function toggleTimesketchMode() {
 
 // Initialize upload dropzone
 function initTimesketchUploadDropzone() {
-    const dropzone = document.getElementById('ts-upload-dropzone');
-    const fileInput = document.getElementById('ts-kape-file');
-    const dropzoneText = document.getElementById('ts-dropzone-text');
-
-    if (!dropzone || !fileInput) return;
-
-    // Only initialize once
-    if (dropzone.dataset.initialized) return;
-    dropzone.dataset.initialized = 'true';
-
-    // Click to browse
-    dropzone.addEventListener('click', () => fileInput.click());
-
-    // Drag events
-    dropzone.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        dropzone.classList.add('border-purple-500', 'bg-purple-500/10');
-    });
-
-    dropzone.addEventListener('dragleave', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        dropzone.classList.remove('border-purple-500', 'bg-purple-500/10');
-    });
-
-    dropzone.addEventListener('drop', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        dropzone.classList.remove('border-purple-500', 'bg-purple-500/10');
-
-        const files = e.dataTransfer.files;
-        if (files.length > 0) {
-            handleTimesketchFileSelect(files[0]);
-        }
-    });
-
-    // File input change
-    fileInput.addEventListener('change', (e) => {
-        if (e.target.files.length > 0) {
-            handleTimesketchFileSelect(e.target.files[0]);
-        }
-    });
+    initDropzone('ts-upload-dropzone', 'ts-kape-file', handleTimesketchFileSelect,
+                 { highlight: ['border-purple-500', 'bg-purple-500/10'] });
 }
 
 // Handle file selection
