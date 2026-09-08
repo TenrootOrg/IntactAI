@@ -65,30 +65,98 @@ instead — and nothing needs migrating there. Intact mints its own.
 
 ### Take the backup
 
+Run this **on the risx box**, as the normal login user (not root — `sudo` is
+used only where it is needed).
+
+#### 1. Make the backup folder
+
 ```bash
-# On the RISX box.
+mkdir -p ~/velociraptor_backup
+chmod 700 ~/velociraptor_backup          # only you can read it — it will hold a private key
+cd ~/velociraptor_backup
+pwd                                      # expect: /home/<user>/velociraptor_backup
+```
+
+#### 2. Copy the files into it
+
+```bash
+# Locate the risx Velociraptor directory (no need to know the username).
 VELO=$(ls -d /home/*/setup_platform/workdir/velociraptor/velociraptor)
+echo "Found: $VELO"
+
 STAMP=$(date +%Y%m%d-%H%M%S)
 
-# The config — this is the migration. Keep it safe.
-sudo install -m 600 "$VELO/server.config.yaml" "$HOME/velo-server.config.$STAMP.yaml"
+# (a) THE FILE THE MIGRATION NEEDS.
+sudo install -m 600 -o "$USER" -g "$USER" \
+     "$VELO/server.config.yaml" \
+     ~/velociraptor_backup/server.config.yaml
 
-# Belt and braces: the whole directory, in case you later want history.
-sudo tar -czf "$HOME/velociraptor-full-$STAMP.tar.gz" -C "$(dirname "$VELO")" velociraptor
-sudo chown "$USER" "$HOME"/velo-server.config.$STAMP.yaml "$HOME"/velociraptor-full-$STAMP.tar.gz
+# (b) The derived client config — not needed to migrate, useful to compare against later.
+sudo install -m 600 -o "$USER" -g "$USER" \
+     "$VELO/client.config.yaml" \
+     ~/velociraptor_backup/client.config.yaml 2>/dev/null || \
+     echo "no client.config.yaml — fine, Intact regenerates it"
 
-ls -lh "$HOME"/velo-*"$STAMP"*
+# (c) Everything, including the datastore, in case history is wanted later.
+sudo tar -czf ~/velociraptor_backup/velociraptor-full-$STAMP.tar.gz \
+     -C "$(dirname "$VELO")" velociraptor
+sudo chown "$USER":"$USER" ~/velociraptor_backup/velociraptor-full-$STAMP.tar.gz
+chmod 600 ~/velociraptor_backup/velociraptor-full-$STAMP.tar.gz
 ```
 
-Then copy both **off the machine** — `scp`, a USB stick, anything — and verify
-the copy opens before you touch the old box:
+#### 3. Check what you got
 
 ```bash
-# From your laptop
-scp <user>@<risx-host>:'~/velo-*' ./
-python3 -c "import yaml,sys; d=yaml.safe_load(open('velo-server.config.<stamp>.yaml')); \
-print('CA present:', bool(d['CA']['private_key']), '| clients dial:', d['Client']['server_urls'])"
+ls -lh ~/velociraptor_backup/
 ```
+
+Expect something like:
+
+```
+-rw------- 1 user user  13K  server.config.yaml
+-rw------- 1 user user 2.7K  client.config.yaml
+-rw------- 1 user user 1.2G  velociraptor-full-20260908-101500.tar.gz
+```
+
+Now prove the important file is intact and says what you expect — **before** you
+touch anything else. This prints the CA fingerprint and the address your clients
+dial; write both down, you will compare them after the migration:
+
+```bash
+python3 -c "
+import hashlib, yaml
+d = yaml.safe_load(open('$HOME/velociraptor_backup/server.config.yaml'))
+print('CA fingerprint :', hashlib.sha256(d['CA']['private_key'].encode()).hexdigest()[:16])
+print('clients dial   :', d['Client']['server_urls'])
+print('nonce present  :', bool(d['Client'].get('nonce')))
+"
+```
+
+All three must be present. An empty `CA fingerprint` or a missing `nonce` means
+you have copied the wrong file — stop and find the right one.
+
+#### 4. Get it off the machine
+
+A backup that only exists on the box you are about to wipe is not a backup.
+
+```bash
+# From your laptop (not the risx box):
+scp -r <user>@<risx-host>:~/velociraptor_backup ./
+ls -lh velociraptor_backup/
+```
+
+Then verify the copy on your laptop opens and shows the **same** CA fingerprint
+as above:
+
+```bash
+python3 -c "
+import hashlib, yaml
+d = yaml.safe_load(open('velociraptor_backup/server.config.yaml'))
+print('CA fingerprint :', hashlib.sha256(d['CA']['private_key'].encode()).hexdigest()[:16])
+"
+```
+
+Only once those fingerprints match are you allowed to move on to Step 2.
 
 > **`server.config.yaml` is a credential.** It contains the Velociraptor CA
 > private key and the client nonce — anyone holding it can impersonate the
@@ -124,7 +192,7 @@ The address never moves, which is the one thing this path makes easy. Everything
 else is harder, so confirm before you start:
 
 ```bash
-ls -lh "$HOME"/velo-*        # the backup exists HERE
+ls -lh ~/velociraptor_backup/   # the backup exists HERE
 # ...and has been copied OFF this machine. Check on the other end, not this one.
 ```
 
@@ -192,14 +260,21 @@ setup. Do not migrate before the appliance is healthy on its own.
 
 ## Step 4 — Adopt the Velociraptor identity
 
-Copy the backed-up config onto the Intact box, then, **from the install root**:
+Copy the backup folder onto the Intact box first:
+
+```bash
+# From your laptop, onto the NEW appliance:
+scp -r velociraptor_backup <user>@<intact-host>:~/
+```
+
+Then, on the Intact box, **from the install root**:
 
 ```bash
 cd /path/to/intact
 
 # ALWAYS dry-run first. Needs no root, changes nothing.
 sudo ./scripts/adopt_velociraptor_identity.sh \
-     --from ~/velo-server.config.<stamp>.yaml --dry-run
+     --from ~/velociraptor_backup/server.config.yaml --dry-run
 ```
 
 Read the output. It prints the incoming CA fingerprint, the CA currently on the
@@ -209,7 +284,8 @@ healthy server that no client ever reaches.
 
 ```bash
 # For real.
-sudo ./scripts/adopt_velociraptor_identity.sh --from ~/velo-server.config.<stamp>.yaml
+sudo ./scripts/adopt_velociraptor_identity.sh \
+     --from ~/velociraptor_backup/server.config.yaml
 ```
 
 Options:
@@ -217,6 +293,7 @@ Options:
 | flag | when |
 |---|---|
 | `--dry-run` | always, first |
+| `--from <dir>` | the folder works too — `--from ~/velociraptor_backup` finds `server.config.yaml` inside it |
 | `--domain X` | override the address from `config.yaml` |
 | `--datastore <dir>` | also bring the old datastore (historical hunts/flows). Skip it if you only need clients reconnecting — they will, without it |
 | `-y` | skip the prompts. Also the override for a diverging address, when you are cutting DNS separately |
@@ -268,9 +345,14 @@ one returning client before you call it done.
 ## Afterwards
 
 - Delete every working copy of `server.config.yaml` that is not the appliance's
-  own (your laptop, the backup dir, any transfer medium).
-- Keep the full `velociraptor-full-<stamp>.tar.gz` archive somewhere safe until
-  the customer is satisfied — it is the only copy of the old datastore.
+  own — your laptop, `~/velociraptor_backup/server.config.yaml` on the Intact
+  box, and any USB stick used to carry it:
+  ```bash
+  shred -u ~/velociraptor_backup/server.config.yaml   # on the Intact box
+  ```
+- **Keep** `~/velociraptor_backup/velociraptor-full-<stamp>.tar.gz` somewhere
+  safe until the customer is satisfied — it is the only copy of the old
+  datastore, and it also still contains the CA, so store it like a credential.
 - Leave the old machine powered off but not wiped for a week.
 
 ## Scope
