@@ -75,6 +75,10 @@ but the backup then IS live data), `--skip-remove` (leave risx stopped on
 disk; needs 3× disk), `--backup-dir` (reuse a previous run's backup after a
 failure — re-runs are cheap).
 
+> **Doing this on a customer site?** [RISX_TO_INTACT_RUNBOOK.md](RISX_TO_INTACT_RUNBOOK.md) is the step-by-step
+> operator version: back up, decommission risx, install Intact, adopt, verify.
+> This file is the design and the evidence behind it.
+
 ## The other shape: adopting a fleet onto a box that is *already* installed
 
 `migrate_from_risx.sh` above replaces a risx box in place, and it seeds the
