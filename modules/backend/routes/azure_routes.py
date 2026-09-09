@@ -126,12 +126,18 @@ def get_rules_info():
                 'counts': counts,
                 'custom_rules_count': custom_count,
             })
-        else:
-            return jsonify({
-                'available': False,
-                'message': rules_msg,
-                'custom_rules_count': custom_count,
-            })
+        # `counts` is reported either way, zeroed when the ruleset is absent.
+        # Omitting it made "no rules installed" indistinguishable from "the
+        # endpoint could not answer" -- a package install ships no Azure SIGMA
+        # rules, so this branch is the NORMAL air-gapped state, not an error,
+        # and a caller must still be able to read a total off it. Same shape as
+        # get_available_rules_count() so consumers need no special case.
+        return jsonify({
+            'available': False,
+            'message': rules_msg,
+            'counts': {'total': 0, 'by_level': {}, 'by_status': {}},
+            'custom_rules_count': custom_count,
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
