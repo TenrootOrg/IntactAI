@@ -507,9 +507,16 @@ def upload_logs():
         # findings all land on one row.
         try:
             from services.file_storage_service import save_workflow
-            from services.workflow_service import update_run_status
+            from services.workflow_service import update_run_status, _resolve_case_id
             save_workflow({
                 'run_id': run_id,
+                # Tag the run to the ACTIVE workspace. Without this the row
+                # lands with case_id=NULL and _run_visible_in_active_workspace()
+                # rejects it, so /api/azure/status/<run_id> answers 404 to the
+                # very operator who just uploaded it. _resolve_case_id is the
+                # one universal rule (workflow_service.py:126) these two
+                # handlers were bypassing by calling save_workflow directly.
+                'case_id': _resolve_case_id('azure_scan', None),
                 'automation_type': 'azure_scan',
                 'name': f"Azure Offline Analysis ({len(parsed_data)} sources, {sum(len(v) for v in parsed_data.values())} records)",
                 'details': {
