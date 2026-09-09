@@ -142,6 +142,14 @@ paths = [
   # Test fixtures that intentionally use realistic-looking PII to exercise
   # the anonymizer. Anything sensitive in here is by design.
   '''modules/backend/services/agentic/tests/test_data_anonymizer\.py''',
+  # Synthetic Velociraptor config fixtures. gitleaks' private-key rule matches
+  # the PEM HEADER, not what sits between the delimiters -- and what sits
+  # between these is literally the words FAKEKEY and FAKECA. Both files build a
+  # server.config.yaml by hand to exercise the risx->intact migration; there is
+  # no key material in the repository to leak. Anchored to the exact two files
+  # so a real key committed anywhere else under tests/ is still caught.
+  '''tests/test_transform_config\.py$''',
+  '''tests/test_adopt_velo_identity\.sh$''',
   # Rendered runtime conf is allowlisted because the operator pastes
   # their real key into it (via Settings UI or hand-edit at install
   # time). The .template files are NOT allowlisted — those are tracked
