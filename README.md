@@ -84,6 +84,10 @@ Docker is not already installed, carry the release's `intact-20260825-system-bun
 too and put it beside the package — it provides the engine and host packages
 offline.
 
+**Velociraptor tools.** An air-gapped install ships only the tools the default
+blueprints use. Other artifacts' tools (Hayabusa, Sigcheck, Bulk Extractor, …)
+must be added by hand — see [docs/VELOCIRAPTOR_TOOLS_AIRGAP.md](docs/VELOCIRAPTOR_TOOLS_AIRGAP.md).
+
 ## Services & Ports
 
 Everything terminates TLS through the main nginx. Access is `https://YOUR_IP`
