@@ -9,8 +9,8 @@ const TEMPLATE_KEY = 'r\n\n---\n_Deterministic report — The AI provider reject
 const BACKGROUND_NEW = 'r\n\n---\n_Deterministic report — the AI model was not used for this automatic report._\n';
 const BACKGROUND_OLD = 'r\n\n---\n_Deterministic report — no live narration was requested._\n';
 const NARRATED = 'r\n\n---\n_Narrative by live LLM; fact tables deterministic._\n';
-const LIVE_OK = { available: true, code: 'ok', checked_live: true };
-const CONFIG_OK = { available: true, code: 'ok' };            // from the case payload: never probed
+const LIVE_OK = { available: true, code: 'ok', checked_live: true, config_id: 'cfg-codex' };
+const CONFIG_OK = { available: true, code: 'ok', config_id: 'cfg-codex' };   // from the case payload: never probed
 
 function page(over = {}) {
   const store = new Map();
@@ -57,6 +57,18 @@ expect('case switch turned off', { info: { auto_regen_report: false } }, 0);
 expect('not on the Analysis tab', { tab: 'timeline' }, 0);
 expect('remembered view, server not answered yet', { info: { _fresh: false } }, 0);
 expect('no case open', { info: null }, 0);
+
+// Reported live: a try that failed under Gemini blocked the retry after switching
+// to a working subscription. New settings earn one new try; the same settings never twice.
+{
+  const q = page();
+  q.maybeAutoRegen();                                                 // tried under Gemini, failed
+  q.curInfo = { case_id: 'A', _fresh: true, llm_status: { ...LIVE_OK, config_id: 'cfg-codex-2' } };
+  q.maybeAutoRegen(); q.maybeAutoRegen();                             // switched provider
+  const good = JSON.stringify(q.regens) === '["A","A"]';
+  console.log(`${good ? 'ok  ' : 'FAIL'} changing the AI settings earns exactly one new try: ${JSON.stringify(q.regens)}`);
+  if (!good) fails.push('new settings');
+}
 
 // Only the case on screen: another case in the same tab still gets its own one try.
 const p = page();

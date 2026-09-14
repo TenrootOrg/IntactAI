@@ -31,7 +31,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LLM_SIM = os.path.join(ROOT, "modules/backend/services/fusion/llm_sim.py")
 
 WANTED = ("llm_status", "_classify_llm_error", "_sim_tag", "_llm_reason_text",
-          "_subscription_gap", "llm_status_known", "_reach_fingerprint")
+          "_subscription_gap", "llm_status_known", "_reach_fingerprint", "_config_id")
 CONSTS = ("LLM_OK", "LLM_PINNED", "LLM_NO_MODEL", "LLM_MISSING_KEY",
           "_LLM_CONFIG_REASONS", "_LLM_ERR_MESSAGES", "_SIM_TAG_PREFIX", "_REACH_LAST")
 
@@ -190,6 +190,21 @@ class TestTheLastLiveAnswer(_Base):
     def test_the_fingerprint_never_contains_the_key(self):
         fp = NS["_reach_fingerprint"](STATE["cfg"])
         self.assertNotIn("sk-test", fp)
+
+    def test_the_status_carries_an_opaque_settings_id(self):
+        """The page keys its one automatic regeneration on it, so a change of
+        provider, model or key earns a fresh try."""
+        cid = NS["llm_status_known"]()["config_id"]
+        self.assertRegex(cid, r"^[0-9a-f]{12}$")
+        self.assertNotIn("sk-test", cid)
+        self.assertNotIn("openai", cid)
+
+    def test_the_settings_id_changes_with_provider_model_or_key(self):
+        base = NS["_config_id"](STATE["cfg"])
+        for field, value in (("provider", "gemini"), ("model", "gpt-5"), ("api_key", "sk-other")):
+            cfg = {"llm_mode": "online", "online_llm": dict(STATE["cfg"]["online_llm"], **{field: value})}
+            self.assertNotEqual(base, NS["_config_id"](cfg), field)
+        self.assertEqual(base, NS["_config_id"](STATE["cfg"]), "stable for the same settings")
 
     def test_a_config_problem_still_wins(self):
         STATE["cfg"]["online_llm"] = {"provider": "openai", "model": "gpt-4o"}

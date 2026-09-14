@@ -787,11 +787,16 @@ function shouldAutoRegen(info, md, ls){
   return !/no live narration was requested|AI model was not used/i.test(m[1]);
 }
 const _autoRegenTried=new Set();
-function _autoRegenOnce(id){
-  // Once per case per browser tab: a provider that fails every time must not loop.
-  let seen=_autoRegenTried.has(id);
-  try{ seen = seen || sessionStorage.getItem('autoRegen:'+id)==='1'; sessionStorage.setItem('autoRegen:'+id,'1'); }catch(e){}
-  _autoRegenTried.add(id);
+function _autoRegenOnce(id, ls){
+  // Once per case, per browser tab, PER SET OF AI SETTINGS. A model that fails
+  // every time must not loop, but switching provider, model or key has to earn
+  // a fresh try: keyed on the case alone, a failure under Gemini blocked the
+  // retry after switching to a working subscription. config_id is an opaque
+  // hash from the backend and changes with any of those settings.
+  const k='autoRegen:'+id+':'+((ls&&ls.config_id)||'');
+  let seen=_autoRegenTried.has(k);
+  try{ seen = seen || sessionStorage.getItem(k)==='1'; sessionStorage.setItem(k,'1'); }catch(e){}
+  _autoRegenTried.add(k);
   return !seen;
 }
 function maybeAutoRegen(){
@@ -800,7 +805,7 @@ function maybeAutoRegen(){
   // show a template the server has already replaced with an AI report.
   if(!info || !info._fresh || tab!=='report') return;
   if(!shouldAutoRegen(info, window._md||'', info.llm_status)) return;
-  if(!_autoRegenOnce(info.case_id)) return;
+  if(!_autoRegenOnce(info.case_id, info.llm_status)) return;
   toast('AI model connected — regenerating this report…');
   regenReport(info.case_id);
 }

@@ -720,6 +720,19 @@ def _reach_fingerprint(cfg) -> str:
                      hashlib.sha256(key.encode()).hexdigest()[:16] if key else "-"])
 
 
+def _config_id(cfg) -> str:
+    """A short, opaque id for the AI settings in use: changes whenever the mode,
+    provider, model or key does. Safe to hand to the browser -- a hash of the
+    fingerprint, which itself holds only a digest of the key. The Analysis tab
+    keys its one automatic regeneration per case on it, so changing the settings
+    earns a fresh try instead of being blocked by a failure under the old ones."""
+    import hashlib
+    try:
+        return hashlib.sha256(_reach_fingerprint(cfg).encode()).hexdigest()[:12]
+    except Exception:                                 # noqa: BLE001
+        return ""
+
+
 def llm_reachability() -> dict:
     """llm_status(), plus a live probe when config says a model/key ARE set.
 
@@ -728,16 +741,17 @@ def llm_reachability() -> dict:
     probe, or a cached probe), True when a real call was just made.
     """
     status = llm_status()
-    if not status["available"]:
-        return {**status, "checked_live": False}          # already known, for free
-
     cfg = _agentic_cfg()
+    if not status["available"]:
+        return {**status, "checked_live": False,          # already known, for free
+                "config_id": _config_id(cfg)}
+
     fp = _reach_fingerprint(cfg)
     now = time.time()
     with _REACH_LOCK:
         cached = _REACH_CACHE.get(fp)
         if cached and (now - cached[0]) < _REACH_TTL:
-            return cached[1]
+            return {**cached[1], "config_id": _config_id(cfg)}
 
     try:
         from services.agentic.analyzers._llm import call_llm
@@ -756,7 +770,7 @@ def llm_reachability() -> dict:
     with _REACH_LOCK:
         _REACH_CACHE[fp] = (now, result)
         _REACH_LAST[fp] = result
-    return result
+    return {**result, "config_id": _config_id(cfg)}
 
 
 def llm_status_known() -> dict:
@@ -768,15 +782,16 @@ def llm_status_known() -> dict:
     that. A config that changed has a new fingerprint and no remembered answer,
     so it reads as available until the page's own probe says otherwise.
     """
-    st = llm_status()
+    cfg = _agentic_cfg()
+    st = {**llm_status(), "config_id": _config_id(cfg)}
     if not st["available"]:
         return st
     try:
-        last = _REACH_LAST.get(_reach_fingerprint(_agentic_cfg()))
+        last = _REACH_LAST.get(_reach_fingerprint(cfg))
     except Exception:                                 # noqa: BLE001
         last = None
     if last and not last.get("available"):
-        return {**last, "checked_live": False}
+        return {**last, "checked_live": False, "config_id": st["config_id"]}
     return st
 
 
