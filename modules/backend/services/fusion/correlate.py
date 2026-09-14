@@ -19,6 +19,7 @@ import re
 import traceback
 
 from .schema import FusionGraph, Finding, EvidenceRef
+from . import schema as _schema
 from . import severity as sev
 from . import keys
 
@@ -82,7 +83,7 @@ def _record_error(errs: list, where: str, exc: BaseException) -> None:
     """Note one isolated failure. Never raises: it runs inside an except block."""
     try:
         if len(errs) < _ERROR_DETAIL_CAP:
-            errs.append({"where": where, "error": f"{type(exc).__name__}: {exc}"[:300]})
+            errs.append({"where": str(where)[:200], "error": f"{type(exc).__name__}: {exc}"[:300]})
             if len(errs) <= 3:                 # a traceback for the first few only
                 traceback.print_exc()
         elif errs and errs[-1].get("overflow") is not None:
@@ -157,7 +158,21 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     # about it (store.py reports it as a PARTIAL graph).
     _errs = errors if errors is not None else []
     pending_rels = []
-    for _contrib in contributions:
+    # The stream itself can fail too (store.py feeds a generator): keep every
+    # contribution read before the failure instead of losing them with it.
+    try:
+        _stream = iter(contributions if contributions is not None else ())
+    except Exception as _e:                                   # noqa: BLE001
+        _record_error(_errs, "the contribution stream is not iterable", _e)
+        _stream = iter(())
+    while True:
+        try:
+            _contrib = next(_stream)
+        except StopIteration:
+            break
+        except Exception as _e:                               # noqa: BLE001
+            _record_error(_errs, "the contribution stream (stopped; what it yielded before is kept)", _e)
+            break
         try:
             ents, rels = _contrib
             ents, rels = list(ents or []), list(rels or [])
@@ -176,6 +191,12 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
             # first_seen on a pivot (e.g. the cloud mapper on AWS accounts/IOCs) must
             # still be exempt, else its accounts/IOCs + all their edges get window-cut.
             try:
+                # Coerce mapper JSON to the declared field types first, so no
+                # pass, renderer or save below ever meets a list where a str goes.
+                _clean = _schema.sanitize_entity(e)
+                if _clean is None:
+                    raise ValueError(f"not an entity with a usable id ({type(e).__name__})")
+                e = _clean
                 if e.type not in _STRUCTURAL_TYPES and e.first_seen:
                     eff = sev.max_level(e.severity, sev.from_anomaly(e.anomaly))
                     if not (sev.at_least(eff, min_severity) and in_window(e.first_seen, window)):
@@ -187,6 +208,8 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     # Drop edges whose endpoint was filtered out (no dangling relationships).
     for r in pending_rels:
         try:
+            if _schema.sanitize_relationship(r) is None:
+                raise ValueError(f"not a relationship with usable endpoints ({type(r).__name__})")
             if r.src in g.entities and r.dst in g.entities:
                 g.relate(r)
         except Exception as _e:                               # noqa: BLE001

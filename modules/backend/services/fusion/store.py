@@ -1719,9 +1719,13 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     _plog("Refusion · graph built", "info",
           f"{len(g.entities):,} entities, {len(g.relationships):,} links, "
           f"{len(g.findings):,} findings", pct=80)
+    def _n_errors():
+        # Past correlate._ERROR_DETAIL_CAP failures are only counted, in "overflow".
+        return sum(int(x.get("overflow") or 1) for x in _assembly_errors)
+
     if _assembly_errors:
         _plog("Refusion · graph built with recoverable errors", "warning",
-              f"{len(_assembly_errors)} item(s) or pass(es) failed and were skipped; "
+              f"{_n_errors():,} item(s) or pass(es) failed and were skipped; "
               f"everything else is in the graph: "
               + "; ".join(f"{x['where']} ({x['error']})" for x in _assembly_errors[:8])[:600],
               pct=80)
@@ -1751,7 +1755,19 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
             mask = None
     # host-exclusion: cut excluded hosts' data from the report/LLM (token saving). The
     # FULL graph `g` is still stored so the picker can list/re-include every host.
-    gv = _filter_graph_by_hosts(g, d.get("excluded_hosts"))
+    def _degrade(step, exc):
+        # A step AFTER assembly failed. Same rule as inside assemble: the graph is
+        # already built and must still be saved, so record it, say so, and carry
+        # on with a safe fallback. Storage failures below stay loud on purpose.
+        correlate._record_error(_assembly_errors, step, exc)
+        _plog(f"Refusion · {step} failed, continuing without it", "warning",
+              f"{type(exc).__name__}: {str(exc)[:300]}")
+
+    try:
+        gv = _filter_graph_by_hosts(g, d.get("excluded_hosts"))
+    except Exception as _e:                                   # noqa: BLE001
+        _degrade("host exclusion", _e)
+        gv = g                    # report on every host rather than on none
     # The report + advisory are the heavy narrative. Generate them ONLY on the FIRST
     # fuse (no report yet); afterwards they stay FROZEN until the operator clicks
     # Rescan (store.regenerate_report). This keeps the per-action re-fuses (timeline
@@ -1814,27 +1830,35 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
             log_case_event(case_id, "Report · sending request to the LLM", "info",
                            f"model {_mdl} ({_prov}); payload ≤{llm_ent:,} entities, "
                            f"output ≤{llm_out or 'model max'} tokens")
-        report = llm_sim.generate_report(
-            gv, window=window, min_severity=min_sev,
-            initial_access=d.get("initial_access_estimate"),
-            case_name=d.get("name", "Case"), run_id=case_id,
-            audience=d.get("audience", "both"), language=d.get("language", "en"),
-            altitude_mode=d.get("report_altitude") or "auto",
-            master_prompt=d.get("master_prompt"), mask=mask,
-            dispositions=d.get("dispositions") or None,
-            validations=d.get("timeline_validations") or None,
-            # First scan narrates with the model whenever one is configured. It
-            # used to be hardcoded False -- "fast, free, deterministic; LLM on
-            # Rescan" -- which meant the report an operator actually READ was the
-            # string-interpolated template, and the real narrative only existed if
-            # they knew to press Regenerate. Almost nobody did, so the product was
-            # judged on the template. A box with no model, no key or no route gets
-            # the deterministic report automatically and is told which it is; there
-            # is no longer a tick for that.
-            prefer_llm=_narrate,
-            max_entities=llm_ent, budget_chars=llm_chars, max_output_tokens=llm_out,
-            detail="explicit", max_identities=llm_ident)
-        if _narrate and _mdl:
+        _report_failed = False
+        try:
+            report = llm_sim.generate_report(
+                gv, window=window, min_severity=min_sev,
+                initial_access=d.get("initial_access_estimate"),
+                case_name=d.get("name", "Case"), run_id=case_id,
+                audience=d.get("audience", "both"), language=d.get("language", "en"),
+                altitude_mode=d.get("report_altitude") or "auto",
+                master_prompt=d.get("master_prompt"), mask=mask,
+                dispositions=d.get("dispositions") or None,
+                validations=d.get("timeline_validations") or None,
+                # First scan narrates with the model whenever one is configured. It
+                # used to be hardcoded False -- "fast, free, deterministic; LLM on
+                # Rescan" -- which meant the report an operator actually READ was the
+                # string-interpolated template, and the real narrative only existed if
+                # they knew to press Regenerate. Almost nobody did, so the product was
+                # judged on the template. A box with no model, no key or no route gets
+                # the deterministic report automatically and is told which it is; there
+                # is no longer a tick for that.
+                prefer_llm=_narrate,
+                max_entities=llm_ent, budget_chars=llm_chars, max_output_tokens=llm_out,
+                detail="explicit", max_identities=llm_ident)
+        except Exception as _e:                               # noqa: BLE001
+            _report_failed = True
+            _degrade("report generation", _e)
+            report = d.get("report_md") or (
+                f"_The report could not be generated ({type(_e).__name__}). The graph "
+                f"was built and saved; press Rescan to try again._")
+        if _narrate and _mdl and not _report_failed:
             _marker = "_Live LLM unavailable"
             if _marker in (report or ""):
                 _why = (report.split(_marker, 1)[1].split("\n", 1)[0] or "").strip(" (_.")
@@ -1856,6 +1880,8 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         # read, or served; a blob on an old case is simply ignored.
         report_members = list(members)   # report now reflects exactly these members
         report_dirty = False             # report freshly generated → up to date
+        if _report_failed:               # nothing new was written: still behind
+            report_members, report_dirty = d.get("report_run_ids"), True
     # customer-confirmation checklist — generate once (preserve operator decisions on
     # re-fuse). GENERATED here, but WRITTEN after the bulk patch below via
     # _mutate_list_field — see the note there for why it may not ride along in the patch.
@@ -1919,8 +1945,19 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     # Persist the graph to its sidecar (NOT inline in the case row) + precompute the
     # stat-bar counts, so metadata/report/config/log reads never deserialize the
     # graph. `fusion_graph: {}` clears any legacy inline graph from older fuses.
-    pruned = g.pruned(max_entities=int(d.get("max_entities")
-                                       or DEFAULT_MAX_ENTITIES)).to_dict()
+    try:
+        pruned = g.pruned(max_entities=int(d.get("max_entities")
+                                           or DEFAULT_MAX_ENTITIES)).to_dict()
+    except Exception as _e:                                   # noqa: BLE001
+        _degrade("graph pruning", _e)
+        pruned = g.to_dict()      # unpruned is bigger, never wrong
+    try:
+        _llm_calls = (_expected_llm_calls(gv, d, window, min_sev)
+                      if _narrate
+                      else (d.get("report_llm_calls") or 0))
+    except Exception as _e:                                   # noqa: BLE001
+        _degrade("LLM call estimate", _e)
+        _llm_calls = d.get("report_llm_calls") or 0
     _plog("Refusion · writing graph to database", "info",
           f"{len(pruned.get('entities') or {}):,} entities → sidecar", pct=95)
     if not _write_graph_sidecar(case_id, pruned):
@@ -1934,10 +1971,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                                   # LAST narration actually paid -- the estimate
                                   # reads this, and a re-fuse would otherwise
                                   # make every case quote the flat fallback.
-                                  "report_llm_calls": (
-                                      _expected_llm_calls(gv, d, window, min_sev)
-                                      if _narrate
-                                      else (d.get("report_llm_calls") or 0)),
+                                  "report_llm_calls": _llm_calls,
                                   # Record exactly which member runs this graph was
                                   # built from, so the UI can detect when new runs
                                   # have landed since (stale_member_runs) and show a
@@ -1968,7 +2002,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                            lambda cur: cur or fresh_checklist)
     _degraded = bool(_skipped or _assembly_errors)
     _partial = ((f" — PARTIAL: {len(_skipped)} run(s) skipped" if _skipped else "")
-                + (f" — {len(_assembly_errors)} recoverable error(s) during assembly"
+                + (f" — {_n_errors():,} recoverable error(s)"
                    if _assembly_errors else "")
                 + (", see the warnings above" if _degraded else ""))
     log_case_event(case_id, "Refusion complete", "warning" if _degraded else "success",
