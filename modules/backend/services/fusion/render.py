@@ -2193,6 +2193,14 @@ def _limitations_md(graph, assets, findings, *, window=None,
                      f"({', '.join(sorted(quiet)[:6])}{'…' if len(quiet) > 6 else ''}) — "
                      "this means nothing was detected in what was collected, NOT that "
                      "the host is known-clean.")
+    import re as _re
+    _logged = sorted({m for f in findings for m in _re.findall(r"\(logged as ([^)]+)\)", f.title or "")})
+    _n_logged = sum(1 for f in findings if "(logged as " in (f.title or ""))
+    if _n_logged:
+        lines.append(f"- **{_n_logged} finding(s) come from event logs recorded under another "
+                     f"computer name** ({', '.join(_logged[:4])}{'…' if len(_logged) > 4 else ''}). "
+                     "These are usually an earlier name of the same machine, or of the image it "
+                     "was built from; confirm before attributing them to this incident.")
     undated = sum(1 for f in findings if not f.ts)
     if undated:
         lines.append(f"- **{undated} finding(s) carry no timestamp** and cannot be "

@@ -70,6 +70,9 @@ def _assets_of(e) -> list[str]:
 # Structural pivots that are never window/severity-filtered on ingest — they anchor
 # the graph and link everything else, so time-judging them would orphan their edges.
 _STRUCTURAL_TYPES = {"asset", "account", "ioc", "identity", "config"}
+# Below-floor entities kept as CONTEXT per entity they link to (see assemble).
+# ponytail: one hop, fixed cap; a relevance ranking if a busy account needs more.
+_CONTEXT_PER_ENTITY = 50
 
 
 # Detail is kept for the first N failures only. A systematically broken mapper
@@ -158,6 +161,7 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     # about it (store.py reports it as a PARTIAL graph).
     _errs = errors if errors is not None else []
     pending_rels = []
+    _held: dict = {}            # in the window but below the severity floor
     # The stream itself can fail too (store.py feeds a generator): keep every
     # contribution read before the failure instead of losing them with it.
     try:
@@ -199,12 +203,38 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
                 e = _clean
                 if e.type not in _STRUCTURAL_TYPES and e.first_seen:
                     eff = sev.max_level(e.severity, sev.from_anomaly(e.anomaly))
-                    if not (sev.at_least(eff, min_severity) and in_window(e.first_seen, window)):
+                    if not in_window(e.first_seen, window):
+                        continue
+                    if not sev.at_least(eff, min_severity):
+                        _held.setdefault(e.id, e)
                         continue
                 g.upsert(e)
             except Exception as _e:                           # noqa: BLE001
                 _record_error(_errs, f"entity {getattr(e, 'id', '?')!r}", _e)
         pending_rels.extend(rels)
+    # CONTEXT, NOT FINDINGS. The severity floor removed every process a detection
+    # was about -- a process is "informational" on its own -- and every edge went
+    # with it. Measured on a real collection: 135 links mapped, 4 kept; the case
+    # listed detections with nothing connecting them. A below-floor entity that is
+    # directly linked to something kept comes back, flagged `context`, so the
+    # chain (account -> process -> detection -> hash) survives. It never becomes a
+    # finding by itself (_derive_findings skips `context`).
+    _ctx_count: dict = {}
+    for r in pending_rels:
+        try:
+            if _schema.sanitize_relationship(r) is None:
+                continue
+            for near, far in ((r.src, r.dst), (r.dst, r.src)):
+                if near in g.entities and far in _held and far not in g.entities:
+                    if _ctx_count.get(near, 0) >= _CONTEXT_PER_ENTITY:
+                        continue
+                    _ctx_count[near] = _ctx_count.get(near, 0) + 1
+                    c = _held[far]
+                    if "context" not in c.flags:
+                        c.flags.append("context")
+                    g.upsert(c)
+        except Exception as _e:                               # noqa: BLE001
+            _record_error(_errs, f"context for relationship {getattr(r, 'kind', '?')!r}", _e)
     # Drop edges whose endpoint was filtered out (no dangling relationships).
     for r in pending_rels:
         try:
@@ -223,6 +253,7 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     _guarded(_errs, "_derive_findings", lambda: _derive_findings(g, baseline=baseline, window=window))
     _guarded(_errs, "_coordinated_activity", lambda: _coordinated_activity(g, window=window, baseline=baseline))
     _guarded(_errs, "_recover_mitre_from_text", lambda: _recover_mitre_from_text(g))               # after EVERY finding exists
+    _guarded(_errs, "_mitre_from_rule_titles", lambda: _mitre_from_rule_titles(g))                 # titles with no id in them
     _guarded(_errs, "_corroboration", lambda: _corroboration(g))
     _guarded(_errs, "_stamp_finding_watermarks", lambda: _stamp_finding_watermarks(g))              # occurrence watermark — before dispositions
     _guarded(_errs, "_apply_dispositions", lambda: _apply_dispositions(g, dispositions))      # operator triage — before severity rollup
@@ -265,6 +296,48 @@ def _recover_mitre_from_text(g: FusionGraph) -> None:
         found = list(dict.fromkeys(_MITRE_RX.findall(blob)))
         if found:
             f.mitre = found
+
+
+# Well-established SIGMA rule title -> ATT&CK technique. Hayabusa rows carry only
+# the rule TITLE (no tags column), so 26 of 31 findings on a real collection had
+# no technique and the report's ATT&CK view read as empty. Each entry is a set of
+# alternatives; an alternative matches when ALL its words are in the title.
+# ponytail: a curated keyword table, not rule metadata. Read the rule's own
+# `tags:` instead once the collection carries them. Only unambiguous pairs here --
+# a title that matches nothing stays without a technique rather than a guess.
+_TITLE_TECHNIQUES = (
+    ("T1070.001", (("log", "cleared"),)),
+    ("T1562.001", (("defender", "disabl"), ("real-time protection", "disabl"))),
+    ("T1003.001", (("lsass",), ("mimikatz",), ("credential dump",))),
+    ("T1219", (("anydesk",), ("remote access tool",))),
+    ("T1027", (("base64",), ("obfuscat",))),
+    ("T1105", (("curl", "download"), ("web request",))),
+    ("T1098", (("added to local admin",), ("local admin grp",))),
+    ("T1543.003", (("service binary",), ("driver load",))),
+    ("T1059.001", (("powershell",),)),
+    ("T1036.007", (("double extension",),)),
+    ("T1070.004", (("erasing tool",),)),
+)
+
+
+def _techniques_for_title(title) -> list:
+    t = str(title or "").lower().split(" on ")[0]    # the host is not part of the rule
+    return [tid for tid, alts in _TITLE_TECHNIQUES
+            if any(all(w in t for w in alt) for alt in alts)]
+
+
+def _mitre_from_rule_titles(g: FusionGraph) -> None:
+    """Technique ids for detection findings whose title names none. One odd
+    finding costs its own technique, never the rest."""
+    for f in g.findings:
+        try:
+            if f.mitre:
+                continue
+            tids = _techniques_for_title(f.title)
+            if tids:
+                f.mitre = tids
+        except Exception:                                     # noqa: BLE001
+            continue
 
 
 def _stamp_finding_watermarks(g: FusionGraph) -> None:
@@ -948,6 +1021,8 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
 
     # BYOVD / malicious loaded driver (LolDrivers)
     for e in g.by_type("module"):
+        if "context" in e.flags:
+            continue
         if "byovd" not in e.flags and "loldriver" not in e.flags:
             continue
         asset = _assets_of(e)
@@ -966,6 +1041,8 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
 
     # DLL sideloading (HijackLibs) + bad bootloader (firmware)
     for e in g.by_type("event"):
+        if "context" in e.flags:
+            continue
         if "dll_hijack" in e.flags:
             asset = _assets_of(e)
             host = _host_label(g, asset[0]) if asset else "?"
@@ -989,7 +1066,7 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
 
     # suspicious Kerberos tickets (Golden/Silver-Ticket triage)
     for e in g.by_type("event"):
-        if "kerberos_suspicious" not in e.flags:
+        if "kerberos_suspicious" not in e.flags or "context" in e.flags:
             continue
         asset = _assets_of(e)
         host = _host_label(g, asset[0]) if asset else "?"
@@ -1067,15 +1144,17 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
     # title per host so a rule firing N times is ONE finding (not N). Only
     # high/critical surface as findings; medium/low stay as ranked events.
     _sigma_groups: dict = {}
+    _grouping: dict = {}        # finding id -> (asset, logged_as) for same-moment grouping
     for e in g.by_type("event"):
-        if "sigma" not in e.flags:
+        if "sigma" not in e.flags or "context" in e.flags:
             continue
         if not sev.at_least(e.severity, "high"):
             continue
         for a in _assets_of(e) or ["?"]:
-            _sigma_groups.setdefault((a, e.attrs.get("title") or e.label), []).append(e)
-    for (asset_id, title), evs in _sigma_groups.items():
-        host = _host_label(g, asset_id)
+            _sigma_groups.setdefault((a, e.attrs.get("title") or e.label,
+                                      e.attrs.get("logged_host") or ""), []).append(e)
+    for (asset_id, title, logged), evs in _sigma_groups.items():
+        host = _host_label(g, asset_id) + (f" (logged as {logged})" if logged else "")
         top = max(evs, key=lambda x: x.anomaly)
         # baseline-subtraction: a rule that ALSO fires on the clean environment is
         # provisioning/automation noise, not signal — suppress it. Never suppress
@@ -1083,8 +1162,10 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
         if title in base_titles and not sev.at_least(top.severity, "critical"):
             continue
         chans = sorted({x.attrs.get("channel") for x in evs if x.attrs.get("channel")})
+        _sid = _fid("sigma", f"{asset_id}:{title}" + (f":{logged}" if logged else ""))
+        _grouping[_sid] = (asset_id, logged)
         g.add_finding(Finding(
-            id=_fid("sigma", f"{asset_id}:{title}"),
+            id=_sid,
             title=f"SIGMA: {title} on {host}",
             severity=top.severity, confidence="medium",
             summary=f"Hayabusa/SIGMA rule '{title}' matched {len(evs)}× on {host}"
@@ -1102,26 +1183,61 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
     # (anything lower was already dropped at ingest). SIGMA has its own loop above.
     _det_groups: dict = {}
     for e in g.by_type("event"):
-        if "detection" not in e.flags or "sigma" in e.flags:
+        if "detection" not in e.flags or "sigma" in e.flags or "context" in e.flags:
             continue
         if not sev.at_least(e.severity, "medium"):
             continue
         title = e.attrs.get("title") or e.attrs.get("detection") or e.label
         for a in _assets_of(e) or ["?"]:
-            _det_groups.setdefault((a, title), []).append(e)
-    for (asset_id, title), evs in _det_groups.items():
-        host = _host_label(g, asset_id)
+            # ONE FILE, ONE FINDING. A renamed binary is keyed by its hash: the
+            # same cmd.exe copied under five names was five findings.
+            if "masquerading" in e.flags and e.attrs.get("full_hash"):
+                key = (a, "renamed", str(e.attrs["full_hash"]).lower())
+            else:
+                key = (a, title, e.attrs.get("logged_host") or "")
+            _det_groups.setdefault(key, []).append(e)
+    for (asset_id, title, extra), evs in _det_groups.items():
         top = max(evs, key=lambda x: x.anomaly)
+        latest = max((e.first_seen for e in evs if e.first_seen), default=top.first_seen)
+        first = min((e.first_seen for e in evs if e.first_seen), default=top.first_seen)
+        if title == "renamed":
+            host = _host_label(g, asset_id)
+            names = sorted({str(e.attrs.get("name") or e.label) for e in evs})
+            orig = next((e.attrs.get("original_name") for e in evs if e.attrs.get("original_name")), None)
+            shown = ", ".join(names[:6]) + ("…" if len(names) > 6 else "")
+            if orig:
+                rtitle = f"Renamed binary: {orig} copied as {shown}"
+            elif len(names) == 1:
+                rtitle = f"Renamed binary: {names[0]}"
+            else:
+                rtitle = f"Renamed binary copied as {shown}"
+            paths = sorted({str(e.attrs.get("path")) for e in evs if e.attrs.get("path")})
+            g.add_finding(Finding(
+                id=_fid("det", f"{asset_id}:renamed:{extra}"),
+                title=f"{rtitle} on {host}",
+                severity=top.severity, confidence="high" if len(names) > 1 else "medium",
+                summary=(f"One file (SHA256 {extra[:16]}…"
+                         + (f", originally {orig}" if orig else "")
+                         + f") exists under {len(names)} name(s) on {host}: "
+                         + "; ".join(paths[:6]) + ("…" if len(paths) > 6 else "") + "."),
+                entity_ids=[e.id for e in evs[:25]], asset_ids=[asset_id],
+                sources=sorted({s for e in evs for s in e.sources}),
+                evidence=[x for e in evs[:6] for x in e.evidence[:1]], mitre=["T1036.003"],
+                ts=first, kind="single", occ_count=len(evs), occ_latest=latest))
+            continue
+        logged = extra
+        host = _host_label(g, asset_id) + (f" (logged as {logged})" if logged else "")
+        _did = _fid("det", f"{asset_id}:{title}" + (f":{logged}" if logged else ""))
+        _grouping[_did] = (asset_id, logged)
         g.add_finding(Finding(
-            id=_fid("det", f"{asset_id}:{title}"),
+            id=_did,
             title=f"{title} on {host}",
             severity=top.severity, confidence="medium",
             summary=f"Detection '{title}' fired {len(evs)}× on {host}.",
             entity_ids=[e.id for e in evs[:25]], asset_ids=[asset_id],
             sources=top.sources, evidence=list(top.evidence), mitre=[],
             ts=top.first_seen, kind="single",
-            occ_count=len(evs),
-            occ_latest=max((e.first_seen for e in evs if e.first_seen), default=top.first_seen)))
+            occ_count=len(evs), occ_latest=latest))
 
     # cloud SIGMA detections (AWS/Azure) -> findings; cross-domain corroboration
     # (same account/IP also on an endpoint) is surfaced automatically via the
@@ -1161,6 +1277,69 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
         g.findings = [f for f in g.findings
                       if sev.at_least(f.severity, "critical")
                       or f.title.split(" on ")[0] not in base_finding_titles]
+    # Grouping only tidies findings that already exist. If it fails, the case keeps
+    # them ungrouped -- never loses them with the rest of this pass.
+    try:
+        _group_simultaneous_detections(g, _grouping)
+    except Exception:                                         # noqa: BLE001
+        traceback.print_exc()
+
+
+def _group_simultaneous_detections(g: FusionGraph, grouping: dict) -> None:
+    """Detections on one host in the same second are ONE thing that happened.
+
+    A single log clear fired four SIGMA rules and became four findings; one
+    Defender change became three; an AnyDesk drop, four. The analyst read 17
+    findings for 5 moments. Rules that agree are corroboration, so they fold into
+    one finding that names every rule, at high confidence.
+    ponytail: same-second bucketing; a sliding window if detectors disagree on
+    time by more than the rounding.
+    """
+    buckets: dict = {}
+    for f in g.findings:
+        meta = grouping.get(f.id)
+        if not meta or not f.ts:
+            continue
+        buckets.setdefault((meta[0], str(f.ts)[:19], meta[1]), []).append(f)
+    merged_ids: set = set()
+    new: list = []
+    for (asset_id, second, logged), fs in buckets.items():
+        if len(fs) < 2:
+            continue
+        # Name the group after its most SPECIFIC rule: highest severity, then one
+        # that maps to a technique ("Remote Access Tool - AnyDesk ..."), then the
+        # busiest. Severity and count alone picked "File Write to Suspicious
+        # Folder" to name an AnyDesk drop.
+        top = max(fs, key=lambda f: (sev.rank(f.severity),
+                                     bool(f.mitre or _techniques_for_title(f.title)),
+                                     f.occ_count or 1))
+        host = _host_label(g, asset_id) + (f" (logged as {logged})" if logged else "")
+        rules = sorted({f.title.rsplit(" on ", 1)[0] for f in fs})
+        mitre: list = []
+        for f in fs:
+            for t in list(f.mitre or []) + _techniques_for_title(f.title):
+                if t not in mitre:
+                    mitre.append(t)
+        ents = []
+        for f in fs:
+            for eid in f.entity_ids:
+                if eid not in ents:
+                    ents.append(eid)
+        new.append(Finding(
+            id=_fid("grp", asset_id, second, logged, *sorted(f.id for f in fs)),
+            title=f"{top.title.rsplit(' on ', 1)[0]} (+{len(fs) - 1} related) on {host}",
+            severity=top.severity, confidence="high",
+            summary=f"{len(fs)} detections fired together at {second}Z on {host}: "
+                    + "; ".join(rules) + ".",
+            entity_ids=ents[:50], asset_ids=[asset_id],
+            sources=sorted({s for f in fs for s in f.sources}),
+            evidence=[x for f in fs for x in f.evidence[:1]], mitre=mitre,
+            ts=top.ts, kind="single",
+            occ_count=sum(int(f.occ_count or 1) for f in fs),
+            occ_latest=max((f.occ_latest or f.ts for f in fs), default=top.ts)))
+        merged_ids.update(f.id for f in fs)
+    if new:
+        g.findings = [f for f in g.findings if f.id not in merged_ids] + new
 
 
 # ---------------------------------------------------- coordinated activity

@@ -272,6 +272,19 @@ class FusionGraph:
                 continue
             if v in (None, "", []):
                 continue
+            if k.endswith("_observations") and isinstance(v, list):
+                # Bookkeeping from an earlier merge, not an observed value. Two
+                # entities that were each already merged both carry one; comparing
+                # them as values nested the list inside itself
+                # (`source_name_observations_observations`) -- and before that
+                # crashed the fuse. Combine the observations instead.
+                mine = cur.attrs.get(k)
+                if not isinstance(mine, list):
+                    cur.attrs[k] = mine = []
+                for o in v:
+                    if o not in mine:
+                        mine.append(o)
+                continue
             if k in cur.attrs and cur.attrs[k] != v:
                 # FORENSIC INTEGRITY: conflicting values from different
                 # observations are kept with provenance, never overwritten.

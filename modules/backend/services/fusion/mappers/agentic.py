@@ -295,7 +295,22 @@ def _linux_susp(text):
     return any(k in t for k in _LINUX_SUSP)
 
 
-def _account_eid(asset, domain, user):
+def _logged_host(row, host):
+    """The machine name a log row itself recorded, when it is NOT the host it was
+    collected from. Measured on a real collection: 28% of Hayabusa rows and 81% of
+    Evtx detections were logged as WIN-UK1GV882OK6 (the image the VM was built
+    from) and were all silently reported against the collecting host.
+    Never raises: a malformed row simply has no logged host."""
+    try:
+        rc = row.get("Computer") if isinstance(row, dict) else None
+        if rc and host and keys.norm_host(rc) != keys.norm_host(host):
+            return str(rc)
+    except Exception:                                  # noqa: BLE001
+        pass
+    return None
+
+
+def _account_eid(asset, domain, user, local_hosts=()):
     """Domain accounts -> global node (cross-host); local -> asset-scoped.
 
     A qualified `DOMAIN\\user` arriving in `user` with no separate `domain` is
@@ -309,6 +324,14 @@ def _account_eid(asset, domain, user):
         d, u = keys.split_domain_user(u)
     if not u or u in ("-", "n/a"):
         return None, d, u
+    # A domain that is this machine's own name (now, or as a log recorded it)
+    # is a LOCAL account. `win-uk1gv882ok6\\administrator` from the logon log and
+    # `administrator` from SAM were two identities for one account.
+    try:
+        if d and keys.norm_host(d) in {keys.norm_host(h) for h in (local_hosts or ()) if h}:
+            d = ""
+    except Exception:                                  # noqa: BLE001
+        pass
     if d and d not in _LOCAL_DOMAINS and not d.endswith("$"):
         return f"account:domain:{d}\\{u}", d, u          # GLOBAL
     return keys.account_id(asset, None, u), d, u          # local, asset-scoped
@@ -645,7 +668,8 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             elif any(k in an for k in ("logon", "rdpauth", "rdpclient", "authentication",
                                        "accountusage")):
                 user = F.get(r, *F.USER)
-                aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), user)
+                aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), user,
+                                          local_hosts=(host, r.get("Computer")))
                 if aeid:
                     lproc = str(F.get(r, *F.LOGON_PROC) or "").lower()
                     # runas/psexec/WinRM logon mechanisms are lateral-movement signals —
@@ -682,14 +706,24 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             # ---- user inventory (Sys.Users / AllUsers / SAM) -> account ---
             elif "sys.users" in an or "allusers" in an or "localusers" in an \
                     or ab.endswith(".users") or ab.endswith(".sam"):
-                uname = F.get(r, "Name", *F.USER)
-                aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), uname)
+                _pv = r.get("ParsedV") if isinstance(r.get("ParsedV"), dict) else {}
+                _pf = r.get("ParsedF") if isinstance(r.get("ParsedF"), dict) else {}
+                # SAM/Parsed nests the name and the account details; reading only
+                # flat columns dropped all five of its rows.
+                uname = F.get(r, "Name", *F.USER) or _pv.get("username")
+                aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), uname, local_hosts=(host,))
                 if aeid:
                     sid = F.get(r, "UUID", "Sid", "SID", "Uid", default=None)
                     ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset,
-                                     run_id, loc, first=ts, user=u, domain=d, sid=sid,
+                                     run_id, loc, first=None if _pf else ts, user=u, domain=d, sid=sid,
                                      home=F.get(r, "Directory", "HomeDir", "ProfilePath",
-                                                default=None), artifact=artifact))
+                                                default=None),
+                                     # 1601-01-01 is Windows' zero date: "never".
+                                     last_login=(None if str(_pf.get("LastLoginDate") or "").startswith("1601-01-01")
+                                                 else _pf.get("LastLoginDate")),
+                                     password_reset=(None if str(_pf.get("PasswordResetDate") or "").startswith("1601-01-01")
+                                                     else _pf.get("PasswordResetDate")),
+                                     account_type=_pv.get("AccountType"), artifact=artifact))
 
             # ---- powershell command history -> execution event -----------
             elif "psreadline" in an:
@@ -853,7 +887,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 title = F.get(r, "Title", "RuleTitle", "Rule", "Message", default=artifact)
                 level = F.get(r, "Level", "Severity", default="informational")
                 anom = _level_anomaly(level)
-                akey = (asset, str(title))
+                akey = (asset, str(title), _logged_host(r, host) or "")
                 agg = sigma_agg.get(akey)
                 if agg is None:
                     sigma_agg[akey] = {
@@ -1023,10 +1057,13 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 sha = _sha256_of(r)
                 btime = keys.norm_ts(F.get(r, "Btime", "Ctime", "Mtime", default=ts))
                 title = f"Renamed binary: {str(name or path)[:55]}"
+                _vi = r.get("VersionInformation") if isinstance(r.get("VersionInformation"), dict) else {}
+                _orig = _vi.get("OriginalFilename") or _vi.get("InternalName")
                 eid = keys.event_key(asset, f"binrename:{name or path}", f"{path}")
                 ents.append(_ent(eid, "event", title, asset, run_id, loc,
                                  anomaly=50, first=btime, artifact=artifact,
                                  flags=["detection", "masquerading"], title=title,
+                                 original_name=str(_orig) if _orig else None,
                                  name=str(name) if name else None,
                                  path=str(path) if path else None,
                                  full_hash=str(sha) if sha else None, **_hash_attrs(r)))
@@ -1110,6 +1147,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                         else None),
                                  detection=str(dname) if dname else None,
                                  criticality=str(crit) if crit else None,
+                                 logged_host=_logged_host(r, host),
                                  title=(f"{artifact.split('.')[-1]}: {str(dname)[:60]}"
                                         if dname else None)))
 
@@ -1141,13 +1179,13 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                  first=ts, full_hash=h, **_hash_attrs(r), **_sa, artifact=artifact))
 
     # ---- fold the sigma occurrences into one entity per (host, rule) ----
-    for (a_id, title), agg in sigma_agg.items():
+    for (a_id, title, logged), agg in sigma_agg.items():
         r = agg["row"]
         raw_details = str(F.get(r, "Details", "Message", default=""))
         pd = DET.parse_details(raw_details)      # parse ONCE, for the exemplar only
         _hh = DET.hashes(pd)
         _edom, _eusr = DET.user(pd)
-        eid = keys.event_key(a_id, f"sigma:{title}")
+        eid = keys.event_key(a_id, f"sigma:{title}" + (f"@{logged}" if logged else ""))
         n = agg["n"]
         ev = _ent(eid, "event",
                   (f"SIGMA: {str(title)[:80]}" if n == 1
@@ -1155,6 +1193,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                   a_id, agg["run_id"], agg["loc"],
                   anomaly=agg["anom"], first=agg["first"], artifact=agg["artifact"],
                   flags=["sigma"], title=str(title), level=str(agg["level"]).lower(),
+                  logged_host=logged or None,
                   occurrences=n,
                   channel=F.get(r, "Channel", default=None),
                   eid_num=F.get(r, "EID", "EventID", default=None),
@@ -1170,7 +1209,8 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
         # One linking entry per RULE, not per row: the pass below creates
         # processes/accounts/IOCs from parsed details, and feeding it 183k rows
         # to produce a handful of capped entities was pure waste.
-        sigma_events.append((eid, a_id, pd, agg["first"], agg["artifact"]))
+        sigma_events.append((eid, a_id, pd, agg["first"], agg["artifact"],
+                             (assets_seen.get(a_id), logged)))
 
     # ---- spawned edges (ppid) across the processes we created -----------
     for artifact, rows in (collected_data or {}).items():
@@ -1196,7 +1236,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
     _DET_CAP = 300                                   # per-asset flood guard
     _det_made: dict = {}
     # (A) create from_detection processes where Pstree missed them
-    for eid, asset, pd, ts, src_artifact in sigma_events:
+    for eid, asset, pd, ts, src_artifact, _hosts in sigma_events:
         p, pname = DET.pid(pd), DET.proc(pd)
         if not p or not pname or (asset, p) in proc_by_asset_pid:
             continue
@@ -1210,7 +1250,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                          anomaly=0, first=keys.norm_ts(ts), flags=["from_detection"],
                          pid=p, name=name, cmdline=DET.cmdline(pd), createtime=keys.norm_ts(ts), artifact=src_artifact))
     # (B) edges: event_about(proc), spawned(parent), executed(account), connected(ioc)
-    for eid, asset, pd, ts, src_artifact in sigma_events:
+    for eid, asset, pd, ts, src_artifact, _hosts in sigma_events:
         p = DET.pid(pd)
         proc_eid = proc_by_asset_pid.get((asset, p)) if p else None
         if proc_eid:
@@ -1221,7 +1261,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 rels.append(Relationship(parent, proc_eid, "spawned", sources=[MODULE], ts=ts))
         dom, usr = DET.user(pd)
         if usr:
-            aeid, d, u = _account_eid(asset, dom, usr)
+            aeid, d, u = _account_eid(asset, dom, usr, local_hosts=_hosts)
             if aeid:
                 ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset, run_id,
                                  "hayabusa/details", user=u, domain=d, artifact=src_artifact, first=ts))

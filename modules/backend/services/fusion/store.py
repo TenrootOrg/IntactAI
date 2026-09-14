@@ -655,6 +655,15 @@ def get_case(case_id) -> dict:
     return run.get("details") or {}
 
 
+# Bump when mapping or merging changes how an entity is IDENTIFIED (its id), so a
+# graph stored by the previous code is rebuilt once instead of added to. v2: SIGMA
+# events logged under another computer name, local accounts written with their
+# host prefix, renamed binaries grouped by hash (fusion collection-quality fixes).
+# Without it the first automatic fuse after an upgrade kept both the old and the
+# new entity for the same thing, and showed its findings twice.
+_GRAPH_ENGINE_VERSION = 2
+
+
 def _graph_filter_signature(d, baseline) -> str:
     """Everything whose change invalidates the STORED graph.
 
@@ -677,6 +686,7 @@ def _graph_filter_signature(d, baseline) -> str:
         "is_baseline": bool(d.get("is_baseline")),
         "baseline": bool(baseline),
         "dispositions": _stable_hash(d.get("dispositions") or {}),
+        "engine": _GRAPH_ENGINE_VERSION,
     }
     return _stable_hash(payload)
 
