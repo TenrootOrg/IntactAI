@@ -219,5 +219,83 @@ class TestTheReportTag(_Base):
         self.assertNotIn("API key", tag)
 
 
+
+class TestEveryMessageIsPlain(_Base):
+    """Every reason an AI report could not be written, held to one standard.
+
+    Reported from QA: the Analysis banner was confusing. One message said "no
+    model call made", the next "a model is reachable now", the last "add a model
+    and API key". So every message is now a (problem, fix) pair: the problem in
+    one plain sentence, then what to do and where. These rules keep it that way
+    for every code, including ones added later."""
+
+    def _all(self):
+        out = dict(NS["_LLM_ERR_MESSAGES"])
+        out.update({"config:" + k: v for k, v in NS["_LLM_CONFIG_REASONS"].items()})
+        return out
+
+    def test_every_message_is_a_problem_and_a_fix(self):
+        for code, pair in self._all().items():
+            self.assertIsInstance(pair, tuple, code)
+            self.assertEqual(2, len(pair), code)
+            problem, fix = pair
+            self.assertTrue(problem.strip(), "%s has no problem text" % code)
+            self.assertTrue(fix.strip(), "%s tells the operator nothing to do" % code)
+
+    def test_every_sentence_is_finished_and_short(self):
+        for code, (problem, fix) in self._all().items():
+            for part, text, cap in (("problem", problem, 160), ("fix", fix, 170)):
+                self.assertRegex(text, r"[.)]$", "%s %s is not a finished sentence: %r" % (code, part, text))
+                self.assertNotIn("..", text, "%s %s has a doubled period" % (code, part))
+                self.assertLessEqual(len(text), cap, "%s %s is too long to read at a glance" % (code, part))
+
+    def test_no_internal_jargon_reaches_the_operator(self):
+        for code, (problem, fix) in self._all().items():
+            text = problem + " " + fix
+            for word in ("LLM", "deterministic", "narrat", "graph", "⚠", "→", "pinned"):
+                self.assertNotIn(word, text, "%s says %r: %r" % (code, word, text))
+
+    def test_every_fix_says_where_or_how(self):
+        """A fix must be something to DO: a place in Settings, a retry, or (for
+        the one config-only switch) who changes it."""
+        for code, (_problem, fix) in self._all().items():
+            self.assertTrue(
+                "Settings ▸ Agentic" in fix or "try again" in fix.lower() or "Support" in fix,
+                "%s gives no place or action: %r" % (code, fix))
+
+    def test_every_fix_ends_by_retrying(self):
+        """One reading order everywhere: what to do, THEN retry. The banner turns
+        "then try again." into "then click Regenerate report."; a fix that ends on
+        anything else gets a retry sentence bolted on after it, which reads badly."""
+        for code, (_problem, fix) in self._all().items():
+            self.assertTrue(fix.endswith("then try again.") or fix.startswith("Try again."),
+                            "%s does not end by retrying: %r" % (code, fix))
+
+    def test_the_billing_and_routing_messages_say_the_key_is_fine(self):
+        """Both arrive looking like auth failures; an operator told nothing
+        replaces a key that works."""
+        for code in ("no_credit", "model_not_routable"):
+            self.assertIn("The API key itself is fine.", NS["_LLM_ERR_MESSAGES"][code][0], code)
+
+    def test_every_error_code_the_classifier_returns_has_a_message(self):
+        samples = ("credit balance is too low", "no endpoints available", "401",
+                   "timed out", "429", "connection refused", "something odd")
+        for text in samples:
+            code = classify(RuntimeError(text))
+            self.assertIn(code, NS["_LLM_ERR_MESSAGES"], "%r -> %s has no message" % (text, code))
+
+    def test_reason_text_returns_the_pair_unchanged(self):
+        self.assertEqual(NS["_LLM_ERR_MESSAGES"]["invalid_key"], reason_text("invalid_key"))
+        self.assertEqual(NS["_LLM_CONFIG_REASONS"]["no_model"], reason_text("no_model"))
+        self.assertEqual(NS["_LLM_ERR_MESSAGES"]["llm_error"], reason_text("never-heard-of-it"))
+
+    def test_the_report_tag_reads_as_one_clean_sentence_pair(self):
+        STATE["cfg"]["online_llm"] = {"provider": "openai", "model": "gpt-4o"}
+        tag = sim_tag()
+        self.assertNotIn("..", tag)
+        self.assertIn("No API key is set for the AI model. Until then, reports use", tag)
+        self.assertTrue(tag.rstrip().endswith("then try again._"), tag)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

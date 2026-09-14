@@ -716,20 +716,50 @@ function reportAirGap(md, ls){
   else if(narrated){ airgap=false; tailDetail=''; }
   else if(ls && ls.available===false){ airgap=true; tailDetail=''; }
   else { airgap=false; tailDetail=''; }
-  if(!airgap) return {airgap:false, detail:''};
-  if(ls && ls.available===false && (ls.reason||ls.fix)){
-    // live check currently failing — the freshest, most actionable reason
-    const reason=(ls.reason||'').replace(/[.\s]*$/,'')+'.';
-    return {airgap:true, detail:reason+(ls.fix?(' '+ls.fix):'')};
-  }
+  if(!airgap) return {airgap:false};
   if(ls && ls.available===true){
     // Config AND a live probe both say narration would work RIGHT NOW —
     // whatever this report's own tail says failed (a dead key, no credit…)
     // may no longer be true, e.g. the operator just fixed it. Repeating that
     // stale reason here would read as "still broken" when it plainly isn't.
-    return {airgap:true, reachable:true, detail:''};
+    return {airgap:true, reachable:true, problem:'The AI model is connected now.',
+            fix:'Click Regenerate report to rewrite this report with it.'};
   }
-  return {airgap:true, detail:tailDetail||'No live narration was requested for this report.'};
+  if(ls && ls.available===false && ls.reason){
+    // live check currently failing — the freshest, most actionable reason
+    return {airgap:true, problem:ls.reason, fix:_regenFix(ls.fix)};
+  }
+  // No live answer: all we have is what the report's own tag recorded.
+  // Reports written before the messages were rewritten say "no live narration
+  // was requested", which is internal wording for a background fuse.
+  const t=(tailDetail||'').trim();
+  if(!t || /no live narration was requested|AI model was not used/i.test(t))
+    return {airgap:true, problem:'The AI model was not used for this automatic report.',
+            fix:'Click Regenerate report to write it with the AI model.'};
+  // The tag holds "problem fix" as one string. Split off the fix (the sentence
+  // that retries) so the banner keeps its problem/fix lines and says retry once.
+  const m=/^(.*?[.)])\s+((?:Try again\.|(?:(?!\.\s).)*then try again\.).*)$/s.exec(t);
+  if(m) return {airgap:true, problem:m[1], fix:_regenFix(m[2])};
+  return {airgap:true, problem:t, fix:'Click Regenerate report to try again.'};
+}
+// Every fix ends by telling the operator how to retry, once, in this tab's terms.
+function _regenFix(fix){
+  const f=(fix||'').trim();
+  if(!f) return 'Click Regenerate report to try again.';
+  if(/then try again\.$/i.test(f)) return f.replace(/then try again\.$/i,'then click Regenerate report.');
+  if(/^try again\./i.test(f)) return f.replace(/^try again\./i,'Click Regenerate report to try again.');
+  return f+' Then click Regenerate report.';
+}
+// One title for every case, then the problem, then what to do. It used to say
+// "no model call made" and "add a model and API key" even when a model was
+// connected, with "a model is reachable now" in between: three lines, two stories.
+function airGapBanner(ag){
+  if(!ag || !ag.airgap) return '';
+  return `<div class="agbanner">
+      <div class="agtitle">📝 Template report — written without the AI model</div>
+      <div class="agdetail">${esc(ag.problem)}</div>
+      <div class="agaction">${esc(ag.fix).replace('Regenerate report','<b>Regenerate report</b>')}</div>
+    </div>`;
 }
 function renderReport(info){
   const id=info.case_id;
@@ -741,24 +771,13 @@ function renderReport(info){
   // next to "sending data to the model", which is actively confusing. It
   // reappears on its own once generation ends, correctly, from whatever the
   // result actually was.
-  const ag=generating ? {airgap:false,detail:''} : reportAirGap(md, info.llm_status);
+  const ag=generating ? {airgap:false} : reportAirGap(md, info.llm_status);
   // The loudest thing on the tab, and the FIRST thing rendered: an operator
   // reading a report with no narrative needs to know before they start reading
   // it, not stumble on a footnote after they finish. Framed as the automatic
   // default it is — there is no per-case switch to flip; a model + API key in
   // Settings ▸ Agentic is what turns narration on.
-  // Two situations, and every line of the banner has to agree with which one
-  // this is. It used to keep the no-model wording ("no model call made", "add a
-  // model and API key") even when the live check said a model was reachable,
-  // and put "a model is reachable now" in between: three lines, two stories.
-  const banner = !ag.airgap ? '' : ag.reachable ? `<div class="agbanner">
-      <div class="agtitle">📝 Template report — written before a model was available</div>
-      <div class="agdetail">A model is now connected. Click <b>Regenerate report</b> below to replace this template with an AI-narrated report.</div>
-    </div>` : `<div class="agbanner">
-      <div class="agtitle">🔒 Air-Gap Template — no model is reachable, so this report was written without one</div>
-      <div class="agdetail">${esc(ag.detail)}</div>
-      <div class="agaction">To get an AI-narrated report: add a model and API key in <b>Settings ▸ Agentic</b> (this appliance needs an internet connection), then click <b>Regenerate report</b> below.</div>
-    </div>`;
+  const banner = airGapBanner(ag);
   // The report's own tail already told the story above; showing it again as a
   // raw markdown footnote would just repeat it in a smaller, unstyled font.
   const mdBody = md.replace(/\n\n---\n_(?:Deterministic report — [\s\S]*?|Narrative by live LLM[\s\S]*?)_\n\s*$/, '');

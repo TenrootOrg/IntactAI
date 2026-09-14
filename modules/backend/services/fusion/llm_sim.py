@@ -596,14 +596,21 @@ LLM_PINNED = "pinned"
 LLM_NO_MODEL = "no_model"
 LLM_MISSING_KEY = "missing_key"          # same code chat uses
 
+# Every message is a (problem, fix) PAIR, written for the operator: the problem
+# in one plain sentence, then exactly what to do and where. The Analysis banner
+# shows them on separate lines; chat, the report's closing note and Settings'
+# Test Connection join them. tests/test_llm_status.py holds every message to
+# those rules, and tests/test_air_gap_banner.py renders each one in the banner.
 _LLM_CONFIG_REASONS = {
-    LLM_PINNED: ("The deterministic narrator is pinned for this appliance",
-                 "Clear agentic.fusion_llm_mode to use a live model."),
-    LLM_NO_MODEL: ("No model is configured",
-                   "Choose one in Settings ▸ Agentic."),
-    LLM_MISSING_KEY: ("No API key is configured",
-                      "Add one in Settings ▸ Agentic. Until then this report is "
-                      "written from the correlated graph, which needs no network."),
+    LLM_PINNED: ("This appliance is set to never use an AI model.",
+                 # Set on purpose, in config.yaml, with no UI switch: only
+                 # support can undo it (clear agentic.fusion_llm_mode).
+                 "Ask Support to turn AI reports back on for this appliance, then try again."),
+    LLM_NO_MODEL: ("No AI model is selected.",
+                   "Choose one in Settings ▸ Agentic, then try again."),
+    LLM_MISSING_KEY: ("No API key is set for the AI model.",
+                      "Until then, reports use the case data alone, which needs no "
+                      "network. Add a key in Settings ▸ Agentic, then try again."),
 }
 
 
@@ -616,8 +623,7 @@ def _llm_reason_text(code) -> tuple:
     """
     if code in _LLM_CONFIG_REASONS:
         return _LLM_CONFIG_REASONS[code]
-    msg = _LLM_ERR_MESSAGES.get(code) or _LLM_ERR_MESSAGES.get("llm_error", "")
-    return (msg.lstrip("⚠️ ").strip(), "")
+    return _LLM_ERR_MESSAGES.get(code) or _LLM_ERR_MESSAGES["llm_error"]
 
 
 def llm_status() -> dict:
@@ -722,8 +728,8 @@ def llm_reachability() -> dict:
 def _sim_tag() -> str:
     st = llm_status()
     if st["available"]:                        # narration was possible but not taken
-        return _SIM_TAG_PREFIX + "no live narration was requested._\n"
-    tail = f"{st['reason']}." + (f" {st['fix']}" if st["fix"] else "")
+        return _SIM_TAG_PREFIX + "the AI model was not used for this automatic report._\n"
+    tail = st["reason"] + (f" {st['fix']}" if st["fix"] else "")
     return _SIM_TAG_PREFIX + tail + "_\n"
 
 
@@ -1604,32 +1610,47 @@ class LLMUnavailable(Exception):
 
 
 _LLM_ERR_MESSAGES = {
-    "missing_key": "⚠️ No LLM API key is configured. Add a valid key in Settings to use Case Analysis chat.",
-    "invalid_key": "⚠️ The LLM API key was rejected — it looks invalid or outdated. Update it in Settings.",
-    "no_internet": "⚠️ No connection to the LLM. Check the internet connection and try again.",
-    "timeout": "⚠️ The LLM did not respond in time (timeout). Check the connection or the model, then retry.",
-    "rate_limited": "⚠️ The LLM provider rate-limited the request. Wait a moment and try again.",
-    "missing_offline_url": "⚠️ No local LLM (Ollama) URL is configured. Set it in Settings or switch to an online model.",
-    "llm_error": "⚠️ Could not get a response from the LLM. Check the API key and internet connection.",
-    "cli_not_installed": "⚠️ The subscription CLI is not installed. Install it in Settings → Agentic (needs internet).",
-    "cli_not_authenticated": "⚠️ The subscription is not connected. Sign in from Settings → Agentic (needs internet).",
-    "model_unsupported": "⚠️ The vendor rejected the selected model for this subscription. Clear the Model field in Settings → Agentic to use the model your plan allows.",
-    "no_credit": (
-        "⚠️ The LLM provider accepted the key but refused the request for "
-        "billing reasons — no credit, or the quota for this plan is used up. "
-        "Top up or change plan with the provider, or switch to a different "
-        "provider in Settings → Agentic. The key itself is fine."),
-    "model_not_routable": (
-        "⚠️ The provider has no endpoint it is allowed to route this model to — "
-        "usually a data-policy / privacy restriction on the account rather than "
-        "anything wrong with the key. Pick a different model in Settings → Agentic, "
-        "or relax the provider's data policy (OpenRouter: openrouter.ai/settings/privacy)."),
+    "missing_key": ("No API key is set for the AI model.",
+                    "Add one in Settings ▸ Agentic, then try again."),
+    "invalid_key": ("The AI provider rejected the API key.",
+                    "Enter a valid key in Settings ▸ Agentic, then try again."),
+    "no_internet": ("The appliance cannot reach the AI provider.",
+                    "Check the appliance's internet connection, then try again."),
+    "timeout": ("The AI model took too long to answer.",
+                "Try again. If it keeps happening, check the connection or choose "
+                "a faster model in Settings ▸ Agentic."),
+    "rate_limited": ("The AI provider is limiting requests right now.",
+                     "Wait a minute, then try again."),
+    "missing_offline_url": ("Local model mode is on, but no local model address is set.",
+                            "Set the Ollama URL in Settings ▸ Agentic, or switch to an "
+                            "online model, then try again."),
+    "llm_error": ("The AI model did not answer.",
+                  "Check the API key and the internet connection in Settings ▸ Agentic, "
+                  "then try again."),
+    "cli_not_installed": ("The subscription app (CLI) is not installed.",
+                          "Install it in Settings ▸ Agentic (needs internet), then try again."),
+    "cli_not_authenticated": ("The subscription is not signed in.",
+                              "Sign in from Settings ▸ Agentic (needs internet), then try again."),
+    "model_unsupported": ("Your subscription does not allow the selected model.",
+                          "Clear the Model field in Settings ▸ Agentic to use your "
+                          "plan's default model, then try again."),
+    # Billing and routing both arrive looking like auth failures; saying the key
+    # is fine stops the operator replacing a key that works.
+    "no_credit": ("The AI provider account is out of credit. The API key itself is fine.",
+                  "Add credit with the provider, or switch provider in Settings ▸ Agentic, "
+                  "then try again."),
+    "model_not_routable": ("The provider will not run this model for your account, usually "
+                           "because of its privacy settings. The API key itself is fine.",
+                           "Choose a different model in Settings ▸ Agentic, or relax the "
+                           "provider's privacy settings (OpenRouter: "
+                           "openrouter.ai/settings/privacy), then try again."),
 }
 
 
 def llm_error_message(reason: str) -> str:
     """Operator-facing message for an LLMUnavailable reason code."""
-    return _LLM_ERR_MESSAGES.get(reason, _LLM_ERR_MESSAGES["llm_error"])
+    problem, fix = _LLM_ERR_MESSAGES.get(reason, _LLM_ERR_MESSAGES["llm_error"])
+    return f"⚠️ {problem} {fix}"
 
 
 def classify_llm_failure(exc) -> dict:
