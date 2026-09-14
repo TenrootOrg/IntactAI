@@ -41,6 +41,18 @@ class AutoRegenerateReport(unittest.TestCase):
         self.assertIn('id="cf-autoregen"', page)
         self.assertRegex(page, r"auto_regen_report:\$\('#cf-autoregen'\)")
 
+    def test_it_starts_as_soon_as_the_case_is_drawn(self):
+        """Reported from QA: the banner said "connected" but regeneration only
+        started ~10s later, after the live probe. It must also run the moment
+        fresh case data is drawn."""
+        page = _src("modules/nginx/html/cases.html")
+        body = page.split("function showCase(")[1].split("\nfunction ")[0]
+        self.assertIn("maybeAutoRegen();", body)
+        self.assertNotIn("checked_live===true", page.split("function shouldAutoRegen(")[1].split("\n}")[0])
+
+    def test_the_case_payload_carries_the_last_live_answer(self):
+        self.assertIn("llm_sim.llm_status_known()", _src("modules/backend/routes/case_routes.py"))
+
     def test_it_is_checked_after_every_live_model_check(self):
         """The trigger needs a PROBED answer, which only arrives after the
         reachability refresh -- so both places that refresh must call it."""

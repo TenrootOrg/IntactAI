@@ -696,6 +696,10 @@ def llm_status() -> dict:
 _REACH_CACHE: dict = {}
 _REACH_LOCK = threading.Lock()
 _REACH_TTL = 25.0     # feels "live" on normal navigation; bounds provider cost
+# The last live answer per config, kept past the TTL. Never used to SKIP a probe;
+# only to stop the case payload claiming "available" for a config the provider
+# rejected moments ago (see llm_status_known).
+_REACH_LAST = {}
 
 
 def _reach_fingerprint(cfg) -> str:
@@ -705,9 +709,15 @@ def _reach_fingerprint(cfg) -> str:
     wait out the TTL."""
     mode = str(cfg.get("llm_mode", "online")).lower()
     on = (cfg.get("offline_llm") if mode == "offline" else cfg.get("online_llm")) or {}
+    # A digest of the key, not just whether one is set. With bool() alone,
+    # replacing a rejected key with a working one kept the same fingerprint, so
+    # the stale "rejected" answer survived exactly the change this promises to
+    # notice. The digest never leaves this process and is not the key.
+    import hashlib
+    key = str(on.get("api_key") or "")
     return "|".join([mode, str(on.get("provider")),
                      str(on.get("model") or cfg.get("model")),
-                     str(bool(on.get("api_key")))])
+                     hashlib.sha256(key.encode()).hexdigest()[:16] if key else "-"])
 
 
 def llm_reachability() -> dict:
@@ -745,7 +755,29 @@ def llm_reachability() -> dict:
 
     with _REACH_LOCK:
         _REACH_CACHE[fp] = (now, result)
+        _REACH_LAST[fp] = result
     return result
+
+
+def llm_status_known() -> dict:
+    """llm_status(), corrected by the last live probe of this exact config.
+
+    Makes no call. The case payload uses it so the Analysis tab can act at once:
+    config alone says "available" for a key the provider rejected a minute ago,
+    and the page would otherwise have to wait ~10s for a fresh probe to learn
+    that. A config that changed has a new fingerprint and no remembered answer,
+    so it reads as available until the page's own probe says otherwise.
+    """
+    st = llm_status()
+    if not st["available"]:
+        return st
+    try:
+        last = _REACH_LAST.get(_reach_fingerprint(_agentic_cfg()))
+    except Exception:                                 # noqa: BLE001
+        last = None
+    if last and not last.get("available"):
+        return {**last, "checked_live": False}
+    return st
 
 
 def _sim_tag() -> str:

@@ -462,6 +462,7 @@ function showCase(id,info,rep){
      info.customer_name=rep.customer_name||'';
      info.tlp=rep.tlp||'AMBER'; info.has_logo=!!rep.has_logo; info.master_prompt=rep.master_prompt||'';
      render(info,rep.report_md||'',info.counts||{});
+     maybeAutoRegen();                     // at once, not after the ~10s probe
      // Only the Analysis tab shows this banner, and `tab` can carry over from
      // whatever the operator was last on (switching cases doesn't reset it) —
      // so skip the check entirely unless Analysis is what's about to be drawn.
@@ -776,7 +777,11 @@ function airGapBanner(ag){
 // automatic path regenerates on its own.
 function shouldAutoRegen(info, md, ls){
   if(!info || info.auto_regen_report===false || info.report_generating) return false;
-  if(!(ls && ls.available===true && ls.checked_live===true)) return false;   // a real probe, not config alone
+  // Available per the case payload (config + the last live answer for it) is
+  // enough to start. Waiting for this page's own probe cost ~10s on every open;
+  // the regeneration is itself the real test, and _autoRegenOnce stops a model
+  // that turns out to fail from being tried again.
+  if(!(ls && ls.available===true)) return false;
   const m=/\n\n---\n_Deterministic report — ([\s\S]*?)_\n\s*$/.exec(md||'');
   if(!m) return false;                                          // narrated, or no tag
   return !/no live narration was requested|AI model was not used/i.test(m[1]);

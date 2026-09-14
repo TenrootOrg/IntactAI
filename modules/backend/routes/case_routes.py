@@ -463,10 +463,12 @@ def get_case(case_id):
 
 
 def _llm_status_for(d):
-    """Never let a status probe break the case view — it is a hint, not the data."""
+    """Never let a status probe break the case view — it is a hint, not the data.
+    Config plus the last live answer for it (no call made): the Analysis tab
+    acts on this at once instead of waiting for its own ~10s probe."""
     try:
         from services.fusion import llm_sim
-        return llm_sim.llm_status()
+        return llm_sim.llm_status_known()
     except Exception:                       # noqa: BLE001
         return {"available": True, "code": "ok", "reason": "", "fix": ""}
 

@@ -31,9 +31,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LLM_SIM = os.path.join(ROOT, "modules/backend/services/fusion/llm_sim.py")
 
 WANTED = ("llm_status", "_classify_llm_error", "_sim_tag", "_llm_reason_text",
-          "_subscription_gap")
+          "_subscription_gap", "llm_status_known", "_reach_fingerprint")
 CONSTS = ("LLM_OK", "LLM_PINNED", "LLM_NO_MODEL", "LLM_MISSING_KEY",
-          "_LLM_CONFIG_REASONS", "_LLM_ERR_MESSAGES", "_SIM_TAG_PREFIX")
+          "_LLM_CONFIG_REASONS", "_LLM_ERR_MESSAGES", "_SIM_TAG_PREFIX", "_REACH_LAST")
 
 
 def _load():
@@ -155,6 +155,45 @@ class TestEachReasonIsNamed(_Base):
         for code, (reason, fix) in NS["_LLM_CONFIG_REASONS"].items():
             self.assertTrue(reason.strip(), "%s has no reason text" % code)
             self.assertTrue(fix.strip(), "%s tells the operator nothing to do" % code)
+
+
+class TestTheLastLiveAnswer(_Base):
+    """The case payload's status: config, corrected by the last live probe of
+    that exact config, with no call made. It lets the Analysis tab act at once
+    instead of waiting ~10s for its own probe."""
+
+    def setUp(self):
+        super().setUp()
+        NS["_REACH_LAST"].clear()
+
+    def _remember(self, result):
+        NS["_REACH_LAST"][NS["_reach_fingerprint"](STATE["cfg"])] = result
+
+    def test_no_probe_yet_reads_as_config(self):
+        self.assertTrue(NS["llm_status_known"]()["available"])
+
+    def test_a_rejected_key_is_remembered(self):
+        self._remember({"available": False, "code": "invalid_key",
+                        "reason": "The AI provider rejected the API key.", "fix": "x"})
+        st = NS["llm_status_known"]()
+        self.assertFalse(st["available"])
+        self.assertEqual("invalid_key", st["code"])
+        self.assertFalse(st["checked_live"], "remembered, not probed just now")
+
+    def test_a_new_key_is_not_judged_by_the_old_ones_failure(self):
+        """The fingerprint used bool(api_key): replacing a rejected key with a
+        working one kept the same fingerprint, so the old "rejected" stuck."""
+        self._remember({"available": False, "code": "invalid_key", "reason": "r", "fix": "f"})
+        STATE["cfg"]["online_llm"]["api_key"] = "sk-a-different-key"
+        self.assertTrue(NS["llm_status_known"]()["available"])
+
+    def test_the_fingerprint_never_contains_the_key(self):
+        fp = NS["_reach_fingerprint"](STATE["cfg"])
+        self.assertNotIn("sk-test", fp)
+
+    def test_a_config_problem_still_wins(self):
+        STATE["cfg"]["online_llm"] = {"provider": "openai", "model": "gpt-4o"}
+        self.assertEqual(NS["LLM_MISSING_KEY"], NS["llm_status_known"]()["code"])
 
 
 class TestErrorClassification(_Base):
