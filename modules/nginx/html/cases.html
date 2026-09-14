@@ -93,6 +93,9 @@
   .msg.u{background:var(--acc);color:#fff;margin-left:auto} .msg.a{background:var(--panel2);border:1px solid var(--bd);white-space:pre-wrap}
   .chatbar{display:flex;gap:8px;margin-top:8px}
   .empty{color:var(--muted);text-align:center;margin-top:60px}
+  /* Analysis view opens the active case straight away: never flash "pick a case"
+     while a heavy case loads. init() shows it only when there is no active case. */
+  .v-analysis #main>.empty.pick{display:none}
   .stat{display:inline-block;margin-right:16px;font-size:13px} .stat b{color:#fff;font-size:18px}
   /* The same badges inside a config column. 18px is right in the header strip,
      where it is the headline; beside 11px muted labels it shouts. Size only --
@@ -250,7 +253,7 @@
     <div id="caselist"></div>
   </div>
   <div class="main" id="main">
-    <div class="empty">Pick a case (left) to fuse the runs tagged to it into one<br/>cross-module, cross-host graph — report, timeline + chat.</div>
+    <div class="empty pick">Pick a case (left) to fuse the runs tagged to it into one<br/>cross-module, cross-host graph — report, timeline + chat.</div>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -1496,6 +1499,11 @@ function caseNamePlaceholder(){
 
 (async function init(){
   const cn=$('#cname'); if(cn) cn.placeholder=caseNamePlaceholder();
+  // Analysis view: start loading the remembered active case NOW, before the
+  // round-trips below. They used to run first, so a heavy case sat on the
+  // "pick a case" placeholder for seconds and looked like nothing was selected.
+  const first = VIEW==='analysis' ? window.ActiveCase.get() : '';
+  if(first) openCase(first);
   await window.ActiveCase.ensureActiveCase();
   await refreshSelector();
   loadCases();
@@ -1504,7 +1512,9 @@ function caseNamePlaceholder(){
   // analysis view: always show the ACTIVE workspace's fusion; follow active changes
   if(VIEW==='analysis'){
     const open=()=>{ const a=window.ActiveCase.get(); if(a) openCase(a); };
-    open();
+    const a=window.ActiveCase.get();
+    if(!a) $('#main').innerHTML='<div class="empty">No active case — create or pick one in Cases.</div>';
+    else if(a!==first) open();      // validation moved it; otherwise already loading
     window.addEventListener('active-case-changed', open);
     window.addEventListener('storage', e=>{ if(e.key==='activeCaseId') open(); });
   }
