@@ -1823,12 +1823,12 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         # reset them. Reported live as "the timers didn't reset when I started a
         # new fusion", and before that as the whole thing looking dead.
         _mdl, _prov, _ = _configured_fusion_model()
-        if _narrate and _mdl:
+        if _narrate:                      # a blank model is the plan's default, not none
             _merge_case_details(case_id, {"report_phase": "narrative",
                                           "report_phase_started_at": _now_iso(),
                                           "report_generating_started_at": _now_iso()})
             log_case_event(case_id, "Report · sending request to the LLM", "info",
-                           f"model {_mdl} ({_prov}); payload ≤{llm_ent:,} entities, "
+                           f"model {_model_label(_mdl)} ({_prov}); payload ≤{llm_ent:,} entities, "
                            f"output ≤{llm_out or 'model max'} tokens")
         _report_failed = False
         try:
@@ -1858,16 +1858,14 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
             report = d.get("report_md") or (
                 f"_The report could not be generated ({type(_e).__name__}). The graph "
                 f"was built and saved; press Rescan to try again._")
-        if _narrate and _mdl and not _report_failed:
-            _marker = "_Live LLM unavailable"
-            if _marker in (report or ""):
-                _why = (report.split(_marker, 1)[1].split("\n", 1)[0] or "").strip(" (_.")
-                log_case_event(case_id, "Report · LLM call failed", "warning",
-                               f"{_why or 'provider unavailable'} — deterministic "
-                               f"report used instead")
-            else:
+        if _narrate and not _report_failed:
+            _narrated, _why = _narration_outcome(report)
+            if _narrated:
                 log_case_event(case_id, "Report · LLM responded", "success",
                                f"narrative generated ({len(report or ''):,} chars)")
+            else:
+                log_case_event(case_id, "Report · LLM call failed", "warning",
+                               f"{_why} — template report used instead")
         # ADVISORY analyst pass — incident-grouping + grounded hypotheses. Stored
         # SEPARATELY from the deterministic findings; fed prior operator dispositions.
         # THE ADVISORY IS GONE, engine and all. It was a second whole-case model
@@ -1903,15 +1901,19 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     fresh_checklist = None
     if allow_llm and not d.get("disposition_checklist"):
         _cmdl, _cprov, _ = _configured_fusion_model()
-        if _cmdl:
+        try:
+            _cnarrate = bool(llm_sim._use_real())      # generate_disposition_checklist's own rule
+        except Exception:                               # noqa: BLE001
+            _cnarrate = bool(_cmdl)
+        if _cnarrate:
             _merge_case_details(case_id, {"report_phase": "checklist",
                                           "report_phase_started_at": _now_iso()})
             log_case_event(case_id, "Checklist · sending request to the LLM", "info",
-                           f"model {_cmdl} ({_cprov})")
+                           f"model {_model_label(_cmdl)} ({_cprov})")
         try:
             fresh_checklist = llm_sim.generate_disposition_checklist(
                 gv, window=window, min_severity=min_sev, run_id=case_id, mask=mask)
-            if _cmdl:
+            if _cnarrate:
                 log_case_event(case_id, "Checklist · complete", "success",
                                f"{len(fresh_checklist or []):,} item(s) generated")
         except Exception as e:                       # noqa: BLE001
@@ -2255,6 +2257,26 @@ def _filter_graph_by_hosts(g, excluded_labels) -> FusionGraph:
     return gv
 
 
+def _narration_outcome(report):
+    """(narrated, why) for a report generate_report just returned, read from the
+    report's OWN closing note, which is the one thing that knows what happened.
+
+    The log used to look for a Live-LLM-unavailable note, which generate_report
+    stopped writing, so a call that failed was logged "LLM responded"."""
+    import re
+    md = report or ""
+    if "_Narrative by live LLM" in md:
+        return True, ""
+    m = re.search(r"_Deterministic report — (.*?)_\s*$", md, re.S)
+    return False, (m.group(1).strip() if m else "the model did not return a narrative")
+
+
+def _model_label(model):
+    """What the log names. A subscription with the Model field blank uses the
+    plan's default, which is not "no model" (it used to log exactly that)."""
+    return model or "the plan's default model"
+
+
 def _merge_case_details(case_id, patch) -> None:
     """Merge a patch into the case details without disturbing its status.
 
@@ -2562,14 +2584,22 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
     llm_ident = _llm_identity_budget(d)
     llm_out = _effective_output_cap(d)
     model, provider, mode = _configured_fusion_model()
+    # The SAME rule generate_report uses to decide whether to call the model.
+    # This used to be `if model:`, and a subscription with the Model field blank
+    # (the plan's default) logged "LLM not configured — no model set" and then
+    # narrated with the model anyway.
+    try:
+        will_narrate = bool(use_llm and (llm_sim._use_real() or llm_sim._llm_available()))
+    except Exception:                                     # noqa: BLE001
+        will_narrate = bool(use_llm and model)
     if use_llm:
-        if model:
+        if will_narrate:
             log_case_event(case_id, "Report · sending request to the LLM", "info",
-                           f"model {model} ({provider}); payload ≤{llm_ent:,} entities, "
+                           f"model {_model_label(model)} ({provider}); payload ≤{llm_ent:,} entities, "
                            f"output ≤{llm_out or 'model max'} tokens")
         else:
             log_case_event(case_id, "Report · LLM not configured", "warning",
-                           "no model set — using the deterministic narrator")
+                           "no usable AI model — writing the template report")
     else:
         log_case_event(case_id, "Report · regenerating (deterministic)", "info",
                        "no LLM tokens spent")
@@ -2584,22 +2614,17 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
             validations=d.get("timeline_validations") or None,
             prefer_llm=use_llm, max_entities=llm_ent, budget_chars=llm_chars,
             max_output_tokens=llm_out, detail="explicit", max_identities=llm_ident)
-        if use_llm and model:
-            # generate_report swallows a failed call and returns the DETERMINISTIC
-            # report with a "_Live LLM unavailable (...)_" line appended. Logging
-            # success unconditionally here therefore reported "LLM responded" for
-            # a call that 402'd, on a report the model never wrote — and the char
-            # count reinforced it, since it measures the whole markdown including
-            # the deterministic tables, not the narrative. Read the marker back
-            # instead of assuming.
-            _marker = "_Live LLM unavailable"
-            if _marker in (report or ""):
-                _why = (report.split(_marker, 1)[1].split("\n", 1)[0] or "").strip(" (_.")
-                log_case_event(case_id, "Report · LLM call failed", "warning",
-                               f"{_why or 'provider unavailable'} — deterministic report used instead")
-            else:
+        if will_narrate:
+            # generate_report swallows a failed call and returns the TEMPLATE
+            # report, ending in a note that says why. Read that back instead of
+            # assuming success, or a call that failed is logged "LLM responded".
+            narrated, why = _narration_outcome(report)
+            if narrated:
                 log_case_event(case_id, "Report · LLM responded", "success",
                                f"narrative generated ({len(report):,} chars)")
+            else:
+                log_case_event(case_id, "Report · LLM call failed", "warning",
+                               f"{why} — template report used instead")
     except Exception as e:
         log_case_event(case_id, "Report generation", "error", f"LLM/render failed: {e}")
         raise
@@ -2658,9 +2683,9 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
     # waiting on one. Generated once and never regenerated: it carries the
     # operator's decisions.
     if not d.get("disposition_checklist"):
-        if use_llm and model:
+        if use_llm and llm_sim._use_real():     # generate_disposition_checklist's own rule
             log_case_event(case_id, "Checklist · sending request to the LLM", "info",
-                           f"model {model} ({provider})")
+                           f"model {_model_label(model)} ({provider})")
         try:
             fresh = llm_sim.generate_disposition_checklist(
                 gv, window=window, min_severity=min_sev, run_id=case_id, mask=mask)
