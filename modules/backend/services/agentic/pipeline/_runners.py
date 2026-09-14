@@ -34,7 +34,8 @@ from services.agentic.collectors import (
 from services.agentic.pipeline._helpers import *  # noqa: F401,F403
 from services.agentic.pipeline._helpers import (_start_watchdog, _update_phase, _PIPELINE_SYNTHESIS_GRACE_SECONDS)  # underscore members
 
-def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, cancel_event=None):
+def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, cancel_event=None,
+                         run_settings=None):
     """Background thread: full agentic forensics pipeline (collection-only —
     the run gathers artifacts and is then fused into a Case for analysis)."""
     # Outer watchdog — the absolute backstop. Even if every other
@@ -82,8 +83,21 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, c
 
         artifacts = blueprint.get('artifacts', [])
         settings = blueprint.get('settings', {}).copy()  # Copy to avoid mutating blueprint
+        # Per-run adjustments from the Collection page (validated in the route).
+        # They change THIS run only; the stored blueprint is untouched.
+        _rs = run_settings or {}
+        _changed = []
+        if "timeout_seconds" in _rs and _rs["timeout_seconds"] != settings.get("timeout"):
+            _changed.append(f"timeout {settings.get('timeout', 3600)}s -> {_rs['timeout_seconds']}s")
+            settings["timeout"] = _rs["timeout_seconds"]
+        if "cpu_limit" in _rs and _rs["cpu_limit"] != settings.get("cpu_limit"):
+            _changed.append(f"CPU {settings.get('cpu_limit', 50)}% -> {_rs['cpu_limit']}%")
+            settings["cpu_limit"] = _rs["cpu_limit"]
 
         add_log_to_run(run_id, f"[Pipeline] Blueprint: {blueprint.get('name')} ({len(artifacts)} artifacts)", "info")
+        add_log_to_run(run_id,
+            f"[Pipeline] Run settings: timeout {settings.get('timeout', 3600)}s, CPU {settings.get('cpu_limit', 50)}%"
+            + (f" (adjusted for this run: {', '.join(_changed)})" if _changed else " (blueprint defaults)"), "info")
         add_log_to_run(run_id, f"[Pipeline] Clients: {len(client_ids)} selected", "info")
         add_log_to_run(run_id, f"[Pipeline] Collection time: {collection_minutes} minutes", "info")
         # 2. Create collections on selected clients

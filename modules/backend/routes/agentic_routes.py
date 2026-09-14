@@ -37,6 +37,13 @@ def start_agentic_run():
         if _cid_err:
             return jsonify({"error": _cid_err}), 400
         collection_minutes = data.get('collection_minutes', 30)
+        # Optional per-run timeout / CPU chosen on the Collection page (defaults
+        # come from the blueprint). A collection has no expiry; that is a hunt
+        # setting, so it is not accepted here.
+        from services.vql_safety import validate_run_settings
+        run_settings, _rs_err = validate_run_settings(data, allow_expiry=False)
+        if _rs_err:
+            return jsonify({"error": _rs_err}), 400
 
         # Validate
         if not blueprint_id:
@@ -82,6 +89,8 @@ def start_agentic_run():
                 # the human hostnames (or the client_id as fallback).
                 "hostnames": hostnames,
                 "collection_minutes": collection_minutes,
+                # What the operator changed from the blueprint for this run only.
+                "run_settings": run_settings,
                 "phase": "starting"
             }
         )
@@ -96,6 +105,7 @@ def start_agentic_run():
         thread = threading.Thread(
             target=run_agentic_pipeline,
             args=(run_id, blueprint_id, client_ids, collection_minutes, cancel_event),
+            kwargs={"run_settings": run_settings},
             daemon=True
         )
         thread.start()

@@ -206,6 +206,46 @@ def validate_target_ips(values, max_items: int = 1000):
     return cleaned, None
 
 
+# Per-run resource settings an operator may adjust on the Velociraptor pages.
+# Each value is interpolated into VQL (collect_client / hunt), so it must be a
+# plain integer inside a sane range -- never a string that reaches the query.
+RUN_SETTING_RANGES = {
+    "expire_minutes": (1, 10080),      # hunt expiry: 1 minute .. 7 days
+    "timeout_seconds": (60, 86400),    # per-client collection timeout: 1 minute .. 24 hours
+    "cpu_limit": (1, 100),             # percent of one client's CPU
+}
+
+
+def validate_run_settings(data, *, allow_expiry: bool):
+    """Optional per-run overrides of a blueprint's expiry / timeout / CPU.
+
+    Returns ({key: int}, None) with only the keys that were supplied, or
+    (None, error_message). A missing or null key means "use the blueprint's
+    value". Booleans, fractions, text and out-of-range numbers are rejected.
+    `expire_minutes` is only accepted where it means something (a hunt).
+    """
+    out = {}
+    data = data if isinstance(data, dict) else {}
+    for key, (lo, hi) in RUN_SETTING_RANGES.items():
+        if key == "expire_minutes" and not allow_expiry:
+            continue
+        raw = data.get(key)
+        if raw is None or raw == "":
+            continue
+        if isinstance(raw, bool):
+            return None, f"{key} must be a whole number"
+        if isinstance(raw, str) and raw.strip().isdigit():
+            raw = int(raw.strip())
+        if isinstance(raw, float) and raw.is_integer():
+            raw = int(raw)
+        if not isinstance(raw, int):
+            return None, f"{key} must be a whole number"
+        if not lo <= raw <= hi:
+            return None, f"{key} must be between {lo} and {hi}"
+        out[key] = raw
+    return out, None
+
+
 def escape_vql_string(value: str) -> str:
     """Make a free-form string safe to embed inside a VQL single-quoted
     literal via the standard SQL/VQL escape: double up every `'`.

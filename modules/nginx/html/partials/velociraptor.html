@@ -72,10 +72,19 @@
                                 </div>
                                 <div id="forensics-blueprint-info" class="mt-2 bg-gray-900 rounded-lg p-3 border border-gray-700 hidden">
                                     <p class="text-xs text-gray-400" id="forensics-bp-description"></p>
+                                    <!-- Defaults come from the blueprint; the operator may adjust them for
+                                         THIS run. The blueprint itself is not changed. A collection has no
+                                         expiry (that is a hunt setting), so Expiry shows on Hunt only. -->
                                     <div class="grid grid-cols-3 gap-3 mt-2 text-xs text-gray-400">
-                                        <div>Expiry: <span class="text-white" id="forensics-bp-expiry"></span></div>
-                                        <div>Timeout: <span class="text-white" id="forensics-bp-timeout"></span></div>
-                                        <div>CPU: <span class="text-white" id="forensics-bp-cpu"></span></div>
+                                        <label x-show="forensicsMode === 'raw'" class="block">Expiry (min)
+                                            <input type="number" id="forensics-bp-expiry" min="1" max="10080" step="1" class="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white text-xs focus:border-blue-500 focus:outline-none"></label>
+                                        <label class="block">Timeout (s)
+                                            <input type="number" id="forensics-bp-timeout" min="60" max="86400" step="1" class="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white text-xs focus:border-blue-500 focus:outline-none"></label>
+                                        <label class="block">CPU (%)
+                                            <input type="number" id="forensics-bp-cpu" min="1" max="100" step="1" class="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-white text-xs focus:border-blue-500 focus:outline-none"></label>
+                                    </div>
+                                    <div class="mt-1 text-right">
+                                        <button type="button" onclick="resetForensicsRunSettings()" class="text-[11px] text-blue-400 hover:text-blue-300">Reset to blueprint defaults</button>
                                     </div>
                                 </div>
                             </div>

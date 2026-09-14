@@ -157,6 +157,37 @@ function setForensicsDefaultBlueprint(mode, blueprints = null) {
 function selectAllForensicsClients(select) { forensicsClientManager.selectAll(select); }
 function filterForensicsClients(query) { forensicsClientManager.filter(query); }
 
+// Per-run expiry / timeout / CPU. Defaults are the selected blueprint's settings;
+// the operator can adjust them for one run without editing the blueprint.
+let _forensicsDefaults = { expire_minutes: 120, timeout_seconds: 3600, cpu_limit: 50 };
+const _FORENSICS_RANGES = {
+    expire_minutes: [1, 10080, 'Expiry (minutes)', 'forensics-bp-expiry'],
+    timeout_seconds: [60, 86400, 'Timeout (seconds)', 'forensics-bp-timeout'],
+    cpu_limit: [1, 100, 'CPU (%)', 'forensics-bp-cpu'],
+};
+
+function resetForensicsRunSettings() {
+    for (const [key, [, , , id]] of Object.entries(_FORENSICS_RANGES)) {
+        const el = document.getElementById(id);
+        if (el) el.value = _forensicsDefaults[key];
+    }
+}
+
+/** Read and validate the run settings. Returns {values} or {error}. */
+function readForensicsRunSettings(keys) {
+    const values = {};
+    for (const key of keys) {
+        const [lo, hi, label, id] = _FORENSICS_RANGES[key];
+        const raw = (document.getElementById(id)?.value ?? '').toString().trim();
+        const n = raw === '' ? _forensicsDefaults[key] : Number(raw);
+        if (!Number.isInteger(n) || n < lo || n > hi) {
+            return { error: `${label} must be a whole number between ${lo} and ${hi}.` };
+        }
+        values[key] = n;
+    }
+    return { values };
+}
+
 async function onForensicsBlueprintChange(blueprintId) {
     const countEl = document.getElementById('forensics-artifact-count');
     const infoDiv = document.getElementById('forensics-blueprint-info');
@@ -176,12 +207,13 @@ async function onForensicsBlueprintChange(blueprintId) {
     // Update info panel
     const descEl = document.getElementById('forensics-bp-description');
     if (descEl) descEl.textContent = bp.description || '';
-    const expiryEl = document.getElementById('forensics-bp-expiry');
-    if (expiryEl) expiryEl.textContent = (bp.settings?.hunt_expiry || 120) + ' min';
-    const timeoutEl = document.getElementById('forensics-bp-timeout');
-    if (timeoutEl) timeoutEl.textContent = (bp.settings?.timeout || 3600) + 's';
-    const cpuEl = document.getElementById('forensics-bp-cpu');
-    if (cpuEl) cpuEl.textContent = (bp.settings?.cpu_limit || 50) + '%';
+    // The blueprint supplies the DEFAULTS; the fields stay editable for this run.
+    _forensicsDefaults = {
+        expire_minutes: bp.settings?.hunt_expiry || 120,
+        timeout_seconds: bp.settings?.timeout || 3600,
+        cpu_limit: bp.settings?.cpu_limit || 50,
+    };
+    resetForensicsRunSettings();
     if (infoDiv) infoDiv.classList.remove('hidden');
 }
 
@@ -204,6 +236,14 @@ async function startForensicsCollection() {
             alert('Please select at least one client');
             return;
         }
+    }
+
+    // A collection uses timeout + CPU; a hunt also uses expiry.
+    const runSettings = readForensicsRunSettings(
+        isAiMode ? ['timeout_seconds', 'cpu_limit'] : ['expire_minutes', 'timeout_seconds', 'cpu_limit']);
+    if (runSettings.error) {
+        alert(runSettings.error);
+        return;
     }
 
     const statusEl = document.getElementById('forensics-status');
@@ -232,6 +272,8 @@ async function startForensicsCollection() {
                     blueprint_id: blueprintId,
                     client_ids: selectedClients,
                     collection_minutes: collectionTime,
+                    timeout_seconds: runSettings.values.timeout_seconds,
+                    cpu_limit: runSettings.values.cpu_limit,
                     report_types: []
                 })
             });
@@ -257,9 +299,9 @@ async function startForensicsCollection() {
                 body: JSON.stringify({
                     artifacts: blueprint.artifacts || [],
                     blueprint_name: blueprint.name || 'Custom',
-                    expire_minutes: blueprint.settings?.hunt_expiry || 120,
-                    timeout_seconds: blueprint.settings?.timeout || 3600,
-                    cpu_limit: blueprint.settings?.cpu_limit || 50,
+                    expire_minutes: runSettings.values.expire_minutes,
+                    timeout_seconds: runSettings.values.timeout_seconds,
+                    cpu_limit: runSettings.values.cpu_limit,
                     per_artifact: perArtifact,
                     // Label targeting: [] => run on all clients.
                     include_labels: getSelectedForensicsLabels(),

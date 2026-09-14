@@ -319,9 +319,16 @@ def run_bestpractice_hunts():
                     "error": f"artifacts[{i}] is not a valid Velociraptor artifact name"
                 }), 400
         blueprint_name = data.get('blueprint_name', 'Custom')
-        expire_minutes = data.get('expire_minutes', 120)
-        timeout_seconds = data.get('timeout_seconds', 10000)
-        cpu_limit = data.get('cpu_limit', 50)
+        # Expiry / timeout / CPU are chosen on the Hunt page (defaults from the
+        # blueprint) and are interpolated into the hunt's VQL, so they must be
+        # whole numbers in range. They used to be taken from the body unchecked.
+        from services.vql_safety import validate_run_settings
+        run_settings, _rs_err = validate_run_settings(data, allow_expiry=True)
+        if _rs_err:
+            return jsonify({"error": _rs_err}), 400
+        expire_minutes = run_settings.get('expire_minutes', 120)
+        timeout_seconds = run_settings.get('timeout_seconds', 10000)
+        cpu_limit = run_settings.get('cpu_limit', 50)
         per_artifact = bool(data.get('per_artifact', False))
         # Optional label targeting: scope the hunt to clients carrying any of
         # these Velociraptor labels. Empty/missing => run on ALL clients.
