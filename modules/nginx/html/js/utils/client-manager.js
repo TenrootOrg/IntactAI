@@ -118,12 +118,16 @@ class ClientManager {
      * on screen and says so; it never wipes a working picker. Clicks while a
      * refresh is in flight are ignored.
      */
-    async refresh() {
+    async refresh(button = null) {
         if (this._refreshing) return;
         const container = document.getElementById(this.containerId);
         if (!container) return;
         this._refreshing = true;
         this._refreshError = '';
+        // The button lives in the module's header beside Select All / None, so it
+        // is visible before the list has loaded. Show progress ON it.
+        const label = button ? button.textContent : null;
+        if (button) { button.disabled = true; button.textContent = 'Refreshing…'; }
         this._renderFacetBar();
         try {
             const data = await this._fetchFleet();
@@ -140,6 +144,8 @@ class ClientManager {
             this._refreshing = false;
             this._refreshError = 'Refresh failed — showing the previous list';
             this._renderFacetBar();
+        } finally {
+            if (button) { button.disabled = false; button.textContent = label; }
         }
     }
 
@@ -276,7 +282,6 @@ class ClientManager {
             const el = e.target.closest('[data-facet],[data-act]');
             if (!el) return;
             e.preventDefault();
-            if (el.dataset.act === 'refresh') return this.refresh();
             if (el.dataset.act === 'select-shown') return this.selectFiltered(true);
             if (el.dataset.act === 'deselect-shown') return this.selectFiltered(false);
             if (el.dataset.facet === 'online') return this.setOnlineOnly(!this.onlineOnly);
@@ -323,13 +328,13 @@ class ClientManager {
         groups.push(onlineChip);
         const chipRow = `<div class="flex flex-wrap items-center gap-1.5">${groups.join('<span class="mx-1 text-gray-700">·</span>')}</div>`;
 
-        // Row 2: refresh (every picker) + include/exclude (multi-select only) + counts.
+        // Row 2: include/exclude (multi-select only) + counts. The ↻ Refresh button
+        // is in each module's header, beside Select All / None.
         const counts = this._countsText();
-        const refreshBtn = `<button type="button" data-act="refresh" ${this._refreshing ? 'disabled' : ''} title="Reload the client list from Velociraptor" class="text-[11px] bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded disabled:opacity-60">${this._refreshing ? 'Refreshing…' : '↻ Refresh'}</button>`;
         const selectBtns = this.singleSelect ? '' : `
                 <button type="button" data-act="select-shown" class="text-[11px] bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded">Select shown</button>
                 <button type="button" data-act="deselect-shown" class="text-[11px] bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded">Deselect shown</button>`;
-        const actions = `<div class="flex gap-2 items-center">${refreshBtn}${selectBtns}${this._refreshError ? `<span class="text-[11px] text-red-400">${escapeHtml(this._refreshError)}</span>` : ''}</div>`;
+        const actions = `<div class="flex gap-2 items-center">${selectBtns}${this._refreshError ? `<span class="text-[11px] text-red-400">${escapeHtml(this._refreshError)}</span>` : ''}</div>`;
         const actionRow = `<div class="flex items-center justify-between">${actions}<span class="text-[11px] text-gray-500">${counts}</span></div>`;
 
         bar.innerHTML = chipRow + actionRow;

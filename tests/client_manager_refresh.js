@@ -46,12 +46,12 @@ async function build(opts = {}) {
 const fleet = (...cs) => ({ body: { items: cs, total: cs.length } });
 
 (async () => {
-  // 1. every picker shows the button, single-select (Memory) too
+  // 1. the button lives in the module header, so the component's own bar has none
   for (const single of [false, true]) {
     const t = await build({ singleSelect: single });
     t.responses.push(fleet(client('C.1', 'A')));
     await t.m.load();
-    assert(t.page.parent.bar.innerHTML.includes('data-act="refresh"'), `refresh button missing (singleSelect=${single})`);
+    assert(!t.page.parent.bar.innerHTML.includes('data-act="refresh"'), `a second refresh button (singleSelect=${single})`);
   }
 
   // 2. refresh keeps facets, search and selection; drops vanished clients; shows new ones
@@ -82,33 +82,38 @@ const fleet = (...cs) => ({ body: { items: cs, total: cs.length } });
     await t.m.refresh();
     assert(t.page.container.innerHTML.includes('KEEPME'), 'a failed refresh must not wipe the list');
     assert(t.page.parent.bar.innerHTML.includes('Refresh failed'), 'a failed refresh says so');
-    assert(t.page.parent.bar.innerHTML.includes('↻ Refresh'), 'the button is usable again');
     t.responses.push(fleet(client('C.1', 'KEEPME')));
     await t.m.refresh();
     assert(!t.page.parent.bar.innerHTML.includes('Refresh failed'), 'a successful refresh clears the error');
   }
 
-  // 4. clicking twice while a refresh is in flight fetches once
+  // 4. the header button shows progress, ignores a double click, and is restored
   {
     const t = await build();
     t.responses.push(fleet(client('C.1', 'A')));
     await t.m.load();
-    t.responses.push({ delay: 30, body: { items: [client('C.1', 'A')], total: 1 } });
-    const a = t.m.refresh(), b = t.m.refresh();
-    assert(t.page.parent.bar.innerHTML.includes('Refreshing…'), 'the button shows it is working');
+    t.responses.push({ delay: 30, body: { items: [client('C.1', 'A'), client('C.9', 'NEW-ONE')], total: 2 } });
+    const button = { textContent: '↻ Refresh', disabled: false };
+    const a = t.m.refresh(button), b = t.m.refresh(button);
+    assert.strictEqual(button.textContent, 'Refreshing…', 'the button says it is working');
+    assert.strictEqual(button.disabled, true, 'the button is disabled while working');
     await Promise.all([a, b]);
     assert.strictEqual(t.calls(), 2, 'one load + one refresh, not two refreshes');
+    assert.strictEqual(button.textContent, '↻ Refresh', 'the label comes back');
+    assert.strictEqual(button.disabled, false, 'the button is usable again');
+    assert(t.page.container.innerHTML.includes('NEW-ONE'), 'the refresh reloaded the list');
   }
 
-  // 5. the button in the bar actually calls refresh
+  // 5. the header button is restored after a FAILED refresh too
   {
     const t = await build();
     t.responses.push(fleet(client('C.1', 'A')));
     await t.m.load();
-    t.responses.push(fleet(client('C.1', 'A'), client('C.9', 'VIA-CLICK')));
-    t.page.parent.bar._fire('click', { closest: () => ({ dataset: { act: 'refresh' } }) });
-    await new Promise(r => setTimeout(r, 20));
-    assert(t.page.container.innerHTML.includes('VIA-CLICK'), 'clicking ↻ Refresh reloads the list');
+    t.responses.push(new Error('network down'));
+    const button = { textContent: '↻ Refresh', disabled: false };
+    await t.m.refresh(button);
+    assert.strictEqual(button.textContent, '↻ Refresh');
+    assert.strictEqual(button.disabled, false);
   }
   console.log('client manager refresh: all checks pass');
 })().catch(e => { console.error('FAIL:', e.message); process.exit(1); });

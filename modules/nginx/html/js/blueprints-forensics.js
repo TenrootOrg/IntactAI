@@ -13,6 +13,10 @@
 const forensicsClientManager = new ClientManager('forensics-client-list', 'forensics-client-cb');
 
 async function initForensicsTab(mode = 'ai') {
+    // Start the client list NOW, in parallel with the blueprints. It used to wait
+    // for the blueprint list first, so "Loading clients..." sat there for however
+    // long that took before the client request was even sent.
+    const clientsLoading = forensicsClientManager.load();
     // Load unified blueprints (velociraptor + agentic combined)
     const blueprints = await loadBlueprints('forensics');
 
@@ -34,8 +38,8 @@ async function initForensicsTab(mode = 'ai') {
         setForensicsDefaultBlueprint(mode, blueprints);
     }
 
-    // Load clients (shared faceted picker)
-    await forensicsClientManager.load();
+    // Clients (shared faceted picker) -- already loading since the top.
+    await clientsLoading;
     // Load the hunt label-target options (raw/hunt mode)
     await loadForensicsHuntLabels();
 }

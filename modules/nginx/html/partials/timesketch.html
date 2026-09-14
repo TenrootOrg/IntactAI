@@ -84,6 +84,7 @@
                             <div class="flex items-center justify-between mb-2">
                                 <label class="block text-sm font-medium text-gray-300">Select Clients for Collection</label>
                                 <div class="flex gap-2">
+                                    <button type="button" onclick="timesketchClientManager.refresh(this)" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded disabled:opacity-60" title="Reload the client list from Velociraptor">↻ Refresh</button>
                                     <button onclick="selectAllTimeSketchClients()" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Select All</button>
                                     <button onclick="deselectAllTimeSketchClients()" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">None</button>
                                 </div>
