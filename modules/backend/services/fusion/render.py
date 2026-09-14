@@ -974,6 +974,13 @@ def _distilled_at(graph, *, window, min_severity, max_entities, detail="summary"
         # id in the payload is an id it may print into the report.
         if include_ids:
             fd["id"] = f.id
+        # Logged while the machine had an EARLIER name (image build, provisioning).
+        # Only present when true, so every other finding's payload is unchanged.
+        try:
+            if graph.before_current_name(f):
+                fd["before_current_name"] = True
+        except Exception:                                     # noqa: BLE001
+            pass
         # EXPLICIT: surface real per-event evidence so the narrative can cite specifics.
         if eff_detail == "explicit" and (sev.at_least(f.severity, "high")
                                          or f.kind == "cross_host"):
@@ -1095,6 +1102,9 @@ def _host_coverage(graph, assets, findings) -> list:
         role = _host_role(label)
         if role:
             row["role_hint"] = role
+        hist = (a.attrs or {}).get("name_history")
+        if hist:
+            row["name_history"] = hist
         rows.append(row)
     # Severity first, then volume: the order the narrative should prioritise, not
     # the order finding counts alone would suggest.
@@ -2201,6 +2211,19 @@ def _limitations_md(graph, assets, findings, *, window=None,
                      f"computer name** ({', '.join(_logged[:4])}{'…' if len(_logged) > 4 else ''}). "
                      "These are usually an earlier name of the same machine, or of the image it "
                      "was built from; confirm before attributing them to this incident.")
+    for a in assets or []:
+        try:
+            prev = [h for h in ((a.attrs or {}).get("name_history") or []) if h.get("previous")]
+            if not prev:
+                continue
+            n_before = sum(1 for f in findings if graph.before_current_name(f))
+            names = ", ".join(f"{h['name']} (until {str(h.get('last'))[:10]})" for h in prev[:4])
+            lines.append(f"- **{a.label}** was previously recorded as {names}. "
+                         f"**{n_before} finding(s) predate its current name** and are listed after "
+                         "current activity; they usually come from the image the machine was built "
+                         "from, not from this incident.")
+        except Exception:                                     # noqa: BLE001
+            continue
     undated = sum(1 for f in findings if not f.ts)
     if undated:
         lines.append(f"- **{undated} finding(s) carry no timestamp** and cannot be "

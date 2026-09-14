@@ -332,6 +332,16 @@ class FusionGraph:
             cur.ts = r.ts
         return cur
 
+    def before_current_name(self, f: Finding) -> bool:
+        """True when every entity a finding cites was logged under an EARLIER name
+        of its host (flagged `previous_name` by correlate._mark_previous_names) --
+        typically the image the machine was built from. Never raises."""
+        try:
+            ids = [i for i in (f.entity_ids or []) if i in self.entities]
+            return bool(ids) and all("previous_name" in (self.entities[i].flags or []) for i in ids)
+        except Exception:                                 # noqa: BLE001
+            return False
+
     def add_finding(self, f: Finding) -> None:
         self.findings.append(f)
 

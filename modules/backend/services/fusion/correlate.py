@@ -247,6 +247,7 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     _guarded(_errs, "_resolve_host_assets", lambda: _resolve_host_assets(g))
     _guarded(_errs, "_bridge_hashes", lambda: _bridge_hashes(g))
     _guarded(_errs, "_rollup_severity", lambda: _rollup_severity(g))
+    _guarded(_errs, "_mark_previous_names", lambda: _mark_previous_names(g))                    # before findings are derived
     _guarded(_errs, "_flag_pid_reuse", lambda: _flag_pid_reuse(g))
     _guarded(_errs, "_cross_host_findings", lambda: _cross_host_findings(g))
     _guarded(_errs, "_identity_cross_host_findings", lambda: _identity_cross_host_findings(g))
@@ -260,7 +261,9 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     _guarded(_errs, "_rollup_asset_severity", lambda: _rollup_asset_severity(g))
     _guarded(_errs, "_score_assets", lambda: _score_assets(g))
     try:
-        g.findings.sort(key=lambda f: (-sev.rank(f.severity), f.ts or "9999"))
+        # Activity under an EARLIER name of the machine goes after current activity.
+        # Severity is untouched: a rename can also be an attacker's, so nothing hides.
+        g.findings.sort(key=lambda f: (g.before_current_name(f), -sev.rank(f.severity), f.ts or "9999"))
     except Exception as _e:                                   # noqa: BLE001
         _record_error(_errs, "sort findings", _e)
     return g
@@ -695,6 +698,80 @@ def _bridge_hashes(g: FusionGraph) -> None:
             fresh.append(r)
     g.relationships = fresh
     g.rebuild_indexes()
+
+
+def _mark_previous_names(g: FusionGraph) -> None:
+    """Work out each host's NAME HISTORY from the names its own logs recorded.
+
+    A QA machine's logs carried four names: the image it was built from
+    (WIN-UK1GV882OK6, December 2025), a second build step, a random name Windows
+    gave the new VM for two minutes, and DESKTOP-16OJFO6 from then on. Every
+    event under an old name came strictly BEFORE the first event under the
+    current one. The report nevertheless read the image build -- a Mimikatz
+    string match, log clearing -- as a possible earlier compromise.
+
+    An earlier name is PREVIOUS only if all of its events end before the first
+    event recorded under the current name; a host that really logs under two
+    names at once is left alone. Its events are flagged `previous_name`, and the
+    host keeps `name_history` for the report. Recomputed on every fuse: the flags
+    are cleared first so a stale verdict can never survive new data.
+    """
+    for e in g.entities.values():
+        if "previous_name" in (e.flags or []):
+            e.flags = [x for x in e.flags if x != "previous_name"]
+    by_asset: dict = {}
+    for e in g.entities.values():
+        rec = e.attrs.get("recorded_host")
+        if not rec or not e.first_seen:
+            continue
+        for a in _assets_of(e):
+            by_asset.setdefault(a, []).append((keys.norm_host(rec), str(rec), e))
+    for asset_id, rows in by_asset.items():
+        asset = g.entities.get(asset_id)
+        if asset is None:
+            continue
+        asset.attrs.pop("name_history", None)
+        cur = keys.norm_host(asset.attrs.get("hostname") or asset.label)
+        cur_times = [t for t in (keys.to_utc_dt(e.first_seen) for n, _, e in rows if n == cur) if t]
+        if not cur or not cur_times:
+            continue
+        cur_first = min(cur_times)
+        spans: dict = {}
+        for n, shown, e in rows:
+            if n == cur:
+                continue
+            t0 = keys.to_utc_dt(e.first_seen)
+            if not t0:
+                continue
+            t1 = keys.to_utc_dt(e.last_seen) or t0
+            s = spans.setdefault(n, [shown, t0, t1, []])
+            s[1], s[2] = min(s[1], t0), max(s[2], t1)
+            s[3].append(e)
+        history = []
+        prev_spans = []
+        for n, (shown, t0, t1, ents) in sorted(spans.items(), key=lambda kv: kv[1][1]):
+            previous = t1 < cur_first
+            history.append({"name": shown, "first": t0.isoformat(), "last": t1.isoformat(),
+                            "previous": previous})
+            if previous:
+                prev_spans.append((t0, t1))
+                for e in ents:
+                    e.flags.append("previous_name")
+        # Rows that record no machine name at all (MFT, Amcache file times) belong to
+        # an earlier name only when they fall INSIDE one of its periods. An erasing
+        # tool dated 02:47 during the 02:42-03:27 image build is part of that build.
+        if prev_spans:
+            for e in g.entities.values():
+                if e.type != "event" or e.attrs.get("recorded_host") or "previous_name" in e.flags:
+                    continue
+                if asset_id not in _assets_of(e):
+                    continue
+                t = keys.to_utc_dt(e.first_seen)
+                if t and any(a <= t <= b for a, b in prev_spans):
+                    e.flags.append("previous_name")
+        if history:
+            history.append({"name": asset.label, "since": cur_first.isoformat(), "current": True})
+            asset.attrs["name_history"] = history
 
 
 def _rollup_severity(g: FusionGraph) -> None:
@@ -1364,6 +1441,38 @@ COORD_MIN_TITLES = 3
 COORD_MIN_TACTICS = 2
 
 
+# A burst ends after a quiet WEEK. Measured on a QA collection: the window-wide
+# grouping called 69 detections spread over nine months "coordinated", while a
+# 24-hour gap split one eight-day lab exercise into four findings.
+# ponytail: a fixed gap; tune by calibrate.sweep if real campaigns pause longer.
+COORD_MAX_GAP_HOURS = 168
+
+
+def _bursts(evs: list) -> list:
+    """Split one host's detections into bursts separated by COORD_MAX_GAP_HOURS of
+    quiet. Undated events form their own group. Never raises: on a surprise the
+    detections stay together, exactly as before this split existed."""
+    try:
+        dated = sorted(((keys.to_utc_dt(e.first_seen), e) for e in evs), key=lambda x: (x[0] is None, x[0] or 0))
+        undated = [e for t, e in dated if t is None]
+        out, cur, last = [], [], None
+        for t, e in dated:
+            if t is None:
+                continue
+            if last is not None and (t - last).total_seconds() > COORD_MAX_GAP_HOURS * 3600:
+                out.append(cur)
+                cur = []
+            cur.append(e)
+            last = t
+        if cur:
+            out.append(cur)
+        if undated:
+            out.append(undated)
+        return out
+    except Exception:                                         # noqa: BLE001
+        return [list(evs)]
+
+
 def _tactics_of(title: str) -> set:
     t = (title or "").lower()
     return {k for k, kws in _TACTIC_KW.items() if any(w in t for w in kws)}
@@ -1390,21 +1499,24 @@ def _coordinated_activity(g: FusionGraph, *, window=None, baseline=None) -> None
         if not in_window(e.first_seen, window):
             continue
         for a in _assets_of(e) or ["?"]:
-            per_asset.setdefault(a, []).append(e)
-    for asset_id, evs in per_asset.items():
+            # Per recorded name too: a machine's image build and a later attack on it
+            # are not one coordinated burst.
+            per_asset.setdefault((a, e.attrs.get("logged_host") or ""), []).append(e)
+    for (asset_id, logged), burst_src in per_asset.items():
+      for evs in _bursts(burst_src):
         titles = {e.attrs.get("title") or e.label for e in evs}
         tactics = set().union(*[_tactics_of(e.attrs.get("title") or e.label) for e in evs]) \
             if evs else set()
         if len(titles) < COORD_MIN_TITLES or len(tactics) < COORD_MIN_TACTICS:
             continue
-        host = _host_label(g, asset_id)
+        host = _host_label(g, asset_id) + (f" (logged as {logged})" if logged else "")
         # Fingerprint on the actual composition (titles), not just the host —
         # otherwise an operator dispositioning ONE burst as benign silently
         # mutes every future coordinated-activity finding on that host, even
         # one composed of a completely different set of detections (the
         # watermark re-open check only catches MORE/LATER occurrences, not a
         # differently-composed burst with an equal-or-lower count).
-        composition_fp = hashlib.sha1("|".join(sorted(titles)).encode()).hexdigest()[:8]
+        composition_fp = hashlib.sha1(("|".join(sorted(titles)) + (f"@{logged}" if logged else "")).encode()).hexdigest()[:8]
         g.add_finding(Finding(
             id=_fid("coord", asset_id, composition_fp), title=f"Coordinated suspicious activity on {host}",
             severity="high", confidence="high",

@@ -232,5 +232,133 @@ class ExistingCasesRebuildOnce(unittest.TestCase):
         self.assertRegex(src, r"\n_GRAPH_ENGINE_VERSION = [2-9]\d*\n")
 
 
+
+class ActivityBeforeTheCurrentName(unittest.TestCase):
+    """A QA machine was built from an image named WIN-UK1GV882OK6 in December and
+    renamed DESKTOP-16OJFO6 in August. The report read the image build as a
+    possible earlier compromise."""
+
+    def _renamed(self, old_ts="2025-12-05T03:26:42Z"):
+        return _fuse({"Windows.Hayabusa.Rules": [
+            _sigma("Security Eventlog Cleared", ts=old_ts, computer=OLD),
+            _sigma("Credential Dumping Tools Accessing LSASS Memory", ts="2026-09-01T08:01:17Z")]})
+
+    def test_old_name_activity_that_ended_before_the_rename_is_marked(self):
+        g = self._renamed()
+        old = next(f for f in g.findings if "(logged as" in f.title)
+        cur = next(f for f in g.findings if "(logged as" not in f.title)
+        self.assertTrue(g.before_current_name(old))
+        self.assertFalse(g.before_current_name(cur))
+        hist = g.entities[f"asset:endpoint:{CID}"].attrs["name_history"]
+        self.assertEqual([OLD, HOST], [h["name"] for h in hist])
+        self.assertTrue(hist[0]["previous"])
+
+    def test_current_activity_is_listed_first_and_nothing_is_downgraded(self):
+        g = self._renamed()
+        self.assertNotIn("(logged as", g.findings[0].title)
+        self.assertEqual({"high"}, {f.severity for f in g.findings})
+
+    def test_an_old_name_still_in_use_after_the_rename_is_not_marked(self):
+        g = self._renamed(old_ts="2026-09-02T10:00:00Z")      # after the current name appeared
+        self.assertFalse(any(g.before_current_name(f) for f in g.findings))
+        hist = g.entities[f"asset:endpoint:{CID}"].attrs["name_history"]
+        self.assertFalse(hist[0]["previous"])
+
+    def test_the_report_writer_receives_the_marker_and_the_history(self):
+        g = self._renamed()
+        p = render.distilled(g)
+        marked = [f for f in p["findings"] if f.get("before_current_name")]
+        self.assertEqual(1, len(marked))
+        self.assertIn("(logged as", marked[0]["title"])
+        unmarked = [f for f in p["findings"] if "before_current_name" not in f]
+        self.assertEqual(1, len(unmarked), "current findings keep exactly their old fields")
+        self.assertTrue(any(r.get("name_history") for r in p["host_coverage"]))
+
+    def test_a_row_with_no_machine_name_inside_an_earlier_name_period_is_marked(self):
+        """MFT rows record no computer. An erasing tool dated during the image build
+        belongs to it; one dated after the rename does not."""
+        rows = {"Windows.Hayabusa.Rules": [
+                    _sigma("Security Eventlog Cleared", ts="2025-12-05T02:40:00Z", computer=OLD),
+                    _sigma("Important Log File Cleared", ts="2025-12-05T03:30:00Z", computer=OLD),
+                    _sigma("Credential Dumping Tools Accessing LSASS Memory", ts="2026-09-01T08:01:17Z")],
+                "DetectRaptor.Windows.Detection.MFT.Erasing.Tools": [
+                    {"ClientId": CID, "EventTime": "2025-12-05T02:47:30Z", "OSPath": "C:\\Tools\\sdelete.exe",
+                     "Detection": {"Name": "Erasing Tools", "Criticality": "Medium"}},
+                    {"ClientId": CID, "EventTime": "2026-09-02T10:00:00Z", "OSPath": "C:\\Tools\\eraser.exe",
+                     "Detection": {"Name": "Erasing Tools", "Criticality": "Medium"}}]}
+        g = _fuse(rows, min_severity="informational")
+        mft = {e.attrs.get("path") or e.label: "previous_name" in e.flags
+               for e in g.entities.values() if e.type == "event" and "erasing" in str(e.attrs.get("artifact", "")).lower()}
+        inside = [v for k, v in mft.items() if "sdelete" in str(k).lower()]
+        outside = [v for k, v in mft.items() if "eraser" in str(k).lower()]
+        self.assertEqual([True], inside, mft)
+        self.assertEqual([False], outside, mft)
+
+    def test_every_report_prompt_carries_the_rule(self):
+        with open(os.path.join(ROOT, "modules/backend/services/fusion/llm_sim.py"), encoding="utf-8") as f:
+            self.assertEqual(3, f.read().count("before_current_name=true"))
+
+    def test_limitations_names_the_earlier_names(self):
+        g = self._renamed()
+        assets = [e for e in g.entities.values() if e.type == "asset"]
+        md = render._limitations_md(g, assets, g.findings)
+        self.assertIn(f"was previously recorded as {OLD}", md)
+        self.assertIn("1 finding(s) predate its current name", md)
+
+    def test_a_failure_in_the_pass_costs_nothing_else(self):
+        """Hostile attrs on one entity must not stop the fuse or lose findings."""
+        ents, rels = map_agentic({"Windows.Hayabusa.Rules": [
+            _sigma("Security Eventlog Cleared", ts="2025-12-05T03:26:42Z", computer=OLD),
+            _sigma("Credential Dumping Tools Accessing LSASS Memory", ts="2026-09-01T08:01:17Z")]},
+            run_id="r1", hostnames=HOSTNAMES)
+        ents.append(schema.Entity(id="event:odd", type="event", label="odd", severity="high",
+                                  first_seen="not-a-date", attrs={"recorded_host": ["x"], "_assets": [f"asset:endpoint:{CID}"]}))
+        errors = []
+        g = correlate.assemble("c", [(ents, rels)], ["r1"], min_severity="medium", errors=errors)
+        self.assertEqual(2, len([f for f in g.findings if f.title.startswith("SIGMA:")]), errors)
+
+
+class CoordinatedActivityIsOneBurst(unittest.TestCase):
+    """69 detections over nine months were called one coordinated burst."""
+
+    WINDOW = {"start": "2016-01-01T00:00:00Z", "end": None}
+
+    def _rows(self, day, titles, computer=HOST):
+        return [_sigma(t, ts=f"{day}T07:{10 + i:02d}:00Z", level="medium", computer=computer)
+                for i, t in enumerate(titles)]
+
+    def _fuse_window(self, rows):
+        ents, rels = map_agentic({"Windows.Hayabusa.Rules": rows}, run_id="r1", hostnames=HOSTNAMES)
+        g = correlate.assemble("c", [(ents, rels)], ["r1"], min_severity="medium", window=self.WINDOW)
+        return [f for f in g.findings if f.title.startswith("Coordinated suspicious activity")]
+
+    def test_bursts_weeks_apart_are_separate_findings(self):
+        coord = self._fuse_window(
+            self._rows("2026-08-01", ["Suspicious PowerShell Invocation", "Security Eventlog Cleared", "LSASS Access"])
+            + self._rows("2026-09-01", ["Encoded Command Seen", "Defender Disable Attempt", "Mimikatz Detected"]))
+        self.assertEqual(2, len(coord), [f.summary for f in coord])
+
+    def test_one_campaign_over_a_few_days_stays_one_finding(self):
+        """A 24-hour gap split an eight-day lab exercise into four findings."""
+        coord = self._fuse_window(
+            self._rows("2026-09-01", ["Suspicious PowerShell Invocation", "Security Eventlog Cleared", "LSASS Access"])
+            + self._rows("2026-09-04", ["Encoded Command Seen", "Defender Disable Attempt", "Mimikatz Detected"]))
+        self.assertEqual(1, len(coord), [f.summary for f in coord])
+
+    def test_one_burst_is_still_one_finding(self):
+        coord = self._fuse_window(
+            self._rows("2026-09-01", ["Suspicious PowerShell Invocation", "Security Eventlog Cleared", "LSASS Access"]))
+        self.assertEqual(1, len(coord))
+        self.assertEqual(f"Coordinated suspicious activity on {HOST}", coord[0].title)
+
+    def test_a_burst_under_an_old_name_is_labelled_and_kept_apart(self):
+        coord = self._fuse_window(
+            self._rows("2025-12-05", ["Suspicious PowerShell Invocation", "Security Eventlog Cleared", "LSASS Access"], computer=OLD)
+            + self._rows("2026-09-01", ["Encoded Command Seen", "Defender Disable Attempt", "Mimikatz Detected"]))
+        titles = sorted(f.title for f in coord)
+        self.assertEqual([f"Coordinated suspicious activity on {HOST}",
+                          f"Coordinated suspicious activity on {HOST} (logged as {OLD})"], titles)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

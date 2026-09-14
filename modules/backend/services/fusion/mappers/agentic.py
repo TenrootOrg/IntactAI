@@ -1148,6 +1148,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                  detection=str(dname) if dname else None,
                                  criticality=str(crit) if crit else None,
                                  logged_host=_logged_host(r, host),
+                                 recorded_host=r.get("Computer"),
                                  title=(f"{artifact.split('.')[-1]}: {str(dname)[:60]}"
                                         if dname else None)))
 
@@ -1194,6 +1195,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                   anomaly=agg["anom"], first=agg["first"], artifact=agg["artifact"],
                   flags=["sigma"], title=str(title), level=str(agg["level"]).lower(),
                   logged_host=logged or None,
+                  recorded_host=F.get(r, "Computer", default=None),
                   occurrences=n,
                   channel=F.get(r, "Channel", default=None),
                   eid_num=F.get(r, "EID", "EventID", default=None),

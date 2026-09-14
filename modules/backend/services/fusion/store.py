@@ -661,7 +661,9 @@ def get_case(case_id) -> dict:
 # host prefix, renamed binaries grouped by hash (fusion collection-quality fixes).
 # Without it the first automatic fuse after an upgrade kept both the old and the
 # new entity for the same thing, and showed its findings twice.
-_GRAPH_ENGINE_VERSION = 2
+# v3: events record the machine name their log carried (recorded_host), which the
+# name-history pass needs; a graph stored by v2 has none and must rebuild once.
+_GRAPH_ENGINE_VERSION = 3
 
 
 def _graph_filter_signature(d, baseline) -> str:
