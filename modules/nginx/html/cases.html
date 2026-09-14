@@ -782,18 +782,25 @@ function shouldAutoRegen(info, md, ls){
   // the regeneration is itself the real test, and _autoRegenOnce stops a model
   // that turns out to fail from being tried again.
   if(!(ls && ls.available===true)) return false;
+  // Written under the settings in use NOW: this model already had its try and
+  // this is what it produced. Only a template from DIFFERENT settings (no key,
+  // another provider...) is worth regenerating. This is what stops a failing
+  // model being retried, in every tab, rather than per-tab memory.
+  if(ls.config_id && info.report_config_id && info.report_config_id===ls.config_id) return false;
   const m=/\n\n---\n_Deterministic report — ([\s\S]*?)_\n\s*$/.exec(md||'');
   if(!m) return false;                                          // narrated, or no tag
   return !/no live narration was requested|AI model was not used/i.test(m[1]);
 }
 const _autoRegenTried=new Set();
-function _autoRegenOnce(id, ls){
-  // Once per case, per browser tab, PER SET OF AI SETTINGS. A model that fails
-  // every time must not loop, but switching provider, model or key has to earn
-  // a fresh try: keyed on the case alone, a failure under Gemini blocked the
-  // retry after switching to a working subscription. config_id is an opaque
-  // hash from the backend and changes with any of those settings.
-  const k='autoRegen:'+id+':'+((ls&&ls.config_id)||'');
+function _autoRegenOnce(info){
+  // Backstop, per saved report: never fire twice for the same report under the
+  // same settings (a double draw, a reload while the stamp is missing on an old
+  // report). Keyed on settings alone it blocked a real case: Codex worked, a
+  // switch to Claude wrote a template, and back on Codex nothing happened
+  // because "Codex was already tried". report_written_at makes each saved
+  // report its own key.
+  const ls=info.llm_status||{};
+  const k='autoRegen:'+info.case_id+':'+(ls.config_id||'')+':'+(info.report_written_at||'');
   let seen=_autoRegenTried.has(k);
   try{ seen = seen || sessionStorage.getItem(k)==='1'; sessionStorage.setItem(k,'1'); }catch(e){}
   _autoRegenTried.add(k);
@@ -805,7 +812,7 @@ function maybeAutoRegen(){
   // show a template the server has already replaced with an AI report.
   if(!info || !info._fresh || tab!=='report') return;
   if(!shouldAutoRegen(info, window._md||'', info.llm_status)) return;
-  if(!_autoRegenOnce(info.case_id, info.llm_status)) return;
+  if(!_autoRegenOnce(info)) return;
   toast('AI model connected — regenerating this report…');
   regenReport(info.case_id);
 }

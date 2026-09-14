@@ -50,6 +50,19 @@ class AutoRegenerateReport(unittest.TestCase):
         self.assertIn("maybeAutoRegen();", body)
         self.assertNotIn("checked_live===true", page.split("function shouldAutoRegen(")[1].split("\n}")[0])
 
+    def test_every_saved_report_is_stamped_with_its_settings(self):
+        """The page compares the settings that WROTE the template with the
+        settings now. Both save paths must stamp it, and the payload must carry it."""
+        store = _src("modules/backend/services/fusion/store.py")
+        regen = store.split("def regenerate_report(")[1].split("\ndef ")[0]
+        self.assertIn('"report_config_id": report_cfg_id, "report_written_at": _now_iso()', regen)
+        fuse = store.split("def _fuse_case_locked(")[1].split("\ndef ")[0]
+        self.assertIn('"report_config_id": _report_cfg_id,', fuse)
+        self.assertIn('"report_written_at": _report_written_at,', fuse)
+        routes = _src("modules/backend/routes/case_routes.py")
+        self.assertIn('"report_config_id": d.get("report_config_id")', routes)
+        self.assertIn('"report_written_at": d.get("report_written_at")', routes)
+
     def test_the_case_payload_carries_the_last_live_answer(self):
         self.assertIn("llm_sim.llm_status_known()", _src("modules/backend/routes/case_routes.py"))
 

@@ -58,16 +58,28 @@ expect('not on the Analysis tab', { tab: 'timeline' }, 0);
 expect('remembered view, server not answered yet', { info: { _fresh: false } }, 0);
 expect('no case open', { info: null }, 0);
 
-// Reported live: a try that failed under Gemini blocked the retry after switching
-// to a working subscription. New settings earn one new try; the same settings never twice.
+expect('template written under the settings in use now (that model already had its try)',
+       { info: { report_config_id: 'cfg-codex', report_written_at: 't1' } }, 0);
+expect('template written under other settings', { info: { report_config_id: 'cfg-claude', report_written_at: 't1' } }, 1);
+
+// Reported live, twice. (1) A failure under Gemini blocked the retry after
+// switching to a working subscription. (2) Codex worked, a switch to Claude
+// wrote a template, and back on Codex nothing ran, because "Codex was already
+// tried". Walk the operator's exact sequence, as the server stamps each report.
 {
-  const q = page();
-  q.maybeAutoRegen();                                                 // tried under Gemini, failed
-  q.curInfo = { case_id: 'A', _fresh: true, llm_status: { ...LIVE_OK, config_id: 'cfg-codex-2' } };
-  q.maybeAutoRegen(); q.maybeAutoRegen();                             // switched provider
+  const q = page({ info: { report_config_id: 'cfg-claude', report_written_at: 't1' } });
+  const open = (report_config_id, report_written_at) => {       // a fresh load of the case
+    q.curInfo = { case_id: 'A', _fresh: true, llm_status: LIVE_OK, report_config_id, report_written_at };
+    q.maybeAutoRegen(); q.maybeAutoRegen();                    // drawn, then the probe answers
+  };
+  open('cfg-claude', 't1');   // template from Claude, now on Codex        -> regenerate
+  open('cfg-codex',  't2');   // Codex FAILED and wrote this template      -> leave it
+  open('cfg-codex',  't2');   // reopened                                   -> still leave it
+  open('cfg-claude', 't3');   // switched to Claude again, template again   -> regenerate
+  open('cfg-claude', 't3');   // reopened before it finished saving         -> not twice
   const good = JSON.stringify(q.regens) === '["A","A"]';
-  console.log(`${good ? 'ok  ' : 'FAIL'} changing the AI settings earns exactly one new try: ${JSON.stringify(q.regens)}`);
-  if (!good) fails.push('new settings');
+  console.log(`${good ? 'ok  ' : 'FAIL'} Codex -> Claude -> Codex: regenerates each time the settings changed, never retries a failure: ${JSON.stringify(q.regens)}`);
+  if (!good) fails.push('operator sequence');
 }
 
 // Only the case on screen: another case in the same tab still gets its own one try.

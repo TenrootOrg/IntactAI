@@ -1773,6 +1773,11 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     # Rescan (store.regenerate_report). This keeps the per-action re-fuses (timeline
     # validations, dispositions) fast + token-free, and matches the product rule
     # "first scan generates it; afterwards only on rescan".
+    # Which AI settings wrote the report being saved, and when. A reused report
+    # keeps its own stamp. The Analysis tab regenerates a template automatically
+    # only when the settings NOW differ from the ones that wrote it, so a model
+    # that fails is never retried under the same settings, from any tab.
+    _report_cfg_id, _report_written_at = d.get("report_config_id"), d.get("report_written_at")
     if d.get("report_md") and not force_report:
         report = d.get("report_md")
         # NO NARRATION ON THIS PATH -- the report is reused verbatim. Bound here
@@ -1823,6 +1828,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         # reset them. Reported live as "the timers didn't reset when I started a
         # new fusion", and before that as the whole thing looking dead.
         _mdl, _prov, _ = _configured_fusion_model()
+        _report_cfg_id, _report_written_at = llm_sim._config_id(llm_sim._agentic_cfg()), _now_iso()
         if _narrate:                      # a blank model is the plan's default, not none
             _merge_case_details(case_id, {"report_phase": "narrative",
                                           "report_phase_started_at": _now_iso(),
@@ -1854,6 +1860,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                 detail="explicit", max_identities=llm_ident)
         except Exception as _e:                               # noqa: BLE001
             _report_failed = True
+            _report_cfg_id, _report_written_at = d.get("report_config_id"), d.get("report_written_at")
             _degrade("report generation", _e)
             report = d.get("report_md") or (
                 f"_The report could not be generated ({type(_e).__name__}). The graph "
@@ -1968,6 +1975,8 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                          details={"fusion_graph": {},
                                   "graph_counts": _counts_from_graph_dict(pruned),
                                   "report_md": report,
+                                  "report_config_id": _report_cfg_id,
+                                  "report_written_at": _report_written_at,
                                   "token_ab": token_ab,
                                   # Reusing a report must not zero the cost the
                                   # LAST narration actually paid -- the estimate
@@ -2588,6 +2597,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
     # This used to be `if model:`, and a subscription with the Model field blank
     # (the plan's default) logged "LLM not configured — no model set" and then
     # narrated with the model anyway.
+    report_cfg_id = llm_sim._config_id(llm_sim._agentic_cfg())   # the settings THIS report is written under
     try:
         will_narrate = bool(use_llm and (llm_sim._use_real() or llm_sim._llm_available()))
     except Exception:                                     # noqa: BLE001
@@ -2647,6 +2657,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
     # by however long the narrative took -- measured on a live case: the banner
     # said the advisory was 13 minutes in when it had been running for two.
     _narrative_patch = {"report_md": report, "report_dirty": False,
+                        "report_config_id": report_cfg_id, "report_written_at": _now_iso(),
                         "report_phase": "checklist",
                         "report_phase_started_at": _now_iso(),
                         # What this narration actually cost in calls, so the next

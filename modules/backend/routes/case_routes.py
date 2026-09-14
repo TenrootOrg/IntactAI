@@ -441,6 +441,12 @@ def get_case(case_id):
                     # report_dirty: triage/disposition re-fuses changed the data but left
                     # the report frozen — so the report may not reflect recent changes.
                     "report_dirty": bool(d.get("report_dirty")),
+                    # Which AI settings wrote the current report, and when. The
+                    # Analysis tab compares it with the settings now (llm_status's
+                    # config_id) to decide whether a template is worth one
+                    # automatic regeneration.
+                    "report_config_id": d.get("report_config_id"),
+                    "report_written_at": d.get("report_written_at"),
                     "is_stale": bool(data_stale or report_stale or d.get("report_dirty")),
                     # WHY the report is (or is not) narrated, in the operator's
                     # terms. The Analysis tab shows this instead of leaving them to
