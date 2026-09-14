@@ -96,6 +96,10 @@
   /* Analysis view opens the active case straight away: never flash "pick a case"
      while a heavy case loads. init() shows it only when there is no active case. */
   .v-analysis #main>.empty.pick{display:none}
+  /* placeholder layout drawn while a case with no remembered view loads */
+  .skel{background:linear-gradient(90deg,#1b222c 25%,#252e3a 50%,#1b222c 75%);background-size:200% 100%;
+        animation:skel 1.4s ease-in-out infinite;border-radius:6px}
+  @keyframes skel{from{background-position:200% 0}to{background-position:-200% 0}}
   .stat{display:inline-block;margin-right:16px;font-size:13px} .stat b{color:#fff;font-size:18px}
   /* The same badges inside a config column. 18px is right in the header strip,
      where it is the headline; beside 11px muted labels it shouts. Size only --
@@ -403,13 +407,52 @@ function refreshLlmReachability(){
   }).catch(()=>null);
 }
 
+// The last case view, remembered for this browser tab. A heavy case takes seconds
+// to load; drawing what the operator saw last time makes opening it instant, and
+// the fresh copy replaces it when it lands. sessionStorage, not localStorage, so
+// case data does not outlive the tab. Failures (quota, private mode) just mean
+// no remembered view, and the skeleton is shown instead.
+const VIEW_KEY='caseView:last';
+function rememberedView(id){
+  try{ const v=JSON.parse(sessionStorage.getItem(VIEW_KEY)||'null'); return v&&v.id===id?v:null; }catch(e){ return null; }
+}
+function rememberView(id,info,rep){
+  try{ sessionStorage.setItem(VIEW_KEY, JSON.stringify({id,info,rep})); }
+  catch(e){ try{ sessionStorage.removeItem(VIEW_KEY); }catch(_){} }
+}
+function skeletonView(){
+  const bar=(w,h,m)=>`<div class="skel" style="width:${w};height:${h}px;margin:${m||'0 0 10px'}"></div>`;
+  return `<div class="outwrap">${bar('240px',22)}${bar('140px',12,'0 0 18px')}
+    <div style="display:flex;gap:10px;margin-bottom:18px">${bar('90px',26,0).repeat(7)}</div>
+    ${bar('100%',14)}${bar('92%',14)}${bar('96%',14)}${bar('70%',14)}</div>`;
+}
+
 function openCase(id){
   sel=id; loadCases();
+  const seq=window._openSeq=(window._openSeq||0)+1;
+  // Only when switching TO this case. A re-open of the case already on screen
+  // (after a rescan, a triage edit...) keeps the current view, which is newer
+  // than anything remembered.
+  let shown='';
+  if(!(curInfo && curInfo.case_id===id)){
+    const v=rememberedView(id);
+    if(v){ showCase(id,v.info,v.rep); shown=JSON.stringify([v.info,v.rep]); }
+    else $('#main').innerHTML=skeletonView();
+  }
   // NOTE: we deliberately do NOT fetch /graph here — it's multi-MB and the tabs
   // only need counts (served on /api/cases/<id> as info.counts). Avoids a slow
   // load on every open.
   Promise.all([api('/api/cases/'+id),api('/api/cases/'+id+'/report')])
    .then(([info,rep])=>{
+     if(seq!==window._openSeq) return;          // a newer open superseded this one
+     rememberView(id,info,rep);
+     // Unchanged since the remembered view: don't redraw under the operator.
+     if(shown && JSON.stringify([info,rep])===shown) return;
+     showCase(id,info,rep);
+   });
+}
+
+function showCase(id,info,rep){
      // fold the report meta (branding/master-prompt) into info for the controls.
      // Audience is NOT among them any more: the report is always written for both
      // an executive and a technical reader, so there is nothing to choose.
@@ -422,7 +465,6 @@ function openCase(id){
      if(tab==='report'){
        refreshLlmReachability().then(()=>{ if(curInfo && curInfo.case_id===id && tab==='report') drawTab(); });
      }
-   });
 }
 
 // `c` is the lightweight counts object {hosts,entities,links,findings,cross_host}
