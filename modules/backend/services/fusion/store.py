@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import threading
+import traceback
 
 from .schema import FusionGraph
 from . import correlate, llm_sim, keys, render, budget
@@ -1526,6 +1527,14 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     if inc is not None:
         members = [m for m in members if m in set(inc)]
     seed_graph = None            # set below only on the additive path
+    # Runs that could not be mapped and were skipped so the rest still fuse.
+    # Defined HERE, above the override/membership branch, because it is read
+    # after both branches rejoin -- defined inside one branch it would raise
+    # NameError on the contributions_override path.
+    _skipped: list = []
+    # Units that failed INSIDE assembly (an entity, a relationship, a derivation
+    # pass) and were isolated by correlate.assemble so the rest still built.
+    _assembly_errors: list = []
     if contributions_override is not None:
         contributions = contributions_override
         # Counted off the override itself, so the name `contributions` is never
@@ -1655,7 +1664,32 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
 
         def _contributions():
             for _i, (rid, run) in enumerate(kept_runs):
-                yield _contribution_for_run(run, log=log, refetch=refetch)
+                # ONE BAD RUN MUST NOT LOSE THE OTHERS. Mapping reads whatever a
+                # collector produced; a single malformed row used to raise out of
+                # here and abort the entire fuse, so a case with five good runs
+                # got NO graph at all because the sixth was bad. Observed live:
+                # "Refusion failed ... TypeError: unhashable type: 'list'" after
+                # all three runs had already mapped.
+                #
+                # A failed run is SKIPPED, not silently: it is written to the case
+                # log at error level with the run's name and the exception, and
+                # recorded in _skipped, which turns the completion line into a
+                # PARTIAL warning. Better a graph missing one run than no graph
+                # at all.
+                try:
+                    _c = _contribution_for_run(run, log=log, refetch=refetch)
+                except Exception as _e:                          # noqa: BLE001
+                    _skipped.append({"run_id": rid,
+                                     "name": (run.get("name") or rid)[:120],
+                                     "error": f"{type(_e).__name__}: {_e}"[:200]})
+                    _plog("Refusion · SKIPPED a run that could not be mapped",
+                          "error",
+                          f"{(run.get('name') or rid)[:60]} — {type(_e).__name__}: "
+                          f"{_e} — the other {_nmem - 1} run(s) still fuse",
+                          pct=5 + int(35 * (_i + 1) / _nmem))
+                    traceback.print_exc()
+                    continue
+                yield _c
                 # 5% → 40% spread across the member runs (the per-run read + map is
                 # the bulk of I/O for a multi-host hunt import).
                 _plog(f"Refusion · mapped {_i + 1}/{_nmem} run(s)", "info",
@@ -1678,13 +1712,24 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     _sig_full = _graph_filter_signature(d, baseline)
     g = correlate.assemble(case_id, contributions, members, baseline=baseline, window=window,
                            min_severity=min_sev, dispositions=d.get("dispositions") or None,
-                           seed=seed_graph)
+                           seed=seed_graph, errors=_assembly_errors)
     # Optional cross-infra identity correlation: add analyst-confirmed / auto / manual
     # identity edges. Best-effort + fully isolated — never breaks the fuse (below).
     _apply_identity_links(g, d, log=_plog if _record else None)
     _plog("Refusion · graph built", "info",
           f"{len(g.entities):,} entities, {len(g.relationships):,} links, "
           f"{len(g.findings):,} findings", pct=80)
+    if _assembly_errors:
+        _plog("Refusion · graph built with recoverable errors", "warning",
+              f"{len(_assembly_errors)} item(s) or pass(es) failed and were skipped; "
+              f"everything else is in the graph: "
+              + "; ".join(f"{x['where']} ({x['error']})" for x in _assembly_errors[:8])[:600],
+              pct=80)
+    if _skipped:
+        _plog("Refusion · graph is PARTIAL", "warning",
+              f"{len(_skipped)} run(s) could not be mapped and are NOT in this graph: "
+              + "; ".join(f"{x['name']} ({x['error']})" for x in _skipped)[:600],
+              pct=80)
     if not _record:
         return g
     # cross-case KB: enrich with prior sightings, then index this case (best-effort,
@@ -1921,10 +1966,16 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     if fresh_checklist:
         _mutate_list_field(case_id, "disposition_checklist",
                            lambda cur: cur or fresh_checklist)
-    log_case_event(case_id, "Refusion complete", "success",
+    _degraded = bool(_skipped or _assembly_errors)
+    _partial = ((f" — PARTIAL: {len(_skipped)} run(s) skipped" if _skipped else "")
+                + (f" — {len(_assembly_errors)} recoverable error(s) during assembly"
+                   if _assembly_errors else "")
+                + (", see the warnings above" if _degraded else ""))
+    log_case_event(case_id, "Refusion complete", "warning" if _degraded else "success",
                    f"triggered by {trig} — saved to database — {len(g.entities):,} entities, "
                    f"{len(g.relationships):,} links, {len(g.findings):,} findings "
-                   f"across {len(members)} run(s) · 100%",
+                   f"across {len(members) - len(_skipped)} of {len(members)} run(s)"
+                   f"{_partial} · 100%",
                    pct=100)
     return g
 

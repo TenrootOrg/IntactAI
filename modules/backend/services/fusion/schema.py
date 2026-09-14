@@ -54,12 +54,30 @@ def _wider(a: Optional[str], b: Optional[str], *, want_min: bool) -> Optional[st
 
 
 def _union(dst: list, src: list) -> None:
-    """In-place order-preserving set-union of two lists of hashables."""
-    seen = set(dst)
+    """In-place order-preserving union of two lists.
+
+    Fast path uses a set, which is what sources/flags/_assets always are (short
+    strings). It falls back to a linear scan the moment an element is
+    unhashable, because attribute values are arbitrary mapper JSON and a nested
+    list here used to raise "TypeError: unhashable type: 'list'" and take the
+    entire fuse down with it. Same result either way; the fallback is only
+    slower, and only for the odd entity that needs it.
+    """
+    try:
+        seen = set(dst)
+    except TypeError:
+        for x in src:
+            if x not in dst:
+                dst.append(x)
+        return
     for x in src:
-        if x not in seen:
-            dst.append(x)
-            seen.add(x)
+        try:
+            if x not in seen:
+                dst.append(x)
+                seen.add(x)
+        except TypeError:                      # unhashable element
+            if x not in dst:
+                dst.append(x)
 
 
 def _union_evidence(dst: list, src: list) -> None:
@@ -256,7 +274,16 @@ class FusionGraph:
                 # FORENSIC INTEGRITY: conflicting values from different
                 # observations are kept with provenance, never overwritten.
                 obs = cur.attrs.setdefault(f"{k}_observations", [])
-                vals = {o.get("value") for o in obs if isinstance(o, dict)}
+                # A LIST, not a set. An attribute value is arbitrary mapper JSON
+                # and is routinely a list (a host's users, a process's argv, a
+                # rule's tags). Building a set here hashed those values, so the
+                # first time two runs DISAGREED about any list-valued attribute
+                # the whole fuse died with "TypeError: unhashable type: 'list'"
+                # -- observed on a live case the moment a Velociraptor collection
+                # joined two agentic runs. `x in list` compares with == and works
+                # for lists, dicts and scalars alike. obs holds a handful of
+                # entries, so the linear scan costs nothing.
+                vals = [o.get("value") for o in obs if isinstance(o, dict)]
                 if cur.attrs[k] not in vals:
                     obs.append({"value": cur.attrs[k], "source": "prior"})
                 if v not in vals:

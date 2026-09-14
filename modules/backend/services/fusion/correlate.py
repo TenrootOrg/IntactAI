@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import traceback
 
 from .schema import FusionGraph, Finding, EvidenceRef
 from . import severity as sev
@@ -26,8 +27,43 @@ def _fid(*parts) -> str:
     return "f_" + hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()[:12]
 
 
+def _hashable_dedup(items) -> list:
+    """Order-preserving dedup that DROPS unhashable items instead of raising.
+
+    Asset ids are strings, so a list or dict here is malformed mapper output, not
+    a real id. It could not be looked up in g.entities anyway -- that lookup
+    raises the same TypeError one call later -- so keeping it would only move the
+    crash. Dropping it keeps every well-formed id and lets the pass continue.
+
+    This matters more than per-pass isolation alone: _assets_of() is shared by
+    nearly every derivation pass, so ONE entity with a nested list used to make
+    an entire pass fail -- _derive_findings included, which would leave a case
+    with no findings at all. For the normal all-string case the result is
+    identical to list(dict.fromkeys(items)), order included.
+    """
+    out, seen = [], set()
+    for x in items or ():
+        try:
+            if x in seen:
+                continue
+            seen.add(x)
+        except TypeError:
+            continue
+        out.append(x)
+    return out
+
+
+def _remap_id(remap: dict, x):
+    """remap.get(x, x), except an unhashable x comes back unchanged instead of
+    raising -- _hashable_dedup then drops it."""
+    try:
+        return remap.get(x, x)
+    except TypeError:
+        return x
+
+
 def _assets_of(e) -> list[str]:
-    return list(dict.fromkeys(e.attrs.get("_assets") or []))
+    return _hashable_dedup(e.attrs.get("_assets"))
 
 
 # Structural pivots that are never window/severity-filtered on ingest — they anchor
@@ -35,8 +71,46 @@ def _assets_of(e) -> list[str]:
 _STRUCTURAL_TYPES = {"asset", "account", "ioc", "identity", "config"}
 
 
+# Detail is kept for the first N failures only. A systematically broken mapper
+# can fail on every one of ~228,000 entities in a large capture; recording each
+# would trade a crashed fuse for an exhausted backend. Past the cap, failures are
+# counted, not described.
+_ERROR_DETAIL_CAP = 50
+
+
+def _record_error(errs: list, where: str, exc: BaseException) -> None:
+    """Note one isolated failure. Never raises: it runs inside an except block."""
+    try:
+        if len(errs) < _ERROR_DETAIL_CAP:
+            errs.append({"where": where, "error": f"{type(exc).__name__}: {exc}"[:300]})
+            if len(errs) <= 3:                 # a traceback for the first few only
+                traceback.print_exc()
+        elif errs and errs[-1].get("overflow") is not None:
+            errs[-1]["overflow"] += 1
+        else:
+            errs.append({"where": "(further failures)", "error": "not listed", "overflow": 1})
+    except Exception:                          # noqa: BLE001
+        pass
+
+
+def _guarded(errs: list, name: str, fn, *args, **kwargs):
+    """Run one derivation pass; a failure is recorded and the next pass still runs.
+
+    Callers pass `lambda: _pass(g, ...)` rather than the function and its
+    arguments, so each call still reads exactly as it did unguarded. That is not
+    cosmetic: tests/test_incremental_fusion.py checks that the passes run over
+    the merged graph by looking for `_derive_findings(g` and friends in source.
+    """
+    try:
+        return fn(*args, **kwargs)
+    except Exception as exc:                   # noqa: BLE001
+        _record_error(errs, f"pass {name}", exc)
+        return None
+
+
 def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None,
-             min_severity="informational", dispositions=None, seed=None) -> FusionGraph:
+             min_severity="informational", dispositions=None, seed=None,
+             errors=None) -> FusionGraph:
     """Build the case graph from `contributions`.
 
     `seed` is an existing graph to add to instead of starting empty — the
@@ -74,8 +148,22 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     # effective level (matches _rollup_severity) so a high-anomaly row with a low base
     # severity isn't dropped. Trade-off: the graph is now the FILTERED set, so changing
     # the window/severity requires a Refusion (it's no longer a free re-render).
+    # ONE BAD ITEM MUST NOT LOSE THE GRAPH. Every unit below -- a contribution, an
+    # entity, a relationship, a derivation pass, the final sort -- runs guarded:
+    # a failure is recorded in `errors` and assembly continues with everything
+    # else. Observed live: a fuse of three runs died with "TypeError: unhashable
+    # type: 'list'" inside one entity merge and the case got NO graph at all.
+    # Isolation is always on; `errors` only decides whether the caller hears
+    # about it (store.py reports it as a PARTIAL graph).
+    _errs = errors if errors is not None else []
     pending_rels = []
-    for ents, rels in contributions:
+    for _contrib in contributions:
+        try:
+            ents, rels = _contrib
+            ents, rels = list(ents or []), list(rels or [])
+        except Exception as _e:                               # noqa: BLE001
+            _record_error(_errs, "a contribution that is not (entities, relationships)", _e)
+            continue
         for e in ents:
             # Filter ONLY time-stamped rows (the bulk: events / files / hashes) by
             # window + severity. NEVER drop:
@@ -87,31 +175,40 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
             # The exemption is BY TYPE, not "has no first_seen": a mapper that stamps
             # first_seen on a pivot (e.g. the cloud mapper on AWS accounts/IOCs) must
             # still be exempt, else its accounts/IOCs + all their edges get window-cut.
-            if e.type not in _STRUCTURAL_TYPES and e.first_seen:
-                eff = sev.max_level(e.severity, sev.from_anomaly(e.anomaly))
-                if not (sev.at_least(eff, min_severity) and in_window(e.first_seen, window)):
-                    continue
-            g.upsert(e)
+            try:
+                if e.type not in _STRUCTURAL_TYPES and e.first_seen:
+                    eff = sev.max_level(e.severity, sev.from_anomaly(e.anomaly))
+                    if not (sev.at_least(eff, min_severity) and in_window(e.first_seen, window)):
+                        continue
+                g.upsert(e)
+            except Exception as _e:                           # noqa: BLE001
+                _record_error(_errs, f"entity {getattr(e, 'id', '?')!r}", _e)
         pending_rels.extend(rels)
     # Drop edges whose endpoint was filtered out (no dangling relationships).
     for r in pending_rels:
-        if r.src in g.entities and r.dst in g.entities:
-            g.relate(r)
-    _resolve_host_assets(g)
-    _bridge_hashes(g)
-    _rollup_severity(g)
-    _flag_pid_reuse(g)
-    _cross_host_findings(g)
-    _identity_cross_host_findings(g)
-    _derive_findings(g, baseline=baseline, window=window)
-    _coordinated_activity(g, window=window, baseline=baseline)
-    _recover_mitre_from_text(g)               # after EVERY finding exists
-    _corroboration(g)
-    _stamp_finding_watermarks(g)              # occurrence watermark — before dispositions
-    _apply_dispositions(g, dispositions)      # operator triage — before severity rollup
-    _rollup_asset_severity(g)
-    _score_assets(g)
-    g.findings.sort(key=lambda f: (-sev.rank(f.severity), f.ts or "9999"))
+        try:
+            if r.src in g.entities and r.dst in g.entities:
+                g.relate(r)
+        except Exception as _e:                               # noqa: BLE001
+            _record_error(_errs, f"relationship {getattr(r, 'kind', '?')!r}", _e)
+    _guarded(_errs, "_resolve_host_assets", lambda: _resolve_host_assets(g))
+    _guarded(_errs, "_bridge_hashes", lambda: _bridge_hashes(g))
+    _guarded(_errs, "_rollup_severity", lambda: _rollup_severity(g))
+    _guarded(_errs, "_flag_pid_reuse", lambda: _flag_pid_reuse(g))
+    _guarded(_errs, "_cross_host_findings", lambda: _cross_host_findings(g))
+    _guarded(_errs, "_identity_cross_host_findings", lambda: _identity_cross_host_findings(g))
+    _guarded(_errs, "_derive_findings", lambda: _derive_findings(g, baseline=baseline, window=window))
+    _guarded(_errs, "_coordinated_activity", lambda: _coordinated_activity(g, window=window, baseline=baseline))
+    _guarded(_errs, "_recover_mitre_from_text", lambda: _recover_mitre_from_text(g))               # after EVERY finding exists
+    _guarded(_errs, "_corroboration", lambda: _corroboration(g))
+    _guarded(_errs, "_stamp_finding_watermarks", lambda: _stamp_finding_watermarks(g))              # occurrence watermark — before dispositions
+    _guarded(_errs, "_apply_dispositions", lambda: _apply_dispositions(g, dispositions))      # operator triage — before severity rollup
+    _guarded(_errs, "_rollup_asset_severity", lambda: _rollup_asset_severity(g))
+    _guarded(_errs, "_score_assets", lambda: _score_assets(g))
+    try:
+        g.findings.sort(key=lambda f: (-sev.rank(f.severity), f.ts or "9999"))
+    except Exception as _e:                                   # noqa: BLE001
+        _record_error(_errs, "sort findings", _e)
     return g
 
 
@@ -430,7 +527,7 @@ def _resolve_host_assets(g: FusionGraph) -> None:
     for e in g.entities.values():                  # remap every entity's asset list
         al = e.attrs.get("_assets")
         if al:
-            e.attrs["_assets"] = list(dict.fromkeys(remap.get(x, x) for x in al))
+            e.attrs["_assets"] = _hashable_dedup(_remap_id(remap, x) for x in al)
     for r in g.relationships:                       # remap edge endpoints
         r.src, r.dst = remap.get(r.src, r.src), remap.get(r.dst, r.dst)
     seen: dict = {}                                 # dedup (src,dst,kind) after remap
