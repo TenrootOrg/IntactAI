@@ -15,23 +15,32 @@ An air-gapped install (`install.sh --package …`) ships and registers the tools
 **default blueprints** use. They are stored on the Velociraptor server and served
 to endpoints from it, so they work with no internet:
 
-| Tool name | File |
-|---|---|
-| `Autorun_amd64` | `autorunsc64.exe` |
-| `lastactivityview` | `lastactivityview.zip` |
-| `DetectRaptorLolRMM` | `lolrmm.csv` |
-| `FileYaraWindows` / `FileYaraLinux` / `FileYaraMacOS` | `full_*_file.yar.gz` |
-| `extsentry` | `extsentry_feed.json` |
-| `VelociraptorWindows`, `VelociraptorWindowsMSI`, `VelociraptorLinux`, `VelociraptorCollector` | the Velociraptor binaries and the offline collector |
+| Tool name | File | Used by |
+|---|---|---|
+| `Autorun_amd64` | `autorunsc64.exe` | `Windows.Sysinternals.Autoruns` |
+| `lastactivityview` | `lastactivityview.zip` | `Windows.Nirsoft.LastActivityView` |
+| `DetectRaptorLolRMM` | `lolrmm.csv` | `DetectRaptor.Windows.Detection.LolRMM` |
+| `VelociraptorWindows`, `VelociraptorWindowsMSI`, `VelociraptorLinux`, `VelociraptorCollector` | the Velociraptor binaries and the offline collector | client installers, offline collectors |
 
-Measured on an `intact-20260825` appliance: 12 tools ready offline.
+That is **7 tools**, measured on a clean `install.sh --package` install of
+`intact-20260903` with only Velociraptor enabled. Every artifact the default
+Velociraptor blueprints use is present, and every tool they need is stored, on
+64-bit Windows. `Windows.Sysinternals.Autoruns` on **32-bit** Windows needs
+`Autorun_386`, which is not included.
 
 ## What is not inside
 
-Everything else. The same appliance had **78** more tools registered by name
-only, pointing at internet URLs — Hayabusa, Sigcheck, FTK Imager, CatScale,
-Bulk Extractor, ThorZIP, the log4shell scanners, and others. The artifacts that
-use them fail on an air-gapped box until you add the tool yourself.
+Everything else: **79** more tools that artifacts on the server refer to, stored
+by name only and pointing at internet URLs. Among them are Hayabusa, Sigcheck,
+FTK Imager, CatScale, Bulk Extractor, ThorZIP, the log4shell scanners, and:
+
+- `FileYaraWindows` / `FileYaraLinux` / `FileYaraMacOS`, the rule files for
+  `DetectRaptor.Generic.Detection.YaraFile`;
+- `extsentry`, the feed for `DetectRaptor.Generic.Detection.BrowserExtensions`.
+
+No default blueprint uses these. Their artifacts fail on an air-gapped box until
+you add the tool yourself. A box that was installed or maintained **with
+internet** may already hold some of them.
 
 The package deliberately carries only the default tools (see
 `data/tools_inventory.yaml`: `enabled: true` is the default tier). Setting
@@ -42,12 +51,18 @@ internet** download them.
 ## Add a tool by hand
 
 All commands run on the appliance, from the Intact folder (the one holding
-`install.sh`). `V` is a shortcut for the Velociraptor binary inside its
-container:
+`install.sh`). `V` is a shortcut that runs the Velociraptor binary inside its
+container and sends each query **to the running server**:
 
 ```bash
-V="docker exec intact_velociraptor /velociraptor/velociraptor --config /velociraptor/server.config.yaml"
+V="docker exec intact_velociraptor /velociraptor/velociraptor --api_config /velociraptor/api.config.yaml"
 ```
+
+Use `--api_config`, not `--config /velociraptor/server.config.yaml`. With
+`--config`, `query` runs in a separate local process that sees only the 421
+built-in artifacts. It misses the ~400 curated artifacts the server loads at
+start (DetectRaptor, the Artifact Exchange, Hayabusa and others), so step 1 would
+under-report what is missing.
 
 ### 1. List the tools that are missing (on the appliance)
 
@@ -59,7 +74,7 @@ $V query --format jsonl \
 ```
 
 Each line names a tool, the URL to download it from, and the artifact that needs
-it:
+it. A tool shared by several artifacts appears once per artifact:
 
 ```json
 {"Tool":"Bulk_Extractor_Binary","Url":"https://github.com/Velocidex/Tools/raw/main/BulkExtractor/bulk_extractor.exe","ArtifactName":"Windows.Forensics.BulkExtractor"}
@@ -124,16 +139,14 @@ done < tools_to_register.txt
 ### 5. Check it
 
 ```bash
-$V tools show Bulk_Extractor_Binary
+$V query --format jsonl \
+  "SELECT name, serve_locally, filename, hash FROM inventory() WHERE name = 'Bulk_Extractor_Binary'"
 ```
 
-Expect `serve_locally: true`, your file name, and a `hash`:
+Expect `serve_locally` true, your file name, and a `hash`:
 
-```
-name: Bulk_Extractor_Binary
-serve_locally: true
-filename: bulk_extractor.exe
-hash: <sha256 of the file>
+```json
+{"name":"Bulk_Extractor_Binary","serve_locally":true,"filename":"bulk_extractor.exe","hash":"<sha256 of the file>"}
 ```
 
 Then run the artifact. The endpoint downloads the tool from the appliance.
