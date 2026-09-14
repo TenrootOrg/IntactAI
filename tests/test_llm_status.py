@@ -30,7 +30,8 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LLM_SIM = os.path.join(ROOT, "modules/backend/services/fusion/llm_sim.py")
 
-WANTED = ("llm_status", "_classify_llm_error", "_sim_tag", "_llm_reason_text")
+WANTED = ("llm_status", "_classify_llm_error", "_sim_tag", "_llm_reason_text",
+          "_subscription_gap")
 CONSTS = ("LLM_OK", "LLM_PINNED", "LLM_NO_MODEL", "LLM_MISSING_KEY",
           "_LLM_CONFIG_REASONS", "_LLM_ERR_MESSAGES", "_SIM_TAG_PREFIX")
 
@@ -88,6 +89,22 @@ class TestAvailable(_Base):
         STATE["cfg"]["online_llm"] = {"provider": "claude", "model": "opus"}
         STATE["subscription"] = True
         self.assertTrue(status()["available"])
+
+    def test_a_subscription_with_the_model_left_blank_is_available(self):
+        """Reported live: a connected Codex subscription with the Model field
+        blank (the plan's default, which Settings allows) was shown as "No AI
+        model is selected", and the banner never offered Regenerate. The report
+        path itself worked; only this status check demanded a model name."""
+        STATE["cfg"]["online_llm"] = {"provider": "codex-subscription", "model": "",
+                                      "api_key": "leftover"}
+        STATE["subscription"] = True
+        st = status()
+        self.assertTrue(st["available"], st)
+        self.assertEqual("", st["reason"])
+
+    def test_a_blank_model_is_still_missing_for_a_key_based_provider(self):
+        STATE["cfg"]["online_llm"] = {"provider": "openai", "model": "", "api_key": "sk-test"}
+        self.assertEqual(NS["LLM_NO_MODEL"], status()["code"])
 
     def test_a_self_hosted_model_needs_neither_key_nor_route(self):
         STATE["cfg"] = {"llm_mode": "offline"}

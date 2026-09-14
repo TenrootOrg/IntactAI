@@ -626,6 +626,19 @@ def _llm_reason_text(code) -> tuple:
     return _LLM_ERR_MESSAGES.get(code) or _LLM_ERR_MESSAGES["llm_error"]
 
 
+def _subscription_gap(provider):
+    """For a subscription provider that is NOT ready: which step is missing
+    ("cli_not_installed" / "cli_not_authenticated"). None for any other provider,
+    or when that cannot be told, so the caller falls through to the usual checks."""
+    try:
+        from services.agentic import subscription_cli as _sub
+        if not _sub.is_subscription_provider(provider):
+            return None
+        return "cli_not_installed" if not _sub.is_installed(provider) else "cli_not_authenticated"
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def llm_status() -> dict:
     """Can a report be narrated, and if not, WHY — in the operator's terms.
 
@@ -647,9 +660,19 @@ def llm_status() -> dict:
         code = LLM_OK                         # self-hosted; nothing to key or reach
     else:
         online = cfg.get("online_llm") or {}
-        if not (online.get("model") or cfg.get("model")):
+        provider = online.get("provider")
+        if _subscription_ready(provider):
+            # Checked BEFORE the model name. A subscription needs no key, and a
+            # blank Model field means "the plan's default" (Settings says so).
+            # The model check used to come first, so a connected Codex
+            # subscription with the field blank was reported as "No AI model is
+            # selected" -- while _use_real() and the call itself worked fine.
+            code = LLM_OK
+        elif _subscription_gap(provider):
+            code = _subscription_gap(provider)    # not installed / not signed in
+        elif not (online.get("model") or cfg.get("model")):
             code = LLM_NO_MODEL
-        elif _subscription_ready(online.get("provider")) or online.get("api_key"):
+        elif online.get("api_key"):
             code = LLM_OK
         else:
             code = LLM_MISSING_KEY
