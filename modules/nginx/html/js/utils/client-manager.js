@@ -53,6 +53,9 @@ class ClientManager {
         this._listenerAttached = false;
         this._facetBar = null;
         this._radioName = `${containerId}-radio`;
+        this._refreshing = false;  // a refresh is in flight (repeat clicks ignored)
+        this._refreshError = '';   // shown in the bar; the list itself is kept
+        this._loadedAt = null;     // when the fleet was last fetched
     }
 
     /**
@@ -78,23 +81,65 @@ class ClientManager {
         }
 
         try {
-            let url = `/api/clients?limit=${this.limit}&include_offline=true`;
-            if (this.search) url += `&search=${encodeURIComponent(this.search)}`;
-
-            const response = await fetch(url);
-            if (!response.ok) {
+            const data = await this._fetchFleet();
+            if (!data) {
                 container.innerHTML = '<p class="text-sm text-red-400">Failed to load clients</p>';
                 return;
             }
-
-            const data = await response.json();
-            this._clients = data.items || [];
-            this.totalClients = data.total || this._clients.length;
-
+            this._setFleet(data);
             this._applyAutoSelect();
             this.render();
         } catch (error) {
-            container.innerHTML = `<p class="text-sm text-red-400">Error: ${error.message}</p>`;
+            container.innerHTML = `<p class="text-sm text-red-400">Error: ${escapeHtml(error.message)}</p>`;
+        }
+    }
+
+    /** GET the fleet. Returns the JSON body, or null on a non-OK response. */
+    async _fetchFleet() {
+        let url = `/api/clients?limit=${this.limit}&include_offline=true`;
+        if (this.search) url += `&search=${encodeURIComponent(this.search)}`;
+        const response = await fetch(url);
+        if (!response.ok) return null;
+        return response.json();
+    }
+
+    _setFleet(data) {
+        this._clients = data.items || [];
+        this.totalClients = data.total || this._clients.length;
+        this._loadedAt = new Date();
+    }
+
+    /**
+     * Re-fetch the fleet on demand (the ↻ Refresh button in every picker).
+     *
+     * Keeps everything the operator set: OS/label/online facets, the name
+     * filter, and the selection -- except clients that no longer exist, which
+     * are dropped so a job is never sent to one. A failed refresh KEEPS the list
+     * on screen and says so; it never wipes a working picker. Clicks while a
+     * refresh is in flight are ignored.
+     */
+    async refresh() {
+        if (this._refreshing) return;
+        const container = document.getElementById(this.containerId);
+        if (!container) return;
+        this._refreshing = true;
+        this._refreshError = '';
+        this._renderFacetBar();
+        try {
+            const data = await this._fetchFleet();
+            if (!data) throw new Error('the server did not return the client list');
+            this._setFleet(data);
+            const ids = new Set(this._clients.map(c => c.client_id));
+            const before = this.selected.size;
+            this.selected = new Set([...this.selected].filter(id => ids.has(id)));
+            this._applyAutoSelect();
+            this._refreshing = false;
+            this.render();
+            if (this.selected.size !== before) this._fireChange();
+        } catch (error) {
+            this._refreshing = false;
+            this._refreshError = 'Refresh failed — showing the previous list';
+            this._renderFacetBar();
         }
     }
 
@@ -231,6 +276,7 @@ class ClientManager {
             const el = e.target.closest('[data-facet],[data-act]');
             if (!el) return;
             e.preventDefault();
+            if (el.dataset.act === 'refresh') return this.refresh();
             if (el.dataset.act === 'select-shown') return this.selectFiltered(true);
             if (el.dataset.act === 'deselect-shown') return this.selectFiltered(false);
             if (el.dataset.facet === 'online') return this.setOnlineOnly(!this.onlineOnly);
@@ -277,16 +323,14 @@ class ClientManager {
         groups.push(onlineChip);
         const chipRow = `<div class="flex flex-wrap items-center gap-1.5">${groups.join('<span class="mx-1 text-gray-700">·</span>')}</div>`;
 
-        // Row 2: include/exclude actions (multi-select only) + counts.
-        const counts = this.singleSelect
-            ? `${this._shownCount} shown`
-            : `${this._shownCount} shown · ${this.selected.size} selected`;
-        const actions = this.singleSelect ? '' : `
-            <div class="flex gap-2">
+        // Row 2: refresh (every picker) + include/exclude (multi-select only) + counts.
+        const counts = this._countsText();
+        const refreshBtn = `<button type="button" data-act="refresh" ${this._refreshing ? 'disabled' : ''} title="Reload the client list from Velociraptor" class="text-[11px] bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded disabled:opacity-60">${this._refreshing ? 'Refreshing…' : '↻ Refresh'}</button>`;
+        const selectBtns = this.singleSelect ? '' : `
                 <button type="button" data-act="select-shown" class="text-[11px] bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded">Select shown</button>
-                <button type="button" data-act="deselect-shown" class="text-[11px] bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded">Deselect shown</button>
-            </div>`;
-        const actionRow = `<div class="flex items-center justify-between">${actions || '<span></span>'}<span class="text-[11px] text-gray-500">${counts}</span></div>`;
+                <button type="button" data-act="deselect-shown" class="text-[11px] bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded">Deselect shown</button>`;
+        const actions = `<div class="flex gap-2 items-center">${refreshBtn}${selectBtns}${this._refreshError ? `<span class="text-[11px] text-red-400">${escapeHtml(this._refreshError)}</span>` : ''}</div>`;
+        const actionRow = `<div class="flex items-center justify-between">${actions}<span class="text-[11px] text-gray-500">${counts}</span></div>`;
 
         bar.innerHTML = chipRow + actionRow;
     }
@@ -295,11 +339,17 @@ class ClientManager {
     _updateCounts() {
         if (!this._facetBar) return;
         const span = this._facetBar.querySelector('.flex.items-center.justify-between > span:last-child');
-        if (span) {
-            span.textContent = this.singleSelect
-                ? `${this._shownCount} shown`
-                : `${this._shownCount} shown · ${this.selected.size} selected`;
-        }
+        if (span) span.textContent = this._countsText();
+    }
+
+    _countsText() {
+        const base = this.singleSelect
+            ? `${this._shownCount} shown`
+            : `${this._shownCount} shown · ${this.selected.size} selected`;
+        if (!this._loadedAt) return base;
+        const p = n => String(n).padStart(2, '0');
+        const t = this._loadedAt;
+        return `${base} · updated ${p(t.getHours())}:${p(t.getMinutes())}:${p(t.getSeconds())}`;
     }
 
     // ------------------------------------------------------------------
