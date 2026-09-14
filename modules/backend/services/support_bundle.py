@@ -169,6 +169,17 @@ _SECRET_PATTERNS = [
     (re.compile(r'((?:Bearer|Basic)\s+)(\S+)'), _mask_bearer),
     # Credentials inside a URL: scheme://user:secret@host
     (re.compile(r'(://[^:/@\s]+:)([^@/\s]+)(@)'), _mask_url),
+    # A key in a URL's QUERY STRING. Anchored on `?`/`&`, which is what makes a
+    # bare `key=` safe here when it is not safe in prose. Found in a live
+    # backend log: a failed Gemini catalog fetch printed
+    #   400 Client Error: Bad Request for url: https://…/v1beta/models?key=<key>
+    (re.compile(r'([?&](?:key|api[_-]?key|apikey|access[_-]?token|token)=)([^&\s"\'<>]+)', re.I),
+     _mask_pair),
+    # Provider API keys by their SHAPE, wherever they appear: OpenAI/OpenRouter/
+    # Anthropic `sk-…` and Google `AIza…`. Long enough that no ordinary word or
+    # identifier matches.
+    (re.compile(r'\b(?:sk-(?:or-v1-|ant-[a-z0-9]+-|proj-)?[A-Za-z0-9_\-]{20,}|AIza[0-9A-Za-z_\-]{35})'),
+     lambda m: _REDACTED),
 ]
 
 

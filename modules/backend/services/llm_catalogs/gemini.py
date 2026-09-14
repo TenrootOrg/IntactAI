@@ -86,9 +86,16 @@ def refresh_catalog(logger: Optional[Callable] = None, api_key: Optional[str] = 
 
     log(f"Fetching Gemini model catalog from {MODELS_URL}...")
     try:
+        # The key goes in a HEADER, never the URL. It used to be a query
+        # parameter, so any failure's text -- "400 Client Error: Bad Request for
+        # url: ...?key=<the key>" -- carried it, and this function logs that text and
+        # returns it as `error`. A live appliance printed a full API key into
+        # `docker logs intact_backend` that way. Google accepts x-goog-api-key
+        # for every Generative Language API call.
         resp = requests.get(
             MODELS_URL,
-            params={"key": key, "pageSize": 200},
+            params={"pageSize": 200},
+            headers={"x-goog-api-key": key},
             timeout=FETCH_TIMEOUT_SEC,
         )
         resp.raise_for_status()
