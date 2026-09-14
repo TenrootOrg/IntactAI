@@ -446,8 +446,11 @@ function openCase(id){
    .then(([info,rep])=>{
      if(seq!==window._openSeq) return;          // a newer open superseded this one
      rememberView(id,info,rep);
-     // Unchanged since the remembered view: don't redraw under the operator.
-     if(shown && JSON.stringify([info,rep])===shown) return;
+     const same = shown && JSON.stringify([info,rep])===shown;
+     // Unchanged since the remembered view: don't redraw under the operator,
+     // but the view on screen is now confirmed current.
+     if(same){ if(curInfo && curInfo.case_id===id){ curInfo._fresh=true; maybeAutoRegen(); } return; }
+     info._fresh=true;
      showCase(id,info,rep);
    });
 }
@@ -463,7 +466,7 @@ function showCase(id,info,rep){
      // whatever the operator was last on (switching cases doesn't reset it) —
      // so skip the check entirely unless Analysis is what's about to be drawn.
      if(tab==='report'){
-       refreshLlmReachability().then(()=>{ if(curInfo && curInfo.case_id===id && tab==='report') drawTab(); });
+       refreshLlmReachability().then(()=>{ if(curInfo && curInfo.case_id===id && tab==='report'){ drawTab(); maybeAutoRegen(); } });
      }
 }
 
@@ -563,7 +566,7 @@ function setTab(t){
   // Only Analysis shows the reachability banner — Chat/Timeline/Identities/
   // Risk/Configuration/Log have no use for it, so don't spend a check on them.
   if(t==='report'){
-    refreshLlmReachability().then(()=>{ if(tab===t) drawTab(); });
+    refreshLlmReachability().then(()=>{ if(tab===t){ drawTab(); maybeAutoRegen(); } });
   }
 }
 function drawTab(md){
@@ -654,6 +657,7 @@ function renderConfig(info){
         </div>
         <label style="margin-top:8px"><input type="checkbox" id="cf-mask" ${mk.enabled?'checked':''} style="width:auto"/> Mask hosts / users / IPs</label>
         <textarea id="cf-maskpat" placeholder="extra patterns, one per line (optional)" style="min-height:38px">${esc((mk.patterns||[]).join('\n'))}</textarea>
+        <label style="margin-top:8px" title="When this case's report was written without the AI model and a model is connected now, opening the case on the Analysis tab regenerates it with the model once. Untick to only ever regenerate with the button."><input type="checkbox" id="cf-autoregen" ${info.auto_regen_report!==false?'checked':''} style="width:auto"/> Regenerate the template report automatically once an AI model is connected</label>
         <div style="font-size:11px;color:var(--muted);margin-top:8px">Chat always sends the full case graph; the report always shows the real command line, path &amp; hash per high finding (masked if masking is on).</div>
       </div>
       <div class="cfgcol">
@@ -760,6 +764,40 @@ function airGapBanner(ag){
       <div class="agdetail">${esc(ag.problem)}</div>
       <div class="agaction">${esc(ag.fix).replace('Regenerate report','<b>Regenerate report</b>')}</div>
     </div>`;
+}
+// AUTO-REGENERATE, one case at a time. When this case's report is a template
+// written because no model could be used, and the live check has now reached a
+// model, opening the case on the Analysis tab regenerates it once -- only this
+// case, never a sweep of every case. Asked for explicitly; the per-case
+// "Regenerate the template report automatically" box is the escape hatch.
+//
+// Deliberately NOT when the template came from an automatic fuse while a model
+// WAS available ("the AI model was not used..."): nothing switched, and the
+// automatic path regenerates on its own.
+function shouldAutoRegen(info, md, ls){
+  if(!info || info.auto_regen_report===false || info.report_generating) return false;
+  if(!(ls && ls.available===true && ls.checked_live===true)) return false;   // a real probe, not config alone
+  const m=/\n\n---\n_Deterministic report — ([\s\S]*?)_\n\s*$/.exec(md||'');
+  if(!m) return false;                                          // narrated, or no tag
+  return !/no live narration was requested|AI model was not used/i.test(m[1]);
+}
+const _autoRegenTried=new Set();
+function _autoRegenOnce(id){
+  // Once per case per browser tab: a provider that fails every time must not loop.
+  let seen=_autoRegenTried.has(id);
+  try{ seen = seen || sessionStorage.getItem('autoRegen:'+id)==='1'; sessionStorage.setItem('autoRegen:'+id,'1'); }catch(e){}
+  _autoRegenTried.add(id);
+  return !seen;
+}
+function maybeAutoRegen(){
+  const info=curInfo;
+  // _fresh: the case data came from the server just now. A remembered view can
+  // show a template the server has already replaced with an AI report.
+  if(!info || !info._fresh || tab!=='report') return;
+  if(!shouldAutoRegen(info, window._md||'', info.llm_status)) return;
+  if(!_autoRegenOnce(info.case_id)) return;
+  toast('AI model connected — regenerating this report…');
+  regenReport(info.case_id);
 }
 function renderReport(info){
   const id=info.case_id;
@@ -1012,7 +1050,8 @@ async function _railCfg(){
     report_detail:'explicit',       // LOCKED to explicit (backend enforces regardless)
     fusion_modules:[...document.querySelectorAll('#cf-modules input[data-mod]:checked')].map(c=>c.dataset.mod),
     excluded_hosts:[..._hostExc],            // hosts unchecked = dropped from report/LLM
-    masking:{enabled:$('#cf-mask').checked, patterns:$('#cf-maskpat').value.split('\n').map(s=>s.trim()).filter(Boolean)}
+    masking:{enabled:$('#cf-mask').checked, patterns:$('#cf-maskpat').value.split('\n').map(s=>s.trim()).filter(Boolean)},
+    auto_regen_report:$('#cf-autoregen') ? $('#cf-autoregen').checked : undefined
   };
   if(logo) cfg.customer_logo_b64=logo;
   return cfg;

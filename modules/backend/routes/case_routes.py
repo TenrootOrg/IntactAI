@@ -409,6 +409,11 @@ def get_case(case_id):
                     # above. It never calls the model and never redraws the view; the
                     # narrative still waits for an explicit Rescan.
                     "auto_fuse": bool(d.get("auto_fuse", True)),
+                    # Regenerate a TEMPLATE report by itself when the operator opens
+                    # this case and an AI model has since become reachable. Default
+                    # ON, absent included. The per-case escape hatch: off restores
+                    # the manual Regenerate button as the only way, with no deploy.
+                    "auto_regen_report": bool(d.get("auto_regen_report", True)),
                     # Exactly which runs the STORED graph was built from. The case
                     # view snapshots this at render time and the staleness poll
                     # compares against it, which is how "new runs arrived" is told
