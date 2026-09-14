@@ -727,7 +727,7 @@ function reportAirGap(md, ls){
     // whatever this report's own tail says failed (a dead key, no credit…)
     // may no longer be true, e.g. the operator just fixed it. Repeating that
     // stale reason here would read as "still broken" when it plainly isn't.
-    return {airgap:true, detail:'A model is reachable now — click Regenerate report below for an AI-narrated version.'};
+    return {airgap:true, reachable:true, detail:''};
   }
   return {airgap:true, detail:tailDetail||'No live narration was requested for this report.'};
 }
@@ -747,11 +747,18 @@ function renderReport(info){
   // it, not stumble on a footnote after they finish. Framed as the automatic
   // default it is — there is no per-case switch to flip; a model + API key in
   // Settings ▸ Agentic is what turns narration on.
-  const banner = ag.airgap ? `<div class="agbanner">
-      <div class="agtitle">🔒 Air-Gap Template — deterministic report, no model call made</div>
+  // Two situations, and every line of the banner has to agree with which one
+  // this is. It used to keep the no-model wording ("no model call made", "add a
+  // model and API key") even when the live check said a model was reachable,
+  // and put "a model is reachable now" in between: three lines, two stories.
+  const banner = !ag.airgap ? '' : ag.reachable ? `<div class="agbanner">
+      <div class="agtitle">📝 Template report — written before a model was available</div>
+      <div class="agdetail">A model is now connected. Click <b>Regenerate report</b> below to replace this template with an AI-narrated report.</div>
+    </div>` : `<div class="agbanner">
+      <div class="agtitle">🔒 Air-Gap Template — no model is reachable, so this report was written without one</div>
       <div class="agdetail">${esc(ag.detail)}</div>
-      <div class="agaction">This is the automatic report when no model is reachable — nothing to switch on here. To get an AI-narrated report instead: add a model and API key in <b>Settings ▸ Agentic</b> (this appliance needs an internet connection), then click <b>Regenerate report</b> below.</div>
-    </div>` : '';
+      <div class="agaction">To get an AI-narrated report: add a model and API key in <b>Settings ▸ Agentic</b> (this appliance needs an internet connection), then click <b>Regenerate report</b> below.</div>
+    </div>`;
   // The report's own tail already told the story above; showing it again as a
   // raw markdown footnote would just repeat it in a smaller, unstyled font.
   const mdBody = md.replace(/\n\n---\n_(?:Deterministic report — [\s\S]*?|Narrative by live LLM[\s\S]*?)_\n\s*$/, '');
