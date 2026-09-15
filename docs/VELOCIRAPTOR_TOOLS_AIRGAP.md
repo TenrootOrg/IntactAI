@@ -10,26 +10,23 @@ Velociraptor server makes its artifact **fail when it runs**.
 it asks the running server what its own artifacts want, and it registers any
 file under any name you give it.
 
-```bash
-cd /home/tenroot/intact
+Every command below is copy-paste ready and was run on a live appliance.
 
-sudo bash scripts/velo_tools.sh list                  # what artifacts want and the box has not got
-sudo bash scripts/velo_tools.sh install Takajo-2.5.0  # box has internet: fetch it and register it
-sudo bash scripts/velo_tools.sh add OurTool /media/usb/ourtool.exe   # air-gapped, or your own tool
-sudo bash scripts/velo_tools.sh status                # what is on the server now
-sudo bash scripts/velo_tools.sh selftest              # check the whole thing end to end
-```
+> Run them as the appliance user (the one that owns `/home/tenroot/intact`), not
+> with `sudo`. The tools directory belongs to that user, and a `sudo` run leaves
+> root-owned files that later runs cannot rewrite. If your `data/tools` is
+> already root-owned, use `sudo` for *every* command instead of mixing the two.
 
 | Command | What it does | Needs internet |
 |---|---|---|
 | `list` | tools the installed artifacts ask for and the server does not store, with URL and expected hash | no |
-| `install <NAME>…` | looks the URL up from the artifact, downloads, registers | yes |
+| `install <NAME>…` | looks the URL up from the artifact, downloads it, registers it | yes |
 | `add <NAME> <FILE>` | registers any file under any name | no |
-| `import <DIR>` | registers a whole carried folder (uses its `velo_tools.map`) | no |
-| `fetch <list.tsv> --out <DIR>` | downloads a carry folder on a connected machine | yes |
+| `import <DIR>` | registers a carried folder (uses its `velo_tools.map`) | no |
+| `fetch <list.tsv> --out <DIR>` | builds a carry folder on a connected machine | yes |
 | `status` | what the server stores, and how many are still missing | no |
 | `test --tool <NAME>` | makes an **endpoint** download the tool, and says PASS/FAIL | no |
-| `selftest` | runs the whole chain and checks each step | yes |
+| `selftest` | runs the whole chain and checks every step | yes |
 
 ## What is already inside, and configured
 
@@ -70,117 +67,168 @@ The package deliberately carries only the default tools (see
 tools into a package; it only makes an install or maintenance run **with
 internet** download them.
 
-## Adding tools
-
-**The name is the whole point.** An artifact asks for a tool by name —
-`Hayabusa-2.14.0`, not `hayabusa-2.14.0-win-x64.zip`. Registering a file under
-the wrong name succeeds, reports success, and is never found by anything. Take
-names from `list`, column 1, character for character. Names may contain letters,
-digits and `. _ + @ -`.
-
-You are not limited to what `list` prints: `add` takes any file under any name,
-including a tool of your own that no artifact asks for yet.
-
-### A. The appliance has internet — name the tool
+## See what is missing
 
 ```bash
-$ cd /home/tenroot/intact
-$ sudo bash scripts/velo_tools.sh install Takajo-2.5.0
+cd /home/tenroot/intact
+bash scripts/velo_tools.sh list | head -20
+```
+
+Output — name, download URL, the sha256 the artifact expects (often empty), and
+the artifacts that want it:
+
+```
+# 79 tool(s) missing
+# TOOL	URL	SHA256 the artifact expects (empty = any)	ARTIFACTS (delete rows you do not need)
+ChopChopGo	https://github.com/M00NLIG7/ChopChopGo/releases/download/v1.0.0-beta-3/ChopChopGo_v1.0.0-beta-3.zip		Linux.LogAnalysis.ChopChopGo
+CapaWindows	https://github.com/mandiant/capa/releases/download/v6.1.0/capa-v6.1.0-windows.zip	070923d5ca225ef2…	Windows.Analysis.Capa
+CrowdStrikeFalconInstaller			Custom.Windows.CrowdStrike.FalconInstall
+```
+
+**Column 1 is the name that matters.** An artifact asks for `Hayabusa-2.14.0`,
+not `hayabusa-2.14.0-win-x64.zip`. A file registered under the wrong name is
+accepted by the server and then never found by anything. Copy names exactly;
+they may contain letters, digits and `. _ + @ -`.
+
+What the server holds right now:
+
+```bash
+cd /home/tenroot/intact
+bash scripts/velo_tools.sh status
+```
+
+## Route A — the appliance has internet
+
+One tool, by name. Nothing else to look up:
+
+```bash
+cd /home/tenroot/intact
+bash scripts/velo_tools.sh install Takajo-2.5.0
+```
+
+```
 Takajo-2.5.0: downloading https://github.com/Yamato-Security/takajo/releases/download/v2.5.0/takajo-2.5.0-win.zip
 registered Takajo-2.5.0 -> takajo-2.5.0-win.zip
 install: 1 added, 0 failed
 ```
 
-The URL comes from the artifact that wants the tool, so there is no link to copy
-and no file name to guess. Several at once is fine:
+Several at once:
 
 ```bash
-sudo bash scripts/velo_tools.sh install Hayabusa-2.14.0 Takajo-2.5.0 CapaWindows
+cd /home/tenroot/intact
+bash scripts/velo_tools.sh install Hayabusa-2.14.0 ChopChopGo DHParser
 ```
 
-A tool of your own needs no lookup at all:
-
-```bash
-$ sudo bash scripts/velo_tools.sh add OurCollector /opt/ours/our_collector.exe
-registered OurCollector -> our_collector.exe
+```
+install: 3 added, 0 failed
 ```
 
-Your artifact then asks for `OurCollector` and the endpoint gets that file from
-the appliance.
+## Route B — air-gapped, you already have the files
 
-### B. Air-gapped — you already have the files
-
-You downloaded the tools on another machine and carried the folder over, say to
-`/home/tenroot/my-tools`. `import` will not guess names, so it asks you to name
-each file:
+You downloaded the tools elsewhere and carried the folder over. `import` will not
+guess names, so it stops and asks you to name each file:
 
 ```bash
-$ sudo bash scripts/velo_tools.sh import /home/tenroot/my-tools
+cd /home/tenroot/intact
+bash scripts/velo_tools.sh import /home/tenroot/my-tools
+```
+
+```
 ERROR: no velo_tools.map in /home/tenroot/my-tools — add tools one at a time with: velo_tools.sh add <TOOL> <FILE>
 ```
 
-Either name each file as you add it:
+**Either** name each file as you add it:
 
 ```bash
-$ sudo bash scripts/velo_tools.sh add etl2pcapng /home/tenroot/my-tools/etl2pcapng.zip
+cd /home/tenroot/intact
+bash scripts/velo_tools.sh add etl2pcapng /home/tenroot/my-tools/etl2pcapng.zip
+```
+
+```
 registered etl2pcapng -> etl2pcapng.zip
 ```
 
-or write the folder's map once — one line per file: name, a **TAB**, file name —
-and import the whole folder:
+**or** write the folder's map once and import the lot. One line per file: the
+tool name, a **TAB**, the file name:
 
 ```bash
-$ printf 'etl2pcapng\tetl2pcapng.zip\nBulk_Extractor_Binary\tbulk_extractor.exe\n' \
+printf 'etl2pcapng\tetl2pcapng.zip\nBulk_Extractor_Binary\tbulk_extractor.exe\n' \
     > /home/tenroot/my-tools/velo_tools.map
 
-$ sudo bash scripts/velo_tools.sh import /home/tenroot/my-tools
+cd /home/tenroot/intact
+bash scripts/velo_tools.sh import /home/tenroot/my-tools
+```
+
+```
 registered etl2pcapng -> etl2pcapng.zip
 registered Bulk_Extractor_Binary -> bulk_extractor.exe
 import: 2 registered, 0 failed
 ```
 
-`import` and `add` make no network calls, so both work with the cable pulled.
-Re-running either is harmless.
+`add` and `import` make no network calls, so both work with the cable pulled, and
+re-running either is harmless.
 
-### C. Let the appliance tell you what to carry
-
-**1. On the appliance**, write the list and cut it down to what you need:
+A tool of your own works exactly the same — there is nothing to look up:
 
 ```bash
-$ sudo bash scripts/velo_tools.sh list > missing.tsv
-# 79 tool(s) missing
-$ grep '^CatScale' missing.tsv > want.tsv
+cd /home/tenroot/intact
+bash scripts/velo_tools.sh add OurCollector /opt/ours/our_collector.exe
 ```
 
-Columns are: name, URL, the sha256 the artifact expects (often empty), and the
-artifacts that want it.
+Your artifact then asks for `OurCollector`, and endpoints get that file from the
+appliance.
 
-**2. On a machine with internet**, carry `want.tsv` over and download:
+## Route C — let the appliance tell you what to carry
+
+**1. On the appliance**, write the list and keep only the rows you want:
 
 ```bash
-$ bash scripts/velo_tools.sh fetch want.tsv --out ./velo-tools
-  fetched CatScale -> Cat-Scale.sh
+cd /home/tenroot/intact
+bash scripts/velo_tools.sh list > /tmp/missing.tsv
+grep -E '^Trawler|^DocsIndex' /tmp/missing.tsv > /tmp/want.tsv
+```
+
+Copy `/tmp/want.tsv` to a machine with internet.
+
+**2. On that machine** (it needs the repo checkout, `curl` and `python3`):
+
+```bash
+bash scripts/velo_tools.sh fetch /tmp/want.tsv --out ~/velo-tools
+ls ~/velo-tools
+```
+
+```
+  fetched Trawler -> Trawler.ps1
 fetch: 1 downloaded, 0 without a public URL, 0 failed
+carry ~/velo-tools (files + velo_tools.map) to the appliance, then: velo_tools.sh import ~/velo-tools
 
-$ ls velo-tools
-Cat-Scale.sh  velo_tools.map
+Trawler.ps1  velo_tools.map
 ```
 
-`fetch` writes the map for you. Check each tool's licence before redistributing
-it to a customer site.
+`fetch` writes the map for you, so each file lands under its real tool name.
+Check each tool's licence before redistributing it to a customer site.
 
-**3. Back on the appliance**, carry the folder over and import it:
+**3. Carry `~/velo-tools` to the appliance** (USB, share, `scp`, whatever the
+site allows) and import it:
 
 ```bash
-$ sudo bash scripts/velo_tools.sh import /media/usb/velo-tools
-registered CatScale -> Cat-Scale.sh
+cd /home/tenroot/intact
+bash scripts/velo_tools.sh import /media/usb/velo-tools
+```
+
+```
+registered Trawler -> Trawler.ps1
 import: 1 registered, 0 failed
 ```
 
-### A tool with no public download
+## A tool with no public download
 
-Some rows in `list` have an empty URL — a vendor installer such as
-`CrowdStrikeFalconInstaller`. `install` says so rather than guessing:
+Vendor installers have no URL in `list`. `install` says so rather than guessing:
+
+```bash
+cd /home/tenroot/intact
+bash scripts/velo_tools.sh install CrowdStrikeFalconInstaller
+```
 
 ```
 ERROR: no download URL known for 'CrowdStrikeFalconInstaller'
@@ -188,15 +236,26 @@ ERROR:   either no artifact asks for it, or it has no public download (a vendor 
 ERROR:   Get the file yourself, then: velo_tools.sh add CrowdStrikeFalconInstaller <file>
 ```
 
-Get the file from the vendor, then add it as in A or B.
+Get the file from the vendor, then:
+
+```bash
+cd /home/tenroot/intact
+bash scripts/velo_tools.sh add CrowdStrikeFalconInstaller /media/usb/falcon.exe
+```
 
 ## Hashes: why an add can be refused
 
 Some artifacts pin their tool's sha256 — 18 of the missing tools on a clean box
 do, including every Hayabusa version, SharpHound, Capa and Sigcheck. A file that
 does not match is registered happily by the server and then **refused by the
-endpoint**, mid-collection. So `fetch` and `install` check what they downloaded,
+endpoint**, mid-collection. So `install` and `fetch` check what they downloaded,
 and `add`/`import` refuse a mismatch:
+
+```bash
+cd /home/tenroot/intact
+curl -fL -o /tmp/sigcheck64.exe https://live.sysinternals.com/tools/sigcheck64.exe
+bash scripts/velo_tools.sh add sigcheck_amd64 /tmp/sigcheck64.exe
+```
 
 ```
 ERROR: hash mismatch for sigcheck_amd64
@@ -205,24 +264,34 @@ ERROR:   this file is:         3a081d7ae5a052f5a2fe918c1a9fed11ef7a6686ab2bf5120
 ERROR:   endpoints would refuse it. Get the pinned version, or re-run with --force.
 ```
 
-Nothing is copied or registered when that happens.
+Nothing is copied or registered when that happens. That example is real and
+current: Microsoft serves a newer Sigcheck than `Client.Windows.Sigcheck` pins.
+
+To register it anyway — only sensible if you also update the artifact's tool
+definition, otherwise endpoints reject it:
+
+```bash
+cd /home/tenroot/intact
+bash scripts/velo_tools.sh add --force sigcheck_amd64 /tmp/sigcheck64.exe
+```
 
 **Which URLs stay put.** A URL under a release tag —
 `.../releases/download/v2.5.0/takajo-2.5.0-win.zip` — is fixed forever, which is
 why `Hayabusa-2.14.0` and `Takajo-2.5.0` are the examples here: both were
 downloaded on 2026-09-15 and matched the hash their artifact pins. A URL that
-always serves "the latest" does not. The Sigcheck mismatch above is real and
-current: `https://live.sysinternals.com/tools/sigcheck64.exe` is a newer build
-than `Client.Windows.Sigcheck` pins. Either get the pinned build, or update the
-artifact's tool definition and use `--force`.
+always serves "the latest" does not, which is exactly the Sigcheck case above.
 
-## Checking it works
+## Check it works
 
-### The whole chain, one command
+The whole chain, one command. It picks a missing tool, installs it, and verifies
+each step:
 
 ```bash
-$ cd /home/tenroot/intact
-$ sudo bash scripts/velo_tools.sh selftest
+cd /home/tenroot/intact
+bash scripts/velo_tools.sh selftest
+```
+
+```
 1. what the server is missing
    72 tool(s) missing
   PASS  list works
@@ -238,26 +307,65 @@ $ sudo bash scripts/velo_tools.sh selftest
 SUMMARY: 4 pass, 0 fail, 1 skip
 ```
 
-It picks a missing tool with a public URL, or takes `--tool NAME`. Step 4 is the
-one that matters most: it fetches the file back over the **endpoint-facing URL**
-and compares the sha256 with what the server recorded. A step it cannot prove is
-`SKIP`, never a pass — with no client enrolled, step 5 skips.
+Step 4 is the one that matters most: it fetches the file back over the
+**endpoint-facing URL** and compares the sha256 with what the server recorded. A
+step it cannot prove is `SKIP`, never a pass. Add `--tool NAME` to test a
+specific one.
 
-### Does an endpoint really get it?
-
-Registering a tool and *serving* it are two different things, and only an
-endpoint settles the second. With at least one client enrolled:
+With at least one endpoint enrolled, prove the last hop too:
 
 ```bash
-sudo bash scripts/velo_tools.sh test --tool etl2pcapng
+cd /home/tenroot/intact
+bash scripts/velo_tools.sh test --tool etl2pcapng
 ```
 
 It collects `Generic.Utils.FetchBinary`, the helper every tool-using artifact
 calls internally — so nothing forensic runs and nothing is collected off the
-machine. It prints the endpoint, the flow, the flow state and what the endpoint
-reported, ending in PASS or FAIL. Add `--client C.xxxx` to choose an endpoint;
-otherwise the most recently seen one is used. On failure it prints the command
-that shows the flow log.
+machine. It prints the endpoint, flow, flow state and what the endpoint reported,
+ending in PASS or FAIL, and on failure the command that shows the flow log. Add
+`--client C.xxxx` to choose an endpoint; otherwise the most recently seen one is
+used.
+
+## Remove a tool
+
+Two steps, and the second is not optional:
+
+```bash
+docker exec intact_velociraptor /velociraptor/velociraptor \
+    --config /velociraptor/server.config.yaml tools rm Takajo-2.5.0
+docker restart intact_velociraptor
+```
+
+Then drop it from the map and the tools directory, or the next `--velo-refresh`
+puts it straight back:
+
+```bash
+cd /home/tenroot/intact
+awk -F'\t' '$1 != "Takajo-2.5.0"' data/tools/velo_tools.map > /tmp/m && mv /tmp/m data/tools/velo_tools.map
+rm -f data/tools/takajo-2.5.0-win.zip
+```
+
+The `tools` subcommands need the server config, not `--api_config`. `tools rm`
+exits 0 while the tool is still served: the running server holds the inventory in
+memory and writes it back, so the restart is what makes it stick. Measured on
+2026-09-15 — after `rm` the entry still had its hash; only after the restart was
+the hash gone.
+
+Check it with the `hash` field, not with `serve_locally`:
+
+```bash
+docker exec intact_velociraptor /velociraptor/velociraptor \
+    --api_config /velociraptor/api.config.yaml query --format jsonl \
+    "SELECT name, serve_locally, hash, url FROM inventory() WHERE name = 'sigcheck_amd64'"
+```
+
+```
+{"name":"sigcheck_amd64","serve_locally":true,"hash":"","filename":"sigcheck64.exe","url":"https://live.sysinternals.com/tools/sigcheck64.exe"}
+```
+
+An empty `hash` means the server no longer holds a copy — the tool is back to
+"missing", and `list` shows it again. The name and its URL stay, because an
+artifact still declares them; that is the inventory entry, not a stored file.
 
 ## The same thing in raw VQL
 
@@ -267,18 +375,17 @@ file in `data/tools/` first (it is mounted into the container, read-only, as
 
 ```bash
 V="docker exec intact_velociraptor /velociraptor/velociraptor --api_config /velociraptor/api.config.yaml"
+
 $V query --format jsonl \
   "SELECT inventory_add(tool='Bulk_Extractor_Binary', serve_locally=TRUE, file='/tools/bulk_extractor.exe', filename='bulk_extractor.exe', accessor='file') AS r FROM scope()"
-```
 
-Check it:
-
-```bash
 $V query --format jsonl \
   "SELECT name, serve_locally, filename, hash FROM inventory() WHERE name = 'Bulk_Extractor_Binary'"
 ```
 
-Expect `serve_locally` true, your file name, and a `hash`.
+```
+{"name":"Bulk_Extractor_Binary","serve_locally":true,"filename":"bulk_extractor.exe","hash":"1eade5c20c693cf537e9b0e89ecdcb958e573c4ad45c72b25234041461ca53e0"}
+```
 
 Use `--api_config`, not `--config /velociraptor/server.config.yaml`. With
 `--config`, `query` runs in a separate local process that sees only the 421
@@ -290,8 +397,14 @@ built-in artifacts, not the ~400 curated ones the server loads via
 - **Where it is stored.** Registering copies the file into Velociraptor's
   datastore, the Docker volume `velociraptor_velociraptor_datastore`, and records
   the tool there. An upgrade keeps that volume and `data/tools/`. Deleting Docker
-  volumes (for example `scripts/clean.sh --volumes`) deletes the registrations —
-  re-run `velo_tools.sh import data/tools` to put them back.
+  volumes (for example `scripts/clean.sh --volumes`) deletes the registrations.
+  Put them all back with:
+
+  ```bash
+  cd /home/tenroot/intact
+  bash scripts/velo_tools.sh import data/tools
+  ```
+
 - **The map.** `add`, `install` and `import` record `TOOL<TAB>FILE` in
   `data/tools/velo_tools.map`. `sudo bash scripts/upgrade.sh --velo-refresh`
   replays it, and falls back to the shipped pattern→name mapping in
@@ -300,20 +413,6 @@ built-in artifacts, not the ~400 curated ones the server loads via
   it cannot name is reported, not registered under a guessed name; two are
   expected on a normal box — `Velociraptor-Artifacts-main.zip` (an artifact
   bundle, not a tool) and the macOS client binary (no artifact asks for it).
-- **Removing a tool** takes two steps, and the second is not optional:
-
-  ```bash
-  docker exec intact_velociraptor /velociraptor/velociraptor \
-      --config /velociraptor/server.config.yaml tools rm <TOOL_NAME>
-  docker restart intact_velociraptor
-  ```
-
-  The `tools` subcommands need the server config, not `--api_config`. `tools rm`
-  exits 0 and the tool is still served until the restart — the running server
-  holds the inventory in memory and writes it back. Measured on 2026-09-15: after
-  `rm` the entry still had `serve_locally: true` and its hash; after the restart,
-  neither. Delete its line from `data/tools/velo_tools.map` and its file from
-  `data/tools/` too, or the next `--velo-refresh` puts it straight back.
 - **A newer artifact can want a newer tool version** under a different name
   (`Hayabusa-2.14.0` → `Hayabusa-3.9.0`). After importing new artifacts, run
-  `velo_tools.sh list` again.
+  `bash scripts/velo_tools.sh list` again.
