@@ -170,6 +170,10 @@ built-in artifacts, not the ~400 curated ones the server loads via
   two are expected there on a normal box — `Velociraptor-Artifacts-main.zip`
   (an artifact bundle, not a tool) and the macOS client binary (no artifact asks
   for it).
+- **Removing a tool.** `docker exec intact_velociraptor /velociraptor/velociraptor
+  --config /velociraptor/server.config.yaml tools rm <TOOL_NAME>` (the `tools`
+  subcommands need the server config, not `--api_config`). Delete its line from
+  `data/tools/velo_tools.map` too, or the next `--velo-refresh` puts it back.
 - **A newer artifact can want a newer tool version** under a different name
   (`Hayabusa-2.14.0` → `Hayabusa-3.8.0`). After importing new artifacts, run
   `velo_tools.sh list` again.
