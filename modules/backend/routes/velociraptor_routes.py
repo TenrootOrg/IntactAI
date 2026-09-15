@@ -798,23 +798,31 @@ def _is_workflow_run_id(value):
 def _adopt_locators_of_run(run):
     """What a stored Intact run can hand to Add by ID: (reason, ids).
 
+    Every Velociraptor run type records its locators in `details`:
+      velociraptor_collection  flow_id -- a list when several clients were picked
+      velociraptor_hunt        hunt_id -- whole hunts and per-artifact hunt rows
+      velociraptor_upload      offline_hunt_id / offline_flow_id -- the offline
+                               collector ZIP is imported INTO Velociraptor, which is
+                               what minted those ids, so its rows are on the server
+      velociraptor_adopt       flow_id or hunt_id
+    A hunt wins over its flows: adopting the hunt already pulls every client.
+
     reason is None when there is something to pull, otherwise:
-      'offline' -- the run imported a collection FILE, so its flow is not on
-                   this Velociraptor server and cannot be read back by id;
-      'none'    -- the run collected nothing from Velociraptor at all.
-    A hunt wins over its flows: adopting the hunt already pulls every client."""
+      'collector' -- the run BUILT an offline collector binary; it holds no data,
+                     which comes back later as an upload with its own workflow id;
+      'none'      -- the run collected nothing from Velociraptor."""
     run = run or {}
     details = run.get("details") or {}
-    if (run.get("automation_type") == "velociraptor_upload"
-            or details.get("offline_flow_id") or details.get("offline_hunt_id")):
-        return "offline", []
+    if run.get("automation_type") == "velociraptor_offline_collector":
+        return "collector", []
 
     def as_list(v):
         if isinstance(v, list):
             return [x for x in v if x]
         return [v] if v else []
 
-    ids = as_list(details.get("hunt_id")) or as_list(details.get("flow_id"))
+    hunts = as_list(details.get("hunt_id")) + as_list(details.get("offline_hunt_id"))
+    ids = hunts or (as_list(details.get("flow_id")) + as_list(details.get("offline_flow_id")))
     out = []
     for i in ids:
         i = str(i).strip()
@@ -848,10 +856,10 @@ def _adopt_from_workflow(source_run_id):
                         "duplicate": True, "run_id": source_run_id}), 409
 
     reason, locators = _adopt_locators_of_run(source)
-    if reason == "offline":
-        return jsonify({"error": f"{source_run_id} was imported from a collection file, so "
-                                 f"its data is not on this Velociraptor server. Upload the "
-                                 f"same file into this case instead."}), 400
+    if reason == "collector":
+        return jsonify({"error": f"{source_run_id} built an offline collector and holds no "
+                                 f"data. Its results come back as an upload -- use that "
+                                 f"upload's workflow id instead."}), 400
     if reason == "none":
         return jsonify({"error": f"{source_run_id} is a "
                                  f"{source.get('automation_type') or 'non-Velociraptor'} run "

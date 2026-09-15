@@ -606,15 +606,28 @@ class TestWhatAWorkflowCanHandOver(unittest.TestCase):
                "details": {"hunt_id": "H.CCC333", "flow_id": ["F.AAA111"]}}
         self.assertEqual((None, ["H.CCC333"]), self.of(run))
 
-    def test_an_uploaded_collection_file_is_not_on_this_server(self):
+    def test_an_uploaded_offline_collection_hands_over_its_imported_flow(self):
+        # The upload imports the ZIP INTO Velociraptor -- that import is what
+        # minted the id -- so the rows are on the server and can be read again.
         run = {"automation_type": "velociraptor_upload",
-               "details": {"flow_id": "F.DAHAOKCK9F7TI", "offline_flow_id": "F.DAHAOKCK9F7TI"}}
-        self.assertEqual(("offline", []), self.of(run))
+               "details": {"flow_id": "F.DAHAOKCK9F7TI", "offline_flow_id": "F.DAHAOKCK9F7TI",
+                           "hunt_id": None}}
+        self.assertEqual((None, ["F.DAHAOKCK9F7TI"]), self.of(run))
 
-    def test_an_offline_import_stamp_alone_is_enough(self):
-        run = {"automation_type": "velociraptor_collection",
-               "details": {"offline_hunt_id": "H.XYZ"}}
-        self.assertEqual(("offline", []), self.of(run))
+    def test_an_uploaded_hunt_hands_over_the_hunt(self):
+        run = {"automation_type": "velociraptor_upload",
+               "details": {"offline_hunt_id": "H.DA9TC7LTQRN9S"}}
+        self.assertEqual((None, ["H.DA9TC7LTQRN9S"]), self.of(run))
+
+    def test_a_per_artifact_hunt_row(self):
+        run = {"automation_type": "velociraptor_hunt",
+               "details": {"hunt_id": "H.X1Y2Z3", "artifacts": ["Windows.System.Pslist"]}}
+        self.assertEqual((None, ["H.X1Y2Z3"]), self.of(run))
+
+    def test_building_an_offline_collector_holds_no_data(self):
+        run = {"automation_type": "velociraptor_offline_collector",
+               "details": {"config_id": "x", "os": "windows"}}
+        self.assertEqual(("collector", []), self.of(run))
 
     def test_a_run_with_nothing_from_velociraptor(self):
         for run in ({"automation_type": "maintenance", "details": {}},
@@ -650,8 +663,12 @@ class TestTheWorkflowPathKeepsTheSafetyOrder(unittest.TestCase):
         self.assertIn('source.get("case_id") == case_id', self.helper)
         self.assertIn("409", self.helper)
 
-    def test_an_uploaded_file_gets_a_reason_not_a_failed_fetch(self):
-        self.assertIn("imported from a collection file", self.helper)
+    def test_uploads_are_pulled_not_refused(self):
+        # An uploaded offline collection is on the server; refusing it was wrong.
+        self.assertNotIn("imported from a collection file", self.helper)
+
+    def test_a_collector_build_gets_a_reason_not_a_failed_fetch(self):
+        self.assertIn("built an offline collector", self.helper)
 
     def test_no_client_id_is_asked_for(self):
         self.assertNotIn("client_id", self.helper)
