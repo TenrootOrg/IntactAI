@@ -55,14 +55,45 @@ list of its own: it asks the running server which tools **its own artifacts**
 want and hasn't got, so artifacts you import later are covered too, and it
 registers any file under any tool name you give it.
 
-Two ways in, depending on what you have:
+**Any file, under any name.** The `list` command is a convenience — it tells you
+what the installed artifacts are asking for — but you are not limited to it.
+`add` registers whatever file you point it at, under whatever name you give:
+a tool from a vendor, a newer build than the artifact expects, a script of your
+own that no artifact uses yet. The name is simply what an artifact must ask for
+to get that file.
 
-- **A — you already have the files.** Carry the folder onto the box and register
+Three ways in, depending on where the files are:
+
+- **A — the appliance itself has internet.** Download and add, on the box, two
+  commands.
+- **B — you already have the files.** Carry the folder onto the box and register
   them. No internet at any point.
-- **B — you want the script to tell you what is missing and download it** on a
-  machine that has internet.
+- **C — let the script tell you what is missing**, download it on a machine that
+  has internet, and carry that folder over.
 
-### A. You already have the files — carry the folder in
+### A. The appliance has internet — download and add
+
+```bash
+$ cd /home/tenroot/intact
+$ bash scripts/velo_tools.sh list | grep Hayabusa
+Hayabusa-2.14.0   https://github.com/Yamato-Security/hayabusa/releases/download/v2.14.0/hayabusa-2.14.0-win-x64.zip   de8abff4f6ed35f2...
+
+$ curl -fL -o /tmp/hayabusa.zip https://github.com/Yamato-Security/hayabusa/releases/download/v2.14.0/hayabusa-2.14.0-win-x64.zip
+$ sudo bash scripts/velo_tools.sh add Hayabusa-2.14.0 /tmp/hayabusa.zip
+registered Hayabusa-2.14.0 -> hayabusa.zip
+```
+
+A tool of your own works the same way — there is nothing to look up:
+
+```bash
+$ sudo bash scripts/velo_tools.sh add OurCollector /opt/ours/our_collector.exe
+```
+
+Your artifact then asks for `OurCollector`, and the endpoint gets that file from
+the appliance.
+
+
+### B. You already have the files — carry the folder in
 
 The common case: you downloaded the tools on your own machine, put them on a
 USB stick, and moved the folder onto the appliance. Real output, on a box with
@@ -111,7 +142,7 @@ a version, such as `Hayabusa-2.14.0`. A tool of your own that no artifact uses y
 works the same way — just name it the same in your artifact. Names may contain
 letters, digits and `. _ + @ -`.
 
-### B. Let the script find and download them
+### C. Let the script find and download them
 
 Use this when the appliance can tell you what it is missing and another machine
 has internet.
@@ -206,7 +237,7 @@ the flow log.
 
 Some rows in `list` have an empty URL — a vendor installer such as
 `CrowdStrikeFalconInstaller`. Get the file from the vendor, then add it exactly
-as in A:
+as in A or B:
 
 ```bash
 sudo bash scripts/velo_tools.sh add CrowdStrikeFalconInstaller /media/usb/falcon.exe
