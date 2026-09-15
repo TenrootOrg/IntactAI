@@ -86,7 +86,9 @@ offline.
 
 **Velociraptor tools.** An air-gapped install ships only the tools the default
 blueprints use. Other artifacts' tools (Hayabusa, Sigcheck, Bulk Extractor, …)
-must be added by hand — see [docs/VELOCIRAPTOR_TOOLS_AIRGAP.md](docs/VELOCIRAPTOR_TOOLS_AIRGAP.md).
+are added with `scripts/velo_tools.sh` (`list` on the box → `fetch` where there
+is internet → `import` back on the box) — see
+[docs/VELOCIRAPTOR_TOOLS_AIRGAP.md](docs/VELOCIRAPTOR_TOOLS_AIRGAP.md).
 
 ## Services & Ports
 

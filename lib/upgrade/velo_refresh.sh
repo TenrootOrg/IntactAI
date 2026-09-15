@@ -131,20 +131,93 @@ _velo_refresh_tools() {
     local tools_dir="${SCRIPT_DIR}/data/tools"
     [[ -d "$tools_dir" ]] || { log_info "  no data/tools directory; nothing to register"; return 0; }
 
-    local registered=0 failed=0 f base
-    while IFS= read -r f; do
-        base="$(basename "$f")"
-        case "$base" in *.txt|*.md|*.yaml|*.yml) continue ;; esac
-        if velo_vql "SELECT inventory_add(tool='${base}', serve_locally=TRUE, file='/tools/${base}', accessor='file') AS r FROM scope()" \
+    # Register under the tool's NAME, which is the only thing an artifact looks
+    # up -- never under the file name. `inventory_add(tool='bulk_extractor.exe')`
+    # succeeds and registers a tool nothing will ever ask for, which is what
+    # this step used to do for every file in data/tools.
+    #
+    # Two sources of the name, both already in the tree:
+    #   data/tools/velo_tools.map      TOOL<TAB>FILE, written by scripts/velo_tools.sh
+    #   data/tools_inventory.yaml      velociraptor_inventory: tool_name + file_pattern
+    # A file matching neither is NOT registered -- it is reported, so the
+    # operator can name it with `scripts/velo_tools.sh add <TOOL> <FILE>`.
+    local pairs
+    pairs="$(INTACT_TOOLS_DIR="$tools_dir" INTACT_TOOLS_YAML="${SCRIPT_DIR}/data/tools_inventory.yaml" \
+        python3 - <<'PY'
+import os, re, sys
+tools_dir = os.environ["INTACT_TOOLS_DIR"]
+yaml_path = os.environ["INTACT_TOOLS_YAML"]
+files = sorted(f for f in os.listdir(tools_dir)
+               if os.path.isfile(os.path.join(tools_dir, f)))
+mapped = {}
+
+# 1. the operator's own map wins -- it was written for this exact box.
+map_path = os.path.join(tools_dir, "velo_tools.map")
+if os.path.isfile(map_path):
+    for line in open(map_path, encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if not line or line.startswith("#") or "\t" not in line:
+            continue
+        tool, fname = line.split("\t", 1)
+        if fname in files:
+            mapped[fname] = tool
+
+# 2. the shipped pattern -> name mapping for everything else.
+try:
+    import yaml
+    inv = (yaml.safe_load(open(yaml_path, encoding="utf-8")) or {}).get("velociraptor_inventory") or []
+except Exception as e:
+    inv = []
+    print("yaml unreadable: %s" % e, file=sys.stderr)
+for entry in inv:
+    tool, pat = entry.get("tool_name"), entry.get("file_pattern")
+    if not tool or not pat:
+        continue
+    try:
+        rx = re.compile(pat)
+    except re.error:
+        continue
+    for f in files:
+        if f in mapped:
+            continue
+        if rx.match(f):
+            mapped[f] = tool
+            break
+
+for f in files:
+    if f.endswith((".txt", ".md", ".yaml", ".yml", ".map")):
+        continue
+    print("%s\t%s" % (mapped.get(f, ""), f))
+PY
+)" || { log_warn "    could not build the tool name mapping"; return 1; }
+
+    local registered=0 failed=0 unnamed=0 line tool base unnamed_list=""
+    while IFS= read -r line; do
+        # Manual split: with IFS=tab, `read -r tool base` collapses the leading
+        # empty field of an unnamed file's "<TAB>file" row, which read as a
+        # named tool with no file and skipped the very case worth reporting.
+        [[ "$line" == *$'\t'* ]] || continue
+        tool="${line%%$'\t'*}"; base="${line#*$'\t'}"
+        [[ -n "$base" ]] || continue
+        if [[ -z "$tool" ]]; then
+            unnamed=$((unnamed + 1))
+            unnamed_list+="${unnamed_list:+, }${base}"
+            continue
+        fi
+        if velo_vql "SELECT inventory_add(tool='${tool}', serve_locally=TRUE, file='/tools/${base}', filename='${base}', accessor='file') AS r FROM scope()" \
              | grep -q '"r"'; then
             registered=$((registered + 1))
         else
             failed=$((failed + 1))
-            log_warn "    could not register tool ${base}"
+            log_warn "    could not register tool ${tool} (${base})"
         fi
-    done < <(find "$tools_dir" -maxdepth 1 -type f 2>/dev/null)
+    done <<< "$pairs"
 
-    log_info "  tools: ${registered} registered, ${failed} failed"
+    log_info "  tools: ${registered} registered by name, ${failed} failed, ${unnamed} unnamed"
+    if (( unnamed )); then
+        log_info "    no tool name for: ${unnamed_list}"
+        log_info "    name them with: scripts/velo_tools.sh add <TOOL_NAME> data/tools/<file>"
+    fi
     (( failed )) && return 1
     return 0
 }
