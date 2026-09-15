@@ -5,10 +5,45 @@ Elasticsearch Service - Persistent storage for workflow runs
 
 from elasticsearch import Elasticsearch
 from datetime import datetime
+import time
 import traceback
+
+try:
+    from elasticsearch import ConnectionError as _ESConnectionError, ConnectionTimeout as _ESConnectionTimeout
+    _UNREACHABLE = (_ESConnectionError, _ESConnectionTimeout)
+except ImportError:  # an older client without the transport exceptions
+    _UNREACHABLE = ()
 
 # Elasticsearch client instance
 es_client = None
+
+# When Elasticsearch cannot be reached -- ELK stopped while config.yaml still says
+# enabled, or not up yet -- every call paid a name lookup plus the client's retries
+# (2.2 s measured with a fresh client, ~0.5 s warm) before falling back to SQLite.
+# Listing runs does that twice per request, and the Case Management page lists
+# cases several times on load, so the page took seconds. After a CONNECTION failure
+# every call returns its empty result at once for a short cool-down, then tries
+# again, so ELK coming back is noticed within a minute. Any other error -- a missing
+# document, a bad query -- still logs and returns exactly as before and never trips
+# this, so a real problem is not hidden behind it. SQLite stays the store of record
+# either way; nothing is written or skipped that would otherwise have succeeded.
+_UNREACHABLE_COOLDOWN_S = 60
+_unreachable_until = [0.0]
+
+
+def _skip_while_unreachable() -> bool:
+    return time.monotonic() < _unreachable_until[0]
+
+
+def _note_failure(e, what) -> None:
+    if _UNREACHABLE and isinstance(e, _UNREACHABLE):
+        first = not _skip_while_unreachable()
+        _unreachable_until[0] = time.monotonic() + _UNREACHABLE_COOLDOWN_S
+        if first:
+            print(f"[ELASTICSEARCH] ✗ unreachable while trying to {what}; skipping it for "
+                  f"{_UNREACHABLE_COOLDOWN_S}s: {e}", flush=True)
+        return
+    print(f"[ELASTICSEARCH] ✗ Failed to {what}: {e}", flush=True)
 
 def init_elasticsearch(host='elasticsearch', port=9200, user=None, password=None):
     """Initialize Elasticsearch connection"""
@@ -76,7 +111,7 @@ def init_elasticsearch(host='elasticsearch', port=9200, user=None, password=None
 
 def update_workflow_status(run_id, status, progress=None, error=None):
     """Update workflow run status using partial update"""
-    if not es_client:
+    if not es_client or _skip_while_unreachable():
         return False
 
     try:
@@ -100,13 +135,15 @@ def update_workflow_status(run_id, status, progress=None, error=None):
         return True
 
     except Exception as e:
-        print(f"[ELASTICSEARCH] ✗ Failed to update status: {e}", flush=True)
+        _note_failure(e, "update status")
         return False
 
 def get_all_workflow_runs(size=100):
     """Get all workflow runs, sorted by started_at descending"""
     if not es_client:
         print("[ELASTICSEARCH] ✗ Client not initialized", flush=True)
+        return []
+    if _skip_while_unreachable():
         return []
 
     try:
@@ -123,12 +160,12 @@ def get_all_workflow_runs(size=100):
         return workflows
 
     except Exception as e:
-        print(f"[ELASTICSEARCH] ✗ Failed to get workflow runs: {e}", flush=True)
+        _note_failure(e, "get workflow runs")
         return []
 
 def get_workflow_run(run_id):
     """Get a specific workflow run by ID"""
-    if not es_client:
+    if not es_client or _skip_while_unreachable():
         return None
 
     try:
@@ -136,5 +173,5 @@ def get_workflow_run(run_id):
         return result['_source']
 
     except Exception as e:
-        print(f"[ELASTICSEARCH] ✗ Failed to get workflow run: {e}", flush=True)
+        _note_failure(e, "get workflow run")
         return None
