@@ -116,6 +116,86 @@ sudo bash scripts/velo_tools.sh status
 tool name. It makes **no** network calls, so it works with the cable pulled.
 Re-running it is harmless.
 
+### A worked example, start to finish
+
+Adding CatScale (a Linux collection script) to an air-gapped box. Real output.
+
+**On the appliance** — find it and keep just that row:
+
+```bash
+$ cd /home/tenroot/intact
+$ sudo bash scripts/velo_tools.sh list > missing.tsv
+# 79 tool(s) missing
+$ grep '^CatScale' missing.tsv > want.tsv
+$ cat want.tsv
+CatScale   https://raw.githubusercontent.com/FSecureLABS/LinuxCatScale/master/Cat-Scale.sh      Linux.Collection.CatScale
+```
+
+**On a machine with internet** — carry `want.tsv` over, download:
+
+```bash
+$ bash scripts/velo_tools.sh fetch want.tsv --out ./velo-tools
+  fetched CatScale -> Cat-Scale.sh
+fetch: 1 downloaded, 0 without a public URL, 0 failed
+carry ./velo-tools (files + velo_tools.map) to the appliance, then: velo_tools.sh import ./velo-tools
+
+$ ls velo-tools
+Cat-Scale.sh  velo_tools.map
+$ cat velo-tools/velo_tools.map
+CatScale	Cat-Scale.sh
+```
+
+**Back on the appliance** — carry the folder over (USB, share, however), import:
+
+```bash
+$ sudo bash scripts/velo_tools.sh import /media/usb/velo-tools
+registered CatScale -> Cat-Scale.sh
+import: 1 registered, 0 failed
+```
+
+That is the whole job. The tool is stored on the server, hashed, and served to
+endpoints with no internet:
+
+```bash
+$ sudo bash scripts/velo_tools.sh status
+Stored on this server (served to endpoints, no internet needed):
+  CatScale  <-  Cat-Scale.sh
+  ...
+  (10 tool(s))
+Missing (an artifact wants them, this server has not got them): 76
+```
+
+### A folder you put together yourself
+
+If you downloaded the files by hand rather than with `fetch`, the folder has no
+`velo_tools.map`, and `import` will not guess names — a wrong name registers
+happily and is then never found by any artifact:
+
+```bash
+$ sudo bash scripts/velo_tools.sh import /media/usb/my-tools
+ERROR: no velo_tools.map in /media/usb/my-tools — add tools one at a time with: velo_tools.sh add <TOOL> <FILE>
+```
+
+Either add each file, naming it yourself:
+
+```bash
+$ sudo bash scripts/velo_tools.sh add CatScale /media/usb/my-tools/Cat-Scale.sh
+$ sudo bash scripts/velo_tools.sh add OurCollector /media/usb/my-tools/our_collector.exe
+```
+
+or write the map once — one line per file, name and file separated by a **TAB**
+— and import the folder in one go:
+
+```bash
+$ printf 'CatScale\tCat-Scale.sh\nOurCollector\tour_collector.exe\n' \
+    > /media/usb/my-tools/velo_tools.map
+$ sudo bash scripts/velo_tools.sh import /media/usb/my-tools
+```
+
+Take the names from the `list` output, character for character. `OurCollector`
+above is an in-house tool no artifact has asked for yet — that works too; the
+artifact that uses it just has to name the tool the same way.
+
 ### One tool, or a file from a vendor
 
 ```bash
