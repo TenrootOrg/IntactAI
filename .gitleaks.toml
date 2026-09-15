@@ -150,6 +150,13 @@ paths = [
   # so a real key committed anywhere else under tests/ is still caught.
   '''tests/test_transform_config\.py$''',
   '''tests/test_adopt_velo_identity\.sh$''',
+  # Same shape, different fixture: this test proves an API key never reaches a
+  # request URL or a log line, so it needs a string that LOOKS like a real key
+  # -- "sk-or-v1-THIS-IS-A-TEST-KEY-..." -- and generic-api-key fires on its
+  # entropy. It failed the intact asset scan of the intact-20260915 release
+  # build. Anchored to this one file, so a real key anywhere else under tests/
+  # is still caught.
+  '''tests/test_gemini_key_not_in_url\.py$''',
   # Rendered runtime conf is allowlisted because the operator pastes
   # their real key into it (via Settings UI or hand-edit at install
   # time). The .template files are NOT allowlisted — those are tracked
