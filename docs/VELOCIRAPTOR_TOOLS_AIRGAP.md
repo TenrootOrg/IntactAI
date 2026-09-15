@@ -55,15 +55,76 @@ list of its own: it asks the running server which tools **its own artifacts**
 want and hasn't got, so artifacts you import later are covered too, and it
 registers any file under any tool name you give it.
 
-### 1. On the appliance — what is missing
+Two ways in, depending on what you have:
+
+- **A — you already have the files.** Carry the folder onto the box and register
+  them. No internet at any point.
+- **B — you want the script to tell you what is missing and download it** on a
+  machine that has internet.
+
+### A. You already have the files — carry the folder in
+
+The common case: you downloaded the tools on your own machine, put them on a
+USB stick, and moved the folder onto the appliance. Real output, on a box with
+`etl2pcapng.zip` and `bulk_extractor.exe` in `/home/tenroot/my-tools`.
+
+`import` will not guess names. A tool registered under the wrong name — its file
+name, say — is accepted by the server and then never found by any artifact, so
+the script asks you to name each file instead:
+
+```bash
+$ sudo bash scripts/velo_tools.sh import /home/tenroot/my-tools
+ERROR: no velo_tools.map in /home/tenroot/my-tools — add tools one at a time with: velo_tools.sh add <TOOL> <FILE>
+```
+
+**Either name each file as you add it:**
+
+```bash
+$ sudo bash scripts/velo_tools.sh add etl2pcapng /home/tenroot/my-tools/etl2pcapng.zip
+registered etl2pcapng -> etl2pcapng.zip
+```
+
+**or write the folder's map once and import the whole folder.** One line per
+file: the tool name, a **TAB**, the file name.
+
+```bash
+$ printf 'etl2pcapng\tetl2pcapng.zip\nBulk_Extractor_Binary\tbulk_extractor.exe\n' \
+    > /home/tenroot/my-tools/velo_tools.map
+
+$ sudo bash scripts/velo_tools.sh import /home/tenroot/my-tools
+registered etl2pcapng -> etl2pcapng.zip
+registered Bulk_Extractor_Binary -> bulk_extractor.exe
+import: 2 registered, 0 failed
+
+$ sudo bash scripts/velo_tools.sh status
+  ...
+  (12 tool(s))
+Missing (an artifact wants them, this server has not got them): 74
+```
+
+Done — no internet was used, and the tools are now served to endpoints from the
+appliance.
+
+**Where do the names come from?** `velo_tools.sh list` prints the exact name each
+artifact asks for (see B below). Copy it character for character; it often carries
+a version, such as `Hayabusa-2.14.0`. A tool of your own that no artifact uses yet
+works the same way — just name it the same in your artifact. Names may contain
+letters, digits and `. _ + @ -`.
+
+### B. Let the script find and download them
+
+Use this when the appliance can tell you what it is missing and another machine
+has internet.
+
+**1. On the appliance — what is missing**
 
 ```bash
 sudo bash scripts/velo_tools.sh list > missing.tsv
 ```
 
-One row per tool: the exact tool name, its download URL, and the artifacts that
-want it. Delete the rows you do not need — you only need the tools for the
-artifacts you intend to run.
+One row per tool: the exact tool name, its download URL, the sha256 the artifact
+expects (often empty), and the artifacts that want it. Delete the rows you do not
+need — you only need tools for the artifacts you intend to run.
 
 ```
 TOOL             URL                                                SHA256 the artifact expects   ARTIFACTS
@@ -72,13 +133,41 @@ Hayabusa-2.14.0  https://github.com/.../hayabusa-2.14.0-win-x64.zip de8abff4f6ed
 ```
 
 A row with an empty URL (a vendor installer such as `CrowdStrikeFalconInstaller`)
-has no public download; get that file from the vendor and use `add` (below).
+has no public download; get that file from the vendor and add it as in A.
 
-**The hash column matters.** Some artifacts pin their tool's sha256 — 18 of the
-missing tools on a clean box do, including every Hayabusa version, SharpHound,
-Capa and Sigcheck. A file that does not match is registered happily by the
-server and then **refused by the endpoint**, mid-collection. So `fetch` checks
-what it downloaded, and `add`/`import` refuse a file whose hash does not match:
+**2. On a machine WITH internet — download them**
+
+```bash
+$ bash scripts/velo_tools.sh fetch want.tsv --out ./velo-tools
+  fetched CatScale -> Cat-Scale.sh
+fetch: 1 downloaded, 0 without a public URL, 0 failed
+
+$ ls velo-tools
+Cat-Scale.sh  velo_tools.map
+```
+
+`fetch` writes the `velo_tools.map` for you, so the files land under their real
+tool names on the other side. Check each tool's licence before redistributing it
+to a customer site.
+
+**3. Back on the appliance — import the folder**
+
+```bash
+$ sudo bash scripts/velo_tools.sh import /media/usb/velo-tools
+registered CatScale -> Cat-Scale.sh
+import: 1 registered, 0 failed
+```
+
+`import` makes **no** network calls, so it works with the cable pulled, and
+re-running it is harmless.
+
+### Hashes: why an add can be refused
+
+Some artifacts pin their tool's sha256 — 18 of the missing tools on a clean box
+do, including every Hayabusa version, SharpHound, Capa and Sigcheck. A file that
+does not match is registered happily by the server and then **refused by the
+endpoint**, mid-collection. So `fetch` checks what it downloaded, and
+`add`/`import` refuse a mismatch:
 
 ```
 ERROR: hash mismatch for Hayabusa-2.14.0
@@ -87,125 +176,19 @@ ERROR:   this file is:         7d94206ac5c5d68cae535916fe92ba86f963e459633233ff8
 ERROR:   endpoints would refuse it. Get the pinned version, or re-run with --force.
 ```
 
-Nothing is copied or registered when that happens. If the URL has moved on to a
-newer release, fetch the pinned version instead — or, if you mean to run a
+Nothing is copied or registered when that happens. If the download URL has moved
+on to a newer release, get the pinned version instead — or, if you mean to run a
 different version, update the artifact's tool definition and use `--force`.
 
-### 2. On a machine WITH internet — download them
+### A tool with no public download
 
-Carry `missing.tsv` across, then:
-
-```bash
-bash scripts/velo_tools.sh fetch missing.tsv --out ./velo-tools
-```
-
-This writes the files plus a `velo_tools.map` (`TOOL<TAB>FILE`) next to them.
-The map is what makes each file land under its **real tool name** on the other
-side. Check each tool's licence before redistributing it to a customer site.
-
-### 3. Back on the appliance — register them
-
-Carry `./velo-tools` across, then:
-
-```bash
-sudo bash scripts/velo_tools.sh import ./velo-tools
-sudo bash scripts/velo_tools.sh status
-```
-
-`import` copies the files into `data/tools/` and registers each one under its
-tool name. It makes **no** network calls, so it works with the cable pulled.
-Re-running it is harmless.
-
-### A worked example, start to finish
-
-Adding CatScale (a Linux collection script) to an air-gapped box. Real output.
-
-**On the appliance** — find it and keep just that row:
-
-```bash
-$ cd /home/tenroot/intact
-$ sudo bash scripts/velo_tools.sh list > missing.tsv
-# 79 tool(s) missing
-$ grep '^CatScale' missing.tsv > want.tsv
-$ cat want.tsv
-CatScale   https://raw.githubusercontent.com/FSecureLABS/LinuxCatScale/master/Cat-Scale.sh      Linux.Collection.CatScale
-```
-
-**On a machine with internet** — carry `want.tsv` over, download:
-
-```bash
-$ bash scripts/velo_tools.sh fetch want.tsv --out ./velo-tools
-  fetched CatScale -> Cat-Scale.sh
-fetch: 1 downloaded, 0 without a public URL, 0 failed
-carry ./velo-tools (files + velo_tools.map) to the appliance, then: velo_tools.sh import ./velo-tools
-
-$ ls velo-tools
-Cat-Scale.sh  velo_tools.map
-$ cat velo-tools/velo_tools.map
-CatScale	Cat-Scale.sh
-```
-
-**Back on the appliance** — carry the folder over (USB, share, however), import:
-
-```bash
-$ sudo bash scripts/velo_tools.sh import /media/usb/velo-tools
-registered CatScale -> Cat-Scale.sh
-import: 1 registered, 0 failed
-```
-
-That is the whole job. The tool is stored on the server, hashed, and served to
-endpoints with no internet:
-
-```bash
-$ sudo bash scripts/velo_tools.sh status
-Stored on this server (served to endpoints, no internet needed):
-  CatScale  <-  Cat-Scale.sh
-  ...
-  (10 tool(s))
-Missing (an artifact wants them, this server has not got them): 76
-```
-
-### A folder you put together yourself
-
-If you downloaded the files by hand rather than with `fetch`, the folder has no
-`velo_tools.map`, and `import` will not guess names — a wrong name registers
-happily and is then never found by any artifact:
-
-```bash
-$ sudo bash scripts/velo_tools.sh import /media/usb/my-tools
-ERROR: no velo_tools.map in /media/usb/my-tools — add tools one at a time with: velo_tools.sh add <TOOL> <FILE>
-```
-
-Either add each file, naming it yourself:
-
-```bash
-$ sudo bash scripts/velo_tools.sh add CatScale /media/usb/my-tools/Cat-Scale.sh
-$ sudo bash scripts/velo_tools.sh add OurCollector /media/usb/my-tools/our_collector.exe
-```
-
-or write the map once — one line per file, name and file separated by a **TAB**
-— and import the folder in one go:
-
-```bash
-$ printf 'CatScale\tCat-Scale.sh\nOurCollector\tour_collector.exe\n' \
-    > /media/usb/my-tools/velo_tools.map
-$ sudo bash scripts/velo_tools.sh import /media/usb/my-tools
-```
-
-Take the names from the `list` output, character for character. `OurCollector`
-above is an in-house tool no artifact has asked for yet — that works too; the
-artifact that uses it just has to name the tool the same way.
-
-### One tool, or a file from a vendor
+Some rows in `list` have an empty URL — a vendor installer such as
+`CrowdStrikeFalconInstaller`. Get the file from the vendor, then add it exactly
+as in A:
 
 ```bash
 sudo bash scripts/velo_tools.sh add CrowdStrikeFalconInstaller /media/usb/falcon.exe
 ```
-
-`add` takes any name and any file — including a tool no artifact has asked for
-yet, and your own in-house binaries. **Copy the tool name exactly** as `list`
-prints it; it is how the artifact finds the file, and it often carries a version
-(`Hayabusa-2.14.0`). Names are restricted to letters, digits and `. _ + @ -`.
 
 ### The same thing in raw VQL
 
