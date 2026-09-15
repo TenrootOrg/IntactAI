@@ -28,6 +28,7 @@
 # makes putting them back one command instead of a memory exercise.
 #
 # Usage: scripts/velo_tools.sh <list|fetch|add|import|status> [args]
+#        add/import take --force to register a file whose hash an artifact pins
 set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -74,7 +75,7 @@ cmd_list() {
     local out
     out="$(velo_vql \
         "LET stored <= SELECT name FROM inventory() WHERE serve_locally AND hash" \
-        "SELECT * FROM foreach(row={SELECT name AS Artifact, tools FROM artifact_definitions() WHERE tools}, query={SELECT name AS Tool, url AS Url, Artifact FROM foreach(row=tools) WHERE NOT name IN stored.name}) ORDER BY Tool")" || {
+        "SELECT * FROM foreach(row={SELECT name AS Artifact, tools FROM artifact_definitions() WHERE tools}, query={SELECT name AS Tool, url AS Url, expected_hash AS Expected, Artifact FROM foreach(row=tools) WHERE NOT name IN stored.name}) ORDER BY Tool")" || {
         err "could not query the server"; return 1; }
 
     # TSV: one row per tool, artifacts that want it collapsed into one column.
@@ -86,14 +87,16 @@ for line in sys.stdin:
     if not line.strip():
         continue
     r = json.loads(line)
-    t = tools.setdefault(r["Tool"], {"url": r.get("Url") or "", "arts": []})
+    t = tools.setdefault(r["Tool"], {"url": r.get("Url") or "", "sha": r.get("Expected") or "", "arts": []})
     t["arts"].append(r.get("Artifact", ""))
     if not t["url"]:
         t["url"] = r.get("Url") or ""
-print("# TOOL\tURL\tARTIFACTS (delete the rows you do not need)")
+    if not t["sha"]:
+        t["sha"] = r.get("Expected") or ""
+print("# TOOL\tURL\tSHA256 the artifact expects (empty = any)\tARTIFACTS (delete rows you do not need)")
 for name in sorted(tools):
     t = tools[name]
-    print("%s\t%s\t%s" % (name, t["url"], ",".join(sorted(set(t["arts"])))))
+    print("%s\t%s\t%s\t%s" % (name, t["url"], t["sha"], ",".join(sorted(set(t["arts"])))))
 print("# %d tool(s) missing" % len(tools), file=sys.stderr)
 '
 }
@@ -115,7 +118,7 @@ cmd_fetch() {
     [[ "$listfile" == "-" || -f "$listfile" ]] || { err "no such file: $listfile"; return 1; }
     mkdir -p "$out" || return 1
 
-    local ok=0 skipped=0 failed=0 line tool url rest fname
+    local ok=0 skipped=0 failed=0 line tool url rest fname want_sha got_sha
     while IFS= read -r line; do
         [[ -z "$line" || "$line" == \#* ]] && continue
         # Split on TABs by hand: `read -r tool url rest` with IFS=tab treats
@@ -123,6 +126,8 @@ cmd_fetch() {
         # tool with no public download) shifted its artifact list into the URL.
         [[ "$line" == *$'\t'* ]] || continue
         tool="${line%%$'\t'*}"; rest="${line#*$'\t'}"; url="${rest%%$'\t'*}"
+        rest="${rest#*$'\t'}"; want_sha="${rest%%$'\t'*}"
+        [[ "$want_sha" == "$url" ]] && want_sha=""   # a 3-column row (no hash column)
         if [[ -z "${url:-}" ]]; then
             log "  no public URL, get it from the vendor: ${tool}"
             skipped=$((skipped + 1)); continue
@@ -132,7 +137,19 @@ cmd_fetch() {
             # The map is what makes the tool land under its REAL name on the
             # other side; the file name alone is not enough to register with.
             printf '%s\t%s\n' "$tool" "$fname" >> "${out}/${MAP_NAME}"
-            log "  fetched ${tool} -> ${fname}"
+            # An artifact may pin the tool's sha256. Downloading "the latest"
+            # of a pinned tool gives a file the endpoint will refuse, and the
+            # refusal happens at collection time, at the customer site.
+            if [[ -n "$want_sha" ]]; then
+                got_sha="$(sha256sum < "${out}/${fname}" | cut -d' ' -f1)"
+                if [[ "$got_sha" != "$want_sha" ]]; then
+                    err "hash mismatch for ${tool}: the artifact expects ${want_sha}, this download is ${got_sha}"
+                    err "  the URL now serves a different version — get the pinned one, or update the artifact"
+                    failed=$((failed + 1))
+                    continue
+                fi
+            fi
+            log "  fetched ${tool} -> ${fname}${want_sha:+ (hash matches)}"
             ok=$((ok + 1))
         else
             err "download failed: ${tool} (${url})"
@@ -150,7 +167,29 @@ cmd_fetch() {
 # ---------------------------------------------------------------------------
 # add — register ONE file under ONE exact tool name. No network.
 # ---------------------------------------------------------------------------
+# The sha256 an artifact pins for this tool, or empty. Registering a file that
+# does not match it succeeds here and fails on the endpoint, so `add` checks.
+expected_hash_for() {
+    local tool="$1"
+    velo_vql "SELECT * FROM foreach(row={SELECT tools FROM artifact_definitions() WHERE tools}, query={SELECT expected_hash AS h FROM foreach(row=tools) WHERE name = '${tool}' AND expected_hash}) LIMIT 1" 2>/dev/null \
+        | python3 -c 'import sys,json
+for l in sys.stdin:
+    l=l.strip()
+    if l:
+        print(json.loads(l).get("h","") or "")
+        break' 2>/dev/null
+}
+
 cmd_add() {
+    local force=0
+    local args=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --force) force=1; shift ;;
+            *) args+=("$1"); shift ;;
+        esac
+    done
+    set -- "${args[@]:-}"
     local tool="${1:-}" file="${2:-}"
     [[ -n "$tool" && -n "$file" ]] || { err "usage: velo_tools.sh add <TOOL_NAME> <FILE>"; return 1; }
     # Check the arguments BEFORE reaching for docker, so a bad name fails the
@@ -162,9 +201,27 @@ cmd_add() {
     valid_token "$base" || { err "file name has characters that are not allowed: ${base}"; return 1; }
     require_container || return 1
 
+    local want_sha got_sha
+    want_sha="$(expected_hash_for "$tool")"
+    if [[ -n "$want_sha" ]]; then
+        got_sha="$(sha256sum < "$file" | cut -d' ' -f1)"
+        if [[ "$got_sha" != "$want_sha" ]]; then
+            if (( force )); then
+                log "  WARNING: ${tool} hash does not match what the artifact expects — registering anyway (--force)"
+            else
+                err "hash mismatch for ${tool}"
+                err "  the artifact expects: ${want_sha}"
+                err "  this file is:         ${got_sha}"
+                err "  endpoints would refuse it. Get the pinned version, or re-run with --force."
+                return 1
+            fi
+        fi
+    fi
+
     mkdir -p "$TOOLS_DIR" || return 1
-    # Keep the file where the container can read it. Copying to itself is fine
-    # and means `add` works both for a carried file and for one already staged.
+    # Only now, with the file accepted, put it where the container can read it.
+    # Copying a file that is already there onto itself is skipped, so `add`
+    # works for a carried file and for one already staged.
     if [[ "$(cd "$(dirname "$file")" && pwd)/${base}" != "${TOOLS_DIR}/${base}" ]]; then
         cp -f "$file" "${TOOLS_DIR}/${base}" || { err "could not copy into ${TOOLS_DIR}"; return 1; }
         chmod 644 "${TOOLS_DIR}/${base}" 2>/dev/null || true
@@ -192,6 +249,15 @@ cmd_add() {
 # import — replay a carry folder's map (or the appliance's own). No network.
 # ---------------------------------------------------------------------------
 cmd_import() {
+    local force_arg=""
+    local args=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --force) force_arg="--force"; shift ;;
+            *) args+=("$1"); shift ;;
+        esac
+    done
+    set -- "${args[@]:-}"
     local dir="${1:-$TOOLS_DIR}"
     [[ -d "$dir" ]] || { err "no such directory: ${dir}"; return 1; }
     local map="${dir}/${MAP_NAME}"
@@ -207,7 +273,7 @@ cmd_import() {
             err "missing file for ${tool}: ${dir}/${fname}"
             failed=$((failed + 1)); continue
         fi
-        if cmd_add "$tool" "${dir}/${fname}"; then ok=$((ok + 1)); else failed=$((failed + 1)); fi
+        if cmd_add ${force_arg:+$force_arg} "$tool" "${dir}/${fname}"; then ok=$((ok + 1)); else failed=$((failed + 1)); fi
     done < "$map"
 
     log "import: ${ok} registered, ${failed} failed"

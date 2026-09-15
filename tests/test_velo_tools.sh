@@ -29,7 +29,12 @@ case "\$1" in
         [[ "\$2" == "-f" ]] && { echo true; exit 0; }
         exit 0 ;;
 esac
-# every VQL call "succeeds" the way the real one reports success
+# the expected-hash lookup: answer with whatever the test planted
+if [[ "\$*" == *expected_hash* ]]; then
+    [[ -s "${root}/expect_sha" ]] && echo "{\"h\":\"\$(cat "${root}/expect_sha")\"}"
+    exit 0
+fi
+# every other VQL call "succeeds" the way the real one reports success
 echo '{"r":{"name":"x","serve_locally":true}}'
 EOF
     chmod +x "${root}/bin/docker"
@@ -121,22 +126,22 @@ test_list_turns_the_servers_answer_into_a_carryable_tsv() {
     cat > "${root}/bin/docker" <<EOF
 #!/bin/bash
 case "\$1" in inspect) [[ "\$2" == "-f" ]] && echo true; exit 0 ;; esac
-echo '{"Tool":"Hayabusa-2.14.0","Url":"https://example.test/hayabusa.zip","Artifact":"Windows.Hayabusa.Rules"}'
-echo '{"Tool":"Hayabusa-2.14.0","Url":"https://example.test/hayabusa.zip","Artifact":"Windows.Hayabusa.Monitoring"}'
-echo '{"Tool":"VendorOnly","Url":"","Artifact":"Windows.Vendor.Install"}'
+echo '{"Tool":"Hayabusa-2.14.0","Url":"https://example.test/hayabusa.zip","Expected":"abc123","Artifact":"Windows.Hayabusa.Rules"}'
+echo '{"Tool":"Hayabusa-2.14.0","Url":"https://example.test/hayabusa.zip","Expected":"abc123","Artifact":"Windows.Hayabusa.Monitoring"}'
+echo '{"Tool":"VendorOnly","Url":"","Expected":"","Artifact":"Windows.Vendor.Install"}'
 EOF
     chmod +x "${root}/bin/docker"
     local out; out="$(_run "$root" list)"
-    assert_contains "$out" $'Hayabusa-2.14.0\thttps://example.test/hayabusa.zip' "tool and URL"
+    assert_contains "$out" $'Hayabusa-2.14.0\thttps://example.test/hayabusa.zip\tabc123' "tool, URL and the pinned hash"
     assert_contains "$out" "Windows.Hayabusa.Monitoring" "keeps every artifact that wants it"
     assert_eq "$(grep -c '^Hayabusa-2.14.0' <<<"$out")" "1" "one row per tool, not per artifact"
-    assert_contains "$out" $'VendorOnly\t\t' "a tool with no public URL still appears"
+    assert_contains "$out" $'VendorOnly\t\t\t' "a tool with no public URL still appears"
 }
 
 test_fetch_downloads_the_listed_urls_and_writes_the_map() {
     local root; root="$(_fake)"
-    printf '# TOOL\tURL\tARTIFACTS\nHayabusa-2.14.0\thttps://example.test/hayabusa.zip\tW.H.Rules\nVendorOnly\t\tW.V.Install\n' \
-        > "${root}/list.tsv"
+    printf '# TOOL\tURL\tSHA\tARTIFACTS\nHayabusa-2.14.0\thttps://example.test/hayabusa.zip\t%s\tW.H.Rules\nVendorOnly\t\t\tW.V.Install\n' \
+        "239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5" > "${root}/list.tsv"
     # curl stub: writes the -o target, so fetch sees a real file appear.
     cat > "${root}/bin/curl" <<'EOF'
 #!/bin/bash
@@ -151,6 +156,64 @@ EOF
     assert_eq "$(cat "${root}/carry/velo_tools.map")" "$(printf 'Hayabusa-2.14.0\thayabusa.zip')" \
         "map carries the real tool name next to the file"
     assert_contains "$out" "no public URL" "says which tool needs the vendor"
+    assert_contains "$out" "hash matches" "verified the pinned hash"
+}
+
+test_fetch_refuses_a_download_that_does_not_match_the_pinned_hash() {
+    local root; root="$(_fake)"
+    printf '# TOOL\tURL\tSHA\tARTIFACTS\nHayabusa-2.14.0\thttps://example.test/hayabusa.zip\tdeadbeef\tW.H.Rules\n' \
+        > "${root}/list.tsv"
+    cat > "${root}/bin/curl" <<'EOF'
+#!/bin/bash
+out=""; while [[ $# -gt 0 ]]; do [[ "$1" == "-o" ]] && { out="$2"; shift; }; shift; done
+printf 'payload' > "$out"
+EOF
+    chmod +x "${root}/bin/curl"
+    _run "$root" fetch "${root}/list.tsv" --out "${root}/carry" >/dev/null
+    assert_ne "$?" "0" "fetch reports failure"
+    assert_contains "$(cat "${root}/err")" "hash mismatch" "names the problem"
+    assert_contains "$(cat "${root}/err")" "different version" "explains it"
+}
+
+# ---------------------------------------------------------------------------
+# An artifact can pin its tool's sha256 (Hayabusa, SharpHound, Capa, Sigcheck
+# all do). Registering a file that does not match succeeds at the server and
+# then fails on the ENDPOINT, mid-collection, at a customer site.
+# ---------------------------------------------------------------------------
+test_add_refuses_a_file_the_artifact_would_reject() {
+    local root; root="$(_fake)"
+    printf 'payload' > "${root}/carry/hayabusa.zip"
+    echo "not_the_hash_of_payload" > "${root}/expect_sha"
+
+    _run "$root" add Hayabusa-2.14.0 "${root}/carry/hayabusa.zip" >/dev/null
+    assert_ne "$?" "0" "refused"
+    local e; e="$(cat "${root}/err")"
+    assert_contains "$e" "hash mismatch" "says what is wrong"
+    assert_contains "$e" "the artifact expects: not_the_hash_of_payload" "shows the expected hash"
+    assert_contains "$e" "--force" "offers the override"
+    assert_not_contains "$(cat "${root}/docker.calls")" "inventory_add" "nothing registered"
+    assert_false test -f "${root}/tools/hayabusa.zip"   # and no stray file left behind
+}
+
+test_add_registers_when_the_hash_matches() {
+    local root; root="$(_fake)"
+    printf 'payload' > "${root}/carry/hayabusa.zip"
+    sha256sum < "${root}/carry/hayabusa.zip" | cut -d' ' -f1 > "${root}/expect_sha"
+
+    _run "$root" add Hayabusa-2.14.0 "${root}/carry/hayabusa.zip" >/dev/null
+    assert_eq "$?" "0" "accepted"
+    assert_contains "$(cat "${root}/docker.calls")" "inventory_add" "registered"
+}
+
+test_add_force_registers_a_mismatch_but_says_so() {
+    local root; root="$(_fake)"
+    printf 'payload' > "${root}/carry/hayabusa.zip"
+    echo "not_the_hash_of_payload" > "${root}/expect_sha"
+
+    local out; out="$(_run "$root" add --force Hayabusa-2.14.0 "${root}/carry/hayabusa.zip")"
+    assert_eq "$?" "0" "registers"
+    assert_contains "$out" "WARNING" "warns"
+    assert_contains "$(cat "${root}/docker.calls")" "inventory_add" "registered"
 }
 
 # ---------------------------------------------------------------------------

@@ -66,12 +66,30 @@ want it. Delete the rows you do not need — you only need the tools for the
 artifacts you intend to run.
 
 ```
-Autorun_386     https://live.sysinternals.com/tools/autorunsc.exe   Windows.Sysinternals.Autoruns
-SigmaProfiles   https://sigma.velocidex.com/profiles.json           Notebooks.Sigma.Studio
+TOOL             URL                                                SHA256 the artifact expects   ARTIFACTS
+Autorun_386      https://live.sysinternals.com/tools/autorunsc.exe                                Windows.Sysinternals.Autoruns
+Hayabusa-2.14.0  https://github.com/.../hayabusa-2.14.0-win-x64.zip de8abff4f6ed35f2...           Exchange.Windows.EventLogs.Hayabusa.Takajo
 ```
 
 A row with an empty URL (a vendor installer such as `CrowdStrikeFalconInstaller`)
 has no public download; get that file from the vendor and use `add` (below).
+
+**The hash column matters.** Some artifacts pin their tool's sha256 — 18 of the
+missing tools on a clean box do, including every Hayabusa version, SharpHound,
+Capa and Sigcheck. A file that does not match is registered happily by the
+server and then **refused by the endpoint**, mid-collection. So `fetch` checks
+what it downloaded, and `add`/`import` refuse a file whose hash does not match:
+
+```
+ERROR: hash mismatch for Hayabusa-2.14.0
+ERROR:   the artifact expects: de8abff4f6ed35f28e1e2897659e4f7adcca13ef84d2764afa786ca3f60224ec
+ERROR:   this file is:         7d94206ac5c5d68cae535916fe92ba86f963e459633233ff8faf6b361a959d90
+ERROR:   endpoints would refuse it. Get the pinned version, or re-run with --force.
+```
+
+Nothing is copied or registered when that happens. If the URL has moved on to a
+newer release, fetch the pinned version instead — or, if you mean to run a
+different version, update the artifact's tool definition and use `--force`.
 
 ### 2. On a machine WITH internet — download them
 
