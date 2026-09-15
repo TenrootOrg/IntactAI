@@ -567,7 +567,7 @@ async function adoptVelociraptorId() {
     statusDiv.classList.remove('hidden');
 
     if (!ident) {
-        statusDiv.innerHTML = '<span class="text-red-400">Enter a flow id or hunt id.</span>';
+        statusDiv.innerHTML = '<span class="text-red-400">Enter a flow id, hunt id or workflow id.</span>';
         return;
     }
 
@@ -584,9 +584,18 @@ async function adoptVelociraptorId() {
         const data = await response.json();
 
         if (response.ok) {
-            const kind = data.kind === 'hunt' ? 'Hunt' : 'Flow';
-            statusDiv.innerHTML = `<span class="text-green-400">${kind} ${escapeHtml(data.id || ident)} `
-                + `added to the case. Opening Workflows…</span>`;
+            let msg;
+            if (Array.isArray(data.runs)) {
+                // A workflow id: one adopt run per flow (or the hunt) it collected.
+                const n = data.runs.length;
+                const already = (data.skipped || []).length;
+                msg = `Pulling ${n} collection${n === 1 ? '' : 's'} from ${escapeHtml(data.from_run || ident)} into the case`
+                    + (already ? ` (${already} already here)` : '') + '. Opening Workflows…';
+            } else {
+                const kind = data.kind === 'hunt' ? 'Hunt' : 'Flow';
+                msg = `${kind} ${escapeHtml(data.id || ident)} added to the case. Opening Workflows…`;
+            }
+            statusDiv.innerHTML = `<span class="text-green-400">${msg}</span>`;
             idInput.value = '';
             setTimeout(() => {
                 switchTab('workflows');

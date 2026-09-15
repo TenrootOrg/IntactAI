@@ -392,11 +392,11 @@
                     <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
                         <div class="space-y-4">
                             <div>
-                                <label class="block text-sm font-medium text-gray-300 mb-1">Flow ID or Hunt ID</label>
-                                <input type="text" id="adopt-id" placeholder="F.CVJ8K2M4NQ1P0 or H.CVJ8K2M4NQ1P0"
+                                <label class="block text-sm font-medium text-gray-300 mb-1">Flow ID, Hunt ID or Workflow ID</label>
+                                <input type="text" id="adopt-id" placeholder="F.CVJ8K2M4NQ1P0, H.CVJ8K2M4NQ1P0 or velociraptor_collection_1789045831972"
                                        class="w-full bg-gray-900 text-white border border-gray-700 rounded-lg p-2.5 text-sm font-mono focus:border-blue-500 focus:outline-none"
                                        @keydown.enter="adoptVelociraptorId()">
-                                <p class="text-xs text-gray-500 mt-1">Copy it from the Velociraptor GUI. A hunt pulls every client that reported; a flow pulls one host.</p>
+                                <p class="text-xs text-gray-500 mt-1">Copy a flow or hunt id from the Velociraptor GUI, or a workflow id from the Workflows page. A hunt pulls every client that reported; a flow pulls one host; a workflow pulls whatever that run collected from Velociraptor.</p>
                             </div>
 
                             <div class="bg-gray-900 border border-gray-700 rounded-lg p-3">

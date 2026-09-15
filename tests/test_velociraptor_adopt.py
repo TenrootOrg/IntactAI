@@ -544,5 +544,133 @@ class TestTheOperatorCanFindIt(unittest.TestCase):
         self.assertIn("409", adopt)
 
 
+
+# ---------------------------------------------------------------------------
+# Add by ID also takes an Intact WORKFLOW id, copied from the Workflows page, and
+# pulls the Velociraptor collection that run made into the active case. It never
+# shares the source run between cases -- it reads the rows from Velociraptor again
+# into new adopt runs -- so the same one-case-per-run rule holds.
+# ---------------------------------------------------------------------------
+
+def load_workflow_helpers():
+    """Exec the two pure workflow-id helpers without importing the route module."""
+    tree = ast.parse(read(ROUTES))
+    ns = {}
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name in (
+                "_is_workflow_run_id", "_adopt_locators_of_run"):
+            exec(compile(ast.Module([node], []), ROUTES, "exec"), ns)
+    return ns
+
+
+class TestAWorkflowIdIsRecognised(unittest.TestCase):
+
+    def setUp(self):
+        self.ok = load_workflow_helpers()["_is_workflow_run_id"]
+
+    def test_the_ids_the_workflows_page_shows(self):
+        for rid in ("velociraptor_collection_1789045831972",
+                    "velociraptor_adopt_1788789137005",
+                    "velociraptor_hunt_1789000000000",
+                    "aws_offline_2f5615076aea",
+                    "  velociraptor_collection_1789045831972  "):
+            self.assertTrue(self.ok(rid), rid)
+
+    def test_velociraptor_ids_are_not_workflow_ids(self):
+        for rid in ("F.CVJ8K2M4NQ1P0", "H.CVJ8K2M4NQ1P0", "F.CVJ8K2M4NQ1P0.H"):
+            self.assertFalse(self.ok(rid), rid)
+
+    def test_anything_else_is_refused_before_a_lookup(self):
+        for rid in ("", None, "x", "run", "Velociraptor_Collection_1789045831972",
+                    "velociraptor collection_1789045831972", "case_1789377446038'--",
+                    "run_123456;rm -rf /", "../../etc/passwd_123456"):
+            self.assertFalse(self.ok(rid), repr(rid))
+
+
+class TestWhatAWorkflowCanHandOver(unittest.TestCase):
+
+    def setUp(self):
+        self.of = load_workflow_helpers()["_adopt_locators_of_run"]
+
+    def test_a_multi_client_collection_hands_over_every_flow(self):
+        run = {"automation_type": "velociraptor_collection",
+               "details": {"flow_id": ["F.AAA111", "F.BBB222", "F.AAA111"]}}
+        self.assertEqual((None, ["F.AAA111", "F.BBB222"]), self.of(run))
+
+    def test_a_single_flow(self):
+        run = {"automation_type": "velociraptor_adopt", "details": {"flow_id": "F.ABCDEFGH"}}
+        self.assertEqual((None, ["F.ABCDEFGH"]), self.of(run))
+
+    def test_a_hunt_wins_over_its_flows(self):
+        run = {"automation_type": "velociraptor_hunt",
+               "details": {"hunt_id": "H.CCC333", "flow_id": ["F.AAA111"]}}
+        self.assertEqual((None, ["H.CCC333"]), self.of(run))
+
+    def test_an_uploaded_collection_file_is_not_on_this_server(self):
+        run = {"automation_type": "velociraptor_upload",
+               "details": {"flow_id": "F.DAHAOKCK9F7TI", "offline_flow_id": "F.DAHAOKCK9F7TI"}}
+        self.assertEqual(("offline", []), self.of(run))
+
+    def test_an_offline_import_stamp_alone_is_enough(self):
+        run = {"automation_type": "velociraptor_collection",
+               "details": {"offline_hunt_id": "H.XYZ"}}
+        self.assertEqual(("offline", []), self.of(run))
+
+    def test_a_run_with_nothing_from_velociraptor(self):
+        for run in ({"automation_type": "maintenance", "details": {}},
+                    {"automation_type": "aws_scan", "details": {"flow_id": None}},
+                    {}, None):
+            self.assertEqual(("none", []), self.of(run), run)
+
+
+class TestTheWorkflowPathKeepsTheSafetyOrder(unittest.TestCase):
+    """The same guarantees as a typed id: validated before anything is looked up,
+    each resulting id validated and duplicate-checked before a run exists, and
+    the source run is never shared into a second case."""
+
+    def setUp(self):
+        self.route = func_source(ROUTES, "adopt_velociraptor_collection")
+        self.helper = func_source(ROUTES, "_adopt_from_workflow")
+
+    def test_the_route_recognises_the_id_before_taking_the_path(self):
+        self.assertLess(self.route.index("_is_workflow_run_id"),
+                        self.route.index("_adopt_from_workflow"))
+
+    def test_each_id_is_validated_and_deduplicated_before_a_run_is_created(self):
+        created = self.helper.index("create_automation_run")
+        self.assertLess(self.helper.index("get_workflow("), created)
+        self.assertLess(self.helper.index("_adopt_normalize_id"), created)
+        self.assertLess(self.helper.index("_adopt_existing_run"), created)
+
+    def test_the_source_run_is_never_retagged_or_attached(self):
+        for forbidden in ("attach_runs", "save_workflow", '["case_id"] =', "case_id=source"):
+            self.assertNotIn(forbidden, self.helper, forbidden)
+
+    def test_a_run_already_in_this_case_is_refused(self):
+        self.assertIn('source.get("case_id") == case_id', self.helper)
+        self.assertIn("409", self.helper)
+
+    def test_an_uploaded_file_gets_a_reason_not_a_failed_fetch(self):
+        self.assertIn("imported from a collection file", self.helper)
+
+    def test_no_client_id_is_asked_for(self):
+        self.assertNotIn("client_id", self.helper)
+
+
+class TestThePanelOffersWorkflowIds(unittest.TestCase):
+
+    def test_the_same_box_says_it_takes_a_workflow_id(self):
+        panel = read(PANEL)
+        self.assertIn("Workflow ID", panel)
+        self.assertIn("Workflows page", panel)
+        self.assertEqual(1, panel.count('id="adopt-id"'), "one box, not a second field")
+
+    def test_the_page_reports_a_multi_collection_pull(self):
+        vjs = read(VJS)
+        adopt = vjs[vjs.index("async function adoptVelociraptorId"):]
+        self.assertIn("data.runs", adopt)
+        self.assertIn("switchTab('workflows')", adopt)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

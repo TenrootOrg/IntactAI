@@ -742,7 +742,9 @@ def get_artifacts():
 # boundary so no unmapped raw Velociraptor data enters the graph.
 
 _ADOPT_ID_HINT = ("Expected a Velociraptor flow id (F.XXXXXXXX), "
-                  "a hunt id (H.XXXXXXXX), or a hunt-derived flow id (F.XXXXXXXX.H).")
+                  "a hunt id (H.XXXXXXXX), a hunt-derived flow id (F.XXXXXXXX.H), "
+                  "or a workflow id from the Workflows page "
+                  "(velociraptor_collection_1789045831972).")
 
 
 def _adopt_normalize_id(value):
@@ -781,6 +783,109 @@ def _adopt_ids_in_details(details):
             out.add(str(val).strip().lower())
     return out
 
+
+
+def _is_workflow_run_id(value):
+    """True for an Intact workflow id as the Workflows page shows it:
+    `velociraptor_collection_1789045831972`, `aws_offline_2f5615076aea`.
+
+    Checked before the id reaches storage. It can never be mistaken for a
+    Velociraptor id: those always contain a dot, workflow ids never do."""
+    import re
+    return bool(re.fullmatch(r"[a-z][a-z0-9_]{0,60}_[0-9a-z]{6,40}", (value or "").strip()))
+
+
+def _adopt_locators_of_run(run):
+    """What a stored Intact run can hand to Add by ID: (reason, ids).
+
+    reason is None when there is something to pull, otherwise:
+      'offline' -- the run imported a collection FILE, so its flow is not on
+                   this Velociraptor server and cannot be read back by id;
+      'none'    -- the run collected nothing from Velociraptor at all.
+    A hunt wins over its flows: adopting the hunt already pulls every client."""
+    run = run or {}
+    details = run.get("details") or {}
+    if (run.get("automation_type") == "velociraptor_upload"
+            or details.get("offline_flow_id") or details.get("offline_hunt_id")):
+        return "offline", []
+
+    def as_list(v):
+        if isinstance(v, list):
+            return [x for x in v if x]
+        return [v] if v else []
+
+    ids = as_list(details.get("hunt_id")) or as_list(details.get("flow_id"))
+    out = []
+    for i in ids:
+        i = str(i).strip()
+        if i and i not in out:
+            out.append(i)
+    return (None, out) if out else ("none", [])
+
+
+def _adopt_from_workflow(source_run_id):
+    """Add by ID with an Intact workflow id: pull the Velociraptor flows or hunt
+    that run collected into the ACTIVE case, as new adopt runs.
+
+    Nothing is copied out of the source run and it is never re-tagged -- a run
+    belongs to one case. The rows are read from Velociraptor again, exactly as
+    adopting the flow id by hand would, so both cases hold their own copy and
+    neither can change the other's evidence."""
+    import threading
+    from services.file_storage_service import get_workflow
+    from services.workflow_service import _resolve_case_id
+
+    case_id = _resolve_case_id("velociraptor_adopt", None)
+    if not case_id:
+        return jsonify({"error": "No active case to adopt into."}), 400
+
+    source = get_workflow(source_run_id)
+    if not source:
+        return jsonify({"error": f"No workflow with id {source_run_id}. "
+                                 f"Copy it from the Workflows page."}), 404
+    if source.get("case_id") == case_id:
+        return jsonify({"error": f"{source_run_id} is already part of this case.",
+                        "duplicate": True, "run_id": source_run_id}), 409
+
+    reason, locators = _adopt_locators_of_run(source)
+    if reason == "offline":
+        return jsonify({"error": f"{source_run_id} was imported from a collection file, so "
+                                 f"its data is not on this Velociraptor server. Upload the "
+                                 f"same file into this case instead."}), 400
+    if reason == "none":
+        return jsonify({"error": f"{source_run_id} is a "
+                                 f"{source.get('automation_type') or 'non-Velociraptor'} run "
+                                 f"with no Velociraptor collection to pull."}), 400
+
+    started, skipped = [], []
+    for raw in locators:
+        # Same order as a typed id: validate, then refuse a duplicate, then create.
+        kind, ident = _adopt_normalize_id(raw)
+        if not kind:
+            continue
+        existing = _adopt_existing_run(case_id, ident)
+        if existing:
+            skipped.append({"id": ident, "run_id": existing.get("run_id")})
+            continue
+        run_id = create_automation_run(
+            automation_type="velociraptor_adopt",
+            name=f"Adopt {'hunt' if kind == 'hunt' else 'flow'} {ident} from {source_run_id}",
+            details={("hunt_id" if kind == "hunt" else "flow_id"): ident,
+                     "adopted_id": ident,
+                     "adopted_from_run": source_run_id,
+                     "is_agentic": False},
+            case_id=case_id,
+        )
+        add_log_to_run(run_id, f"Adopting {kind} {ident} from workflow {source_run_id} into the case")
+        threading.Thread(target=_adopt_worker, args=(run_id, kind, ident), daemon=True).start()
+        started.append({"run_id": run_id, "kind": kind, "id": ident})
+
+    if not started:
+        if skipped:
+            return jsonify({"error": f"Everything {source_run_id} collected is already in this case.",
+                            "duplicate": True, "skipped": skipped}), 409
+        return jsonify({"error": f"{source_run_id} names no valid Velociraptor id."}), 400
+    return jsonify({"from_run": source_run_id, "runs": started, "skipped": skipped}), 202
 
 # A run in one of these states holds no data for its id — it either never
 # fetched any or was stopped before it could. Blocking a re-adopt on one strands
@@ -941,6 +1046,10 @@ def adopt_velociraptor_collection():
         raw_id = (data.get('id') or data.get('flow_id') or data.get('hunt_id') or '')
 
         kind, ident = _adopt_normalize_id(raw_id)
+        if not kind and _is_workflow_run_id(raw_id):
+            # An Intact workflow id copied from the Workflows page: pull the
+            # Velociraptor collection that run made into this case.
+            return _adopt_from_workflow(str(raw_id).strip())
         if not kind:
             # Validate BEFORE anything else: these ids are interpolated straight
             # into VQL downstream, and this is the first route that takes one
