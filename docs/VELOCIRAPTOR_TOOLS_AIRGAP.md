@@ -1,14 +1,22 @@
-# Velociraptor tools on an air-gapped appliance
+# Velociraptor tools: adding them online and air-gapped
 
 Many Velociraptor artifacts run a third-party **tool** on the endpoint: Hayabusa,
-Sigcheck, Bulk Extractor, YARA rule files, and so on. Online, Velociraptor
-downloads each tool from its internet URL the first time an artifact needs it.
-An air-gapped box has no internet, so any tool that is not already stored on the
-Velociraptor server makes its artifact **fail when it runs**.
+Sigcheck, Bulk Extractor, YARA rule files, and so on. Velociraptor downloads each
+tool from its internet URL the first time an artifact needs it — so on a box with
+internet the tool arrives on its own the first time, and on an air-gapped box any
+tool the server does not already store makes its artifact **fail when it runs**.
 
-`scripts/velo_tools.sh` puts tools on the server. It holds no list of its own —
-it asks the running server what its own artifacts want, and it registers any
-file under any name you give it.
+Either way the fix is the same: store the tool on the Velociraptor server, which
+then serves it to endpoints. This page covers every way to do that.
+
+| Your appliance | Use |
+|---|---|
+| **has internet** | [`velo_tools.sh install <NAME>`](#online--one-tool-at-a-time-recommended) for one tool at a time, hash-checked, or [the platform's bulk download](#online--every-optional-tool-at-once) for the whole optional tier at once |
+| **is air-gapped** | [`add` / `import`](#air-gapped--you-already-have-the-files) for files you carry in, or [`list` → `fetch` → `import`](#air-gapped--let-the-appliance-tell-you-what-to-carry) to let the box tell you what to bring |
+| **either** | [`selftest`](#check-it-works) to prove the chain, [`list` / `status`](#see-what-is-missing) to see where you stand |
+
+`scripts/velo_tools.sh` holds no list of its own — it asks the running server what
+its own artifacts want, and registers any file under any name you give it.
 
 Every command below is copy-paste ready and was run on a live appliance.
 
@@ -97,7 +105,7 @@ cd /home/tenroot/intact
 bash scripts/velo_tools.sh status
 ```
 
-## Route A — the appliance has internet
+## Online — one tool at a time (recommended)
 
 One tool, by name. Nothing else to look up:
 
@@ -123,7 +131,74 @@ bash scripts/velo_tools.sh install Hayabusa-2.14.0 ChopChopGo DHParser
 install: 3 added, 0 failed
 ```
 
-## Route B — air-gapped, you already have the files
+## Online — every optional tool at once
+
+The platform has its own downloader, driven by `data/tools_inventory.yaml`. It
+fetches the **default** tier on every install and maintenance run, and the
+**optional** tier (Hayabusa, the YARA packs, the Eric Zimmerman tools, Sysmon,
+OSQuery, WinPmem, …) only when you ask for it.
+
+1. Turn the optional tier on, in `config.yaml`:
+
+```yaml
+options:
+  download_tools: true
+```
+
+2. Run it (there is no button for this in the dashboard):
+
+```bash
+docker exec intact_backend curl -s -X POST http://127.0.0.1:5001/api/maintenance/download-tools
+```
+
+It answers with a run id and works in the background:
+
+```
+{"message":"Tool download started","run_id":"maintenance_1789460042415","success":true}
+```
+
+3. Watch it, with that run id (the endpoint returns JSON, so print the messages):
+
+```bash
+docker exec intact_backend curl -s \
+  http://127.0.0.1:5001/api/dashboard/automation/maintenance_1789460042415/logs \
+  | python3 -c "import sys,json;[print(l['message']) for l in json.load(sys.stdin)['logs'][-6:]]"
+```
+
+The tail of a finished run says what it did and what is still missing:
+
+```
+  24 of 52 tool(s) are actually held locally; 28 have no binary on the server
+    no binary: CapaWindows, DotNetDumper, ESETLogCollector, EvtxHussar17, FileYaraLinux, …
+  Tool download completed: Downloaded: 0, Existed: 3, Failed: 0 | Configured: 0, Already served: 7, File not found: 0, Failed: 0
+```
+
+(That run is from a box with `download_tools` still `false`, so only the three
+default tools were considered — with the flag on, the optional tier downloads
+too.)
+
+Re-running an install or `install.sh` on a connected box does the same thing.
+
+**Two limits worth knowing**, and both are why `velo_tools.sh` exists:
+
+- **It knows only the tools listed in `data/tools_inventory.yaml`** — 26 of the 79
+  names a clean box is missing. The rest, and anything an artifact you import
+  later asks for, it cannot fetch. `velo_tools.sh install` reads the URL from the
+  artifact itself, so it is not limited to that file.
+- **It does not check the hash an artifact pins.** If a URL has moved on to a
+  newer release, the newer file is downloaded and registered under the old name,
+  and the endpoint then refuses it mid-collection. `velo_tools.sh` compares the
+  hash and refuses instead.
+
+So after a bulk run, check what actually landed:
+
+```bash
+cd /home/tenroot/intact
+bash scripts/velo_tools.sh status
+bash scripts/velo_tools.sh list
+```
+
+## Air-gapped — you already have the files
 
 You downloaded the tools elsewhere and carried the folder over. `import` will not
 guess names, so it stops and asks you to name each file:
@@ -178,7 +253,7 @@ bash scripts/velo_tools.sh add OurCollector /opt/ours/our_collector.exe
 Your artifact then asks for `OurCollector`, and endpoints get that file from the
 appliance.
 
-## Route C — let the appliance tell you what to carry
+## Air-gapped — let the appliance tell you what to carry
 
 **1. On the appliance**, write the list and keep only the rows you want:
 
