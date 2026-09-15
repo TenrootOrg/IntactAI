@@ -64,34 +64,56 @@ to get that file.
 
 Three ways in, depending on where the files are:
 
-- **A — the appliance itself has internet.** Download and add, on the box, two
-  commands.
+- **A — the appliance itself has internet.** `install <TOOL_NAME>` — one command,
+  no URL to copy.
 - **B — you already have the files.** Carry the folder onto the box and register
   them. No internet at any point.
 - **C — let the script tell you what is missing**, download it on a machine that
   has internet, and carry that folder over.
 
-### A. The appliance has internet — download and add
+### A. The appliance has internet — name the tool, that is all
 
 ```bash
 $ cd /home/tenroot/intact
-$ bash scripts/velo_tools.sh list | grep Hayabusa
-Hayabusa-2.14.0   https://github.com/Yamato-Security/hayabusa/releases/download/v2.14.0/hayabusa-2.14.0-win-x64.zip   de8abff4f6ed35f2...
-
-$ curl -fL -o /tmp/hayabusa.zip https://github.com/Yamato-Security/hayabusa/releases/download/v2.14.0/hayabusa-2.14.0-win-x64.zip
-$ sudo bash scripts/velo_tools.sh add Hayabusa-2.14.0 /tmp/hayabusa.zip
-registered Hayabusa-2.14.0 -> hayabusa.zip
+$ sudo bash scripts/velo_tools.sh install Takajo-2.5.0
+Takajo-2.5.0: downloading https://github.com/Yamato-Security/takajo/releases/download/v2.5.0/takajo-2.5.0-win.zip
+registered Takajo-2.5.0 -> takajo-2.5.0-win.zip
+install: 1 added, 0 failed
 ```
 
-A tool of your own works the same way — there is nothing to look up:
+`install` takes the URL from the artifact that wants the tool, so there is no
+link to copy and no file name to guess — the two things that go wrong when the
+command is assembled by hand. Several at once is fine:
+
+```bash
+sudo bash scripts/velo_tools.sh install Hayabusa-2.14.0 Takajo-2.5.0
+```
+
+Names come from `velo_tools.sh list`, column 1. If a tool has no public download
+(a vendor installer), `install` says so and tells you to use `add`:
+
+```
+ERROR: no download URL known for 'CrowdStrikeFalconInstaller'
+ERROR:   either no artifact asks for it, or it has no public download (a vendor installer).
+ERROR:   Get the file yourself, then: velo_tools.sh add CrowdStrikeFalconInstaller <file>
+```
+
+**Any file, any name, no list needed.** `add` is the general form — point it at a
+file and name it whatever an artifact will ask for. A tool of your own works
+exactly the same:
 
 ```bash
 $ sudo bash scripts/velo_tools.sh add OurCollector /opt/ours/our_collector.exe
+registered OurCollector -> our_collector.exe
 ```
 
-Your artifact then asks for `OurCollector`, and the endpoint gets that file from
-the appliance.
-
+**Which download URLs stay put.** A URL under a release tag —
+`.../releases/download/v2.5.0/takajo-2.5.0-win.zip` — is fixed forever, which is
+why `Hayabusa-2.14.0` and `Takajo-2.5.0` are used as examples here: both were
+downloaded on 2026-09-15 and matched the hash their artifact pins. A URL that
+always serves "the latest" does not: `https://live.sysinternals.com/tools/sigcheck64.exe`
+is a newer build than `Client.Windows.Sigcheck` pins today, so adding it is
+refused (see *Hashes*, below) until someone updates the artifact.
 
 ### B. You already have the files — carry the folder in
 

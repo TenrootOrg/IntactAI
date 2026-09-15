@@ -22,6 +22,9 @@
 # Prove an endpoint really gets a tool (needs one enrolled client):
 #   velo_tools.sh test --tool etl2pcapng
 #
+# On a box WITH internet, one tool by name -- no URL to copy:
+#   velo_tools.sh install Takajo-2.5.0
+#
 # One tool, by hand, in one step:
 #   velo_tools.sh add Hayabusa-2.14.0 /media/usb/hayabusa-2.14.0-win-x64.zip
 #
@@ -30,7 +33,7 @@
 # the Velociraptor datastore volume drops every registration; the map is what
 # makes putting them back one command instead of a memory exercise.
 #
-# Usage: scripts/velo_tools.sh <list|fetch|add|import|status|test> [args]
+# Usage: scripts/velo_tools.sh <list|install|fetch|add|import|status|test> [args]
 #        add/import take --force to register a file whose hash an artifact pins
 set -o pipefail
 
@@ -249,6 +252,54 @@ cmd_add() {
 }
 
 # ---------------------------------------------------------------------------
+# install — name a tool, get it. Only on a box WITH internet.
+#
+# The URL comes from the artifact that wants the tool, so there is no URL to
+# copy by hand and no version to guess -- the two things that go wrong when an
+# operator assembles the command themselves.
+# ---------------------------------------------------------------------------
+cmd_install() {
+    local force_arg="" tools=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --force) force_arg="--force"; shift ;;
+            -h|--help) usage 0 ;;
+            *) tools+=("$1"); shift ;;
+        esac
+    done
+    [[ ${#tools[@]} -gt 0 ]] || { err "usage: velo_tools.sh install <TOOL_NAME> [TOOL_NAME ...]"; return 1; }
+    require_container || return 1
+
+    local tmp; tmp="$(mktemp -d)" || return 1
+    local ok=0 failed=0 tool url fname
+    for tool in "${tools[@]}"; do
+        valid_token "$tool" || { err "tool name has characters that are not allowed: ${tool}"; failed=$((failed + 1)); continue; }
+        url="$(velo_vql "SELECT * FROM foreach(row={SELECT tools FROM artifact_definitions() WHERE tools}, query={SELECT url AS u FROM foreach(row=tools) WHERE name = '${tool}' AND url}) LIMIT 1" 2>/dev/null \
+            | python3 -c 'import sys,json
+l=sys.stdin.readline()
+print(json.loads(l).get("u","") if l.strip() else "")' 2>/dev/null)"
+        if [[ -z "$url" ]]; then
+            err "no download URL known for '${tool}'"
+            err "  either no artifact asks for it, or it has no public download (a vendor installer)."
+            err "  Get the file yourself, then: velo_tools.sh add ${tool} <file>"
+            failed=$((failed + 1)); continue
+        fi
+        fname="$(basename "${url%%\?*}")"
+        log "${tool}: downloading ${url}"
+        if ! curl -fL --retry 3 --connect-timeout 30 --progress-bar -o "${tmp}/${fname}" "$url"; then
+            err "download failed for ${tool} (${url})"
+            failed=$((failed + 1)); continue
+        fi
+        if cmd_add ${force_arg:+$force_arg} "$tool" "${tmp}/${fname}"; then ok=$((ok + 1)); else failed=$((failed + 1)); fi
+    done
+    rm -rf "$tmp"
+
+    log "install: ${ok} added, ${failed} failed"
+    (( failed )) && return 1
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # import — replay a carry folder's map (or the appliance's own). No network.
 # ---------------------------------------------------------------------------
 cmd_import() {
@@ -386,7 +437,8 @@ case "${1:-}" in
     list)   shift; cmd_list "$@" ;;
     fetch)  shift; cmd_fetch "$@" ;;
     add)    shift; cmd_add "$@" ;;
-    import) shift; cmd_import "$@" ;;
+    import)  shift; cmd_import "$@" ;;
+    install) shift; cmd_install "$@" ;;
     status) shift; cmd_status "$@" ;;
     test)   shift; cmd_test "$@" ;;
     -h|--help|help|"") usage 0 ;;

@@ -344,6 +344,56 @@ EOF
     assert_contains "$(cat "${root}/err")" "velo_tools.sh add" "says how to fix it"
 }
 
+# ---------------------------------------------------------------------------
+# `install` exists because copying a URL by hand is where this goes wrong: a
+# guessed file name 404s, and a wrong version fails the artifact's hash check.
+# The URL comes from the artifact that wants the tool.
+# ---------------------------------------------------------------------------
+test_install_downloads_the_url_the_server_reports() {
+    local root; root="$(_fake)"
+    cat > "${root}/bin/docker" <<EOF
+#!/bin/bash
+echo "\$@" >> "${root}/docker.calls"
+case "\$1" in inspect) [[ "\$2" == "-f" ]] && echo true; exit 0 ;; esac
+case "\$*" in
+    *"url AS u"*)       echo '{"u":"https://example.test/takajo-2.5.0-win.zip"}' ;;
+    *expected_hash*)    ;;
+    *)                  echo '{"r":{"name":"x"}}' ;;
+esac
+exit 0
+EOF
+    chmod +x "${root}/bin/docker"
+    cat > "${root}/bin/curl" <<'EOF'
+#!/bin/bash
+echo "curl $*" >> "CALLS"
+out=""; while [[ $# -gt 0 ]]; do [[ "$1" == "-o" ]] && { out="$2"; shift; }; shift; done
+printf 'payload' > "$out"
+EOF
+    sed -i "s#CALLS#${root}/curl.calls#" "${root}/bin/curl"; chmod +x "${root}/bin/curl"
+
+    local out; out="$(_run "$root" install Takajo-2.5.0)"
+    assert_eq "$?" "0" "install succeeds"
+    assert_contains "$(cat "${root}/curl.calls")" "https://example.test/takajo-2.5.0-win.zip" "downloads what the server named"
+    assert_contains "$(cat "${root}/docker.calls")" "tool='Takajo-2.5.0'" "registers under that name"
+    assert_contains "$out" "1 added, 0 failed" "reports what it did"
+    assert_true test -f "${root}/tools/takajo-2.5.0-win.zip"
+}
+
+test_install_says_what_to_do_when_there_is_no_public_url() {
+    local root; root="$(_fake)"
+    cat > "${root}/bin/docker" <<EOF
+#!/bin/bash
+case "\$1" in inspect) [[ "\$2" == "-f" ]] && echo true; exit 0 ;; esac
+exit 0
+EOF
+    chmod +x "${root}/bin/docker"
+    _run "$root" install CrowdStrikeFalconInstaller >/dev/null
+    assert_ne "$?" "0" "fails"
+    local e; e="$(cat "${root}/err")"
+    assert_contains "$e" "no download URL known" "says why"
+    assert_contains "$e" "velo_tools.sh add CrowdStrikeFalconInstaller" "points at the manual route"
+}
+
 python3 -c 'import yaml' 2>/dev/null || {
     echo "$(basename "$0"): SKIP -- PyYAML not installed"; exit 0; }
 
