@@ -33,7 +33,7 @@
 # the Velociraptor datastore volume drops every registration; the map is what
 # makes putting them back one command instead of a memory exercise.
 #
-# Usage: scripts/velo_tools.sh <list|install|fetch|add|import|status|test> [args]
+# Usage: scripts/velo_tools.sh <list|install|fetch|add|import|status|test|selftest> [args]
 #        add/import take --force to register a file whose hash an artifact pins
 set -o pipefail
 
@@ -336,6 +336,83 @@ cmd_import() {
 }
 
 # ---------------------------------------------------------------------------
+# selftest — run the whole chain on this box and check every step.
+#
+# Picks a tool the server is missing, installs it, then proves the three things
+# that actually matter: it is stored, the server really serves those bytes over
+# the endpoint-facing URL, and (if a client is enrolled) an endpoint downloads
+# it. Anything it cannot prove is reported as SKIP, never as a pass.
+# ---------------------------------------------------------------------------
+cmd_selftest() {
+    local tool=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --tool) tool="${2:-}"; shift 2 ;;
+            -h|--help) usage 0 ;;
+            *) err "unknown argument: $1"; return 1 ;;
+        esac
+    done
+    require_container || return 1
+    local pass=0 fail=0 skip=0
+    _ok()   { log "  PASS  $*"; pass=$((pass + 1)); }
+    _bad()  { err "  FAIL  $*"; fail=$((fail + 1)); }
+    _skip() { log "  SKIP  $*"; skip=$((skip + 1)); }
+
+    log "1. what the server is missing"
+    local listing missing
+    listing="$(cmd_list 2>/dev/null)" || { _bad "could not list missing tools"; return 1; }
+    missing="$(grep -cvE '^#|^$' <<<"$listing")"
+    log "   ${missing} tool(s) missing"
+    [[ "$missing" -gt 0 ]] && _ok "list works" || _skip "nothing missing to test with"
+
+    # A tool with a public URL, so `install` has something to fetch.
+    [[ -n "$tool" ]] || tool="$(awk -F'\t' '$1 !~ /^#/ && $2 != "" {print $1; exit}' <<<"$listing")"
+    [[ -n "$tool" ]] || { _skip "no missing tool has a public URL — pass --tool NAME"; log "SUMMARY: ${pass} pass, ${fail} fail, ${skip} skip"; return 0; }
+
+    log "2. install '${tool}' by name (download + register)"
+    if cmd_install "$tool" >/dev/null 2>&1; then _ok "installed ${tool}"; else _bad "could not install ${tool}"; fi
+
+    log "3. is it stored on the server?"
+    local row hash filename
+    row="$(velo_vql "SELECT filename, hash, serve_url FROM inventory() WHERE name = '${tool}' AND serve_locally AND hash" 2>/dev/null | head -1)"
+    hash="$(printf '%s' "$row" | python3 -c 'import sys,json
+l=sys.stdin.readline(); print(json.loads(l).get("hash","") if l.strip() else "")' 2>/dev/null)"
+    filename="$(printf '%s' "$row" | python3 -c 'import sys,json
+l=sys.stdin.readline(); print(json.loads(l).get("filename","") if l.strip() else "")' 2>/dev/null)"
+    [[ -n "$hash" ]] && _ok "stored as ${filename} (${hash:0:12}…)" || _bad "not stored"
+
+    log "4. does the server actually serve those bytes?"
+    local url served
+    url="$(printf '%s' "$row" | python3 -c 'import sys,json
+l=sys.stdin.readline(); print(json.loads(l).get("serve_url","") if l.strip() else "")' 2>/dev/null)"
+    if [[ -n "$url" ]]; then
+        served="$(curl -sk --max-time 120 "$url" | sha256sum | cut -d' ' -f1)"
+        if [[ "$served" == "$hash" ]]; then _ok "downloaded from ${url%%/public/*}/public/… and the hash matches"
+        else _bad "served bytes do not match the stored hash (${served:0:12}… vs ${hash:0:12}…)"; fi
+    else
+        _bad "no serve_url — endpoints would have nowhere to fetch it from"
+    fi
+
+    log "5. does an endpoint download it?"
+    local client
+    client="$(velo_vql "SELECT client_id FROM clients() ORDER BY last_seen_at DESC LIMIT 1" 2>/dev/null \
+        | python3 -c 'import sys,json
+l=sys.stdin.readline(); print(json.loads(l).get("client_id","") if l.strip() else "")' 2>/dev/null)"
+    if [[ -z "$client" ]]; then
+        _skip "no endpoint is enrolled — install a client, then: velo_tools.sh test --tool ${tool}"
+    elif cmd_test --tool "$tool" --client "$client" >/dev/null 2>&1; then
+        _ok "endpoint ${client} downloaded ${tool}"
+    else
+        _bad "endpoint ${client} did not get ${tool} — run: velo_tools.sh test --tool ${tool}"
+    fi
+
+    log ""
+    log "SUMMARY: ${pass} pass, ${fail} fail, ${skip} skip"
+    (( fail )) && return 1
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # test — make an ENDPOINT download a tool from this server, and say if it did
 #
 # Registering a tool and serving it are two different things, and only the
@@ -440,7 +517,8 @@ case "${1:-}" in
     import)  shift; cmd_import "$@" ;;
     install) shift; cmd_install "$@" ;;
     status) shift; cmd_status "$@" ;;
-    test)   shift; cmd_test "$@" ;;
+    test)     shift; cmd_test "$@" ;;
+    selftest) shift; cmd_selftest "$@" ;;
     -h|--help|help|"") usage 0 ;;
     *) err "unknown command: $1"; usage 2 ;;
 esac

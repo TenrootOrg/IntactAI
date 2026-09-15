@@ -394,6 +394,61 @@ EOF
     assert_contains "$e" "velo_tools.sh add CrowdStrikeFalconInstaller" "points at the manual route"
 }
 
+# ---------------------------------------------------------------------------
+# `selftest` is the one-command check. What matters is that it never calls a
+# step it could not prove a pass -- an unproven step is SKIP, and a served file
+# whose bytes do not match the stored hash is a FAIL, not a pass.
+# ---------------------------------------------------------------------------
+_selftest_stub() {  # _selftest_stub <root> <served-body>
+    local root="$1" body="$2"
+    printf '%s' "$body" > "${root}/served"
+    cat > "${root}/bin/docker" <<EOF
+#!/bin/bash
+case "\$1" in inspect) [[ "\$2" == "-f" ]] && echo true; exit 0 ;; esac
+case "\$*" in
+    *"NOT name IN stored.name"*) echo '{"Tool":"Aftermath","Url":"https://example.test/aftermath","Expected":"","Artifact":"MacOS.Collection.Aftermath"}' ;;
+    *"url AS u"*)                echo '{"u":"https://example.test/aftermath"}' ;;
+    *"FROM clients()"*)          ;;
+    *"serve_url FROM inventory"*) echo '{"filename":"aftermath","hash":"HASHVAL","serve_url":"https://srv:8000/public/abc"}' ;;
+    *"FROM inventory()"*)        echo '{"name":"Aftermath","filename":"aftermath","hash":"HASHVAL"}' ;;
+    *)                           echo '{"r":{"name":"Aftermath"}}' ;;
+esac
+exit 0
+EOF
+    sed -i "s/HASHVAL/$(printf '%s' "$body" | sha256sum | cut -d' ' -f1)/g" "${root}/bin/docker"
+    chmod +x "${root}/bin/docker"
+    cat > "${root}/bin/curl" <<EOF
+#!/bin/bash
+out=""; while [[ \$# -gt 0 ]]; do [[ "\$1" == "-o" ]] && { out="\$2"; shift; }; shift; done
+if [[ -n "\$out" ]]; then printf '%s' "\$(cat ${root}/served)" > "\$out"; else cat "${root}/served"; fi
+EOF
+    chmod +x "${root}/bin/curl"
+}
+
+test_selftest_passes_when_the_served_bytes_match() {
+    local root; root="$(_fake)"; _selftest_stub "$root" "the-real-payload"
+    local out; out="$(_run "$root" selftest)"
+    assert_eq "$?" "0" "exits 0"
+    assert_contains "$out" "0 fail" "nothing failed"
+    assert_contains "$out" "the hash matches" "checked the served bytes"
+    assert_contains "$out" "SKIP  no endpoint is enrolled" "endpoint step is skipped, not claimed"
+}
+
+test_selftest_fails_when_the_server_serves_different_bytes() {
+    local root; root="$(_fake)"; _selftest_stub "$root" "the-real-payload"
+    # the server hands back something else than the hash it recorded
+    printf 'tampered' > "${root}/served.alt"
+    cat > "${root}/bin/curl" <<EOF
+#!/bin/bash
+out=""; while [[ \$# -gt 0 ]]; do [[ "\$1" == "-o" ]] && { out="\$2"; shift; }; shift; done
+if [[ -n "\$out" ]]; then printf '%s' "\$(cat ${root}/served)" > "\$out"; else cat "${root}/served.alt"; fi
+EOF
+    chmod +x "${root}/bin/curl"
+    _run "$root" selftest >/dev/null
+    assert_ne "$?" "0" "exits non-zero"
+    assert_contains "$(cat "${root}/err")" "do not match the stored hash" "says what is wrong"
+}
+
 python3 -c 'import yaml' 2>/dev/null || {
     echo "$(basename "$0"): SKIP -- PyYAML not installed"; exit 0; }
 
