@@ -449,6 +449,17 @@ EOF
     assert_contains "$(cat "${root}/err")" "do not match the stored hash" "says what is wrong"
 }
 
+test_help_always_shows_the_command_list() {
+    local root; root="$(_fake)"
+    # The help used to print a fixed line range of the header, so adding a line
+    # to the header silently cut the Usage line off the bottom.
+    local out; out="$(_run "$root")"
+    assert_contains "$out" "Usage: scripts/velo_tools.sh" "prints the usage line"
+    for c in list install fetch add import status test selftest; do
+        assert_contains "$out" "$c" "help mentions $c"
+    done
+}
+
 python3 -c 'import yaml' 2>/dev/null || {
     echo "$(basename "$0"): SKIP -- PyYAML not installed"; exit 0; }
 

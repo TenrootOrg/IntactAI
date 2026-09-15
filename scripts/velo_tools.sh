@@ -69,7 +69,10 @@ require_container() {
 valid_token() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._+@-]*$ ]]; }
 
 usage() {
-    sed -n '2,31p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    # Print the header comment, however long it grows -- a fixed line range
+    # silently truncated the help the moment the header gained a line, which
+    # cut off the Usage line itself.
+    awk 'NR > 1 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
     exit "${1:-0}"
 }
 
