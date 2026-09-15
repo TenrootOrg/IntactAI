@@ -4,6 +4,7 @@ Workflow Service - Centralized workflow and job tracking with SQLite + Elasticse
 """
 
 import os
+import re
 import signal
 import subprocess
 import time
@@ -347,19 +348,71 @@ def unregister_cancel(run_id):
 # Initialize file storage on module load
 print("[WORKFLOW] Using SQLite + Elasticsearch storage for workflows", flush=True)
 
-# run_id was `{type}_{ms}` — two runs created in the SAME millisecond collided on the
-# id and the second INSERT OR REPLACE silently overwrote the first (so a case could only
-# ever hold one of them). Hand out monotonically-increasing ids under a lock to guarantee
-# uniqueness. Format unchanged (`{type}_{int}`), so existing ids/paths stay valid.
+# run_id is `{type}_{ms}`, and save_workflow() writes with INSERT OR REPLACE -- so an
+# id that is already taken does not fail, it silently OVERWRITES the stored run. Two
+# guards keep ids unique:
+#
+#  1. Within this process ids only increase, under a lock. (Two runs created in the
+#     same millisecond used to collide and the second replaced the first.)
+#  2. Against what is ALREADY STORED -- runs written before this process started,
+#     including every run an earlier version wrote. The counter starts above the
+#     highest stored id, and a candidate that still exists is skipped. Without this,
+#     a clock that is behind a stored run (a VM snapshot restore, an NTP step, a
+#     database carried over from a box whose clock ran ahead) hands out an id that is
+#     already taken, and that run's data is lost with no error.
+#
+# Stored rows are only READ here, never rewritten, and the format is unchanged, so data
+# from earlier versions keeps its ids, its links and its exported bundles. Only SQLite
+# is consulted: it is the store of record, and probing Elasticsearch on every run
+# creation would add a network round-trip -- or a timeout when ELK is off, the common
+# case -- to every workflow start.
 _run_id_lock = threading.Lock()
-_last_run_ms = [0]
+_last_run_ms = [None]                  # None until seeded from storage
+_RUN_MS_RE = re.compile(r"_(\d{13,})$")
+
+
+def _highest_stored_run_ms() -> int:
+    """The largest `_<ms>` suffix among stored run ids; 0 if none or unreadable.
+
+    Ids in other shapes (aws_offline_<hex>, hand-made ids, anything an older
+    version wrote) are ignored rather than trusted or rejected."""
+    try:
+        from services.storage import get_connection
+        best = 0
+        for row in get_connection().execute("SELECT run_id FROM workflows"):
+            m = _RUN_MS_RE.search(row[0] or "")
+            if m:
+                best = max(best, int(m.group(1)))
+        return best
+    except Exception as e:  # noqa: BLE001 -- never stop a run being created
+        print(f"[WORKFLOW] could not read stored run ids ({e}); "
+              f"new ids fall back to the clock", flush=True)
+        return 0
+
+
+def _stored_run_exists(run_id) -> bool:
+    """True when a run with this id is already stored. When storage cannot be read,
+    False -- the same behaviour as before this check existed, so a storage hiccup
+    never blocks a workflow from starting."""
+    try:
+        from services.storage import get_connection
+        return get_connection().execute(
+            "SELECT 1 FROM workflows WHERE run_id = ?", (run_id,)).fetchone() is not None
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _next_run_id(automation_type) -> str:
     with _run_id_lock:
-        ms = int(time.time() * 1000)
-        if ms <= _last_run_ms[0]:
-            ms = _last_run_ms[0] + 1
+        if _last_run_ms[0] is None:
+            _last_run_ms[0] = _highest_stored_run_ms()
+        ms = max(int(time.time() * 1000), _last_run_ms[0] + 1)
+        # Bounded: a run of taken ids this long means something is badly wrong,
+        # and returning a fresh id beats looping forever inside the lock.
+        for _ in range(10000):
+            if not _stored_run_exists(f"{automation_type}_{ms}"):
+                break
+            ms += 1
         _last_run_ms[0] = ms
     return f"{automation_type}_{ms}"
 
