@@ -12,7 +12,7 @@ then serves it to endpoints. This page covers every way to do that.
 | Your appliance | Use |
 |---|---|
 | **has internet** | [`velo_tools.sh install <NAME>`](#online--one-tool-at-a-time-recommended) for one tool at a time, hash-checked, or [the platform's bulk download](#online--every-optional-tool-at-once) for the whole optional tier at once |
-| **is air-gapped** | [`add` / `import`](#air-gapped--you-already-have-the-files) for files you carry in, or [`list` → `fetch` → `import`](#air-gapped--let-the-appliance-tell-you-what-to-carry) to let the box tell you what to bring |
+| **is air-gapped** | [`add` / `import`](#air-gapped--you-already-have-the-files) for files you carry in, [`list` → `fetch` → `import`](#air-gapped--let-the-appliance-tell-you-what-to-carry) to let the box tell you what to bring, or [the release package](#air-gapped--let-the-release-package-carry-the-tools) if you already transport those |
 | **either** | [`selftest`](#check-it-works) to prove the chain, [`list` / `status`](#see-what-is-missing) to see where you stand |
 
 `scripts/velo_tools.sh` holds no list of its own — it asks the running server what
@@ -296,6 +296,30 @@ registered Trawler -> Trawler.ps1
 import: 1 registered, 0 failed
 ```
 
+## Air-gapped — let the release package carry the tools
+
+An upgrade package can bring tools across with it, so a site that already
+transports packages does not need a second transfer for tools.
+
+- A stock package always carries the **default** tier. Verified by listing an
+  `intact-20260903` package: `tools/lolrmm.csv`, `tools/lastactivityview.zip`,
+  `tools/autorunsc64.exe`, plus the Velociraptor binaries and the artifact bundle.
+  On the air-gapped box, `install.sh --package …` stages those into `data/tools/`
+  and registers them — that is where the 7 tools above come from.
+- With `options.download_tools: true` set on the **connected** box that builds the
+  package, the packager bundles the optional tier as well, and the air-gapped
+  install stages and registers those too. (This is what the packager does by
+  design; the default-tier half is what was measured here.)
+
+After the install or upgrade, check what landed:
+
+```bash
+cd /home/tenroot/intact
+bash scripts/velo_tools.sh status
+```
+
+Anything the package did not carry is still added with `add` or `import`, above.
+
 ## A tool with no public download
 
 Vendor installers have no URL in `list`. `install` says so rather than guessing:
@@ -466,6 +490,34 @@ Use `--api_config`, not `--config /velociraptor/server.config.yaml`. With
 `--config`, `query` runs in a separate local process that sees only the 421
 built-in artifacts, not the ~400 curated ones the server loads via
 `--definitions`, so a missing-tools list built that way is short.
+
+## What has been verified, and what has not
+
+Everything in this page was run on a live appliance while it was written, except
+where noted here.
+
+**Run and confirmed:** `list`, `status`, `install` (one name and several),
+`add`, `add --force`, `import` with and without a map, `fetch`, `import
+data/tools`, the refusals (no public URL, pinned-hash mismatch, invalid name),
+`selftest`, the raw VQL pair, removal (`tools rm` + restart), and the
+`--velo-refresh` tool replay. The server really serves what it stores: a
+registered tool was downloaded back over its endpoint-facing URL and the sha256
+matched.
+
+**Not yet proven:**
+
+- **An endpoint downloading a tool.** No client was enrolled on the test box, so
+  `test --tool` has only ever run its failure paths and `selftest` reports that
+  step as SKIP. Everything up to the server handing over the bytes is proven.
+- **The bulk download with `download_tools: true`.** The maintenance endpoint was
+  exercised with the flag off, so only the default tier was considered. Its two
+  documented limits were confirmed in the source, not by a full optional-tier run.
+- **`scripts/upgrade.sh --velo-refresh` as a command.** The tool-registration step
+  it runs was tested directly against the real config, map and server; the CLI
+  entry point itself was not.
+- **`fetch` on a machine that is not the appliance.** It was run on the appliance
+  (which has internet). It needs only `curl` and `python3` — no Docker — but that
+  has not been demonstrated on a separate laptop.
 
 ## Notes
 
