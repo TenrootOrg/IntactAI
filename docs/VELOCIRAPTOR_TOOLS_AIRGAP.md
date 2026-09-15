@@ -255,10 +255,21 @@ built-in artifacts, not the ~400 curated ones the server loads via
   two are expected there on a normal box — `Velociraptor-Artifacts-main.zip`
   (an artifact bundle, not a tool) and the macOS client binary (no artifact asks
   for it).
-- **Removing a tool.** `docker exec intact_velociraptor /velociraptor/velociraptor
-  --config /velociraptor/server.config.yaml tools rm <TOOL_NAME>` (the `tools`
-  subcommands need the server config, not `--api_config`). Delete its line from
-  `data/tools/velo_tools.map` too, or the next `--velo-refresh` puts it back.
+- **Removing a tool** takes two steps, and the second is not optional:
+
+  ```bash
+  docker exec intact_velociraptor /velociraptor/velociraptor \
+      --config /velociraptor/server.config.yaml tools rm <TOOL_NAME>
+  docker restart intact_velociraptor
+  ```
+
+  The `tools` subcommands need the server config, not `--api_config`. `tools rm`
+  exits 0 and the tool is still served until the restart — the running server
+  holds the inventory in memory and writes it back. Verified on 2026-09-15:
+  after `rm` the tool still had `serve_locally: true` and its hash; after the
+  restart, `serve_locally: false` and no hash. Delete its line from
+  `data/tools/velo_tools.map` too (and the file from `data/tools/`), or the next
+  `--velo-refresh` puts it straight back.
 - **A newer artifact can want a newer tool version** under a different name
   (`Hayabusa-2.14.0` → `Hayabusa-3.8.0`). After importing new artifacts, run
   `velo_tools.sh list` again.
