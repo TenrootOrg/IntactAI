@@ -180,6 +180,28 @@ Nothing is copied or registered when that happens. If the download URL has moved
 on to a newer release, get the pinned version instead — or, if you mean to run a
 different version, update the artifact's tool definition and use `--force`.
 
+### Check an endpoint really gets it
+
+Registering a tool and *serving* it are two different things, and only an
+endpoint settles the second. With at least one client enrolled:
+
+```bash
+$ sudo bash scripts/velo_tools.sh test --tool etl2pcapng
+endpoint : C.1234567890abcdef
+tool     : etl2pcapng
+flow     : F.CV9K2M7QJ4R8T
+state    : FINISHED (after 6s)
+endpoint reported:
+{"Binary":"C:\\Windows\\Temp\\etl2pcapng.zip","Hash":"..."}
+PASS — the endpoint downloaded 'etl2pcapng' from this appliance, no internet needed
+```
+
+It collects `Generic.Utils.FetchBinary`, the helper every tool-using artifact
+calls internally — so nothing forensic runs and nothing is collected off the
+machine. Add `--client C.xxxx` to pick an endpoint; without it the most recently
+seen one is used. On failure it prints the flow state and the command that shows
+the flow log.
+
 ### A tool with no public download
 
 Some rows in `list` have an empty URL — a vendor installer such as

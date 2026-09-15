@@ -273,6 +273,77 @@ test_refresh_reports_a_file_it_cannot_name_instead_of_inventing_one() {
     assert_false test -s "${root}/vql"   # nothing registered under a guessed name
 }
 
+# ---------------------------------------------------------------------------
+# `test` proves the last hop: an ENDPOINT downloading a tool from the server.
+# Registering a tool and serving it are different things, and only the endpoint
+# settles the second.
+# ---------------------------------------------------------------------------
+_fake_endpoint() {  # _fake_endpoint <root> <flow-state> [rows]
+    local root="$1" state="$2" rows="${3:-yes}"
+    cat > "${root}/bin/docker" <<EOF
+#!/bin/bash
+echo "\$@" >> "${root}/docker.calls"
+case "\$1" in inspect) [[ "\$2" == "-f" ]] && echo true; exit 0 ;; esac
+q="\$*"
+case "\$q" in
+    *"FROM inventory()"*)   echo '{"name":"etl2pcapng","filename":"etl2pcapng.zip"}' ;;
+    *"FROM clients()"*)     echo '{"client_id":"C.1234567890abcdef"}' ;;
+    *collect_client*)       echo '{"f":{"flow_id":"F.TESTFLOW01"}}' ;;
+    *"FROM flows("*)        echo '{"state":"${state}","session_id":"F.TESTFLOW01"}' ;;
+    *"FROM source("*)       [[ "${rows}" == "yes" ]] && echo '{"Binary":"C:/Windows/Temp/etl2pcapng.zip","Hash":"abc"}' ;;
+esac
+exit 0
+EOF
+    chmod +x "${root}/bin/docker"
+}
+
+test_test_reports_pass_when_the_endpoint_fetched_the_tool() {
+    local root; root="$(_fake)"; _fake_endpoint "$root" FINISHED yes
+    local out; out="$(_run "$root" test --tool etl2pcapng)"
+    assert_eq "$?" "0" "exits 0"
+    assert_contains "$out" "PASS" "says it passed"
+    assert_contains "$out" "C.1234567890abcdef" "names the endpoint it used"
+    local calls; calls="$(cat "${root}/docker.calls")"
+    assert_contains "$calls" "Generic.Utils.FetchBinary" "collects the fetch helper"
+    assert_contains "$calls" "ToolName='etl2pcapng'" "asks for the tool by name"
+}
+
+test_test_reports_fail_when_the_flow_errors() {
+    local root; root="$(_fake)"; _fake_endpoint "$root" ERROR no
+    _run "$root" test --tool etl2pcapng >/dev/null
+    assert_ne "$?" "0" "exits non-zero"
+    assert_contains "$(cat "${root}/err")" "FAIL" "says it failed"
+    assert_contains "$(cat "${root}/err")" "flow_logs" "points at the flow log"
+}
+
+test_test_stops_when_no_endpoint_is_enrolled() {
+    local root; root="$(_fake)"
+    cat > "${root}/bin/docker" <<EOF
+#!/bin/bash
+case "\$1" in inspect) [[ "\$2" == "-f" ]] && echo true; exit 0 ;; esac
+case "\$*" in *"FROM inventory()"*) echo '{"name":"etl2pcapng"}' ;; esac
+exit 0
+EOF
+    chmod +x "${root}/bin/docker"
+    _run "$root" test --tool etl2pcapng >/dev/null
+    assert_ne "$?" "0" "exits non-zero"
+    assert_contains "$(cat "${root}/err")" "no endpoint is enrolled" "says why"
+}
+
+test_test_stops_when_the_tool_is_not_stored() {
+    local root; root="$(_fake)"
+    cat > "${root}/bin/docker" <<'EOF'
+#!/bin/bash
+case "$1" in inspect) [[ "$2" == "-f" ]] && echo true; exit 0 ;; esac
+exit 0
+EOF
+    chmod +x "${root}/bin/docker"
+    _run "$root" test --tool NoSuchTool >/dev/null
+    assert_ne "$?" "0" "exits non-zero"
+    assert_contains "$(cat "${root}/err")" "not stored on this server" "says why"
+    assert_contains "$(cat "${root}/err")" "velo_tools.sh add" "says how to fix it"
+}
+
 python3 -c 'import yaml' 2>/dev/null || {
     echo "$(basename "$0"): SKIP -- PyYAML not installed"; exit 0; }
 

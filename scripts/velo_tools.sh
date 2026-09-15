@@ -19,6 +19,9 @@
 #       --out ./velo-tools              velo_tools.sh status
 #   (carry ./velo-tools over)
 #
+# Prove an endpoint really gets a tool (needs one enrolled client):
+#   velo_tools.sh test --tool etl2pcapng
+#
 # One tool, by hand, in one step:
 #   velo_tools.sh add Hayabusa-2.14.0 /media/usb/hayabusa-2.14.0-win-x64.zip
 #
@@ -27,7 +30,7 @@
 # the Velociraptor datastore volume drops every registration; the map is what
 # makes putting them back one command instead of a memory exercise.
 #
-# Usage: scripts/velo_tools.sh <list|fetch|add|import|status> [args]
+# Usage: scripts/velo_tools.sh <list|fetch|add|import|status|test> [args]
 #        add/import take --force to register a file whose hash an artifact pins
 set -o pipefail
 
@@ -282,6 +285,84 @@ cmd_import() {
 }
 
 # ---------------------------------------------------------------------------
+# test — make an ENDPOINT download a tool from this server, and say if it did
+#
+# Registering a tool and serving it are two different things, and only the
+# endpoint proves the second. Generic.Utils.FetchBinary is the helper every
+# tool-using artifact calls internally, so collecting it is the smallest
+# possible end-to-end check: no forensic artifact runs, nothing is collected
+# off the machine.
+# ---------------------------------------------------------------------------
+cmd_test() {
+    local tool="" client=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --tool)   tool="${2:-}"; shift 2 ;;
+            --client) client="${2:-}"; shift 2 ;;
+            -h|--help) usage 0 ;;
+            *) err "unknown argument: $1"; return 1 ;;
+        esac
+    done
+    require_container || return 1
+    tool="${tool:-etl2pcapng}"
+    valid_token "$tool" || { err "tool name has characters that are not allowed: ${tool}"; return 1; }
+
+    local stored
+    stored="$(velo_vql "SELECT name FROM inventory() WHERE name = '${tool}' AND serve_locally AND hash" 2>/dev/null | head -1)"
+    [[ -n "$stored" ]] || { err "'${tool}' is not stored on this server. Add it first:"; err "  sudo bash scripts/velo_tools.sh add ${tool} <file>"; return 1; }
+
+    if [[ -z "$client" ]]; then
+        client="$(velo_vql "SELECT client_id FROM clients() ORDER BY last_seen_at DESC LIMIT 1" 2>/dev/null \
+            | python3 -c 'import sys,json
+l=sys.stdin.readline()
+print(json.loads(l).get("client_id","") if l.strip() else "")' 2>/dev/null)"
+    fi
+    [[ -n "$client" ]] || { err "no endpoint is enrolled — install a client first, then re-run"; return 1; }
+    valid_token "$client" || { err "client id looks wrong: ${client}"; return 1; }
+
+    log "endpoint : ${client}"
+    log "tool     : ${tool}"
+
+    local raw flow
+    raw="$(velo_vql "SELECT collect_client(client_id='${client}', artifacts=['Generic.Utils.FetchBinary'], spec=dict(\`Generic.Utils.FetchBinary\`=dict(ToolName='${tool}'))) AS f FROM scope()" 2>&1)"
+    # Take the flow id from wherever it sits in the reply, and fall back to this
+    # client's newest flow if the reply carries none.
+    flow="$(printf '%s' "$raw" | grep -oE 'F\.[A-Za-z0-9]{8,}' | head -1)"
+    if [[ -z "$flow" ]]; then
+        flow="$(velo_vql "SELECT session_id FROM flows(client_id='${client}') ORDER BY create_time DESC LIMIT 1" 2>/dev/null \
+            | python3 -c 'import sys,json
+l=sys.stdin.readline()
+print(json.loads(l).get("session_id","") if l.strip() else "")' 2>/dev/null)"
+    fi
+    [[ -n "$flow" ]] || { err "could not start the collection. The server said:"; printf '%s\n' "$raw" | head -5; return 1; }
+    log "flow     : ${flow}"
+
+    local i state="" waited=0
+    for i in $(seq 1 40); do
+        state="$(velo_vql "SELECT state FROM flows(client_id='${client}') WHERE session_id = '${flow}'" 2>/dev/null \
+            | python3 -c 'import sys,json
+l=sys.stdin.readline()
+print(json.loads(l).get("state","") if l.strip() else "")' 2>/dev/null)"
+        [[ "$state" == "FINISHED" || "$state" == "ERROR" ]] && break
+        sleep 3; waited=$((waited + 3))
+    done
+    log "state    : ${state:-UNKNOWN} (after ${waited}s)"
+
+    local rows
+    rows="$(velo_vql "SELECT * FROM source(client_id='${client}', flow_id='${flow}', artifact='Generic.Utils.FetchBinary')" 2>/dev/null)"
+    [[ -n "$rows" ]] && { log "endpoint reported:"; printf '%s\n' "$rows" | head -3 | cut -c1-300; }
+
+    if [[ "$state" == "FINISHED" && -n "$rows" ]]; then
+        log "PASS — the endpoint downloaded '${tool}' from this appliance, no internet needed"
+        return 0
+    fi
+    err "FAIL — state=${state:-UNKNOWN}, rows returned: $([[ -n "$rows" ]] && echo yes || echo no)"
+    err "  flow log: velo_tools.sh ... or run:"
+    err "  docker exec ${VELO_CONTAINER} /velociraptor/velociraptor --api_config /velociraptor/api.config.yaml query --format jsonl \"SELECT * FROM flow_logs(client_id='${client}', flow_id='${flow}')\""
+    return 1
+}
+
+# ---------------------------------------------------------------------------
 # status — what this server stores, and how many tools are still missing
 # ---------------------------------------------------------------------------
 cmd_status() {
@@ -307,6 +388,7 @@ case "${1:-}" in
     add)    shift; cmd_add "$@" ;;
     import) shift; cmd_import "$@" ;;
     status) shift; cmd_status "$@" ;;
+    test)   shift; cmd_test "$@" ;;
     -h|--help|help|"") usage 0 ;;
     *) err "unknown command: $1"; usage 2 ;;
 esac
