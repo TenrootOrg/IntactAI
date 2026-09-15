@@ -465,7 +465,11 @@ def get_case(case_id):
                     # spinner across two calls that can each take minutes.
                     "report_phase": d.get("report_phase"),
                     "report_phase_started_at": d.get("report_phase_started_at"),
-                    "report_generating_started_at": d.get("report_generating_started_at")})
+                    "report_generating_started_at": d.get("report_generating_started_at"),
+                    # Elapsed is computed HERE so the banner does not depend on
+                    # the viewer's clock (see store.seconds_since).
+                    "report_generating_elapsed_s": store.seconds_since(d.get("report_generating_started_at")),
+                    "report_phase_elapsed_s": store.seconds_since(d.get("report_phase_started_at"))})
 
 
 def _llm_status_for(d):

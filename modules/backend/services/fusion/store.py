@@ -2497,6 +2497,31 @@ def report_generation_active(d) -> bool:
     return (datetime.now(timezone.utc) - ts).total_seconds() < REPORT_GEN_STALE_SECONDS
 
 
+def seconds_since(iso):
+    """Whole seconds between `iso` and now, computed HERE, or None.
+
+    The Case Analysis banner used to work this out in the browser -- Date.now()
+    minus the stamp -- which trusts the VIEWER's clock. A workstation whose clock
+    has drifted (a suspended VM is the usual way) showed a report that started ten
+    minutes ago as "running 1063 min", which reads as a stuck job. How long
+    something has been running is a server fact, so the server states it and the
+    page only renders it. Same parsing rules as report_generation_active: a naive
+    stamp is UTC, because that is what the writers produce.
+    """
+    if not iso:
+        return None
+    from datetime import datetime, timezone
+    try:
+        ts = datetime.fromisoformat(str(iso))
+    except Exception:  # noqa: BLE001 -- an unparseable stamp is not an elapsed time
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    # Clamped: a stamp in the future (clock moved backwards on the appliance)
+    # reads as "just started", never as a negative age.
+    return max(0, int((datetime.now(timezone.utc) - ts).total_seconds()))
+
+
 def regenerate_report_async(case_id, *, audience=None, use_llm=False) -> dict:
     """Kick off regenerate_report() on a background thread and return immediately.
 
