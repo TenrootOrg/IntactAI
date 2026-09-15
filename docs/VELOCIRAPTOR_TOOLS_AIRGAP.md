@@ -157,7 +157,9 @@ It answers with a run id and works in the background:
 {"message":"Tool download started","run_id":"maintenance_1789460042415","success":true}
 ```
 
-3. Watch it, with that run id (the endpoint returns JSON, so print the messages):
+3. Watch it, with that run id. The run works in the background, so read the log
+   again until the last line says `Tool download completed` (the endpoint returns
+   JSON, so print the messages):
 
 ```bash
 docker exec intact_backend curl -s \
@@ -260,12 +262,14 @@ appliance.
 ```bash
 cd /home/tenroot/intact
 bash scripts/velo_tools.sh list > /tmp/missing.tsv
-grep -E '^Trawler|^DocsIndex' /tmp/missing.tsv > /tmp/want.tsv
+grep -E '^FileYaraLinux|^FileYaraMacOS' /tmp/missing.tsv > /tmp/want.tsv
 ```
 
-Copy `/tmp/want.tsv` to a machine with internet.
+Use names from **your** list — the two above are examples, and may already be on
+your box. Copy `/tmp/want.tsv` to a machine with internet.
 
-**2. On that machine** (it needs the repo checkout, `curl` and `python3`):
+**2. On that machine** (it needs the repo checkout, `curl` and `python3` — no
+Docker):
 
 ```bash
 bash scripts/velo_tools.sh fetch /tmp/want.tsv --out ~/velo-tools
@@ -273,11 +277,12 @@ ls ~/velo-tools
 ```
 
 ```
-  fetched Trawler -> Trawler.ps1
-fetch: 1 downloaded, 0 without a public URL, 0 failed
-carry ~/velo-tools (files + velo_tools.map) to the appliance, then: velo_tools.sh import ~/velo-tools
+  fetched FileYaraLinux -> full_linux_file.yar.gz
+  fetched FileYaraMacOS -> full_macos_file.yar.gz
+fetch: 2 downloaded, 0 without a public URL, 0 failed
+carry /home/tenroot/velo-tools (files + velo_tools.map) to the appliance, then: velo_tools.sh import /home/tenroot/velo-tools
 
-Trawler.ps1  velo_tools.map
+full_linux_file.yar.gz  full_macos_file.yar.gz  velo_tools.map
 ```
 
 `fetch` writes the map for you, so each file lands under its real tool name.
@@ -292,8 +297,9 @@ bash scripts/velo_tools.sh import /media/usb/velo-tools
 ```
 
 ```
-registered Trawler -> Trawler.ps1
-import: 1 registered, 0 failed
+registered FileYaraLinux -> full_linux_file.yar.gz
+registered FileYaraMacOS -> full_macos_file.yar.gz
+import: 2 registered, 0 failed
 ```
 
 ## Air-gapped — let the release package carry the tools
@@ -455,16 +461,18 @@ Check it with the `hash` field, not with `serve_locally`:
 ```bash
 docker exec intact_velociraptor /velociraptor/velociraptor \
     --api_config /velociraptor/api.config.yaml query --format jsonl \
-    "SELECT name, serve_locally, hash, url FROM inventory() WHERE name = 'sigcheck_amd64'"
+    "SELECT name, serve_locally, hash, url FROM inventory() WHERE name = 'Takajo-2.5.0'"
 ```
 
 ```
-{"name":"sigcheck_amd64","serve_locally":true,"hash":"","filename":"sigcheck64.exe","url":"https://live.sysinternals.com/tools/sigcheck64.exe"}
+{"name":"Takajo-2.5.0","serve_locally":false,"hash":"","url":"https://github.com/Yamato-Security/takajo/releases/download/v2.5.0/takajo-2.5.0-win.zip"}
 ```
 
 An empty `hash` means the server no longer holds a copy — the tool is back to
-"missing", and `list` shows it again. The name and its URL stay, because an
-artifact still declares them; that is the inventory entry, not a stored file.
+"missing", and `list` shows it again. Judge it by `hash`, not by `serve_locally`:
+that flag came back `false` here and `true` for another tool removed the same way.
+The name and URL stay because an artifact still declares them; that is the
+inventory entry, not a stored file.
 
 ## The same thing in raw VQL
 
