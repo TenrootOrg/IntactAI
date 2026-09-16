@@ -308,11 +308,12 @@
                  Required because Intact.AI runs as a network service:
                  any user reaching the UI must be told where to obtain
                  the source. Sidebar bottom is visible on every page.
-                 Version pulled from /api/version (reads VERSION file
-                 stamped by stamp-version-on-release.yml). -->
+                 Version pulled from /api/version. `display` is the release,
+                 plus the running backend image tag when the two disagree — a
+                 hand-deployed build must not read as a clean release. -->
             <div x-show="!$store.app.sidebarCollapsed"
                  x-data="{ intactVersion: '' }"
-                 x-init="fetch('/api/version').then(r => r.json()).then(d => intactVersion = d.version || '').catch(() => {})"
+                 x-init="fetch('/api/version').then(r => r.json()).then(d => intactVersion = d.display || d.version || '').catch(() => {})"
                  class="mt-auto px-4 py-3 leading-relaxed border-t border-gray-800">
                 <div x-show="intactVersion" class="text-xs font-semibold text-gray-200 mb-2">
                     Version: <span x-text="intactVersion"></span>

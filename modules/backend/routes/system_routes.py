@@ -53,27 +53,49 @@ def health_check():
     return jsonify({"status": "healthy", "service": "intact-backend"})
 
 
-@system_bp.route('/api/version', methods=['GET'])
-def get_intact_version():
-    """Return the current Intact.AI platform version.
-
-    Reads the VERSION file at the repo root — stamped by
-    .github/workflows/stamp-version-on-release.yml on every release.
-    Mirrors the read logic in services.upgrade.base.get_current_versions
-    but kept as a tiny standalone endpoint so the sidebar load doesn't
-    pull in the upgrade machinery.
-    """
+def version_payload(workdir, backend_version) -> dict:
+    """The decision itself, with no Flask around it — see tests/test_version_endpoint.py."""
     import os
-    workdir = os.environ.get('INTACT_PATH', '/app/workdir')
-    version_file = os.path.join(workdir, 'VERSION')
+    version = "unknown"
     try:
-        with open(version_file) as f:
-            version = f.read().strip()
-        if version:
-            return jsonify({"version": version})
+        with open(os.path.join(workdir, 'VERSION')) as f:
+            version = f.read().strip() or "unknown"
     except Exception:
         pass
-    return jsonify({"version": "unknown"})
+    backend = (backend_version or '').strip()
+    hybrid = bool(backend) and backend != version
+    return {
+        "version": version,
+        "backend": backend or None,
+        "hybrid": hybrid,
+        "display": f"{version} (backend {backend})" if hybrid else version,
+    }
+
+
+@system_bp.route('/api/version', methods=['GET'])
+def get_intact_version():
+    """Which release this is — and which backend is actually running it.
+
+    `version` is the VERSION file at the repo root, stamped by
+    .github/workflows/stamp-version-on-release.yml on every release. That is the
+    release TREE, and on a box where a backend image has been deployed by hand it
+    is not the code executing: VERSION is written by the installer and by nothing
+    else, so a dev build reports the release it was dropped onto. The sidebar read
+    `intact-20260903` for a box running main, and a support bundle from it said
+    the same — which is how a fix that WAS deployed can look like one that was not.
+
+    So `backend` names the running image tag, read from BACKEND_VERSION. Compose
+    interpolates the very same variable into `image:`, so it cannot drift from
+    what is running the way a stamped file can. `display` is what a human should
+    be shown: the release alone when they agree (an ordinary appliance, no noise),
+    and both when they do not.
+
+    `version` keeps its exact old meaning — the upgrade dropdown filters releases
+    on it and must never see a `main-*` tag.
+    """
+    import os
+    return jsonify(version_payload(os.environ.get('INTACT_PATH', '/app/workdir'),
+                                   os.environ.get('BACKEND_VERSION')))
 
 @system_bp.route('/api/system/actions', methods=['GET'])
 def get_system_actions():
