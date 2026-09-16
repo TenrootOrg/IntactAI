@@ -35,11 +35,14 @@ original.
 ## Quick Start
 
 ```bash
-# 1. Clone the repo (gets the latest `main`)
-git clone https://github.com/TenrootOrg/IntactAI.git intact
-# To install a specific release instead, add `--branch <tag>`,
-# e.g.:
-# git clone --branch intact-20260609 https://github.com/TenrootOrg/IntactAI.git intact
+# 1. Clone the release you want to install (see Releases for the latest tag)
+git clone --branch intact-20260915 https://github.com/TenrootOrg/IntactAI.git intact
+
+# Cloning without --branch gets `main`, which is for DEVELOPMENT. The installer
+# still takes its images from a published release — the one main's VERSION file
+# names — but the scripts, compose files and backend source come from your
+# checkout. Mid-cycle those are newer than the release, so you get an installer
+# and images from two different versions. Pin the tag and it installs as a unit.
 
 cd intact
 
