@@ -200,15 +200,33 @@ sudo bash scripts/upgrade.sh intact-20260915 --only intact
 sudo bash scripts/upgrade.sh intact-20260915 --only intact,velociraptor
 ```
 
-**Air-gapped** — name the modules when you build the package, then upgrade from
-it exactly as in the full air-gapped flow above:
+**Air-gapped** — the same flow as above, with the modules named as the third
+argument to `prepare_package.sh`.
+
+**Step 1 — on any machine WITH internet** (not the box):
 
 ```bash
-# on the machine WITH internet
+cd ~
+curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-20260915.tar.gz" -o intact-20260915.tar.gz
+mkdir -p intact-20260915 && tar -xzf intact-20260915.tar.gz --strip-components=1 -C intact-20260915
+
+# just the platform itself
 bash intact-20260915/scripts/prepare_package.sh intact-20260915 . intact
+
+# the platform plus Velociraptor
 bash intact-20260915/scripts/prepare_package.sh intact-20260915 . intact,velociraptor
 
-# on the air-gapped box
+tar -czf intact-20260915-checkout.tar.gz intact-20260915   # the release folder, as one file
+```
+
+Carry **both** `intact-20260915-checkout.tar.gz` and `intact-20260915-package.tar`
+to the box.
+
+**Step 2 — on the AIR-GAPPED box:**
+
+```bash
+cd ~
+tar -xzf intact-20260915-checkout.tar.gz
 cd ~ && sudo bash intact-20260915/scripts/upgrade.sh --package intact-20260915-package.tar --root ./intact
 ```
 
