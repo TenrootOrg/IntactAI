@@ -16,7 +16,7 @@ import tempfile
 import time
 import zipfile
 from datetime import datetime
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 
 # Per-container `docker logs --tail N`. 10k lines covers a few hours of
@@ -512,6 +512,44 @@ def _copy_upgrade_engine_logs(workdir: str, dest_dir: str, logger: Callable) -> 
 _VERSION_KEY = re.compile(r'^[A-Z0-9_]*VERSION$')
 
 
+def _intact_version(workdir: str) -> str:
+    """The release this box believes it is. '' when the file is missing."""
+    v = os.path.join(workdir, 'VERSION')
+    try:
+        with open(v, encoding='utf-8') as fh:
+            return fh.read().strip()
+    except OSError:
+        return ''
+
+
+def _read_version_pins(workdir: str) -> List[Tuple[str, str, str]]:
+    """(module, KEY, value) for every *VERSION pin in every module .env.
+
+    One parser feeding both versions.txt (for a person) and versions.json (for
+    a script), so the two can never disagree about what the box is pinned to.
+    """
+    pins: List[Tuple[str, str, str]] = []
+    modules_dir = os.path.join(workdir, 'modules')
+    if not os.path.isdir(modules_dir):
+        return pins
+    for mod in sorted(os.listdir(modules_dir)):
+        envf = os.path.join(modules_dir, mod, '.env')
+        if not os.path.isfile(envf):
+            continue
+        try:
+            with open(envf, encoding='utf-8', errors='replace') as fh:
+                for raw in fh:
+                    if '=' not in raw or raw.lstrip().startswith('#'):
+                        continue
+                    key, _, val = raw.partition('=')
+                    key = key.strip()
+                    if _VERSION_KEY.match(key):
+                        pins.append((mod, key, val.strip()))
+        except OSError:
+            continue
+    return pins
+
+
 def _version_manifest(workdir: str, dest_path: str, logger: Callable) -> int:
     """What the box THINKS it is running, as opposed to what is running.
 
@@ -521,34 +559,116 @@ def _version_manifest(workdir: str, dest_path: str, logger: Callable) -> int:
     the bug, and the bundle had no way to show it.
     """
     lines = []
-    v = os.path.join(workdir, 'VERSION')
-    if os.path.isfile(v):
-        try:
-            lines.append(f"VERSION = {open(v).read().strip()}")
-        except OSError:
-            pass
-    modules_dir = os.path.join(workdir, 'modules')
-    if os.path.isdir(modules_dir):
-        for mod in sorted(os.listdir(modules_dir)):
-            envf = os.path.join(modules_dir, mod, '.env')
-            if not os.path.isfile(envf):
-                continue
-            try:
-                with open(envf, encoding='utf-8', errors='replace') as fh:
-                    for raw in fh:
-                        if '=' not in raw or raw.lstrip().startswith('#'):
-                            continue
-                        key, _, val = raw.partition('=')
-                        key = key.strip()
-                        if _VERSION_KEY.match(key):
-                            lines.append(f"modules/{mod}/.env  {key} = {val.strip()}")
-            except OSError:
-                continue
+    version = _intact_version(workdir)
+    if version:
+        lines.append(f"VERSION = {version}")
+    lines += [f"modules/{mod}/.env  {key} = {val}"
+              for mod, key, val in _read_version_pins(workdir)]
     with open(dest_path, 'w', encoding='utf-8') as out:
         out.write("# Version pins as recorded on disk (only *VERSION keys are\n"
                   "# read; no other .env value is collected).\n\n")
         out.write("\n".join(lines) + "\n")
     return len(lines)
+
+
+def _environment_json(workdir: str, dest_path: str, logger: Callable) -> Dict:
+    """versions.json — what this box is, in one machine-readable file.
+
+    The first question any bundle raises is "which version produced this?", and
+    the second is "on what?". Both were answerable only by grepping a text file
+    and reading a `docker ps` table pasted into another one -- and the host OS
+    was not in there at all, because `uname` inside the backend names the
+    CONTAINER. A bundle from 2026-09-14 cost a round trip for exactly this: the
+    failure in it was a known bug, already fixed, and deciding that needed the
+    release the box was on, which nothing in the bundle stated up front.
+
+    So: the release, every module pin, every container with its image tag and
+    health, and the real host OS (from `docker info`, which reports the DAEMON's
+    host, not this container). Never raises -- a section that cannot be read is
+    recorded as null and the rest of the bundle still builds.
+    """
+    env: Dict = {
+        'intact_version': _intact_version(workdir) or None,
+        'collected_at': datetime.utcnow().isoformat() + 'Z',
+        'workdir': workdir,
+        'module_pins': {},
+        'containers': [],
+        'host': {},
+    }
+    for mod, key, val in _read_version_pins(workdir):
+        env['module_pins'].setdefault(mod, {})[key] = val
+
+    try:
+        out = (_run("docker ps -a --format '{{json .}}'", timeout=30).get('stdout') or '')
+        for line in out.splitlines():
+            line = line.strip()
+            if not line.startswith('{'):
+                continue
+            try:
+                c = json.loads(line)
+            except ValueError:
+                continue
+            image = c.get('Image') or ''
+            # "repo:tag" -> tag, but a digest or a registry port must not be
+            # mistaken for one (localhost:5000/img has a colon in the HOST).
+            tail = image.rsplit('/', 1)[-1]
+            tag = tail.split(':', 1)[1] if ':' in tail else ''
+            env['containers'].append({
+                'name': c.get('Names'), 'image': image, 'tag': tag or None,
+                'state': c.get('State'), 'status': c.get('Status'),
+                'health': c.get('HealthStatus') or None,
+                'created_at': c.get('CreatedAt'),
+            })
+        env['containers'].sort(key=lambda x: x.get('name') or '')
+    except Exception as e:  # noqa: BLE001 — best effort, like every collector here
+        logger(f"  ! could not enumerate containers for versions.json: {e}", 'warning')
+
+    try:
+        info = json.loads(_run("docker info --format '{{json .}}'", timeout=30).get('stdout') or '{}')
+        env['host'] = {
+            # These describe the DOCKER HOST, which is the appliance itself --
+            # the one OS fact a container cannot read for itself.
+            'os': info.get('OperatingSystem'), 'os_type': info.get('OSType'),
+            'os_version': info.get('OSVersion'), 'kernel': info.get('KernelVersion'),
+            'architecture': info.get('Architecture'), 'cpus': info.get('NCPU'),
+            'memory_bytes': info.get('MemTotal'),
+            'docker': info.get('ServerVersion'),
+            'docker_compose': (_run('docker compose version --short',
+                                    timeout=20).get('stdout') or '').strip() or None,
+        }
+    except Exception as e:  # noqa: BLE001
+        logger(f"  ! could not read host info for versions.json: {e}", 'warning')
+
+    try:
+        with open(dest_path, 'w', encoding='utf-8') as fh:
+            json.dump(env, fh, indent=2, sort_keys=False)
+            fh.write('\n')
+    except OSError as e:
+        logger(f"  ! could not write versions.json: {e}", 'warning')
+    return env
+
+
+def _copy_config_yaml(workdir: str, bundle_root: str, logger: Callable) -> Dict:
+    """The appliance's own config.yaml, with credentials scrubbed.
+
+    Which modules are enabled, the domain, the pinned versions section and every
+    option the upgrade plans against live here and nowhere else in the bundle.
+    Redacted with the same pass every collected log goes through (_redact_file),
+    so a password or key in it is [REDACTED] before the file is ever archived.
+    """
+    src = os.path.join(workdir, 'config.yaml')
+    if not os.path.isfile(src):
+        logger("  ! config.yaml not found — bundle will not carry it", 'warning')
+        return {'included': False, 'redacted_lines': 0}
+    dest = os.path.join(bundle_root, 'config.yaml')
+    try:
+        shutil.copy2(src, dest)
+    except OSError as e:
+        logger(f"  ! could not copy config.yaml: {e}", 'warning')
+        return {'included': False, 'redacted_lines': 0}
+    n = _redact_file(dest)
+    logger(f"  ✓ config.yaml copied ({n} line(s) redacted)", 'info')
+    return {'included': True, 'redacted_lines': n}
 
 
 def _bind_mount_audit(workdir: str, dest_path: str, logger: Callable) -> Dict:
@@ -766,6 +886,11 @@ def prepare_support_bundle(run_id: str, logger: Callable) -> Dict:
     manifest: Dict = {
         'bundle_name': bundle_root_name,
         'created_at': datetime.utcnow().isoformat() + 'Z',
+        # The FIRST thing anyone reading a bundle needs, and it used to be
+        # buried in versions.txt: which release produced this. Filled in at
+        # Phase 6 from the appliance's VERSION file; null if it could not be read.
+        'intact_version': None,
+        'host': {},
         'run_id': run_id,
         'container_log_tail_lines': CONTAINER_LOG_TAIL_LINES,
         # `containers[<name>]` carries both line count (set in Phase 3) and
@@ -906,6 +1031,19 @@ def prepare_support_bundle(run_id: str, logger: Callable) -> Dict:
                                  os.path.join(bundle_root, 'versions.txt'), logger)
         manifest['version_pins'] = pins
         logger(f"  ✓ {pins} version pin(s) recorded", 'info')
+
+        # The same facts a second time, as JSON, plus the host OS and every
+        # container's image tag and health — so "what is this box running" is
+        # one file read, not a grep across three text dumps.
+        env = _environment_json(workdir,
+                               os.path.join(bundle_root, 'versions.json'), logger)
+        manifest['intact_version'] = env.get('intact_version')
+        manifest['host'] = env.get('host') or {}
+        logger(f"  ✓ versions.json — {env.get('intact_version') or 'VERSION unreadable'} "
+               f"on {(env.get('host') or {}).get('os') or 'unknown OS'}, "
+               f"{len(env.get('containers') or [])} container(s)", 'info')
+
+        manifest['config_yaml'] = _copy_config_yaml(workdir, bundle_root, logger)
 
         mounts = _bind_mount_audit(workdir,
                                    os.path.join(bundle_root, 'bind_mounts.txt'), logger)
