@@ -614,18 +614,40 @@ function _cfgTouched(){ _cfgDirty=true; }
 // Mounted AND edited: skip the redraw, keep what the operator typed. Not dirty ->
 // redraw freely (that is how the rail shows values saved by anything else).
 function skipConfigRedraw(tab, dirty, mounted){ return tab==='config' && !!dirty && !!mounted; }
+// Is `t` still the tab on screen? Timeline, Chat, Identities and Risk all fetch
+// first and write #tabc in a .then(), and none of them used to check. Click a
+// slow tab, click another before it answers, and the first one's response paints
+// its content under the second one's underline — the tab bar says Analysis while
+// the Timeline is on screen, and the only way out is clicking again. Every
+// deferred write goes through this now.
+function tabIsStill(t){ return tab===t; }
 function drawTab(md){
   if(md)window._md=md;
   const info=curInfo;
   if(skipConfigRedraw(tab, _cfgDirty, !!$('#cf-start'))) return;
   if(window._logTimer && tab!=='log'){clearInterval(window._logTimer);window._logTimer=null;} // stop following when leaving Log
-  if(tab==='timeline') renderTimeline(info.case_id);
-  else if(tab==='chat') renderChat(info.case_id);
-  else if(tab==='identities') renderIdentities(info.case_id);
-  else if(tab==='log') renderLog(info.case_id);
-  else if(tab==='config') renderConfig(info);
-  else if(tab==='risk') renderRisk(info);
-  else renderReport(info);
+  const _t=tab;
+  try{
+    if(tab==='timeline') renderTimeline(info.case_id);
+    else if(tab==='chat') renderChat(info.case_id);
+    else if(tab==='identities') renderIdentities(info.case_id);
+    else if(tab==='log') renderLog(info.case_id);
+    else if(tab==='config') renderConfig(info);
+    else if(tab==='risk') renderRisk(info);
+    else renderReport(info);
+  }catch(e){
+    // A renderer that threw used to leave the PREVIOUS tab's content sitting
+    // under the new tab's underline, which reads as "the click did nothing".
+    // Say what happened instead; the operator can act on that.
+    console.error('drawTab', _t, e);
+    const box=$('#tabc');
+    if(box) box.innerHTML='<div class="empty">This tab could not be drawn — '
+      + esc(String((e&&e.message)||e)) + '. Switch tabs and back, or reload.</div>';
+  }
+  // What #tabc is actually showing. The 5s case poll compares it with `tab` and
+  // redraws on a mismatch, so a tab that ends up out of step with its underline
+  // for any reason corrects itself instead of needing a second click.
+  const box=$('#tabc'); if(box) box.dataset.tab=_t;
 }
 // Same duplication as the timeline, one level down: the host is already the
 // row's second column, and every finding title inside `why` ends with "on
@@ -647,6 +669,7 @@ function _riskWhy(r){
 function renderRisk(info){
   $('#tabc').innerHTML='<div class="md">loading risk…</div>';
   api('/api/cases/'+info.case_id+'/risk').then(d=>{
+    if(!tabIsStill('risk'))return;
     const rows=d.rows||[];
     if(!rows.length){$('#tabc').innerHTML='<div class="empty">No fused data yet — fuse the case first.</div>';return;}
     const sc={critical:'#f85149',high:'#db6d28',medium:'#d29922',low:'#3fb950',informational:'#8b949e'};
@@ -1044,7 +1067,14 @@ function pollReportGen(id){
         const changed = (info.fused_at||'')!==(curInfo.fused_at||'')
                      || (info.report_written_at||'')!==(curInfo.report_written_at||'')
                      || !!curInfo.report_generating;     // generation just ended
-        if(changed) backgroundRefresh(id, 'report updated');
+        if(changed){ backgroundRefresh(id, 'report updated'); return; }
+        // Nothing changed — so use the tick to check the view is self-consistent.
+        // drawTab stamps #tabc with the tab it drew; if that disagrees with the
+        // tab bar, the content on screen is not the tab the operator selected and
+        // clicking again is the only way out. Redraw instead. drawTab applies the
+        // config-rail guard itself, so an edit in progress is still safe.
+        const _box=$('#tabc');
+        if(_box && _box.dataset.tab && _box.dataset.tab!==tab && !operatorIsTyping()) drawTab();
         return;
       }
       // Patch ONLY the status banner, never the whole tab. drawTab() rebuilds
@@ -1268,7 +1298,8 @@ function _tlTitle(r){
 function renderTimeline(id){
   window._tlCase=id;
   $('#tabc').innerHTML='<i style="color:var(--muted)">loading timeline…</i>';
-  api('/api/cases/'+id+'/timeline').then(d=>{window._tlData=d.timeline||[];tlBuild();});
+  api('/api/cases/'+id+'/timeline').then(d=>{ if(!tabIsStill('timeline'))return;
+    window._tlData=d.timeline||[];tlBuild();});
 }
 function tlBuild(){
   const rows=window._tlData||[], f=window._tlf;
@@ -1392,6 +1423,7 @@ function renderIdentities(id){
   if(!window._idExpand) window._idExpand={};
   $('#tabc').innerHTML='<i style="color:var(--muted)">resolving identities…</i>';
   api('/api/cases/'+id+'/identities').then(d=>{
+    if(!tabIsStill('identities'))return;
     window._idData=d;
     if(d.error && !(d.identities)){ $('#tabc').innerHTML=`<p style="color:#f85149">could not load identities: ${esc(String(d.error))}</p>`; return; }
     _idRender(id);

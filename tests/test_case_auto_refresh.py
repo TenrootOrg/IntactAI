@@ -143,5 +143,51 @@ class OpeningACaseRedrawsOnce(unittest.TestCase):
                         "rather than leaving a comment that describes a dead hazard")
 
 
+class TheContentAlwaysMatchesTheUnderline(unittest.TestCase):
+    """Reported: "I'm on the Analysis page but it shows the log."
+
+    setTab moves the underline synchronously and then draws. Timeline, Chat,
+    Identities and Risk all FETCH first and write #tabc in a .then(), and none of
+    them checked whether their tab was still the one on screen — so clicking a
+    slow tab and then another painted the first one's content under the second
+    one's underline. A renderer that threw did the same thing by leaving the
+    previous tab's content in place. Either way the only way out was clicking
+    again, which is also what "the tabs don't move on the first click" looks like.
+    """
+
+    def setUp(self):
+        with open(PAGE, encoding="utf-8") as fh:
+            self.page = fh.read()
+
+    def test_every_deferred_write_checks_the_tab_is_still_its_own(self):
+        import re
+        for fn, tab in (("renderTimeline", "timeline"), ("renderIdentities", "identities"),
+                        ("renderRisk", "risk")):
+            body = self.page[self.page.index(f"function {fn}("):][:1500]
+            self.assertIn(f"tabIsStill('{tab}')", body,
+                          f"{fn} writes #tabc after a fetch — it must not paint over "
+                          "a tab the operator has since switched to")
+            self.assertLess(body.index("tabIsStill("), body.index("$('#tabc')", body.index(".then(")),
+                            f"{fn} must check BEFORE it writes")
+
+    def test_a_renderer_that_throws_does_not_leave_the_previous_tab(self):
+        draw = self.page[self.page.index("function drawTab(md){"):]
+        draw = draw[:draw.index("\n}") + 2]
+        self.assertIn("catch(e){", draw)
+        self.assertIn("could not be drawn", draw)
+
+    def test_tabc_records_which_tab_it_is_showing(self):
+        draw = self.page[self.page.index("function drawTab(md){"):]
+        draw = draw[:draw.index("\n}") + 2]
+        self.assertIn("box.dataset.tab=_t", draw,
+                      "stamp what is on screen, or a mismatch cannot be detected")
+
+    def test_the_poll_corrects_a_mismatch(self):
+        poll = self.page[self.page.index("function pollReportGen(id){"):][:4000]
+        self.assertIn("dataset.tab!==tab", poll,
+                      "the 5s tick should heal a tab that ended up out of step with "
+                      "its underline, whatever caused it")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
