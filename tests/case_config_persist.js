@@ -141,6 +141,30 @@ function run({ railMounted = true, rescanReply = {} } = {}) {
     }
   }
 
+  // 7. An edit in progress must survive a background redraw. While a report
+  //    generates the page polls every 5s and calls openCase() on completion or a
+  //    phase change, which rebuilds #tabc — so a half-typed time window was thrown
+  //    away and the next Refusion posted the PRE-EDIT values. The server log showed
+  //    exactly that: "Config · Time window ... 13:04:00 -> ... 13:04:51".
+  {
+    const guardSrc = slice('function skipConfigRedraw(', 'function drawTab(md){');
+    const { skipConfigRedraw } = new Function(guardSrc + '; return {skipConfigRedraw};')();
+    check(skipConfigRedraw('config', true, true) === true, 'a dirty, mounted rail must not be redrawn under the operator');
+    check(skipConfigRedraw('config', false, true) === false, 'an untouched rail redraws freely (that is how saved values appear)');
+    check(skipConfigRedraw('config', true, false) === false, 'nothing to protect when the rail is not mounted');
+    check(skipConfigRedraw('report', true, true) === false, 'other tabs always redraw');
+
+    const draw = slice('function drawTab(md){', 'function _riskWhy(r){');
+    check(/skipConfigRedraw\(/.test(draw), 'drawTab must consult the guard before rebuilding the tab');
+    const rc = slice('function renderConfig(info){', 'function loadHosts(id){');
+    check(/addEventListener\('input',\s*_cfgTouched\)/.test(rc) || /_cfgTouched/.test(rc),
+      'the rail must mark itself dirty when the operator edits it');
+    for (const fn of ['doRefusion', 'doRescanLLM']) {
+      const body = slice(`async function ${fn}(id){`, fn === 'doRefusion' ? '// Rescan (LLM) = SAVE config' : 'function synthFromChat(id){');
+      check(/_cfgDirty\s*=\s*false/.test(body), `${fn}() must clear the dirty flag once the edits are saved`);
+    }
+  }
+
   if (failures.length) {
     console.error('FAIL:\n  - ' + failures.join('\n  - '));
     process.exit(1);

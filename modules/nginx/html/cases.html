@@ -575,9 +575,21 @@ function setTab(t){
     refreshLlmReachability().then(()=>{ if(tab===t){ drawTab(); maybeAutoRegen(); } });
   }
 }
+// An operator EDITING the Configuration tab must never have their input thrown
+// away by a redraw they did not ask for. While a report generates the page polls
+// every 5s and calls openCase() on completion or a phase change; openCase ->
+// render -> drawTab rebuilds #tabc, so a half-typed time window vanished and the
+// next Refusion posted the values that were on screen BEFORE the edit -- which is
+// exactly how a changed window "did not persist": the backend never saw it.
+let _cfgDirty=false;
+function _cfgTouched(){ _cfgDirty=true; }
+// Mounted AND edited: skip the redraw, keep what the operator typed. Not dirty ->
+// redraw freely (that is how the rail shows values saved by anything else).
+function skipConfigRedraw(tab, dirty, mounted){ return tab==='config' && !!dirty && !!mounted; }
 function drawTab(md){
   if(md)window._md=md;
   const info=curInfo;
+  if(skipConfigRedraw(tab, _cfgDirty, !!$('#cf-start'))) return;
   if(window._logTimer && tab!=='log'){clearInterval(window._logTimer);window._logTimer=null;} // stop following when leaving Log
   if(tab==='timeline') renderTimeline(info.case_id);
   else if(tab==='chat') renderChat(info.case_id);
@@ -696,6 +708,9 @@ function renderConfig(info){
       <button onclick="doRefusion('${info.case_id}')" style="background:var(--info);border-color:var(--info);color:#0d1117" title="Saves your configuration first, then re-fuses the deterministic graph (hosts, entities, links, findings, risk &amp; timeline). Fast — no LLM, no tokens.">🔄 Refusion</button>
     </div>`;
   loadHosts(info.case_id);
+  // Any edit marks the rail dirty, so no background redraw can discard it.
+  const _tc=$('#tabc');
+  if(_tc){ _tc.addEventListener('input',_cfgTouched); _tc.addEventListener('change',_cfgTouched); }
   // friendly single-field date+time picker — choosing a date pops the hour inline
   if(window.flatpickr){
     const fp={enableTime:true,time_24hr:true,dateFormat:'Y-m-d\\TH:i:S',minuteIncrement:5,allowInput:true};
@@ -1094,6 +1109,7 @@ async function doRefusion(id){
   // operator unable to tell their own click from a colleague's or from anything
   // running on its own.
   cfg.trigger = 'refusion';
+  _cfgDirty=false;          // saved: the redraw below may show the stored values
   // Move to the Log so the operator watches the refusion progress live. The
   // rescan runs server-side while the Log tab's follower polls /log every few
   // seconds; fuse_case emits "<phase> · <pct>% · ~<eta>s remaining" rows, so
@@ -1123,6 +1139,7 @@ async function doRefusion(id){
 async function doRescanLLM(id){
   toast('saving + rescanning (LLM) — refusing + regenerating report…');
   const cfg = await _railCfg(); cfg.trigger = 'rescan_llm';
+  _cfgDirty=false;
   const r = await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
   if(r && r.busy){ toast('⏳ already re-fusing this case — retry in a moment'); return; }
   await api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({use_llm:true})});
