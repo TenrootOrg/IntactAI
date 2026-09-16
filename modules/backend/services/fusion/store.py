@@ -1845,10 +1845,16 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         # new fusion", and before that as the whole thing looking dead.
         _mdl, _prov, _ = _configured_fusion_model()
         _report_cfg_id, _report_written_at = llm_sim._config_id(llm_sim._agentic_cfg()), _now_iso()
-        if _narrate:                      # a blank model is the plan's default, not none
+        if _narrate and not report_generation_active(d):
+            # Reset the banner's clocks for THIS fuse's narration — but never while
+            # a background generation owns them. Re-stamping an in-flight run's
+            # start time made "running 10 min" restart from zero on every Refusion,
+            # and pushed the stale-generation cut-off back each time, so a stuck
+            # run could never be recognised as stuck.
             _merge_case_details(case_id, {"report_phase": "narrative",
                                           "report_phase_started_at": _now_iso(),
                                           "report_generating_started_at": _now_iso()})
+        if _narrate:
             log_case_event(case_id, "Report · sending request to the LLM", "info",
                            f"model {_model_label(_mdl)} ({_prov}); payload ≤{llm_ent:,} entities, "
                            f"output ≤{llm_out or 'model max'} tokens")
@@ -2484,6 +2490,67 @@ def _report_gen_lock(case_id):
         return _REPORT_GEN_LOCKS.setdefault(case_id, threading.Lock())
 
 
+def _generation_is_current(case_id, gen_id) -> bool:
+    """Is `gen_id` still the generation this case is waiting for?
+
+    A generation can be SUPERSEDED while its model call is still in flight — the
+    operator changes the AI settings, or it is written off as stuck. Python cannot
+    stop the thread, so the thread has to notice on its own: every write it would
+    make is gated on this. None (a caller with no id, e.g. the synchronous path)
+    is always current.
+    """
+    if gen_id is None:
+        return True
+    try:
+        return (get_case(case_id) or {}).get("report_generation_id") == gen_id
+    except Exception:                                  # noqa: BLE001
+        return True                                   # cannot tell: do not drop a report
+
+
+def supersede_report_generations(reason: str) -> int:
+    """Stop waiting for every in-flight report generation. Returns how many.
+
+    Reported live: an operator swapped the AI provider while a DeepSeek narration
+    was still running. That call never answered — its connection to OpenRouter was
+    still open 25 minutes later — so its worker never reached the `finally` that
+    clears the flag, and the case sat on "Sending case data to the model — running
+    10 min" with nothing actually working towards it. Changing the settings is the
+    operator saying the old call is no longer wanted, so honour that:
+
+      * the markers are cleared at once, so the banner goes and Regenerate works;
+      * the generation id is dropped, so if the old call DOES come back its result
+        is discarded rather than overwriting whatever the new model writes;
+      * the per-case lock is replaced, because the stuck thread still holds the
+        old one and would otherwise refuse every new generation as "busy".
+    """
+    n = 0
+    try:                                  # same enumeration as the startup sweep
+        runs = [r for r in (_ws().get_all_automation_runs() or [])
+                if r.get("automation_type") == CASE_TYPE
+                and (r.get("details") or {}).get("report_generating")]
+    except Exception:                                  # noqa: BLE001
+        runs = []
+    for r in runs:
+        cid = r.get("run_id")
+        try:
+            _merge_case_details(cid, {"report_generating": False,
+                                      "report_generating_started_at": None,
+                                      "report_phase": None,
+                                      "report_phase_started_at": None,
+                                      "report_generation_id": None})
+            with _REPORT_GEN_LOCKS_GUARD:
+                _REPORT_GEN_LOCKS[cid] = threading.Lock()
+            log_case_event(cid, "Report generation stopped", "warning",
+                           f"{reason} — the report that was being written is abandoned "
+                           f"and its result will be discarded if it arrives. The previous "
+                           f"report is unchanged. Press Regenerate to write it with the "
+                           f"new settings.")
+            n += 1
+        except Exception:                              # noqa: BLE001 — never block a save
+            continue
+    return n
+
+
 class ReportGenerationBusy(Exception):
     """A report is already being generated for this case."""
 
@@ -2591,26 +2658,33 @@ def regenerate_report_async(case_id, *, audience=None, use_llm=False) -> dict:
             lock.release()
 
     started = _now_iso()
+    import uuid
+    gen_id = uuid.uuid4().hex
     try:
         _merge_case_details(case_id, {"report_generating": True,
                                       "report_generating_started_at": started,
                                       "report_phase": "narrative",
-                                      "report_phase_started_at": started})
+                                      "report_phase_started_at": started,
+                                      "report_generation_id": gen_id})
     except Exception:
         lock.release()
         raise
 
     def _worker():
         try:
-            regenerate_report(case_id, audience=audience, use_llm=True)
+            regenerate_report(case_id, audience=audience, use_llm=True, gen_id=gen_id)
         except Exception:
             pass                     # already logged to the case activity log
         finally:
+            # Only clear the markers if they are still OURS. A superseded generation
+            # finishing late must not wipe the banner of the one that replaced it.
             try:
-                _merge_case_details(case_id, {"report_generating": False,
-                                              "report_generating_started_at": None,
-                                              "report_phase": None,
-                                              "report_phase_started_at": None})
+                if _generation_is_current(case_id, gen_id):
+                    _merge_case_details(case_id, {"report_generating": False,
+                                                  "report_generating_started_at": None,
+                                                  "report_phase": None,
+                                                  "report_phase_started_at": None,
+                                                  "report_generation_id": None})
             except Exception:
                 pass
             lock.release()
@@ -2620,7 +2694,7 @@ def regenerate_report_async(case_id, *, audience=None, use_llm=False) -> dict:
     return {"status": "started", "case_id": case_id, "started_at": started}
 
 
-def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
+def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None) -> dict:
     """Re-narrate report + advisory from the STORED graph (no re-collect/re-fuse),
     applying the case's audience + master_prompt + Timeline triage. Deterministic by
     default (free); pass use_llm=True (the 'Regenerate report' button) for the premium
@@ -2736,6 +2810,15 @@ def regenerate_report(case_id, *, audience=None, use_llm=False) -> dict:
     _fused = d.get("fused_run_ids")
     if _fused is not None:
         _narrative_patch["report_run_ids"] = list(_fused)
+    if not _generation_is_current(case_id, gen_id):
+        # Superseded while the model was answering (the AI settings changed, or it
+        # was written off). Writing now would put the OLD model's report over
+        # whatever the operator has asked for since.
+        log_case_event(case_id, "Report · late result discarded", "info",
+                       "a report from before the AI settings changed finally arrived; "
+                       "it was not saved")
+        return {"report_md": d.get("report_md"), "audience": d.get("audience", "both"),
+                "discarded": True}
     try:
         _merge_case_details(case_id, _narrative_patch)
         log_case_event(case_id, "Report saved", "success",

@@ -265,7 +265,12 @@ def _bind_active_case():
                     if (_r.get("details") or {}).get("report_generating"):
                         store._merge_case_details(_r["run_id"], {
                             "report_generating": False,
-                            "report_generating_started_at": None})
+                            "report_generating_started_at": None,
+                            # the phase and generation id die with the process too;
+                            # leaving them made the next banner show a stale phase
+                            "report_phase": None,
+                            "report_phase_started_at": None,
+                            "report_generation_id": None})
                         store.log_case_event(
                             _r["run_id"], "Report generation", "warning",
                             "interrupted by a backend restart — click Regenerate report to try again")

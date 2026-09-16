@@ -640,8 +640,29 @@ def save_config():
             config['agentic']['online_llm']['api_key'] = \
                 existing.get('agentic', {}).get('online_llm', {}).get('api_key', '')
 
+        # Which AI settings were in force BEFORE this save, so a change can be told
+        # apart from re-saving the same thing.
+        try:
+            from services.fusion import llm_sim
+            _before = llm_sim._config_id(llm_sim._agentic_cfg())
+        except Exception:                                   # noqa: BLE001
+            _before = None
+
         _save_config(config)
-        return jsonify({"status": "saved", "message": "Configuration saved successfully"})
+
+        # A report still being written by the OLD model is no longer what the
+        # operator wants — and if that call has hung, nothing else will ever clear
+        # its "generating" banner. Retire it. Best effort: a failure here must
+        # never turn a successful settings save into an error.
+        stopped = 0
+        try:
+            from services.fusion import llm_sim, store
+            if _before is not None and llm_sim._config_id(llm_sim._agentic_cfg()) != _before:
+                stopped = store.supersede_report_generations("the AI settings changed")
+        except Exception as _e:                            # noqa: BLE001
+            print(f"[CONFIG] could not retire in-flight report generations: {_e}", flush=True)
+        return jsonify({"status": "saved", "message": "Configuration saved successfully",
+                        "report_generations_stopped": stopped})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
