@@ -539,7 +539,7 @@ function render(info,md,g){
     <div class="outwrap">
       <div class="row" style="justify-content:space-between">
         <div><h1 style="margin:0;font-size:19px">${esc(info.name||info.case_id)}</h1>
-          <div style="color:var(--muted);font-size:12px">${tw.start?('since '+esc(tw.start)):'no start date'}</div></div>
+          <div id="case-since" style="color:var(--muted);font-size:12px">${tw.start?('since '+esc(tw.start)):'no start date'}</div></div>
       </div>
       <div style="margin:6px 0 14px">${statSpans(g)}</div>
       <div class="tabs">
@@ -1124,6 +1124,11 @@ async function _railCfg(){
 function _applyCfgLocally(cfg){
   if(!curInfo) return;
   for(const k in cfg) if(cfg[k]!==undefined && k!=='trigger') curInfo[k]=cfg[k];
+  // The scope line under the case name is drawn by render(), which only runs on
+  // a full re-open — so without this it keeps naming the old start for as long
+  // as the fuse takes, even though the rail beneath it already shows the new one.
+  const since=$('#case-since'), st=(cfg.time_window||{}).start;
+  if(since) since.textContent = st ? ('since '+st) : 'no start date';
 }
 // Refusion = SAVE config → re-fuse the DATA (deterministic graph). Fast, no LLM/tokens.
 // The /rescan endpoint persists the posted config (set_analysis_config) before fusing,

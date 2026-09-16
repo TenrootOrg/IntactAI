@@ -148,6 +148,13 @@ const dumpSession = win => Object.fromEntries(
     check(posted && posted.body.time_window.start === TYPED,
       `Refusion posts the operator's start (sent ${posted && posted.body.time_window.start})`);
     check(stored().start === TYPED, `the backend stored it (${stored().start})`);
+    // the scope line under the case name must name the new start too — it is
+    // drawn by render(), which does not run again until the whole fuse ends
+    const since = win.document.querySelector('#case-since');
+    console.log('scope line:', since && since.textContent);
+    check(since && since.textContent === 'since ' + TYPED,
+      `the scope line follows the save (${since && since.textContent})`);
+
     // a Refusion switches to the Log to show progress; back to Configuration
     win.setTab('config'); await sleep(1000);
     console.log('rail after Refusion -> Log -> Configuration:', $('#cf-start') && $('#cf-start').value);
