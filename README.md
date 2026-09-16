@@ -194,7 +194,7 @@ modules are fetched.
 cd ~/intact
 
 # just the platform itself — backend, dashboard, engine (~460 MB)
-sudo bash scripts/upgrade.sh intact-20260915 --only intact
+# sudo bash scripts/upgrade.sh intact-20260915 --only intact
 
 # the platform plus Velociraptor (755 MB, measured)
 sudo bash scripts/upgrade.sh intact-20260915 --only intact,velociraptor
@@ -211,7 +211,7 @@ curl -fL "https://github.com/TenrootOrg/IntactAI/archive/refs/tags/intact-202609
 mkdir -p intact-20260915 && tar -xzf intact-20260915.tar.gz --strip-components=1 -C intact-20260915
 
 # just the platform itself
-bash intact-20260915/scripts/prepare_package.sh intact-20260915 . intact
+# bash intact-20260915/scripts/prepare_package.sh intact-20260915 . intact
 
 # the platform plus Velociraptor
 bash intact-20260915/scripts/prepare_package.sh intact-20260915 . intact,velociraptor
