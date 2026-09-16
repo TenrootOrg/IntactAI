@@ -463,7 +463,15 @@ function showCase(id,info,rep){
      // by the time it runs, #main (and the inputs) have already been replaced.
      // Keep the fresh data, skip the redraw; the rail redraws as soon as the edit
      // is saved (the flag clears) or the operator leaves the tab (it unmounts).
-     if(skipConfigRedraw(tab, _cfgDirty, !!$('#cf-start'))){ curInfo=info; return; }
+     // Keep the fresh payload only if it belongs to the case whose rail is on
+     // screen. The analysis view re-opens the ACTIVE workspace case on its own
+     // (init(), active-case-changed, and a `storage` event from a second browser
+     // tab), so this can arrive for a DIFFERENT case — and curInfo is what the
+     // rail redraws from once the edit is saved.
+     if(skipConfigRedraw(tab, _cfgDirty, !!$('#cf-start'))){
+       if(!curInfo || curInfo.case_id===id) curInfo=info;
+       return;
+     }
      // fold the report meta (branding/master-prompt) into info for the controls.
      // Audience is NOT among them any more: the report is always written for both
      // an executive and a technical reader, so there is nothing to choose.

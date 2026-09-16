@@ -164,6 +164,16 @@ function run({ railMounted = true, rescanReply = {} } = {}) {
     check(/skipConfigRedraw\(/.test(show),
       'showCase must consult the guard before render() replaces #main — otherwise the '
       + 'rail is destroyed before drawTab can protect it');
+    // ...and when it skips, it must not adopt the payload of a DIFFERENT case.
+    // The analysis view re-opens the active workspace case by itself (init(),
+    // active-case-changed, and a `storage` event from a second browser tab), so
+    // showCase does get called for another case while this rail is being edited.
+    // curInfo is what the rail redraws from once the edit is saved, so taking
+    // that payload shows the operator another case's settings under their own
+    // case's heading.
+    check(/curInfo\.case_id===id\)?\s*curInfo=info/.test(show.replace(/\s+/g, ' ')),
+      'while skipping a redraw, showCase must only keep the payload of the case on '
+      + 'screen — a re-open of the ACTIVE case must not replace curInfo underneath it');
     const rc = slice('function renderConfig(info){', 'function loadHosts(id){');
     check(/addEventListener\('input',\s*_cfgTouched\)/.test(rc) || /_cfgTouched/.test(rc),
       'the rail must mark itself dirty when the operator edits it');

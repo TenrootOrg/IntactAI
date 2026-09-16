@@ -24,6 +24,7 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HARNESS = os.path.join(ROOT, "tests", "case_config_persist.js")
+EDIT_FLOW = os.path.join(ROOT, "tests", "case_config_edit_flow.js")
 
 
 class TheConfigRailSurvivesARefusion(unittest.TestCase):
@@ -31,6 +32,12 @@ class TheConfigRailSurvivesARefusion(unittest.TestCase):
     @unittest.skipIf(shutil.which("node") is None, "node is not installed")
     def test_harness(self):
         r = subprocess.run(["node", HARNESS, ROOT], capture_output=True, text=True, timeout=120)
+        self.assertEqual(0, r.returncode, r.stdout + r.stderr)
+
+    @unittest.skipIf(shutil.which("node") is None, "node is not installed")
+    def test_the_whole_edit_flow(self):
+        """render -> type -> a background refresh lands -> Refusion -> redraw."""
+        r = subprocess.run(["node", EDIT_FLOW, ROOT], capture_output=True, text=True, timeout=120)
         self.assertEqual(0, r.returncode, r.stdout + r.stderr)
 
 
