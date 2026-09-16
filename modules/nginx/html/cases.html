@@ -461,6 +461,11 @@ function showCase(id,info,rep){
      // an executive and a technical reader, so there is nothing to choose.
      info.customer_name=rep.customer_name||'';
      info.tlp=rep.tlp||'AMBER'; info.has_logo=!!rep.has_logo; info.master_prompt=rep.master_prompt||'';
+     // Altitude is a REPORT setting, so /report carries it and /api/cases/<id> does
+     // not — but the config rail renders from `info`, so without this merge the
+     // operator's choice reads back as "auto" every time the rail is drawn, exactly
+     // like the time window did before doRefusion started re-reading the case.
+     info.report_altitude=rep.report_altitude||info.report_altitude||'auto';
      render(info,rep.report_md||'',info.counts||{});
      maybeAutoRegen();                     // at once, not after the ~10s probe
      // Only the Analysis tab shows this banner, and `tab` can carry over from
@@ -1104,6 +1109,14 @@ async function doRefusion(id){
     if(r && r.busy) toast('⏳ already re-fusing this case — retry in a moment');
     else toast('✓ Refusion complete — data, risk & timeline updated');
   }catch(e){ toast('✗ Refusion failed — see the Log for details'); }
+  // Re-read the case. The rail's settings were just persisted server-side, but
+  // every tab renders from `curInfo` — so without this the Configuration tab (and
+  // the scope line above the report) keep showing the values from BEFORE the save,
+  // and the operator's new time window appears to revert the moment they leave the
+  // tab. Re-reading also costs nothing visually: openCase keeps the current tab,
+  // which is the Log they were just sent to. Done for a busy/failed reply too:
+  // what the server holds is the truth worth showing either way.
+  openCase(id);
   if(typeof logRefresh==='function') logRefresh();   // pull the final rows at once
 }
 // Rescan (LLM) = SAVE config → re-fuse → regenerate report + chat narrative with the LLM.
