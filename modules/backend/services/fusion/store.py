@@ -1989,6 +1989,14 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                                   "report_md": report,
                                   "report_config_id": _report_cfg_id,
                                   "report_written_at": _report_written_at,
+                                  # Stamped on EVERY completed fuse, whether or not
+                                  # the report was rewritten. report_written_at is
+                                  # not enough for that: a re-fuse that reuses the
+                                  # existing narrative keeps the old stamp, so an
+                                  # open case had no way to tell that the graph
+                                  # underneath it had changed. This is the field the
+                                  # case view polls to refresh itself with no click.
+                                  "fused_at": _now_iso(),
                                   "token_ab": token_ab,
                                   # Reusing a report must not zero the cost the
                                   # LAST narration actually paid -- the estimate

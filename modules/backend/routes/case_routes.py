@@ -447,6 +447,11 @@ def get_case(case_id):
                     # automatic regeneration.
                     "report_config_id": d.get("report_config_id"),
                     "report_written_at": d.get("report_written_at"),
+                    # When the graph was last rebuilt. Changes on EVERY completed
+                    # fuse — the open case polls it and refreshes itself, so a fuse
+                    # started anywhere (this browser, another operator, an automatic
+                    # one after new data landed) reaches the screen without a reload.
+                    "fused_at": d.get("fused_at"),
                     "is_stale": bool(data_stale or report_stale or d.get("report_dirty")),
                     # WHY the report is (or is not) narrated, in the operator's
                     # terms. The Analysis tab shows this instead of leaving them to

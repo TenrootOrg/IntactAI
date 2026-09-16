@@ -531,6 +531,10 @@ function costBadge(ce){
 }
 function render(info,md,g){
   curInfo=info; curGraph=g;
+  // The case now watches itself for as long as it is on screen, whichever tab
+  // that is — a fuse started anywhere reaches the view with no reload. Cheap,
+  // and a no-op when it is already watching this case.
+  pollReportGen(info.case_id);
   $('#llmbadge').textContent='LLM: '+(info.llm_enabled?'real':'simulated (no key)');
   const mk=info.masking||{};
   const opt=(v,l,cur)=>`<option value="${v}" ${cur===v?'selected':''}>${l}</option>`;
@@ -882,7 +886,11 @@ function renderReport(info){
   // A page reload (or a tab switch back to Analysis) while a generation is
   // already running elsewhere must resume watching it, not just show a static
   // "generating" label that never updates or refreshes.
-  if(generating) pollReportGen(id); else if(_genPollCase===id) stopReportGenPoll();
+  // Always polling now (render() starts it for every case, whatever tab is
+  // showing). Calling it here too is harmless — it returns immediately when it
+  // is already watching this case — and keeps the Analysis tab working if it is
+  // ever reached without going through render().
+  pollReportGen(id);
 }
 // Macro report -> the macro->micro loop: the backend's deterministic zoom_targets
 // (suspicious host-cluster + time-window hotspots) as one-click "Analyze this scope"
@@ -962,13 +970,53 @@ function genStatusHtml(elapsedS, phase, phaseElapsedS){
     </div>`;
 }
 
+// A BACKGROUND redraw must never land on top of the operator.
+//
+// openCase -> render replaces #main wholesale, so a redraw the operator did not
+// ask for throws away whatever they were in the middle of: a half-typed time
+// window (which is how a changed window "did not persist"), a chat message,
+// a master prompt. _cfgDirty covers the config rail; this covers everything
+// else, because the poll below now runs for EVERY open case rather than only
+// while a report generates, so the chance of one landing mid-keystroke is no
+// longer small. Deferring costs nothing -- the poll comes round again in 5s and
+// the refresh happens the moment the field is empty or unfocused.
+function operatorIsTyping(){
+  const el = document.activeElement;
+  if(!el) return false;
+  if(el.isContentEditable) return true;
+  const tag = (el.tagName||'').toLowerCase();
+  if(tag!=='input' && tag!=='textarea') return false;
+  if(el.type==='checkbox' || el.type==='radio' || el.type==='file') return false;
+  return !!String(el.value||'').trim();
+}
+// The one door every automatic refresh goes through. Returns false when it held
+// off, so a caller can tell "nothing changed" from "changed, shown later".
+function backgroundRefresh(id, why){
+  if(_cfgDirty || operatorIsTyping()) return false;
+  openCase(id);
+  if(why) toast(why);
+  return true;
+}
+
 function stopReportGenPoll(){
   if(_genPoll){ clearInterval(_genPoll); _genPoll=null; _genPollCase=null; }
   _genPhase=null;
 }
 
-// Called on click AND on opening/redrawing a case that's already generating
-// (e.g. the operator reloaded the page mid-run) — either way we land here.
+// The open case watches itself. Runs for as long as a case is on screen —
+// NOT only while a report generates, which is what it used to do.
+//
+// A fuse rewrites the report at the end of every run, and a fuse can start from
+// places this browser knows nothing about: another operator's Refusion, the
+// automatic re-fuse after new data lands, a disposition or timeline edit made
+// in another tab. While the poll only ran during generation, all of those left
+// the case showing the PREVIOUS report until someone reloaded — and the one
+// case where it did refresh (a report this browser started) made that look like
+// the rule rather than the exception.
+//
+// `fused_at` is stamped on every completed fuse, so comparing it against what is
+// on screen answers "has the graph under me changed" for all of them. Cheap:
+// the case payload is 3-6ms and carries no graph.
 function pollReportGen(id){
   if(_genPoll && _genPollCase===id) return;     // already polling this case
   stopReportGenPoll();
@@ -977,15 +1025,18 @@ function pollReportGen(id){
     api('/api/cases/'+id).then(info=>{
       if(_genPollCase!==id) return;              // superseded by a newer poll
       if(!info.report_generating){
-        stopReportGenPoll();
-        // Only touch the screen if the operator is still looking at THIS case —
-        // a background report finishing must not yank them off whatever they
-        // switched to. If they are, this IS the auto-refresh: re-fetch the
-        // report and redraw Analysis with no click needed.
-        if(curInfo && curInfo.case_id===id){
-          openCase(id);
-          toast('report updated');
-        }
+        // Nothing is generating. Keep watching anyway, and refresh the moment
+        // the case changes underneath us — that is the whole point of the poll
+        // now. `_genPhase` is reset so a later generation is seen from its first
+        // phase rather than treated as a continuation of an older one.
+        _genPhase=null;
+        // Not looking at this case any more: a background fuse finishing must
+        // not yank the operator off whatever they switched to.
+        if(!(curInfo && curInfo.case_id===id)) return;
+        const changed = (info.fused_at||'')!==(curInfo.fused_at||'')
+                     || (info.report_written_at||'')!==(curInfo.report_written_at||'')
+                     || !!curInfo.report_generating;     // generation just ended
+        if(changed) backgroundRefresh(id, 'report updated');
         return;
       }
       // Patch ONLY the status banner, never the whole tab. drawTab() rebuilds
@@ -1005,9 +1056,7 @@ function pollReportGen(id){
         _genPhase = info.report_phase;
         if(!firstSighting && info.report_phase!=='narrative'
            && curInfo && curInfo.case_id===id){
-          openCase(id);
-          toast('report ready');
-          return;
+          if(backgroundRefresh(id, 'report ready')) return;
         }
       }
       if(curInfo && curInfo.case_id===id){
