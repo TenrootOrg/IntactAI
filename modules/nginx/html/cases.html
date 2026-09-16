@@ -1113,6 +1113,18 @@ async function _railCfg(){
   if(logo) cfg.customer_logo_b64=logo;
   return cfg;
 }
+// Show what was just saved, NOW. The rail's keys are the case's keys, so the
+// config is on screen the instant it is posted instead of when the request
+// returns — and /rescan does not return until the whole re-fuse is done, which
+// on a real case means re-reading every member run and waiting on the report
+// (minutes). Until this, the operator saved a new time window, went to the Log
+// and came back, and the rail still showed the OLD one: the save had worked,
+// but `curInfo` — what every tab redraws from — was still the pre-save payload.
+// The openCase() at the end of each action confirms it from the server after.
+function _applyCfgLocally(cfg){
+  if(!curInfo) return;
+  for(const k in cfg) if(cfg[k]!==undefined && k!=='trigger') curInfo[k]=cfg[k];
+}
 // Refusion = SAVE config → re-fuse the DATA (deterministic graph). Fast, no LLM/tokens.
 // The /rescan endpoint persists the posted config (set_analysis_config) before fusing,
 // so saving is always the first step — there is no separate Save button.
@@ -1126,6 +1138,7 @@ async function doRefusion(id){
   // running on its own.
   cfg.trigger = 'refusion';
   _cfgDirty=false;          // saved: the redraw below may show the stored values
+  _applyCfgLocally(cfg);    // ...and the stored values are these, from this moment on
   // Move to the Log so the operator watches the refusion progress live. The
   // rescan runs server-side while the Log tab's follower polls /log every few
   // seconds; fuse_case emits "<phase> · <pct>% · ~<eta>s remaining" rows, so
@@ -1156,6 +1169,7 @@ async function doRescanLLM(id){
   toast('saving + rescanning (LLM) — refusing + regenerating report…');
   const cfg = await _railCfg(); cfg.trigger = 'rescan_llm';
   _cfgDirty=false;
+  _applyCfgLocally(cfg);    // an LLM rescan is minutes long — show the save now
   const r = await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
   if(r && r.busy){ toast('⏳ already re-fusing this case — retry in a moment'); return; }
   await api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({use_llm:true})});

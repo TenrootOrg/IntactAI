@@ -42,11 +42,12 @@ function run({ railMounted = true, rescanReply = {} } = {}) {
     toast: (m) => calls.toasts.push(m),
     openCase: (id) => calls.openCase.push(id),
     _hostExc: new Set(),        // hosts unticked in the rail; empty for this test
+    curInfo: { case_id: 'case_1' },   // what every tab redraws from
     console,
   };
   const names = Object.keys(ctx);
   const api = new Function(...names, code + '; return {doRefusion, _railCfg};')(...names.map(n => ctx[n]));
-  return { api, calls };
+  return { api, calls, ctx };
 }
 
 (async () => {
@@ -67,11 +68,14 @@ function run({ railMounted = true, rescanReply = {} } = {}) {
   // 2. THE BUG: after the rescan returns, the case must be re-read, or every tab
   //    keeps rendering the settings from before the save.
   {
-    const { api, calls } = run();
+    const { api, calls, ctx } = run();
     await api.doRefusion('case_1');
     check(calls.openCase.includes('case_1'),
       'after a Refusion the case must be re-read so the rail shows the saved settings '
       + `(openCase calls: ${JSON.stringify(calls.openCase)})`);
+    check(ctx.curInfo.time_window && ctx.curInfo.time_window.start === '2026-09-01T00:00:00',
+      'the saved window must be on curInfo straight away, not only once the fuse '
+      + `finishes (curInfo holds ${JSON.stringify(ctx.curInfo.time_window)})`);
   }
 
   // 3. a busy backend (409-style reply) still persisted the config, so refresh too
@@ -180,6 +184,16 @@ function run({ railMounted = true, rescanReply = {} } = {}) {
     for (const fn of ['doRefusion', 'doRescanLLM']) {
       const body = slice(`async function ${fn}(id){`, fn === 'doRefusion' ? '// Rescan (LLM) = SAVE config' : 'function synthFromChat(id){');
       check(/_cfgDirty\s*=\s*false/.test(body), `${fn}() must clear the dirty flag once the edits are saved`);
+      // The save must land on `curInfo` BEFORE the request is awaited. /rescan
+      // does not return until the whole re-fuse is done — minutes on a real
+      // case, re-reading every member run and waiting on the report — and until
+      // it does, every tab still redraws from the pre-save payload. That is the
+      // "I saved it, went to the Log, came back and it was the old value again"
+      // report: the save had worked; the screen had not caught up.
+      const beforeAwait = body.slice(0, body.search(/await\s+api\(/));
+      check(/_applyCfgLocally\(cfg\)/.test(beforeAwait),
+        `${fn}() must put the saved config on curInfo before awaiting the request, or `
+        + 'the rail keeps showing the pre-save values for as long as the fuse runs');
     }
   }
 
