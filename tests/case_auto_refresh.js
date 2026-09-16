@@ -98,21 +98,32 @@ async function waitFor(fn, ms = 30000) {
     dom = boot(cid);
     const win = dom.window;
     await new Promise(r => win.addEventListener('load', r));
-    await sleep(2500);
 
-    check(!!win.curInfo && win.curInfo.case_id === cid, 'the case is on screen');
-    const before = win.curInfo && win.curInfo.fused_at;
+    // `curInfo` is a `let`, so it is not a window property. showCase IS -- a
+    // top-level function declaration -- and every refresh goes through it, so
+    // wrapping it is how the test sees what the page is rendering.
+    const seen = [];
+    const realShowCase = win.showCase;
+    win.showCase = (id, info, rep) => {
+      if (id === cid && info) seen.push(info.fused_at);
+      return realShowCase(id, info, rep);
+    };
+    const onScreen = () => seen.length ? seen[seen.length - 1] : undefined;
+
+    await sleep(2500);
+    check(seen.length > 0, 'the case is on screen');
+    const before = onScreen();
     console.log('  fused_at on screen:', before);
     check(!!before, 'the case payload carries fused_at (the poll compares it)');
 
     // 1. A FUSE STARTED OUTSIDE THIS BROWSER. Nothing on the page asked for it
-    //    and nothing on the page is generating — exactly the case the old poll
+    //    and nothing on the page is generating -- exactly the case the old poll
     //    could not see.
     call('POST', `/api/cases/${cid}/rescan`, { trigger: 'refusion' });
     const after = JSON.parse(call('GET', '/api/cases/' + cid).text).fused_at;
     check(after !== before, `the fuse moved fused_at server-side (${before} -> ${after})`);
-    const caught = await waitFor(() => win.curInfo && win.curInfo.fused_at === after);
-    check(caught, `the open case refreshed itself with no click (on screen: ${win.curInfo && win.curInfo.fused_at})`);
+    const caught = await waitFor(() => onScreen() === after);
+    check(caught, `the open case refreshed itself with no click (on screen: ${onScreen()})`);
 
     // 2. ...but not on top of someone typing.
     win.setTab('config');
@@ -123,11 +134,11 @@ async function waitFor(fn, ms = 30000) {
       box.value = 'half typed';
       box.focus();
       check(win.operatorIsTyping() === true, 'a focused field with text counts as typing');
-      const held = win.curInfo.fused_at;
+      const held = onScreen();
       call('POST', `/api/cases/${cid}/rescan`, { trigger: 'refusion' });
-      await sleep(9000);                       // ~2 poll ticks
-      check(win.curInfo.fused_at === held,
-        'a fuse finishing must NOT redraw the page under a half-typed field');
+      await sleep(12000);                      // ~2 poll ticks
+      check(onScreen() === held,
+        `a fuse finishing must NOT redraw the page under a half-typed field (on screen: ${onScreen()})`);
       check(win.document.querySelector('#cf-cust').value === 'half typed',
         'the typed text is still there');
 
@@ -135,8 +146,8 @@ async function waitFor(fn, ms = 30000) {
       box.value = '';
       box.blur();
       const latest = JSON.parse(call('GET', '/api/cases/' + cid).text).fused_at;
-      const resumed = await waitFor(() => win.curInfo && win.curInfo.fused_at === latest);
-      check(resumed, `the deferred refresh lands once the field is free (on screen: ${win.curInfo && win.curInfo.fused_at})`);
+      const resumed = await waitFor(() => onScreen() === latest);
+      check(resumed, `the deferred refresh lands once the field is free (on screen: ${onScreen()})`);
     }
     win.close();
   } finally {
