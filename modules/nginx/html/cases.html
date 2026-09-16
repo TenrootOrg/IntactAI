@@ -456,6 +456,14 @@ function openCase(id){
 }
 
 function showCase(id,info,rep){
+     // NEVER rebuild the page under an operator who is editing the Configuration
+     // rail. render() replaces #main wholesale — tabs, rail and all — so a
+     // half-typed time window goes with it, and the next Refusion posts the values
+     // that were on screen BEFORE the edit. Guarding drawTab alone was not enough:
+     // by the time it runs, #main (and the inputs) have already been replaced.
+     // Keep the fresh data, skip the redraw; the rail redraws as soon as the edit
+     // is saved (the flag clears) or the operator leaves the tab (it unmounts).
+     if(skipConfigRedraw(tab, _cfgDirty, !!$('#cf-start'))){ curInfo=info; return; }
      // fold the report meta (branding/master-prompt) into info for the controls.
      // Audience is NOT among them any more: the report is always written for both
      // an executive and a technical reader, so there is nothing to choose.

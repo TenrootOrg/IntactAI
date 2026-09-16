@@ -156,6 +156,14 @@ function run({ railMounted = true, rescanReply = {} } = {}) {
 
     const draw = slice('function drawTab(md){', 'function _riskWhy(r){');
     check(/skipConfigRedraw\(/.test(draw), 'drawTab must consult the guard before rebuilding the tab');
+    // The decisive one: render() replaces #main wholesale, so the guard must run
+    // BEFORE that, in showCase — guarding only drawTab leaves the inputs already
+    // destroyed, which is exactly how the first attempt at this fix still lost the
+    // operator's window.
+    const show = slice('function showCase(id,info,rep){', 'function render(info,md,g){');
+    check(/skipConfigRedraw\(/.test(show),
+      'showCase must consult the guard before render() replaces #main — otherwise the '
+      + 'rail is destroyed before drawTab can protect it');
     const rc = slice('function renderConfig(info){', 'function loadHosts(id){');
     check(/addEventListener\('input',\s*_cfgTouched\)/.test(rc) || /_cfgTouched/.test(rc),
       'the rail must mark itself dirty when the operator edits it');
