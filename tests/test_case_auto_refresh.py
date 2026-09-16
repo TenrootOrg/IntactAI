@@ -99,5 +99,49 @@ class ThePollIsNotConditionalOnAReportGenerating(unittest.TestCase):
                       "the case payload must carry it or the page cannot compare it")
 
 
+class OpeningACaseRedrawsOnce(unittest.TestCase):
+    """A second redraw a fraction of a second after the first can swallow a click.
+
+    openCase shows the remembered view immediately, then compares the payload
+    that arrives against it and skips the redraw when nothing changed. That
+    comparison was dead: the snapshot was taken AFTER showCase, which mutates
+    `info` by folding in five report-meta keys the case payload never carries.
+    So `same` was never true and every re-open replaced #main twice — the second
+    landing where the operator was already clicking. A node replaced between
+    mousedown and mouseup fires no click at all, which is how a tab "does
+    nothing until the second try".
+    """
+
+    def setUp(self):
+        with open(PAGE, encoding="utf-8") as fh:
+            self.page = fh.read()
+        self.open_case = self.page[self.page.index("function openCase(id){"):
+                                   self.page.index("function showCase(id,info,rep){")]
+
+    def test_the_snapshot_is_taken_before_showCase_mutates_it(self):
+        self.assertLess(self.open_case.index("shown=JSON.stringify"),
+                        self.open_case.index("showCase(id,v.info"),
+                        "snapshot the remembered view BEFORE showing it — showCase "
+                        "mutates `info`, and a snapshot taken afterwards can never "
+                        "equal the raw payload the network returns")
+
+    def test_the_keys_showCase_adds_are_still_absent_from_the_payload(self):
+        """If the backend ever starts serving these, the ordering above stops
+        mattering — and this test should be the thing that says so."""
+        import re
+        show = self.page[self.page.index("function showCase(id,info,rep){"):
+                         self.page.index("function render(info,md,g){")]
+        added = set(re.findall(r"info\.([a-z_]+)\s*=", show))
+        with open(os.path.join(ROOT, "modules/backend/routes/case_routes.py"),
+                  encoding="utf-8") as fh:
+            routes = fh.read()
+        d0 = routes.index("def get_case(case_id):")
+        served = set(re.findall(r'"([a-z_]+)":', routes[d0:routes.index("@case_bp.route", d0)]))
+        self.assertTrue(added - served,
+                        "showCase no longer adds anything the payload lacks — the "
+                        "snapshot ordering is no longer load-bearing, so simplify it "
+                        "rather than leaving a comment that describes a dead hazard")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

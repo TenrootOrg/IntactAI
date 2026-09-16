@@ -436,7 +436,15 @@ function openCase(id){
   let shown='';
   if(!(curInfo && curInfo.case_id===id)){
     const v=rememberedView(id);
-    if(v){ showCase(id,v.info,v.rep); shown=JSON.stringify([v.info,v.rep]); }
+    // SNAPSHOT BEFORE SHOWING IT. showCase MUTATES `info` — it folds the report
+    // meta (customer/tlp/logo/master-prompt/altitude) onto it — so taking the
+    // snapshot afterwards compared a mutated object against the raw payload the
+    // network returns, and `same` below was therefore never true. The effect was
+    // two full #main replacements a fraction of a second apart on EVERY case
+    // open, the second landing right where the operator was already clicking: a
+    // node replaced between mousedown and mouseup fires no click at all, which
+    // is why a tab sometimes did nothing until the second try.
+    if(v){ shown=JSON.stringify([v.info,v.rep]); showCase(id,v.info,v.rep); }
     else $('#main').innerHTML=skeletonView();
   }
   // NOTE: we deliberately do NOT fetch /graph here — it's multi-MB and the tabs
