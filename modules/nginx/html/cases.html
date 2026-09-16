@@ -639,10 +639,14 @@ function drawTab(md){
     // A renderer that threw used to leave the PREVIOUS tab's content sitting
     // under the new tab's underline, which reads as "the click did nothing".
     // Say what happened instead; the operator can act on that.
+    // The exception text goes to the CONSOLE, not the screen. An operator
+    // reading "startedAt is not defined" in the middle of their case has been
+    // handed a stack trace's worth of alarm and nothing they can act on; the
+    // Log is where this case's actual errors are written, in their language.
     console.error('drawTab', _t, e);
     const box=$('#tabc');
-    if(box) box.innerHTML='<div class="empty">This tab could not be drawn — '
-      + esc(String((e&&e.message)||e)) + '. Switch tabs and back, or reload.</div>';
+    if(box) box.innerHTML='<div class="empty">This view could not be drawn just now. '
+      + 'Check the Log tab for details, or switch tabs and back.</div>';
   }
   // What #tabc is actually showing. The 5s case poll compares it with `tab` and
   // redraws on a mismatch, so a tab that ends up out of step with its underline
@@ -978,8 +982,17 @@ let _genPoll=null, _genPollCase=null, _genPhase=null;
 function genStatusHtml(elapsedS, phase, phaseElapsedS){
   const elapsedMin = (secs) =>
     (typeof secs === 'number' && isFinite(secs)) ? Math.max(0, Math.round(secs/60)) : null;
-  const mins = elapsedMin(elapsedS) ?? 0;
-  const since = startedAt ? (mins<1 ? 'just started' : `running ${mins} min`) : 'starting…';
+  // `startedAt` was this function's OLD first parameter, a server timestamp this
+  // code subtracted from the browser clock. It became elapsed SECONDS from the
+  // server (see above) and this line kept the dead name — so the banner threw
+  // ReferenceError every time it rendered, which is only ever while a report is
+  // generating. renderReport died with it, #tabc kept whatever tab was there
+  // before, and the operator saw the Log sitting under the Analysis underline.
+  // Silent until drawTab started catching. "Do we have a figure yet" is the
+  // question it was always asking.
+  const minsRaw = elapsedMin(elapsedS);
+  const mins = minsRaw ?? 0;
+  const since = (minsRaw !== null) ? (mins<1 ? 'just started' : `running ${mins} min`) : 'starting…';
   if(phase === 'checklist'){
     // The PHASE's own clock, not the job's. Showing total elapsed next to
     // the phase's OWN elapsed, not the job's -- putting total elapsed here

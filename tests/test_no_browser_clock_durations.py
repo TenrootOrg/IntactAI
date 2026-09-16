@@ -18,6 +18,8 @@ is fine; mark that line `local-clock-ok` and it is allowed.
 import datetime
 import os
 import re
+import shutil
+import subprocess
 import sys
 import unittest
 
@@ -67,6 +69,24 @@ class NoPageComputesADurationFromTheViewersClock(unittest.TestCase):
         src = open(CASE_ROUTES, encoding="utf-8").read()
         self.assertIn('"report_generating_elapsed_s": store.seconds_since(', src)
         self.assertIn('"report_phase_elapsed_s": store.seconds_since(', src)
+
+
+class TheBannerActuallyRenders(unittest.TestCase):
+    """The static checks above all passed while the banner threw on every draw.
+
+    genStatusHtml was rewritten to take elapsed SECONDS and one line kept the old
+    `startedAt` parameter name, so it raised ReferenceError every time it drew —
+    which is only ever while a report is generating. renderReport died with it and
+    the tab kept the previous tab's content. Nothing here CALLED the function, so
+    nothing noticed. tests/gen_status_banner.js calls it, for every shape the
+    server can send.
+    """
+
+    @unittest.skipIf(shutil.which("node") is None, "node is not installed")
+    def test_it(self):
+        r = subprocess.run(["node", os.path.join(ROOT, "tests", "gen_status_banner.js"), ROOT],
+                           capture_output=True, text=True, timeout=120)
+        self.assertEqual(0, r.returncode, r.stdout + r.stderr)
 
 
 class TheServerMeasuresElapsedItself(unittest.TestCase):
