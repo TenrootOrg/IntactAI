@@ -177,6 +177,61 @@ cd ~ && sudo bash intact-20260915/scripts/upgrade.sh --package intact-20260915-p
 Or push-button in the dashboard: **Settings → Online Upgrade / Prepare Package /
 Import Package** — the same engine, no shell.
 
+### Upgrading only some modules
+
+> ⚠️ **Not recommended. Be careful.** A release is tested as a whole, and this
+> is the one way to end up running a combination nobody QA'd: a new backend
+> against an older Timesketch, ELK or IRIS. Module upgrades sometimes depend on
+> each other and the engine does not check for that — if it breaks, the fix is a
+> full upgrade to the same tag. Use it when a full upgrade is impractical (a slow
+> or metered link, a maintenance window too short for ~8 GB), not as the default.
+
+`--only` limits both the **download** and the apply, so only the named modules
+are fetched. Two examples:
+
+```bash
+cd ~/intact
+
+# just the platform itself — backend, dashboard, engine (~460 MB)
+sudo bash scripts/upgrade.sh intact-20260915 --only intact
+
+# the platform plus Velociraptor (755 MB, measured)
+sudo bash scripts/upgrade.sh intact-20260915 --only intact,velociraptor
+```
+
+Against ~7.8 GB for the whole release. The second one printed
+
+```
+  MODULE           INSTALLED            PACKAGE              ACTION
+  intact           intact-20260903      intact-20260915      UPGRADE
+  velociraptor     0.77.2               0.77.2               -
+  elk              9.4.4                9.4.4                skip (excluded by --only)
+  timesketch       20260630             20260630             skip (excluded by --only)
+  ...
+```
+
+Notes:
+
+- **`intact` is always fetched**, named or not — its asset carries the upgrade
+  engine (`source/intact/scripts/upgrade.sh`) that the run hands over to. The log
+  says so: `Fetching only: velociraptor intact`.
+- **Module names** are `intact`, `elk`, `timesketch`, `plaso`, `iris`,
+  `velociraptor`, `aws_sigma`, `o365rc`, `volweb`, `portainer`. Anything else is
+  rejected with the list.
+- **`--skip <csv>`** is the inverse — upgrade everything except these.
+- **See it first, without root:** `bash scripts/upgrade.sh --plan intact-20260915
+  --only intact,velociraptor` downloads only the ~0.2 MB manifest, prints the
+  table above and changes nothing.
+- **Air-gapped equivalent:** pass the modules to `prepare_package.sh` —
+  ```bash
+  bash intact-20260915/scripts/prepare_package.sh intact-20260915 . intact
+  bash intact-20260915/scripts/prepare_package.sh intact-20260915 . intact,velociraptor
+  ```
+- The box still reports the **release tag** as its version afterwards, even
+  though only some modules moved. `versions.txt` in a support bundle (and
+  `versions.json`, from `intact-20260916` on) shows the per-module pins, which is
+  where a partial upgrade is actually visible.
+
 ## Scripts
 
 ### Change Platform IP
