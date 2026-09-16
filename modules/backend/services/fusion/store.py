@@ -1790,6 +1790,10 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     # only when the settings NOW differ from the ones that wrote it, so a model
     # that fails is never retried under the same settings, from any tab.
     _report_cfg_id, _report_written_at = d.get("report_config_id"), d.get("report_written_at")
+    # Set when the report's own attempt proved there is NO ROUTE to the provider.
+    # Scoped to this fuse only — nothing is remembered between runs, so the next
+    # Refusion tries again and a connection that came back is used at once.
+    _no_route = False
     if d.get("report_md") and not force_report:
         report = d.get("report_md")
         # NO NARRATION ON THIS PATH -- the report is reused verbatim. Bound here
@@ -1873,6 +1877,10 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         except Exception as _e:                               # noqa: BLE001
             _report_failed = True
             _report_cfg_id, _report_written_at = d.get("report_config_id"), d.get("report_written_at")
+            try:
+                _no_route = llm_sim._classify_llm_error(_e) in llm_sim._NO_ROUTE_CODES
+            except Exception:                                 # noqa: BLE001
+                _no_route = False
             _degrade("report generation", _e)
             report = d.get("report_md") or (
                 f"_The report could not be generated ({type(_e).__name__}). The graph "
@@ -1885,6 +1893,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
             else:
                 log_case_event(case_id, "Report · LLM call failed", "warning",
                                f"{_why} — template report used instead")
+                _no_route = llm_sim.provider_unreachable(_why)
         # ADVISORY analyst pass — incident-grouping + grounded hypotheses. Stored
         # SEPARATELY from the deterministic findings; fed prior operator dispositions.
         # THE ADVISORY IS GONE, engine and all. It was a second whole-case model
@@ -1918,7 +1927,15 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     # after the fuse (services/fusion/autofuse.py). Every model call now happens
     # in the narration step, which is the one allowed to be slow and billed.
     fresh_checklist = None
-    if allow_llm and not d.get("disposition_checklist"):
+    # The report's attempt just proved there is no route to the provider, and the
+    # checklist would call the SAME provider — one more full timeout to learn the
+    # same thing. Skip it for this run and say so; the next Refusion tries again.
+    if _no_route and allow_llm and not d.get("disposition_checklist"):
+        log_case_event(case_id, "Checklist · skipped", "info",
+                       "the provider could not be reached for the report a moment "
+                       "ago — not calling it again in this run; the next Refusion "
+                       "will try afresh")
+    if allow_llm and not _no_route and not d.get("disposition_checklist"):
         _cmdl, _cprov, _ = _configured_fusion_model()
         try:
             _cnarrate = bool(llm_sim._use_real())      # generate_disposition_checklist's own rule

@@ -1734,6 +1734,43 @@ _LLM_ERR_MESSAGES = {
 }
 
 
+# A provider that could not be REACHED at all — as opposed to one that answered
+# and refused. Within a single fuse there is no point calling it a second time:
+# the report's attempt has just proved there is no route, and the checklist call
+# that follows spends another full timeout learning the same thing. On an
+# air-gapped box with a provider still configured that was ~65s of dead waiting
+# per Refusion, with "generating report (this waits on the model)" on screen.
+#
+# Deliberately NOT remembered between fuses: every Refusion gets a fresh attempt,
+# so a connection that comes back is used immediately, with no cooldown to wait
+# out and no state to go stale.
+_NO_ROUTE_CODES = ("no_internet", "timeout")
+
+
+def reason_code_of(why: str) -> str:
+    """The reason CODE behind a rendered failure sentence, or ''.
+
+    generate_report classifies its own failure and then renders it into the
+    report's closing note, keeping the code to itself — so the only thing a
+    caller can see is the sentence. Rather than change that signature, map the
+    sentence back through the same table that produced it: self-consistent by
+    construction, and a test pins it.
+    """
+    text = (why or "").strip()
+    if not text:
+        return ""
+    for code in list(_LLM_CONFIG_REASONS) + list(_LLM_ERR_MESSAGES):
+        reason, _fix = _llm_reason_text(code)
+        if reason and text.startswith(reason):
+            return code
+    return ""
+
+
+def provider_unreachable(why: str) -> bool:
+    """Did this failure mean "no route to the provider"? See _NO_ROUTE_CODES."""
+    return reason_code_of(why) in _NO_ROUTE_CODES
+
+
 def llm_error_message(reason: str) -> str:
     """Operator-facing message for an LLMUnavailable reason code."""
     problem, fix = _LLM_ERR_MESSAGES.get(reason, _LLM_ERR_MESSAGES["llm_error"])
