@@ -200,17 +200,6 @@ sudo bash scripts/upgrade.sh intact-20260915 --only intact
 sudo bash scripts/upgrade.sh intact-20260915 --only intact,velociraptor
 ```
 
-The second one printed:
-
-```
-  MODULE           INSTALLED            PACKAGE              ACTION
-  intact           intact-20260903      intact-20260915      UPGRADE
-  velociraptor     0.77.2               0.77.2               -
-  elk              9.4.4                9.4.4                skip (excluded by --only)
-  timesketch       20260630             20260630             skip (excluded by --only)
-  ...
-```
-
 **Air-gapped** — name the modules when you build the package, then upgrade from
 it exactly as in the full air-gapped flow above:
 
