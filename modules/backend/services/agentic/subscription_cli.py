@@ -961,8 +961,21 @@ def _vendor_message(text) -> str:
     return best
 
 
+# A spent single-use refresh token. OAuth rotates these: the CLI hands back the
+# stored one, the vendor retires it and issues a replacement, and the CLI writes
+# that replacement into the scratch CODEX_HOME -- which is then shredded. When
+# the credential came from the operator's own ~/.codex (mounted READ-ONLY) the
+# replacement has nowhere to go, so the retired token is what the NEXT call
+# presents, for ever. It reads as random because it only bites at the FIRST
+# refresh, which is days after signing in -- the access token's whole lifetime.
+_CREDENTIAL_SPENT = ("refresh token was already used", "could not be refreshed",
+                     "log out and sign in again", "refresh_token_already_used")
+
+
 def _classify(text) -> str:
     t = (text or "").lower()
+    if any(m in t for m in _CREDENTIAL_SPENT):
+        return "cli_credential_expired"
     if "not supported when using" in t or "model is not supported" in t \
             or ("invalid_request_error" in t and "model" in t):
         return "model_unsupported"
@@ -976,6 +989,36 @@ def _classify(text) -> str:
     if "network" in t or "connection" in t or "dns" in t or "offline" in t:
         return "no_internet"
     return "llm_error"
+
+
+def _credential_note(provider, home) -> str:
+    """Say WHY the login died and what to do -- in the message the case log prints.
+
+    The vendor's own sentence ("Please log out and sign in again") sends the
+    operator to a screen the appliance does not have: sign-in happens on the
+    HOST, in their shell. Worse, it does not say why a login that worked for days
+    suddenly stopped, so the obvious reading is that the appliance lost it.
+    """
+    spec = _spec(provider)
+    if _HOME_SOURCE.get(home) == "host":
+        return (f" This login is read from the host's ~/.{spec['binary']}/{spec['auth_file']} "
+                f"through a READ-ONLY mount, so when the CLI refreshed the token the new "
+                f"one could not be saved and the old one is now spent. Fix: on the "
+                f"appliance HOST run `{spec['binary']} login` — or "
+                f"`{spec['binary']} login --device-auth` if that host has no browser. "
+                f"It will come back at the next token refresh until that credential "
+                f"is writable.")
+    return (f" The stored login could not be refreshed. Fix: on the appliance HOST run "
+            f"`{spec['binary']} login` — or `{spec['binary']} login --device-auth` if "
+            f"that host has no browser.")
+
+
+def _fail(provider, home, message, source_text):
+    """Raise with the classified reason, plus the explanation when we have one."""
+    reason = _classify(source_text)
+    if reason == "cli_credential_expired":
+        message += _credential_note(provider, home)
+    raise SubscriptionCLIError(message, reason)
 
 
 def run_prompt(provider, prompt, system_prompt=None, model=None, timeout=None) -> dict:
@@ -1019,19 +1062,19 @@ def run_prompt(provider, prompt, system_prompt=None, model=None, timeout=None) -
 
         if r.returncode != 0 and not text:
             vendor = _vendor_message(r.stdout or "")
-            raise SubscriptionCLIError(
-                f"{spec['label']}: {vendor}" if vendor else
-                f"{spec['label']} CLI failed (exit {r.returncode}): "
-                f"{combined[-400:] or 'no output'}",
-                _classify(vendor or combined))
+            _fail(provider, home,
+                  f"{spec['label']}: {vendor}" if vendor else
+                  f"{spec['label']} CLI failed (exit {r.returncode}): "
+                  f"{combined[-400:] or 'no output'}",
+                  vendor or combined)
         if not text:
             # fall back to the JSON event stream if -o produced nothing
             text = _text_from_jsonl(r.stdout)
         if not text:
             vendor = _vendor_message(r.stdout or "")
-            raise SubscriptionCLIError(
-                f"{spec['label']} returned no content: {vendor or combined[-300:]}",
-                _classify(vendor or combined))
+            _fail(provider, home,
+                  f"{spec['label']} returned no content: {vendor or combined[-300:]}",
+                  vendor or combined)
         return {"text": text, "in_tokens": in_tok, "out_tokens": out_tok}
     except subprocess.TimeoutExpired:
         raise SubscriptionCLIError(

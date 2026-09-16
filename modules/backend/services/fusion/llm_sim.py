@@ -1704,6 +1704,20 @@ _LLM_ERR_MESSAGES = {
                           "Install it in Settings ▸ Agentic (needs internet), then try again."),
     "cli_not_authenticated": ("The subscription is not signed in.",
                               "Sign in from Settings ▸ Agentic (needs internet), then try again."),
+    # NOT the same as "not signed in", and the difference is the whole point: the
+    # sign-in was valid and worked for days. Single-use refresh tokens are what
+    # ended it -- the CLI spent the stored one, and the replacement it was handed
+    # could not be saved (the appliance reads ~/.codex read-only). Saying "not
+    # signed in" sends the operator looking for a setting they never changed, and
+    # the vendor's own "log out and sign in again" points at a screen that does
+    # not exist here: signing in happens on the HOST, in a shell.
+    "cli_credential_expired": (
+        "The subscription sign-in expired: the CLI refreshed its token, the refreshed "
+        "copy could not be saved, and the old one is now spent. Nothing was "
+        "misconfigured — this is the first refresh since you signed in.",
+        "On the appliance HOST run `codex login` — or `codex login --device-auth` if "
+        "that host has no browser. Until the appliance can write that credential back, "
+        "it returns at every token refresh."),
     "model_unsupported": ("Your subscription does not allow the selected model.",
                           "Clear the Model field in Settings ▸ Agentic to use your "
                           "plan's default model, then try again."),
