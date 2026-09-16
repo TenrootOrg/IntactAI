@@ -35,14 +35,14 @@ from services import support_bundle as sb  # noqa: E402
 
 PS_JSON = (
     '{"Names":"intact_backend","Image":"intact-backend:intact-20260903",'
-    '"State":"running","Status":"Up 2 hours (healthy)","HealthStatus":"healthy",'
+    '"State":"running","Status":"Up 2 hours (healthy)",'
     '"CreatedAt":"2026-09-14 12:00:00 +0000 UTC"}\n'
     '{"Names":"intact_velociraptor","Image":"velociraptor-server:0.77.2",'
-    '"State":"running","Status":"Up 2 hours","HealthStatus":"",'
+    '"State":"running","Status":"Up 2 hours",'
     '"CreatedAt":"2026-09-14 12:00:00 +0000 UTC"}\n'
     # a registry with a port: the colon in the HOST is not a tag
     '{"Names":"intact_odd","Image":"localhost:5000/thing","State":"exited",'
-    '"Status":"Exited (0) 1 day ago","HealthStatus":"","CreatedAt":"x"}\n'
+    '"Status":"Exited (0) 1 day ago","CreatedAt":"x"}\n'
 )
 INFO_JSON = json.dumps({
     "OperatingSystem": "Ubuntu 24.04.3 LTS", "OSType": "linux", "OSVersion": "24.04",
@@ -110,6 +110,19 @@ class VersionsJson(unittest.TestCase):
         self.assertEqual("0.77.2", by["intact_velociraptor"]["tag"])
         self.assertIsNone(by["intact_velociraptor"]["health"])
         self.assertEqual("exited", by["intact_odd"]["state"])
+
+    def test_health_is_read_from_the_status_when_the_cli_omits_the_field(self):
+        """The docker CLI inside the backend image is older than HealthStatus.
+
+        Every container in the first real bundle read `health: null` while its
+        own status text said "(healthy)". The status text is always there.
+        """
+        self.assertEqual("healthy", sb._health_from_status("Up 2 hours (healthy)"))
+        self.assertEqual("unhealthy", sb._health_from_status("Up 2 hours (unhealthy)"))
+        self.assertEqual("starting", sb._health_from_status("Up 3 seconds (health: starting)"))
+        self.assertIsNone(sb._health_from_status("Up 2 hours"))
+        self.assertIsNone(sb._health_from_status(""))
+        self.assertIsNone(sb._health_from_status(None))
 
     def test_a_registry_port_is_not_read_as_a_tag(self):
         by = {c["name"]: c for c in self.env["containers"]}

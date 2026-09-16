@@ -571,6 +571,21 @@ def _version_manifest(workdir: str, dest_path: str, logger: Callable) -> int:
     return len(lines)
 
 
+def _health_from_status(status: str):
+    """Health out of the `Status` text, for a docker CLI that omits the field.
+
+    `HealthStatus` in `docker ps --format '{{json .}}'` is recent; the CLI
+    shipped INSIDE the backend image is older and leaves it out entirely, so
+    every container in the first real bundle read `health: null` while its own
+    status text said "(healthy)". Parse what is there rather than pin a CLI.
+    """
+    s = (status or '').lower()
+    for word in ('healthy', 'unhealthy', 'health: starting'):
+        if f'({word})' in s:
+            return 'starting' if word == 'health: starting' else word
+    return None
+
+
 def _environment_json(workdir: str, dest_path: str, logger: Callable) -> Dict:
     """versions.json — what this box is, in one machine-readable file.
 
@@ -616,7 +631,7 @@ def _environment_json(workdir: str, dest_path: str, logger: Callable) -> Dict:
             env['containers'].append({
                 'name': c.get('Names'), 'image': image, 'tag': tag or None,
                 'state': c.get('State'), 'status': c.get('Status'),
-                'health': c.get('HealthStatus') or None,
+                'health': c.get('HealthStatus') or _health_from_status(c.get('Status')),
                 'created_at': c.get('CreatedAt'),
             })
         env['containers'].sort(key=lambda x: x.get('name') or '')
