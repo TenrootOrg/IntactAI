@@ -81,7 +81,8 @@ class FullContextChat(unittest.TestCase):
         p = self._payload("any malicious binary on 2024-05-24?",
                           validations=[{"finding_id": "f_mid", "status": "true_positive"}])
         ids = _ids(p, "findings_this_question_is_about")
-        self.assertEqual(ids, {"f_old", "f_mid"})
+        # a verdicted finding gets micro details only when the question is about verdicts
+        self.assertEqual(ids, {"f_old"})
         self.assertEqual(p["case_evidence_span"][0], "2024-05-24T17:49:46Z")
         self.assertEqual(p["hosts_excluded_from_analysis_by_operator"], ["DESKTOP-16OJFO6"])
 
@@ -132,3 +133,45 @@ class ReadableForTheAnalyst(unittest.TestCase):
             d = store.get_case("c")
         self.assertEqual([v["status"] for v in d["timeline_validations"]], ["true_positive", "false_positive"])
         self.assertEqual(d["manual_timeline_events"][0]["status"], "known")
+
+
+
+class MicroSelection(unittest.TestCase):
+    """MACRO for the whole case, MICRO (evidence details) only for what the question is about."""
+
+    def _g(self):
+        g = _graph()
+        g.upsert(schema.Entity(id="asset:b", type="asset", label="ALClient04", attrs={"hostname": "ALClient04"}))
+        g.upsert(schema.Entity(id="ev:1", type="event", label="rename",
+                               attrs={"name": "peview.exe", "path": r"C:\Users\srv\peview.exe", "_assets": ["asset:b"]}))
+        g.findings.append(schema.Finding(id="f_pe", title="Renamed binary", severity="medium", confidence="high",
+                                         summary="", entity_ids=["ev:1"], asset_ids=["asset:b"],
+                                         ts="2025-06-01T00:00:00Z"))
+        return g
+
+    def _pick(self, q, ctx="", **k):
+        g = self._g()
+        return {f.id for f in render.question_findings(g.findings, q, graph=g, context_text=ctx, **k)}
+
+    def test_a_host_named_in_the_question(self):
+        self.assertEqual(self._pick("what happened on alclient04?"), {"f_pe"})
+
+    def test_a_file_named_in_the_question(self):
+        self.assertEqual(self._pick("where did peview.exe run"), {"f_pe"})
+
+    def test_a_follow_up_uses_the_previous_exchange(self):
+        self.assertEqual(self._pick("and what was its path?"), set())
+        self.assertEqual(self._pick("and what was its path?", ctx="assistant: peview.exe was renamed"), {"f_pe"})
+
+    def test_verdicts_only_when_asked_about(self):
+        self.assertEqual(self._pick("summarize", also_finding_ids=["f_mid"]), set())
+        self.assertEqual(self._pick("what did I mark true positive?", also_finding_ids=["f_mid"]), {"f_mid"})
+
+    def test_capped_most_severe_first(self):
+        g = self._g()
+        for n in range(30):
+            g.findings.append(schema.Finding(id="x%d" % n, title="t", severity="low" if n else "critical",
+                                             confidence="high", summary="", asset_ids=["asset:b"], ts="2025-01-01"))
+        out = render.question_findings(g.findings, "alclient04", graph=g, limit=15)
+        self.assertEqual(len(out), 15)
+        self.assertEqual(out[0].severity, "critical")

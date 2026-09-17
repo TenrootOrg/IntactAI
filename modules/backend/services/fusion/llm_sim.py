@@ -1614,9 +1614,10 @@ def generate_report(graph, *, window=None, min_severity="informational",
             _analyst = analyst_context(dispositions, validations, manual_events, graph, checklist)
             payload.update(_analyst)
             _, _scoped_r = render.scope(graph, window=window, min_severity=min_severity)
-            _crit = render.critical_details(graph, _scoped_r)
+            # MICRO for the report: critical findings and the ones the analyst confirmed.
+            _crit = render.critical_details(graph, _scoped_r, also_ids=[v.get("finding_id") for v in (validations or []) if v.get("status") == "true_positive"])
             if _crit:
-                payload["critical_finding_details"] = _crit
+                payload["key_finding_details"] = _crit
             payload_str = json.dumps(payload)
             _unmasked_payload = payload_str           # keep for the grounding guard (pre-mask)
             if mask:                                  # anonymize the LLM input too
@@ -1650,7 +1651,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
                            # synthesis cannot mention it, and 40% of the case went
                            # unnarrated on a live run.
                            "outside_phases": render.outside_phases_digest(graph, _outside),
-                           **({"critical_finding_details": _crit} if _crit else {}),
+                           **({"key_finding_details": _crit} if _crit else {}),
                            **_analyst}
                 payload_str = json.dumps(payload)
                 if mask:
@@ -2222,8 +2223,10 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
                 # groups, without ids, and whatever did not fit dropped. Add back what
                 # this question is about, uncollapsed, plus the case's real extent.
                 _, _scoped = render.scope(graph, window=window, min_severity=min_severity)
+                _prev = "\n".join(str(m.get("content") or "")[:2000] for m in (history or [])[-2:])
                 _qf = render.question_findings(
-                    _scoped, question, [v.get("finding_id") for v in (validations or [])])
+                    _scoped, question, [v.get("finding_id") for v in (validations or [])],
+                    graph=graph, context_text=_prev)
                 if _qf:
                     _verdict = {v.get("finding_id"): v.get("status") for v in (validations or [])}
                     payload["findings_this_question_is_about"] = [
@@ -2254,9 +2257,9 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
                         {"title": f.title, "time": f.ts,
                          "hosts": [render._host_label(graph, a) for a in (f.asset_ids or [])]}
                         for f in _missed]
-                _crit = render.critical_details(graph, _scoped)
+                _crit = render.critical_details(graph, _scoped, also_ids=[v.get("finding_id") for v in (validations or []) if v.get("status") == "true_positive"])
                 if _crit:
-                    payload["critical_finding_details"] = _crit
+                    payload["key_finding_details"] = _crit
             else:
                 payload = render.chat_subgraph(graph, question, window=window,
                                                min_severity=min_severity,

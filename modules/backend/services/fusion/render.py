@@ -1329,13 +1329,14 @@ def finding_detail(graph, f, verdict=None, max_details=6) -> dict:
     return out
 
 
-def critical_details(graph, findings, per_finding=2, width=150) -> list:
+def critical_details(graph, findings, per_finding=2, width=150, also_ids=None) -> list:
     """File name, path, user and command for the CRITICAL findings only -- small by
     design (qasw: 9 findings, ~650 chars). Everything below critical stays on demand:
     a question naming a date, host, account or file pulls that finding's full details."""
     out = []
+    also = set(also_ids or [])
     for f in findings:
-        if f.severity != "critical":
+        if f.severity != "critical" and f.id not in also:
             continue
         det = finding_detail(graph, f, max_details=per_finding).get("evidence_details") or []
         det = [{k: (v[:width] if isinstance(v, str) else v) for k, v in x.items()} for x in det]
@@ -1349,19 +1350,74 @@ def _entity_dict(graph, e):
             "flags": e.flags, "hosts": [_host_label(graph, x) for x in _assets_of(e)]}
 
 
-def question_findings(findings, question, also_finding_ids=None) -> list:
-    """Findings a chat question is about that no severity or budget filter may drop:
-    every finding on a date the question names ("2024-05-24", or a month "2024-05"),
-    and every finding in `also_finding_ids` (the analyst's Timeline verdicts).
+_VERDICT_WORDS = _tf_re.compile(r"true.?positive|false.?positive|\bknown\b|validat|verdict|confirm|triag")
+
+
+def _mention_index(graph) -> list:
+    """(lowercase term, entity id) for names an analyst types: hosts, accounts, file
+    and process names, hashes, IPs. Built once per loaded graph."""
+    idx = getattr(graph, "_mention_index", None)
+    if idx is not None:
+        return idx
+    idx = []
+
+    def add(term, eid, min_len):
+        t = str(term or "").strip().lower()
+        if len(t) >= min_len:
+            idx.append((t, eid))
+
+    for e in graph.entities.values():
+        a = e.attrs or {}
+        if e.type == "asset":
+            add(e.label, e.id, 4); add(a.get("hostname"), e.id, 4)
+        elif e.type == "account":
+            add(str(e.label or "").split("\\")[-1], e.id, 4); add(a.get("user"), e.id, 4)
+        elif e.type == "ioc":
+            add(e.label, e.id, 7); add(a.get("md5"), e.id, 12); add(a.get("sha1"), e.id, 12)
+            add(a.get("source_name"), e.id, 5)
+        else:
+            for k in ("name", "original_name", "source_name"):
+                v = str(a.get(k) or "")
+                if "." in v:                         # a file or process name, not a word
+                    add(v, e.id, 5)
+            add(a.get("ev_tgtip"), e.id, 7)
+            if a.get("full_hash"):
+                add(a["full_hash"], e.id, 12)
+    graph._mention_index = idx
+    return idx
+
+
+def question_findings(findings, question, also_finding_ids=None, graph=None,
+                      context_text="", limit=15) -> list:
+    """MICRO: the few findings a chat question is about, sent with their evidence
+    details on top of the MACRO summary of the whole case. Selected by:
+      * a date in the question ("2024-05-24", or a month "2024-05");
+      * a host, account, file/process name, hash or IP named in the question -- or in
+        the previous exchange, so "and what was the path?" still knows what "it" is;
+      * the analyst's verdicts, only when the question is about verdicts.
+    Capped at `limit`, most severe first, so a busy host cannot flood the context.
 
     Live: asked about a medium finding by date, the model got neither it nor the
     date -- the budget had cut it -- and answered that no such event existed."""
     q = (question or "").lower()
+    ctx = (q + "\n" + (context_text or "").lower())
     dates = set(_tf_re.findall(r"\b(\d{4}-\d{2}(?:-\d{2})?)\b", q))
-    also = set(also_finding_ids or [])
-    return [f for f in findings
-            if f.id in also or any(str(t or "").startswith(d) for d in dates
-                                   for t in (f.ts, getattr(f, "occ_latest", None)))]
+    also = set(also_finding_ids or []) if _VERDICT_WORDS.search(q) else set()
+    named = set()
+    if graph is not None:
+        for term, eid in _mention_index(graph):
+            if term in ctx:
+                named.add(eid)
+                h = (graph.entities[eid].attrs or {}).get("full_hash") if eid in graph.entities else None
+                if h:
+                    named.add("ioc:hash:" + h)
+    picked = [f for f in findings
+              if f.id in also
+              or any(str(t or "").startswith(d) for d in dates
+                     for t in (f.ts, getattr(f, "occ_latest", None)))
+              or (named & set(f.asset_ids or [])) or (named & set(f.entity_ids or []))]
+    picked.sort(key=lambda f: (-sev.rank(f.severity), str(f.ts or "")))
+    return picked[:limit]
 
 
 def case_extent(findings) -> dict:
