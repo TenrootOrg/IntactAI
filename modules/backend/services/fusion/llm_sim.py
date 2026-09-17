@@ -1380,9 +1380,27 @@ def _note_progress(run_id):
         pass
 
 
+def analyst_context(dispositions=None, validations=None, manual_events=None) -> dict:
+    """What the analyst has told the case, for every model call that writes about it:
+    triage verdicts (False Positive / Known), Timeline validations, and the events they
+    added by hand ("IT pushed a GPO at 14:05"). The segmented report used to drop all
+    of it -- its phase and synthesis payloads were rebuilt without the triage -- and
+    manual events reached no model at all."""
+    out = {}
+    if dispositions:
+        out["operator_dispositions"] = dispositions
+    if validations:
+        out["analyst_validations"] = validations
+    if manual_events:
+        out["analyst_timeline_events"] = [
+            {k: e.get(k) for k in ("ts", "host", "title", "severity", "status", "notes") if e.get(k)}
+            for e in manual_events]
+    return out
+
+
 def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
                     eff_detail, run_id, max_output_tokens, mask, master_prompt,
-                    log=None, should_continue=None):
+                    log=None, should_continue=None, analyst=None):
     """One LLM call PER PHASE, in parallel, each over that phase's evidence only.
 
     Why not one call for the whole case (what this replaces): the payload was 258K
@@ -1441,6 +1459,8 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
             if len(json.dumps(alt)) < len(json.dumps(p)):
                 p, chosen = alt, eff_detail
         z["_detail"] = chosen          # reported, so a thin section is never ambiguous
+        if analyst:
+            p = {**p, **analyst}
         body = json.dumps(p)
         if mask:
             body = _apply_mask(body, mask)
@@ -1523,7 +1543,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
                     dispositions=None, validations=None, prefer_llm=True,
                     max_entities=None, budget_chars=None, max_output_tokens=None,
                     detail="auto", max_identities=None, grouping="time", log=None,
-                    should_continue=None) -> str:
+                    should_continue=None, manual_events=None) -> str:
     """Case report. Real path = LLM narrative over distilled() + deterministic
     fact tables appended verbatim. `audience` (exec/technical/both) + `language`
     tailor the narrative (reusing the engagement directive); `master_prompt` is the
@@ -1557,10 +1577,8 @@ def generate_report(graph, *, window=None, min_severity="informational",
                                        include_timeframes=True,
                                        altitude_mode=altitude_mode)
             # give the model the analyst's triage so the narrative reflects it
-            if dispositions:
-                payload["operator_dispositions"] = dispositions
-            if validations:
-                payload["analyst_validations"] = validations
+            _analyst = analyst_context(dispositions, validations, manual_events)
+            payload.update(_analyst)
             payload_str = json.dumps(payload)
             _unmasked_payload = payload_str           # keep for the grounding guard (pre-mask)
             if mask:                                  # anonymize the LLM input too
@@ -1579,7 +1597,8 @@ def generate_report(graph, *, window=None, min_severity="informational",
                     graph, _zt, window=window, min_severity=min_severity, me=me, bc=bc,
                     max_identities=max_identities, eff_detail=eff_detail, run_id=run_id,
                     max_output_tokens=max_output_tokens, mask=mask,
-                    master_prompt=master_prompt, log=log, should_continue=should_continue)
+                    master_prompt=master_prompt, log=log, should_continue=should_continue,
+                    analyst=_analyst)
                 _outside = render.outside_phases(graph, _zt, window=window,
                                                  min_severity=min_severity)
                 payload = {"case_totals": payload.get("scope", {}),
@@ -1592,7 +1611,8 @@ def generate_report(graph, *, window=None, min_severity="informational",
                            # High+ activity NO phase covers. Without this the
                            # synthesis cannot mention it, and 40% of the case went
                            # unnarrated on a live run.
-                           "outside_phases": render.outside_phases_digest(graph, _outside)}
+                           "outside_phases": render.outside_phases_digest(graph, _outside),
+                           **_analyst}
                 payload_str = json.dumps(payload)
                 if mask:
                     payload_str = _apply_mask(payload_str, mask)
@@ -2115,7 +2135,7 @@ def _classify_llm_error(exc) -> str:
 def chat(graph, question: str, history=None, *, window=None, min_severity="informational",
          run_id=None, dispositions=None, validations=None, full_context=None,
          max_output_tokens=None, require_llm=False, mask=None, max_identities=None,
-         excluded_hosts=None) -> str:
+         excluded_hosts=None, master_prompt=None, manual_events=None) -> str:
     """Grounded Q&A. Real path narrates the distilled graph; simulated = deterministic
     retrieval. Surfaces operator dispositions (what's been triaged as benign/IT).
     `mask` (optional DataAnonymizer) anonymizes the LLM payload the same way
@@ -2174,10 +2194,8 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
                                                max_entities=budget.CHAT_MAX_ENTITIES,
                                                pin_ids=pin_ids, focus_labels=focus,
                                                also_finding_ids=[v.get("finding_id") for v in (validations or [])])
-            if dispositions:
-                payload["operator_dispositions"] = dispositions   # so the LLM can answer triage Qs
-            if validations:
-                payload["analyst_validations"] = validations      # Timeline real/not-real/known
+            # the analyst's triage, validations and manual events -- same as the report
+            payload.update(analyst_context(dispositions, validations, manual_events))
             if excluded_hosts:
                 # Taken out of the analysis in Configuration: say so rather than
                 # answering that the host does not exist.
@@ -2185,6 +2203,12 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
             turns = "".join(f"{m.get('role')}: {m.get('content')}\n" for m in (history or []))
             user = f"{json.dumps(payload)}\n\n{turns}Q: {question}"
             system = CHAT_SYSTEM_PROMPT
+            if master_prompt:
+                # The case's Steering, as the report applies it: chat answering about
+                # "the backup host noise" the analyst told the report to ignore read
+                # as two different tools.
+                system = ("## OPERATOR CONTEXT (from interactive validation) — treat as "
+                          f"ground truth:\n{master_prompt.strip()}\n\n---\n\n") + system
             if mask:                                  # anonymize the LLM input too
                 _build_mask_mapping(graph, mask)
                 _log_mask_audit(run_id, mask, user)

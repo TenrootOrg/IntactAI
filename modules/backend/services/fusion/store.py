@@ -1916,6 +1916,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                 master_prompt=d.get("master_prompt"), mask=mask,
                 dispositions=d.get("dispositions") or None,
                 validations=d.get("timeline_validations") or None,
+                manual_events=d.get("manual_timeline_events") or None,
                 # First scan narrates with the model whenever one is configured. It
                 # used to be hardcoded False -- "fast, free, deterministic; LLM on
                 # Rescan" -- which meant the report an operator actually READ was the
@@ -2992,6 +2993,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
             master_prompt=d.get("master_prompt"), mask=mask,
             dispositions=d.get("dispositions") or None,
             validations=d.get("timeline_validations") or None,
+            manual_events=d.get("manual_timeline_events") or None,
             prefer_llm=bool(use_llm and not offline), max_entities=llm_ent, budget_chars=llm_chars,
             max_output_tokens=llm_out, detail="explicit", max_identities=llm_ident,
             should_continue=(lambda: _generation_is_current(case_id, gen_id)))
@@ -4006,7 +4008,9 @@ def chat_case(case_id, question) -> str:
                            max_output_tokens=_effective_output_cap(d),
                            require_llm=True,    # no deterministic fallback: surface real errors
                            mask=mask, max_identities=_llm_identity_budget(d),
-                           excluded_hosts=d.get("excluded_hosts") or None)
+                           excluded_hosts=d.get("excluded_hosts") or None,
+                           master_prompt=d.get("master_prompt") or None,
+                           manual_events=d.get("manual_timeline_events") or None)
         log_case_event(case_id, "Chat · reply generated", "success", f"{len(ans or '')} chars")
         # A detected verdict rides ALONG WITH the answer as an offer. Worst case
         # for a misread is one extra sentence the operator ignores — never a
