@@ -1116,7 +1116,14 @@ function pollReportGen(id){
         const changed = (info.fused_at||'')!==(curInfo.fused_at||'')
                      || (info.report_written_at||'')!==(curInfo.report_written_at||'')
                      || !!curInfo.report_generating;     // generation just ended
-        if(changed){ backgroundRefresh(id, 'report updated'); return; }
+        // Toast only if there is something NEW to read. A run whose narrative was
+        // already announced mid-run ("report ready") and that then finished its
+        // checklist used to toast a second time — two messages for one report. A
+        // run that was stopped or written off changed nothing, so it clears quietly
+        // (the Log says why).
+        const newReport = (info.report_written_at||'')!==(curInfo.report_written_at||'')
+                       || (info.fused_at||'')!==(curInfo.fused_at||'');
+        if(changed){ backgroundRefresh(id, newReport ? 'report updated' : null); return; }
         // Nothing changed — so use the tick to check the view is self-consistent.
         // drawTab stamps #tabc with the tab it drew; if that disagrees with the
         // tab bar, the content on screen is not the tab the operator selected and
@@ -1149,13 +1156,17 @@ function pollReportGen(id){
       // remaining run, which is the second half of the job and just as
       // slow. The every-tick redraw is still avoided (see below); this fires on
       // a phase change only.
-      if(info.report_phase && info.report_phase!==_genPhase){
-        const firstSighting = (_genPhase===null);
-        _genPhase = info.report_phase;
-        if(!firstSighting && info.report_phase!=='narrative'
-           && curInfo && curInfo.case_id===id){
-          if(backgroundRefresh(id, 'report ready')) return;
-        }
+      // The narrative is SAVED while the run goes on (the checklist follows). Load it
+      // as soon as the saved report is newer than the one on screen. This used to
+      // key on seeing the phase CHANGE from narrative -> checklist, which a page
+      // that first observed the run already in the checklist phase (a fast model,
+      // or opening the case mid-run) never saw — so the banner said "the report
+      // below is finished and saved" above the PREVIOUS report, for as long as the
+      // checklist took. report_written_at does not depend on what was observed.
+      _genPhase = info.report_phase || _genPhase;
+      if(curInfo && curInfo.case_id===id
+         && (info.report_written_at||'')!==(curInfo.report_written_at||'')){
+        if(backgroundRefresh(id, 'report ready')) return;
       }
     }).catch(()=>{});   // a blip in the poll is not a failure — just try again
   };
