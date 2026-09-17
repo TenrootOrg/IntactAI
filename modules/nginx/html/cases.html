@@ -152,6 +152,7 @@
   .agbanner .agtitle{font-weight:700;color:var(--med);font-size:13px;display:flex;
                       align-items:center;gap:7px}
   .agbanner .agdetail{color:var(--tx);font-size:12px;margin-top:5px}
+  .agnote{color:var(--muted);font-size:12px;margin:0 0 10px;padding:6px 10px;border-left:2px solid var(--med)}
   .agbanner .agaction{color:var(--muted);font-size:11.5px;margin-top:6px;line-height:1.5}
   /* Same block, blue instead of amber — a state to notice, not a warning. Used
      while a report is actively generating in the background. ONE compound
@@ -764,6 +765,7 @@ function renderConfig(info){
     <div class="cfgactions">
       <button id="cf-refusion" onclick="doRefusion('${info.case_id}')" style="background:var(--info);border-color:var(--info);color:#0d1117" title="Saves your configuration first, then re-fuses the deterministic graph (hosts, entities, links, findings, risk &amp; timeline). Fast — no LLM, no tokens.">🔄 Refusion</button>
       <div id="cf-refusion-hint" style="color:var(--med);font-size:12px;margin-top:6px;display:none">Select at least one host to run Refusion.</div>
+      <div id="cf-refusion-pending" style="color:var(--med);font-size:12px;margin-top:6px;display:${info.refusion_needed?'':'none'}">Saved settings are not applied yet. Click Refusion to apply them.</div>
     </div>`;
   loadHosts(info.case_id);
   // Any edit marks the rail dirty, so no background redraw can discard it.
@@ -908,7 +910,18 @@ function maybeAutoRegen(){
 function reportStatusHtml(info){
   if(info && info.report_generating)
     return genStatusHtml(info.report_generating_elapsed_s, info.report_phase, info.report_phase_elapsed_s);
-  return airGapBanner(reportAirGap(window._md||'', info && info.llm_status));
+  return airGapBanner(reportAirGap(window._md||'', info && info.llm_status)) + behindNote(info);
+}
+// What the page on screen does not reflect yet, in one quiet line. Nothing runs by
+// itself: a Refusion or a regeneration is the operator's call (and the latter spends
+// tokens).
+function behindNote(info){
+  if(!info) return '';
+  if(info.refusion_needed)
+    return `<div class="agnote">Some saved settings (time window, severity, hosts or modules) are not applied yet. Go to <b>Configuration</b> and click <b>Refusion</b> to apply them.</div>`;
+  if(info.report_dirty && (window._md||'').trim())
+    return `<div class="agnote">This report is older than your latest changes (triage, Timeline, identities or settings). Click <b>Regenerate report</b> to update it.</div>`;
+  return '';
 }
 function regenButtonHtml(info){
   const id=info.case_id;
@@ -1079,6 +1092,7 @@ function backgroundRefresh(id, why){
 function _quietFuseRefresh(info){
   Object.assign(curInfo, info);                 // keeps the report meta showCase folded in
   const sb=$('#statbar'); if(sb) sb.innerHTML=statSpans(info.counts||{});
+  const pend=$('#cf-refusion-pending'); if(pend) pend.style.display=info.refusion_needed?'':'none';
   // Every tab that shows fused data redraws in place (none of them blanks first).
   // Chat, Log and the Configuration rail do not show it and are left alone.
   if(['report','timeline','risk','identities'].includes(tab) && !operatorIsTyping()) drawTab();
@@ -1140,6 +1154,13 @@ function pollReportGen(id){
         // toast and no full reload. Reloading the whole case here blinked the
         // screen and said "The report has been updated." when it had not been.
         if((info.fused_at||'')!==(curInfo.fused_at||'')){ _quietFuseRefresh(info); return; }
+        // A verdict, identity decision or saved setting changed what is behind,
+        // with no fuse: update the notices in place.
+        if(!!info.report_dirty!==!!curInfo.report_dirty || !!info.refusion_needed!==!!curInfo.refusion_needed){
+          curInfo.report_dirty=info.report_dirty; curInfo.refusion_needed=info.refusion_needed;
+          patchReportStatus(curInfo);
+          const pend=$('#cf-refusion-pending'); if(pend) pend.style.display=info.refusion_needed?'':'none';
+        }
         // Nothing changed — so use the tick to check the view is self-consistent.
         // drawTab stamps #tabc with the tab it drew; if that disagrees with the
         // tab bar, the content on screen is not the tab the operator selected and

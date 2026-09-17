@@ -671,6 +671,39 @@ def get_case(case_id) -> dict:
 _GRAPH_ENGINE_VERSION = 3
 
 
+def _settings_sig(d) -> str:
+    """The Configuration settings a fused graph is built under and that apply only
+    through a Refusion. Stamped on the case by every fuse; when the saved settings no
+    longer match it, the case payload says a Refusion is needed."""
+    tw = d.get("time_window") or {}
+    return _stable_hash({
+        "window": [tw.get("start"), tw.get("end")],
+        "min_severity": d.get("min_severity", "informational"),
+        "modules": sorted(normalize_modules(d.get("fusion_modules"))),
+        "included": sorted(d.get("included_run_ids") or []) if d.get("included_run_ids") is not None else None,
+        "excluded_hosts": sorted({keys.norm_host(h) for h in (d.get("excluded_hosts") or []) if h}),
+    })
+
+
+def refusion_needed(d) -> bool:
+    fused = d.get("fused_settings_sig")
+    return bool(fused) and fused != _settings_sig(d)
+
+
+def _report_behind(case_id) -> None:
+    """The analyst changed something the report is written from (a verdict, a manual
+    event, an identity decision). The report is not regenerated -- that spends
+    tokens -- but the Analysis tab says it is behind. Regenerating clears it."""
+    try:
+        _merge_case_details(case_id, {"report_dirty": True})
+    except Exception:                                   # noqa: BLE001 — a hint, never a failure
+        pass
+
+
+# Report settings: changing one leaves the written report behind (see _report_behind).
+_REPORT_INPUT_KEYS = ("master_prompt", "masking", "report_altitude", "audience", "language")
+
+
 def _graph_filter_signature(d, baseline) -> str:
     """Everything whose change invalidates the STORED graph.
 
@@ -2089,6 +2122,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                                   # automatic fuse may only ADD to it if these
                                   # still match — see _graph_filter_signature.
                                   "graph_filter_sig": _sig_full,
+                                  "fused_settings_sig": _settings_sig(d),
                                   # members the LLM report/chat narrative reflects
                                   # (updated only when the report is rebuilt, not on
                                   # a plain graph re-fuse) — drives the "rescan to
@@ -3284,6 +3318,9 @@ def set_analysis_config(case_id, cfg) -> dict:
     if patch:
         before = get_case(case_id) or {}
         _log_config_changes(case_id, before, patch)
+        if before.get("report_md") and any(k in patch and patch[k] != before.get(k)
+                                           for k in _REPORT_INPUT_KEYS):
+            patch["report_dirty"] = True
         try:
             _merge_case_details(case_id, patch)
             log_case_event(case_id, "Configuration saved", "success",
@@ -3378,8 +3415,8 @@ def _refuse_after_identity(case_id) -> None:
     immediately" -- but the Identities tab reads the decisions directly and nothing
     else shown reads the identity edges, so each click waited for a Refusion that
     changed nothing visible. The edges are still applied on the next Refusion
-    (_apply_identity_links runs on every fuse)."""
-    return None
+    (_apply_identity_links runs on every fuse). The report is marked behind instead."""
+    _report_behind(case_id)
 
 
 def decide_identity_group(case_id, members, decision) -> dict:
@@ -3428,6 +3465,7 @@ def split_account(case_id, account_id) -> dict:
         return kept
 
     _mutate_list_field(case_id, "identity_links", _mutate)
+    _report_behind(case_id)
     log_case_event(case_id, "Identity · account switched off", "info", f"{account_id} is not this person")
     # No re-fuse: a switched-off account is an Identities-tab view only (the fuse never
     # reads splits). Re-fusing made every click wait for a whole Refusion.
@@ -3704,6 +3742,7 @@ def validate_timeline(case_id, finding_id, status, notes="") -> dict:
     Manual events (finding_id 'manual:…') carry their own status on the event
     record — they have no graph finding to suppress."""
     status = status if status in _TL_STATES else "pending"
+    _report_behind(case_id)
     log_case_event(case_id, "Timeline · validation", "info",
                    f"{finding_id} marked {status}" + (f" — {notes}" if notes else ""))
 
@@ -3761,6 +3800,7 @@ def add_manual_timeline_event(case_id, event) -> dict:
            "notes": (event.get("notes") or event.get("description") or "").strip(),
            "created_at": _now_iso()}
     _mutate_list_field(case_id, "manual_timeline_events", lambda evs: list(evs) + [row])
+    _report_behind(case_id)
     log_case_event(case_id, "Timeline · manual event added", "info",
                    f"{row['title']} @ {row['ts'] or 'no ts'} on {row['host']}")
     return row
@@ -3770,6 +3810,7 @@ def delete_manual_timeline_event(case_id, event_id) -> dict:
     _mutate_list_field(case_id, "manual_timeline_events",
                        lambda evs: [e for e in evs if e.get("finding_id") != event_id])
     log_case_event(case_id, "Timeline · manual event deleted", "info", event_id)
+    _report_behind(case_id)
     return {"event_id": event_id, "deleted": True}
 
 

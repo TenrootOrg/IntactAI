@@ -450,6 +450,9 @@ def get_case(case_id):
                     # report_dirty: triage/disposition re-fuses changed the data but left
                     # the report frozen — so the report may not reflect recent changes.
                     "report_dirty": bool(d.get("report_dirty")),
+                    # Saved settings (window, severity, hosts, modules) the fused data
+                    # was not built under: they apply at the next Refusion.
+                    "refusion_needed": store.refusion_needed(d),
                     # Which AI settings wrote the current report, and when. The
                     # Analysis tab compares it with the settings now (llm_status's
                     # config_id) to decide whether a template is worth one
