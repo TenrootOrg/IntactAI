@@ -108,6 +108,13 @@ async function waitFor(fn, ms = 30000) {
       if (id === cid && info) seen.push(info.fused_at);
       return realShowCase(id, info, rep);
     };
+    // A fuse that changed only the fused data (no new report) updates in place
+    // through _quietFuseRefresh instead of reloading the case: watch both.
+    const realQuiet = win._quietFuseRefresh;
+    win._quietFuseRefresh = (info) => {
+      if (info && info.case_id === cid) seen.push(info.fused_at);
+      return realQuiet(info);
+    };
     const onScreen = () => seen.length ? seen[seen.length - 1] : undefined;
 
     await sleep(2500);

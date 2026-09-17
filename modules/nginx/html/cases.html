@@ -553,7 +553,7 @@ function render(info,md,g){
         <div><h1 style="margin:0;font-size:19px">${esc(info.name||info.case_id)}</h1>
           <div id="case-since" style="color:var(--muted);font-size:12px">${tw.start?('since '+esc(tw.start)):'no start date'}</div></div>
       </div>
-      <div style="margin:6px 0 14px">${statSpans(g)}</div>
+      <div id="statbar" style="margin:6px 0 14px">${statSpans(g)}</div>
       <div class="tabs">
         <!-- Tab ORDER is the investigative order, not the order these were built.
              Analysis + Chat lead: the narrative and the way you interrogate it.
@@ -671,7 +671,9 @@ function _riskWhy(r){
 }
 
 function renderRisk(info){
-  $('#tabc').innerHTML='<div class="md">loading risk…</div>';
+  // A refresh of the table already on screen keeps it until the new rows arrive.
+  if(!($('#tabc') && $('#tabc').dataset.tab==='risk' && /<table/i.test($('#tabc').innerHTML)))
+    $('#tabc').innerHTML='<div class="md">loading risk…</div>';
   api('/api/cases/'+info.case_id+'/risk').then(d=>{
     if(!tabIsStill('risk'))return;
     const rows=d.rows||[];
@@ -1074,6 +1076,13 @@ function backgroundRefresh(id, why){
   return true;
 }
 
+function _quietFuseRefresh(info){
+  Object.assign(curInfo, info);                 // keeps the report meta showCase folded in
+  const sb=$('#statbar'); if(sb) sb.innerHTML=statSpans(info.counts||{});
+  // Every tab that shows fused data redraws in place (none of them blanks first).
+  // Chat, Log and the Configuration rail do not show it and are left alone.
+  if(['report','timeline','risk','identities'].includes(tab) && !operatorIsTyping()) drawTab();
+}
 function stopReportGenPoll(){
   if(_genPoll){ clearInterval(_genPoll); _genPoll=null; _genPollCase=null; }
   _genPhase=null;
@@ -1120,17 +1129,17 @@ function pollReportGen(id){
         // Not looking at this case any more: a background fuse finishing must
         // not yank the operator off whatever they switched to.
         if(!(curInfo && curInfo.case_id===id)) return;
-        const changed = (info.fused_at||'')!==(curInfo.fused_at||'')
-                     || (info.report_written_at||'')!==(curInfo.report_written_at||'')
-                     || !!curInfo.report_generating;     // generation just ended
-        // Toast only if there is something NEW to read. A run whose narrative was
-        // already announced mid-run ("report ready") and that then finished its
-        // checklist used to toast a second time — two messages for one report. A
-        // run that was stopped or written off changed nothing, so it clears quietly
-        // (the Log says why).
-        const newReport = (info.report_written_at||'')!==(curInfo.report_written_at||'')
-                       || (info.fused_at||'')!==(curInfo.fused_at||'');
-        if(changed){ backgroundRefresh(id, newReport ? 'The report has been updated.' : null); return; }
+        const reportWritten = (info.report_written_at||'')!==(curInfo.report_written_at||'');
+        // A new report, or a generation that just ended: reload the case (toast
+        // only when there is a new report to read). A run that was stopped or
+        // written off changed nothing, so it clears quietly (the Log says why).
+        if(reportWritten || curInfo.report_generating){
+          backgroundRefresh(id, reportWritten ? 'The report has been updated.' : null); return;
+        }
+        // Only the FUSED data changed (a triage re-fuse, new data landing): no
+        // toast and no full reload. Reloading the whole case here blinked the
+        // screen and said "The report has been updated." when it had not been.
+        if((info.fused_at||'')!==(curInfo.fused_at||'')){ _quietFuseRefresh(info); return; }
         // Nothing changed — so use the tick to check the view is self-consistent.
         // drawTab stamps #tabc with the tab it drew; if that disagrees with the
         // tab bar, the content on screen is not the tab the operator selected and
@@ -1388,8 +1397,10 @@ function _tlTitle(r){
 }
 
 function renderTimeline(id){
+  // Reloading the case already on screen keeps the rows until the new ones arrive.
+  const reload = window._tlCase===id && window._tlData && $('#tlrows');
   window._tlCase=id;
-  $('#tabc').innerHTML='<i style="color:var(--muted)">loading timeline…</i>';
+  if(!reload) $('#tabc').innerHTML='<i style="color:var(--muted)">loading timeline…</i>';
   api('/api/cases/'+id+'/timeline').then(d=>{ if(!tabIsStill('timeline'))return;
     window._tlData=d.timeline||[];tlBuild();});
 }

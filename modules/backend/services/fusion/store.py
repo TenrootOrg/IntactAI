@@ -520,6 +520,11 @@ def clear_disposition(case_id, target) -> dict:
     finding marked not-real / known-IT comes back to its real severity. The
     counterpart to set_disposition — makes validation reversible."""
     ws = _ws()
+    # Nothing to clear (True Positive / Pending on a finding never marked benign):
+    # no write, no re-fuse. Re-fusing anyway cost ~30 s per click and reloaded the
+    # operator's page when it finished, for a graph identical to the one before.
+    if not any(x.get("target") == target for x in ((get_case(case_id) or {}).get("dispositions") or [])):
+        return {"target": target, "cleared": False}
 
     def _mutate(details):
         details["dispositions"] = [x for x in (details.get("dispositions") or [])
