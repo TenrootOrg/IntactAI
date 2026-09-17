@@ -16,6 +16,9 @@ for _p in (os.path.dirname(os.path.abspath(__file__)),
 
 import _optional_deps  # noqa: F401,E402
 from services.fusion import render, schema  # noqa: E402
+# Bound at import: test_autofuse installs a fake llm_sim in sys.modules and never
+# removes it, so a lookup at test time can get the fake.
+from services.fusion import llm_sim as _LLM_SIM  # noqa: E402
 
 
 def _graph():
@@ -53,6 +56,30 @@ class ChatContext(unittest.TestCase):
         p = render.chat_subgraph(_graph(), "hello")
         self.assertEqual(p["case_evidence_span"][0], "2024-05-24T17:49:46Z")
         self.assertEqual(p["case_findings_total"], 3)
+
+
+class FullContextChat(unittest.TestCase):
+    """The case setting "send the full case to chat" sends the report's budgeted
+    summary, which collapses findings and drops what does not fit."""
+
+    def _payload(self, question, validations=None):
+        import json
+        from unittest import mock
+        llm_sim = _LLM_SIM
+        seen = {}
+        with mock.patch.object(llm_sim, "_real_llm", lambda s, u, **k: seen.setdefault("u", u) or "ok"), \
+             mock.patch.object(llm_sim, "_use_real", lambda: True):
+            llm_sim.chat(_graph(), question, full_context=True, require_llm=True,
+                         validations=validations, excluded_hosts=["DESKTOP-16OJFO6"])
+        return json.loads(seen["u"].split("\n\n")[0])
+
+    def test_the_question_findings_and_extent_are_added(self):
+        p = self._payload("any malicious binary on 2024-05-24?",
+                          validations=[{"finding_id": "f_mid", "status": "real"}])
+        ids = {f["id"] for f in p["findings_this_question_is_about"]}
+        self.assertEqual(ids, {"f_old", "f_mid"})
+        self.assertEqual(p["case_evidence_span"][0], "2024-05-24T17:49:46Z")
+        self.assertEqual(p["hosts_excluded_from_analysis_by_operator"], ["DESKTOP-16OJFO6"])
 
 
 if __name__ == "__main__":

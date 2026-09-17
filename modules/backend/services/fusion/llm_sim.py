@@ -2159,6 +2159,15 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
                                            max_entities=budget.REPORT_MAX_ENTITIES,
                                            budget_chars=budget.REPORT_BUDGET_CHARS,
                                            max_identities=max_identities)
+                # "Full" is the report's budgeted summary: findings collapsed into
+                # groups, without ids, and whatever did not fit dropped. Add back what
+                # this question is about, uncollapsed, plus the case's real extent.
+                _, _scoped = render.scope(graph, window=window, min_severity=min_severity)
+                _qf = render.question_findings(
+                    _scoped, question, [v.get("finding_id") for v in (validations or [])])
+                if _qf:
+                    payload["findings_this_question_is_about"] = [render._finding_dict(graph, f) for f in _qf]
+                payload.update(render.case_extent(_scoped))
             else:
                 payload = render.chat_subgraph(graph, question, window=window,
                                                min_severity=min_severity,
