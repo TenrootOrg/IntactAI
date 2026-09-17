@@ -1273,6 +1273,9 @@ def _refetch_agentic_rows(rid, det, log=None):
     if not flows:
         return None
     cid = det.get("client_id")
+    from services.vql_safety import is_valid_client_id
+    if cid and not is_valid_client_id(cid):
+        return None               # not a real client (e.g. "server"): keep the snapshot
     try:
         from services.agentic.collectors import get_existing_collection_results
         merged = {}
@@ -1310,7 +1313,12 @@ def _contribution_for_run(run, log=None, refetch=False):
         # "agentic" -> "velociraptor" (the data is just imported Velociraptor
         # artifacts) so the report doesn't read as if an agent had run.
         if atype in ("velociraptor_collection", "velociraptor_upload"):
-            rows = _refetch_agentic_rows(rid, det, log=log) if refetch else None
+            # Only a LIVE collection can have gained rows since its snapshot. An
+            # upload is a file imported once; re-reading it asked Velociraptor for
+            # client "server" (the import's placeholder), which the id check rejects
+            # and logged as a red error on the upload at every Refusion.
+            rows = (_refetch_agentic_rows(rid, det, log=log)
+                    if refetch and atype == "velociraptor_collection" else None)
             if rows is None:
                 rows = _agentic_collected_data(rid, det, log=log)
             ents, rels = map_agentic(_filter_supported(rows), run_id=rid,
