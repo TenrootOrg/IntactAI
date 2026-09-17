@@ -2647,18 +2647,18 @@ def _report_watchdog(case_id, model_label, stop, *, gen_id=None, write_off=True)
             silent = seconds_since(since) if since else None
             if silent is None:
                 continue
-            mins = max(1, round(silent / 60))
+            _d = lambda sec: f"{int(sec)}s" if sec < 90 else f"{round(sec / 60)} min"
             if write_off and silent >= stuck:
                 _retire_generation(
                     case_id, "Report · written off as stuck",
-                    f"no answer from {model_label} for {mins} min — stopped waiting. Its "
+                    f"no answer from {model_label} for {_d(silent)} — stopped waiting. Its "
                     f"result will be discarded if it ever arrives. The previous report is "
                     f"unchanged. Check Settings ▸ Agentic, or press Regenerate to try again.",
                     gen_id=gen_id)
                 return
             log_case_event(case_id, "Report · still waiting on the model", "info",
-                           f"{model_label} has not answered for {mins} min"
-                           + (f" — written off at {round(stuck / 60)} min without an answer"
+                           f"{model_label} has not answered for {_d(silent)}"
+                           + (f" — written off at {_d(stuck)} without an answer"
                               if write_off else ""))
         except Exception:                              # noqa: BLE001 — never kill the run
             continue
@@ -2887,7 +2887,8 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None) -> 
             dispositions=d.get("dispositions") or None,
             validations=d.get("timeline_validations") or None,
             prefer_llm=use_llm, max_entities=llm_ent, budget_chars=llm_chars,
-            max_output_tokens=llm_out, detail="explicit", max_identities=llm_ident)
+            max_output_tokens=llm_out, detail="explicit", max_identities=llm_ident,
+            should_continue=(lambda: _generation_is_current(case_id, gen_id)))
         if will_narrate:
             # generate_report swallows a failed call and returns the TEMPLATE
             # report, ending in a note that says why. Read that back instead of
@@ -2901,8 +2902,9 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None) -> 
                 # — with nothing saying which run each line belonged to.
                 log_case_event(case_id, "Report · late result discarded", "info",
                                f"the stopped run on {_model_label(model)} ({provider}) "
-                               + ("answered" if narrated else f"failed — {why}")
-                               + " after it was stopped; nothing was saved")
+                               + ("answered after it was stopped. Nothing was saved."
+                                  if narrated else
+                                  f"failed after it was stopped. Nothing was saved. It said: {why}"))
                 return {"report_md": d.get("report_md"), "audience": d.get("audience", "both"),
                         "discarded": True}
             if narrated:
@@ -2914,9 +2916,12 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None) -> 
                 _no_route = llm_sim.provider_unreachable(why)
     except Exception as e:
         if not _generation_is_current(case_id, gen_id):
+            stopped_early = isinstance(e, llm_sim.GenerationStopped)
             log_case_event(case_id, "Report · late result discarded", "info",
-                           f"the stopped run on {_model_label(model)} ({provider}) failed after "
-                           f"it was stopped ({type(e).__name__}); nothing was saved")
+                           f"the stopped run on {_model_label(model)} ({provider}) "
+                           + ("made no further model calls after it was stopped. Nothing was saved."
+                              if stopped_early else
+                              f"failed after it was stopped ({type(e).__name__}). Nothing was saved."))
             return {"report_md": d.get("report_md"), "audience": d.get("audience", "both"),
                     "discarded": True}
         log_case_event(case_id, "Report generation", "error", f"LLM/render failed: {e}")
@@ -2963,7 +2968,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None) -> 
         # whatever the operator has asked for since.
         log_case_event(case_id, "Report · late result discarded", "info",
                        f"the stopped run on {_model_label(model)} ({provider}) finished "
-                       f"after it was stopped; nothing was saved")
+                       f"after it was stopped. Nothing was saved.")
         return {"report_md": d.get("report_md"), "audience": d.get("audience", "both"),
                 "discarded": True}
     try:

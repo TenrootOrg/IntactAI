@@ -893,28 +893,45 @@ function maybeAutoRegen(){
   toast('AI model connected — regenerating this report…');
   regenReport(info.case_id);
 }
+// THE STATUS AREA IS ONE SLOT. It holds exactly one of: the "generating" banner,
+// or the template/air-gap banner, or nothing — never two. It used to be two
+// siblings drawn at different times: the template banner at tab-draw time and a
+// #genstatus the poll patched later. When a run started without a full redraw
+// (another tab started it, the operator was typing, the page script predated a
+// fix) the poll filled #genstatus and left the template banner standing, so the
+// operator saw "Template report — the AI model did not answer" directly above
+// "Sending case data to the model", with Regenerate still enabled. Now every tick
+// REPLACES the whole slot, and the button slot with it, from the same `info`.
+function reportStatusHtml(info){
+  if(info && info.report_generating)
+    return genStatusHtml(info.report_generating_elapsed_s, info.report_phase, info.report_phase_elapsed_s);
+  return airGapBanner(reportAirGap(window._md||'', info && info.llm_status));
+}
+function regenButtonHtml(info){
+  const id=info.case_id;
+  return info.report_generating
+    ? `<button class="dlbtn" disabled title="A report is already being generated">⏳ Generating…</button>`
+    : `<button class="dlbtn" onclick="regenReport('${id}')" title="Rebuild the report from the current case state (applies your Timeline confirmations). Generated automatically on first scan; after that only when you click here.">↻ Regenerate report</button>`;
+}
+// Overwrite both slots from `info`. Cheap (two small blocks), so it runs on every
+// poll tick rather than only on transitions that might be missed.
+function patchReportStatus(info){
+  if(tab!=='report') return;
+  const st=$('#reportstatus'), bt=$('#regenslot');
+  if(st) st.innerHTML=reportStatusHtml(info);
+  if(bt) bt.innerHTML=regenButtonHtml(info);
+}
 function renderReport(info){
   const id=info.case_id;
   const dl=(p,l)=>`<a class="dlbtn" href="/api/cases/${id}${p}" target="_blank">${l}</a>`;
   const md=window._md||'';
-  const generating=!!info.report_generating;
-  // While a generation is in flight, that IS the story for this tab — showing
-  // the Air-Gap banner alongside it would read as "no model reachable" right
-  // next to "sending data to the model", which is actively confusing. It
-  // reappears on its own once generation ends, correctly, from whatever the
-  // result actually was.
-  const ag=generating ? {airgap:false} : reportAirGap(md, info.llm_status);
-  // The loudest thing on the tab, and the FIRST thing rendered: an operator
-  // reading a report with no narrative needs to know before they start reading
-  // it, not stumble on a footnote after they finish. Framed as the automatic
-  // default it is — there is no per-case switch to flip; a model + API key in
-  // Settings ▸ Agentic is what turns narration on.
-  const banner = airGapBanner(ag);
+  // The report's status area and the Regenerate button are each ONE slot,
+  // rendered by one function from one `info` — see reportStatusHtml.
   // The report's own tail already told the story above; showing it again as a
   // raw markdown footnote would just repeat it in a smaller, unstyled font.
   const mdBody = md.replace(/\n\n---\n_(?:Deterministic report — [\s\S]*?|Narrative by live LLM[\s\S]*?)_\n\s*$/, '');
-  $('#tabc').innerHTML=`${banner}<div id="genstatus">${generating?genStatusHtml(info.report_generating_elapsed_s, info.report_phase, info.report_phase_elapsed_s):''}</div><div class="row" style="gap:8px;margin-bottom:10px;align-items:center">
-    <button class="dlbtn" ${generating?'disabled title="A report is already being generated"':`onclick="regenReport('${id}')" title="Rebuild the report from the current case state (applies your Timeline confirmations). Generated automatically on first scan; after that only when you click here."`}>${generating?'⏳ Generating…':'↻ Regenerate report'}</button>
+  $('#tabc').innerHTML=`<div id="reportstatus">${reportStatusHtml(info)}</div><div class="row" style="gap:8px;margin-bottom:10px;align-items:center">
+    <span id="regenslot">${regenButtonHtml(info)}</span>
     ${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}
     <span style="color:var(--muted);font-size:11px;margin-left:auto">auto-generated on first scan · regenerate to apply Timeline changes</span>
   </div><div id="zoomcards"></div><div class="md">${mdToHtml(mdBody)}</div>`;
@@ -1109,16 +1126,18 @@ function pollReportGen(id){
         if(_box && _box.dataset.tab && _box.dataset.tab!==tab && !operatorIsTyping()) drawTab();
         return;
       }
-      // The moment a generation STARTS, redraw the tab once. Patching only
-      // #genstatus (below) is right for every later tick — but on the transition
-      // it left the rest of the tab as it was drawn before: "Template report —
-      // the AI model did not answer" still up beside "Sending case data to the
-      // model", and Regenerate still enabled. Reported as "it only updates when I
-      // refresh". backgroundRefresh holds off while the operator is typing.
-      if(curInfo && curInfo.case_id===id && !curInfo.report_generating){
-        if(backgroundRefresh(id)) return;
+      // A generation is running. Update what the tab believes and OVERWRITE the
+      // status slot and the button slot from it — on every tick, including the
+      // very first, so a run that started elsewhere can never leave the template
+      // banner standing next to this one or the Regenerate button enabled.
+      if(curInfo && curInfo.case_id===id){
+        curInfo.report_generating=true;
+        curInfo.report_generating_elapsed_s=info.report_generating_elapsed_s;
+        curInfo.report_phase=info.report_phase;
+        curInfo.report_phase_elapsed_s=info.report_phase_elapsed_s;
+        patchReportStatus(info);
       }
-      // Patch ONLY the status banner, never the whole tab. drawTab() rebuilds
+      // Never redraw the whole tab on a tick. drawTab() rebuilds
       // the entire #tabc — including the full markdown report body, which can
       // be 100K+ characters — from scratch. Doing that every 5 seconds while
       // the operator might be reading, scrolling or selecting text in THAT
@@ -1137,14 +1156,6 @@ function pollReportGen(id){
            && curInfo && curInfo.case_id===id){
           if(backgroundRefresh(id, 'report ready')) return;
         }
-      }
-      if(curInfo && curInfo.case_id===id){
-        curInfo.report_generating=true;
-        curInfo.report_phase=info.report_phase;
-        curInfo.report_phase_started_at=info.report_phase_started_at;
-        curInfo.report_generating_started_at=info.report_generating_started_at;
-        const gs=$('#genstatus');
-        if(tab==='report' && gs) gs.outerHTML=`<div id="genstatus">${genStatusHtml(info.report_generating_elapsed_s, info.report_phase, info.report_phase_elapsed_s)}</div>`;
       }
     }).catch(()=>{});   // a blip in the poll is not a failure — just try again
   };

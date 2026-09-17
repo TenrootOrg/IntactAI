@@ -1254,6 +1254,11 @@ SYNTHESIS_SYSTEM_PROMPT = (
 )
 
 
+class GenerationStopped(Exception):
+    """The generation this call belongs to was stopped (AI settings changed, or it
+    was written off as stuck). Raised BEFORE the next model call, never after one."""
+
+
 def _case_event(run_id, action, status, detail):
     """Write to the case activity log from inside the model layer. Best effort."""
     if not (isinstance(run_id, str) and run_id.startswith("case_")):
@@ -1280,7 +1285,7 @@ def _note_progress(run_id):
 
 def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
                     eff_detail, run_id, max_output_tokens, mask, master_prompt,
-                    log=None):
+                    log=None, should_continue=None):
     """One LLM call PER PHASE, in parallel, each over that phase's evidence only.
 
     Why not one call for the whole case (what this replaces): the payload was 258K
@@ -1351,6 +1356,12 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
         # A phase answer is short by construction, so cap it low: the budget is
         # shared with the model's own reasoning, and an unbounded cap is what let a
         # reasoning model spend everything thinking and return an empty string.
+        # A STOPPED run makes no further calls. Each call reads the AI settings at
+        # the moment it is made, so a run stopped because the settings changed was
+        # otherwise free to carry on against the NEW provider — measured: a retired
+        # run's synthesis went to the operator's real subscription.
+        if should_continue and not should_continue():
+            raise GenerationStopped()
         _w = z.get("window") or {}
         _case_event(run_id, f"Report · phase {z['n']} of {_total} — sending", "info",
                     f"{_w.get('start') or '?'} → {_w.get('end') or '?'} · "
@@ -1387,13 +1398,17 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
                     name = m.group(1).strip().strip("*").strip()
                     text = text[:m.start()] + text[m.end():]
                 results[z["n"]] = {"name": name, "body": text.strip()}
-                _case_event(run_id, f"Report · phase {z['n']} of {_total} — answered", "success",
-                            f"{z.get('_seconds', '?')}s · {len(text):,} chars")
+                if not should_continue or should_continue():   # a stopped run's lines are not this run's
+                    _case_event(run_id, f"Report · phase {z['n']} of {_total} — answered", "success",
+                                f"{z.get('_seconds', '?')}s · {len(text):,} chars")
             except Exception as e:                       # noqa: BLE001
                 results[z["n"]] = {"error": f"{type(e).__name__}: {e}"[:200]}
-                _r, _f = _llm_reason_text(_classify_llm_error(e))
-                _case_event(run_id, f"Report · phase {z['n']} of {_total} — failed", "warning",
-                            f"{_r}{provider_retry_hint(e)} The other phases are unaffected.")
+                if isinstance(e, GenerationStopped):
+                    continue
+                if not should_continue or should_continue():
+                    _r, _f = _llm_reason_text(_classify_llm_error(e))
+                    _case_event(run_id, f"Report · phase {z['n']} of {_total} — failed", "warning",
+                                f"{_r}{provider_retry_hint(e)} The other phases are unaffected.")
                 if log:
                     log(f"phase {z['n']} failed: {type(e).__name__}")
             _note_progress(run_id)
@@ -1406,7 +1421,8 @@ def generate_report(graph, *, window=None, min_severity="informational",
                     altitude_mode="auto",
                     dispositions=None, validations=None, prefer_llm=True,
                     max_entities=None, budget_chars=None, max_output_tokens=None,
-                    detail="auto", max_identities=None, grouping="time", log=None) -> str:
+                    detail="auto", max_identities=None, grouping="time", log=None,
+                    should_continue=None) -> str:
     """Case report. Real path = LLM narrative over distilled() + deterministic
     fact tables appended verbatim. `audience` (exec/technical/both) + `language`
     tailor the narrative (reusing the engagement directive); `master_prompt` is the
@@ -1462,7 +1478,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
                     graph, _zt, window=window, min_severity=min_severity, me=me, bc=bc,
                     max_identities=max_identities, eff_detail=eff_detail, run_id=run_id,
                     max_output_tokens=max_output_tokens, mask=mask,
-                    master_prompt=master_prompt, log=log)
+                    master_prompt=master_prompt, log=log, should_continue=should_continue)
                 _outside = render.outside_phases(graph, _zt, window=window,
                                                  min_severity=min_severity)
                 payload = {"case_totals": payload.get("scope", {}),
@@ -1493,6 +1509,8 @@ def generate_report(graph, *, window=None, min_severity="informational",
                           f"{master_prompt.strip()}\n\n---\n\n") + system
             if mask:                              # teach the model the identity-number key
                 system = _MASK_IDENTITY_LEGEND + system
+            if should_continue and not should_continue():
+                raise GenerationStopped()
             if altitude == "macro":
                 _case_event(run_id, "Report · synthesis — sending", "info",
                             "combining the phase analyses into the report")
@@ -1614,6 +1632,8 @@ def generate_report(graph, *, window=None, min_severity="informational",
                   "\n\n---\n_Narrative by live LLM; fact tables deterministic._\n")
             return md
         except Exception as e:  # noqa: BLE001 — never let LLM failure break a case
+            if isinstance(e, GenerationStopped):
+                raise                 # not a model failure: the caller stopped wanting this run
             md = render.report(graph, window=window, min_severity=min_severity,
                                initial_access=initial_access, case_name=case_name,
                                dispositions=dispositions, validations=validations,
