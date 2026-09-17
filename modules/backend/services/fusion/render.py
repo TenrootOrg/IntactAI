@@ -1327,6 +1327,21 @@ def finding_detail(graph, f, verdict=None, max_details=6) -> dict:
     return out
 
 
+def critical_details(graph, findings, per_finding=2, width=150) -> list:
+    """File name, path, user and command for the CRITICAL findings only -- small by
+    design (qasw: 9 findings, ~650 chars). Everything below critical stays on demand:
+    a question naming a date, host, account or file pulls that finding's full details."""
+    out = []
+    for f in findings:
+        if f.severity != "critical":
+            continue
+        det = finding_detail(graph, f, max_details=per_finding).get("evidence_details") or []
+        det = [{k: (v[:width] if isinstance(v, str) else v) for k, v in x.items()} for x in det]
+        if det:
+            out.append({"finding": f.title, "time": f.ts, "evidence_details": det})
+    return out
+
+
 def _entity_dict(graph, e):
     return {"type": e.type, "label": e.label, "severity": e.severity, "anomaly": e.anomaly,
             "flags": e.flags, "hosts": [_host_label(graph, x) for x in _assets_of(e)]}

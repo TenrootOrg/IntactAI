@@ -78,3 +78,32 @@ class AnalystContext(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConservativeAdditions(unittest.TestCase):
+    """Small, fixed additions only: answered checklist items, critical findings'
+    evidence details, and high findings the chat summary dropped (one line each)."""
+
+    def test_only_answered_checklist_items_are_sent(self):
+        ctx = _LLM.analyst_context(checklist=[
+            {"question": "Is X expected?", "status": "declined"},
+            {"question": "Is Y expected?", "status": "accepted"},
+            {"question": "Is Z expected?", "status": "pending"}])
+        answers = {c["question"]: c["answer"] for c in ctx["customer_confirmations"]}
+        self.assertEqual(answers, {"Is X expected?": "no, not expected",
+                                   "Is Y expected?": "yes, expected / authorised"})
+
+    def test_nothing_answered_adds_nothing(self):
+        self.assertNotIn("customer_confirmations",
+                         _LLM.analyst_context(checklist=[{"question": "q", "status": "pending"}]))
+
+    def test_critical_details_are_limited_to_critical_findings(self):
+        g = _graph()
+        g.upsert(schema.Entity(id="proc:1", type="process", label="mimikatz.exe",
+                               attrs={"cmdline": "mimikatz.exe sekurlsa::logonpasswords " + "x" * 400,
+                                      "_assets": ["asset:H0"]}))
+        for f in g.findings:
+            f.entity_ids = ["proc:1"]
+        out = render.critical_details(g, g.findings)
+        self.assertEqual({f.severity for f in g.findings if f.title in {o["finding"] for o in out}}, {"critical"})
+        self.assertTrue(all(len(d["cmdline"]) <= 150 for o in out for d in o["evidence_details"]))

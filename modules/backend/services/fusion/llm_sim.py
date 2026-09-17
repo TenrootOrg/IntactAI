@@ -1385,7 +1385,8 @@ def _note_progress(run_id):
         pass
 
 
-def analyst_context(dispositions=None, validations=None, manual_events=None, graph=None) -> dict:
+def analyst_context(dispositions=None, validations=None, manual_events=None, graph=None,
+                    checklist=None) -> dict:
     """What the analyst has told the case, for every model call that writes about it:
     triage verdicts (False Positive / Known), Timeline validations, and the events they
     added by hand ("IT pushed a GPO at 14:05"). The segmented report used to drop all
@@ -1415,6 +1416,15 @@ def analyst_context(dispositions=None, validations=None, manual_events=None, gra
             {**_about(x.get("target")), "verdict": x.get("verdict"),
              **{k: x[k] for k in ("attribution", "reason", "scope") if x.get(k)}}
             for x in dispositions]
+    # Only items the customer has ANSWERED. A declined "is this expected?" is recorded
+    # nowhere else (an accepted one also becomes a benign disposition).
+    answered = [x for x in (checklist or []) if x.get("status") in ("accepted", "declined")]
+    if answered:
+        out["customer_confirmations"] = [
+            {"question": x.get("question"),
+             "answer": ("yes, expected / authorised" if x["status"] == "accepted"
+                        else "no, not expected")}
+            for x in answered]
     if manual_events:
         out["analyst_timeline_events"] = [
             {k: e.get(k) for k in ("ts", "host", "title", "severity", "status", "notes") if e.get(k)}
@@ -1567,7 +1577,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
                     dispositions=None, validations=None, prefer_llm=True,
                     max_entities=None, budget_chars=None, max_output_tokens=None,
                     detail="auto", max_identities=None, grouping="time", log=None,
-                    should_continue=None, manual_events=None) -> str:
+                    should_continue=None, manual_events=None, checklist=None) -> str:
     """Case report. Real path = LLM narrative over distilled() + deterministic
     fact tables appended verbatim. `audience` (exec/technical/both) + `language`
     tailor the narrative (reusing the engagement directive); `master_prompt` is the
@@ -1601,8 +1611,12 @@ def generate_report(graph, *, window=None, min_severity="informational",
                                        include_timeframes=True,
                                        altitude_mode=altitude_mode)
             # give the model the analyst's triage so the narrative reflects it
-            _analyst = analyst_context(dispositions, validations, manual_events, graph)
+            _analyst = analyst_context(dispositions, validations, manual_events, graph, checklist)
             payload.update(_analyst)
+            _, _scoped_r = render.scope(graph, window=window, min_severity=min_severity)
+            _crit = render.critical_details(graph, _scoped_r)
+            if _crit:
+                payload["critical_finding_details"] = _crit
             payload_str = json.dumps(payload)
             _unmasked_payload = payload_str           # keep for the grounding guard (pre-mask)
             if mask:                                  # anonymize the LLM input too
@@ -1636,6 +1650,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
                            # synthesis cannot mention it, and 40% of the case went
                            # unnarrated on a live run.
                            "outside_phases": render.outside_phases_digest(graph, _outside),
+                           **({"critical_finding_details": _crit} if _crit else {}),
                            **_analyst}
                 payload_str = json.dumps(payload)
                 if mask:
@@ -2159,7 +2174,7 @@ def _classify_llm_error(exc) -> str:
 def chat(graph, question: str, history=None, *, window=None, min_severity="informational",
          run_id=None, dispositions=None, validations=None, full_context=None,
          max_output_tokens=None, require_llm=False, mask=None, max_identities=None,
-         excluded_hosts=None, master_prompt=None, manual_events=None) -> str:
+         excluded_hosts=None, master_prompt=None, manual_events=None, checklist=None) -> str:
     """Grounded Q&A. Real path narrates the distilled graph; simulated = deterministic
     retrieval. Surfaces operator dispositions (what's been triaged as benign/IT).
     `mask` (optional DataAnonymizer) anonymizes the LLM payload the same way
@@ -2214,6 +2229,19 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
                     payload["findings_this_question_is_about"] = [
                         render.finding_detail(graph, f, _verdict.get(f.id)) for f in _qf]
                 payload.update(render.case_extent(_scoped))
+                # Kept deliberately small (the chat payload is sent on every turn):
+                # the high/critical findings the budgeted summary dropped, one line
+                # each, and the evidence details of the critical ones.
+                _dump = json.dumps(payload)
+                _missed = [f for f in _scoped if f.severity in ("high", "critical") and f.title not in _dump]
+                if _missed:
+                    payload["other_high_findings"] = [
+                        {"title": f.title, "time": f.ts,
+                         "hosts": [render._host_label(graph, a) for a in (f.asset_ids or [])]}
+                        for f in _missed]
+                _crit = render.critical_details(graph, _scoped)
+                if _crit:
+                    payload["critical_finding_details"] = _crit
             else:
                 payload = render.chat_subgraph(graph, question, window=window,
                                                min_severity=min_severity,
@@ -2221,7 +2249,7 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
                                                pin_ids=pin_ids, focus_labels=focus,
                                                also_finding_ids=[v.get("finding_id") for v in (validations or [])])
             # the analyst's triage, validations and manual events -- same as the report
-            payload.update(analyst_context(dispositions, validations, manual_events, graph))
+            payload.update(analyst_context(dispositions, validations, manual_events, graph, checklist))
             if excluded_hosts:
                 # Taken out of the analysis in Configuration: say so rather than
                 # answering that the host does not exist.
