@@ -55,7 +55,7 @@ class AnalystContext(unittest.TestCase):
         self.assertTrue(calls)
         for _sys, user in calls:
             self.assertIn("IT pushed a GPO", user)
-            self.assertIn("analyst_validations", user)
+            self.assertIn("analyst_verdicts", user)
             self.assertIn("operator_dispositions", user)
 
     def test_focused_report(self):

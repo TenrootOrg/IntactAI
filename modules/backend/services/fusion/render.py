@@ -1268,9 +1268,63 @@ def _collapse_findings(findings):
 
 
 def _finding_dict(graph, f):
-    return {"id": f.id, "title": f.title, "severity": f.severity, "confidence": f.confidence,
+    return {"title": f.title, "severity": f.severity, "confidence": f.confidence,
             "hosts": [_host_label(graph, x) for x in f.asset_ids],
             "summary": f.summary, "mitre": f.mitre, "kind": f.kind, "ts": f.ts}
+
+
+# Evidence fields an analyst reads a finding by: what ran or was dropped, where, by
+# whom, with what command. Internal keys (ids, row numbers, pids) are left out.
+_DETAIL_KEYS = ("name", "original_name", "source_name", "path", "command", "cmdline",
+                "ev_cmdline", "ev_user", "user", "detection", "proc_name", "domain")
+
+
+def _hash_events(graph) -> dict:
+    """full_hash -> entities carrying that hash (the rows that name the file and its
+    path). Built once per loaded graph."""
+    idx = getattr(graph, "_hash_events", None)
+    if idx is None:
+        idx = {}
+        for e in graph.entities.values():
+            h = (e.attrs or {}).get("full_hash")
+            if h and e.type != "ioc":
+                idx.setdefault(h, []).append(e)
+        graph._hash_events = idx
+    return idx
+
+
+def finding_detail(graph, f, verdict=None, max_details=6) -> dict:
+    """A finding as the analyst would describe it: _finding_dict plus the concrete
+    evidence -- the binary's file name and path, the user, the command line -- and
+    the analyst's verdict on it. Live: asked about a validated "Shared binary seen on
+    2 hosts", the model had only its hash, while the rows naming the file
+    (peview.exe, C:\\Users\\kobia\\Downloads\\amd64\\peview.exe) sat in the graph."""
+    out = _finding_dict(graph, f)
+    details, seen = [], set()
+
+    def add(e):
+        item = {k: str(e.attrs[k])[:300] for k in _DETAIL_KEYS if (e.attrs or {}).get(k)}
+        hosts = [_host_label(graph, x) for x in _assets_of(e)]
+        if hosts:
+            item["hosts"] = hosts
+        key = repr(sorted(item.items()))
+        if item and key not in seen and len(details) < max_details:
+            seen.add(key)
+            details.append(item)
+
+    for eid in (f.entity_ids or [])[:10]:
+        e = graph.entities.get(eid)
+        if e is None:
+            continue
+        add(e)
+        h = (e.attrs or {}).get("full_hash")
+        for ev in (_hash_events(graph).get(h, []) if h else []):
+            add(ev)
+    if details:
+        out["evidence_details"] = details
+    if verdict:
+        out["analyst_verdict"] = verdict
+    return out
 
 
 def _entity_dict(graph, e):
@@ -1495,8 +1549,8 @@ def narrative_md(graph, *, window=None, min_severity="informational",
     return "\n".join(out)
 
 
-_STATE_LABEL = {"real": "True Positive", "not_real": "False Positive",
-                "known_it": "Known (IT-confirmed)", "pending": "Pending"}
+_STATE_LABEL = {"true_positive": "True Positive", "false_positive": "False Positive",
+                "known": "Known (IT-confirmed)", "pending": "Pending"}
 
 
 def _analyst_validations_md(graph, dispositions, validations) -> str:
@@ -1504,7 +1558,7 @@ def _analyst_validations_md(graph, dispositions, validations) -> str:
     (confirmed real, dismissed as FP, or IT-acknowledged). Integration point with
     the Timeline tab."""
     title_of = {f.id: f.title for f in graph.findings}
-    buckets = {"real": [], "not_real": [], "known_it": []}
+    buckets = {"true_positive": [], "false_positive": [], "known": []}
     seen = set()
     for v in (validations or []):
         fid, st = v.get("finding_id"), v.get("status")
@@ -1516,14 +1570,14 @@ def _analyst_validations_md(graph, dispositions, validations) -> str:
         if tgt in seen:
             continue
         seen.add(tgt)
-        buckets["known_it" if d.get("attribution") == "it_admin" else "not_real"].append(
+        buckets["known" if d.get("attribution") == "it_admin" else "false_positive"].append(
             title_of.get(tgt, str(tgt)))
     if not any(buckets.values()):
         return ""
     out = ["## Analyst Validations\n",
            "_Operator triage from the Timeline. False-positive and known/expected "
            "items are suppressed from risk scoring._\n"]
-    for st in ("real", "not_real", "known_it"):
+    for st in ("true_positive", "false_positive", "known"):
         items = buckets[st]
         if items:
             out.append(f"**{_STATE_LABEL[st]} ({len(items)}):**")
@@ -1904,7 +1958,7 @@ def _high_confidence_iocs(graph, validations=None):
     for f in graph.findings:
         cited.update(f.entity_ids or [])
     real_fids = {v.get("finding_id") for v in (validations or [])
-                 if v.get("status") == "real"}
+                 if v.get("status") == "true_positive"}
     validated = set()
     for f in graph.findings:
         if f.id in real_fids:

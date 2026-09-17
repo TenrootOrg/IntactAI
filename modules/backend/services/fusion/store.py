@@ -657,7 +657,14 @@ def get_case(case_id) -> dict:
     run = _ws().get_automation_run(case_id)
     if not run or run.get("automation_type") != CASE_TYPE:
         return {}
-    return run.get("details") or {}
+    d = run.get("details") or {}
+    # Cases saved before the verdict codes were renamed carry real / not_real /
+    # known_it. Translated here, on every read, so no consumer sees the old codes.
+    for key in ("timeline_validations", "manual_timeline_events"):
+        for v in (d.get(key) or []):
+            if isinstance(v, dict) and v.get("status") in _TL_LEGACY:
+                v["status"] = _TL_LEGACY[v["status"]]
+    return d
 
 
 # Bump when mapping or merging changes how an entity is IDENTIFIED (its id), so a
@@ -3727,20 +3734,24 @@ def decide_checklist_item(case_id, item_id, decision) -> dict:
 
 
 # Timeline validation states (fully reversible — every transition is allowed):
-#   real      -> confirmed malicious / keep      (clears any suppression)
-#   not_real  -> false positive                  (suppress: disposition benign / operator)
-#   known_it  -> IT confirms expected activity   (suppress: disposition benign / it_admin)
-#   pending   -> not yet triaged                 (clears any suppression + the record)
-_TL_STATES = ("real", "not_real", "known_it", "pending")
+#   true_positive  -> confirmed malicious / keep      (clears any suppression)
+#   false_positive -> detection error                 (suppress: disposition benign / operator)
+#   known          -> IT confirms expected activity   (suppress: disposition benign / it_admin)
+#   pending        -> not yet triaged                 (clears any suppression + the record)
+# The old codes real / not_real / known_it read as "real what?" to the model, which
+# echoed "status: real" at the analyst. Still accepted on input and translated on read.
+_TL_STATES = ("true_positive", "false_positive", "known", "pending")
+_TL_LEGACY = {"real": "true_positive", "not_real": "false_positive", "known_it": "known"}
 
 
 def validate_timeline(case_id, finding_id, status, notes="") -> dict:
     """Operator triages a timeline entry. Reversible: changing the status removes
     the previous record and re-applies/clears the matching suppression so a row
-    can move freely between real / not_real / known_it / pending.
+    can move freely between true_positive / false_positive / known / pending.
 
     Manual events (finding_id 'manual:…') carry their own status on the event
     record — they have no graph finding to suppress."""
+    status = _TL_LEGACY.get(status, status)
     status = status if status in _TL_STATES else "pending"
     _report_behind(case_id)
     log_case_event(case_id, "Timeline · validation", "info",
@@ -3768,11 +3779,11 @@ def validate_timeline(case_id, finding_id, status, notes="") -> dict:
 
     _mutate_list_field(case_id, "timeline_validations", _mutate)
 
-    if status == "not_real":
+    if status == "false_positive":
         set_disposition(case_id, finding_id, verdict="benign", attribution="operator",
                         reason=f"timeline: marked not real{(' — ' + notes) if notes else ''}",
                         scope="case", watermark=wm)
-    elif status == "known_it":
+    elif status == "known":
         set_disposition(case_id, finding_id, verdict="benign", attribution="it_admin",
                         reason=f"timeline: IT confirms expected{(' — ' + notes) if notes else ''}",
                         scope="case", watermark=wm)
@@ -3796,7 +3807,9 @@ def add_manual_timeline_event(case_id, event) -> dict:
            "title": (event.get("title") or "").strip() or "(manual event)",
            "severity": (event.get("severity") or "informational").strip().lower(),
            "artifacts": ["manual"], "phase": "Manual",
-           "status": (event.get("status") if event.get("status") in _TL_STATES else "real"),
+           "status": (_TL_LEGACY.get(event.get("status"), event.get("status"))
+                      if _TL_LEGACY.get(event.get("status"), event.get("status")) in _TL_STATES
+                      else "true_positive"),
            "notes": (event.get("notes") or event.get("description") or "").strip(),
            "created_at": _now_iso()}
     _mutate_list_field(case_id, "manual_timeline_events", lambda evs: list(evs) + [row])
@@ -3881,7 +3894,7 @@ def get_timeline(case_id) -> list:
     host-exclusion so it matches the report.
 
     Each row: finding_id, ts, host, phase, title, severity, mitre, artifacts,
-    source ('fusion'|'manual'), validation ('real'|'not_real'|'known_it'|
+    source ('fusion'|'manual'), validation ('true_positive'|'false_positive'|'known'|
     'pending'), suggested_benign (analyst hinted it looks expected), manual."""
     from services.fusion.correlate import _wm_new_activity
     d = get_case(case_id)
@@ -3901,7 +3914,7 @@ def get_timeline(case_id) -> list:
             # A benign verdict (Known/False-positive) RE-OPENS to Pending when new
             # activity arrived since it was made — it only covered the watermark it
             # snapshotted. Real/pending are not occurrence-bound.
-            if st in ("known_it", "not_real") and _wm_new_activity(v.get("watermark"), fwm.get(fid, "")):
+            if st in ("known", "false_positive") and _wm_new_activity(v.get("watermark"), fwm.get(fid, "")):
                 r["validation"] = "pending"
                 r["reopened"] = True
             else:
@@ -3914,7 +3927,7 @@ def get_timeline(case_id) -> list:
     for e in (d.get("manual_timeline_events") or []):
         row = dict(e)
         row["ts"] = render.fmt_ts(e.get("ts"))     # same display format as findings
-        row["validation"] = e.get("status", "real")
+        row["validation"] = e.get("status", "true_positive")
         row.setdefault("mitre", [])
         row.setdefault("suggested_benign", False)
         rows.append(row)

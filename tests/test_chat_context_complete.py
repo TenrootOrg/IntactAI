@@ -35,8 +35,12 @@ def _graph():
     return g
 
 
-def _ids(payload):
-    return {f["id"] for f in payload["findings"]}
+_ID_BY_TITLE = {"Shared binary seen on 2 hosts": "f_old", "Suspicious service path": "f_mid", "Mimikatz": "f_high"}
+
+
+def _ids(payload, key="findings"):
+    # payloads name findings by title; ids are internal and are not sent
+    return {_ID_BY_TITLE[f["title"]] for f in payload[key]}
 
 
 class ChatContext(unittest.TestCase):
@@ -75,8 +79,8 @@ class FullContextChat(unittest.TestCase):
 
     def test_the_question_findings_and_extent_are_added(self):
         p = self._payload("any malicious binary on 2024-05-24?",
-                          validations=[{"finding_id": "f_mid", "status": "real"}])
-        ids = {f["id"] for f in p["findings_this_question_is_about"]}
+                          validations=[{"finding_id": "f_mid", "status": "true_positive"}])
+        ids = _ids(p, "findings_this_question_is_about")
         self.assertEqual(ids, {"f_old", "f_mid"})
         self.assertEqual(p["case_evidence_span"][0], "2024-05-24T17:49:46Z")
         self.assertEqual(p["hosts_excluded_from_analysis_by_operator"], ["DESKTOP-16OJFO6"])
@@ -84,3 +88,47 @@ class FullContextChat(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReadableForTheAnalyst(unittest.TestCase):
+    """Verdicts by title/time/host, not id; the binary's name and path in the finding."""
+
+    def test_verdicts_name_the_finding_and_carry_no_ids(self):
+        import json
+        g = _graph()
+        ctx = _LLM_SIM.analyst_context(validations=[{"finding_id": "f_old", "status": "true_positive",
+                                                     "watermark": "1|2024-05-24T17:49:46Z"}], graph=g)
+        v = ctx["analyst_verdicts"][0]
+        self.assertEqual((v["finding"], v["verdict"]), ("Shared binary seen on 2 hosts", "true_positive"))
+        blob = json.dumps(ctx)
+        self.assertNotIn("f_old", blob)
+        self.assertNotIn("watermark", blob)
+
+    def test_the_binary_name_and_path_come_with_the_finding(self):
+        g = _graph()
+        h = "9b" * 32
+        g.upsert(schema.Entity(id="ioc:hash:" + h, type="ioc", label=h,
+                               attrs={"full_hash": h, "source_name": "peview.exe", "_assets": ["asset:a"]}))
+        g.upsert(schema.Entity(id="event:1", type="event", label="rename",
+                               attrs={"full_hash": h, "name": "peview.exe",
+                                      "path": r"C:\Users\kobia\Downloads\amd64\peview.exe", "_assets": ["asset:a"]}))
+        f = g.findings[0]
+        f.entity_ids = ["ioc:hash:" + h]
+        d = render.finding_detail(g, f, "true_positive")
+        paths = [x.get("path") for x in d["evidence_details"]]
+        self.assertIn(r"C:\Users\kobia\Downloads\amd64\peview.exe", paths)
+        self.assertEqual(d["analyst_verdict"], "true_positive")
+        self.assertNotIn("id", d)
+
+    def test_old_verdict_codes_are_translated_on_read(self):
+        from unittest import mock
+        from services.fusion import store
+        run = {"automation_type": store.CASE_TYPE,
+               "details": {"timeline_validations": [{"finding_id": "x", "status": "real"},
+                                                     {"finding_id": "y", "status": "not_real"}],
+                           "manual_timeline_events": [{"finding_id": "m", "status": "known_it"}]}}
+        ws = mock.Mock(); ws.get_automation_run.return_value = run
+        with mock.patch.object(store, "_ws", return_value=ws):
+            d = store.get_case("c")
+        self.assertEqual([v["status"] for v in d["timeline_validations"]], ["true_positive", "false_positive"])
+        self.assertEqual(d["manual_timeline_events"][0]["status"], "known")

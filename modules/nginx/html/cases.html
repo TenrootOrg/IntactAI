@@ -189,8 +189,8 @@
   .seg{display:inline-flex;border:1px solid var(--bd);border-radius:6px;overflow:hidden}
   .seg button{font-size:10px;padding:3px 7px;background:transparent;border:none;border-left:1px solid var(--bd);color:var(--muted);cursor:pointer}
   .seg button:first-child{border-left:none}
-  .seg button.on.s-real{background:var(--ok);color:#0d1117} .seg button.on.s-not_real{background:var(--sev-high,#db6d28);color:#0d1117}
-  .seg button.on.s-known_it{background:var(--info);color:#0d1117} .seg button.on.s-pending{background:var(--panel2);color:var(--tx)}
+  .seg button.on.s-true_positive{background:var(--ok);color:#0d1117} .seg button.on.s-false_positive{background:var(--sev-high,#db6d28);color:#0d1117}
+  .seg button.on.s-known{background:var(--info);color:#0d1117} .seg button.on.s-pending{background:var(--panel2);color:var(--tx)}
   .arti{font-size:10px;color:var(--info);background:rgba(88,166,255,.08);border:1px solid var(--bd);border-radius:4px;padding:1px 5px;font-family:var(--mono,monospace)}
   .zoomwrap{margin:0 0 16px;padding:12px 14px;border:1px solid var(--bd);border-radius:8px;background:rgba(88,166,255,.05)}
   .zoomhdr{font-size:12px;color:var(--muted);margin-bottom:9px}
@@ -1397,8 +1397,8 @@ function synthFromChat(id){toast('Drafting the master prompt from the chat…');
 }
 // ---- Unified timeline (findings + manual events; validate with the IT team) ----
 const TL_SEV_RANK={informational:0,info:0,low:1,medium:2,high:3,critical:4};
-const TL_STATES=[['pending','Pending'],['real','True Positive'],['not_real','False Positive'],['known_it','Known']];
-window._tlf={status:{pending:1,real:1,not_real:1,known_it:1},artifact:'',host:'',sev:'informational',order:'time'};
+const TL_STATES=[['pending','Pending'],['true_positive','True Positive'],['false_positive','False Positive'],['known','Known']];
+window._tlf={status:{pending:1,true_positive:1,false_positive:1,known:1},artifact:'',host:'',sev:'informational',order:'time'};
 // The host is already the first thing on the row, and finding titles end with
 // "on <host>" — so almost every line named the same machine twice:
 //   ALClient022 [Execution / Injection] SIGMA: ... Detection on ALClient022
@@ -1475,7 +1475,7 @@ function tlVisible(){
 }
 function tlPaint(){
   const id=window._tlCase, rows=tlVisible();
-  const supp=v=>v==='not_real'||v==='known_it';
+  const supp=v=>v==='false_positive'||v==='known';
   const html= rows.length? rows.map(r=>{
     const v=r.validation||'pending';
     const seg=TL_STATES.map(([k,lbl])=>`<button class="s-${k} ${v===k?'on':''}" onclick="tlValidate('${r.finding_id}','${k}')">${lbl}</button>`).join('');

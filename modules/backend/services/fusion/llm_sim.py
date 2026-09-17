@@ -552,6 +552,11 @@ REPORT_SYSTEM_PROMPT_FOCUSED = (
     "real to say rather than padding it. No preamble. Start at '## Executive Summary'."
 )
 CHAT_SYSTEM_PROMPT = (
+    "Never show internal identifiers or data field names: no finding ids (f_...), entity "
+    "ids, watermarks, row numbers or JSON keys. Refer to a finding by what happened, "
+    "when and on which host, and name the binary, path, user or command from its "
+    "evidence_details when present. Write verdicts as True Positive, False Positive, "
+    "Known or Pending.\n"
     "You are a senior DFIR / SOC analyst embedded in this investigation, talking with "
     "another analyst about their environment. The attached correlated incident graph "
     "(JSON: hosts, accounts, processes, IOCs, findings, cross-host links, timeline) is "
@@ -1380,17 +1385,36 @@ def _note_progress(run_id):
         pass
 
 
-def analyst_context(dispositions=None, validations=None, manual_events=None) -> dict:
+def analyst_context(dispositions=None, validations=None, manual_events=None, graph=None) -> dict:
     """What the analyst has told the case, for every model call that writes about it:
     triage verdicts (False Positive / Known), Timeline validations, and the events they
     added by hand ("IT pushed a GPO at 14:05"). The segmented report used to drop all
     of it -- its phase and synthesis payloads were rebuilt without the triage -- and
-    manual events reached no model at all."""
+    manual events reached no model at all.
+
+    Each verdict names its finding the way the analyst sees it (title, time, hosts),
+    not by internal id: given ids and watermarks, the model answered with
+    "f_b69307719720 ... status: real, watermark 1|2024-05-24T17:49:46Z"."""
+    by_id = {f.id: f for f in (graph.findings if graph is not None else [])}
+
+    def _about(fid):
+        f = by_id.get(fid)
+        if f is None:
+            return {}
+        return {"finding": f.title, "time": f.ts,
+                "hosts": [render._host_label(graph, a) for a in (f.asset_ids or [])]}
+
     out = {}
-    if dispositions:
-        out["operator_dispositions"] = dispositions
     if validations:
-        out["analyst_validations"] = validations
+        out["analyst_verdicts"] = [
+            {**_about(v.get("finding_id")), "verdict": v.get("status"),
+             **({"notes": v["notes"]} if v.get("notes") else {})}
+            for v in validations]
+    if dispositions:
+        out["operator_dispositions"] = [
+            {**_about(x.get("target")), "verdict": x.get("verdict"),
+             **{k: x[k] for k in ("attribution", "reason", "scope") if x.get(k)}}
+            for x in dispositions]
     if manual_events:
         out["analyst_timeline_events"] = [
             {k: e.get(k) for k in ("ts", "host", "title", "severity", "status", "notes") if e.get(k)}
@@ -1577,7 +1601,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
                                        include_timeframes=True,
                                        altitude_mode=altitude_mode)
             # give the model the analyst's triage so the narrative reflects it
-            _analyst = analyst_context(dispositions, validations, manual_events)
+            _analyst = analyst_context(dispositions, validations, manual_events, graph)
             payload.update(_analyst)
             payload_str = json.dumps(payload)
             _unmasked_payload = payload_str           # keep for the grounding guard (pre-mask)
@@ -2186,7 +2210,9 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
                 _qf = render.question_findings(
                     _scoped, question, [v.get("finding_id") for v in (validations or [])])
                 if _qf:
-                    payload["findings_this_question_is_about"] = [render._finding_dict(graph, f) for f in _qf]
+                    _verdict = {v.get("finding_id"): v.get("status") for v in (validations or [])}
+                    payload["findings_this_question_is_about"] = [
+                        render.finding_detail(graph, f, _verdict.get(f.id)) for f in _qf]
                 payload.update(render.case_extent(_scoped))
             else:
                 payload = render.chat_subgraph(graph, question, window=window,
@@ -2195,7 +2221,7 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
                                                pin_ids=pin_ids, focus_labels=focus,
                                                also_finding_ids=[v.get("finding_id") for v in (validations or [])])
             # the analyst's triage, validations and manual events -- same as the report
-            payload.update(analyst_context(dispositions, validations, manual_events))
+            payload.update(analyst_context(dispositions, validations, manual_events, graph))
             if excluded_hosts:
                 # Taken out of the analysis in Configuration: say so rather than
                 # answering that the host does not exist.

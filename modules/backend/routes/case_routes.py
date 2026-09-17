@@ -50,7 +50,10 @@ def _audit_case_id():
 
 
 # friendly labels for the common case actions (the raw path is the fallback)
-_STATE_LABEL = {"real": "Real", "not_real": "Not real", "known_it": "Known", "pending": "Pending"}
+_STATE_LABEL = {"true_positive": "True Positive", "false_positive": "False Positive", "known": "Known",
+                "pending": "Pending",
+                # old codes, still accepted from older clients
+                "real": "True Positive", "not_real": "False Positive", "known_it": "Known"}
 
 
 def _audit_label(action):
@@ -99,7 +102,7 @@ def _audit_detail(action, is_err, resp):
         b = request.get_json(silent=True) or {}
         if a == "timeline" and "validate" in action and b.get("finding_id"):
             what = b.get("title") or b.get("finding_id")
-            state = _STATE_LABEL.get(b.get("status"), b.get("status", "real"))
+            state = _STATE_LABEL.get(b.get("status"), b.get("status", "true_positive"))
             return f'marked "{what}" as {state}'
         if a == "timeline" and "event" in action:
             if request.method == "DELETE":
@@ -992,15 +995,16 @@ def manual_identity_link(case_id):
 
 @case_bp.route("/api/cases/<case_id>/timeline/validate", methods=["POST"])
 def timeline_validate(case_id):
-    """Triage a timeline entry: real / not_real / known_it / pending. Reversible —
-    any transition is allowed; not_real/known_it suppress, real/pending un-suppress."""
+    """Triage a timeline entry: true_positive / false_positive / known / pending
+    (the old real / not_real / known_it are still accepted). Reversible — any
+    transition is allowed; false_positive/known suppress, true_positive/pending un-suppress."""
     if not store.get_case(case_id):
         return jsonify({"error": "case not found"}), 404
     b = request.get_json(silent=True) or {}
     fid = (b.get("finding_id") or "").strip()
     if not fid:
         return jsonify({"error": "finding_id required"}), 400
-    res = store.validate_timeline(case_id, fid, b.get("status", "real"), b.get("notes", ""))
+    res = store.validate_timeline(case_id, fid, b.get("status", "true_positive"), b.get("notes", ""))
     return jsonify({"case_id": case_id, **res})
 
 
@@ -1217,7 +1221,7 @@ def graph(case_id):
 def timeline(case_id):
     if not store.get_case(case_id):
         return jsonify({"error": "case not found"}), 404
-    # each row carries finding_id + validation status (real/not_real/unknown)
+    # each row carries finding_id + validation status (true_positive/false_positive/known/pending)
     return jsonify({"case_id": case_id, "timeline": store.get_timeline(case_id)})
 
 
