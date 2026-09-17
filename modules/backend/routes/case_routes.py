@@ -124,6 +124,8 @@ def _audit_detail(action, is_err, resp):
             # later; this one only needs to mark that the click was received.
             if resp.status_code == 202:
                 return "generation started — narrating in the background, no need to wait here"
+            if _safe_json(resp).get("status") == "offline":
+                return "report written offline — no AI model is reachable from this appliance"
             return "report regenerated"
         if a in ("rescan", "config", "hosts", "masking"):
             return "configuration updated, case re-fused"
@@ -1118,7 +1120,8 @@ def regenerate_report(case_id):
         return jsonify({"error": str(e), "busy": True}), 409
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
-    return jsonify({"case_id": case_id, **res}), 202
+    # "offline": no route to the provider, so the report was already written here
+    return jsonify({"case_id": case_id, **res}), (200 if res.get("status") == "offline" else 202)
 
 
 @case_bp.route("/api/cases/<case_id>/synthesize", methods=["POST"])
