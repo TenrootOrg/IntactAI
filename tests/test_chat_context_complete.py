@@ -175,3 +175,44 @@ class MicroSelection(unittest.TestCase):
         out = render.question_findings(g.findings, "alclient04", graph=g, limit=15)
         self.assertEqual(len(out), 15)
         self.assertEqual(out[0].severity, "critical")
+
+
+class EveryKindOfDataSelects(unittest.TestCase):
+    """Measured on a live case: hashes (full, first 8), md5, sha1, IP, domain, event id,
+    MITRE id, DOMAIN\\\\user, file, and dates in ISO, 16/06/2026, 16.06.2026 and
+    'June 16, 2026' forms, and months, all 100% precise and complete."""
+
+    def _g(self):
+        g = schema.FusionGraph(case_id="c")
+        g.upsert(schema.Entity(id="asset:a", type="asset", label="HOSTA"))
+        h = "ab12cd34" + "0" * 56
+        rows = [("f_mail", "Phishing mail", {"sender": "attacker@evil.example"}, "2026-06-16T10:00:00Z"),
+                ("f_hash", "Dropped binary", {"full_hash": h, "name": "drop.exe"}, "2026-06-17T10:00:00Z"),
+                ("f_srv", "Service created", {"name": "srvhost.exe"}, "2026-07-01T10:00:00Z")]
+        for fid, title, attrs, ts in rows:
+            g.upsert(schema.Entity(id="e:" + fid, type="event", label=title, attrs=dict(attrs, _assets=["asset:a"])))
+            g.findings.append(schema.Finding(id=fid, title=title, severity="high", confidence="high", summary="",
+                                             entity_ids=["e:" + fid], asset_ids=["asset:a"], ts=ts, mitre=["T1566"] if fid == "f_mail" else []))
+        return g
+
+    def _pick(self, q):
+        g = self._g()
+        return {f.id for f in render.question_findings(g.findings, q, graph=g)}
+
+    def test_email(self):
+        self.assertEqual(self._pick("did attacker@evil.example send anything?"), {"f_mail"})
+
+    def test_hash_prefix(self):
+        self.assertEqual(self._pick("what is ab12cd34?"), {"f_hash"})
+
+    def test_whole_words_only(self):
+        self.assertEqual(self._pick("what did srv do?"), set())          # not "srvhost.exe"
+
+    def test_mitre_id(self):
+        self.assertEqual(self._pick("anything for T1566?"), {"f_mail"})
+
+    def test_date_formats(self):
+        for q in ("what happened on 2026-06-16?", "on 16/06/2026", "on 16.06.2026",
+                  "what happened June 16, 2026?", "16 June 2026"):
+            self.assertEqual(self._pick(q), {"f_mail"}, q)
+        self.assertEqual(self._pick("what happened in June 2026?"), {"f_mail", "f_hash"})

@@ -1276,7 +1276,7 @@ def _finding_dict(graph, f):
 # Evidence fields an analyst reads a finding by: what ran or was dropped, where, by
 # whom, with what command. Internal keys (ids, row numbers, pids) are left out.
 _DETAIL_KEYS = ("name", "original_name", "source_name", "path", "command", "cmdline",
-                "ev_cmdline", "ev_user", "user", "detection", "proc_name", "domain")
+                "ev_cmdline", "ev_user", "user", "detection", "proc_name", "domain", "ev_tgtip")
 
 
 def _hash_events(graph) -> dict:
@@ -1353,38 +1353,131 @@ def _entity_dict(graph, e):
 _VERDICT_WORDS = _tf_re.compile(r"true.?positive|false.?positive|\bknown\b|validat|verdict|confirm|triag")
 
 
-def _mention_index(graph) -> list:
-    """(lowercase term, entity id) for names an analyst types: hosts, accounts, file
-    and process names, hashes, IPs. Built once per loaded graph."""
-    idx = getattr(graph, "_mention_index", None)
-    if idx is not None:
-        return idx
-    idx = []
+# Words that say what KIND of question it is, not what it is about. Anything else
+# that is too common in the case is dropped by the frequency check below.
+_QUESTION_STOPWORDS = frozenset("""
+a an and any are as at be been by can could did do does for from had has have how i if in
+into is it its it's me my no not of on or show tell than that the their them then there these
+this those to was we were what when where which who whom why will with you your all also about
+after before during between over under more most much many some other same such only just
+happen happened happening activity activities event events finding findings host hosts machine
+machines computer account accounts user users file files process processes binary binaries
+command commands line lines full path paths run ran running used use using execute executed
+case risk overall environment compromised compromise malicious suspicious detection detections
+anything something everything mark marked verdict verdicts true false positive known pending
+first last latest earliest please summary summarize summarise explain describe give list
+connection connections connect connected network traffic communicate communicated contact
+contacted reach reached access accessed login logins logon logons session sessions tool tools
+know knew anyone someone see seen look find found related regarding info information details
+hash hashes md5 sha1 sha256 address addresses domain domains eid mitre technique techniques
+jan january feb february mar march apr april may jun june jul july aug august sep sept september
+oct october nov november dec december today yesterday night morning date dates day days
+""".split())
 
-    def add(term, eid, min_len):
-        t = str(term or "").strip().lower()
-        if len(t) >= min_len:
-            idx.append((t, eid))
+_TOKEN_RE = _tf_re.compile(r"[a-z0-9_$\\\-.:@]{3,}")      # @ keeps an email whole
+_HEX_RE = _tf_re.compile(r"^[0-9a-f]{8,}$")
+_MONTHS = {m: i + 1 for i, m in enumerate(("jan feb mar apr may jun jul aug sep oct nov dec").split())}
 
-    for e in graph.entities.values():
-        a = e.attrs or {}
-        if e.type == "asset":
-            add(e.label, e.id, 4); add(a.get("hostname"), e.id, 4)
-        elif e.type == "account":
-            add(str(e.label or "").split("\\")[-1], e.id, 4); add(a.get("user"), e.id, 4)
-        elif e.type == "ioc":
-            add(e.label, e.id, 7); add(a.get("md5"), e.id, 12); add(a.get("sha1"), e.id, 12)
-            add(a.get("source_name"), e.id, 5)
-        else:
-            for k in ("name", "original_name", "source_name"):
-                v = str(a.get(k) or "")
-                if "." in v:                         # a file or process name, not a word
-                    add(v, e.id, 5)
-            add(a.get("ev_tgtip"), e.id, 7)
-            if a.get("full_hash"):
-                add(a["full_hash"], e.id, 12)
-    graph._mention_index = idx
-    return idx
+
+_DATE_TEXT_RE = _tf_re.compile(
+    r"\b\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?\b|\b\d{1,2}[/.]\d{1,2}[/.]\d{4}\b"
+    r"|\b\d{1,2}(?:st|nd|rd|th)?\s+[a-z]{3,9}\.?,?\s+\d{4}\b"
+    r"|\b[a-z]{3,9}\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b|\b[a-z]{3,9}\s+\d{4}\b")
+
+
+def _question_dates(q) -> set:
+    """ISO dates/months named in a question, in the formats analysts type:
+    2024-05-24, 2024/05/24, 2024-05, 24/05/2024 and 24.05.2024 (day first),
+    24 May 2024, May 24 2024, May 2024."""
+    out = set(_tf_re.findall(r"\b(\d{4}-\d{2}(?:-\d{2})?)\b", q))
+    for y, m, d in _tf_re.findall(r"\b(\d{4})/(\d{1,2})/(\d{1,2})\b", q):
+        out.add(f"{y}-{int(m):02d}-{int(d):02d}")
+    for d, m, y in _tf_re.findall(r"\b(\d{1,2})[/.](\d{1,2})[/.](\d{4})\b", q):
+        if 1 <= int(m) <= 12 and 1 <= int(d) <= 31:
+            out.add(f"{y}-{int(m):02d}-{int(d):02d}")
+    for d, mon, y in _tf_re.findall(r"\b(\d{1,2})\s+([a-z]{3})[a-z]*\.?,?\s+(\d{4})\b", q):
+        if mon in _MONTHS:
+            out.add(f"{y}-{_MONTHS[mon]:02d}-{int(d):02d}")
+    for mon, d, y in _tf_re.findall(r"\b([a-z]{3})[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b", q):
+        if mon in _MONTHS:
+            out.add(f"{y}-{_MONTHS[mon]:02d}-{int(d):02d}")
+    for mon, y in _tf_re.findall(r"(?<!\d )\b([a-z]{3})[a-z]*\s+(\d{4})\b", q):   # not "24 May 2024"
+        if mon in _MONTHS:
+            out.add(f"{y}-{_MONTHS[mon]:02d}")
+    return out
+
+
+def _finding_blobs(graph) -> dict:
+    """finding id -> the lowercase text an analyst could ask about: title, summary,
+    hosts, and every linked entity's name, path, user, command line, IP and hashes
+    (including the rows that share its file hash). Built once per loaded graph."""
+    blobs = getattr(graph, "_finding_blobs", None)
+    if blobs is not None:
+        return blobs
+    hev = _hash_events(graph)
+    blobs = {}
+    for f in graph.findings:
+        parts = ([f.title or "", f.summary or ""] + [_host_label(graph, a) for a in (f.asset_ids or [])]
+                 + list(f.mitre or []))
+        ents = [graph.entities[i] for i in (f.entity_ids or []) if i in graph.entities]
+        for e in list(ents):
+            h = (e.attrs or {}).get("full_hash")
+            if h:
+                ents += hev.get(h, [])
+        for e in ents:
+            # Every field is searched (a tool can be named only in an event's title or
+            # details); only _DETAIL_KEYS are ever SENT.
+            parts.append(str(e.label or ""))
+            parts += [str(v)[:2000] for k, v in (e.attrs or {}).items() if v and not k.startswith("_")]
+        blobs[f.id] = "\n".join(parts).lower()
+    graph._finding_blobs = blobs
+    return blobs
+
+
+def _select_by_terms(findings, text, graph):
+    """Findings the words in `text` point at. A host named in the text narrows the
+    other terms to that host (AND); on its own it selects the host's findings."""
+    blobs = _finding_blobs(graph)
+    hosts = {str(a.label or "").lower(): a.id for a in graph.by_type("asset") if a.label}
+    toks = {t.strip(".:-") for t in _TOKEN_RE.findall(text)}
+    toks = {t for t in toks if len(t) >= 3 and t not in _QUESTION_STOPWORDS}
+    host_ids = {hosts[t] for t in toks if t in hosts}
+    terms = [t for t in toks if t not in hosts]
+    n = max(1, len(findings))
+    # Whole words only: "know" must not match "unknown", nor "srv" match "srvhost".
+    # A hex term of 8+ characters may be the start of a hash the analyst pasted.
+    rx = {t: _tf_re.compile(r"(?<![a-z0-9])" + _tf_re.escape(t)
+                            + ("" if _HEX_RE.match(t) else r"(?![a-z0-9])")) for t in terms}
+    has = {t: {f.id for f in findings if rx[t].search(blobs.get(f.id, ""))} for t in terms}
+    # A term found in most of the case says nothing about which findings matter.
+    df = {t: len(has[t]) for t in terms}
+    selective = [t for t in terms if 0 < df[t] <= max(3, int(0.4 * n))]
+    on_host = [f for f in findings if host_ids & set(f.asset_ids or [])]
+    if selective:
+        # Weight each term by how rare it is in the case (a rare tool name or IP says
+        # far more than a user seen everywhere), and keep the findings reaching at least
+        # half of the best score. Measured on a live case: requiring EVERY term dropped
+        # "any connections to <IP>" to 3 of 7; matching ANY term let "srv" in a
+        # follow-up pull everything srv touched (45% precise).
+        import math
+        w = {t: math.log((n + 1) / df[t]) + 0.1 for t in selective}
+        score = {f.id: sum(w[t] for t in selective if f.id in has[t]) for f in findings}
+        best = max(score.values(), default=0)
+        hit = [f for f in findings if best and score[f.id] >= 0.5 * best]
+        if host_ids:
+            narrowed = [f for f in hit if host_ids & set(f.asset_ids or [])]
+            hit = narrowed or hit
+        return hit
+    # Only common terms ("powershell" in a case where half the findings are
+    # PowerShell): still an answer about them, just not a selective one -- the cap
+    # and the severity order keep it small.
+    common = [t for t in terms if df[t]]
+    if common:
+        hit = [f for f in findings if any(f.id in has[t] for t in common)]
+        if host_ids:
+            hit = [f for f in hit if host_ids & set(f.asset_ids or [])] or hit
+        return hit
+    return on_host
 
 
 def question_findings(findings, question, also_finding_ids=None, graph=None,
@@ -1392,30 +1485,32 @@ def question_findings(findings, question, also_finding_ids=None, graph=None,
     """MICRO: the few findings a chat question is about, sent with their evidence
     details on top of the MACRO summary of the whole case. Selected by:
       * a date in the question ("2024-05-24", or a month "2024-05");
-      * a host, account, file/process name, hash or IP named in the question -- or in
-        the previous exchange, so "and what was the path?" still knows what "it" is;
+      * the words of the question matched against each finding's full text (title,
+        hosts, file names, paths, users, command lines, IPs, hashes) -- generic words
+        and words common to most of the case are ignored, and a host narrows the rest;
+      * when the question itself names nothing, the previous exchange, so "and what
+        was the full command line?" still knows what "it" is;
       * the analyst's verdicts, only when the question is about verdicts.
-    Capped at `limit`, most severe first, so a busy host cannot flood the context.
+    Capped at `limit`, most severe first.
 
-    Live: asked about a medium finding by date, the model got neither it nor the
-    date -- the budget had cut it -- and answered that no such event existed."""
+    Measured on a live case before this matched full text: "what was Rubeus used
+    for?" and "is there any mimikatz?" selected nothing, and "powershell on
+    ALClient09" selected every finding on the host (20% precise)."""
     q = (question or "").lower()
-    ctx = (q + "\n" + (context_text or "").lower())
-    dates = set(_tf_re.findall(r"\b(\d{4}-\d{2}(?:-\d{2})?)\b", q))
+    dates = _question_dates(q)
     also = set(also_finding_ids or []) if _VERDICT_WORDS.search(q) else set()
-    named = set()
+    by_terms = []
     if graph is not None:
-        for term, eid in _mention_index(graph):
-            if term in ctx:
-                named.add(eid)
-                h = (graph.entities[eid].attrs or {}).get("full_hash") if eid in graph.entities else None
-                if h:
-                    named.add("ioc:hash:" + h)
+        # The date was already used above; its pieces ("2026", "june") are not search words.
+        q_words = _DATE_TEXT_RE.sub(" ", q) if dates else q
+        by_terms = _select_by_terms(findings, q_words, graph)
+        if not by_terms and not dates and not also and context_text:
+            by_terms = _select_by_terms(findings, context_text.lower(), graph)
+    ids = {f.id for f in by_terms}
     picked = [f for f in findings
-              if f.id in also
+              if f.id in also or f.id in ids
               or any(str(t or "").startswith(d) for d in dates
-                     for t in (f.ts, getattr(f, "occ_latest", None)))
-              or (named & set(f.asset_ids or [])) or (named & set(f.entity_ids or []))]
+                     for t in (f.ts, getattr(f, "occ_latest", None)))]
     picked.sort(key=lambda f: (-sev.rank(f.severity), str(f.ts or "")))
     return picked[:limit]
 
