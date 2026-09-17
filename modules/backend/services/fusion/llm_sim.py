@@ -1700,7 +1700,7 @@ def _simulated_checklist(findings) -> list:
 
 
 def generate_disposition_checklist(graph, *, window=None, min_severity="high",
-                                   run_id=None, mask=None, outcome=None) -> list:
+                                   run_id=None, mask=None, outcome=None, allow_llm=True) -> list:
     """Customer-confirmation checklist: per high finding, a likely-benign yes/no question
     the customer accepts (=> dispositioned benign) or declines (=> kept). Grounded to real
     finding_ids; deterministic fallback when no real LLM. Never raises.
@@ -1716,7 +1716,11 @@ def generate_disposition_checklist(graph, *, window=None, min_severity="high",
     outcome.update({"used_llm": False, "error": None, "error_text": ""})
     _, findings = render.scope(graph, window=window, min_severity=min_severity)
     high = [f for f in findings if sev.at_least(f.severity, "high")] or findings
-    if not _use_real():
+    # allow_llm=False: the caller promised "no model call" (a deterministic
+    # regeneration logs "no LLM tokens spent"). It used to make one anyway whenever
+    # the case had no checklist yet — inside the HTTP request, blocking it for the
+    # model's whole timeout.
+    if not allow_llm or not _use_real():
         return _simulated_checklist(high)
     outcome["used_llm"] = True
     try:
@@ -1770,6 +1774,16 @@ _LLM_ERR_MESSAGES = {
     "timeout": ("The AI model took too long to answer.",
                 "Try again. If it keeps happening, check the connection or choose "
                 "a faster model in Settings ▸ Agentic."),
+    # The provider WAS reached and answered — badly. None of these is a key or a
+    # network problem, and saying "check the API key and the internet connection"
+    # (what all three used to fall through to) sends the operator to fix things
+    # that work.
+    "empty_reply": ("The AI model answered with nothing.",
+                    "Choose a different model in Settings ▸ Agentic, then try again."),
+    "bad_response": ("The AI provider sent back a reply that could not be read.",
+                     "Check the model address in Settings ▸ Agentic, then try again."),
+    "provider_error": ("The AI provider reported an internal error.",
+                       "Wait a moment, or choose another model in Settings ▸ Agentic, then try again."),
     "rate_limited": ("The AI provider is limiting requests right now.",
                      "Wait, or switch provider in Settings ▸ Agentic, then try again."),
     "missing_offline_url": ("Local model mode is on, but no local model address is set.",
@@ -1921,6 +1935,17 @@ def _classify_llm_error(exc) -> str:
     # The model never answered because it was never REACHED. A connect timeout is
     # worded "…timed out", and the timeout branch below used to claim it — telling
     # an operator whose box has no route out that "the model took too long".
+    # Answered, but not with anything usable. Verbatim from requests/json on a proxy
+    # that returned an HTML error page with HTTP 200: "Expecting value: line 1
+    # column 1 (char 0)".
+    if any(t in s for t in ("jsondecodeerror", "expecting value", "invalid json",
+                            "not valid json", "unexpected token")):
+        return "bad_response"
+    # The provider's own server failed (5xx). A 504 is deliberately NOT here: a
+    # gateway timeout is the "took too long" case below.
+    if any(t in s for t in ("500 server error", "internal server error", "502 server error",
+                            "bad gateway", "503 server error", "service unavailable")):
+        return "provider_error"
     if any(t in s for t in ("connecttimeout", "connect timeout", "newconnectionerror",
                             "failed to establish a new connection", "name or service not known",
                             "temporary failure in name resolution", "nodename nor servname",

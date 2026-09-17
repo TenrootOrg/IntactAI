@@ -628,9 +628,11 @@ def get_config():
 def save_config():
     """Save frontend configuration."""
     try:
-        config = request.json
-        if not config:
-            return jsonify({"error": "No configuration provided"}), 400
+        # silent=True: a body that is not JSON is the CALLER's mistake (400), not a
+        # server error. request.json raised, and the generic handler below answered 500.
+        config = request.get_json(silent=True)
+        if not isinstance(config, dict) or not config:
+            return jsonify({"error": "No valid configuration provided"}), 400
 
         # Don't overwrite the real key with the masked placeholder GET
         # returns — same protection /api/config/cloud's PUT already has.

@@ -2614,11 +2614,36 @@ REPORT_HEARTBEAT_SECONDS = 120
 REPORT_STUCK_SECONDS = 15 * 60
 
 
+# How long past a call's own timeout silence is tolerated before a write-off.
+REPORT_STUCK_MARGIN_SECONDS = 60
+
+
+def _call_timeout_seconds(ag) -> int:
+    """The per-call timeout the configured provider will actually use."""
+    try:
+        from services.agentic.constants import OLLAMA_TIMEOUT_SECONDS, ONLINE_LLM_TIMEOUT_SECONDS
+    except Exception:                                  # noqa: BLE001
+        OLLAMA_TIMEOUT_SECONDS = ONLINE_LLM_TIMEOUT_SECONDS = 600
+    if str(ag.get("llm_mode", "online")).lower() == "offline":
+        return int(ag.get("ollama_timeout") or OLLAMA_TIMEOUT_SECONDS)
+    return int(ONLINE_LLM_TIMEOUT_SECONDS)
+
+
 def _watchdog_limits():
+    """(heartbeat, stuck) in seconds.
+
+    The stuck limit is never below the call's own timeout plus a margin. It used
+    to be applied as given, so a slow local model configured with a long
+    ollama_timeout — the normal air-gapped setup, a 70B model on CPU — had a
+    perfectly valid 20-minute answer thrown away at 15. A call that is still
+    inside its own timeout is slow, not stuck; the write-off is for calls whose
+    timeout never fired (a connection that trickles bytes forever).
+    """
     try:
         ag = llm_sim._agentic_cfg() or {}
         hb = int(ag.get("report_heartbeat_seconds") or REPORT_HEARTBEAT_SECONDS)
         stuck = int(ag.get("report_stuck_seconds") or REPORT_STUCK_SECONDS)
+        stuck = max(stuck, _call_timeout_seconds(ag) + REPORT_STUCK_MARGIN_SECONDS)
         return max(5, hb), max(hb, stuck)
     except Exception:                                  # noqa: BLE001
         return REPORT_HEARTBEAT_SECONDS, REPORT_STUCK_SECONDS
@@ -2992,7 +3017,9 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None) -> 
     # operator's decisions.
     if not d.get("disposition_checklist"):
         try:
-            _cl_llm = bool(llm_sim._use_real())          # generate_disposition_checklist's own rule
+            # Only when this regeneration is ALLOWED to use the model. A deterministic
+            # one (use_llm=False) promises no model call and must keep that promise.
+            _cl_llm = bool(use_llm and llm_sim._use_real())
         except Exception:                                # noqa: BLE001
             _cl_llm = False
         if _cl_llm and _no_route:
@@ -3010,7 +3037,8 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None) -> 
             try:
                 _oc = {}
                 fresh = llm_sim.generate_disposition_checklist(
-                    gv, window=window, min_severity=min_sev, run_id=case_id, mask=mask, outcome=_oc)
+                    gv, window=window, min_severity=min_sev, run_id=case_id, mask=mask, outcome=_oc,
+                    allow_llm=bool(use_llm))
                 if fresh:
                     _mutate_list_field(case_id, "disposition_checklist",
                                        lambda cur: cur or fresh)
