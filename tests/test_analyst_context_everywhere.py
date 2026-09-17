@@ -107,3 +107,15 @@ class ConservativeAdditions(unittest.TestCase):
         out = render.critical_details(g, g.findings)
         self.assertEqual({f.severity for f in g.findings if f.title in {o["finding"] for o in out}}, {"critical"})
         self.assertTrue(all(len(d["cmdline"]) <= 150 for o in out for d in o["evidence_details"]))
+
+
+class MissedFindingsMatchTheSummary(unittest.TestCase):
+    def test_a_finding_the_summary_kept_under_a_rewritten_title_is_not_resent(self):
+        g = _graph()
+        seen = {}
+        with mock.patch.object(_LLM, "_real_llm", lambda s, u, **k: seen.update(u=u) or "ok"), \
+             mock.patch.object(_LLM, "_use_real", lambda: True):
+            _LLM.chat(g, "summarize", full_context=True, require_llm=True)
+        p = json.loads(seen["u"].split("\n\n")[0])
+        resent = p.get("other_high_findings") or []
+        self.assertLess(len(resent), len(g.findings), "every finding was re-sent: title matching is broken")

@@ -2233,7 +2233,10 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
                 # the high/critical findings the budgeted summary dropped, one line
                 # each, and the evidence details of the critical ones.
                 _dump = json.dumps(payload)
-                _missed = [f for f in _scoped if f.severity in ("high", "critical") and f.title not in _dump]
+                # The summary rewrites titles ("X (+1 related)", the "on <host>" tail
+                # trimmed), so match on the rule part of the title, not the whole title.
+                _missed = [f for f in _scoped if f.severity in ("high", "critical")
+                           and f.title.split(" on ")[0][:40] not in _dump]
                 if _missed:
                     payload["other_high_findings"] = [
                         {"title": f.title, "time": f.ts,

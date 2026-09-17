@@ -1304,6 +1304,8 @@ def finding_detail(graph, f, verdict=None, max_details=6) -> dict:
 
     def add(e):
         item = {k: str(e.attrs[k])[:300] for k in _DETAIL_KEYS if (e.attrs or {}).get(k)}
+        if not item:
+            return                  # hosts alone are already on the finding: not a detail
         hosts = [_host_label(graph, x) for x in _assets_of(e)]
         if hosts:
             item["hosts"] = hosts
