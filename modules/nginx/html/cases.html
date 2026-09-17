@@ -760,7 +760,8 @@ function renderConfig(info){
       </div>
     </div>
     <div class="cfgactions">
-      <button onclick="doRefusion('${info.case_id}')" style="background:var(--info);border-color:var(--info);color:#0d1117" title="Saves your configuration first, then re-fuses the deterministic graph (hosts, entities, links, findings, risk &amp; timeline). Fast — no LLM, no tokens.">🔄 Refusion</button>
+      <button id="cf-refusion" onclick="doRefusion('${info.case_id}')" style="background:var(--info);border-color:var(--info);color:#0d1117" title="Saves your configuration first, then re-fuses the deterministic graph (hosts, entities, links, findings, risk &amp; timeline). Fast — no LLM, no tokens.">🔄 Refusion</button>
+      <div id="cf-refusion-hint" style="color:var(--med);font-size:12px;margin-top:6px;display:none">Select at least one host to run Refusion.</div>
     </div>`;
   loadHosts(info.case_id);
   // Any edit marks the rail dirty, so no background redraw can discard it.
@@ -1234,8 +1235,16 @@ function renderHosts(){
     out+=groups[os].map(h=>`<label class="hostrow"><input type="checkbox" ${_hostExc.has(h.host)?'':'checked'} style="width:auto" onchange="toggleHost('${jsa(h.host)}',this.checked)"/> <span class="t">${esc(h.host)}</span> <span style="color:var(--muted)">${esc((h.sources||[]).join('/'))}</span></label>`).join('');
   });
   $('#cf-hosts').innerHTML=out;
+  _refusionGuard();
 }
-function toggleHost(host,inc){ inc?_hostExc.delete(host):_hostExc.add(host); }   // checked=include
+// Every host unticked = nothing to fuse. Refusion is disabled and says why.
+function _noHostSelected(){ return _hostList.length>0 && _hostList.every(h=>_hostExc.has(h.host)); }
+function _refusionGuard(){
+  const none=_noHostSelected(), b=$('#cf-refusion'), hint=$('#cf-refusion-hint');
+  if(b){ b.disabled=none; b.style.opacity=none?'.5':''; b.style.cursor=none?'not-allowed':''; }
+  if(hint) hint.style.display=none?'':'none';
+}
+function toggleHost(host,inc){ inc?_hostExc.delete(host):_hostExc.add(host); _refusionGuard(); }   // checked=include
 function hostSelectAll(inc){
   const q=(($('#cf-hostfilter')||{}).value||'').toLowerCase();
   _hostList.filter(h=>!q||(h.host||'').toLowerCase().includes(q)).forEach(h=>inc?_hostExc.delete(h.host):_hostExc.add(h.host));
@@ -1300,6 +1309,7 @@ function _applyCfgLocally(cfg){
 // The /rescan endpoint persists the posted config (set_analysis_config) before fusing,
 // so saving is always the first step — there is no separate Save button.
 async function doRefusion(id){
+  if(_noHostSelected()){ toast('Select at least one host to run Refusion.'); return; }
   // Read the config rail BEFORE switching tabs — setTab('log') replaces #tabc,
   // unmounting the #cf-* inputs _railCfg() reads.
   const cfg = await _railCfg();
