@@ -1521,7 +1521,7 @@ function _idRender(id){
     || (it.hosts||[]).some(h=>(h.label||'').toLowerCase().includes(q));
   const shown=idents.filter(hit);
   const bset=(d.buckets||[]).join(', ')||'none';
-  let h=`<p style="color:var(--muted);font-size:12px;margin:0 0 6px">People in this case and their footprint across infrastructures (<b>${esc(bset)}</b>). Same-name accounts merge automatically; uncertain matches are <b>suggestions</b>. Click a person to expand; use ✕ to remove a wrong account/host. Everything persists across re-fusion.</p>`;
+  let h=`<p style="color:var(--muted);font-size:12px;margin:0 0 6px">People in this case and their footprint across infrastructures (<b>${esc(bset)}</b>). Same-name accounts merge automatically; uncertain matches are <b>suggestions</b>. Click a person to expand; use ✕ to remove an account that is not this person. Everything persists across re-fusion.</p>`;
   if(d.stale) h+=`<p style="color:var(--med);font-size:12px;margin:0 0 6px">⚠ ${d.stale} run(s) not yet fused — new uploads appear after a <b>Refusion</b>.</p>`;
   h+=`<div style="display:flex;gap:10px;align-items:center;margin:6px 0 10px">
       <input id="id-search" placeholder="filter people / accounts / hosts…" value="${esc(window._idQuery||'')}" oninput="idSearch(this.value)" autocomplete="off" style="flex:1;max-width:360px;padding:6px 8px">
@@ -1553,9 +1553,6 @@ function idCard(cid,it){
   const accts=(it.accounts||[]).map(a=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:1px 0">
       <span>👤 ${esc(a.label)}<span style="color:var(--muted);font-size:11px">${a.ctx?(' · @'+esc(a.ctx)):(a.bucket?(' · '+esc(a.bucket)):'')}${(typeof a.conf==='number'&&a.conf<1)?(' · '+Math.round(a.conf*100)+'%'):''}</span></span>
       ${xbtn(`idSplit('${jsa(cid)}','${jsa(a.id)}')`)}</div>`).join('') || '<span style="color:var(--muted)">—</span>';
-  const hosts=(it.hosts||[]).map(hh=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:1px 0">
-      <span>💻 ${esc(hh.label)} <span style="color:${hh.strong?'var(--ok)':'var(--muted)'};font-size:11px">· ${hh.strong?'active on host':'by name'}</span></span>
-      ${xbtn(`idExHost('${jsa(cid)}','${jsa(hh.name||'')}','${jsa(hh.id)}')`)}</div>`).join('') || '<span style="color:var(--muted)">—</span>';
   const sugg=(it.suggestions||[]).map(s=>`<div style="display:flex;gap:10px;align-items:center;justify-content:space-between;padding:4px 0">
       <span style="font-size:12px">possibly also <b>${esc(s.other)}</b> <span style="color:var(--muted);font-size:11px">· ${esc(s.reason||'')} · conf ${(typeof s.score==='number'?s.score.toFixed(2):s.score)}${s.ambiguous?' · <span style="color:var(--med)">ambiguous</span>':''}</span></span>
       <span style="white-space:nowrap"><button class="ghost" style="border-color:var(--ok)" onclick="idSug('${jsa(cid)}','${jsa(s.id)}','confirmed')">Merge</button> <button class="ghost" style="border-color:var(--med)" onclick="idSug('${jsa(cid)}','${jsa(s.id)}','declined')">Dismiss</button></span></div>`).join('');
@@ -1564,7 +1561,7 @@ function idCard(cid,it){
       <button class="ghost" style="border-color:var(--med);font-size:11px;padding:2px 8px" onclick="idSeparate('${jsa(cid)}','${jsa(it.key)}','${jsa((m.names||[]).join('|'))}')">Separate</button></div>`).join('');
   const body=`<div style="display:flex;gap:24px;margin-top:8px;flex-wrap:wrap">
        <div style="flex:1;min-width:240px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">Accounts</div>${accts}</div>
-       <div style="flex:1;min-width:200px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">Operates hosts</div>${hosts}</div></div>
+</div>
      ${mfrom?`<div style="margin-top:8px;border-top:1px dashed var(--bd);padding-top:6px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">How this person was assembled (Separate to undo)</div>${mfrom}</div>`:''}
      ${sugg?`<div style="margin-top:8px;border-top:1px dashed var(--bd);padding-top:6px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">Suggested links (Merge folds them into this person)</div>${sugg}</div>`:''}`;
   return `<div style="border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin-bottom:8px;background:#0d1117">${header}${body}</div>`;
@@ -1579,10 +1576,6 @@ function idSug(cid,sid,decision){
 function idSplit(cid,aid){
   api('/api/cases/'+cid+'/identities/account/split',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account_id:aid})})
     .then(_=>{toast('Account removed from this person.');renderIdentities(cid);});
-}
-function idExHost(cid,name,hid){
-  api('/api/cases/'+cid+'/identities/host/exclude',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,host_id:hid})})
-    .then(_=>{toast('Host removed.');renderIdentities(cid);});
 }
 function idSeparate(cid,ck,names){
   let m=null;
