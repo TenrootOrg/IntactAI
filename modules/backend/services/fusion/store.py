@@ -3396,8 +3396,9 @@ def split_account(case_id, account_id) -> dict:
         return kept
 
     _mutate_list_field(case_id, "identity_links", _mutate)
-    log_case_event(case_id, "Identity · account removed", "info", f"{account_id} split out")
-    _refuse_after_identity(case_id)
+    log_case_event(case_id, "Identity · account switched off", "info", f"{account_id} is not this person")
+    # No re-fuse: a switched-off account is an Identities-tab view only (the fuse never
+    # reads splits). Re-fusing made every click wait for a whole Refusion.
     return {"id": lid}
 
 
@@ -3429,7 +3430,8 @@ def undo_identity_decision(case_id, decision_id) -> dict:
     _mutate_list_field(case_id, "identity_links",
                        lambda links: [r for r in links if r.get("id") != decision_id])
     log_case_event(case_id, "Identity · undo", "info", str(decision_id))
-    _refuse_after_identity(case_id)
+    if not str(decision_id).startswith("split:"):    # switching an account back on is view-only
+        _refuse_after_identity(case_id)
     return {"removed": decision_id}
 
 

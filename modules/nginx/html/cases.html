@@ -1575,14 +1575,19 @@ function idSug(cid,sid,decision){
       body:JSON.stringify({decision:decision,members:members||[{id:sid}]})})
     .then(_=>{toast(decision==='confirmed'?'Merged. The change applies on the next Refusion.':'Kept as separate people.');renderIdentities(cid);});
 }
-function idInclude(cid,aid){
-  api('/api/cases/'+cid+'/identities/undo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'split:'+aid})})
-    .then(_=>{toast('Account included in this person again.');renderIdentities(cid);});
+// The switch is instant: flip the row here, save in the background, and put it back
+// only if the save fails. It used to wait for the server and redraw the whole tab.
+function _idSwitch(cid,aid,off){
+  const set=v=>{ for(const it of ((window._idData||{}).identities||[])) for(const a of (it.accounts||[])) if(a.id===aid) a.disabled=v; _idRender(cid); };
+  set(off);
+  const req = off
+    ? api('/api/cases/'+cid+'/identities/account/split',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account_id:aid})})
+    : api('/api/cases/'+cid+'/identities/undo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'split:'+aid})});
+  req.then(r=>{ if(!r || r.error) throw new Error(); })
+     .catch(_=>{ set(!off); toast('The change could not be saved. Please try again.'); });
 }
-function idSplit(cid,aid){
-  api('/api/cases/'+cid+'/identities/account/split',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account_id:aid})})
-    .then(_=>{toast('Account switched off for this person.');renderIdentities(cid);});
-}
+function idInclude(cid,aid){ _idSwitch(cid,aid,false); }
+function idSplit(cid,aid){ _idSwitch(cid,aid,true); }
 function idSeparate(cid,ck,names){
   let m=null;
   for(const it of ((window._idData||{}).identities||[])) if(it.key===ck) for(const x of (it.merged_from||[])) if((x.names||[]).join('|')===names){m=x;break;}
