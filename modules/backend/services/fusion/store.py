@@ -3468,13 +3468,17 @@ def identity_view(case_id) -> dict:
               if r.get("kind") == "split" and r.get("account_id")}
     hexcl = {(r["name"], r["host_id"]) for r in decisions.values()
              if r.get("kind") == "host_exclude" and r.get("name") and r.get("host_id")}
-    idents = _idf.resolve_identities(g, merges=merges, splits=splits, host_excludes=hexcl)
+    # A removed account stays in its person's card, switched off, so the same button
+    # switches it back on. It used to move out into a card of its own, which read as
+    # a permanent change (QA: "just enable and disable").
+    idents = _idf.resolve_identities(g, merges=merges, host_excludes=hexcl)
     acct_card = {}
     for it in idents:
         it["suggestions"] = []
         it["merged_from"] = []
         for a in it["accounts"]:
             acct_card[a["id"]] = it
+            a["disabled"] = a["id"] in splits
 
     # record HOW each merged card was formed (transparency + a reversible "Separate")
     mf: dict = {}

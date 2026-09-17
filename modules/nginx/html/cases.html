@@ -1521,7 +1521,7 @@ function _idRender(id){
     || (it.hosts||[]).some(h=>(h.label||'').toLowerCase().includes(q));
   const shown=idents.filter(hit);
   const bset=(d.buckets||[]).join(', ')||'none';
-  let h=`<p style="color:var(--muted);font-size:12px;margin:0 0 6px">People in this case and their footprint across infrastructures (<b>${esc(bset)}</b>). Same-name accounts merge automatically; uncertain matches are <b>suggestions</b>. Click a person to expand; use ✕ to remove an account that is not this person. Everything persists across re-fusion.</p>`;
+  let h=`<p style="color:var(--muted);font-size:12px;margin:0 0 6px">People in this case and their footprint across infrastructures (<b>${esc(bset)}</b>). Same-name accounts merge automatically; uncertain matches are <b>suggestions</b>. Click a person to expand; use ✕ to switch off an account that is not this person, and ↺ to switch it back on. Everything persists across re-fusion.</p>`;
   if(d.stale) h+=`<p style="color:var(--med);font-size:12px;margin:0 0 6px">⚠ ${d.stale} run(s) not yet fused — new uploads appear after a <b>Refusion</b>.</p>`;
   h+=`<div style="display:flex;gap:10px;align-items:center;margin:6px 0 10px">
       <input id="id-search" placeholder="filter people / accounts / hosts…" value="${esc(window._idQuery||'')}" oninput="idSearch(this.value)" autocomplete="off" style="flex:1;max-width:360px;padding:6px 8px">
@@ -1544,15 +1544,17 @@ function idCard(cid,it){
   const buckets=bl.some(b=>b!=='endpoint') ? bl.map(b=>bdg(b,b==='aws'?'#d29922':b==='azure'?'#3b9eff':'var(--muted)')).join('') : '';
   const cf=it.confidence; const confb = (typeof cf==='number' && cf<1)?bdg('~'+Math.round(cf*100)+'% match','#d29922'):'';
   const sugN=(it.suggestions||[]).length;
-  const nAcc=(it.accounts||[]).length;
+  const nAcc=(it.accounts||[]).filter(a=>!a.disabled).length;
   const header=`<div onclick="idToggle('${jsa(it.key)}')" style="cursor:pointer;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
      <div><span style="color:var(--muted)">${open?'▾':'▸'}</span> 👤 <b style="font-size:13px">${esc(it.name||it.key)}</b>${buckets} ${confb}</div>
      <span style="color:var(--muted);font-size:11px">${nAcc} ${nAcc===1?'account':'accounts'}${sugN?` · <span style="color:var(--acc)">${sugN} ${sugN===1?'suggestion':'suggestions'}</span>`:''}</span></div>`;
   if(!open) return `<div style="border:1px solid var(--bd);border-radius:8px;padding:8px 12px;margin-bottom:6px;background:#0d1117">${header}</div>`;
-  const xbtn=(fn)=>`<button class="ghost" title="Remove — not this person" style="border:none;color:var(--med);padding:0 4px;font-size:12px" onclick="event.stopPropagation();${fn}">✕</button>`;
-  const accts=(it.accounts||[]).map(a=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:1px 0">
-      <span>👤 ${esc(a.label)}<span style="color:var(--muted);font-size:11px">${a.ctx?(' · @'+esc(a.ctx)):(a.bucket?(' · '+esc(a.bucket)):'')}${(typeof a.conf==='number'&&a.conf<1)?(' · '+Math.round(a.conf*100)+'%'):''}</span></span>
-      ${xbtn(`idSplit('${jsa(cid)}','${jsa(a.id)}')`)}</div>`).join('') || '<span style="color:var(--muted)">—</span>';
+  const xbtn=(fn)=>`<button class="ghost" title="Not this person — switch off" style="border:none;color:var(--med);padding:0 4px;font-size:12px" onclick="event.stopPropagation();${fn}">✕</button>`;
+  const accts=(it.accounts||[]).map(a=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:1px 0${a.disabled?';opacity:.45':''}">
+      <span${a.disabled?' style="text-decoration:line-through"':''}>👤 ${esc(a.label)}<span style="color:var(--muted);font-size:11px">${a.ctx?(' · @'+esc(a.ctx)):(a.bucket?(' · '+esc(a.bucket)):'')}${(typeof a.conf==='number'&&a.conf<1)?(' · '+Math.round(a.conf*100)+'%'):''}</span></span>
+      ${a.disabled
+        ? `<button class="ghost" title="Include in this person again" style="border:none;color:var(--ok);padding:0 4px;font-size:12px" onclick="event.stopPropagation();idInclude('${jsa(cid)}','${jsa(a.id)}')">↺</button>`
+        : xbtn(`idSplit('${jsa(cid)}','${jsa(a.id)}')`)}</div>`).join('') || '<span style="color:var(--muted)">—</span>';
   const sugg=(it.suggestions||[]).map(s=>`<div style="display:flex;gap:10px;align-items:center;justify-content:space-between;padding:4px 0">
       <span style="font-size:12px">possibly also <b>${esc(s.other)}</b> <span style="color:var(--muted);font-size:11px">· ${esc(s.reason||'')} · conf ${(typeof s.score==='number'?s.score.toFixed(2):s.score)}${s.ambiguous?' · <span style="color:var(--med)">ambiguous</span>':''}</span></span>
       <span style="white-space:nowrap"><button class="ghost" style="border-color:var(--ok)" onclick="idSug('${jsa(cid)}','${jsa(s.id)}','confirmed')">Merge</button> <button class="ghost" style="border-color:var(--med)" onclick="idSug('${jsa(cid)}','${jsa(s.id)}','declined')">Dismiss</button></span></div>`).join('');
@@ -1573,9 +1575,13 @@ function idSug(cid,sid,decision){
       body:JSON.stringify({decision:decision,members:members||[{id:sid}]})})
     .then(_=>{toast(decision==='confirmed'?'Merged. The change applies on the next Refusion.':'Kept as separate people.');renderIdentities(cid);});
 }
+function idInclude(cid,aid){
+  api('/api/cases/'+cid+'/identities/undo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'split:'+aid})})
+    .then(_=>{toast('Account included in this person again.');renderIdentities(cid);});
+}
 function idSplit(cid,aid){
   api('/api/cases/'+cid+'/identities/account/split',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account_id:aid})})
-    .then(_=>{toast('Account removed from this person.');renderIdentities(cid);});
+    .then(_=>{toast('Account switched off for this person.');renderIdentities(cid);});
 }
 function idSeparate(cid,ck,names){
   let m=null;
