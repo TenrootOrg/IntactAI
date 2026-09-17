@@ -934,7 +934,7 @@ function renderReport(info){
     <span id="regenslot">${regenButtonHtml(info)}</span>
     ${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}
     <span style="color:var(--muted);font-size:11px;margin-left:auto">auto-generated on first scan · regenerate to apply Timeline changes</span>
-  </div><div id="zoomcards"></div><div class="md">${mdToHtml(mdBody)}</div>`;
+  </div><div id="zoomcards">${_zoomHtml.id===id?_zoomHtml.html:''}</div><div class="md">${mdToHtml(mdBody)}</div>`;
   clampEvidence($('#tabc'));
   loadZoomTargets(id);   // macro report -> clickable "Analyze this scope" presets
   // A page reload (or a tab switch back to Analysis) while a generation is
@@ -952,12 +952,16 @@ function renderReport(info){
 // drops the altitude to focused and yields the single explicit theory. Focused cases
 // get no cards (nothing to zoom into).
 let _zoomTargets=[];
+// The cards come from a separate, slow request (zoom_targets on a large graph). Every
+// redraw of the Analysis tab used to start them EMPTY and refill them when it
+// answered, so they blinked whenever the tab redrew. The last cards stay on screen
+// until a different answer arrives.
+let _zoomHtml={id:null, html:''};
 function loadZoomTargets(id){
   api('/api/cases/'+id+'/zoom_targets').then(d=>{
     const el=$('#zoomcards'); if(!el) return;
     _zoomTargets = (d && d.altitude==='macro' && Array.isArray(d.targets)) ? d.targets : [];
-    if(!_zoomTargets.length){ el.innerHTML=''; return; }
-    el.innerHTML = `<div class="zoomwrap">
+    const html = !_zoomTargets.length ? '' : `<div class="zoomwrap">
       <div class="zoomhdr">🔎 Broad scope — zoom into a suspicious window to get the focused analysis</div>
       <div class="zoomrow">`+ _zoomTargets.map((t,i)=>`
         <div class="zoomcard sev-${esc(t.severity||'')}">
@@ -966,7 +970,9 @@ function loadZoomTargets(id){
           <div class="zt-win">${esc((t.window||{}).start||'')} → ${esc((t.window||{}).end||'')}</div>
           ${t.rollup ? '<div class="zt-meta" style="margin-top:6px">Accounting row — the windows not analysed individually. Not a scope.</div>' : `<button class="dlbtn zt-go" onclick="applyZoom('${esc(id)}',${i})">Analyze this scope →</button>`}
         </div>`).join('')+`</div></div>`;
-  }).catch(()=>{ const el=$('#zoomcards'); if(el) el.innerHTML=''; });
+    _zoomHtml={id, html};
+    if(el.innerHTML!==html) el.innerHTML=html;
+  }).catch(()=>{});      // a failed refresh keeps the cards already on screen
 }
 async function applyZoom(id,i){
   const t=_zoomTargets[i]; if(!t) return;
