@@ -117,7 +117,7 @@ class NarrativeSurvivesEnrichmentFailure(unittest.TestCase):
         self.assertEqual(len(saved), 1)
         self.assertEqual(saved[0]["report_md"], "NARRATIVE")
         self.assertEqual(out["report_md"], "NARRATIVE")
-        self.assertIn(("Checklist", "warning"), logs)
+        self.assertIn(("Checklist · failed", "warning"), logs)
 
     def test_the_report_is_saved_before_the_checklist_is_asked_for(self):
         """Ordering is the whole point: everything after the save is expendable."""

@@ -1450,9 +1450,13 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
                      f"{master_prompt.strip()}\n\n---\n\n") + sys_p
         if mask:
             sys_p = _MASK_IDENTITY_LEGEND + sys_p
-        # A phase answer is short by construction, so cap it low: the budget is
-        # shared with the model's own reasoning, and an unbounded cap is what let a
-        # reasoning model spend everything thinking and return an empty string.
+        # The SAME output allowance as the report, not a low per-phase cap. A phase
+        # answer is short, but a reasoning model draws its thinking from this
+        # allowance first: capped at 4,000 tokens, DeepSeek on OpenRouter came back
+        # empty on 3 and 4 of 6 phases in two live runs, and cut one answer off at
+        # 71 characters -- while the synthesis, sent with the full allowance,
+        # answered both times. The cap is a ceiling, not a spend: a phase that
+        # answers in 800 tokens is billed for 800.
         # A STOPPED run makes no further calls. Each call reads the AI settings at
         # the moment it is made, so a run stopped because the settings changed was
         # otherwise free to carry on against the NEW provider — measured: a retired
@@ -1465,7 +1469,7 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
                     f"{z.get('finding_count', 0)} finding(s)")
         _t0 = time.time()
         out = _real_llm(sys_p, body, run_id=run_id,
-                        max_output_tokens=min(max_output_tokens or 4000, 4000),
+                        max_output_tokens=max_output_tokens,
                         reasoning_effort="low")
         z["_seconds"] = round(time.time() - _t0)
         out = _revert_mask(out, mask)
