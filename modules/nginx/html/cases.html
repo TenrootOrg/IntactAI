@@ -1539,7 +1539,7 @@ function idCard(cid,it){
   const open=!!window._idExpand[it.key];
   const bdg=(t,col)=>`<span style="font-size:10px;border:1px solid ${col||'var(--bd)'};color:${col||'var(--muted)'};border-radius:8px;padding:0 6px;margin-left:4px">${esc(t)}</span>`;
   const buckets=(it.buckets||[]).map(b=>bdg(b,b==='aws'?'#d29922':b==='azure'?'#3b9eff':'var(--muted)')).join('');
-  const cf=it.confidence; const confb = (typeof cf==='number' && cf<1)?bdg('~'+Math.round(cf*100)+'% match','#d29922'):bdg('exact','#3fb950');
+  const cf=it.confidence; const confb = (typeof cf==='number' && cf<1)?bdg('~'+Math.round(cf*100)+'% match','#d29922'):'';
   const sugN=(it.suggestions||[]).length;
   const header=`<div onclick="idToggle('${jsa(it.key)}')" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center">
      <div><span style="color:var(--muted)">${open?'▾':'▸'}</span> 👤 <b style="font-size:13px">${esc(it.name||it.key)}</b>${buckets} ${confb}</div>
