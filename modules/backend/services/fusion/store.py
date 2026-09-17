@@ -2307,6 +2307,15 @@ def load_graph(case_id) -> FusionGraph:
     return FusionGraph.from_dict(fg)
 
 
+def view_graph(case_id, d=None) -> FusionGraph:
+    """The case graph as every Case Analysis view must see it: with the hosts the
+    operator excluded in Configuration taken out. The report and the Timeline
+    applied the exclusion; the Risk tab, the timeframe cards, chat and Identities
+    read load_graph() directly and kept showing an excluded host."""
+    d = d if d is not None else (get_case(case_id) or {})
+    return _filter_graph_by_hosts(load_graph(case_id), d.get("excluded_hosts"))
+
+
 def _filter_graph_by_hosts(g, excluded_labels) -> FusionGraph:
     """Return a view of the graph with the named hosts excluded — their asset nodes,
     the entities/findings that live ONLY on them, and now-dangling relationships are
@@ -3444,7 +3453,7 @@ def identity_view(case_id) -> dict:
         return {"error": "not found"}
     try:
         from . import identities as _idf
-        g = load_graph(case_id)
+        g = view_graph(case_id, d)
         buckets = _idf.case_buckets(g)
         cands = _idf.compute_candidates(g)
     except Exception as e:  # noqa: BLE001
@@ -3911,7 +3920,7 @@ _CHAT_HISTORY_CAP = 100
 
 def chat_case(case_id, question) -> str:
     d = get_case(case_id)
-    g = load_graph(case_id)
+    g = view_graph(case_id, d)
     # Log the ACTION only (never the message content) so the audit trail stays useful
     # without leaking case Q&A into the log.
     log_case_event(case_id, "Chat · question received", "info", f"{len(question or '')} chars")

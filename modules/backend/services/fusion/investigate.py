@@ -102,7 +102,7 @@ def _term_hit(t, hay):
 def _tool(case_id, name, args):
     args = args or {}
     if name == "list_findings":
-        g = store.load_graph(case_id)
+        g = store.view_graph(case_id)
         fs = sorted(g.findings, key=lambda f: -sev.rank(f.severity))
         lim = min(40, int(args.get("limit") or 20))
         rows = [{"id": f.id, "title": f.title, "severity": f.severity,
@@ -123,7 +123,7 @@ def _tool(case_id, name, args):
         # while returning only ~2 of 37 findings per query, so nothing is flooded.
         # Generic: score = fraction of query terms present, ties broken by SEVERITY.
         q = str(args.get("query") or "")
-        g = store.load_graph(case_id)
+        g = store.view_graph(case_id)
         terms = _query_terms(q)
         if not terms:
             return []
@@ -149,7 +149,7 @@ def _tool(case_id, name, args):
         # The finding's evidence LOCATORS give the exact population for free — no
         # extra raw-file I/O — so report the real total rather than a "6 or more"
         # lower bound the model would have to hedge around.
-        g = store.load_graph(case_id)
+        g = store.view_graph(case_id)
         f = next((x for x in g.findings if x.id == fid), None)
         total = len(f.evidence or []) if f else len(rows)
         return {"shown": len(rows),
@@ -165,7 +165,7 @@ def _tool(case_id, name, args):
         val = str(args.get("value") or "").strip().lower()
         if not val:
             return {"error": "pivot needs a value"}
-        g = store.load_graph(case_id)
+        g = store.view_graph(case_id)
         win = args.get("window") or {}
         lo = keys.to_utc_dt(win.get("start")) if win.get("start") else None
         hi = keys.to_utc_dt(win.get("end")) if win.get("end") else None
@@ -191,7 +191,7 @@ def _tool(case_id, name, args):
         rows = [h for _, h in hits[:15]]
         return {"total_matches": total, "shown": len(rows), "events": rows}
     if name == "clusters":
-        g = store.load_graph(case_id)
+        g = store.view_graph(case_id)
         d = store.get_case(case_id) or {}
         cl = render.zoom_targets(g, window=d.get("time_window") or None,
                                  min_severity=d.get("min_severity") or "informational")

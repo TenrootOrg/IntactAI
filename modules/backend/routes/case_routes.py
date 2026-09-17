@@ -506,7 +506,7 @@ def get_case_risk(case_id):
     d = store.get_case(case_id)
     if not d:
         return jsonify({"error": "case not found"}), 404
-    g = store.load_graph(case_id)
+    g = store.view_graph(case_id, d)        # excluded hosts are out of every view
     rows = render.risk_table(g, window=d.get("time_window") or None,
                              min_severity=d.get("min_severity") or "informational")
     return jsonify({"case_id": case_id, "rows": rows, "total": len(rows),
@@ -521,7 +521,7 @@ def get_zoom_targets(case_id):
     d = store.get_case(case_id)
     if not d:
         return jsonify({"error": "case not found"}), 404
-    g = store.load_graph(case_id)
+    g = store.view_graph(case_id, d)
     win = d.get("time_window") or None
     ms = d.get("min_severity") or "informational"
     _mode = d.get("report_altitude") or "auto"
