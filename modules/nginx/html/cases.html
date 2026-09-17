@@ -1543,7 +1543,7 @@ function idCard(cid,it){
   const sugN=(it.suggestions||[]).length;
   const header=`<div onclick="idToggle('${jsa(it.key)}')" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center">
      <div><span style="color:var(--muted)">${open?'▾':'▸'}</span> 👤 <b style="font-size:13px">${esc(it.name||it.key)}</b>${buckets} ${confb}</div>
-     <span style="color:var(--muted);font-size:11px">${(it.accounts||[]).length} acct · ${(it.hosts||[]).length} host${sugN?` · <span style="color:var(--acc)">${sugN} suggestion(s)</span>`:''}</span></div>`;
+     <span style="color:var(--muted);font-size:11px">${(it.accounts||[]).length} acct${sugN?` · <span style="color:var(--acc)">${sugN} suggestion(s)</span>`:''}</span></div>`;
   if(!open) return `<div style="border:1px solid var(--bd);border-radius:8px;padding:8px 12px;margin-bottom:6px;background:#0d1117">${header}</div>`;
   const xbtn=(fn)=>`<button class="ghost" title="Remove — not this person" style="border:none;color:var(--med);padding:0 4px;font-size:12px" onclick="event.stopPropagation();${fn}">✕</button>`;
   const accts=(it.accounts||[]).map(a=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:1px 0">
