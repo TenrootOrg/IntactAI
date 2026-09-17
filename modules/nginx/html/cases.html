@@ -1503,9 +1503,12 @@ function tlDelete(eid){
 
 // ---- Identities tab: unified identity page (collapsible, searchable, per-account edit) ----
 function renderIdentities(id){
+  // Reloading the case already on screen (after Merge / Dismiss / Separate) keeps
+  // the list and swaps it in place, instead of blanking the tab.
+  const reload = window._idCase===id && window._idData && $('#tabc') && /👤/.test($('#tabc').textContent);
   window._idCase=id;
   if(!window._idExpand) window._idExpand={};
-  $('#tabc').innerHTML='<i style="color:var(--muted)">resolving identities…</i>';
+  if(!reload) $('#tabc').innerHTML='<i style="color:var(--muted)">resolving identities…</i>';
   api('/api/cases/'+id+'/identities').then(d=>{
     if(!tabIsStill('identities'))return;
     window._idData=d;

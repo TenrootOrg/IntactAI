@@ -127,8 +127,10 @@ def _audit_detail(action, is_err, resp):
             if _safe_json(resp).get("status") == "offline":
                 return "report written offline — no AI model is reachable from this appliance"
             return "report regenerated"
-        if a in ("rescan", "config", "hosts", "masking"):
+        if a == "rescan":
             return "configuration updated, case re-fused"
+        if a in ("config", "hosts", "masking"):
+            return "configuration saved"
         if a == "export":
             # The background run logs the real outcome (size, run count, the
             # file it produced); this line only marks when it was asked for.

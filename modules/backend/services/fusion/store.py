@@ -3340,14 +3340,13 @@ def _apply_identity_links(g, d, log=None) -> None:
 
 
 def _refuse_after_identity(case_id) -> None:
-    """F3 fix: an identity decision (link/group/split/undo/manual) now takes effect
-    IMMEDIATELY — re-fuse with TRIGGER_IDENTITY so the merged/split identities show
-    without waiting for the next unrelated fuse. Mirrors set_disposition. Best-effort
-    and fully isolated: a re-fuse hiccup never fails the decision that was persisted."""
-    try:
-        fuse_case(case_id, trigger=TRIGGER_IDENTITY)
-    except Exception as e:  # noqa: BLE001
-        log_case_event(case_id, "Identity · re-fuse deferred", "warning", str(e)[:120])
+    """No-op, kept so callers read the same. Identity decisions used to re-fuse the
+    whole case on every click (~30 s on a real case) so they "take effect
+    immediately" -- but the Identities tab reads the decisions directly and nothing
+    else shown reads the identity edges, so each click waited for a Refusion that
+    changed nothing visible. The edges are still applied on the next Refusion
+    (_apply_identity_links runs on every fuse)."""
+    return None
 
 
 def decide_identity_group(case_id, members, decision) -> dict:
@@ -3430,8 +3429,7 @@ def undo_identity_decision(case_id, decision_id) -> dict:
     _mutate_list_field(case_id, "identity_links",
                        lambda links: [r for r in links if r.get("id") != decision_id])
     log_case_event(case_id, "Identity · undo", "info", str(decision_id))
-    if not str(decision_id).startswith("split:"):    # switching an account back on is view-only
-        _refuse_after_identity(case_id)
+    _refuse_after_identity(case_id)
     return {"removed": decision_id}
 
 
