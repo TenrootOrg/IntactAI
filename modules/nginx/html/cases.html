@@ -885,7 +885,9 @@ function maybeAutoRegen(){
   const info=curInfo;
   // _fresh: the case data came from the server just now. A remembered view can
   // show a template the server has already replaced with an AI report.
-  if(!info || !info._fresh || tab!=='report') return;
+  // Any tab: a working model connecting is worth acting on wherever the operator
+  // is. The toast says so; the report refreshes on its own when it is ready.
+  if(!info || !info._fresh) return;
   if(!shouldAutoRegen(info, window._md||'', info.llm_status)) return;
   if(!_autoRegenOnce(info)) return;
   toast('AI model connected — regenerating this report…');
@@ -1007,8 +1009,14 @@ function genStatusHtml(elapsedS, phase, phaseElapsedS){
       <div class="agaction">Safe to read, download or leave.</div>
     </div>`;
   }
+  // Past ~10 minutes a bigger number is not information any more. A normal run is
+  // a minute or two; beyond the per-call timeout something is wrong, and the Log
+  // is where the backend's watchdog says what ("still waiting…", "written off").
+  const slow = (minsRaw !== null && mins >= 10)
+    ? `<div class="agdetail" style="color:var(--warn,#d29922)">This is taking unusually long. The Log shows whether the model is still answering — a run that stays silent is stopped automatically and the previous report is kept.</div>`
+    : '';
   return `<div class="agbanner agbanner-live">
-      <div class="agtitle">⏳ Sending case data to the model — ${esc(since)}</div>
+      <div class="agtitle">⏳ Sending case data to the model — ${esc(since)}</div>${slow}
       <div class="agdetail">A broad case is analysed phase by phase — one model call per phase, run in parallel, then a synthesis pass. This usually takes a minute or two.</div>
       <div class="agaction">No need to wait here — the report refreshes on its own the moment it's ready. Feel free to switch tabs or cases.</div>
     </div>`;
@@ -1068,6 +1076,17 @@ function pollReportGen(id){
   const tick=()=>{
     api('/api/cases/'+id).then(info=>{
       if(_genPollCase!==id) return;              // superseded by a newer poll
+      // AI settings changed while this case is open — on ANY tab. The Analysis
+      // tab used to be the only place a newly working model was noticed, so an
+      // operator on the Log saw nothing until they clicked back. The payload
+      // carries the settings id, so this costs nothing extra.
+      if(curInfo && curInfo.case_id===id && info.llm_status){
+        const was=(curInfo.llm_status||{}).config_id, now=info.llm_status.config_id;
+        if(now && now!==was){
+          curInfo.llm_status=info.llm_status; curInfo._fresh=true;
+          maybeAutoRegen();
+        }
+      }
       if(!info.report_generating){
         // Nothing is generating. Keep watching anyway, and refresh the moment
         // the case changes underneath us — that is the whole point of the poll
@@ -1089,6 +1108,15 @@ function pollReportGen(id){
         const _box=$('#tabc');
         if(_box && _box.dataset.tab && _box.dataset.tab!==tab && !operatorIsTyping()) drawTab();
         return;
+      }
+      // The moment a generation STARTS, redraw the tab once. Patching only
+      // #genstatus (below) is right for every later tick — but on the transition
+      // it left the rest of the tab as it was drawn before: "Template report —
+      // the AI model did not answer" still up beside "Sending case data to the
+      // model", and Regenerate still enabled. Reported as "it only updates when I
+      // refresh". backgroundRefresh holds off while the operator is typing.
+      if(curInfo && curInfo.case_id===id && !curInfo.report_generating){
+        if(backgroundRefresh(id)) return;
       }
       // Patch ONLY the status banner, never the whole tab. drawTab() rebuilds
       // the entire #tabc — including the full markdown report body, which can

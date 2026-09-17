@@ -1254,6 +1254,30 @@ SYNTHESIS_SYSTEM_PROMPT = (
 )
 
 
+def _case_event(run_id, action, status, detail):
+    """Write to the case activity log from inside the model layer. Best effort."""
+    if not (isinstance(run_id, str) and run_id.startswith("case_")):
+        return
+    try:
+        from . import store
+        store.log_case_event(run_id, action, status, detail)
+    except Exception:                                  # noqa: BLE001
+        pass
+
+
+def _note_progress(run_id):
+    """Stamp that the model just answered SOMETHING. The report watchdog measures
+    silence from here, so a slow broad case whose phases keep answering is never
+    mistaken for a stuck one."""
+    if not (isinstance(run_id, str) and run_id.startswith("case_")):
+        return
+    try:
+        from . import store
+        store._merge_case_details(run_id, {"report_last_progress_at": store._now_iso()})
+    except Exception:                                  # noqa: BLE001
+        pass
+
+
 def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
                     eff_detail, run_id, max_output_tokens, mask, master_prompt,
                     log=None):
@@ -1327,9 +1351,15 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
         # A phase answer is short by construction, so cap it low: the budget is
         # shared with the model's own reasoning, and an unbounded cap is what let a
         # reasoning model spend everything thinking and return an empty string.
+        _w = z.get("window") or {}
+        _case_event(run_id, f"Report · phase {z['n']} of {_total} — sending", "info",
+                    f"{_w.get('start') or '?'} → {_w.get('end') or '?'} · "
+                    f"{z.get('finding_count', 0)} finding(s)")
+        _t0 = time.time()
         out = _real_llm(sys_p, body, run_id=run_id,
                         max_output_tokens=min(max_output_tokens or 4000, 4000),
                         reasoning_effort="low")
+        z["_seconds"] = round(time.time() - _t0)
         out = _revert_mask(out, mask)
         if not (out or "").strip():
             raise LLMUnavailable("empty_reply")
@@ -1339,6 +1369,12 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
     results = {}
     if not phases:
         return results
+    # EVERY phase is visible in the Log. A broad case used to show one "sending
+    # request" line over five parallel calls, so when one hung there was no way to
+    # tell which, or that the other four had already answered.
+    _total = len(phases)
+    _case_event(run_id, "Report · analysing the case phase by phase", "info",
+                f"{_total} phase call(s) in parallel, then a synthesis call")
     with _cf.ThreadPoolExecutor(max_workers=min(6, len(phases))) as pool:
         futs = {pool.submit(_one, z): z for z in phases}
         for fut in _cf.as_completed(futs):
@@ -1351,10 +1387,16 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
                     name = m.group(1).strip().strip("*").strip()
                     text = text[:m.start()] + text[m.end():]
                 results[z["n"]] = {"name": name, "body": text.strip()}
+                _case_event(run_id, f"Report · phase {z['n']} of {_total} — answered", "success",
+                            f"{z.get('_seconds', '?')}s · {len(text):,} chars")
             except Exception as e:                       # noqa: BLE001
                 results[z["n"]] = {"error": f"{type(e).__name__}: {e}"[:200]}
+                _r, _f = _llm_reason_text(_classify_llm_error(e))
+                _case_event(run_id, f"Report · phase {z['n']} of {_total} — failed", "warning",
+                            f"{_r}{provider_retry_hint(e)} The other phases are unaffected.")
                 if log:
                     log(f"phase {z['n']} failed: {type(e).__name__}")
+            _note_progress(run_id)
     return results
 
 
@@ -1451,6 +1493,10 @@ def generate_report(graph, *, window=None, min_severity="informational",
                           f"{master_prompt.strip()}\n\n---\n\n") + system
             if mask:                              # teach the model the identity-number key
                 system = _MASK_IDENTITY_LEGEND + system
+            if altitude == "macro":
+                _case_event(run_id, "Report · synthesis — sending", "info",
+                            "combining the phase analyses into the report")
+                _note_progress(run_id)
             narrative = _real_llm(system, payload_str, run_id=run_id,
                                   max_output_tokens=max_output_tokens,
                                   reasoning_effort="low")
@@ -1577,7 +1623,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
             # different actions. Reuses chat's classifier + messages so the same
             # condition is never described two ways in two places.
             reason, fix = _llm_reason_text(_classify_llm_error(e))
-            tail = f"{reason}" + (f" {fix}" if fix else "")
+            tail = f"{reason}" + (f" {fix}" if fix else "") + provider_retry_hint(e)
             return md + (f"\n\n---\n_Deterministic report — {tail}_\n")
     # Deterministic (no-LLM) path: nothing is sent to a provider, so no masking —
     # the operator gets the real report directly.
@@ -1634,17 +1680,25 @@ def _simulated_checklist(findings) -> list:
 
 
 def generate_disposition_checklist(graph, *, window=None, min_severity="high",
-                                   run_id=None, mask=None) -> list:
+                                   run_id=None, mask=None, outcome=None) -> list:
     """Customer-confirmation checklist: per high finding, a likely-benign yes/no question
     the customer accepts (=> dispositioned benign) or declines (=> kept). Grounded to real
     finding_ids; deterministic fallback when no real LLM. Never raises.
     `mask` (optional DataAnonymizer) anonymizes the LLM payload the same way
     generate_report() does — previously this pass sent the graph to the LLM
     unmasked even when the case had masking enabled."""
+    # `outcome`, when given, is filled with what ACTUALLY happened. This never
+    # raises and falls back to a template checklist, so a failed model call used to
+    # be indistinguishable from a successful one: the Log said "Checklist ·
+    # complete — 0 item(s)" for a rejected key.
+    if outcome is None:
+        outcome = {}
+    outcome.update({"used_llm": False, "error": None, "error_text": ""})
     _, findings = render.scope(graph, window=window, min_severity=min_severity)
     high = [f for f in findings if sev.at_least(f.severity, "high")] or findings
     if not _use_real():
         return _simulated_checklist(high)
+    outcome["used_llm"] = True
     try:
         payload = render.distilled(graph, window=window, min_severity=min_severity,
                                    max_entities=budget.REPORT_MAX_ENTITIES,
@@ -1667,8 +1721,12 @@ def generate_disposition_checklist(graph, *, window=None, min_severity="high",
             if fid in valid and q:                    # grounding: only real findings
                 out.append({"id": _checklist_id(fid, q), "finding_id": fid, "question": q,
                             "suggestion": it.get("suggestion", "benign"), "status": "pending"})
+        outcome["empty"] = not out
         return out or _simulated_checklist(high)
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        outcome["error"] = _classify_llm_error(e)
+        _r, _f = _llm_reason_text(outcome["error"])
+        outcome["error_text"] = f"{_r}{provider_retry_hint(e)}"
         return _simulated_checklist(high)
 
 
@@ -1693,7 +1751,7 @@ _LLM_ERR_MESSAGES = {
                 "Try again. If it keeps happening, check the connection or choose "
                 "a faster model in Settings ▸ Agentic."),
     "rate_limited": ("The AI provider is limiting requests right now.",
-                     "Wait a minute, then try again."),
+                     "Wait, or switch provider in Settings ▸ Agentic, then try again."),
     "missing_offline_url": ("Local model mode is on, but no local model address is set.",
                             "Set the Ollama URL in Settings ▸ Agentic, or switch to an "
                             "online model, then try again."),
@@ -1712,15 +1770,13 @@ _LLM_ERR_MESSAGES = {
     # the vendor's own "log out and sign in again" points at a screen that does
     # not exist here: signing in happens on the HOST, in a shell.
     "cli_credential_expired": (
-        "The subscription sign-in expired: the CLI refreshed its token, the refreshed "
-        "copy could not be saved, and the old one is now spent. Nothing was "
-        "misconfigured — this is the first refresh since you signed in.",
-        "On the appliance HOST run `codex login` — or `codex login --device-auth` if "
-        "that host has no browser. Until the appliance can write that credential back, "
-        "it returns at every token refresh."),
-    "model_unsupported": ("Your subscription does not allow the selected model.",
-                          "Clear the Model field in Settings ▸ Agentic to use your "
-                          "plan's default model, then try again."),
+        "The subscription sign-in expired: its refreshed token could not be saved, so the old one is spent.",
+        "On the appliance HOST run `codex login` (or `codex login --device-auth` without a browser), then try again."),
+    # Covers both a subscription plan that does not include the model and a model
+    # id the provider does not have at all — the operator's action is the same.
+    "model_unsupported": ("The provider does not offer the selected model to this account.",
+                          "Choose a different model in Settings ▸ Agentic — or clear the "
+                          "Model field to use the default — then try again."),
     # Billing and routing both arrive looking like auth failures; saying the key
     # is fine stops the operator replacing a key that works.
     "no_credit": ("The AI provider account is out of credit. The API key itself is fine.",
@@ -1745,6 +1801,17 @@ _LLM_ERR_MESSAGES = {
 # so a connection that comes back is used immediately, with no cooldown to wait
 # out and no state to go stale.
 _NO_ROUTE_CODES = ("no_internet", "timeout")
+
+
+def provider_retry_hint(text) -> str:
+    """The provider's own "try again at/in …", as a sentence to append, or ''.
+
+    A usage cap that resets in four days and a burst limit that clears in a
+    minute are the same reason code with completely different answers, and only
+    the provider knows which — so say what it said.
+    """
+    m = _re.search(r"try again (at|in|after) ([^.\n]{3,60})", str(text or ""), _re.I)
+    return f" The provider says to try again {m.group(1).lower()} {m.group(2).strip()}." if m else ""
 
 
 def reason_code_of(why: str) -> str:
@@ -1816,7 +1883,30 @@ def _llm_unavailable_reason():
 
 def _classify_llm_error(exc) -> str:
     """Map a transport exception to a reason code (auth vs connection vs timeout …)."""
+    # A failure that ALREADY knows what it is keeps that answer. The subscription CLI
+    # classifies its own output (it is the only layer that sees the vendor's exact
+    # wording) and raises with `.reason`; re-deriving the code here from the message
+    # text threw that away — "You've hit your usage limit … try again at Sep 20" went
+    # out as "the AI model did not answer, check the API key and internet".
+    r = getattr(exc, "reason", None)
+    if isinstance(r, str) and r != "llm_error" and (r in _LLM_ERR_MESSAGES or r in _LLM_CONFIG_REASONS):
+        return r
     s = f"{type(exc).__name__} {exc}".lower()
+    # A usage cap is not billing and not "wait a minute": the ChatGPT plan answers
+    # "You've hit your usage limit. Visit … to purchase more credits or try again at
+    # <date>". Checked FIRST, because "purchase … credits" would otherwise read as
+    # an empty account.
+    if any(t in s for t in ("usage limit", "hit your limit", "you've hit your", "rate limit reached")):
+        return "rate_limited"
+    # The model never answered because it was never REACHED. A connect timeout is
+    # worded "…timed out", and the timeout branch below used to claim it — telling
+    # an operator whose box has no route out that "the model took too long".
+    if any(t in s for t in ("connecttimeout", "connect timeout", "newconnectionerror",
+                            "failed to establish a new connection", "name or service not known",
+                            "temporary failure in name resolution", "nodename nor servname",
+                            "network is unreachable", "no route to host", "connection refused",
+                            "getaddrinfo")):
+        return "no_internet"
     # Checked FIRST, before the auth patterns. A routing refusal is a 404 whose
     # body often mentions "api"/"policy", and the auth branch below is broad
     # enough to swallow it — which is exactly what happened: OpenRouter refused
@@ -1848,6 +1938,15 @@ def _classify_llm_error(exc) -> str:
     if any(t in s for t in ("no endpoints available", "no allowed providers",
                             "data policy", "guardrail")):
         return "model_not_routable"
+    # A model id the provider does not have. OpenRouter, verbatim:
+    #   "openai/does-not-exist-9f3 is not a valid model ID" (HTTP 400)
+    # which matched nothing and reached the operator as "check the API key and the
+    # internet connection" — both of which were fine.
+    if any(t in s for t in ("not a valid model", "model_not_found", "model not found",
+                            "no such model", "unknown model", "invalid model",
+                            "model does not exist", "is not supported when using",
+                            "model is not supported")):
+        return "model_unsupported"
     if any(t in s for t in ("401", "403", "unauthor", "user not found", "invalid api",
                             "authentication", "invalid_api_key", "no api key", "api key")):
         return "invalid_key"

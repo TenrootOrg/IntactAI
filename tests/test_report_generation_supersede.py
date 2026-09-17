@@ -74,14 +74,16 @@ class ASupersededResultIsNeverWritten(unittest.TestCase):
 class ChangingTheAISettingsRetiresInFlightGenerations(unittest.TestCase):
 
     def test_supersede_clears_every_marker(self):
-        sup = body(STORE, "def supersede_report_generations(")
+        # the work lives in _retire_generation, shared with the stuck-run watchdog
+        self.assertIn("_retire_generation(", body(STORE, "def supersede_report_generations("))
+        sup = body(STORE, "def _retire_generation(")
         for key in ("report_generating", "report_generating_started_at", "report_phase",
                     "report_phase_started_at", "report_generation_id"):
             self.assertIn(f'"{key}"', sup, f"{key} must be cleared")
 
     def test_supersede_replaces_the_lock_the_hung_thread_still_holds(self):
-        self.assertIn("_REPORT_GEN_LOCKS[cid] = threading.Lock()",
-                      body(STORE, "def supersede_report_generations("),
+        self.assertIn("_REPORT_GEN_LOCKS[case_id] = threading.Lock()",
+                      body(STORE, "def _retire_generation("),
                       "without a fresh lock every new generation is refused as busy "
                       "until the hung call returns — which may be never")
 

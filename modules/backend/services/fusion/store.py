@@ -1853,12 +1853,29 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
             # run could never be recognised as stuck.
             _merge_case_details(case_id, {"report_phase": "narrative",
                                           "report_phase_started_at": _now_iso(),
-                                          "report_generating_started_at": _now_iso()})
+                                          "report_generating_started_at": _now_iso(),
+                                          "report_last_progress_at": _now_iso()})
         if _narrate:
             log_case_event(case_id, "Report · sending request to the LLM", "info",
                            f"model {_model_label(_mdl)} ({_prov}); payload ≤{llm_ent:,} entities, "
                            f"output ≤{llm_out or 'model max'} tokens")
+        elif allow_llm:
+            # The operator pressed Refusion and got a template. Say WHY in the Log,
+            # in the same words the Analysis banner uses — it used to show only
+            # "generating report — deterministic report", which reads as a choice.
+            try:
+                _st = llm_sim.llm_status()
+                _nw = (_st.get("reason") or "No usable AI model.") + (f" {_st['fix']}" if _st.get("fix") else "")
+            except Exception:                            # noqa: BLE001
+                _nw = "No usable AI model."
+            log_case_event(case_id, "Report · written without the AI model", "info",
+                           f"{_nw} — template report")
         _report_failed = False
+        _hb_stop = threading.Event()
+        if _narrate:
+            threading.Thread(target=_report_watchdog,
+                             args=(case_id, f"{_model_label(_mdl)} ({_prov})", _hb_stop),
+                             kwargs={"write_off": False}, daemon=True).start()
         try:
             report = llm_sim.generate_report(
                 gv, window=window, min_severity=min_sev,
@@ -1891,6 +1908,8 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
             report = d.get("report_md") or (
                 f"_The report could not be generated ({type(_e).__name__}). The graph "
                 f"was built and saved; press Rescan to try again._")
+        finally:
+            _hb_stop.set()
         if _narrate and not _report_failed:
             _narrated, _why = _narration_outcome(report)
             if _narrated:
@@ -1953,11 +1972,11 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
             log_case_event(case_id, "Checklist · sending request to the LLM", "info",
                            f"model {_model_label(_cmdl)} ({_cprov})")
         try:
+            _oc = {}
             fresh_checklist = llm_sim.generate_disposition_checklist(
-                gv, window=window, min_severity=min_sev, run_id=case_id, mask=mask)
-            if _cnarrate:
-                log_case_event(case_id, "Checklist · complete", "success",
-                               f"{len(fresh_checklist or []):,} item(s) generated")
+                gv, window=window, min_severity=min_sev, run_id=case_id, mask=mask, outcome=_oc)
+            if _cnarrate or _oc.get("used_llm"):
+                _log_checklist_outcome(case_id, _oc, fresh_checklist)
         except Exception as e:                       # noqa: BLE001
             fresh_checklist = None
             log_case_event(case_id, "Checklist", "warning",
@@ -2309,6 +2328,26 @@ def _filter_graph_by_hosts(g, excluded_labels) -> FusionGraph:
     return gv
 
 
+def _log_checklist_outcome(case_id, outcome, items):
+    """Exactly one outcome line for a checklist call that was actually made.
+
+    generate_disposition_checklist never raises — it falls back to a template — so
+    both call sites used to report success regardless: "Checklist · complete — 0
+    item(s)" for a rejected key, and in the Regenerate path, nothing at all after
+    "sending request". `outcome` is what the generator says really happened.
+    """
+    if outcome.get("error"):
+        log_case_event(case_id, "Checklist · failed", "warning",
+                       f"{outcome.get('error_text') or 'the model did not answer'} — "
+                       f"a template checklist was used instead; the report is unaffected")
+    elif outcome.get("empty"):
+        log_case_event(case_id, "Checklist · complete", "success",
+                       "the model found nothing to confirm — a template checklist was used")
+    else:
+        log_case_event(case_id, "Checklist · complete", "success",
+                       f"{len(items or []):,} item(s) generated")
+
+
 def _narration_outcome(report):
     """(narrated, why) for a report generate_report just returned, read from the
     report's OWN closing note, which is the one thing that knows what happened.
@@ -2507,6 +2546,32 @@ def _generation_is_current(case_id, gen_id) -> bool:
         return True                                   # cannot tell: do not drop a report
 
 
+def _retire_generation(case_id, action, detail, gen_id=None) -> bool:
+    """Stop waiting for a case's in-flight generation. True if one was retired.
+
+    Python cannot stop the worker thread, so retiring means: clear the markers (the
+    banner goes and Regenerate works), drop the generation id (a late answer is
+    discarded, see _generation_is_current) and replace the per-case lock (the stuck
+    thread still holds the old one and would refuse every new generation as busy).
+    With `gen_id`, only that generation is retired — a newer one is left alone.
+    """
+    d = get_case(case_id) or {}
+    if not d.get("report_generating"):
+        return False
+    if gen_id is not None and d.get("report_generation_id") != gen_id:
+        return False
+    _merge_case_details(case_id, {"report_generating": False,
+                                  "report_generating_started_at": None,
+                                  "report_phase": None,
+                                  "report_phase_started_at": None,
+                                  "report_generation_id": None,
+                                  "report_last_progress_at": None})
+    with _REPORT_GEN_LOCKS_GUARD:
+        _REPORT_GEN_LOCKS[case_id] = threading.Lock()
+    log_case_event(case_id, action, "warning", detail)
+    return True
+
+
 def supersede_report_generations(reason: str) -> int:
     """Stop waiting for every in-flight report generation. Returns how many.
 
@@ -2515,13 +2580,7 @@ def supersede_report_generations(reason: str) -> int:
     still open 25 minutes later — so its worker never reached the `finally` that
     clears the flag, and the case sat on "Sending case data to the model — running
     10 min" with nothing actually working towards it. Changing the settings is the
-    operator saying the old call is no longer wanted, so honour that:
-
-      * the markers are cleared at once, so the banner goes and Regenerate works;
-      * the generation id is dropped, so if the old call DOES come back its result
-        is discarded rather than overwriting whatever the new model writes;
-      * the per-case lock is replaced, because the stuck thread still holds the
-        old one and would otherwise refuse every new generation as "busy".
+    operator saying the old call is no longer wanted, so honour that.
     """
     n = 0
     try:                                  # same enumeration as the startup sweep
@@ -2531,24 +2590,78 @@ def supersede_report_generations(reason: str) -> int:
     except Exception:                                  # noqa: BLE001
         runs = []
     for r in runs:
-        cid = r.get("run_id")
         try:
-            _merge_case_details(cid, {"report_generating": False,
-                                      "report_generating_started_at": None,
-                                      "report_phase": None,
-                                      "report_phase_started_at": None,
-                                      "report_generation_id": None})
-            with _REPORT_GEN_LOCKS_GUARD:
-                _REPORT_GEN_LOCKS[cid] = threading.Lock()
-            log_case_event(cid, "Report generation stopped", "warning",
-                           f"{reason} — the report that was being written is abandoned "
-                           f"and its result will be discarded if it arrives. The previous "
-                           f"report is unchanged. Press Regenerate to write it with the "
-                           f"new settings.")
-            n += 1
+            if _retire_generation(r.get("run_id"), "Report generation stopped",
+                                  f"{reason} — the report that was being written is abandoned "
+                                  f"and its result will be discarded if it arrives. The previous "
+                                  f"report is unchanged. Press Regenerate to write it with the "
+                                  f"new settings."):
+                n += 1
         except Exception:                              # noqa: BLE001 — never block a save
             continue
     return n
+
+
+# How long a generation may go without the model answering ANYTHING before it is
+# written off, and how often the Log says it is still waiting. Silence is measured
+# from the last answer (report_last_progress_at), not from the start: a broad case
+# whose phases keep answering is slow, not stuck. The default sits above the
+# per-call timeout (ONLINE_LLM_TIMEOUT_SECONDS, 10 min), so a call that is merely
+# slow gets its full timeout first. Both can be set in the agentic settings
+# (report_heartbeat_seconds / report_stuck_seconds) — the escape hatch every
+# background behaviour here is meant to have.
+REPORT_HEARTBEAT_SECONDS = 120
+REPORT_STUCK_SECONDS = 15 * 60
+
+
+def _watchdog_limits():
+    try:
+        ag = llm_sim._agentic_cfg() or {}
+        hb = int(ag.get("report_heartbeat_seconds") or REPORT_HEARTBEAT_SECONDS)
+        stuck = int(ag.get("report_stuck_seconds") or REPORT_STUCK_SECONDS)
+        return max(5, hb), max(hb, stuck)
+    except Exception:                                  # noqa: BLE001
+        return REPORT_HEARTBEAT_SECONDS, REPORT_STUCK_SECONDS
+
+
+def _report_watchdog(case_id, model_label, stop, *, gen_id=None, write_off=True):
+    """While a model call is in flight, keep the Log honest about it.
+
+    The hang this exists for: a DeepSeek call accepted the connection and never
+    answered. For 25 minutes the Log's last line was "sending request to the LLM",
+    identical to a call that had just gone out, and the banner kept counting. Now
+    every heartbeat interval the Log says how long it has been silent, and past the
+    stuck limit the run is written off — cleared, its late answer discarded, and
+    the Log says so in words — instead of spinning until someone restarts the box.
+    `write_off=False` for the synchronous Refusion path, where the HTTP request is
+    itself still waiting and the call's own timeout ends it.
+    """
+    hb, stuck = _watchdog_limits()
+    while not stop.wait(hb):
+        try:
+            d = get_case(case_id) or {}
+            if gen_id is not None and d.get("report_generation_id") != gen_id:
+                return                                  # retired or replaced elsewhere
+            since = (d.get("report_last_progress_at")
+                     or d.get("report_generating_started_at"))
+            silent = seconds_since(since) if since else None
+            if silent is None:
+                continue
+            mins = max(1, round(silent / 60))
+            if write_off and silent >= stuck:
+                _retire_generation(
+                    case_id, "Report · written off as stuck",
+                    f"no answer from {model_label} for {mins} min — stopped waiting. Its "
+                    f"result will be discarded if it ever arrives. The previous report is "
+                    f"unchanged. Check Settings ▸ Agentic, or press Regenerate to try again.",
+                    gen_id=gen_id)
+                return
+            log_case_event(case_id, "Report · still waiting on the model", "info",
+                           f"{model_label} has not answered for {mins} min"
+                           + (f" — written off at {round(stuck / 60)} min without an answer"
+                              if write_off else ""))
+        except Exception:                              # noqa: BLE001 — never kill the run
+            continue
 
 
 class ReportGenerationBusy(Exception):
@@ -2665,17 +2778,31 @@ def regenerate_report_async(case_id, *, audience=None, use_llm=False) -> dict:
                                       "report_generating_started_at": started,
                                       "report_phase": "narrative",
                                       "report_phase_started_at": started,
-                                      "report_generation_id": gen_id})
+                                      "report_generation_id": gen_id,
+                                      # silence is measured from here until the model
+                                      # answers something; a stale stamp from an older
+                                      # run must not make a new one look idle
+                                      "report_last_progress_at": started})
     except Exception:
         lock.release()
         raise
 
     def _worker():
+        stop = threading.Event()
+        try:
+            _m, _p, _ = _configured_fusion_model()
+            threading.Thread(target=_report_watchdog,
+                             args=(case_id, f"{_model_label(_m)} ({_p})", stop),
+                             kwargs={"gen_id": gen_id}, daemon=True,
+                             name=f"report-watchdog-{case_id}").start()
+        except Exception:                                  # noqa: BLE001
+            pass
         try:
             regenerate_report(case_id, audience=audience, use_llm=True, gen_id=gen_id)
         except Exception:
             pass                     # already logged to the case activity log
         finally:
+            stop.set()
             # Only clear the markers if they are still OURS. A superseded generation
             # finishing late must not wipe the banner of the one that replaced it.
             try:
@@ -2729,6 +2856,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None) -> 
     llm_ident = _llm_identity_budget(d)
     llm_out = _effective_output_cap(d)
     model, provider, mode = _configured_fusion_model()
+    _no_route = False            # set when this run's narration proved there is no route
     # The SAME rule generate_report uses to decide whether to call the model.
     # This used to be `if model:`, and a subscription with the Model field blank
     # (the plan's default) logged "LLM not configured — no model set" and then
@@ -2765,13 +2893,32 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None) -> 
             # report, ending in a note that says why. Read that back instead of
             # assuming success, or a call that failed is logged "LLM responded".
             narrated, why = _narration_outcome(report)
+            if not _generation_is_current(case_id, gen_id):
+                # This run was STOPPED (settings changed, or written off as stuck)
+                # and its call has only now come back. Logging it as an ordinary
+                # "LLM call failed" / "responded" put it in the middle of whatever
+                # run replaced it — "sending to deepseek … call failed … responded"
+                # — with nothing saying which run each line belonged to.
+                log_case_event(case_id, "Report · late result discarded", "info",
+                               f"the stopped run on {_model_label(model)} ({provider}) "
+                               + ("answered" if narrated else f"failed — {why}")
+                               + " after it was stopped; nothing was saved")
+                return {"report_md": d.get("report_md"), "audience": d.get("audience", "both"),
+                        "discarded": True}
             if narrated:
                 log_case_event(case_id, "Report · LLM responded", "success",
                                f"narrative generated ({len(report):,} chars)")
             else:
                 log_case_event(case_id, "Report · LLM call failed", "warning",
                                f"{why} — template report used instead")
+                _no_route = llm_sim.provider_unreachable(why)
     except Exception as e:
+        if not _generation_is_current(case_id, gen_id):
+            log_case_event(case_id, "Report · late result discarded", "info",
+                           f"the stopped run on {_model_label(model)} ({provider}) failed after "
+                           f"it was stopped ({type(e).__name__}); nothing was saved")
+            return {"report_md": d.get("report_md"), "audience": d.get("audience", "both"),
+                    "discarded": True}
         log_case_event(case_id, "Report generation", "error", f"LLM/render failed: {e}")
         raise
 
@@ -2815,8 +2962,8 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None) -> 
         # was written off). Writing now would put the OLD model's report over
         # whatever the operator has asked for since.
         log_case_event(case_id, "Report · late result discarded", "info",
-                       "a report from before the AI settings changed finally arrived; "
-                       "it was not saved")
+                       f"the stopped run on {_model_label(model)} ({provider}) finished "
+                       f"after it was stopped; nothing was saved")
         return {"report_md": d.get("report_md"), "audience": d.get("audience", "both"),
                 "discarded": True}
     try:
@@ -2839,21 +2986,35 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None) -> 
     # waiting on one. Generated once and never regenerated: it carries the
     # operator's decisions.
     if not d.get("disposition_checklist"):
-        if use_llm and llm_sim._use_real():     # generate_disposition_checklist's own rule
-            log_case_event(case_id, "Checklist · sending request to the LLM", "info",
-                           f"model {_model_label(model)} ({provider})")
         try:
-            fresh = llm_sim.generate_disposition_checklist(
-                gv, window=window, min_severity=min_sev, run_id=case_id, mask=mask)
-            if fresh:
-                _mutate_list_field(case_id, "disposition_checklist",
-                                   lambda cur: cur or fresh)
-                log_case_event(case_id, "Checklist · complete", "success",
-                               f"{len(fresh):,} item(s) generated")
-        except Exception as e:                       # noqa: BLE001
-            log_case_event(case_id, "Checklist", "warning",
-                           f"could not be generated ({type(e).__name__}); "
-                           f"the report is unaffected")
+            _cl_llm = bool(llm_sim._use_real())          # generate_disposition_checklist's own rule
+        except Exception:                                # noqa: BLE001
+            _cl_llm = False
+        if _cl_llm and _no_route:
+            # Same rule as the Refusion path: the narration just proved there is no
+            # route to this provider, so the checklist would spend a second full
+            # timeout learning it. Measured before this: a Regenerate against a
+            # model that never answered waited out the report AND the checklist.
+            log_case_event(case_id, "Checklist · skipped", "info",
+                           "the provider could not be reached for the report a moment ago — "
+                           "not calling it again in this run; the next Regenerate will try afresh")
+        else:
+            if _cl_llm:
+                log_case_event(case_id, "Checklist · sending request to the LLM", "info",
+                               f"model {_model_label(model)} ({provider})")
+            try:
+                _oc = {}
+                fresh = llm_sim.generate_disposition_checklist(
+                    gv, window=window, min_severity=min_sev, run_id=case_id, mask=mask, outcome=_oc)
+                if fresh:
+                    _mutate_list_field(case_id, "disposition_checklist",
+                                       lambda cur: cur or fresh)
+                if _cl_llm or _oc.get("used_llm"):
+                    _log_checklist_outcome(case_id, _oc, fresh)
+            except Exception as e:                       # noqa: BLE001
+                log_case_event(case_id, "Checklist · failed", "warning",
+                               f"could not be generated ({type(e).__name__}); "
+                               f"the report is unaffected")
     return {"report_md": report, "audience": d.get("audience", "both")}
 
 
