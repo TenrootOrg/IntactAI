@@ -1735,6 +1735,10 @@ def generate_disposition_checklist(graph, *, window=None, min_severity="high",
             payload_str = _apply_mask(payload_str, mask)
             system = _MASK_IDENTITY_LEGEND + system
         raw = _real_llm(system, payload_str, run_id=run_id)
+        # An EMPTY reply is a failed call, not "the model found nothing to confirm":
+        # it parsed to {} and was logged as a successful, empty checklist.
+        if not (raw or "").strip():
+            raise LLMUnavailable("empty_reply")
         raw = _revert_mask(raw, mask)
         data = _parse_json(raw)
         valid = {f.id for f in graph.findings}

@@ -116,6 +116,22 @@ class ADeterministicRegenerationMakesNoModelCall(unittest.TestCase):
         self.assertIn("_cl_llm = bool(use_llm and llm_sim._use_real())", regen)
 
 
+class AnEmptyChecklistReplyIsAFailure(unittest.TestCase):
+
+    def test_empty_is_reported_as_failed_not_as_nothing_to_confirm(self):
+        real_use, real_llm = llm_sim._use_real, llm_sim._real_llm
+        llm_sim._use_real = lambda: True
+        llm_sim._real_llm = lambda *a, **k: "   "
+        try:
+            from services.fusion import schema
+            oc = {}
+            llm_sim.generate_disposition_checklist(schema.FusionGraph(case_id="c"), outcome=oc)
+        finally:
+            llm_sim._use_real, llm_sim._real_llm = real_use, real_llm
+        self.assertEqual("empty_reply", oc.get("error"))
+        self.assertFalse(oc.get("empty"), "an empty reply must not read as a successful, empty checklist")
+
+
 class ABadSettingsBodyIsA400(unittest.TestCase):
 
     def test_save_config_does_not_500_on_non_json(self):
