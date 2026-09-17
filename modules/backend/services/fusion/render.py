@@ -1268,7 +1268,7 @@ def _collapse_findings(findings):
 
 
 def _finding_dict(graph, f):
-    return {"title": f.title, "severity": f.severity, "confidence": f.confidence,
+    return {"id": f.id, "title": f.title, "severity": f.severity, "confidence": f.confidence,
             "hosts": [_host_label(graph, x) for x in f.asset_ids],
             "summary": f.summary, "mitre": f.mitre, "kind": f.kind, "ts": f.ts}
 
@@ -1279,7 +1279,7 @@ def _entity_dict(graph, e):
 
 
 def chat_subgraph(graph, question, *, window=None, min_severity="informational",
-                  max_entities=20, pin_ids=None, focus_labels=None):
+                  max_entities=20, pin_ids=None, focus_labels=None, also_finding_ids=None):
     """Question-scoped subgraph for chat — far smaller than the whole distilled graph,
     so chat tokens stay flat as cases grow. ALWAYS includes every >=high finding
     (escalation-critical facts must never be retrieved away), plus the findings and
@@ -1317,6 +1317,19 @@ def chat_subgraph(graph, question, *, window=None, min_severity="informational",
             for f in findings:
                 if e.id in f.entity_ids:
                     picked[f.id] = f
+    # A date in the question ("2024-05-24", or a month "2024-05") pulls every finding
+    # from that period, whatever its severity. Without it a medium finding the analyst
+    # asked about by date was never sent, and the model said no such event existed.
+    for d in set(_tf_re.findall(r"\b(\d{4}-\d{2}(?:-\d{2})?)\b", q)):
+        for f in findings:
+            if any(str(t or "").startswith(d) for t in (f.ts, getattr(f, "occ_latest", None))):
+                picked[f.id] = f
+    # Findings the caller must include (the analyst's Timeline verdicts): a verdict
+    # sent without its finding reads as an unknown id.
+    _also = set(also_finding_ids or [])
+    for f in findings:
+        if f.id in _also:
+            picked[f.id] = f
     intents = [(("lateral", "move", "pivot", "spread"), lambda f: f.kind == "cross_host"),
                (("persist", "service", "autorun", "task"),
                 lambda f: any(k in f.title.lower() for k in ("service", "persist", "task"))),
@@ -1350,6 +1363,11 @@ def chat_subgraph(graph, question, *, window=None, min_severity="informational",
         "assets": [{"id": a.id, "host": a.label, "severity": a.severity}
                    for a in graph.by_type("asset")],
         "findings": [_finding_dict(graph, f) for f in picked.values()],
+        # The whole case's span, so a partial finding list is not read as the extent
+        # of the evidence ("the data starts in March 2025" when it starts in 2024).
+        "case_findings_total": len(findings),
+        "case_evidence_span": [min((f.ts for f in findings if f.ts), default=None),
+                               max((f.occ_latest or f.ts for f in findings if (f.occ_latest or f.ts)), default=None)],
         "top_entities": [_entity_dict(graph, e) for e in ents],
     }
     if focus_labels:

@@ -4008,7 +4008,8 @@ def chat_case(case_id, question) -> str:
                            full_context=True,   # LOCKED: chat always sends full context
                            max_output_tokens=_effective_output_cap(d),
                            require_llm=True,    # no deterministic fallback: surface real errors
-                           mask=mask, max_identities=_llm_identity_budget(d))
+                           mask=mask, max_identities=_llm_identity_budget(d),
+                           excluded_hosts=d.get("excluded_hosts") or None)
         log_case_event(case_id, "Chat · reply generated", "success", f"{len(ans or '')} chars")
         # A detected verdict rides ALONG WITH the answer as an offer. Worst case
         # for a misread is one extra sentence the operator ignores — never a

@@ -2114,7 +2114,8 @@ def _classify_llm_error(exc) -> str:
 
 def chat(graph, question: str, history=None, *, window=None, min_severity="informational",
          run_id=None, dispositions=None, validations=None, full_context=None,
-         max_output_tokens=None, require_llm=False, mask=None, max_identities=None) -> str:
+         max_output_tokens=None, require_llm=False, mask=None, max_identities=None,
+         excluded_hosts=None) -> str:
     """Grounded Q&A. Real path narrates the distilled graph; simulated = deterministic
     retrieval. Surfaces operator dispositions (what's been triaged as benign/IT).
     `mask` (optional DataAnonymizer) anonymizes the LLM payload the same way
@@ -2162,11 +2163,16 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
                 payload = render.chat_subgraph(graph, question, window=window,
                                                min_severity=min_severity,
                                                max_entities=budget.CHAT_MAX_ENTITIES,
-                                               pin_ids=pin_ids, focus_labels=focus)
+                                               pin_ids=pin_ids, focus_labels=focus,
+                                               also_finding_ids=[v.get("finding_id") for v in (validations or [])])
             if dispositions:
                 payload["operator_dispositions"] = dispositions   # so the LLM can answer triage Qs
             if validations:
                 payload["analyst_validations"] = validations      # Timeline real/not-real/known
+            if excluded_hosts:
+                # Taken out of the analysis in Configuration: say so rather than
+                # answering that the host does not exist.
+                payload["hosts_excluded_from_analysis_by_operator"] = list(excluded_hosts)
             turns = "".join(f"{m.get('role')}: {m.get('content')}\n" for m in (history or []))
             user = f"{json.dumps(payload)}\n\n{turns}Q: {question}"
             system = CHAT_SYSTEM_PROMPT
