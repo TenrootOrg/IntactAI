@@ -802,7 +802,10 @@ function reportAirGap(md, ls){
   else if(ls && ls.available===false){ airgap=true; tailDetail=''; }
   else { airgap=false; tailDetail=''; }
   if(!airgap) return {airgap:false};
-  if(ls && ls.available===true){
+  // Only a LIVE check may say "connected". The case payload's llm_status is config
+  // alone -- a saved key reads as available -- so an air-gapped box said "The AI
+  // model is connected now" on every visit (QA TASK-12664).
+  if(ls && ls.available===true && ls.checked_live===true){
     // Config AND a live probe both say narration would work RIGHT NOW —
     // whatever this report's own tail says failed (a dead key, no credit…)
     // may no longer be true, e.g. the operator just fixed it. Repeating that
@@ -810,6 +813,10 @@ function reportAirGap(md, ls){
     return {airgap:true, reachable:true, problem:'The AI model is connected now.',
             fix:'Click Regenerate report to rewrite this report with it.'};
   }
+  // No route to any model: normal for an air-gapped appliance. Say it once, quietly.
+  if((ls && ls.available===false && ls.code==='no_internet')
+     || (!(ls && ls.available===false) && /^The appliance cannot reach the AI provider/i.test(tailDetail||'')))
+    return {airgap:true, offline:true};
   if(ls && ls.available===false && ls.reason){
     // live check currently failing — the freshest, most actionable reason
     return {airgap:true, problem:ls.reason, fix:_regenFix(ls.fix)};
@@ -840,6 +847,7 @@ function _regenFix(fix){
 // connected, with "a model is reachable now" in between: three lines, two stories.
 function airGapBanner(ag){
   if(!ag || !ag.airgap) return '';
+  if(ag.offline) return `<div class="agnote">📝 Offline report — written from the case evidence, without an AI model. When the appliance can reach an AI model, click <b>Regenerate report</b> to rewrite it.</div>`;
   return `<div class="agbanner">
       <div class="agtitle">📝 Offline report — written from the case evidence, without an AI model</div>
       <div class="agdetail">${esc(ag.problem)}</div>
@@ -861,7 +869,9 @@ function shouldAutoRegen(info, md, ls){
   // enough to start. Waiting for this page's own probe cost ~10s on every open;
   // the regeneration is itself the real test, and _autoRegenOnce stops a model
   // that turns out to fail from being tried again.
-  if(!(ls && ls.available===true)) return false;
+  // A LIVE check only: on config alone an air-gapped box with a saved key counted as
+  // connected, and every new setting "regenerated" into another offline report.
+  if(!(ls && ls.available===true && ls.checked_live===true)) return false;
   // Written under the settings in use NOW: this model already had its try and
   // this is what it produced. Only a template from DIFFERENT settings (no key,
   // another provider...) is worth regenerating. This is what stops a failing

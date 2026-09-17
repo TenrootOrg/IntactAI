@@ -126,7 +126,7 @@ def _audit_detail(action, is_err, resp):
             # own line from inside regenerate_report(), seconds to minutes
             # later; this one only needs to mark that the click was received.
             if resp.status_code == 202:
-                return "generation started — narrating in the background, no need to wait here"
+                return "report generation started"
             if _safe_json(resp).get("status") == "offline":
                 return "report written offline — no AI model is reachable from this appliance"
             return "report regenerated"

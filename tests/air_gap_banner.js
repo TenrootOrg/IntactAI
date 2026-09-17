@@ -26,7 +26,10 @@ for (const [c, [reason, fix]] of Object.entries(msgs))
 for (const [c, [reason, fix]] of Object.entries(msgs))
   cases.push({ name: `report tag only: ${c}`, md: `body\n\n---\n_Deterministic report — ${reason} ${fix}_\n`, ls: null,
                wantProblem: reason });
-cases.push({ name: 'model connected now', md: TEMPLATE, ls: { available: true } });
+cases.push({ name: 'model connected now (live check)', md: TEMPLATE, ls: { available: true, checked_live: true } });
+// Config alone says "available" for a saved key. On an air-gapped box that is not a
+// connected model (QA TASK-12664): only a live check may claim it.
+cases.push({ name: 'config says available, never checked live', md: TEMPLATE, ls: { available: true }, notConnected: true });
 cases.push({ name: 'no live answer, old background report', md: OLD_BG, ls: null });
 cases.push({ name: 'no live answer, new background report', md: NEW_BG, ls: null });
 cases.push({ name: 'old report tag, unsplittable', md: 'body\n\n---\n_Deterministic report — The LLM API key was rejected — it looks invalid or outdated. Update it in Settings._\n', ls: null, legacy: true });
@@ -37,12 +40,22 @@ for (const k of cases) {
   console.log(`\n[${k.name}]\n  ` + lines.join('\n  '));
   const all = lines.join(' ');
   const check = (ok, why) => { if (!ok) failures.push(`${k.name}: ${why} -> ${JSON.stringify(lines)}`); };
+  // No route to any model is normal on an air-gapped appliance: ONE quiet line.
+  const noRoute = (k.ls && k.ls.code === 'no_internet') || (k.wantProblem && /cannot reach the AI provider/.test(k.wantProblem));
+  if (noRoute) {
+    check(lines.length === 1 && lines[0].startsWith('📝 Offline report'), 'no route: one quiet offline line');
+    check((all.match(/Regenerate report/g) || []).length === 1, 'says how to retry exactly once');
+    check(!/connected now|check the appliance/i.test(all), 'no warning, no "connected"');
+    continue;
+  }
   check(lines.length === 3, 'banner must be exactly title, problem, fix');
   check(lines[0] === '📝 Offline report — written from the case evidence, without an AI model', 'one title for every case');
   check((all.match(/Regenerate report/g) || []).length === 1, 'says how to retry exactly once');
   check(!/undefined|null|\.\.|narrat|deterministic/i.test(all) && (k.legacy || !/LLM/.test(all)), 'no broken or internal wording');
   check((all.match(/try again/gi) || []).length <= 1, 'says "try again" at most once');
-  if (k.ls && k.ls.available === true)
+  if (k.notConnected)
+    check(!/connected now/i.test(all), 'config alone must not be described as connected');
+  else if (k.ls && k.ls.available === true)
     check(!/Settings|API key|not|cannot|no /i.test(lines.slice(1).join(' ')), 'a connected model must not be described as missing');
   else
     check(!/connected now/i.test(all), 'a failing model must not be described as connected');

@@ -46,7 +46,7 @@ expect('template (no model) + model connected now', {}, 1);
 expect('template (key rejected) + model connected now', { md: TEMPLATE_KEY }, 1);
 expect('opening the case again in the same tab does not repeat it', {}, 1, 3);
 expect('storage blocked: still only once', { brokenStorage: true }, 1, 3);
-expect('model set per config: starts at once, without waiting for the probe', { info: { llm_status: CONFIG_OK } }, 1);
+expect('model set per config only: waits for a live check (QA TASK-12664: air-gapped box)', { info: { llm_status: CONFIG_OK } }, 0);
 expect('last live probe failed (carried in the case payload)', { info: { llm_status: { available: false, code: 'invalid_key', checked_live: false } } }, 0);
 expect('model still not reachable', { info: { llm_status: { available: false, code: 'invalid_key', checked_live: true } } }, 0);
 expect('background-fuse template (nothing switched)', { md: BACKGROUND_NEW }, 0);

@@ -78,3 +78,20 @@ class OfflineTag(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReachabilityIsFastWithNoRoute(unittest.TestCase):
+    """QA TASK-12664: the live check used to wait out the model call's timeout on an
+    air-gapped box, and the page meanwhile claimed "connected" from config."""
+
+    def test_no_route_answers_without_calling_the_model(self):
+        cfg = {"llm_mode": "online", "online_llm": {"provider": "openrouter", "api_key": "k", "model": "m"}}
+        llm_sim._REACH_CACHE.clear()
+        with mock.patch.object(llm_sim, "_agentic_cfg", return_value=cfg), \
+             mock.patch.object(llm_sim, "provider_route", return_value={"ok": False, "code": "no_internet"}), \
+             mock.patch("services.agentic.analyzers._llm.call_llm") as call:
+            r = llm_sim.llm_reachability()
+        self.assertFalse(r["available"])
+        self.assertEqual(r["code"], "no_internet")
+        self.assertTrue(r["checked_live"])
+        call.assert_not_called()

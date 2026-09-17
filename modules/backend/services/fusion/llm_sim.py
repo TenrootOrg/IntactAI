@@ -762,6 +762,11 @@ def llm_reachability() -> dict:
             return {**cached[1], "config_id": _config_id(cfg)}
 
     try:
+        # No connection at all: answer in seconds. The model call below would wait
+        # out the client's timeout, and meanwhile an air-gapped box went on reading
+        # "The AI model is connected now" from config alone (QA TASK-12664).
+        if not provider_route()["ok"]:
+            raise LLMUnavailable("no_internet")
         from services.agentic.analyzers._llm import call_llm
         probe_cfg = dict(cfg)
         probe_cfg["max_response_tokens"] = 1        # one token: auth + routing, ~free
@@ -1432,6 +1437,24 @@ def analyst_context(dispositions=None, validations=None, manual_events=None, gra
     return out
 
 
+# A phase that failed for one of these reasons is worth asking once more: the model
+# was reached and simply answered badly. A rate limit, a rejected key, no credit, no
+# route or a model the provider does not offer would fail the same way again, and a
+# timeout has already cost the call's whole allowance.
+_PHASE_RETRYABLE = ("empty_reply", "bad_response", "provider_error", "llm_error")
+PHASE_RETRIES_DEFAULT = 1
+
+
+def _phase_retries() -> int:
+    """How many times a failed report phase is retried (AI settings key
+    `report_phase_retries`, default 1, 0-3)."""
+    try:
+        v = _agentic_cfg().get("report_phase_retries")
+        return max(0, min(3, int(PHASE_RETRIES_DEFAULT if v is None else v)))
+    except Exception:                                   # noqa: BLE001
+        return PHASE_RETRIES_DEFAULT
+
+
 def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
                     eff_detail, run_id, max_output_tokens, mask, master_prompt,
                     log=None, should_continue=None, analyst=None):
@@ -1522,14 +1545,27 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
                     f"{_w.get('start') or '?'} → {_w.get('end') or '?'} · "
                     f"{z.get('finding_count', 0)} finding(s)")
         _t0 = time.time()
-        out = _real_llm(sys_p, body, run_id=run_id,
-                        max_output_tokens=max_output_tokens,
-                        reasoning_effort="low")
-        z["_seconds"] = round(time.time() - _t0)
-        out = _revert_mask(out, mask)
-        if not (out or "").strip():
-            raise LLMUnavailable("empty_reply")
-        return out.strip()
+        attempt, retries = 0, _phase_retries()
+        while True:
+            try:
+                out = _real_llm(sys_p, body, run_id=run_id,
+                                max_output_tokens=max_output_tokens,
+                                reasoning_effort="low")
+                out = _revert_mask(out, mask)
+                if not (out or "").strip():
+                    raise LLMUnavailable("empty_reply")
+                z["_seconds"] = round(time.time() - _t0)
+                return out.strip()
+            except GenerationStopped:
+                raise
+            except Exception as e:                       # noqa: BLE001
+                code = _classify_llm_error(e)
+                if (attempt >= retries or code not in _PHASE_RETRYABLE
+                        or (should_continue and not should_continue())):
+                    raise
+                attempt += 1
+                _case_event(run_id, f"Report · phase {z['n']} of {_total} — retrying", "info",
+                            f"{_llm_reason_text(code)[0]} Trying again ({attempt} of {retries}).")
 
     phases = render.analysable(zt)
     results = {}
@@ -1557,11 +1593,14 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
                     _case_event(run_id, f"Report · phase {z['n']} of {_total} — answered", "success",
                                 f"{z.get('_seconds', '?')}s · {len(text):,} chars")
             except Exception as e:                       # noqa: BLE001
-                results[z["n"]] = {"error": f"{type(e).__name__}: {e}"[:200]}
+                _r, _f = _llm_reason_text(_classify_llm_error(e))
+                # The reason in the operator's words (it is printed in the report), and
+                # the exception itself, so a run where EVERY phase failed can fall back
+                # with the provider's own reason and retry time.
+                results[z["n"]] = {"error": _r + provider_retry_hint(e), "exc": e}
                 if isinstance(e, GenerationStopped):
                     continue
                 if not should_continue or should_continue():
-                    _r, _f = _llm_reason_text(_classify_llm_error(e))
                     _case_event(run_id, f"Report · phase {z['n']} of {_total} — failed", "warning",
                                 f"{_r}{provider_retry_hint(e)} The other phases are unaffected.")
                 if log:
@@ -1638,6 +1677,17 @@ def generate_report(graph, *, window=None, min_severity="informational",
                     max_output_tokens=max_output_tokens, mask=mask,
                     master_prompt=master_prompt, log=log, should_continue=should_continue,
                     analyst=_analyst)
+                _analysable = render.analysable(_zt)
+                _failed = [z for z in _analysable if (_phase_out.get(z["n"]) or {}).get("error")]
+                if _analysable and len(_failed) == len(_analysable):
+                    # Nothing was analysed: a synthesis would be written from blank
+                    # phases. Measured live: all 6 phases rate-limited and the synthesis
+                    # was sent anyway. Fall back to the offline report with the reason.
+                    _case_event(run_id, "Report · synthesis skipped", "warning",
+                                "no phase could be analysed, so the report is written "
+                                "offline from the case evidence. "
+                                + (_phase_out.get(_failed[0]["n"]) or {}).get("error", ""))
+                    raise (_phase_out.get(_failed[0]["n"]) or {}).get("exc") or LLMUnavailable("llm_error")
                 _outside = render.outside_phases(graph, _zt, window=window,
                                                  min_severity=min_severity)
                 payload = {"case_totals": payload.get("scope", {}),
@@ -1645,7 +1695,9 @@ def generate_report(graph, *, window=None, min_severity="informational",
                                        "hosts": z.get("host_labels") or [],
                                        "findings": z["finding_count"],
                                        "critical": z.get("critical_count", 0),
-                                       "analysis": _phase_out.get(z["n"], {}).get("body", "")}
+                                       **({"not_analysed": _phase_out[z["n"]]["error"]}
+                                          if (_phase_out.get(z["n"]) or {}).get("error")
+                                          else {"analysis": _phase_out.get(z["n"], {}).get("body", "")})}
                                       for z in render.analysable(_zt)],
                            # High+ activity NO phase covers. Without this the
                            # synthesis cannot mention it, and 40% of the case went
@@ -1658,6 +1710,12 @@ def generate_report(graph, *, window=None, min_severity="informational",
                     payload_str = _apply_mask(payload_str, mask)
             system = (SYNTHESIS_SYSTEM_PROMPT if altitude == "macro"
                       else REPORT_SYSTEM_PROMPT_FOCUSED)
+            if altitude == "macro" and _zt and any((_phase_out.get(z["n"]) or {}).get("error")
+                                                   for z in render.analysable(_zt)):
+                system += ("\n\nSome phases carry `not_analysed` instead of an analysis: the "
+                           "model could not analyse them. Say plainly which phases were not "
+                           "analysed and why, and do not describe what happened in them "
+                           "beyond their window, hosts and finding counts.")
             if (audience and audience != "both") or (language and language != "en"):
                 try:                              # reuse engagement audience/language tailoring
                     from services.engagement.templates import audience_language_directive
@@ -1752,9 +1810,9 @@ def generate_report(graph, *, window=None, min_severity="informational",
                         f"- **Findings:** {z['finding_count']} "
                         f"({z.get('critical_count', 0)} critical)")
                     if got.get("error"):
-                        parts.append(f"> ⚠️ This phase could not be analysed "
-                                     f"({got['error']}). Its evidence is below and in "
-                                     f"the case timeline — the rest of the report is "
+                        parts.append(f"> ⚠️ This phase was not analysed by the AI model: "
+                                     f"{got['error']} Its evidence is below and in the "
+                                     f"case timeline — the rest of the report is "
                                      f"unaffected.\n")
                     else:
                         parts.append(got.get("body", "") + "\n")

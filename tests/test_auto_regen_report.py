@@ -41,14 +41,14 @@ class AutoRegenerateReport(unittest.TestCase):
         self.assertIn('id="cf-autoregen"', page)
         self.assertRegex(page, r"auto_regen_report:\$\('#cf-autoregen'\)")
 
-    def test_it_starts_as_soon_as_the_case_is_drawn(self):
-        """Reported from QA: the banner said "connected" but regeneration only
-        started ~10s later, after the live probe. It must also run the moment
-        fresh case data is drawn."""
+    def test_it_waits_for_a_live_check(self):
+        """QA TASK-12664: on an air-gapped box a saved key made the case payload say
+        "available", so the page claimed "connected" and regenerated. It still runs
+        as soon as the case is drawn, but only on a live check's answer."""
         page = _src("modules/nginx/html/cases.html")
         body = page.split("function showCase(")[1].split("\nfunction ")[0]
         self.assertIn("maybeAutoRegen();", body)
-        self.assertNotIn("checked_live===true", page.split("function shouldAutoRegen(")[1].split("\n}")[0])
+        self.assertIn("checked_live===true", page.split("function shouldAutoRegen(")[1].split("\n}")[0])
 
     def test_every_saved_report_is_stamped_with_its_settings(self):
         """The page compares the settings that WROTE the template with the
