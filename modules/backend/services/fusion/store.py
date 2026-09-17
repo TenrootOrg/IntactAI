@@ -688,6 +688,8 @@ def _graph_filter_signature(d, baseline) -> str:
         "is_baseline": bool(d.get("is_baseline")),
         "baseline": bool(baseline),
         "dispositions": _stable_hash(d.get("dispositions") or {}),
+        # excluded at ingest, so a changed exclusion is a rebuild
+        "excluded_hosts": sorted({keys.norm_host(h) for h in (d.get("excluded_hosts") or []) if h}),
         "engine": _GRAPH_ENGINE_VERSION,
     }
     return _stable_hash(payload)
@@ -1724,7 +1726,8 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     _sig_full = _graph_filter_signature(d, baseline)
     g = correlate.assemble(case_id, contributions, members, baseline=baseline, window=window,
                            min_severity=min_sev, dispositions=d.get("dispositions") or None,
-                           seed=seed_graph, errors=_assembly_errors)
+                           seed=seed_graph, errors=_assembly_errors,
+                           excluded_hosts=d.get("excluded_hosts"))
     # Optional cross-infra identity correlation: add analyst-confirmed / auto / manual
     # identity edges. Best-effort + fully isolated — never breaks the fuse (below).
     _apply_identity_links(g, d, log=_plog if _record else None)
@@ -1765,8 +1768,8 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
             mask = DataAnonymizer(custom_patterns=mk.get("patterns") or [])
         except Exception:
             mask = None
-    # host-exclusion: cut excluded hosts' data from the report/LLM (token saving). The
-    # FULL graph `g` is still stored so the picker can list/re-include every host.
+    # host-exclusion: assemble() already removed the excluded hosts. This view filter
+    # stays as a safety net for a graph built before that (it is a no-op otherwise).
     def _degrade(step, exc):
         # A step AFTER assembly failed. Same rule as inside assemble: the graph is
         # already built and must still be saved, so record it, say so, and carry
@@ -3808,6 +3811,13 @@ def case_hosts(case_id) -> list:
             out.append({"host": label, "os": os_name, "kind": "endpoint",
                         "sources": list(a.sources or []),
                         "excluded": keys.norm_host(label) in excluded})
+    # An excluded host is no longer in a graph fused after the exclusion, but the
+    # picker must still list it so it can be ticked back in.
+    listed = {keys.norm_host(h["host"]) for h in out}
+    for label in (d.get("excluded_hosts") or []):
+        if label and keys.norm_host(label) not in listed:
+            out.append({"host": label, "os": os_by.get(str(label).lower()) or "unknown",
+                        "kind": "endpoint", "sources": [], "excluded": True})
     out.sort(key=lambda h: (h["os"], h["host"].lower()))
     return out
 

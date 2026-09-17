@@ -114,7 +114,7 @@ def _guarded(errs: list, name: str, fn, *args, **kwargs):
 
 def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None,
              min_severity="informational", dispositions=None, seed=None,
-             errors=None) -> FusionGraph:
+             errors=None, excluded_hosts=None) -> FusionGraph:
     """Build the case graph from `contributions`.
 
     `seed` is an existing graph to add to instead of starting empty — the
@@ -245,6 +245,10 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
         except Exception as _e:                               # noqa: BLE001
             _record_error(_errs, f"relationship {getattr(r, 'kind', '?')!r}", _e)
     _guarded(_errs, "_resolve_host_assets", lambda: _resolve_host_assets(g))
+    # Before ANY derivation: an excluded host must not produce findings, count as a
+    # cross-host sighting or shape a risk score. Filtering only the views left it
+    # in every derived number and let each new view forget to filter.
+    _guarded(_errs, "_exclude_hosts", lambda: _exclude_hosts(g, excluded_hosts))
     _guarded(_errs, "_bridge_hashes", lambda: _bridge_hashes(g))
     _guarded(_errs, "_rollup_severity", lambda: _rollup_severity(g))
     _guarded(_errs, "_mark_previous_names", lambda: _mark_previous_names(g))                    # before findings are derived
@@ -594,6 +598,37 @@ def _rollup_asset_severity(g: FusionGraph) -> None:
             if a.id in f.asset_ids:
                 best = sev.max_level(best, f.severity)
         a.severity = best
+
+
+def _exclude_hosts(g: FusionGraph, excluded_labels) -> int:
+    """Remove the operator-excluded hosts from the graph, in place: their asset
+    nodes, every entity seen only on them, their id from the asset list of entities
+    also seen elsewhere (else a hash on one kept host still reads as cross-host),
+    and the relationships left dangling. Returns how many hosts were removed."""
+    excluded = {keys.norm_host(h) for h in (excluded_labels or []) if h}
+    if not excluded:
+        return 0
+    ex = {a.id for a in g.by_type("asset")
+          if keys.norm_host(a.attrs.get("hostname") or "") in excluded
+          or keys.norm_host(a.label or "") in excluded}
+    if not ex:
+        return 0
+    for eid in list(g.entities):
+        e = g.entities[eid]
+        if eid in ex:
+            del g.entities[eid]
+            continue
+        al = e.attrs.get("_assets")
+        if al:
+            rest = [x for x in al if x not in ex]
+            if not rest:
+                del g.entities[eid]
+            elif len(rest) != len(al):
+                e.attrs["_assets"] = rest
+    g.relationships = [r for r in g.relationships
+                       if r.src in g.entities and r.dst in g.entities]
+    g.rebuild_indexes()
+    return len(ex)
 
 
 def _resolve_host_assets(g: FusionGraph) -> None:
