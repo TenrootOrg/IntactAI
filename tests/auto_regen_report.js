@@ -54,7 +54,7 @@ expect('old background-fuse template', { md: BACKGROUND_OLD }, 0);
 expect('report already written by the AI', { md: NARRATED }, 0);
 expect('a report is already generating', { info: { report_generating: true } }, 0);
 expect('case switch turned off', { info: { auto_regen_report: false } }, 0);
-expect('not on the Analysis tab', { tab: 'timeline' }, 0);
+expect('on another tab (B5: a model connecting is acted on from any tab)', { tab: 'timeline' }, 1);
 expect('remembered view, server not answered yet', { info: { _fresh: false } }, 0);
 expect('no case open', { info: null }, 0);
 

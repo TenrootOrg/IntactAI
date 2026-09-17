@@ -285,16 +285,16 @@ function jsa(s){return String(s==null?'':s)
 
 function createWorkspace(){
   const name=$('#cname').value.trim();
-  if(!name){toast('name required');return;}
+  if(!name){toast('Enter a case name.');return;}
   // No time window at creation. It was an optional field nobody filled in, and
   // a case that needs one can set it later in the case's own Settings tab
   // (#cf-start) — where end date and severity live too. Omitting the key is
   // the same thing the route already did with an empty one.
   const body={name};
   api('/api/cases',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-   .then(d=>{ if(!d||!d.case_id){toast('create failed');return;}
+   .then(d=>{ if(!d||!d.case_id){toast('The case could not be created. Please try again.');return;}
      $('#cname').value='';
-     window.ActiveCase.set(d.case_id); toast('case created + activated');
+     window.ActiveCase.set(d.case_id); toast('Case created and set as the active case.');
      loadCases(()=>{ if(VIEW!=='manage') openCase(d.case_id); }); refreshSelector(); });
 }
 
@@ -303,9 +303,9 @@ function delWorkspace(id, name, ev){
   if(!confirm(`Delete case "${name}" and ALL of its runs, fusion + baseline? This cannot be undone.`)) return;
   fetch('/api/cases/'+id,{method:'DELETE'}).then(async r=>{
     const d=await r.json().catch(()=>({}));
-    if(r.status===409){toast('the Default case cannot be deleted');return;}
-    if(!r.ok){toast('delete failed: '+(d.error||r.status));return;}
-    toast(`deleted (${d.runs_deleted||0} run(s))`);
+    if(r.status===409){toast('The Default case cannot be deleted.');return;}
+    if(!r.ok){toast('The case could not be deleted: '+(d.error||r.status));return;}
+    toast(`Case deleted, together with ${d.runs_deleted||0} run(s).`);
     if(window.ActiveCase.get()===id){ await window.ActiveCase.ensureActiveCase(); }
     if(sel===id){ sel=null; $('#main').innerHTML='<div class="empty">Case deleted. Pick another on the left.</div>'; }
     loadCases(); refreshSelector();
@@ -313,7 +313,7 @@ function delWorkspace(id, name, ev){
 }
 
 function activateWorkspace(id, ev){ if(ev) ev.stopPropagation();
-  window.ActiveCase.set(id); toast('switched active case'); loadCases(); refreshSelector(); }
+  window.ActiveCase.set(id); toast('Active case changed.'); loadCases(); refreshSelector(); }
 
 // ── Portable case bundles ────────────────────────────────────────────────────
 // A bundle carries the case's collected data as well as its report and triage,
@@ -334,13 +334,13 @@ function expBtn(id){
 }
 
 function exportWorkspace(id, ev){ if(ev) ev.stopPropagation();
-  toast('starting export…');
+  toast('Starting the export…');
   fetch('/api/cases/'+id+'/export',{method:'POST'}).then(async r=>{
     const d=await r.json().catch(()=>({}));
-    if(!r.ok){ toast('export failed to start: '+(d.error||('HTTP '+r.status)), 5000); return; }
-    toast('export started — opening Settings → Actions', 3000);
+    if(!r.ok){ toast('The export could not be started: '+(d.error||('HTTP '+r.status)), 5000); return; }
+    toast('Export started. Track its progress in Settings ▸ Actions.', 3000);
     setTimeout(()=>{ try{ window.ActiveCase.gotoSystemWorkflows(); }catch(e){} }, 600);
-  }).catch(e=>toast('export failed to start: '+e.message, 5000));
+  }).catch(e=>toast('The export could not be started: '+e.message, 5000));
 }
 
 // Import works exactly like Export: the button lives here in Case Management,
@@ -357,13 +357,13 @@ function exportWorkspace(id, ev){ if(ev) ev.stopPropagation();
 function importWorkspace(ev){
   const f=ev.target.files&&ev.target.files[0]; ev.target.value='';
   if(!f) return;
-  toast('uploading "'+f.name+'"…');
+  toast('Uploading "'+f.name+'"…');
   new TusUploader({
     purpose:'case_import',
     // A bundle creates its OWN new case, so it is not work inside the active
     // workspace — importing while System is selected is legitimate.
     systemGuard:false,
-    onError:e=>toast('upload failed: '+((e&&e.message)||e), 6000),
+    onError:e=>toast('The upload failed: '+((e&&e.message)||e), 6000),
     onSuccess:()=>{ loadCases(); refreshSelector(); }
   }).upload(f);
   // Same hand-off as Export. Long enough for the upload hook to have opened the
@@ -890,7 +890,7 @@ function maybeAutoRegen(){
   if(!info || !info._fresh) return;
   if(!shouldAutoRegen(info, window._md||'', info.llm_status)) return;
   if(!_autoRegenOnce(info)) return;
-  toast('AI model connected — regenerating this report…');
+  toast('An AI model is now available. Regenerating this report…');
   regenReport(info.case_id);
 }
 // THE STATUS AREA IS ONE SLOT. It holds exactly one of: the "generating" banner,
@@ -970,14 +970,14 @@ function loadZoomTargets(id){
 }
 async function applyZoom(id,i){
   const t=_zoomTargets[i]; if(!t) return;
-  toast('re-scoping to '+t.title+' — follow the progress in the Log…');
+  toast('Analysing the scope "'+t.title+'". Progress is shown in the Log.');
   setTab('log'); if(typeof logRefresh==='function') logRefresh();
   try{
     await api('/api/cases/'+id+'/zoom',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({window:t.window, host_labels:t.host_labels})});
-    toast('zoomed to a focused scope — showing the analysis');
+    toast('The focused analysis is ready.');
     setTab('report'); openCase(id);
-  }catch(e){ toast('zoom failed: '+((e&&e.message)||e)); }
+  }catch(e){ toast('The scope could not be analysed: '+((e&&e.message)||e)); }
 }
 
 // A real case is several model calls (one per phase, then a synthesis) over the
@@ -1023,19 +1023,19 @@ function genStatusHtml(elapsedS, phase, phaseElapsedS){
     return `<div class="agbanner agbanner-live">
       <div class="agtitle">✅ Report ready — finishing the confirmation checklist (${esc(stepAge)})</div>
       <div class="agdetail">The report below is finished and saved; it will not change. The checklist is a short final step and does not affect it.</div>
-      <div class="agaction">Safe to read, download or leave.</div>
+      <div class="agaction">You can read or download the report now.</div>
     </div>`;
   }
   // Past ~10 minutes a bigger number is not information any more. A normal run is
   // a minute or two; beyond the per-call timeout something is wrong, and the Log
   // is where the backend's watchdog says what ("still waiting…", "written off").
   const slow = (minsRaw !== null && mins >= 10)
-    ? `<div class="agdetail" style="color:var(--warn,#d29922)">This is taking unusually long. The Log shows whether the model is still answering — a run that stays silent is stopped automatically and the previous report is kept.</div>`
+    ? `<div class="agdetail" style="color:var(--warn,#d29922)">This is taking longer than usual. The Log shows whether the model is still responding. If it stops responding, the run is stopped automatically and the previous report is kept.</div>`
     : '';
   return `<div class="agbanner agbanner-live">
-      <div class="agtitle">⏳ Sending case data to the model — ${esc(since)}</div>${slow}
-      <div class="agdetail">A broad case is analysed phase by phase — one model call per phase, run in parallel, then a synthesis pass. This usually takes a minute or two.</div>
-      <div class="agaction">No need to wait here — the report refreshes on its own the moment it's ready. Feel free to switch tabs or cases.</div>
+      <div class="agtitle">⏳ Generating the report with the AI model — ${esc(since)}</div>${slow}
+      <div class="agdetail">Large cases are analysed phase by phase and then summarised. This usually takes a minute or two.</div>
+      <div class="agaction">The report updates automatically when it is ready. You can keep working in other tabs or cases in the meantime.</div>
     </div>`;
 }
 
@@ -1123,7 +1123,7 @@ function pollReportGen(id){
         // (the Log says why).
         const newReport = (info.report_written_at||'')!==(curInfo.report_written_at||'')
                        || (info.fused_at||'')!==(curInfo.fused_at||'');
-        if(changed){ backgroundRefresh(id, newReport ? 'report updated' : null); return; }
+        if(changed){ backgroundRefresh(id, newReport ? 'The report has been updated.' : null); return; }
         // Nothing changed — so use the tick to check the view is self-consistent.
         // drawTab stamps #tabc with the tab it drew; if that disagrees with the
         // tab bar, the content on screen is not the tab the operator selected and
@@ -1166,7 +1166,7 @@ function pollReportGen(id){
       _genPhase = info.report_phase || _genPhase;
       if(curInfo && curInfo.case_id===id
          && (info.report_written_at||'')!==(curInfo.report_written_at||'')){
-        if(backgroundRefresh(id, 'report ready')) return;
+        if(backgroundRefresh(id, 'The report is ready.')) return;
       }
     }).catch(()=>{});   // a blip in the poll is not a failure — just try again
   };
@@ -1185,11 +1185,11 @@ function regenReport(id){
      if(r && r.status==='offline'){
        // Already written, synchronously. Nothing is generating; just show it.
        if(!backgroundRefresh(id, null)) pollReportGen(id);
-       toast('No AI model is reachable — report written offline from the case evidence');
+       toast('No AI model is reachable. The report was generated offline from the case evidence.');
        return;
      }
-     if(r && r.busy){ toast('already generating — refreshing when it\'s ready'); }
-     else toast('sending case data to the model…');
+     if(r && r.busy){ toast('A report is already being generated. It will appear here when it is ready.'); }
+     else toast('Report generation started.');
      if(curInfo && curInfo.case_id===id){
        curInfo.report_generating=true;
        curInfo.report_generating_started_at=(r&&r.started_at)||null;
@@ -1201,7 +1201,7 @@ function regenReport(id){
      }
      pollReportGen(id);
    })
-   .catch(_=>toast('could not start report generation'));
+   .catch(_=>toast('Report generation could not be started. Please try again.'));
 }
 function _fileToDataUrl(f){return new Promise(res=>{if(!f)return res(null);const r=new FileReader();r.onload=()=>res(r.result);r.readAsDataURL(f);});}
 // Host identities come from the fused graph (deduped endpoints + cloud accounts).
@@ -1310,15 +1310,15 @@ async function doRefusion(id){
   // the progression is visible instead of a frozen spinner.
   setTab('log');
   if(typeof logRefresh==='function') logRefresh();
-  toast('refusing — follow the progress in the Log…');
+  toast('Refusion started. Progress is shown in the Log.');
   try{
     const r = await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
     // 409 from the backend's FusionBusy handler: a fuse is already running for this
     // case. Not a failure — the config posted above IS persisted and a retry re-fuses
     // with it — so say so instead of showing the red "failed" toast.
-    if(r && r.busy) toast('⏳ already re-fusing this case — retry in a moment');
-    else toast('✓ Refusion complete — data, risk & timeline updated');
-  }catch(e){ toast('✗ Refusion failed — see the Log for details'); }
+    if(r && r.busy) toast('This case is already being re-fused. Please try again shortly.');
+    else toast('Refusion complete. Data, risk and timeline are up to date.');
+  }catch(e){ toast('Refusion failed. See the Log for details.'); }
   // Re-read the case. The rail's settings were just persisted server-side, but
   // every tab renders from `curInfo` — so without this the Configuration tab (and
   // the scope line above the report) keep showing the values from BEFORE the save,
@@ -1331,20 +1331,23 @@ async function doRefusion(id){
 }
 // Rescan (LLM) = SAVE config → re-fuse → regenerate report + chat narrative with the LLM.
 async function doRescanLLM(id){
-  toast('saving + rescanning (LLM) — refusing + regenerating report…');
+  toast('Saving the configuration and rescanning the case…');
   const cfg = await _railCfg(); cfg.trigger = 'rescan_llm';
   _cfgDirty=false;
   _applyCfgLocally(cfg);    // an LLM rescan is minutes long — show the save now
   const r = await api('/api/cases/'+id+'/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
-  if(r && r.busy){ toast('⏳ already re-fusing this case — retry in a moment'); return; }
-  await api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({use_llm:true})});
-  toast('✓ Rescan complete — report & chat regenerated'); tab='report'; openCase(id);
+  if(r && r.busy){ toast('This case is already being re-fused. Please try again shortly.'); return; }
+  const g = await api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({use_llm:true})});
+  toast(g && g.status==='offline'
+    ? 'Rescan complete. No AI model is reachable, so the report was generated offline.'
+    : 'Rescan complete. The report is being regenerated.');
+  tab='report'; openCase(id);
 }
-function synthFromChat(id){toast('synthesizing from chat…');
+function synthFromChat(id){toast('Drafting the master prompt from the chat…');
   fetch('/api/cases/'+id+'/synthesize',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(async r=>{
     const d=await r.json().catch(()=>({}));
-    if(!r.ok){toast(d.error||'needs chat + real LLM');return;}
-    const el=$('#cf-mp'); if(el)el.value=d.master_prompt||''; toast('steering drafted from chat');});
+    if(!r.ok){toast(d.error||'This needs a chat conversation and a connected AI model.');return;}
+    const el=$('#cf-mp'); if(el)el.value=d.master_prompt||''; toast('Master prompt drafted from the chat. Review it, then click Save.');});
 }
 // ---- Unified timeline (findings + manual events; validate with the IT team) ----
 const TL_SEV_RANK={informational:0,info:0,low:1,medium:2,high:3,critical:4};
@@ -1474,20 +1477,20 @@ function tlValidate(fid,status){
   tlPaint();
   const lbl=(TL_STATES.find(s=>s[0]===status)||[,status])[1];
   api('/api/cases/'+window._tlCase+'/timeline/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({finding_id:fid,status,title:(r&&r.title)||''})})
-   .then(_=>{toast('set '+lbl);
+   .then(_=>{toast('Marked as '+lbl+'.');
      // suppression changes severity/risk → refetch so the row + report stay in sync
      if(!String(fid).startsWith('manual:')) renderTimeline(window._tlCase);});
 }
 function tlAddSubmit(){
   const g=id=>(document.getElementById(id)||{}).value||'';
   const body={ts:g('tla-ts'),host:g('tla-host'),title:g('tla-title'),severity:g('tla-sev'),notes:g('tla-notes')};
-  if(!body.title.trim()){toast('title required');return;}
+  if(!body.title.trim()){toast('Enter a title.');return;}
   api('/api/cases/'+window._tlCase+'/timeline/event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-   .then(_=>{toast('event added');renderTimeline(window._tlCase);});
+   .then(_=>{toast('Event added.');renderTimeline(window._tlCase);});
 }
 function tlDelete(eid){
   api('/api/cases/'+window._tlCase+'/timeline/event/'+encodeURIComponent(eid),{method:'DELETE'})
-   .then(_=>{toast('event deleted');renderTimeline(window._tlCase);});
+   .then(_=>{toast('Event deleted.');renderTimeline(window._tlCase);});
 }
 
 // ---- Identities tab: unified identity page (collapsible, searchable, per-account edit) ----
@@ -1559,22 +1562,22 @@ function idSug(cid,sid,decision){
   for(const it of ((window._idData||{}).identities||[])) for(const s of (it.suggestions||[])) if(s.id===sid){members=s.members;break;}
   api('/api/cases/'+cid+'/identities/group',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({decision:decision,members:members||[{id:sid}]})})
-    .then(_=>{toast(decision==='confirmed'?'merged — Refusion applies it':'kept separate');renderIdentities(cid);});
+    .then(_=>{toast(decision==='confirmed'?'Merged. The change applies on the next Refusion.':'Kept as separate people.');renderIdentities(cid);});
 }
 function idSplit(cid,aid){
   api('/api/cases/'+cid+'/identities/account/split',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account_id:aid})})
-    .then(_=>{toast('account removed from this person');renderIdentities(cid);});
+    .then(_=>{toast('Account removed from this person.');renderIdentities(cid);});
 }
 function idExHost(cid,name,hid){
   api('/api/cases/'+cid+'/identities/host/exclude',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,host_id:hid})})
-    .then(_=>{toast('host removed');renderIdentities(cid);});
+    .then(_=>{toast('Host removed.');renderIdentities(cid);});
 }
 function idSeparate(cid,ck,names){
   let m=null;
   for(const it of ((window._idData||{}).identities||[])) if(it.key===ck) for(const x of (it.merged_from||[])) if((x.names||[]).join('|')===names){m=x;break;}
   if(!m) return;
   api('/api/cases/'+cid+'/identities/group',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({decision:'declined',members:m.members})})
-    .then(_=>{toast('separated — kept as different people');renderIdentities(cid);});
+    .then(_=>{toast('Separated. They are kept as different people.');renderIdentities(cid);});
 }
 
 // ---- Log tab: workflow-style log (monospace, UTC time + level-colored message) ----
@@ -1627,7 +1630,7 @@ function logDownload(){
 }
 function logClear(){
   if(!confirm('Clear the activity log for this case?'))return;
-  api('/api/cases/'+window._logCase+'/log',{method:'DELETE'}).then(_=>{toast('log cleared');logRefresh();});
+  api('/api/cases/'+window._logCase+'/log',{method:'DELETE'}).then(_=>{toast('Log cleared.');logRefresh();});
 }
 
 let chatHist=[];
@@ -1691,7 +1694,7 @@ function investigateAsk(id){
 }
 function clearChat(id){
   if(!confirm('Clear this conversation?'))return;
-  api('/api/cases/'+id+'/chat',{method:'DELETE'}).then(_=>{chatHist=[];drawMsgs();toast('chat cleared');});
+  api('/api/cases/'+id+'/chat',{method:'DELETE'}).then(_=>{chatHist=[];drawMsgs();toast('Conversation cleared.');});
 }
 function toggleChatFull(){
   const w=document.getElementById('chatwrap'); if(!w)return;
