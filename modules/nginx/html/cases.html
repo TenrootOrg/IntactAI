@@ -1352,7 +1352,7 @@ function synthFromChat(id){toast('Drafting the master prompt from the chat…');
 // ---- Unified timeline (findings + manual events; validate with the IT team) ----
 const TL_SEV_RANK={informational:0,info:0,low:1,medium:2,high:3,critical:4};
 const TL_STATES=[['pending','Pending'],['real','True Positive'],['not_real','False Positive'],['known_it','Known']];
-window._tlf={status:{pending:1,real:1,not_real:1,known_it:1},artifact:'',host:'',sev:'informational'};
+window._tlf={status:{pending:1,real:1,not_real:1,known_it:1},artifact:'',host:'',sev:'informational',order:'time'};
 // The host is already the first thing on the row, and finding titles end with
 // "on <host>" — so almost every line named the same machine twice:
 //   ALClient022 [Execution / Injection] SIGMA: ... Detection on ALClient022
@@ -1393,6 +1393,10 @@ function tlBuild(){
       <select onchange="tlSet('artifact',this.value)">${artOpts}</select>
       <select onchange="tlSet('host',this.value)">${hostOpts}</select>
       <select onchange="tlSet('sev',this.value)" title="minimum severity">${sevOpts}</select>
+      <select onchange="tlSet('order',this.value)" title="order of the events">
+        <option value="time" ${f.order!=='severity'?'selected':''}>order: time</option>
+        <option value="severity" ${f.order==='severity'?'selected':''}>order: severity</option>
+      </select>
       <span class="grow"></span>
       <button class="ghost" onclick="tlAddToggle()">+ Add event</button>
     </div>
@@ -1409,13 +1413,17 @@ function tlBuild(){
 }
 function tlVisible(){
   const f=window._tlf, floor=TL_SEV_RANK[f.sev]||0;
-  return (window._tlData||[]).filter(r=>{
+  const rows=(window._tlData||[]).filter(r=>{
     if(!f.status[r.validation||'pending'])return false;
     if((TL_SEV_RANK[r.severity]||0)<floor)return false;
     if(f.artifact && !(r.artifacts||[]).includes(f.artifact))return false;
     if(f.host && !(r.host||'').split(',').map(s=>s.trim()).includes(f.host))return false;
     return true;
   });
+  // Most severe first. sort() is stable, so events of equal severity keep their
+  // time order.
+  if(f.order==='severity') rows.sort((a,b)=>(TL_SEV_RANK[b.severity]||0)-(TL_SEV_RANK[a.severity]||0));
+  return rows;
 }
 function tlPaint(){
   const id=window._tlCase, rows=tlVisible();
