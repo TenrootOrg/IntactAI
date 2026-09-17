@@ -82,7 +82,7 @@ class TheFuseActsOnIt(unittest.TestCase):
             self.src = fh.read()
 
     def test_the_checklist_is_gated_on_it(self):
-        self.assertIn("if allow_llm and not _no_route and not d.get(\"disposition_checklist\")",
+        self.assertIn("if allow_llm and (not _no_route or _offline) and not d.get(\"disposition_checklist\")",
                       self.src,
                       "the checklist must not call a provider the report just "
                       "failed to reach")

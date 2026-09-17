@@ -112,8 +112,8 @@ class ADeterministicRegenerationMakesNoModelCall(unittest.TestCase):
     def test_regenerate_passes_use_llm_through(self):
         src = open(os.path.join(ROOT, "modules/backend/services/fusion/store.py"), encoding="utf-8").read()
         regen = src[src.index("def regenerate_report("):src.index("def engagement_markdown(")]
-        self.assertIn("allow_llm=bool(use_llm)", regen)
-        self.assertIn("_cl_llm = bool(use_llm and llm_sim._use_real())", regen)
+        self.assertIn("allow_llm=bool(use_llm and not offline)", regen)
+        self.assertIn("_cl_llm = bool(use_llm and not offline and llm_sim._use_real())", regen)
 
 
 class AnEmptyChecklistReplyIsAFailure(unittest.TestCase):

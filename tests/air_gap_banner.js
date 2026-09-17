@@ -38,7 +38,7 @@ for (const k of cases) {
   const all = lines.join(' ');
   const check = (ok, why) => { if (!ok) failures.push(`${k.name}: ${why} -> ${JSON.stringify(lines)}`); };
   check(lines.length === 3, 'banner must be exactly title, problem, fix');
-  check(lines[0] === '📝 Template report — written without the AI model', 'one title for every case');
+  check(lines[0] === '📝 Offline report — written from the case evidence, without an AI model', 'one title for every case');
   check((all.match(/Regenerate report/g) || []).length === 1, 'says how to retry exactly once');
   check(!/undefined|null|\.\.|narrat|deterministic/i.test(all) && (k.legacy || !/LLM/.test(all)), 'no broken or internal wording');
   check((all.match(/try again/gi) || []).length <= 1, 'says "try again" at most once');

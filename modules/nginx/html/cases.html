@@ -836,7 +836,7 @@ function _regenFix(fix){
 function airGapBanner(ag){
   if(!ag || !ag.airgap) return '';
   return `<div class="agbanner">
-      <div class="agtitle">📝 Template report — written without the AI model</div>
+      <div class="agtitle">📝 Offline report — written from the case evidence, without an AI model</div>
       <div class="agdetail">${esc(ag.problem)}</div>
       <div class="agaction">${esc(ag.fix).replace('Regenerate report','<b>Regenerate report</b>')}</div>
     </div>`;
@@ -1175,11 +1175,21 @@ function pollReportGen(id){
 }
 
 function regenReport(id){
-  toast('sending case data to the model…');
+  // No toast before the answer: the server first checks it can reach the AI
+  // provider, and on an air-gapped appliance it writes the report offline
+  // instead. Saying "sending case data to the model" up front was untrue there
+  // (QA TASK-12656).
   // use_llm:true -> premium LLM narrative (the only report path that spends tokens)
   api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({use_llm:true})})
    .then(r=>{
+     if(r && r.status==='offline'){
+       // Already written, synchronously. Nothing is generating; just show it.
+       if(!backgroundRefresh(id, null)) pollReportGen(id);
+       toast('No AI model is reachable — report written offline from the case evidence');
+       return;
+     }
      if(r && r.busy){ toast('already generating — refreshing when it\'s ready'); }
+     else toast('sending case data to the model…');
      if(curInfo && curInfo.case_id===id){
        curInfo.report_generating=true;
        curInfo.report_generating_started_at=(r&&r.started_at)||null;

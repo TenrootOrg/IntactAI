@@ -776,6 +776,103 @@ def llm_reachability() -> dict:
     return {**result, "config_id": _config_id(cfg)}
 
 
+# Where each online provider is reached, for provider_route(). The OpenAI-shaped
+# ones come from the transport's own table so the two cannot drift apart.
+_PROVIDER_HOSTS = {
+    "claude": "https://api.anthropic.com",
+    "openai": "https://api.openai.com",
+    "gemini": "https://generativelanguage.googleapis.com",
+    "codex-subscription": "https://chatgpt.com",
+}
+_ROUTE_TIMEOUT = 4.0
+
+
+def provider_route(timeout: float = _ROUTE_TIMEOUT) -> dict:
+    """Can the appliance open a connection to the configured AI provider RIGHT NOW?
+
+    A TCP connect to the provider's host: no request, no tokens, bounded by
+    `timeout` including the DNS lookup. Asked once at the start of every report
+    generation, before the Log or the banner say anything about a model. On an
+    air-gapped appliance the report used to announce "Sending case data to the
+    model" and then wait out a connection timeout it could never win (QA
+    TASK-12656: "airgapped vm, why saying llm?"). Not remembered between runs:
+    the next Regenerate or Refusion asks again, so a link that comes back is used
+    at once.
+
+    Returns {ok, code, reason, fix, target}. Anything it cannot judge (a proxy in
+    the environment, an unknown provider, a URL it cannot parse) is ok=True: the
+    real call then decides, exactly as before this existed.
+    """
+    import os
+    import socket
+    from urllib.parse import urlparse
+    ok = {"ok": True, "code": LLM_OK, "reason": "", "fix": "", "target": ""}
+    try:
+        cfg = _agentic_cfg()
+        if str(cfg.get("llm_mode", "online")).lower() == "offline":
+            url = (cfg.get("offline_llm") or {}).get("url") or "http://localhost:11434"
+        else:
+            if any(os.environ.get(k) for k in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")):
+                return ok                    # the proxy decides the route, not us
+            prov = str((cfg.get("online_llm") or {}).get("provider") or "claude")
+            from services.agentic.analyzers._llm import OPENAI_COMPATIBLE_BASE_URLS as _oai
+            url = _oai.get(prov) or _PROVIDER_HOSTS.get(prov)
+            if not url:
+                return ok
+        u = urlparse(url if "://" in url else f"http://{url}")
+        host = u.hostname
+        port = u.port or (443 if u.scheme == "https" else 80)
+        if not host:
+            return ok
+    except Exception:                                 # noqa: BLE001
+        return ok
+
+    result = {}
+
+    def _connect():
+        try:
+            socket.create_connection((host, port), timeout=timeout).close()
+            result["ok"] = True
+        except Exception as e:                        # noqa: BLE001
+            result["err"] = e
+
+    # getaddrinfo has no timeout of its own; with no DNS server answering it can
+    # hang for far longer than `timeout`, so the whole attempt runs on a thread.
+    t = threading.Thread(target=_connect, daemon=True, name="provider-route")
+    t.start()
+    t.join(timeout + 0.5)
+    target = f"{host}:{port}"
+    if result.get("ok"):
+        _forget_no_route(cfg)
+        return {**ok, "target": target}
+    reason, fix = _llm_reason_text("no_internet")
+    res = {"ok": False, "code": "no_internet", "reason": reason, "fix": fix, "target": target}
+    try:
+        # So the Analysis tab's payload stops calling this config "available" --
+        # and so its auto-regenerate does not fire for a route just proved dead.
+        with _REACH_LOCK:
+            _REACH_LAST[_reach_fingerprint(cfg)] = {
+                "available": False, "code": "no_internet", "reason": reason, "fix": fix,
+                "checked_live": True}
+    except Exception:                                 # noqa: BLE001
+        pass
+    return res
+
+
+def _forget_no_route(cfg) -> None:
+    """A route that works again must not stay remembered as dead (a rejected key
+    is a different answer and is kept)."""
+    try:
+        fp = _reach_fingerprint(cfg)
+        with _REACH_LOCK:
+            last = _REACH_LAST.get(fp)
+            if last and last.get("code") in _NO_ROUTE_CODES:
+                _REACH_LAST.pop(fp, None)
+                _REACH_CACHE.pop(fp, None)
+    except Exception:                                 # noqa: BLE001
+        pass
+
+
 def llm_status_known() -> dict:
     """llm_status(), corrected by the last live probe of this exact config.
 

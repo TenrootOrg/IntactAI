@@ -1794,6 +1794,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     # Scoped to this fuse only — nothing is remembered between runs, so the next
     # Refusion tries again and a connection that came back is used at once.
     _no_route = False
+    _offline = None              # set when provider_route() found no route before narrating
     if d.get("report_md") and not force_report:
         report = d.get("report_md")
         # NO NARRATION ON THIS PATH -- the report is reused verbatim. Bound here
@@ -1829,10 +1830,19 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         # looked broken. There is nothing left to decide. No model, no key, or no
         # route means the deterministic report, and the Analysis tab says which.
         _narrate = allow_llm and llm_sim._use_real()
+        if _narrate:
+            # Asked before the progress line below, so it never claims a model call
+            # an air-gapped appliance cannot make (see llm_sim.provider_route).
+            try:
+                _route = llm_sim.provider_route()
+            except Exception:                            # noqa: BLE001
+                _route = None
+            if _route and not _route["ok"]:
+                _narrate, _offline, _no_route = False, _route, True
         _plog("Refusion · generating report", "info",
-              ("narrated report (this waits on the model) & checklist"
+              ("AI-written report (this waits on the model) & checklist"
                if _narrate else
-               "deterministic report & checklist"), pct=88)
+               "offline report & checklist, built from the case evidence"), pct=88)
         llm_ent, llm_chars = _llm_payload_budget(d)
         llm_ident = _llm_identity_budget(d)
         llm_out = _effective_output_cap(d)
@@ -1859,6 +1869,8 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
             log_case_event(case_id, "Report · sending request to the LLM", "info",
                            f"model {_model_label(_mdl)} ({_prov}); payload ≤{llm_ent:,} entities, "
                            f"output ≤{llm_out or 'model max'} tokens")
+        elif _offline:
+            log_case_event(case_id, "Report · writing offline", "info", _offline_log_text(_offline))
         elif allow_llm:
             # The operator pressed Refusion and got a template. Say WHY in the Log,
             # in the same words the Analysis banner uses — it used to show only
@@ -1897,6 +1909,8 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                 prefer_llm=_narrate,
                 max_entities=llm_ent, budget_chars=llm_chars, max_output_tokens=llm_out,
                 detail="explicit", max_identities=llm_ident)
+            if _offline:
+                report = _offline_tag(report, _offline)
         except Exception as _e:                               # noqa: BLE001
             _report_failed = True
             _report_cfg_id, _report_written_at = d.get("report_config_id"), d.get("report_written_at")
@@ -1955,15 +1969,16 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     # The report's attempt just proved there is no route to the provider, and the
     # checklist would call the SAME provider — one more full timeout to learn the
     # same thing. Skip it for this run and say so; the next Refusion tries again.
-    if _no_route and allow_llm and not d.get("disposition_checklist"):
+    if _no_route and allow_llm and not _offline and not d.get("disposition_checklist"):
         log_case_event(case_id, "Checklist · skipped", "info",
                        "the provider could not be reached for the report a moment "
                        "ago — not calling it again in this run; the next Refusion "
                        "will try afresh")
-    if allow_llm and not _no_route and not d.get("disposition_checklist"):
+    # Offline (no route found up front): the deterministic checklist, no model call.
+    if allow_llm and (not _no_route or _offline) and not d.get("disposition_checklist"):
         _cmdl, _cprov, _ = _configured_fusion_model()
         try:
-            _cnarrate = bool(llm_sim._use_real())      # generate_disposition_checklist's own rule
+            _cnarrate = bool(not _offline and llm_sim._use_real())   # generate_disposition_checklist's own rule
         except Exception:                               # noqa: BLE001
             _cnarrate = bool(_cmdl)
         if _cnarrate:
@@ -1974,7 +1989,8 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         try:
             _oc = {}
             fresh_checklist = llm_sim.generate_disposition_checklist(
-                gv, window=window, min_severity=min_sev, run_id=case_id, mask=mask, outcome=_oc)
+                gv, window=window, min_severity=min_sev, run_id=case_id, mask=mask, outcome=_oc,
+                allow_llm=not _offline)
             if _cnarrate or _oc.get("used_llm"):
                 _log_checklist_outcome(case_id, _oc, fresh_checklist)
         except Exception as e:                       # noqa: BLE001
@@ -2346,6 +2362,22 @@ def _log_checklist_outcome(case_id, outcome, items):
     else:
         log_case_event(case_id, "Checklist · complete", "success",
                        f"{len(items or []):,} item(s) generated")
+
+
+def _offline_log_text(route) -> str:
+    target = f" ({route['target']})" if route.get("target") else ""
+    return (f"no AI model is reachable from this appliance{target} — the report is "
+            f"built directly from the case evidence and nothing is sent outside the "
+            f"appliance. {route.get('fix') or ''}").strip()
+
+
+def _offline_tag(report, route) -> str:
+    """Swap the deterministic path's generic closing note for the offline reason,
+    in the same "_Deterministic report — problem fix_" shape the page reads."""
+    import re
+    body = re.sub(r"\n\n---\n_Deterministic report — .*?_\n\s*$", "", report or "", flags=re.S)
+    tail = f"{route.get('reason') or ''} {route.get('fix') or ''}".strip()
+    return body + f"\n\n---\n_Deterministic report — {tail}_\n"
 
 
 def _narration_outcome(report):
@@ -2795,6 +2827,19 @@ def regenerate_report_async(case_id, *, audience=None, use_llm=False) -> dict:
         finally:
             lock.release()
 
+    # No route to the provider: write the report offline, now, from this thread --
+    # before anything tells the operator a model is being called.
+    try:
+        route = llm_sim.provider_route() if llm_sim._use_real() else None
+    except Exception:                                     # noqa: BLE001
+        route = None
+    if route and not route["ok"]:
+        try:
+            res = regenerate_report(case_id, audience=audience, use_llm=True, offline=route)
+            return {"status": "offline", "case_id": case_id, **res}
+        finally:
+            lock.release()
+
     started = _now_iso()
     import uuid
     gen_id = uuid.uuid4().hex
@@ -2846,7 +2891,7 @@ def regenerate_report_async(case_id, *, audience=None, use_llm=False) -> dict:
     return {"status": "started", "case_id": case_id, "started_at": started}
 
 
-def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None) -> dict:
+def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, offline=None) -> dict:
     """Re-narrate report + advisory from the STORED graph (no re-collect/re-fuse),
     applying the case's audience + master_prompt + Timeline triage. Deterministic by
     default (free); pass use_llm=True (the 'Regenerate report' button) for the premium
@@ -2891,7 +2936,12 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None) -> 
         will_narrate = bool(use_llm and (llm_sim._use_real() or llm_sim._llm_available()))
     except Exception:                                     # noqa: BLE001
         will_narrate = bool(use_llm and model)
-    if use_llm:
+    if offline:
+        # provider_route() found no route (see regenerate_report_async): nothing is
+        # sent, and the report says why in its closing note.
+        will_narrate = False
+        log_case_event(case_id, "Report · writing offline", "info", _offline_log_text(offline))
+    elif use_llm:
         if will_narrate:
             log_case_event(case_id, "Report · sending request to the LLM", "info",
                            f"model {_model_label(model)} ({provider}); payload ≤{llm_ent:,} entities, "
@@ -2911,9 +2961,11 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None) -> 
             master_prompt=d.get("master_prompt"), mask=mask,
             dispositions=d.get("dispositions") or None,
             validations=d.get("timeline_validations") or None,
-            prefer_llm=use_llm, max_entities=llm_ent, budget_chars=llm_chars,
+            prefer_llm=bool(use_llm and not offline), max_entities=llm_ent, budget_chars=llm_chars,
             max_output_tokens=llm_out, detail="explicit", max_identities=llm_ident,
             should_continue=(lambda: _generation_is_current(case_id, gen_id)))
+        if offline:
+            report = _offline_tag(report, offline)
         if will_narrate:
             # generate_report swallows a failed call and returns the TEMPLATE
             # report, ending in a note that says why. Read that back instead of
@@ -3019,7 +3071,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None) -> 
         try:
             # Only when this regeneration is ALLOWED to use the model. A deterministic
             # one (use_llm=False) promises no model call and must keep that promise.
-            _cl_llm = bool(use_llm and llm_sim._use_real())
+            _cl_llm = bool(use_llm and not offline and llm_sim._use_real())
         except Exception:                                # noqa: BLE001
             _cl_llm = False
         if _cl_llm and _no_route:
@@ -3038,7 +3090,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None) -> 
                 _oc = {}
                 fresh = llm_sim.generate_disposition_checklist(
                     gv, window=window, min_severity=min_sev, run_id=case_id, mask=mask, outcome=_oc,
-                    allow_llm=bool(use_llm))
+                    allow_llm=bool(use_llm and not offline))
                 if fresh:
                     _mutate_list_field(case_id, "disposition_checklist",
                                        lambda cur: cur or fresh)
