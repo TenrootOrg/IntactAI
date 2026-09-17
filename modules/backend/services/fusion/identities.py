@@ -222,6 +222,33 @@ def _match(a_label, b_label):
     return None
 
 
+def analyst_inputs(graph, decisions, cands=None) -> dict:
+    """The analyst's identity decisions turned into resolve_identities() inputs.
+
+    ONE place for the rule the Identities tab applies, so the report, chat and
+    correlation group people exactly as the tab shows them: a fuzzy cross-name
+    link merges when the analyst confirmed it, or when it is evidence-corroborated
+    (auto) and not declined; a switched-off account ("not this person") is split
+    out; a removed host is excluded. `decisions` is store._identity_decisions(d)."""
+    decisions = decisions or {}
+    cands = compute_candidates(graph) if cands is None else cands
+
+    def _dec(c):
+        return decisions.get(c["id"], {}).get("decision")
+
+    fuzzy = [c for c in cands
+             if c["kind"] == "same_identity" and _norm_user(c["a_label"]) != _norm_user(c["b_label"])]
+    return {
+        "cands": cands, "fuzzy": fuzzy,
+        "merges": [(c["a_id"], c["b_id"], c.get("score", 1.0)) for c in fuzzy
+                   if _dec(c) == "confirmed" or (c.get("auto") and _dec(c) != "declined")],
+        "splits": {r["account_id"] for r in decisions.values()
+                   if r.get("kind") == "split" and r.get("account_id")},
+        "host_excludes": {(r["name"], r["host_id"]) for r in decisions.values()
+                          if r.get("kind") == "host_exclude" and r.get("name") and r.get("host_id")},
+    }
+
+
 def resolve_identities(graph, merges=None, splits=None, host_excludes=None) -> list:
     """DETERMINISTIC identity resolution — the unified 'identity page'. Cluster accounts
     that are the SAME person by normalized username (collapses DOMAIN\\user, user@domain,
@@ -240,6 +267,16 @@ def resolve_identities(graph, merges=None, splits=None, host_excludes=None) -> l
     confirmed fuzzy link) so the card can show how sure the clustering is.
     """
     from collections import defaultdict
+    # Called with no overrides (the report, chat, correlation), use the analyst's
+    # decisions the store attached to this graph, so every view groups people the way
+    # the Identities tab does. Computed once per loaded graph.
+    if merges is None and splits is None and host_excludes is None \
+            and getattr(graph, "identity_decisions", None) is not None:
+        inp = getattr(graph, "_identity_inputs", None)
+        if inp is None:
+            inp = analyst_inputs(graph, graph.identity_decisions)
+            graph._identity_inputs = inp
+        merges, splits, host_excludes = inp["merges"], inp["splits"], inp["host_excludes"]
     splits = set(splits or [])
     host_excludes = set(host_excludes or [])
     accounts = [e for e in graph.entities.values()

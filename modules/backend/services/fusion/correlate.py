@@ -114,7 +114,7 @@ def _guarded(errs: list, name: str, fn, *args, **kwargs):
 
 def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None,
              min_severity="informational", dispositions=None, seed=None,
-             errors=None, excluded_hosts=None) -> FusionGraph:
+             errors=None, excluded_hosts=None, identity_decisions=None) -> FusionGraph:
     """Build the case graph from `contributions`.
 
     `seed` is an existing graph to add to instead of starting empty — the
@@ -141,6 +141,10 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     g = seed if seed is not None else FusionGraph(case_id=case_id)
     if seed is not None:
         g.findings = []
+    # The analyst's Merge / Separate / switch-off decisions, so identity-based
+    # cross-host findings group people the way the Identities tab does.
+    g.identity_decisions = identity_decisions
+    g.__dict__.pop("_identity_inputs", None)
     for rid in run_ids or []:
         g.note_run(rid)
     # INGEST FILTER (performance + relevance): only fuse non-asset entities that

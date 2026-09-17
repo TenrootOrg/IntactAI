@@ -1740,10 +1740,12 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     g = correlate.assemble(case_id, contributions, members, baseline=baseline, window=window,
                            min_severity=min_sev, dispositions=d.get("dispositions") or None,
                            seed=seed_graph, errors=_assembly_errors,
-                           excluded_hosts=d.get("excluded_hosts"))
+                           excluded_hosts=d.get("excluded_hosts"),
+                           identity_decisions=_identity_decisions(d))
     # Optional cross-infra identity correlation: add analyst-confirmed / auto / manual
     # identity edges. Best-effort + fully isolated — never breaks the fuse (below).
     _apply_identity_links(g, d, log=_plog if _record else None)
+    g.__dict__.pop("_identity_inputs", None)   # the new edges can change corroboration
     _plog("Refusion · graph built", "info",
           f"{len(g.entities):,} entities, {len(g.relationships):,} links, "
           f"{len(g.findings):,} findings", pct=80)
@@ -2329,7 +2331,9 @@ def view_graph(case_id, d=None) -> FusionGraph:
     applied the exclusion; the Risk tab, the timeframe cards, chat and Identities
     read load_graph() directly and kept showing an excluded host."""
     d = d if d is not None else (get_case(case_id) or {})
-    return _filter_graph_by_hosts(load_graph(case_id), d.get("excluded_hosts"))
+    g = _filter_graph_by_hosts(load_graph(case_id), d.get("excluded_hosts"))
+    g.identity_decisions = _identity_decisions(d)   # people grouped as the Identities tab shows
+    return g
 
 
 def _filter_graph_by_hosts(g, excluded_labels) -> FusionGraph:
@@ -2348,6 +2352,7 @@ def _filter_graph_by_hosts(g, excluded_labels) -> FusionGraph:
     if not ex_assets:
         return g
     gv = FusionGraph(case_id=g.case_id, run_ids=list(g.run_ids))
+    gv.identity_decisions = getattr(g, "identity_decisions", None)
     keep = set()
     for e in g.entities.values():
         if e.id in ex_assets:
@@ -2936,6 +2941,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
     window = d.get("time_window") or None
     min_sev = d.get("min_severity", "informational")
     gv = _filter_graph_by_hosts(g, d.get("excluded_hosts"))
+    gv.identity_decisions = _identity_decisions(d)
     # masking (customer-facing): anonymize host/user/ip in the LLM payload + narrative.
     # This is the LLM path (use_llm=True) where masking actually matters — the first-scan
     # path is deterministic. Build it here too so anonymization is applied on Rescan.
@@ -3481,18 +3487,9 @@ def identity_view(case_id) -> dict:
     def _dec(c):
         return decisions.get(c["id"], {}).get("decision")
 
-    # fuzzy cross-name same-identity candidates (exact-name matches are already ONE card)
-    fuzzy = [c for c in cands
-             if c["kind"] == "same_identity" and _nz(c["a_label"]) != _nz(c["b_label"])]
-    # MERGE (fold two people into one card) when: analyst CONFIRMED, OR the candidate is
-    # evidence-corroborated (auto) and NOT analyst-declined. Name-only candidates are left
-    # as suggestions. Everything is persisted / reversible.
-    merges = [(c["a_id"], c["b_id"], c.get("score", 1.0)) for c in fuzzy
-              if _dec(c) == "confirmed" or (c.get("auto") and _dec(c) != "declined")]
-    splits = {r["account_id"] for r in decisions.values()
-              if r.get("kind") == "split" and r.get("account_id")}
-    hexcl = {(r["name"], r["host_id"]) for r in decisions.values()
-             if r.get("kind") == "host_exclude" and r.get("name") and r.get("host_id")}
+    # The same rule the report, chat and correlation use (identities.analyst_inputs).
+    _inp = _idf.analyst_inputs(g, decisions, cands)
+    fuzzy, merges, splits, hexcl = _inp["fuzzy"], _inp["merges"], _inp["splits"], _inp["host_excludes"]
     # A removed account stays in its person's card, switched off, so the same button
     # switches it back on. It used to move out into a card of its own, which read as
     # a permanent change (QA: "just enable and disable").
