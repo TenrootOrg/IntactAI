@@ -119,3 +119,15 @@ class MissedFindingsMatchTheSummary(unittest.TestCase):
         p = json.loads(seen["u"].split("\n\n")[0])
         resent = p.get("other_high_findings") or []
         self.assertLess(len(resent), len(g.findings), "every finding was re-sent: title matching is broken")
+
+
+class EscapedTitlesAreNotMissing(unittest.TestCase):
+    def test_backslash_and_non_ascii_titles_already_sent_are_not_resent(self):
+        g = _graph()
+        g.findings[-1].title = "Account 'adatumlab\\srv' used across 4 hosts — critical"
+        seen = {}
+        with mock.patch.object(_LLM, "_real_llm", lambda s, u, **k: seen.update(u=u) or "ok"), \
+             mock.patch.object(_LLM, "_use_real", lambda: True):
+            _LLM.chat(g, "summarize", full_context=True, require_llm=True)
+        p = json.loads(seen["u"].split("\n\n")[0])
+        self.assertNotIn(g.findings[-1].title, [x["title"] for x in (p.get("other_high_findings") or [])])

@@ -2232,7 +2232,19 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
                 # Kept deliberately small (the chat payload is sent on every turn):
                 # the high/critical findings the budgeted summary dropped, one line
                 # each, and the evidence details of the critical ones.
-                _dump = json.dumps(payload)
+                # Compare against the payload's actual strings, not its JSON text: JSON
+                # escapes backslashes and non-ASCII ("adatumlab\\srv", "—"), which made
+                # a finding that WAS sent look missing.
+                def _strings(o):
+                    if isinstance(o, str):
+                        yield o
+                    elif isinstance(o, dict):
+                        for v in o.values():
+                            yield from _strings(v)
+                    elif isinstance(o, (list, tuple)):
+                        for v in o:
+                            yield from _strings(v)
+                _dump = "\n".join(_strings(payload))
                 # The summary rewrites titles ("X (+1 related)", the "on <host>" tail
                 # trimmed), so match on the rule part of the title, not the whole title.
                 _missed = [f for f in _scoped if f.severity in ("high", "critical")
