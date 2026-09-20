@@ -187,3 +187,35 @@ class AHangingCallIsBrokenOff(unittest.TestCase):
             self.assertEqual(_LLM._phase_deadline(), 90.0)
         with mock.patch.object(_LLM, "_agentic_cfg", lambda: {}):
             self.assertEqual(_LLM._phase_deadline(), _LLM.PHASE_DEADLINE_DEFAULT)
+
+
+class OnePhaseCannotDominateTheRun(unittest.TestCase):
+    """Live: the payload budget follows the model's context, so a 41-finding phase
+    shipped 2,230 entity rows (86% of a 561k-char call) while its five siblings
+    needed under 400 — slow, and the slow call is the one that hangs."""
+
+    def test_the_cap_applies_and_is_configurable(self):
+        with mock.patch.object(_LLM, "_agentic_cfg", lambda: {}):
+            self.assertEqual(_LLM._phase_entities(6953), _LLM.PHASE_ENTITIES_DEFAULT)
+        with mock.patch.object(_LLM, "_agentic_cfg", lambda: {"report_phase_entities": 300}):
+            self.assertEqual(_LLM._phase_entities(6953), 300)
+
+    def test_a_smaller_case_limit_still_wins(self):
+        with mock.patch.object(_LLM, "_agentic_cfg", lambda: {}):
+            self.assertEqual(_LLM._phase_entities(120), 120)
+
+    def test_phases_are_built_with_the_cap(self):
+        seen = []
+        real = _LLM.render.distilled
+
+        def spy(graph, **k):
+            seen.append(k.get("max_entities"))
+            return real(graph, **k)
+        model = Model(lambda n, u: "**Name:** ok\nanalysis " + "y" * 40)
+        with mock.patch.object(_LLM, "_real_llm", model), mock.patch.object(_LLM, "_use_real", lambda: True), \
+             mock.patch.object(_LLM, "_agentic_cfg", lambda: {"report_phase_entities": 77}), \
+             mock.patch.object(_LLM, "_case_event", lambda *a, **k: None), \
+             mock.patch.object(_LLM.render, "distilled", spy):
+            _LLM.generate_report(_graph(), prefer_llm=True, altitude_mode="macro", run_id="c",
+                                 max_entities=9999)
+        self.assertIn(77, seen, seen)

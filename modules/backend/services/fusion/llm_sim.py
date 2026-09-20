@@ -1456,6 +1456,23 @@ PHASE_RETRIES_DEFAULT = 1
 # connection stayed open), and the run was written off as stuck with five other
 # phases already answered and thrown away.
 PHASE_DEADLINE_DEFAULT = 300.0
+# Entity rows ONE phase call may carry. The payload budget follows the model's
+# context window, so a 1M-context model let a 41-finding phase ship 2,230 entity
+# rows -- 483k of its 561k chars, 86% of the call -- while every other phase on the
+# same case needed under 400. It fits the context; it is simply slow, and the slow
+# call is the one that hangs. Measured on that phase: 800 rows is 255k chars with
+# the SAME 44 findings, and leaves the other five phases untouched.
+PHASE_ENTITIES_DEFAULT = 800
+
+
+def _phase_entities(me) -> int:
+    """Entity rows for one phase call (AI settings key `report_phase_entities`)."""
+    try:
+        v = _agentic_cfg().get("report_phase_entities")
+        cap = int(PHASE_ENTITIES_DEFAULT if v is None else v)
+    except Exception:                                   # noqa: BLE001
+        cap = PHASE_ENTITIES_DEFAULT
+    return max(50, min(int(me or PHASE_ENTITIES_DEFAULT), cap))
 
 
 def _phase_deadline() -> float:
@@ -1540,9 +1557,11 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
         #     choice is moot there. Where there IS room, explicit costs ~23% more and
         #     buys the per-event evidence -- real command lines, decoded
         #     -EncodedCommand -- that a phase section lives on.
+        _pme = _phase_entities(me)
+
         def _build(det):
             return render.distilled(graph, window=z["window"],
-                                    min_severity=min_severity, max_entities=me,
+                                    min_severity=min_severity, max_entities=_pme,
                                     budget_chars=bc, detail=det,
                                     max_identities=max_identities)
 
