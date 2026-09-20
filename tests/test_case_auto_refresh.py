@@ -167,7 +167,13 @@ class TheContentAlwaysMatchesTheUnderline(unittest.TestCase):
             self.assertIn(f"tabIsStill('{tab}')", body,
                           f"{fn} writes #tabc after a fetch — it must not paint over "
                           "a tab the operator has since switched to")
-            self.assertLess(body.index("tabIsStill("), body.index("$('#tabc')", body.index(".then(")),
+            # The write is either a direct #tabc assignment or a paint helper
+            # (the Timeline repaints only its rows on a refresh).
+            after = body.index(".then(")
+            writes = [body.index(w, after) for w in ("$('#tabc')", "tlPaint()", "tlBuild()")
+                      if w in body[after:]]
+            self.assertTrue(writes, f"{fn} must paint something after its fetch")
+            self.assertLess(body.index("tabIsStill("), min(writes),
                             f"{fn} must check BEFORE it writes")
 
     def test_a_renderer_that_throws_does_not_leave_the_previous_tab(self):
