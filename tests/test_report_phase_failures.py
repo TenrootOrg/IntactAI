@@ -117,6 +117,20 @@ class TheOverviewFailingKeepsThePhases(unittest.TestCase):
         self.assertNotIn("_Deterministic report —", md)
         self.assertGreater(calls.count("phase"), 1)
 
+    def test_an_empty_overview_also_keeps_the_phases(self):
+        """What actually happened live: the overview answered NOTHING."""
+        def model(system, user, **k):
+            if _LLM.PHASE_SYSTEM_PROMPT in system:
+                return "**Name:** ok\nphase analysis " + "y" * 60
+            return "   "                                   # empty overview
+        with mock.patch.object(_LLM, "_real_llm", model), mock.patch.object(_LLM, "_use_real", lambda: True), \
+             mock.patch.object(_LLM, "_agentic_cfg", lambda: {}), \
+             mock.patch.object(_LLM, "_case_event", lambda *a, **k: None):
+            md = _LLM.generate_report(_graph(), prefer_llm=True, altitude_mode="macro", run_id="c")
+        self.assertIn("phase analysis", md)
+        self.assertIn("Overview not written", md)
+        self.assertNotIn("_Deterministic report —", md)
+
     def test_a_focused_report_still_falls_back(self):
         """One call, nothing to keep: the offline report with the reason is right."""
         def model(system, user, **k):
