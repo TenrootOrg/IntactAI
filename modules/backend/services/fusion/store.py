@@ -92,9 +92,16 @@ _FUSION_MODULE_LABELS = {
 
 def normalize_modules(mods):
     """Map legacy module names to current ones + apply the default. Keeps cases
-    saved before the agentic/all rename working without a data migration."""
-    if not mods:
+    saved before the agentic/all rename working without a data migration.
+
+    NONE means "never chosen" -> the default. An EMPTY LIST is the operator's own
+    choice of no modules and is kept: unticking every module used to read back as
+    the default, so the tick came back the next time Configuration was opened
+    (QA TASK-12672) and the case fused data the operator had switched off."""
+    if mods is None:
         return list(FUSION_MODULES_DEFAULT)
+    if not mods:
+        return []
     # legacy 'velociraptor' AND the now-removed 'velociraptor_all' both collapse
     # to agentic — we only fuse agentic blueprints.
     _ALIAS = {"velociraptor": "velociraptor_agentic", "velociraptor_all": "velociraptor_agentic"}
@@ -3333,9 +3340,10 @@ def set_analysis_config(case_id, cfg) -> dict:
     patch["llm_use_full_context"] = True
     patch["llm_max_output_tokens"] = None
     if "fusion_modules" in cfg:            # which modules fuse (only available ones honored)
-        mods = normalize_modules(cfg.get("fusion_modules"))
-        patch["fusion_modules"] = [m for m in mods
-                                   if m in FUSION_MODULES_AVAILABLE] or list(FUSION_MODULES_DEFAULT)
+        mods = normalize_modules(cfg.get("fusion_modules") or [])
+        # No `or default` here either: unticking every module is a choice, and
+        # replacing it with the default silently fused what was switched off.
+        patch["fusion_modules"] = [m for m in mods if m in FUSION_MODULES_AVAILABLE]
     if patch:
         before = get_case(case_id) or {}
         _log_config_changes(case_id, before, patch)
