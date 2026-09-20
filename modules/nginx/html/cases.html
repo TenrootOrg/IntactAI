@@ -1438,7 +1438,12 @@ function renderTimeline(id){
   window._tlCase=id;
   if(!reload) $('#tabc').innerHTML='<i style="color:var(--muted)">loading timeline…</i>';
   api('/api/cases/'+id+'/timeline').then(d=>{ if(!tabIsStill('timeline'))return;
-    window._tlData=d.timeline||[];tlBuild();});
+    window._tlData=d.timeline||[];
+    // A refresh of the tab already on screen repaints ONLY the rows. tlBuild()
+    // replaces the whole tab (filter bar and all), which flickers on every
+    // automatic re-fuse — now that a fuse follows the data within seconds, that
+    // is often. The filter bar is rebuilt on the next full draw of the tab.
+    if(reload && $('#tlrows')) tlPaint(); else tlBuild();});
 }
 function tlBuild(){
   const rows=window._tlData||[], f=window._tlf;

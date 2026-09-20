@@ -55,9 +55,15 @@ from __future__ import annotations
 
 import threading
 
-# Quiet period after the last run lands before the case is fused. Long enough
-# that a multi-host hunt arriving over a minute produces ONE fuse.
-QUIET_SECONDS = 60.0
+# Quiet period after the last run lands before the case is fused. Short: the
+# timer RE-ARMS on every landing run, and a fuse never starts while a member run
+# is still importing (see _fire), so a multi-host hunt still produces ONE fuse —
+# it just starts seconds after the last row lands instead of a minute later.
+QUIET_SECONDS = 5.0
+# A member run is still writing its rows. Fusing now would build the graph from
+# half an import, so wait for it rather than fuse early.
+IMPORTING_RETRY_SECONDS = 5.0
+MAX_IMPORTING_RETRIES = 360           # 30 minutes of a long import
 # A fuse was already running. Wait a little and try again rather than dropping
 # this data on the floor until someone clicks Refusion.
 BUSY_RETRY_SECONDS = 30.0
@@ -66,6 +72,9 @@ MAX_BUSY_RETRIES = 10
 # runs for minutes, so a second burst of data can easily land inside one. Retry
 # rather than leave the report describing the data from two collections ago.
 REPORT_RETRY_SECONDS = 60.0
+# Startup catch-up keeps its own spacing: ten cases with unfused data must not
+# rebuild ten graphs at once on a box that has just come up.
+CATCHUP_STAGGER_SECONDS = 30.0
 MAX_REPORT_RETRIES = 5
 
 _TIMERS: dict = {}
@@ -205,7 +214,7 @@ def catch_up(stagger=None) -> int:
     come up. One quiet period apart is roughly one at a time (a fuse measured 29s
     against a 60s period) without needing a real queue.
     """
-    step = QUIET_SECONDS if stagger is None else stagger
+    step = CATCHUP_STAGGER_SECONDS if stagger is None else stagger
     store = _store()
     armed = 0
     try:
@@ -232,6 +241,19 @@ def catch_up(stagger=None) -> int:
     return armed
 
 
+def _importing(store, case_id, d) -> bool:
+    """Is a member run still running or pending? Best-effort: an unreadable run
+    list must not block the fuse for ever."""
+    try:
+        for rid in store._members_for_case(case_id, d) or []:
+            run = store._ws().get_automation_run(rid)
+            if run and run.get("status") in ("running", "pending"):
+                return True
+    except Exception as e:                     # noqa: BLE001
+        print(f"[AUTOFUSE] could not check member runs for {case_id}: {e}", flush=True)
+    return False
+
+
 def _fire(case_id, reason="new data", attempt=0) -> None:
     """The timer expired: fuse the case if it still wants fusing."""
     with _GUARD:
@@ -246,6 +268,19 @@ def _fire(case_id, reason="new data", attempt=0) -> None:
         stale = store.stale_member_runs(case_id, d)
         if not stale:
             return                             # someone already fused it — no-op
+        # AN IMPORT STILL RUNNING IS NOT A QUIET CASE. A member run that is still
+        # fetching rows would be fused half-loaded, and the quiet period alone
+        # cannot tell the difference — an upload writes nothing to the run for
+        # minutes while it pulls a hunt. Wait for it instead.
+        if _importing(store, case_id, d):
+            if attempt + 1 >= MAX_IMPORTING_RETRIES:
+                store.log_case_event(
+                    case_id, "Refusion skipped", "warning",
+                    "a member run has been importing for a long time — click Refusion "
+                    "once it finishes")
+                return
+            schedule(case_id, reason, delay=IMPORTING_RETRY_SECONDS, _attempt=attempt + 1)
+            return
         # CRASH-LOOP BREAKER. A fuse can die in a way no `except` will ever see:
         # a big case OOMs the process (measured — five 547 MB member runs peaked at
         # 5.6 GB and the kernel killed it). Automatic retry then becomes a loop:

@@ -79,6 +79,13 @@ class FakeStore:
     def get_all_automation_runs(self):
         return list(self.all_runs)
 
+    # --- what the import guard reaches for --------------------------------
+    def _members_for_case(self, cid, d=None):
+        return list(getattr(self, "members", []))
+
+    def get_automation_run(self, rid):
+        return {"run_id": rid, "status": getattr(self, "member_status", "completed")}
+
     def _stale_for(self, cid):
         # Staleness is PER CASE in the real store; sharing one list here let one
         # case's fuse silently satisfy another's, which looked like a scheduler bug.
@@ -171,6 +178,7 @@ class _Base(unittest.TestCase):
         _FakeLlmSim.use_real = False
         autofuse.REPORT_RETRY_SECONDS = 0.02
         # real timers, just fast ones
+        self._imp = autofuse.IMPORTING_RETRY_SECONDS
         self._orig = (autofuse.QUIET_SECONDS, autofuse.BUSY_RETRY_SECONDS,
                       autofuse.MAX_BUSY_RETRIES)
         autofuse.QUIET_SECONDS = 0.05
@@ -181,6 +189,7 @@ class _Base(unittest.TestCase):
     def tearDown(self):
         for cid in list(autofuse._TIMERS) + list(autofuse._REPORT_TIMERS):
             autofuse.cancel(cid)
+        autofuse.IMPORTING_RETRY_SECONDS = self._imp
         (autofuse.QUIET_SECONDS, autofuse.BUSY_RETRY_SECONDS,
          autofuse.MAX_BUSY_RETRIES) = self._orig
 
@@ -236,6 +245,19 @@ class TestItFusesOnce(_Base):
         self.assertEqual(self.store.fuses, [], "the timer should have been re-armed")
         self.settle()
         self.assertEqual(len(self.store.fuses), 1)
+
+    def test_it_waits_while_a_member_run_is_still_importing(self):
+        """A 5s quiet period is shorter than an upload's silent stretch while it
+        pulls a hunt: fusing then would build the graph from half an import."""
+        autofuse.IMPORTING_RETRY_SECONDS = 0.05
+        self.store.members = ["velociraptor_upload_1"]
+        self.store.member_status = "running"
+        autofuse.schedule("case_1")
+        self.settle()
+        self.assertEqual(self.store.fuses, [], "must not fuse while a run is importing")
+        self.store.member_status = "completed"
+        self.settle()
+        self.assertEqual(len(self.store.fuses), 1, "fuses once the import finishes")
 
     def test_separate_cases_do_not_share_a_timer(self):
         autofuse.schedule("case_1")
