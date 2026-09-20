@@ -126,3 +126,17 @@ class TheOverviewFailingKeepsThePhases(unittest.TestCase):
              mock.patch.object(_LLM, "_case_event", lambda *a, **k: None):
             md = _LLM.generate_report(_graph(), prefer_llm=True, altitude_mode="focused", run_id="c")
         self.assertIn("_Deterministic report —", md)
+
+
+class EveryCallSaysHowMuchContextItCarries(unittest.TestCase):
+    def test_each_phase_and_the_synthesis(self):
+        events = []
+        model = Model(lambda n, u: "**Name:** ok\nanalysis " + "y" * 40)
+        with mock.patch.object(_LLM, "_real_llm", model), mock.patch.object(_LLM, "_use_real", lambda: True), \
+             mock.patch.object(_LLM, "_agentic_cfg", lambda: {}), \
+             mock.patch.object(_LLM, "_case_event", lambda rid, a, s, d="": events.append((a, d))):
+            _LLM.generate_report(_graph(), prefer_llm=True, altitude_mode="macro", run_id="c")
+        sending = [(a, d) for a, d in events if a.endswith("— sending")]
+        self.assertTrue(sending)
+        for a, d in sending:
+            self.assertRegex(d, r"context [\d,]+ chars \(~[\d,]+ tokens\)", a)

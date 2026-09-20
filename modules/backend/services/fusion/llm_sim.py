@@ -1390,6 +1390,13 @@ def _note_progress(run_id):
         pass
 
 
+def _ctx_size(payload) -> str:
+    """How much context a single call carries, for the case log. Tokens are the usual
+    ~4-characters-per-token estimate, not the provider's count."""
+    n = len(payload or "")
+    return f"context {n:,} chars (~{max(1, n // 4):,} tokens)"
+
+
 def analyst_context(dispositions=None, validations=None, manual_events=None, graph=None,
                     checklist=None) -> dict:
     """What the analyst has told the case, for every model call that writes about it:
@@ -1543,7 +1550,7 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
         _w = z.get("window") or {}
         _case_event(run_id, f"Report · phase {z['n']} of {_total} — sending", "info",
                     f"{_w.get('start') or '?'} → {_w.get('end') or '?'} · "
-                    f"{z.get('finding_count', 0)} finding(s)")
+                    f"{z.get('finding_count', 0)} finding(s) · {_ctx_size(body)}")
         _t0 = time.time()
         attempt, retries = 0, _phase_retries()
         while True:
@@ -1732,8 +1739,13 @@ def generate_report(graph, *, window=None, min_severity="informational",
                 raise GenerationStopped()
             if altitude == "macro":
                 _case_event(run_id, "Report · synthesis — sending", "info",
-                            "combining the phase analyses into the report")
+                            "combining the phase analyses into the report · "
+                            + _ctx_size(payload_str))
                 _note_progress(run_id)
+            else:
+                # One call for the whole case (a focused report): say how much it carries.
+                _case_event(run_id, "Report · sending the case to the model", "info",
+                            _ctx_size(payload_str))
             _synth_failed = ""
             try:
                 narrative = _real_llm(system, payload_str, run_id=run_id,
