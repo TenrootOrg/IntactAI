@@ -1519,7 +1519,8 @@ function openFindingDetail(fid){
     const occHtml=occ.length? occ.map(o=>{
       const kv=Object.entries(o.attrs||{}).map(([k,v])=>`<div class="kv"><b>${esc(k)}</b><span>${esc(String(v))}</span></div>`).join('');
       return `<div class="fdocc">
-        <div style="color:var(--muted);font-size:11px;margin-bottom:3px">⏱ ${esc(o.ts||'—')} · anomaly ${o.anomaly||0}${o.locator?` · <span class="arti">${esc(o.locator)}</span>`:''}</div>
+        <div style="color:var(--muted);font-size:11px;margin-bottom:3px">⏱ ${esc(o.ts||'—')} · anomaly ${o.anomaly||0}${(o.artifacts||[]).map(a=>` · <span class="arti">${esc(a)}</span>`).join('')}</div>
+        ${(o.locators||[]).length?`<div style="color:var(--muted);font-size:10.5px;margin-bottom:3px">${(o.locators||[]).map(l=>esc(l)).join(' · ')}${o.evidence_rows>(o.locators||[]).length?` · +${o.evidence_rows-(o.locators||[]).length} more row(s)`:''}</div>`:''}
         ${kv||'<i style="color:var(--muted)">no fields</i>'}</div>`;}).join('')
       : '<i style="color:var(--muted)">no per-occurrence detail available</i>';
     const more=(f.occ_count>f.shown_occurrences)?` <span style="color:var(--muted)">(showing ${f.shown_occurrences} of ${f.occ_count})</span>`:'';
@@ -1530,7 +1531,7 @@ function openFindingDetail(fid){
       </div>
       <div style="margin:6px 0;font-size:12px;color:var(--muted)">
         <span class="chip c-${f.severity}">${esc(f.severity||'')}</span>
-        ${(f.hosts||[]).length?' · '+esc((f.hosts||[]).join(', ')):''} · ${f.occ_count||occ.length}× occurrences</div>
+        ${(f.hosts||[]).length?' · '+esc((f.hosts||[]).join(', ')):''} · ${f.occ_count||occ.length}× occurrences${(()=>{const r=occ.reduce((n,o)=>n+(o.evidence_rows||0),0),a=[...new Set(occ.flatMap(o=>o.artifacts||[]))];return r?` · ${r} evidence row(s)${a.length>1?` across ${a.length} artifacts`:''}`:'';})()}</div>
       ${f.summary?`<p style="font-size:13px;margin:6px 0">${esc(f.summary)}</p>`:''}
       ${(f.mitre&&f.mitre.length)?`<div style="font-size:11px;color:var(--muted)">MITRE: ${f.mitre.map(esc).join(', ')}</div>`:''}
       ${(f.sources&&f.sources.length)?`<div style="font-size:11px;color:var(--muted)">source: ${f.sources.map(esc).join(', ')}</div>`:''}

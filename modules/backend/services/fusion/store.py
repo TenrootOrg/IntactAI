@@ -3979,10 +3979,21 @@ def get_finding_detail(case_id, finding_id) -> dict | None:
         e = g.entities.get(eid)
         if not e:
             continue
+        # EVERY row this entity was seen in, not just the first. The panel used to
+        # show one locator, so a Timeline filtered by one artifact could open a row
+        # whose detail never mentioned that artifact (QA: filtered by hayabusa, the
+        # detail showed only BinaryRename).
+        _locs = [ev.locator for ev in (e.evidence or []) if ev.locator]
+        _arts = {l.split("/row=")[0].split("/")[0] for l in _locs}
+        _arts |= {str(o.get("value")) for o in ((e.attrs or {}).get("artifact_observations") or [])
+                  if isinstance(o, dict) and o.get("value")}
         occ.append({"ts": e.first_seen, "label": e.label, "type": e.type,
                     "severity": e.severity, "anomaly": e.anomaly,
                     "attrs": _attrs(e),
-                    "locator": (e.evidence[0].locator if e.evidence else None)})
+                    "locator": (_locs[0] if _locs else None),
+                    "locators": _locs[:8],
+                    "evidence_rows": len(_locs),
+                    "artifacts": sorted(a for a in _arts if a and a != "asset")})
     occ.sort(key=lambda o: o.get("ts") or "")
     hosts = [(g.entities.get(a).label if g.entities.get(a) else a) for a in (f.asset_ids or [])]
     return {"finding": {"id": f.id, "title": f.title, "severity": f.severity,
