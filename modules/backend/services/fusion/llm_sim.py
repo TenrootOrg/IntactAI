@@ -1448,8 +1448,37 @@ def analyst_context(dispositions=None, validations=None, manual_events=None, gra
 # was reached and simply answered badly. A rate limit, a rejected key, no credit, no
 # route or a model the provider does not offer would fail the same way again, and a
 # timeout has already cost the call's whole allowance.
-_PHASE_RETRYABLE = ("empty_reply", "bad_response", "provider_error", "llm_error")
+_PHASE_RETRYABLE = ("empty_reply", "bad_response", "provider_error", "llm_error", "timeout")
 PHASE_RETRIES_DEFAULT = 1
+# How long one report call may take before WE stop waiting. The provider client's
+# own timeout cannot be relied on: measured live, a phase carrying 5k tokens went
+# silent for 15 minutes against a 600s client timeout that never fired (the
+# connection stayed open), and the run was written off as stuck with five other
+# phases already answered and thrown away.
+PHASE_DEADLINE_DEFAULT = 300.0
+
+
+def _phase_deadline() -> float:
+    """Seconds one report call may take (AI settings key `report_call_seconds`)."""
+    try:
+        v = _agentic_cfg().get("report_call_seconds")
+        return max(30.0, float(PHASE_DEADLINE_DEFAULT if v is None else v))
+    except Exception:                                   # noqa: BLE001
+        return PHASE_DEADLINE_DEFAULT
+
+
+def _with_deadline(fn, seconds, what):
+    """Run `fn` and give up after `seconds`, whatever the provider's client does.
+    The abandoned call's thread is left to die on its own (it holds no lock)."""
+    import concurrent.futures as _cf
+    pool = _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"llm-{what}")
+    fut = pool.submit(fn)
+    try:
+        return fut.result(timeout=seconds)
+    except _cf.TimeoutError:
+        raise LLMUnavailable("timeout") from None
+    finally:
+        pool.shutdown(wait=False)
 
 
 def _phase_retries() -> int:
@@ -1555,9 +1584,11 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
         attempt, retries = 0, _phase_retries()
         while True:
             try:
-                out = _real_llm(sys_p, body, run_id=run_id,
-                                max_output_tokens=max_output_tokens,
-                                reasoning_effort="low")
+                out = _with_deadline(
+                    lambda: _real_llm(sys_p, body, run_id=run_id,
+                                      max_output_tokens=max_output_tokens,
+                                      reasoning_effort="low"),
+                    _phase_deadline(), f"phase{z['n']}")
                 out = _revert_mask(out, mask)
                 if not (out or "").strip():
                     raise LLMUnavailable("empty_reply")
@@ -1769,9 +1800,11 @@ def generate_report(graph, *, window=None, min_severity="informational",
                         "is below, and Regenerate report will try the summary again.")
 
             try:
-                narrative = _real_llm(system, payload_str, run_id=run_id,
+                narrative = _with_deadline(
+                    lambda: _real_llm(system, payload_str, run_id=run_id,
                                       max_output_tokens=max_output_tokens,
-                                      reasoning_effort="low")
+                                      reasoning_effort="low"),
+                    _phase_deadline(), "synthesis")
                 if not (narrative or "").strip():
                     # An empty answer is a failed call (see the note below) -- and it
                     # is the one that actually happened on the live run.

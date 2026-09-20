@@ -154,3 +154,36 @@ class EveryCallSaysHowMuchContextItCarries(unittest.TestCase):
         self.assertTrue(sending)
         for a, d in sending:
             self.assertRegex(d, r"context [\d,]+ chars \(~[\d,]+ tokens\)", a)
+
+
+class AHangingCallIsBrokenOff(unittest.TestCase):
+    """Live: a phase carrying 5k tokens went silent for 15 minutes against a 600s
+    provider timeout that never fired, and the whole run — five other phases already
+    answered — was written off as stuck and discarded."""
+
+    def test_a_phase_that_never_answers_is_given_up_on_and_retried(self):
+        import time as _t
+        _LLM.PHASE_DEADLINE_DEFAULT_BACKUP = _LLM.PHASE_DEADLINE_DEFAULT
+        calls = []
+
+        def model(system, user, **k):
+            if _LLM.PHASE_SYSTEM_PROMPT in system:
+                calls.append(1)
+                if len(calls) == 1:
+                    _t.sleep(5)                      # hangs past the deadline
+                return "**Name:** ok\nanalysis " + "y" * 40
+            return "## Executive Summary\nok " + "x" * 50
+        events = []
+        with mock.patch.object(_LLM, "_real_llm", model), mock.patch.object(_LLM, "_use_real", lambda: True), \
+             mock.patch.object(_LLM, "_agentic_cfg", lambda: {"report_call_seconds": 30}), \
+             mock.patch.object(_LLM, "_phase_deadline", lambda: 0.5), \
+             mock.patch.object(_LLM, "_case_event", lambda rid, a, s, d="": events.append((a, d))):
+            md = _LLM.generate_report(_graph(), prefer_llm=True, altitude_mode="macro", run_id="c")
+        self.assertTrue(any(a.endswith("— retrying") for a, _ in events), events)
+        self.assertIn("_Narrative by live LLM", md)
+
+    def test_the_deadline_is_configurable(self):
+        with mock.patch.object(_LLM, "_agentic_cfg", lambda: {"report_call_seconds": 90}):
+            self.assertEqual(_LLM._phase_deadline(), 90.0)
+        with mock.patch.object(_LLM, "_agentic_cfg", lambda: {}):
+            self.assertEqual(_LLM._phase_deadline(), _LLM.PHASE_DEADLINE_DEFAULT)
