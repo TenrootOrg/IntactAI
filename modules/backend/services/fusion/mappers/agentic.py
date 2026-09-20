@@ -163,6 +163,14 @@ def _level_anomaly(level) -> int:
     return _HAYABUSA_ANOM.get(str(level or "").strip().lower(), 1)
 
 
+def _det_locator(src_artifact) -> str:
+    """Where an entity pulled out of a detection's fields came from: the artifact that
+    produced the detection, not a made-up name. It was hardcoded "hayabusa/details",
+    so the Timeline's artifact chips and filter listed a second artifact called
+    "hayabusa" beside the real Windows.Hayabusa.Rules / DetectRaptor...Evtx rows."""
+    return f"{src_artifact or 'detection'}/details"
+
+
 def _ent(eid, etype, label, asset, run_id, locator, *, anomaly=0, first=None,
          flags=None, **attrs):
     a = {"_assets": [asset]}
@@ -1248,7 +1256,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
         peid = keys.process_id(asset, p, ts, name)   # event ts = createtime fallback
         proc_by_asset_pid[(asset, p)] = peid
         _det_made[asset] = _det_made.get(asset, 0) + 1
-        ents.append(_ent(peid, "process", f"{name} ({p})", asset, run_id, "hayabusa/details",
+        ents.append(_ent(peid, "process", f"{name} ({p})", asset, run_id, _det_locator(src_artifact),
                          anomaly=0, first=keys.norm_ts(ts), flags=["from_detection"],
                          pid=p, name=name, cmdline=DET.cmdline(pd), createtime=keys.norm_ts(ts), artifact=src_artifact))
     # (B) edges: event_about(proc), spawned(parent), executed(account), connected(ioc)
@@ -1266,14 +1274,14 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             aeid, d, u = _account_eid(asset, dom, usr, local_hosts=_hosts)
             if aeid:
                 ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset, run_id,
-                                 "hayabusa/details", user=u, domain=d, artifact=src_artifact, first=ts))
+                                 _det_locator(src_artifact), user=u, domain=d, artifact=src_artifact, first=ts))
                 if proc_eid:
                     rels.append(Relationship(aeid, proc_eid, "executed", sources=[MODULE], ts=ts))
         tip = DET.tgtip(pd)
         if tip and keys.classify_indicator(tip) == "ip":
             # link only — anomaly 0 so benign cloud telemetry never auto-finds
             iid = keys.ioc_id("ip", tip)
-            ents.append(_ent(iid, "ioc", str(tip), asset, run_id, "hayabusa/details",
+            ents.append(_ent(iid, "ioc", str(tip), asset, run_id, _det_locator(src_artifact),
                              anomaly=0, ioc_kind="ip", first=ts, from_detection=True, artifact=src_artifact))
             if proc_eid:
                 rels.append(Relationship(proc_eid, iid, "connected", sources=[MODULE], ts=ts))
@@ -1282,7 +1290,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
         sha = hh.get("sha256")
         if sha and keys.classify_indicator(sha) == "hash":
             hid = keys.ioc_id("hash", sha)
-            ents.append(_ent(hid, "ioc", sha, asset, run_id, "hayabusa/details",  # full hash
+            ents.append(_ent(hid, "ioc", sha, asset, run_id, _det_locator(src_artifact),  # full hash
                              anomaly=0, ioc_kind="hash", first=ts, full_hash=sha,
                              md5=hh.get("md5"), imphash=hh.get("imphash"), artifact=src_artifact))
             if proc_eid:
