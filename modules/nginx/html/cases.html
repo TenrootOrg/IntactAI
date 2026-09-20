@@ -142,6 +142,8 @@
   .cfgcol{flex:1;min-width:210px;display:flex;flex-direction:column}
   .cfgcol h4{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin:2px 0 6px}
   .cfgactions{display:flex;gap:10px;padding:0 14px 14px;align-items:center;border-top:1px solid var(--bd);padding-top:12px}
+  .cfghint{font-size:11px;color:var(--muted);line-height:1.4;margin:2px 0 6px}
+  .cfghint code{background:var(--panel2);border:1px solid var(--bd);border-radius:3px;padding:0 3px;font-size:10.5px}
   .modwarn{font-size:11px;color:var(--med);line-height:1.35;margin:0 0 6px;padding:6px 8px;border:1px solid rgba(210,153,34,.35);background:rgba(210,153,34,.08);border-radius:6px}
   /* Air-Gap Template banner: the report was written from the correlated graph
      alone, no model call made. Deliberately the loudest thing on the tab —
@@ -731,8 +733,10 @@ function renderConfig(info){
             const badge=dis?'<span class="modbadge dis">disabled</span>':(m.default?'<span class="modbadge def">default</span>':'');
             return `<label class="modrow${dis?' dis':''}${on?' on':''}"><input type="checkbox" data-mod="${m.name}" ${on?'checked':''} ${dis?'disabled':''}/> <span class="t">${esc(m.label)}</span>${badge}</label>`;}).join('')}
         </div>
-        <label style="margin-top:8px"><input type="checkbox" id="cf-mask" ${mk.enabled?'checked':''} style="width:auto"/> Mask hosts / users / IPs</label>
-        <textarea id="cf-maskpat" placeholder="extra patterns, one per line (optional)" style="min-height:38px">${esc((mk.patterns||[]).join('\n'))}</textarea>
+        <label style="margin-top:8px"><input type="checkbox" id="cf-mask" ${mk.enabled?'checked':''} style="width:auto"/> Mask hosts / users / IPs <span class="info" title="Replaces identifying values with placeholders (Hostname1, Username2, ExternalIP3) in everything sent to the AI model — the report payload and every chat question. Covers host names, user names, IP addresses, e-mail addresses, domains, GUIDs and credentials found in the case. The answer comes back masked and the real values are put back before you see it, so the report and chat you read are unchanged. The case data itself is never altered; this only controls what leaves the appliance. Use it when the AI model is a cloud provider and the customer's names must not reach it.">i</span></label>
+        <div class="cfghint">The model sees <code>Hostname1</code>, <code>Username2</code>, <code>ExternalIP3</code> instead of real names, addresses, e-mails, domains and credentials; your report and chat still show the real values. Nothing in the case data changes.</div>
+        <textarea id="cf-maskpat" placeholder="extra patterns, one per line (optional)" title="Values to mask on top of the automatic ones — one per line. Plain text masks that exact value (ACME Corp). *.corp.local masks anything matching the wildcard. alice|bob masks either. /regex/ masks anything the regular expression matches. An invalid line is ignored." style="min-height:38px">${esc((mk.patterns||[]).join('\n'))}</textarea>
+        <div class="cfghint">Extra values to mask, one per line: exact text (<code>ACME Corp</code>), wildcard (<code>*.corp.local</code>), either/or (<code>alice|bob</code>) or a regular expression (<code>/CASE-\\d+/</code>). Only used while masking is on.</div>
         <label style="margin-top:8px" title="When this case's report was written without the AI model and a model is connected now, opening the case on the Analysis tab regenerates it with the model once. Untick to only ever regenerate with the button."><input type="checkbox" id="cf-autoregen" ${info.auto_regen_report!==false?'checked':''} style="width:auto"/> Regenerate the template report automatically once an AI model is connected</label>
         <div style="font-size:11px;color:var(--muted);margin-top:8px">Chat always sends the full case graph; the report always shows the real command line, path &amp; hash per high finding (masked if masking is on).</div>
       </div>
