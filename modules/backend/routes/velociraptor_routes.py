@@ -310,8 +310,12 @@ def run_bestpractice_hunts():
         # shapes (quotes, parens, semicolons) never match.
         if not isinstance(artifacts, list):
             return jsonify({"error": "artifacts must be a list of artifact names"}), 400
-        if len(artifacts) > 500:
-            return jsonify({"error": "artifacts list too long (>500 items)"}), 400
+        # The catalogue itself is ~580 artifacts, and "All artifacts" is a blueprint
+        # the product offers — a cap below the catalogue made that blueprint
+        # unrunnable ("artifacts list too long (>500 items)"). The cap is a sanity
+        # bound on the VQL string, not a policy, so it sits above the catalogue.
+        if len(artifacts) > 2000:
+            return jsonify({"error": "artifacts list too long (>2000 items)"}), 400
         from services.vql_safety import is_valid_artifact_name
         for i, a in enumerate(artifacts):
             if not isinstance(a, str) or not is_valid_artifact_name(a):

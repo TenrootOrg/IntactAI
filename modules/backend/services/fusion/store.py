@@ -1789,6 +1789,18 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     _plog("Refusion · graph built", "info",
           f"{len(g.entities):,} entities, {len(g.relationships):,} links, "
           f"{len(g.findings):,} findings", pct=80)
+    # An artifact can be collected, mapped and still contribute nothing, because
+    # everything it produced sits below the case's severity floor (installed
+    # software is "low"). Silently, that reads as "the artifact is missing".
+    _cut = {k: v for k, v in (getattr(g, "below_floor", None) or {}).items()
+            if not any((ev.locator or "").startswith(k)
+                       for e in g.entities.values() for ev in (e.evidence or [])[:1])}
+    if _cut:
+        _plog("Refusion · below the severity floor", "info",
+              f"{sum(_cut.values()):,} row(s) from {len(_cut)} artifact(s) are under "
+              f"severity {min_sev}+ and are not in this case: "
+              + ", ".join(f"{k} ({v})" for k, v in sorted(_cut.items())[:8])
+              + " — lower Severity in Configuration to include them", pct=80)
     def _n_errors():
         # Past correlate._ERROR_DETAIL_CAP failures are only counted, in "overflow".
         return sum(int(x.get("overflow") or 1) for x in _assembly_errors)

@@ -164,6 +164,7 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     # Isolation is always on; `errors` only decides whether the caller hears
     # about it (store.py reports it as a PARTIAL graph).
     _errs = errors if errors is not None else []
+    _below: dict = {}                  # artifact -> rows dropped by the severity floor
     pending_rels = []
     _held: dict = {}            # in the window but below the severity floor
     # The stream itself can fail too (store.py feeds a generator): keep every
@@ -211,6 +212,14 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
                         continue
                     if not sev.at_least(eff, min_severity):
                         _held.setdefault(e.id, e)
+                        # Which artifact just lost a row to the severity floor. A
+                        # whole artifact can vanish this way (Detection.Applications
+                        # is "low"), and it read as "the artifact is missing" -- the
+                        # fuse now says so in the case log.
+                        for _ev in (e.evidence or [])[:1]:
+                            _a = (_ev.locator or "").split("/row=")[0].split("/")[0]
+                            if _a and _a != "asset":
+                                _below[_a] = _below.get(_a, 0) + 1
                         continue
                 g.upsert(e)
             except Exception as _e:                           # noqa: BLE001
@@ -274,6 +283,8 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
         g.findings.sort(key=lambda f: (g.before_current_name(f), -sev.rank(f.severity), f.ts or "9999"))
     except Exception as _e:                                   # noqa: BLE001
         _record_error(_errs, "sort findings", _e)
+    # Rows the severity floor kept out, per artifact, for the caller to report.
+    g.below_floor = dict(_below)
     return g
 
 
