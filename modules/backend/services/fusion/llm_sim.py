@@ -1734,9 +1734,26 @@ def generate_report(graph, *, window=None, min_severity="informational",
                 _case_event(run_id, "Report · synthesis — sending", "info",
                             "combining the phase analyses into the report")
                 _note_progress(run_id)
-            narrative = _real_llm(system, payload_str, run_id=run_id,
-                                  max_output_tokens=max_output_tokens,
-                                  reasoning_effort="low")
+            _synth_failed = ""
+            try:
+                narrative = _real_llm(system, payload_str, run_id=run_id,
+                                      max_output_tokens=max_output_tokens,
+                                      reasoning_effort="low")
+            except Exception as _se:                     # noqa: BLE001
+                # THE PHASE ANALYSES ARE NOT THROWN AWAY. Measured live: six phases
+                # answered over 15 minutes, the synthesis call then failed, and the
+                # whole run fell back to the offline report -- every phase analysis
+                # lost. The overview is the only part that could not be written.
+                if isinstance(_se, GenerationStopped) or altitude != "macro" \
+                        or not any((_phase_out.get(z["n"]) or {}).get("body")
+                                   for z in render.analysable(_zt)):
+                    raise
+                _synth_failed = _llm_reason_text(_classify_llm_error(_se))[0] + provider_retry_hint(_se)
+                _case_event(run_id, "Report · overview not written", "warning",
+                            f"{_synth_failed} The phase analyses below were written and are kept.")
+                narrative = ("> ⚠️ **Overview not written** — the model could not combine the "
+                             f"phases into a summary: {_synth_failed} Each phase's own analysis "
+                             "is below, and Regenerate report will try the summary again.")
             narrative = _revert_mask(narrative, mask)   # un-mask the LLM's output
             # AN EMPTY NARRATIVE IS A FAILED CALL, NOT A REPORT.
             #
@@ -1752,6 +1769,13 @@ def generate_report(graph, *, window=None, min_severity="informational",
             # report AND names the reason, which is exactly the right outcome.
             if not (narrative or "").strip():
                 raise LLMUnavailable("empty_reply")
+            # Keeps the "_Narrative by live LLM" prefix: the page and
+            # store._narration_outcome read it to tell an AI-written report from an
+            # offline one, and this IS AI-written — only its overview is missing.
+            _tail = ("_Narrative by live LLM — phase analyses only, the overview could not "
+                     f"be written ({_synth_failed.strip()}); fact tables deterministic._"
+                     if _synth_failed else
+                     "_Narrative by live LLM; fact tables deterministic._")
             # GROUNDING GUARD: a report must never carry a sha256 that isn't in the
             # evidence (an analyst would chase a nonexistent IOC). Hashes are the one
             # unambiguous fabrication signal (timestamps include legit proposed zoom
@@ -1848,7 +1872,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
                   + gnote + tfnote
                   + (heatmap + "\n" if heatmap else "")
                   + f"{facts}"
-                  "\n\n---\n_Narrative by live LLM; fact tables deterministic._\n")
+                  + f"\n\n---\n{_tail}\n")
             return md
         except Exception as e:  # noqa: BLE001 — never let LLM failure break a case
             if isinstance(e, GenerationStopped):

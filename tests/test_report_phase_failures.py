@@ -88,3 +88,41 @@ class PhaseFailures(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheOverviewFailingKeepsThePhases(unittest.TestCase):
+    """Measured live: six phases answered over 15 minutes, the synthesis call then
+    failed, and the run fell back to the offline report — every analysis lost."""
+
+    def _run_with_failing_synthesis(self):
+        calls = []
+
+        def model(system, user, **k):
+            if _LLM.PHASE_SYSTEM_PROMPT in system:
+                calls.append("phase")
+                return "**Name:** ok\nphase analysis " + "y" * 60
+            calls.append("synthesis")
+            raise Exception("Connection aborted: RemoteDisconnected")
+        with mock.patch.object(_LLM, "_real_llm", model), mock.patch.object(_LLM, "_use_real", lambda: True), \
+             mock.patch.object(_LLM, "_agentic_cfg", lambda: {}), \
+             mock.patch.object(_LLM, "_case_event", lambda *a, **k: None):
+            md = _LLM.generate_report(_graph(), prefer_llm=True, altitude_mode="macro", run_id="c")
+        return md, calls
+
+    def test_the_phase_analyses_are_in_the_report(self):
+        md, calls = self._run_with_failing_synthesis()
+        self.assertIn("phase analysis", md)
+        self.assertIn("Overview not written", md)
+        self.assertIn("_Narrative by live LLM", md)          # still an AI-written report
+        self.assertNotIn("_Deterministic report —", md)
+        self.assertGreater(calls.count("phase"), 1)
+
+    def test_a_focused_report_still_falls_back(self):
+        """One call, nothing to keep: the offline report with the reason is right."""
+        def model(system, user, **k):
+            raise Exception("429 You've hit your usage limit")
+        with mock.patch.object(_LLM, "_real_llm", model), mock.patch.object(_LLM, "_use_real", lambda: True), \
+             mock.patch.object(_LLM, "_agentic_cfg", lambda: {}), \
+             mock.patch.object(_LLM, "_case_event", lambda *a, **k: None):
+            md = _LLM.generate_report(_graph(), prefer_llm=True, altitude_mode="focused", run_id="c")
+        self.assertIn("_Deterministic report —", md)
