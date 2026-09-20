@@ -219,3 +219,50 @@ class OnePhaseCannotDominateTheRun(unittest.TestCase):
             _LLM.generate_report(_graph(), prefer_llm=True, altitude_mode="macro", run_id="c",
                                  max_entities=9999)
         self.assertIn(77, seen, seen)
+
+
+class SlowCallsAreHedged(unittest.TestCase):
+    """Identical payloads measured at 20s and 220s on the same provider: the report
+    takes as long as its slowest call, so a slow one gets a second copy."""
+
+    def test_the_second_copy_wins_when_the_first_is_slow(self):
+        import time as _t
+        calls = []
+
+        def fn():
+            calls.append(1)
+            if len(calls) == 1:
+                _t.sleep(3)
+                return "slow"
+            return "fast"
+        with mock.patch.object(_LLM, "_agentic_cfg", lambda: {"report_hedge_seconds": 0.2}):
+            out = _LLM._with_deadline(fn, 5, "t")
+        self.assertEqual(out, "fast")
+        self.assertEqual(len(calls), 2)
+
+    def test_no_hedge_when_the_first_is_quick(self):
+        calls = []
+        with mock.patch.object(_LLM, "_agentic_cfg", lambda: {"report_hedge_seconds": 5}):
+            out = _LLM._with_deadline(lambda: calls.append(1) or "ok", 5, "t")
+        self.assertEqual((out, len(calls)), ("ok", 1))
+
+    def test_hedging_can_be_turned_off(self):
+        import time as _t
+        calls = []
+
+        def fn():
+            calls.append(1); _t.sleep(0.4); return "only"
+        with mock.patch.object(_LLM, "_agentic_cfg", lambda: {"report_hedge_seconds": 0}):
+            self.assertEqual(_LLM._with_deadline(fn, 5, "t"), "only")
+        self.assertEqual(len(calls), 1)
+
+    def test_a_failure_still_raises_after_both_copies(self):
+        with mock.patch.object(_LLM, "_agentic_cfg", lambda: {"report_hedge_seconds": 0.1}):
+            with self.assertRaises(ValueError):
+                _LLM._with_deadline(lambda: (_ for _ in ()).throw(ValueError("boom")), 3, "t")
+
+    def test_the_deadline_still_applies(self):
+        import time as _t
+        with mock.patch.object(_LLM, "_agentic_cfg", lambda: {"report_hedge_seconds": 0.1}):
+            with self.assertRaises(_LLM.LLMUnavailable):
+                _LLM._with_deadline(lambda: _t.sleep(5), 1, "t")

@@ -1484,16 +1484,49 @@ def _phase_deadline() -> float:
         return PHASE_DEADLINE_DEFAULT
 
 
-def _with_deadline(fn, seconds, what):
-    """Run `fn` and give up after `seconds`, whatever the provider's client does.
-    The abandoned call's thread is left to die on its own (it holds no lock)."""
-    import concurrent.futures as _cf
-    pool = _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"llm-{what}")
-    fut = pool.submit(fn)
+HEDGE_SECONDS_DEFAULT = 90.0
+
+
+def _hedge_seconds() -> float:
+    """When a call is this slow, send a SECOND copy and take whichever answers
+    first (AI settings key `report_hedge_seconds`; 0 turns hedging off).
+
+    Measured on one case, two runs, identical payloads: a 31k-char phase answered
+    in 20s and then in 220s; a 104k-char phase in 179s and then in 227s. The
+    provider's latency, not the payload, sets how long a report takes, and six
+    parallel calls finish with the slowest one."""
     try:
-        return fut.result(timeout=seconds)
-    except _cf.TimeoutError:
-        raise LLMUnavailable("timeout") from None
+        v = _agentic_cfg().get("report_hedge_seconds")
+        return max(0.0, float(HEDGE_SECONDS_DEFAULT if v is None else v))
+    except Exception:                                   # noqa: BLE001
+        return HEDGE_SECONDS_DEFAULT
+
+
+def _with_deadline(fn, seconds, what):
+    """Run `fn`, hedge it if it is slow, and give up after `seconds` whatever the
+    provider's client does. Abandoned calls are left to die on their own (they
+    hold no lock); the first usable answer wins."""
+    import concurrent.futures as _cf
+    hedge = _hedge_seconds()
+    pool = _cf.ThreadPoolExecutor(max_workers=2, thread_name_prefix=f"llm-{what}")
+    futs = [pool.submit(fn)]
+    try:
+        deadline = time.time() + seconds
+        while True:
+            wait_for = (hedge if (hedge and len(futs) == 1) else max(0.0, deadline - time.time()))
+            done, _ = _cf.wait(futs, timeout=max(0.0, min(wait_for, max(0.0, deadline - time.time()))),
+                               return_when=_cf.FIRST_COMPLETED)
+            for f in done:                              # first ANSWER wins; a failure
+                try:                                    # does not cancel its twin
+                    return f.result()
+                except Exception as e:                  # noqa: BLE001
+                    futs = [x for x in futs if x is not f]
+                    if not futs:
+                        raise
+            if time.time() >= deadline:
+                raise LLMUnavailable("timeout") from None
+            if hedge and len(futs) == 1:
+                futs.append(pool.submit(fn))            # the straggler gets a twin
     finally:
         pool.shutdown(wait=False)
 
