@@ -770,6 +770,37 @@ def _hash_name_map(graph):
     return m
 
 
+# The collector's Details field: " ¦ "-delimited "Key: value" (mappers/details.py).
+# Keys the analyst reads as words, not as field names.
+_DETAIL_LABELS = {"user": "User", "proc": "Process", "cmdline": "Command", "pid": "PID",
+                  "parentpid": "Parent PID", "parentcmdline": "Parent command",
+                  "tgtip": "Target IP", "tgtport": "Target port", "srcip": "Source IP",
+                  "proto": "Protocol", "hashes": "Hashes", "log": "Log", "time": "Time",
+                  "service": "Service", "image": "Image", "path": "Path",
+                  "svc": "Service", "acct": "Account", "starttype": "Start type",
+                  "threat": "Threat", "eid": "Event ID", "logonid": "Logon ID",
+                  "subject": "Subject", "domain": "Domain", "sha256": "SHA256",
+                  "md5": "MD5", "imphash": "Imphash", "initiated": "Initiated",
+                  "channel": "Channel", "record": "Record", "recordid": "Record ID"}
+
+
+def _detail_fields(text) -> list:
+    """The collector's Details string as (Label, value) pairs, or [] when it is
+    prose rather than fields."""
+    if " ¦ " not in str(text):
+        return []
+    out = []
+    try:
+        from .mappers import details as _det
+        for k, v in (_det.parse_details(text) or {}).items():
+            v = str(v).strip()
+            if v and v.lower() not in ("-", "n/a", "none", "unknown"):
+                out.append((_DETAIL_LABELS.get(k, k.replace("_", " ").capitalize()), v))
+    except Exception:                                  # noqa: BLE001 — never break a report
+        return []
+    return out
+
+
 def _finding_evidence(graph, f, *, cap_events=EXPLICIT_EVENTS_PER_FINDING,
                       cap_chars=EXPLICIT_EVIDENCE_CHARS) -> list:
     """Per-event explicit evidence for a finding — the real cmdline / path / user /
@@ -785,20 +816,29 @@ def _finding_evidence(graph, f, *, cap_events=EXPLICIT_EVENTS_PER_FINDING,
         if not e or e.type != "event":
             continue
         a = e.attrs or {}
-        parts = []
-        if _v(a.get("ev_user")):
-            parts.append(f"user={_v(a.get('ev_user'))}")
+        # ONE shape for every field: "Label: value", separated by " · ". It used to
+        # mix its own `user=X` and `sha256=Y` with the collector's raw Details
+        # string, which is ` ¦ `-delimited "Key: value" — one line carried three
+        # punctuation styles and repeated the user (QA TASK-12671).
+        parts, seen = [], set()
+
+        def add(label, value):
+            v = _v(value)
+            if not v or (label.lower(), v.lower()) in seen:
+                return
+            seen.add((label.lower(), v.lower()))
+            parts.append(f"{label}: {v}")
+
+        add("User", a.get("ev_user"))
         has_proc = False
         if _v(a.get("ev_cmdline")):
-            parts.append(f"cmd: {_v(a.get('ev_cmdline'))}")
+            add("Command", a.get("ev_cmdline"))
             has_proc = True
         elif _v(a.get("ev_proc")):
-            parts.append(f"proc: {_v(a.get('ev_proc'))}")
+            add("Process", a.get("ev_proc"))
             has_proc = True
-        if _v(a.get("ev_tgtip")):
-            parts.append(f"→ {_v(a.get('ev_tgtip'))}")
-        if _v(a.get("ev_sha256")):
-            parts.append(f"sha256={_v(a.get('ev_sha256'))}")
+        add("Target IP", a.get("ev_tgtip"))
+        add("SHA256", a.get("ev_sha256"))
         # THE DESCRIPTION, when nothing else says what happened.
         #
         # This used to be `if not parts` — a pure fallback — which meant an
@@ -814,7 +854,14 @@ def _finding_evidence(graph, f, *, cap_events=EXPLICIT_EVENTS_PER_FINDING,
         # also carry their description is a density judgement, not this bug.
         detail_txt = _v(a.get("details"))
         if detail_txt and not has_proc:
-            parts.append(detail_txt)
+            # The collector's own "Key: value ¦ Key: value" is read into the same
+            # shape, so nothing already shown is repeated and the separator is ours.
+            fields = _detail_fields(detail_txt)
+            if fields:
+                for k, v in fields:
+                    add(k, v)
+            else:
+                parts.append(detail_txt)
         if not parts:
             continue
         # Flatten to ONE clean line: raw details can carry newlines / tabs / backticks
