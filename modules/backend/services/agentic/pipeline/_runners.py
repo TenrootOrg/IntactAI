@@ -86,20 +86,24 @@ def run_agentic_pipeline(run_id, blueprint_id, client_ids, collection_minutes, c
         # Per-run adjustments from the Collection page (validated in the route).
         # They change THIS run only; the stored blueprint is untouched.
         _rs = run_settings or {}
-        _changed = []
-        if "timeout_seconds" in _rs and _rs["timeout_seconds"] != settings.get("timeout"):
-            _changed.append(f"timeout {settings.get('timeout', 3600)}s -> {_rs['timeout_seconds']}s")
+        if "timeout_seconds" in _rs:
             settings["timeout"] = _rs["timeout_seconds"]
-        if "cpu_limit" in _rs and _rs["cpu_limit"] != settings.get("cpu_limit"):
-            _changed.append(f"CPU {settings.get('cpu_limit', 50)}% -> {_rs['cpu_limit']}%")
+        if "cpu_limit" in _rs:
             settings["cpu_limit"] = _rs["cpu_limit"]
 
         add_log_to_run(run_id, f"[Pipeline] Blueprint: {blueprint.get('name')} ({len(artifacts)} artifacts)", "info")
+        # WHAT THIS RUN USES, and nothing else. It used to print the blueprint's
+        # stored values beside the run's own ("timeout 600s ... (adjusted for this
+        # run: timeout 3600s -> 600s)"), so the line carried three numbers for one
+        # setting and the operator had to work out which was in force. The blueprint
+        # default is not a fact about this run.
         add_log_to_run(run_id,
-            f"[Pipeline] Run settings: timeout {settings.get('timeout', 3600)}s, CPU {settings.get('cpu_limit', 50)}%"
-            + (f" (adjusted for this run: {', '.join(_changed)})" if _changed else " (blueprint defaults)"), "info")
+            f"[Pipeline] Run settings: artifact timeout {settings.get('timeout', 3600)}s, "
+            f"client CPU limit {settings.get('cpu_limit', 50)}%", "info")
         add_log_to_run(run_id, f"[Pipeline] Clients: {len(client_ids)} selected", "info")
-        add_log_to_run(run_id, f"[Pipeline] Collection time: {collection_minutes} minutes", "info")
+        add_log_to_run(run_id,
+            f"[Pipeline] Collecting for up to {collection_minutes} minute(s) — the run "
+            f"ends sooner if every artifact finishes", "info")
         # 2. Create collections on selected clients
         add_log_to_run(run_id, "[Velociraptor] Creating collections on selected clients...", "info")
         _update_phase(run_id, "creating_collections", 5)

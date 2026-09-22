@@ -81,6 +81,25 @@ class TheValuesReachVelociraptor(unittest.TestCase):
             self.assertRegex(html, r'<input type="number" ' + field.replace('"', '\\"'))
         self.assertIn("resetForensicsRunSettings()", html)
 
+    def test_the_run_says_what_its_number_of_minutes_IS(self):
+        """QA could not tell what the "30m" in the run title meant — elapsed time,
+        a deadline, a version. It is how long the collection may run for."""
+        body = _src("modules/backend/routes/agentic_routes.py")
+        self.assertIn('f"up to {collection_minutes} min"', body)
+        self.assertNotIn('{collection_minutes}m"', body, "a bare 30m says nothing")
+        self.assertIn("client{'' if _n == 1 else 's'}", body, "and '1 clients' is wrong")
+
+    def test_the_settings_line_is_only_what_this_run_uses(self):
+        """It printed the blueprint's stored values beside the run's own — three
+        numbers for one setting, and the operator had to work out which applied."""
+        body = _src("modules/backend/services/agentic/pipeline/_runners.py")
+        seg = body[body.index("[Pipeline] Run settings:"):]
+        seg = seg[:seg.index("[Pipeline] Clients:")]
+        self.assertNotIn("adjusted for this run", seg)
+        self.assertNotIn("blueprint defaults", seg)
+        self.assertIn("artifact timeout", seg)
+        self.assertIn("client CPU limit", seg)
+
     @unittest.skipIf(shutil.which("node") is None, "node is not installed")
     def test_the_real_page_sends_what_the_operator_set(self):
         r = subprocess.run(["node", os.path.join(ROOT, "tests", "forensics_run_settings.js"), ROOT],

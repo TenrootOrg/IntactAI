@@ -27,6 +27,27 @@ const PAGE = process.argv[2], CID = process.argv[3];
 const DIR = path.dirname(PAGE), CONTAINER = process.env.INTACT_BACKEND || 'intact_backend';
 const TABS = ['report', 'chat', 'timeline', 'identities', 'risk', 'config', 'log'];
 
+// Install the relay rather than assume it: the container's /tmp is wiped by every
+// `docker compose up --force-recreate`, so a harness that expects a relay to be
+// there fails at the first fetch, minutes into a run, with an error about a
+// missing file instead of a result. Same block as tests/case_config_live_page.js.
+{
+  const RELAY = `import json, os, sys, urllib.request, urllib.error
+m, p = os.environ["M"], os.environ["P"]
+body = (os.environ.get("BODY") or "").encode() or None
+req = urllib.request.Request("http://127.0.0.1:5001" + p, data=body, method=m)
+if body: req.add_header("Content-Type", "application/json")
+try:
+    r = urllib.request.urlopen(req, timeout=900); out, code = r.read(), r.status
+except urllib.error.HTTPError as e:
+    out, code = e.read(), e.code
+sys.stdout.write(json.dumps({"status": code, "text": out.decode("utf-8", "replace")}))
+`;
+  const tmp = path.join(require('os').tmpdir(), 'intact_api_relay.py');
+  fs.writeFileSync(tmp, RELAY);
+  execFileSync('docker', ['cp', tmp, CONTAINER + ':/tmp/api_call.py']);
+}
+
 function call(method, p, body) {
   const env = { ...process.env, M: method, P: p, BODY: body ? JSON.stringify(body) : '' };
   const out = execFileSync('docker', ['exec', '-i', '-e', 'M', '-e', 'P', '-e', 'BODY',

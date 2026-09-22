@@ -720,7 +720,7 @@ function renderRisk(info){
 // set them, not the operator. Without this line the rail reads as if someone had
 // hand-excluded twenty hosts and set a one-week window.
 function scopeRailNote(info){
-  const sc=((info&&info.scopes)||[]).find(s=>s.active);
+  const sc=asList(info&&info.scopes).find(s=>s.active);
   if(!sc || sc.id==='full') return '';
   return `<div class="cfghint">Scope <b>${esc(sc.label)}</b> is active: the time window and
     the excluded hosts below come from it. Use the Scope row above the report to go back to the full case.</div>`;
@@ -747,7 +747,7 @@ function renderConfig(info){
         <label style="margin-top:8px">Modules <span style="color:var(--muted)">— what fuses</span></label>
         <div class="modwarn">⚠ Enabling more modules can raise cost sharply — some artifacts (e.g. full hunts) produce huge output.</div>
         <div id="cf-modules">
-          ${(info.modules_catalog||[]).map(m=>{const on=(info.fusion_modules||[]).includes(m.name),dis=!m.available;
+          ${asList(info.modules_catalog).map(m=>{const on=asList(info.fusion_modules).includes(m.name),dis=!m.available;
             const badge=dis?'<span class="modbadge dis">disabled</span>':(m.default?'<span class="modbadge def">default</span>':'');
             return `<label class="modrow${dis?' dis':''}${on?' on':''}"><input type="checkbox" data-mod="${m.name}" ${on?'checked':''} ${dis?'disabled':''}/> <span class="t">${esc(m.label)}</span>${badge}</label>`;}).join('')}
         </div>
@@ -1046,8 +1046,14 @@ async function applyZoom(id,i){
 // zoomed into, each keeping its own report, window, host set and fused graph.
 // Clicking one restores it — no model call, no tokens. Hidden until there is
 // somewhere to go back TO (a case that was never zoomed has one scope, or none).
+// A payload field that should be a list but is not (missing, null, a string, a
+// number) must never take a whole tab down — drawTab catches the throw and writes
+// "could not be drawn", which is what the operator then stares at. Every renderer
+// that maps over a payload list goes through here. tests/case_ui_stress.js drives
+// exactly this, one mutilated field at a time.
+function asList(v){ return Array.isArray(v) ? v : []; }
 function scopeChipsHtml(info){
-  const sc=(info&&info.scopes)||[]; if(sc.length<2) return '';
+  const sc=asList(info&&info.scopes); if(sc.length<2) return '';
   const tip=s=>{
     const w=s.window||{};
     return (w.start||'')+(w.end?(' → '+w.end):'')
@@ -1064,7 +1070,7 @@ function scopeChipsHtml(info){
 // "3 hosts" with nothing else on screen is how a zoomed case gets mistaken for a
 // small one.
 function scopePrefix(info){
-  const sc=((info&&info.scopes)||[]).find(s=>s.active);
+  const sc=asList(info&&info.scopes).find(s=>s.active);
   return (!sc || sc.id==='full') ? '' : esc(sc.label)+' · ';
 }
 async function switchScope(id,sid){

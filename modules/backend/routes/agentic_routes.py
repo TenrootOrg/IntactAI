@@ -67,15 +67,20 @@ def start_agentic_run():
         # Workflow-name label uses the "show up to 3 names, then collapse"
         # rule. Past 3 the names string would overflow the table column
         # in the dashboard and stop being useful at a glance.
-        if len(client_ids) <= 3:
-            client_label = f"{len(client_ids)} clients ({', '.join(names)})"
+        _n = len(client_ids)
+        if _n <= 3:
+            client_label = f"{_n} client{'' if _n == 1 else 's'} ({', '.join(names)})"
         else:
-            client_label = f"{len(client_ids)} clients"
+            client_label = f"{_n} clients"
 
-        # Create workflow run
+        # Create workflow run. The name SAYS WHAT THE NUMBER IS: it used to end
+        # ", 30m", which QA read as an elapsed time, a deadline, a version — the
+        # one thing it never said was that it is how long the collection is allowed
+        # to run for. "1m" was worse.
         run_id = create_automation_run(
             automation_type="velociraptor_collection",
-            name=f"Velociraptor Collection - {client_label}, {collection_minutes}m",
+            name=(f"Velociraptor Collection - {client_label} · "
+                  f"up to {collection_minutes} min"),
             details={
                 "blueprint_id": blueprint_id,
                 "blueprint": blueprint_name,
