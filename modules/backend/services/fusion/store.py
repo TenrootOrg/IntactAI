@@ -2749,7 +2749,7 @@ def _window_label(w) -> str:
 # the verdicts, the identities, the configuration, the log — is the case's.
 _SCOPE_FIELDS = ("report_md", "report_written_at", "report_config_id", "report_dirty",
                  "report_run_ids", "chat_messages", "token_ab", "report_llm_calls",
-                 "scope_counts")
+                 "scope_counts", "report_counts")
 
 
 def _live_scope_fields(d) -> dict:
@@ -3018,6 +3018,27 @@ def scope_host_counts(case_id, d=None) -> dict:
     return counts
 
 
+def report_behind_runs(case_id, d=None) -> list:
+    """The member runs the report on screen does not reflect — for its OWN scope.
+
+    report_stale_runs answers per RUN: a new run landed, so every report is
+    "behind" it. Right for the whole case, wrong for a timeframe: measured live, a
+    new host's 21 findings all fell outside a two-week scope, the scope's counts did
+    not move, and it still said "New data has landed … click Regenerate report" —
+    asking for a model run that would reproduce the same text. So when the report
+    recorded what it was written from, a scope is behind only if what it holds NOW
+    differs; otherwise the run-based answer stands (a legacy report has no record).
+    """
+    d = d if d is not None else (get_case(case_id) or {})
+    runs = report_stale_runs(case_id, d)
+    then = d.get("report_counts") or {}
+    if not runs or not then or not active_scope_window(d):
+        return runs
+    now = scope_counts(case_id, d)
+    moved = any(then.get(k) != now.get(k) for k in ("findings", "entities", "links"))
+    return runs if moved else []
+
+
 def scopes_for_payload(d, host_counts=None) -> list:
     """What the dropdown renders. Ids, labels and windows only — never the stored
     report or chat. The full case is always first, whether or not it has an entry
@@ -3149,8 +3170,13 @@ _CASE_LOG_CAP = 500
 
 
 # Actions that happen INSIDE a timeframe and are stamped with it (see below).
-_SCOPE_STAMPED_ACTIONS = __import__("re").compile(
-    r"^(Report|Chat|Checklist|Regenerate|LLM|POST report|Synthes)", __import__("re").I)
+_SCOPE_STAMPED_ACTIONS = re.compile(
+    r"^(Report|Chat|Checklist|Regenerate|LLM|POST report|Synthes)", re.I)
+# ...and of those, the ones a REPORT RUN logs, which carry the run's own scope.
+# "LLM ·" is included because a report's model calls are logged under it; a chat
+# turn during a report run is the one line that could be mis-stamped, and it says
+# "Chat ·" on the line beside it.
+_REPORT_RUN_ACTIONS = re.compile(r"^(Report|Checklist|Regenerate|LLM|Synthes)", re.I)
 
 
 def log_case_event(case_id, action, status="ok", detail="", detail_max=500, **meta) -> None:
@@ -3167,16 +3193,30 @@ def log_case_event(case_id, action, status="ok", detail="", detail_max=500, **me
             lvl = "ok"
         act = str(action)[:120]
         # WHICH TIMEFRAME THIS HAPPENED IN. A report, a chat turn and a checklist
-        # belong to the scope that was being read when they ran, and the log used
-        # to say only "Report saved" — with several scopes in a case the operator
-        # could not tell which report that was. The case-level work (fusing,
-        # configuration, the scope switches themselves) is deliberately left
-        # unstamped: it belongs to the case, not to one window of it.
-        if _SCOPE_STAMPED_ACTIONS.match(act) and _active_scope_id(_d) != FULL_SCOPE_ID:
-            act = f"{act} · {_window_label(active_scope_window(_d))}"
-        entry = {"ts": _now_iso() + "Z", "action": act[:160],
+        # belong to a scope, and the log used to say only "Report saved" — with
+        # several scopes the operator could not tell which report that was. The
+        # case-level work (fusing, configuration, the scope switches themselves)
+        # is left unstamped: it belongs to the case, not to one window of it.
+        #
+        # A REPORT RUN IS STAMPED WITH ITS OWN SCOPE, not the one on screen. It
+        # runs for minutes and the operator reads elsewhere meanwhile: stamping the
+        # scope on screen relabelled a whole-case run's "phase 3 of 6 — answered"
+        # with a two-week window the moment the operator switched to it, measured
+        # live. And once a case has scopes, the whole-case entry is stamped with
+        # its dates too — it is one of them, not an unmarked default.
+        sid = None
+        if _SCOPE_STAMPED_ACTIONS.match(act) and _scopes(_d):
+            sid = (_GEN_SCOPE.get(case_id) if _REPORT_RUN_ACTIONS.match(act) else None) \
+                  or _active_scope_id(_d)
+            if sid == FULL_SCOPE_ID:
+                act = f"{act} · {_full_scope_label(_d)}"
+            else:
+                _s = next((x for x in _scopes(_d) if x["id"] == sid), None)
+                if _s and _s.get("window"):
+                    act = f"{act} · {_window_label(_s['window'])}"
+        entry = {"ts": _now_iso() + "Z", "action": act[:180],
                  "status": lvl, "detail": str(detail)[:max(1, int(detail_max or 500))],
-                 "scope": _active_scope_id(_d)}
+                 "scope": sid or _active_scope_id(_d)}
         for k, v in (meta or {}).items():
             entry[k] = v
 
@@ -3500,6 +3540,18 @@ def seconds_since(iso):
     return max(0, int((datetime.now(timezone.utc) - ts).total_seconds()))
 
 
+# case_id -> the scope a report run in flight belongs to. The report lock allows
+# ONE run per case, so keying on the case is exact, and unlike a thread-local it is
+# visible from the pool threads the phase calls run on. Set when the run captures
+# its scope (regenerate_report), cleared wherever that lock is released.
+_GEN_SCOPE: dict = {}
+
+
+def _release_report_run(case_id, lock) -> None:
+    _GEN_SCOPE.pop(case_id, None)
+    lock.release()
+
+
 def regenerate_report_async(case_id, *, audience=None, use_llm=False) -> dict:
     """Kick off regenerate_report() on a background thread and return immediately.
 
@@ -3541,7 +3593,7 @@ def regenerate_report_async(case_id, *, audience=None, use_llm=False) -> dict:
         try:
             return regenerate_report(case_id, audience=audience, use_llm=False)
         finally:
-            lock.release()
+            _release_report_run(case_id, lock)
 
     # No route to the provider: write the report offline, now, from this thread --
     # before anything tells the operator a model is being called.
@@ -3554,7 +3606,7 @@ def regenerate_report_async(case_id, *, audience=None, use_llm=False) -> dict:
             res = regenerate_report(case_id, audience=audience, use_llm=True, offline=route)
             return {"status": "offline", "case_id": case_id, **res}
         finally:
-            lock.release()
+            _release_report_run(case_id, lock)
 
     started = _now_iso()
     import uuid
@@ -3570,7 +3622,7 @@ def regenerate_report_async(case_id, *, audience=None, use_llm=False) -> dict:
                                       # run must not make a new one look idle
                                       "report_last_progress_at": started})
     except Exception:
-        lock.release()
+        _release_report_run(case_id, lock)
         raise
 
     def _worker():
@@ -3600,7 +3652,7 @@ def regenerate_report_async(case_id, *, audience=None, use_llm=False) -> dict:
                                                   "report_generation_id": None})
             except Exception:
                 pass
-            lock.release()
+            _release_report_run(case_id, lock)
 
     threading.Thread(target=_worker, daemon=True,
                      name=f"report-gen-{case_id}").start()
@@ -3629,6 +3681,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
     # the start, because the run takes minutes and the operator is free to go and
     # read another timeframe meanwhile — see write_report_for_scope.
     _gen_scope = _active_scope_id(d)
+    _GEN_SCOPE[case_id] = _gen_scope       # every line this run logs is stamped with it
     window = view_window(d)
     min_sev = d.get("min_severity", "informational")
     gv = view_graph(case_id, d)
@@ -3745,6 +3798,11 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
     # by however long the narrative took -- measured on a live case: the banner
     # said the advisory was 13 minutes in when it had been running for two.
     _narrative_patch = {"report_md": report, "report_dirty": False,
+                        # What this report was written FROM, for its own scope. The
+                        # run-based "new data is not in this report" check could
+                        # not see that data landing OUTSIDE a scope's window changes
+                        # nothing the report says — see report_behind_runs.
+                        "report_counts": _counts_from_graph(gv),
                         "report_config_id": report_cfg_id, "report_written_at": _now_iso(),
                         "report_phase": "checklist",
                         "report_phase_started_at": _now_iso(),

@@ -376,6 +376,94 @@ class OnlyThePeopleAndPivotsTheWindowReaches(unittest.TestCase):
         self.assertIn("account:ghost", g.entities)
 
 
+class TheLogAndTheBannerDescribeTheRightScope(unittest.TestCase):
+    """Both found in one live run: new data landed while the operator switched
+    between the whole case and a two-week scope."""
+
+    def setUp(self):
+        self.d = {"name": "QA", "report_md": "# r\n", "chat_messages": [],
+                  "time_window": {"start": "2016-09-22T11:08:10", "end": "2026-09-22T11:08:10"},
+                  "activity_log": []}
+        self.logged = []
+        def _mutate(cid, f, m):
+            self.d.update({f: m(self.d.get(f) or [])})
+        patches = [
+            mock.patch.object(store, "get_case", side_effect=lambda cid: dict(self.d)),
+            mock.patch.object(store, "_merge_case_details",
+                              side_effect=lambda cid, patch: self.d.update(patch)),
+            mock.patch.object(store, "_mutate_list_field", side_effect=_mutate),
+            mock.patch.object(store, "load_graph", return_value=_g()),
+        ]
+        for p in patches:
+            p.start(); self.addCleanup(p.stop)
+        # capture what log_case_event would append, through the real function
+        ws = mock.Mock()
+        ws.mutate_run_details.side_effect = lambda cid, fn: (fn(self.d), True)[1]
+        p = mock.patch.object(store, "_ws", return_value=ws); p.start(); self.addCleanup(p.stop)
+        store.log_case_event.__wrapped__ if hasattr(store.log_case_event, "__wrapped__") else None
+        self.sid = None
+        with mock.patch.object(store, "log_case_event"):
+            self.sid = store.create_scope(CASE, None, PHASE_WIN)
+        store._GEN_SCOPE.pop(CASE, None)
+        self.addCleanup(store._GEN_SCOPE.pop, CASE, None)
+
+    def _last(self):
+        return (self.d.get("activity_log") or [{}])[-1].get("action", "")
+
+    def test_a_report_run_stamps_its_own_scope_not_the_one_on_screen(self):
+        """Live: a whole-case run's "phase 3 of 6 — answered" was stamped with the
+        two-week window the operator had switched to meanwhile."""
+        store._GEN_SCOPE[CASE] = "full"              # the run belongs to the whole case
+        self.d["active_scope"] = self.sid            # ...the operator reads the phase
+        store.log_case_event(CASE, "Report · phase 3 of 6 — answered", "info", "")
+        self.assertIn("2016-09-22 11:08:10 → 2026-09-22 11:08:10", self._last())
+        self.assertNotIn("2026-06-14", self._last())
+
+    def test_the_whole_case_is_stamped_once_a_case_has_scopes(self):
+        self.d["active_scope"] = "full"
+        store.log_case_event(CASE, "Report saved", "success", "")
+        self.assertIn("· 2016-09-22 11:08:10 → 2026-09-22 11:08:10", self._last())
+
+    def test_a_chat_turn_uses_the_scope_on_screen(self):
+        store._GEN_SCOPE[CASE] = "full"              # a report runs for the whole case
+        self.d["active_scope"] = self.sid            # while the operator chats here
+        store.log_case_event(CASE, "Chat · sending to LLM", "info", "")
+        self.assertIn("2026-06-14", self._last())
+
+    def test_case_work_stays_unstamped(self):
+        store.log_case_event(CASE, "Refusion · starting", "info", "")
+        self.assertNotIn(" · 20", self._last())
+
+
+class ABannerOnlyWhenTheScopeMoved(unittest.TestCase):
+    """Live: a new host's 21 findings all fell outside a two-week scope, its
+    counts did not move, and it still said "New data has landed … click Regenerate
+    report" — asking for a model run that would reproduce the same text."""
+
+    def _behind(self, d, now):
+        with mock.patch.object(store, "report_stale_runs", return_value=["new_run"]), \
+             mock.patch.object(store, "scope_counts", return_value=now):
+            return store.report_behind_runs(CASE, d)
+
+    def test_data_outside_the_window_does_not_flag_the_scope(self):
+        d = {"active_scope": "w1", "scopes": [{"id": "w1", "window": PHASE_WIN}],
+             "report_counts": {"findings": 10, "entities": 122, "links": 69}}
+        self.assertEqual([], self._behind(d, {"findings": 10, "entities": 122, "links": 69}))
+
+    def test_data_inside_the_window_does(self):
+        d = {"active_scope": "w1", "scopes": [{"id": "w1", "window": PHASE_WIN}],
+             "report_counts": {"findings": 10, "entities": 122, "links": 69}}
+        self.assertEqual(["new_run"], self._behind(d, {"findings": 12, "entities": 140, "links": 71}))
+
+    def test_the_whole_case_keeps_the_run_based_answer(self):
+        """New data in the case IS new data for the whole-case report."""
+        self.assertEqual(["new_run"], self._behind({"report_counts": {"findings": 1}}, {"findings": 1}))
+
+    def test_a_report_that_recorded_nothing_keeps_the_run_based_answer(self):
+        d = {"active_scope": "w1", "scopes": [{"id": "w1", "window": PHASE_WIN}]}
+        self.assertEqual(["new_run"], self._behind(d, {"findings": 10}))
+
+
 class RefusionAndTimeframes(unittest.TestCase):
     """The operator's rule: Refusion with the timeframe already on screen just
     applies the other edits; Refusion with a different one reads that timeframe."""

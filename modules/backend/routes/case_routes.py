@@ -386,7 +386,7 @@ def get_case(case_id):
     #   data_stale   -> new runs not yet in the graph  -> Refusion (data, no LLM)
     #   report_stale -> new runs not in the report/chat -> Rescan (LLM)
     data_stale = store.stale_member_runs(case_id, d)
-    report_stale = store.report_stale_runs(case_id, d)
+    report_stale = store.report_behind_runs(case_id, d)   # per scope, not per run
     return jsonify({"case_id": case_id, "name": d.get("name"),
                     "time_window": d.get("time_window"),
                     "initial_access_estimate": d.get("initial_access_estimate"),
