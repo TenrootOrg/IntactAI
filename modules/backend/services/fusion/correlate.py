@@ -1426,25 +1426,105 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
         traceback.print_exc()
 
 
+# How far apart two detectors may time the SAME event when neither carries an id
+# Windows wrote. They read one log line; the gap is rounding and clock skew.
+SAME_EVENT_MAX_SECONDS = 60
+
+
+def _event_type(e) -> tuple:
+    a = e.attrs or {}
+    return (str(a.get("channel") or "").lower(), str(a.get("eid_num") or ""))
+
+
+def _first_events(g: FusionGraph, f) -> list:
+    """The event(s) a finding FIRST fired on — its moment, not its whole history."""
+    evs = [g.entities[i] for i in (f.entity_ids or [])
+           if i in g.entities and g.entities[i].type == "event"]
+    t0 = min((e.first_seen for e in evs if e.first_seen), default=None)
+    return [e for e in evs if e.first_seen == t0] if t0 else []
+
+
+def _first_ids(g: FusionGraph, f) -> set:
+    out = set()
+    for e in _first_events(g, f):
+        a = e.attrs or {}
+        out.update(a.get("win_ids_first") or a.get("win_ids") or [])
+    return out
+
+
 def _group_simultaneous_detections(g: FusionGraph, grouping: dict) -> None:
-    """Detections on one host in the same second are ONE thing that happened.
+    """Detections of ONE event on one host are one thing that happened.
 
     A single log clear fired four SIGMA rules and became four findings; one
     Defender change became three; an AnyDesk drop, four. The analyst read 17
     findings for 5 moments. Rules that agree are corroboration, so they fold into
     one finding that names every rule, at high confidence.
-    ponytail: same-second bucketing; a sliding window if detectors disagree on
-    time by more than the rounding.
+
+    "The same event" is decided by what WINDOWS wrote, never by time alone: this
+    used to bucket on host + same second, and one second at 03:02:24 on a QA case
+    held about twenty different PowerShell script blocks. So:
+      1. findings whose FIRST occurrence carries the same Windows id (script block
+         id + part, or event-record id) are the same event — exact, any detector;
+      2. a finding with no such id joins another only when that is the ONLY
+         candidate on the host within SAME_EVENT_MAX_SECONDS with the same event
+         type. Ambiguity keeps them apart: a duplicate row is safer than a hidden
+         event.
+    Only the FIRST occurrence counts, so a rule firing 400 times cannot chain
+    every PowerShell finding into one.
     """
-    buckets: dict = {}
-    for f in g.findings:
-        meta = grouping.get(f.id)
-        if not meta or not f.ts:
+    fs_all = [f for f in g.findings if grouping.get(f.id) and f.ts]
+    parent = {f.id: f.id for f in fs_all}
+
+    def root(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x, y):
+        rx, ry = root(x), root(y)
+        if rx != ry:
+            parent[ry] = rx
+
+    ids = {f.id: _first_ids(g, f) for f in fs_all}
+    by_key: dict = {}
+    for f in fs_all:
+        for k in ids[f.id]:
+            by_key.setdefault((grouping[f.id], k), []).append(f.id)
+    for members in by_key.values():
+        for x in members[1:]:
+            union(members[0], x)
+
+    when = {f.id: keys.to_utc_dt(f.ts) for f in fs_all}
+    etype = {f.id: {_event_type(e) for e in _first_events(g, f)} for f in fs_all}
+
+    def same_type(x, y):
+        tx = {t for t in etype[x] if t[1]}
+        ty = {t for t in etype[y] if t[1]}
+        return not tx or not ty or bool(tx & ty)
+
+    for f in fs_all:
+        if ids[f.id] or not when[f.id]:
             continue
-        buckets.setdefault((meta[0], str(f.ts)[:19], meta[1]), []).append(f)
+        cands = {root(o.id) for o in fs_all
+                 if o.id != f.id and grouping[o.id] == grouping[f.id] and when[o.id]
+                 and abs((when[o.id] - when[f.id]).total_seconds()) <= SAME_EVENT_MAX_SECONDS
+                 and same_type(f.id, o.id)}
+        cands.discard(root(f.id))
+        if len(cands) == 1:
+            union(cands.pop(), f.id)
+
+    groups: dict = {}
+    for f in fs_all:
+        groups.setdefault(root(f.id), []).append(f)
+    buckets = {}
+    for fs in groups.values():
+        first = min(fs, key=lambda x: x.ts)
+        meta = grouping[first.id]
+        buckets[(meta[0], str(first.ts)[:19], meta[1], first.id)] = fs
     merged_ids: set = set()
     new: list = []
-    for (asset_id, second, logged), fs in buckets.items():
+    for (asset_id, second, logged, _k), fs in buckets.items():
         if len(fs) < 2:
             continue
         # Name the group after its most SPECIFIC rule: highest severity, then one
@@ -1470,7 +1550,7 @@ def _group_simultaneous_detections(g: FusionGraph, grouping: dict) -> None:
             id=_fid("grp", asset_id, second, logged, *sorted(f.id for f in fs)),
             title=f"{top.title.rsplit(' on ', 1)[0]} (+{len(fs) - 1} related) on {host}",
             severity=top.severity, confidence="high",
-            summary=f"{len(fs)} detections fired together at {second}Z on {host}: "
+            summary=f"{len(fs)} detections fired on the same event at {second}Z on {host}: "
                     + "; ".join(rules) + ".",
             entity_ids=ents[:50], asset_ids=[asset_id],
             sources=sorted({s for f in fs for s in f.sources}),
@@ -1553,12 +1633,29 @@ def _coordinated_activity(g: FusionGraph, *, window=None, baseline=None) -> None
     if not window or not (window.get("start") or window.get("end")):
         return
     base_titles = _baseline_sigma_titles(baseline)
+    # ONE EVENT, ONE ROW. An event already shown by a finding of its own — the
+    # same entity, or the same Windows event seen by another detector — is not
+    # counted again inside the burst. On a QA case Hayabusa's medium match of a
+    # script block sat in the burst while DetectRaptor's match of that same block
+    # was its own row, and the reader saw the PowerShell twice.
+    shown_ents, shown_ids = set(), set()
+    for f in g.findings:
+        if f.kind == "derived":
+            continue
+        for i in f.entity_ids or []:
+            shown_ents.add(i)
+            e = g.entities.get(i)
+            if e is not None:
+                shown_ids.update((e.attrs or {}).get("win_ids") or [])
     per_asset: dict = {}
     for e in g.by_type("event"):
         if "sigma" not in e.flags or not sev.at_least(e.severity, "medium"):
             continue
         title = e.attrs.get("title") or e.label
         if title in base_titles:                    # baseline noise — not signal
+            continue
+        _w = set((e.attrs or {}).get("win_ids") or [])
+        if e.id in shown_ents or (_w and _w <= shown_ids):
             continue
         if not in_window(e.first_seen, window):
             continue

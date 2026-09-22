@@ -9,6 +9,7 @@ same account/IP seen on multiple assets collapses to one node whose
 
 from __future__ import annotations
 
+import hashlib
 import re
 
 from .. import keys
@@ -157,6 +158,9 @@ def _ps_anomaly(line: str) -> int:
 # severity AGREES with the explicit SIGMA level (correlate maxes the two).
 _HAYABUSA_ANOM = {"critical": 100, "crit": 100, "high": 50, "medium": 15, "med": 15,
                   "low": 5, "informational": 0, "info": 0}
+
+
+_WIDS_CAP = 2000
 
 
 def _level_anomaly(level) -> int:
@@ -316,6 +320,41 @@ def _logged_host(row, host):
     except Exception:                                  # noqa: BLE001
         pass
     return None
+
+
+def win_event_ids(row) -> list:
+    """The Windows event a detection row fired on, as keys Windows itself wrote.
+
+    Two detectors reading the same event log (Hayabusa, DetectRaptor, or anyone's
+    own artifact) describe the same event in their own words, so neither their
+    rule names nor their text can say "this is the same event". Windows can:
+      * sb:<ScriptBlockId>#<MessageNumber> — a PowerShell 4104 script block;
+      * rec:<computer>|<channel>|<EventRecordID> — one event-log record.
+    Read from the row's top level, its EventData, or Hayabusa's _Event. Never
+    raises: a row it cannot read simply has no identity.
+    """
+    try:
+        if not isinstance(row, dict):
+            return []
+        ev = row.get("_Event") if isinstance(row.get("_Event"), dict) else {}
+        sysd = ev.get("System") if isinstance(ev.get("System"), dict) else {}
+        data = (row.get("EventData") if isinstance(row.get("EventData"), dict)
+                else ev.get("EventData") if isinstance(ev.get("EventData"), dict) else {})
+        out = []
+        sbid = data.get("ScriptBlockId") or row.get("ScriptBlockId")
+        if sbid:
+            out.append(f"sb:{str(sbid).strip('{}').lower()}#{data.get('MessageNumber') or 1}")
+        rec = row.get("RecordID") or row.get("EventRecordID") or sysd.get("EventRecordID")
+        chan = row.get("Channel") or sysd.get("Channel")
+        comp = row.get("Computer") or sysd.get("Computer")
+        if rec not in (None, "") and chan and comp:
+            out.append(f"rec:{keys.norm_host(comp)}|{str(chan).lower()}|{rec}")
+        # Only ever compared for equality, and stored on every medium+ detection:
+        # a 16-hex digest instead of the ~65-char key kept a 6.5 MB graph from
+        # growing by a fifth.
+        return [hashlib.sha1(k.encode()).hexdigest()[:16] for k in out]
+    except Exception:                                  # noqa: BLE001
+        return []
 
 
 def _account_eid(asset, domain, user, local_hosts=()):
@@ -897,21 +936,33 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 anom = _level_anomaly(level)
                 akey = (asset, str(title), _logged_host(r, host) or "")
                 agg = sigma_agg.get(akey)
+                # Which Windows events this rule fired on. Only medium+ rows can
+                # reach a finding or a burst, so informational rows (85% of them)
+                # cost nothing here.
+                _wids = (win_event_ids(r) if anom >= _level_anomaly("medium") else [])
                 if agg is None:
-                    sigma_agg[akey] = {
+                    sigma_agg[akey] = agg = {
                         "n": 1, "first": ts, "last": ts, "anom": anom, "level": level,
                         "row": r, "loc": loc, "run_id": run_id, "artifact": artifact,
+                        "wids": set(), "first_wids": set(_wids),
                     }
                 else:
                     agg["n"] += 1
                     if ts and (not agg["first"] or ts < agg["first"]):
                         agg["first"] = ts
+                        agg["first_wids"] = set(_wids)
+                    elif ts and ts == agg["first"]:
+                        agg["first_wids"].update(_wids)
                     if ts and (not agg["last"] or ts > agg["last"]):
                         agg["last"] = ts
                     # the loudest row wins the exemplar — its parsed evidence is what
                     # an analyst opens the finding to read
                     if anom > agg["anom"]:
                         agg.update({"anom": anom, "level": level, "row": r, "loc": loc})
+                # ponytail: capped per (host, rule); a rule firing more often than
+                # this on one host is matched on its first 2,000 events only
+                if len(agg["wids"]) < _WIDS_CAP:
+                    agg["wids"].update(_wids)
 
             # ---- MFT detections -> criticality-typed event ----------------
             # Detection={Name,Criticality}; OSPath is the file. Criticality is
@@ -1157,6 +1208,9 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                  criticality=str(crit) if crit else None,
                                  logged_host=_logged_host(r, host),
                                  recorded_host=r.get("Computer"),
+                                 channel=r.get("Channel") or None,
+                                 eid_num=r.get("EventID") or None,
+                                 win_ids=win_event_ids(r) or None,
                                  title=(f"{artifact.split('.')[-1]}: {str(dname)[:60]}"
                                         if dname else None)))
 
@@ -1212,7 +1266,9 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                   ev_pid=DET.pid(pd), ev_parentpid=DET.parentpid(pd),
                   ev_user=(f"{_edom}\\{_eusr}" if _edom and _eusr else _eusr),
                   ev_tgtip=DET.tgtip(pd),
-                  ev_sha256=_hh.get("sha256"), ev_md5=_hh.get("md5"))
+                  ev_sha256=_hh.get("sha256"), ev_md5=_hh.get("md5"),
+                  win_ids=sorted(agg["wids"]) or None,
+                  win_ids_first=sorted(agg["first_wids"]) or None)
         ev.severity = from_string(str(agg["level"]))   # true SIGMA level
         ev.last_seen = agg["last"]
         ents.append(ev)

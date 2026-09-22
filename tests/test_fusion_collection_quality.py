@@ -43,9 +43,27 @@ def _fuse(collected, min_severity="medium"):
     return g
 
 
-def _sigma(title, ts="2026-09-01T07:20:51Z", level="high", computer=HOST):
-    return {"ClientId": CID, "Timestamp": ts, "Computer": computer, "Channel": "Security",
-            "EID": 1102, "Level": level, "Title": title, "RecordID": 1, "Details": ""}
+def _sigma(title, ts="2026-09-01T07:20:51Z", level="high", computer=HOST, record=1,
+           channel="Security", eid=1102, event=None):
+    r = {"ClientId": CID, "Timestamp": ts, "Computer": computer, "Channel": channel,
+         "EID": eid, "Level": level, "Title": title, "RecordID": record, "Details": ""}
+    if event:
+        r["_Event"] = event
+    return r
+
+
+def _psblock(sbid, part=1):
+    return {"EventData": {"ScriptBlockId": sbid, "MessageNumber": part, "MessageTotal": 2,
+                          "ScriptBlockText": "…"}}
+
+
+def _detectraptor(rule, ts, sbid=None, eid=4104, computer=HOST, part=1):
+    r = {"ClientId": CID, "EventTime": ts, "Computer": computer,
+         "Channel": "Microsoft-Windows-PowerShell/Operational", "EventID": eid,
+         "Detection": {"Name": rule}, "Message": "Creating Scriptblock text"}
+    if sbid:
+        r["EventData"] = _psblock(sbid, part)["EventData"]
+    return r
 
 
 class LinkedContextSurvivesTheSeverityFloor(unittest.TestCase):
@@ -90,7 +108,7 @@ class OneMomentIsOneFinding(unittest.TestCase):
     def test_rules_firing_in_the_same_second_fold_into_one_corroborated_finding(self):
         g = _fuse({"Windows.Hayabusa.Rules": [
             _sigma("Security Eventlog Cleared"), _sigma("Important Log File Cleared"),
-            _sigma("Log Cleared"), _sigma("Unrelated Rule", ts="2026-09-02T01:00:00Z")]})
+            _sigma("Log Cleared"), _sigma("Unrelated Rule", ts="2026-09-02T01:00:00Z", record=2)]})
         grouped = [f for f in g.findings if "(+2 related)" in f.title]
         self.assertEqual(1, len(grouped), [f.title for f in g.findings])
         f = grouped[0]
@@ -122,6 +140,80 @@ class OneMomentIsOneFinding(unittest.TestCase):
         self.assertEqual(1, len(renamed), [f.title for f in renamed])
         self.assertIn("Cmd.Exe copied as AnyDesk.exe, nxc.exe, w.exe", renamed[0].title)
         self.assertEqual(["T1036.003"], renamed[0].mitre)
+
+
+class OneWindowsEventIsOneRow(unittest.TestCase):
+    """"The same event" is what Windows wrote (script-block id, record id), never
+    the second alone — one second at 03:02:24 on a QA case held ~20 different
+    PowerShell script blocks, and the System and Security logs were cleared in the
+    same second as two different events."""
+
+    PS = "Microsoft-Windows-PowerShell/Operational"
+
+    def test_two_logs_cleared_in_the_same_second_are_two_events(self):
+        g = _fuse({"Windows.Hayabusa.Rules": [
+            _sigma("Important Log File Cleared", channel="System", eid=104, record=973),
+            _sigma("Important Windows Eventlog Cleared", channel="System", eid=104, record=973),
+            _sigma("Log Cleared", record=18723), _sigma("Security Eventlog Cleared", record=18723)]})
+        self.assertEqual(2, len(g.findings), [f.title for f in g.findings])
+        self.assertTrue(all("(+1 related)" in f.title for f in g.findings))
+
+    def test_two_detectors_on_one_script_block_are_one_row(self):
+        g = _fuse({
+            "Windows.Hayabusa.Rules": [_sigma("Suspicious PowerShell Invocations - Specific",
+                                              ts="2026-09-01T07:42:33.295Z", channel=self.PS,
+                                              eid=4104, record=934, event=_psblock("E1B4", 2))],
+            "DetectRaptor.Windows.Detection.Evtx": [
+                _detectraptor("T1059.001-Mimikatz Execution via PowerShell", "2026-09-01T07:42:33Z",
+                              sbid="{e1b4}", part=2)]})
+        rows = [f for f in g.findings if f.kind == "single"]
+        self.assertEqual(1, len(rows), [f.title for f in rows])
+        self.assertIn("(+1 related)", rows[0].title)
+
+    def test_different_script_blocks_in_the_same_second_stay_apart(self):
+        g = _fuse({"DetectRaptor.Windows.Detection.Evtx": [
+            _detectraptor("T1059.001-PowerShell Web Request", "2026-09-01T07:42:33Z", sbid="aaaa"),
+            _detectraptor("T1059.001-Use of Base64 Commands", "2026-09-01T07:42:33Z", sbid="bbbb")]})
+        self.assertEqual(2, len(g.findings), [f.title for f in g.findings])
+
+    def test_without_an_id_only_a_single_candidate_within_a_minute_joins(self):
+        one = _fuse({
+            "Windows.Hayabusa.Rules": [_sigma("Windows Defender Threat Detection Disabled",
+                                              channel="Microsoft-Windows-Windows Defender/Operational",
+                                              eid=5001, record=381)],
+            "DetectRaptor.Windows.Detection.Evtx": [dict(
+                _detectraptor("T1562.001-Win Defender Disabled", "2026-09-01T07:21:30Z", eid=5001),
+                Channel="Microsoft-Windows-Windows Defender/Operational")]})
+        self.assertEqual(1, len(one.findings), [f.title for f in one.findings])
+        # Three rules, one second, no id: which of them saw the same event is
+        # unknowable, so none are folded (live: three commands in one PSReadline
+        # history file all carry the file's time).
+        two = _fuse({"DetectRaptor.Windows.Detection.Evtx": [
+            _detectraptor(n, "2026-06-18T12:41:34Z", eid=None)
+            for n in ("T1059.001-Mimikatz Execution via PowerShell",
+                      "T1059.001-Use of Base64 Commands", "C2-Powershell Socket Connection")]})
+        self.assertEqual(3, len(two.findings), [f.title for f in two.findings])
+
+    def test_an_event_already_on_its_own_row_is_not_repeated_in_a_burst(self):
+        ents, rels = map_agentic({
+            "Windows.Hayabusa.Rules": [
+                _sigma("Usage Of Web Request Commands And Cmdlets - ScriptBlock", level="medium",
+                       ts="2025-12-05T03:02:24.98Z", channel=self.PS, eid=4104, record=500,
+                       event=_psblock("cccc")),
+                _sigma("Uncommon PowerShell Hosts", level="medium", ts="2025-12-05T03:03:00Z",
+                       channel=self.PS, eid=4104, record=501),
+                _sigma("A Rule Has Been Deleted From The Windows Firewall Exception List",
+                       level="medium", ts="2025-12-05T03:04:00Z", record=502),
+                _sigma("WMI Persistence", level="medium", ts="2025-12-05T03:05:00Z", record=503)],
+            "DetectRaptor.Windows.Detection.Evtx": [
+                _detectraptor("T1059.001-PowerShell Web Request", "2025-12-05T03:02:24Z", sbid="cccc")]},
+            run_id="r1", hostnames=HOSTNAMES)
+        g = correlate.assemble("c", [(ents, rels)], ["r1"], min_severity="medium",
+                               window={"start": "2025-12-01T00:00:00", "end": "2025-12-31T00:00:00"})
+        burst = [f for f in g.findings if f.title.startswith("Coordinated")]
+        members = {g.entities[i].attrs.get("title") for f in burst for i in f.entity_ids}
+        self.assertNotIn("Usage Of Web Request Commands And Cmdlets - ScriptBlock", members,
+                         "DetectRaptor's row already shows that script block")
 
 
 class TheHostALogRecordedIsKept(unittest.TestCase):
