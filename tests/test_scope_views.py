@@ -289,13 +289,14 @@ class HostsInATimeframe(unittest.TestCase):
     asset nodes made every scope report every host in the case — a window that
     touched 7 machines read "9 hosts", measured live."""
 
-    def test_a_scope_counts_only_hosts_with_evidence_in_it(self):
+    def test_a_host_with_nothing_in_the_window_is_not_in_the_scope(self):
+        """Risk listed every host in the case for every scope, with "no findings in
+        window" against the ones the timeframe never touched."""
         g = _g()
         g.upsert(schema.Entity(id="asset:b", type="asset", label="QUIET-HOST"))
         v = store._filter_graph_by_window(g, WIN)
-        self.assertIn("asset:b", v.entities, "the pivot survives the window, by design")
-        self.assertEqual(1, store._active_hosts(v),
-                         "but a host with no evidence in the window is not counted")
+        self.assertNotIn("asset:b", v.entities)
+        self.assertIn("asset:a", v.entities, "the host the window's evidence ran on stays")
         self.assertEqual(1, store._counts_from_graph(v)["hosts"], "and the header agrees")
 
     def test_a_host_excluded_in_configuration_cannot_leak_back(self):
@@ -303,6 +304,44 @@ class HostsInATimeframe(unittest.TestCase):
         g = _g()
         g.entities["ev:in"].attrs["_assets"] = ["asset:a", "asset:gone"]
         self.assertEqual(1, store._active_hosts(g), "asset:gone is no longer a node")
+
+
+class OnlyThePeopleAndPivotsTheWindowReaches(unittest.TestCase):
+    """Identities showed all 19 people of the case in a two-week scope, because the
+    filter kept every account. 162 accounts, of which 2 were linked to anything in
+    the window — measured live."""
+
+    def _g2(self):
+        g = _g()
+        for e in (schema.Entity(id="account:ghost", type="account", label="adatumlab\\ghost",
+                                first_seen=BEFORE, attrs={"_assets": ["asset:a"]}),
+                  schema.Entity(id="account:almogs", type="account", label="adatumlab\\almogs",
+                                first_seen=BEFORE, attrs={"_assets": ["asset:a"]}),
+                  schema.Entity(id="ioc:old", type="ioc", label="9.9.9.9", first_seen=BEFORE)):
+            g.upsert(e)
+        # AlmogS is named ONLY as an event's user — no link to him at all.
+        g.entities["ev:in"].attrs["ev_user"] = "ADATUMLAB\\AlmogS"
+        g.rebuild_indexes()
+        return g
+
+    def test_an_account_nothing_in_the_window_touches_is_not_in_the_scope(self):
+        v = store._filter_graph_by_window(self._g2(), WIN)
+        self.assertNotIn("account:ghost", v.entities)
+
+    def test_a_user_named_only_by_an_event_attribute_is_kept(self):
+        """The Timeline names him; Identities must not drop him."""
+        v = store._filter_graph_by_window(self._g2(), WIN)
+        self.assertIn("account:almogs", v.entities)
+
+    def test_an_indicator_nothing_in_the_window_touches_is_dropped(self):
+        v = store._filter_graph_by_window(self._g2(), WIN)
+        self.assertNotIn("ioc:old", v.entities)
+        self.assertIn("ioc:1.2.3.4", v.entities, "the one an in-window event contacted stays")
+
+    def test_the_whole_case_is_untouched(self):
+        g = self._g2()
+        self.assertIs(g, store._filter_graph_by_window(g, None))
+        self.assertIn("account:ghost", g.entities)
 
 
 class RefusionAndTimeframes(unittest.TestCase):

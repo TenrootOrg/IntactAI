@@ -2502,10 +2502,12 @@ def _filter_graph_by_window(g, window) -> FusionGraph:
     Mirrors the INGEST filter (correlate.assemble) rather than inventing a second
     rule, because the two must agree:
 
-      * `_STRUCTURAL_TYPES` (asset / account / ioc / identity / config) are NEVER
-        time-judged. They anchor the graph, so filtering them by first_seen orphans
-        every edge they carry and the scoped graph comes out edgeless — the exact
-        failure correlate.py documents at its own window filter.
+      * `_STRUCTURAL_TYPES` (asset / account / ioc / identity / config) are never
+        judged by their OWN timestamps — they anchor the graph, so filtering them
+        by first_seen orphans every edge they carry and the scoped graph comes out
+        edgeless, the exact failure correlate.py documents at its own window
+        filter. They are kept when the window's evidence REACHES them (see below),
+        and dropped when nothing in the window touches them at all.
       * an entity with no timestamp is KEPT, never silently dropped (in_window
         says so too), and so is one whose activity STRADDLES the window: first_seen
         before it, last_seen inside it.
@@ -2524,14 +2526,59 @@ def _filter_graph_by_window(g, window) -> FusionGraph:
     gv.identity_decisions = getattr(g, "identity_decisions", None)
     findings = [f for f in g.findings if in_window(f.ts, window)]
     cited = {eid for f in findings for eid in (f.entity_ids or [])}
+
+    # 1. The window's own evidence: everything that is not a pivot and was active
+    #    inside it, plus whatever a kept finding cites.
+    active = set()
+    for e in g.entities.values():
+        if e.type in _STRUCTURAL_TYPES:
+            continue
+        if e.id in cited or in_window(e.first_seen, window) or in_window(e.last_seen, window):
+            active.add(e.id)
+
+    # 2. The PIVOTS that evidence actually touches — not every pivot in the case.
+    #    Keeping all of them unconditionally made every scope report the whole
+    #    case's people and hosts: measured on a live case, a two-week window showed
+    #    all 19 people in Identities and all 9 hosts in Risk, and counted 162
+    #    accounts of which 2 were linked to anything in the window. A pivot stays
+    #    when the window's evidence reaches it: by a link, by a citation, by naming
+    #    it as the host an event ran on, or — for an account — by naming it as the
+    #    event's user. That last one matters: a user often appears only as an
+    #    attribute ("interactive user ADATUMLAB\AlmogS"), never as a link, and
+    #    Identities must not drop someone the Timeline names. A pivot nothing in the
+    #    window reaches carries no edge into it, so dropping it cannot leave the
+    #    scoped graph edgeless — that risk was only ever about pivots that DO link.
+    reached = set(cited)
+    for r in g.relationships:
+        if r.src in active:
+            reached.add(r.dst)
+        if r.dst in active:
+            reached.add(r.src)
+    host_ids = {a for f in findings for a in (f.asset_ids or [])}
+    users = set()
+    for eid in active:
+        a = g.entities[eid].attrs or {}
+        host_ids.update(a.get("_assets") or [])
+        for k in ("ev_user", "user", "acct", "subject"):
+            v = str(a.get(k) or "").strip().lower()
+            if v:
+                users.update({v, v.split("\\")[-1]})
+
+    def _pivot_in_window(e) -> bool:
+        if e.id in reached:
+            return True
+        if e.type == "asset":
+            return e.id in host_ids
+        if e.type == "account":
+            lab = str(e.label or "").strip().lower()
+            return lab in users or lab.split("\\")[-1] in users
+        return False
+
     keep = set()
     for e in g.entities.values():
-        if e.type in _STRUCTURAL_TYPES or e.id in cited:
-            pass                                   # pivots and cited evidence always
-        elif not in_window(e.first_seen, window) and not in_window(e.last_seen, window):
-            continue                               # wholly outside, on both bounds
-        gv.entities[e.id] = e
-        keep.add(e.id)
+        if e.id in active or (e.type in _STRUCTURAL_TYPES and _pivot_in_window(e)):
+            gv.entities[e.id] = e
+            keep.add(e.id)
     gv.findings = findings
     for r in g.relationships:
         if r.src in keep and r.dst in keep:
