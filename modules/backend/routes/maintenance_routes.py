@@ -476,6 +476,8 @@ def run_system_purge():
             add_log_to_run(run_id, "=" * 50, "info")
             update_run_status(run_id, "running", progress=20)
             freed, count = purge_dir("/data/db/azure_runs")
+            f2, c2 = purge_dir("/app/data/azure_runs")   # where azure_routes WRITES
+            freed, count = freed + f2, count + c2
             total_freed += freed
             add_log_to_run(run_id, f"  Removed {count} scan files | Freed: {fmt(freed)}", "success")
 
@@ -843,8 +845,12 @@ def _scan_system_workflows():
 
 
 def _scan_azure_runs():
-    p = "/data/db/azure_runs"
-    return _scan_dir(p), _dir_detail(p, "scan result")
+    # TWO directories: the legacy one and /app/data/azure_runs, which is where
+    # azure_routes actually persists raw O365/Azure records (azure_routes.py:342).
+    # The purge only knew the first, so the estimate under-reported and the files
+    # were never freed by any path.
+    a, b = "/data/db/azure_runs", "/app/data/azure_runs"
+    return _scan_dir(a) + _scan_dir(b), _dir_detail(b, "scan result")
 
 
 def _scan_uploads():
@@ -1228,6 +1234,8 @@ def _purge_system_workflows(run_id):
 
 def _purge_azure_runs(_):
     f, c = _purge_dir("/data/db/azure_runs")
+    f2, c2 = _purge_dir("/app/data/azure_runs")
+    f, c = f + f2, c + c2
     return f, f"{c} files"
 
 

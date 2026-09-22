@@ -904,10 +904,27 @@ def delete_case(case_id) -> dict:
         autofuse.cancel(case_id)
     except Exception:
         pass
-    run_ids = [r.get("run_id") for r in ws.get_automation_runs_by_case(case_id)]
+    # Tagged runs UNION the legacy member list. get_automation_runs_by_case reads
+    # the case_id COLUMN only, while the fuse reads `tagged ∪ member_run_ids` — so a
+    # run from before the workspace model (or one whose tag write failed) was fused
+    # into this case, and then survived its deletion with its row, its logs and its
+    # payload on disk.
+    tagged = {r.get("run_id"): r for r in ws.get_automation_runs_by_case(case_id)}
+    run_ids = list(dict.fromkeys([r for r in tagged if r]
+                                 + [r for r in (d.get("member_run_ids") or []) if r]))
     for rid in run_ids:
+        _delete_run_payloads(rid, (tagged.get(rid) or ws.get_automation_run(rid) or {}))
         delete_workflow(rid)
-        _delete_run_payloads(rid)
+        try:                               # reports keyed to this run (imported or
+            from services.storage.report_store import delete_report   # upgraded boxes)
+            delete_report(rid)
+        except Exception:                  # noqa: BLE001
+            pass
+        try:                               # ...and the run's Elasticsearch copy, or
+            from services import elasticsearch_service as _es          # it comes back
+            _es.delete_workflow_run(rid)   # in the workflow list (see its docstring)
+        except Exception:                  # noqa: BLE001
+            pass
     # baselines this case captured (match by source_case only — never touch a
     # baseline another workspace may rely on)
     removed_baselines = 0
@@ -917,8 +934,30 @@ def delete_case(case_id) -> dict:
         if (r.get("details") or {}).get("source_case") == case_id:
             delete_workflow(r.get("run_id"))
             removed_baselines += 1
+    # Export/import runs live in the SYSTEM workspace (SYSTEM_TYPES), so the tagged
+    # loop above cannot see them — and each one carries this case's id, its name,
+    # every member run id and the path to the bundle below.
+    removed_bundles = 0
+    for r in ws.get_all_automation_runs() or []:
+        if r.get("automation_type") not in ("case_export", "case_import"):
+            continue
+        if (r.get("details") or {}).get("case_id") == case_id:
+            delete_workflow(r.get("run_id"))
     delete_workflow(case_id)
-    _delete_graph_sidecar(case_id)   # remove the fused-graph sidecar file too
+    _delete_graph_sidecar(case_id)   # the fused graph AND every per-scope cache
+    # The export bundle: one .intactcase.zip holding every member payload, the
+    # fused graph and the report — keyed by CASE id, so nothing in the per-run
+    # cleanup above ever reached it. Hundreds of MB to several GB, and until now
+    # only the all-or-nothing Maintenance purge could reclaim it.
+    try:
+        import shutil as _shutil
+        from . import case_bundle as _cb
+        _p = os.path.join(_cb.EXPORT_DIR, str(case_id))
+        if os.path.isdir(_p):
+            removed_bundles = len([f for f in os.listdir(_p)])
+            _shutil.rmtree(_p, ignore_errors=True)
+    except Exception:                      # noqa: BLE001 — never fail a delete over a file
+        pass
     # Also purge this case's entries from the cross-case KB — otherwise its
     # IOC/account/hash entities stay indexed forever and keep resurfacing as
     # "prior sightings" in unrelated future cases even after deletion.
@@ -928,10 +967,11 @@ def delete_case(case_id) -> dict:
     except Exception:
         pass
     return {"deleted": True, "runs_deleted": len(run_ids),
-            "baselines_deleted": removed_baselines}
+            "baselines_deleted": removed_baselines,
+            "export_bundles_deleted": removed_bundles}
 
 
-def _delete_run_payloads(rid) -> None:
+def _delete_run_payloads(rid, det=None) -> None:
     """Remove a deleted run's collected data from disk.
 
     Deleting the row alone left /data/downloads/<run_id>/raw_results.json behind
@@ -951,10 +991,36 @@ def _delete_run_payloads(rid) -> None:
             _shutil.rmtree(os.path.join(base, str(rid)), ignore_errors=True)
         except Exception:
             pass
-    for base in ("/app/data/aws_runs", "/data/aws_runs"):
+    # azure_runs was missing here, and the Maintenance purge looks in a DIFFERENT
+    # directory than the writer uses (/data/db/azure_runs vs /app/data/azure_runs),
+    # so raw O365/Azure sign-in and audit records were reachable by no delete path
+    # at all.
+    for base in ("/app/data/aws_runs", "/data/aws_runs",
+                 "/app/data/azure_runs", "/data/azure_runs"):
         try:
             os.remove(os.path.join(base, f"{rid}.json"))
         except Exception:
+            pass
+    # The memory image itself, when the run died before its own cleanup ran (or
+    # NO_CLEANUP was set). Gigabytes each; the path is in the run's own details.
+    for key in ("host_path", "upload_dir"):
+        p = (det or {}).get(key) or ((det or {}).get("cleanup_state") or {}).get(key)
+        if not p or not str(p).startswith(("/data/memory_dumps", "/app/data/memory_dumps")):
+            continue                       # only ever inside the dump directory
+        try:
+            if os.path.isdir(p):
+                _shutil.rmtree(p, ignore_errors=True)
+            else:
+                os.remove(p)
+        except Exception:                  # noqa: BLE001
+            pass
+    # Cloud findings held in RAM by the route modules, keyed by run id and never
+    # freed — evidence resident in memory until the next restart.
+    for mod, attr in (("routes.aws_routes", "_aws_runs"), ("routes.azure_routes", "_azure_runs")):
+        try:
+            import importlib
+            getattr(importlib.import_module(mod), attr).pop(rid, None)
+        except Exception:                  # noqa: BLE001
             pass
 
 
@@ -2359,6 +2425,21 @@ def _graph_path(case_id):
 
 
 def _write_graph_sidecar(case_id, graph_dict) -> bool:
+    """...unless the case has been DELETED under us. delete_case cancels the armed
+    timer but cannot stop a fuse already running, the watch_and_fuse poller (three
+    hours) or a report thread — and this writer runs before the row update whose
+    failure everything ignores. So the row stayed deleted and the graph came back:
+    a full-size file of the case's evidence, orphaned, reachable by nothing but the
+    Maintenance purge. One guard here covers every writer, since they all land here.
+    Fails OPEN: if the lookup itself errors we write, because losing a real graph is
+    worse than keeping an orphan."""
+    try:
+        if not (_ws().get_automation_run(case_id) or {}):
+            print(f"[FUSION] sidecar write skipped for {case_id}: the case is gone",
+                  flush=True)
+            return False
+    except Exception:                                   # noqa: BLE001 — see above
+        pass
     try:
         os.makedirs(_FUSION_GRAPH_DIR, exist_ok=True)
         tmp = _graph_path(case_id) + ".tmp"

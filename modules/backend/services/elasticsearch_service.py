@@ -109,6 +109,21 @@ def init_elasticsearch(host='elasticsearch', port=9200, user=None, password=None
         traceback.print_exc()
         return False
 
+def delete_workflow_run(run_id):
+    """Remove a run's document. There was no delete here at all, so a run deleted
+    from SQLite lived on in Elasticsearch — and get_all_automation_runs() MERGES
+    ES rows whose run_id is not in SQLite, which is exactly what a delete creates.
+    The deleted runs came back in the workflow list, with their logs, untagged."""
+    if not es_client or _skip_while_unreachable():
+        return False
+    try:
+        es_client.delete(index='intact_workflow_runs', id=run_id, ignore=[404])
+        return True
+    except Exception as e:
+        _note_failure(e, "delete run")
+        return False
+
+
 def update_workflow_status(run_id, status, progress=None, error=None):
     """Update workflow run status using partial update"""
     if not es_client or _skip_while_unreachable():
