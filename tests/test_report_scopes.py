@@ -57,8 +57,8 @@ class ScopeCase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self._write_graph({"entities": {"a": {"type": "asset"}}, "findings": [], "relationships": []})
 
-    def _fuse(self, case_id, force_report=False, trigger=None):
-        self.fused.append(force_report)
+    def _fuse(self, case_id, force_report=False, trigger=None, allow_llm=True):
+        self.fused.append((force_report, allow_llm))
         self._write_graph({"entities": {"rebuilt": {"type": "asset"}}, "findings": [],
                            "relationships": []})
 
@@ -115,8 +115,10 @@ class ScopeCase(unittest.TestCase):
         self.d["dispositions"] = [{"target": "f1", "verdict": "false_positive"}]
         res = store.switch_scope(CASE, "full")
         self.assertTrue(res["refused"])
-        self.assertEqual(self.fused, [False], "force_report=False, or a template "
-                                              "would overwrite the saved report")
+        self.assertEqual(self.fused, [(False, False)],
+                         "force_report=False, or a template would overwrite the saved "
+                         "report; allow_llm=False, or navigating back would buy a "
+                         "narration (or a checklist) the operator never asked for")
         self.assertEqual(self.d["report_md"], MACRO_MD)
 
     def test_new_data_invalidates_the_cache(self):
