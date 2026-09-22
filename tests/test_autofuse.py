@@ -41,6 +41,10 @@ class ReportGenerationBusy(RuntimeError):
     pass
 
 
+class _Vanished(BaseException):
+    """A fuse the process never came back from."""
+
+
 class FakeStore:
     """Stands in for services.fusion.store. Records everything, so a test can
     assert on what was NOT done as easily as what was."""
@@ -63,6 +67,7 @@ class FakeStore:
         self.events = []         # (action, status, detail)
         self.busy_times = 0      # raise FusionBusy this many times, then succeed
         self.raise_always = None
+        self.vanish = False      # the fuse dies where no `except` sees it (an OOM kill)
         self.reports = []        # (kind, kwargs) of every report regeneration
         self.report_busy_times = 0   # raise ReportGenerationBusy this often, then succeed
         self.report_raises = None
@@ -99,6 +104,12 @@ class FakeStore:
             self.fuses.append(kw)
             if self.raise_always:
                 raise self.raise_always
+            if self.vanish:
+                # A BaseException that is not an Exception: it escapes every
+                # `except Exception` in autofuse, exactly as a kernel OOM kill
+                # escapes Python — nothing after the fuse runs, and the marker
+                # written before it stays behind.
+                raise _Vanished()
             if self.busy_times > 0:
                 self.busy_times -= 1
                 raise FusionBusy("a fuse is already running for this case")
@@ -884,30 +895,64 @@ class TestBookkeeping(_Base):
 class TestCrashLoopBreaker(_Base):
     """A fuse can die where no `except` will ever see it: a big case OOMs the
     process (measured — five 547 MB member runs peaked at 5.6 GB and the kernel
-    killed it). Automatic retry then becomes fuse-die-restart-fuse-die."""
+    killed it). Automatic retry then becomes fuse-die-restart-fuse-die.
 
-    def test_a_flag_is_set_before_the_fuse_and_cleared_after(self):
+    But a fuse ALSO dies when the backend is merely restarted under it, and a
+    one-strike breaker locked such a case out of automatic fusing for good —
+    measured live: one deploy 8 s into a fuse, and three catch-ups in a row stood
+    down. An OOM is deterministic, a restart is a one-off, so the breaker allows
+    one retry and stands down on the second consecutive failure."""
+
+    def test_a_counter_is_raised_before_the_fuse_and_cleared_after(self):
         autofuse.schedule("case_1")
         self.settle()
         self.assertEqual([m.get("auto_fuse_incomplete") for m in self.store.merges],
-                         [True, False],
+                         [1, False],
                          "the marker must be written BEFORE the fuse and cleared after")
 
-    def test_a_case_left_marked_is_not_retried(self):
-        """This is the loop being broken."""
-        self.store.case = {"name": "QA case", "auto_fuse_incomplete": True}
+    def test_one_vanished_fuse_is_retried(self):
+        """A restart under a fuse is a one-off. Legacy True counts as one strike."""
+        for marker in (True, 1):
+            self.store = type(self.store)()
+            autofuse._store = lambda: self.store
+            self.store.case = {"name": "QA case", "auto_fuse_incomplete": marker}
+            autofuse.schedule("case_1")
+            self.settle()
+            self.assertEqual(len(self.store.fuses), 1,
+                             f"one strike ({marker!r}) must retry, or a deploy locks the case out")
+            self.assertTrue(any(a == "Refusion · retrying" for a, _s, _d in self.store.events),
+                            "and it says why it is retrying")
+
+    def test_two_vanished_fuses_in_a_row_stand_down(self):
+        """This is the OOM loop being broken."""
+        self.store.case = {"name": "QA case", "auto_fuse_incomplete": 2}
         autofuse.schedule("case_1")
         self.settle()
         self.assertEqual(self.store.fuses, [],
-                         "a case whose last automatic fuse vanished must stand down")
+                         "a case that died twice in a row must stand down")
+
+    def test_the_retry_raises_the_count_so_a_second_death_is_caught(self):
+        self.store.case = {"name": "QA case", "auto_fuse_incomplete": 1}
+        self.store.vanish = True       # the fuse never returns, like an OOM kill
+        # The simulated kill escapes the timer thread by design; keep its expected
+        # traceback out of the test output so a real one is not lost among them.
+        import threading
+        _hook = threading.excepthook
+        threading.excepthook = lambda a: None if a.exc_type is _Vanished else _hook(a)
+        self.addCleanup(setattr, threading, "excepthook", _hook)
+        autofuse.schedule("case_1")
+        self.settle()
+        self.assertEqual(2, self.store.case.get("auto_fuse_incomplete"),
+                         "a retry that also dies must leave the case at two strikes")
 
     def test_standing_down_tells_the_operator_what_to_do(self):
-        self.store.case = {"name": "QA case", "auto_fuse_incomplete": True}
+        self.store.case = {"name": "QA case", "auto_fuse_incomplete": 2}
         autofuse.schedule("case_1")
         self.settle()
         detail = [d for a, _s, d in self.store.events if a == "Refusion skipped"]
         self.assertTrue(detail and "Refusion" in detail[0],
                         "it must point at the manual path, not just go quiet")
+        self.assertIn("too large", detail[0], "and name the likely cause")
 
     def test_a_busy_collision_does_not_leave_the_case_marked(self):
         """Nothing was attempted, so nothing is incomplete."""
@@ -926,12 +971,22 @@ class TestCrashLoopBreaker(_Base):
 
     def test_catch_up_also_respects_the_marker(self):
         self.store.all_runs = [{"run_id": "case_1", "automation_type": "case",
+                                "details": {"name": "c", "auto_fuse_incomplete": 2}}]
+        self.store.case = {"name": "c", "auto_fuse_incomplete": 2}
+        autofuse.catch_up(stagger=0.01)
+        self.settle()
+        self.assertEqual(self.store.fuses, [],
+                         "a restart must not resume a fuse that has already died twice")
+
+    def test_catch_up_after_a_plain_restart_fuses_the_case(self):
+        """The live failure: the deploy killed ONE fuse, and every catch-up after
+        it stood down. It must fuse."""
+        self.store.all_runs = [{"run_id": "case_1", "automation_type": "case",
                                 "details": {"name": "c", "auto_fuse_incomplete": True}}]
         self.store.case = {"name": "c", "auto_fuse_incomplete": True}
         autofuse.catch_up(stagger=0.01)
         self.settle()
-        self.assertEqual(self.store.fuses, [],
-                         "a restart must not resume the fuse that caused it")
+        self.assertEqual(len(self.store.fuses), 1)
 
 
 class TestStartupCatchUp(_Base):

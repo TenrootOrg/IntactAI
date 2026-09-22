@@ -74,6 +74,10 @@ MAX_BUSY_RETRIES = 10
 # runs for minutes, so a second burst of data can easily land inside one. Retry
 # rather than leave the report describing the data from two collections ago.
 REPORT_RETRY_SECONDS = 60.0
+# Consecutive automatic fuses that vanished before automatic fusing stands down
+# for the case — see the crash-loop breaker in _fire. Two, because a restart
+# kills one fuse and an out-of-memory case kills every one.
+MAX_INCOMPLETE_FUSES = 2
 # Startup catch-up keeps its own spacing: ten cases with unfused data must not
 # rebuild ten graphs at once on a box that has just come up.
 CATCHUP_STAGGER_SECONDS = 30.0
@@ -299,17 +303,36 @@ def _fire(case_id, reason="new data", attempt=0) -> None:
         # CRASH-LOOP BREAKER. A fuse can die in a way no `except` will ever see:
         # a big case OOMs the process (measured — five 547 MB member runs peaked at
         # 5.6 GB and the kernel killed it). Automatic retry then becomes a loop:
-        # fuse dies, backend restarts, catch_up re-arms, fuse dies. The flag is
+        # fuse dies, backend restarts, catch_up re-arms, fuse dies. A counter is
         # written BEFORE the fuse and cleared after, so a fuse that never returns
-        # leaves it set and the next automatic attempt stands down. A manual
-        # Refusion clears it, which is the operator's way back in.
-        if d.get("auto_fuse_incomplete"):
+        # leaves it raised. A manual Refusion clears it, which is the operator's
+        # way back in.
+        #
+        # TWO STRIKES, NOT ONE. A fuse also vanishes when the backend is simply
+        # RESTARTED under it — an update, a redeploy, a host reboot — and one
+        # strike could not tell that from an OOM: the case was then locked out of
+        # automatic fusing for good, re-announcing it on every restart. Measured on
+        # a live case: a deploy at 11:09:19 landed 8 s into an automatic fuse, and
+        # the catch-ups at 11:09, 11:22 and 11:53 all stood down. An OOM is
+        # DETERMINISTIC — the same case dies the same way every time — while a
+        # restart is a one-off. So one retry separates them: a case that dies
+        # twice in a row is the loop this exists to break.
+        _strikes = int(d.get("auto_fuse_incomplete") or 0)   # legacy True reads as 1
+        if _strikes >= MAX_INCOMPLETE_FUSES:
             store.log_case_event(
                 case_id, "Refusion skipped", "warning",
-                "a previous automatic re-fuse did not finish (the backend may have "
-                "run out of memory on this case) — click Refusion to fuse it by hand")
+                f"the automatic re-fuse did not finish {_strikes} times in a row — "
+                "this case is probably too large to fuse in the backend's memory. "
+                "Click Refusion to try it by hand; if that also fails, narrow the "
+                "case (fewer hosts, a higher severity floor) or split it")
             return
-        store._merge_case_details(case_id, {"auto_fuse_incomplete": True})
+        if _strikes:
+            store.log_case_event(
+                case_id, "Refusion · retrying", "info",
+                "the previous automatic re-fuse did not finish — most often because "
+                "the backend restarted under it (an update or a reboot). Trying "
+                "once more; if this one fails too, automatic fusing stands down")
+        store._merge_case_details(case_id, {"auto_fuse_incomplete": _strikes + 1})
         # NOTE: no log line here on purpose. fuse_case already narrates itself
         # into the case log ("Refusion · starting" through "Refusion complete"
         # with counts), so anything added around it duplicates. The gap this
