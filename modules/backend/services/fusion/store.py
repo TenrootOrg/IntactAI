@@ -3714,7 +3714,6 @@ _CONFIG_LABELS = {
     "report_altitude": "Report type",
     "customer_name": "Customer name", "master_prompt": "Master prompt",
     "customer_logo_b64": "Customer logo", "report_detail": "Report detail",
-    "auto_regen_report": "Auto-regenerate report when a model connects",
     "auto_report": "Auto-regenerate report when new data lands",
 }
 
@@ -3797,10 +3796,6 @@ def set_analysis_config(case_id, cfg) -> dict:
                                            # is free, this half spends tokens, and
                                            # a report is the operator's call.
         patch["auto_report"] = bool(cfg.get("auto_report"))
-    if "auto_regen_report" in cfg:         # the Analysis tab may regenerate a template
-                                           # report itself once a model is reachable;
-                                           # off = the manual button only
-        patch["auto_regen_report"] = bool(cfg.get("auto_regen_report"))
     if "max_identities" in cfg:            # identity rows in the LLM payload — a
                                            # ceiling INSIDE max_entities, not a separate
                                            # budget (see _llm_identity_budget); empty/0

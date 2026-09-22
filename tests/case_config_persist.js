@@ -30,7 +30,7 @@ function run({ railMounted = true, rescanReply = {} } = {}) {
     'cf-cust': { value: '' }, 'cf-tlp': { value: 'AMBER' }, 'cf-mp': { value: '' },
     'cf-maxent': { value: '500000' }, 'cf-maxident': { value: '' },
     'cf-mask': { checked: false }, 'cf-maskpat': { value: '' },
-    'cf-autoregen': { checked: true }, 'cf-logo': { files: [] },
+    'cf-logo': { files: [] },
   };
   const ctx = {
     $: (sel) => railMounted ? (inputs[sel.replace('#', '')] || null) : null,

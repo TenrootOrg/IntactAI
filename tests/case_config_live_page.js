@@ -183,7 +183,6 @@ const dumpSession = win => Object.fromEntries(
       'cf-alt': 'macro', 'cf-tlp': 'RED', 'cf-cust': 'Acme Corp',
       'cf-maskpat': 'secretproject', 'cf-mp': 'focus on lateral movement',
     };
-    const TOGGLES = { 'cf-mask': true, 'cf-autoregen': false, 'cf-autoreport': true };
     const q = s => win.document.querySelector(s);
     for (const [id, v] of Object.entries(EDITS)) {
       const e = q('#' + id);

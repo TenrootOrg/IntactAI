@@ -475,7 +475,7 @@ function openCase(id){
      const same = shown && JSON.stringify([info,rep])===shown;
      // Unchanged since the remembered view: don't redraw under the operator,
      // but the view on screen is now confirmed current.
-     if(same){ if(curInfo && curInfo.case_id===id){ curInfo._fresh=true; maybeAutoRegen(); } return; }
+     if(same){ if(curInfo && curInfo.case_id===id){ curInfo._fresh=true; } return; }
      info._fresh=true;
      showCase(id,info,rep);
    });
@@ -509,12 +509,11 @@ function showCase(id,info,rep){
      // like the time window did before doRefusion started re-reading the case.
      info.report_altitude=rep.report_altitude||info.report_altitude||'auto';
      render(info,rep.report_md||'',info.counts||{});
-     maybeAutoRegen();                     // at once, not after the ~10s probe
      // Only the Analysis tab shows this banner, and `tab` can carry over from
      // whatever the operator was last on (switching cases doesn't reset it) —
      // so skip the check entirely unless Analysis is what's about to be drawn.
      if(tab==='report'){
-       refreshLlmReachability().then(()=>{ if(curInfo && curInfo.case_id===id && tab==='report'){ drawTab(); maybeAutoRegen(); } });
+       refreshLlmReachability().then(()=>{ if(curInfo && curInfo.case_id===id && tab==='report'){ drawTab(); } });
      }
 }
 
@@ -619,7 +618,7 @@ function setTab(t){
   // Only Analysis shows the reachability banner — Chat/Timeline/Identities/
   // Risk/Configuration/Log have no use for it, so don't spend a check on them.
   if(t==='report'){
-    refreshLlmReachability().then(()=>{ if(tab===t){ drawTab(); maybeAutoRegen(); } });
+    refreshLlmReachability().then(()=>{ if(tab===t){ drawTab(); } });
   }
 }
 // An operator EDITING the Configuration tab must never have their input thrown
@@ -761,7 +760,6 @@ function renderConfig(info){
         <label style="margin-top:6px">Custom patterns <span style="color:var(--muted)">— optional</span></label>
         <textarea id="cf-maskpat" placeholder="one per line, e.g. ACME Corp" title="Your own values to mask, on top of the automatic ones — an organisation or customer name, a project name, a person, anything you would rather not send. One per line. Plain text masks that exact value (ACME Corp). *.corp.local masks anything matching the wildcard. alice|bob masks either. /regex/ masks anything the regular expression matches. An invalid line is ignored." style="min-height:38px">${esc((mk.patterns||[]).join('\n'))}</textarea>
         <div class="cfghint">Anything else you want hidden — the organisation's name, a project, a person: <code>ACME Corp</code>, <code>*.corp.local</code>, <code>alice|bob</code>, <code>/regex/</code>.</div>
-        <label style="margin-top:8px" title="When this case's report was written without the AI model and a model is connected now, opening the case on the Analysis tab regenerates it with the model once. Untick to only ever regenerate with the button."><input type="checkbox" id="cf-autoregen" ${info.auto_regen_report!==false?'checked':''} style="width:auto"/> Regenerate the template report automatically once an AI model is connected</label>
         <label style="margin-top:8px" title="When a new collection or upload lands in this case, write a new report for it straight away — but only when the new data actually changed what the case holds. Folding the data into the graph is free and happens either way; writing the report costs a full model run, so it is never spent on data the case filtered out. Untick to spend nothing automatically: the Analysis tab still tells you the report is behind, with the Regenerate button beside it."><input type="checkbox" id="cf-autoreport" ${info.auto_report!==false?'checked':''} style="width:auto"/> Regenerate the report automatically when new data lands <span style="color:var(--muted)">(spends tokens)</span></label>
         <div class="cfghint">Only when the new data actually changes this case — a collection filtered out by the time window, the severity floor or the host set would produce the same report.</div>        <div style="font-size:11px;color:var(--muted);margin-top:8px">Chat always sends the full case graph; the report always shows the real command line, path &amp; hash per high finding (masked if masking is on).</div>
       </div>
@@ -892,51 +890,6 @@ function airGapBanner(ag){
 // Deliberately NOT when the template came from an automatic fuse while a model
 // WAS available ("the AI model was not used..."): nothing switched, and the
 // automatic path regenerates on its own.
-function shouldAutoRegen(info, md, ls){
-  if(!info || info.auto_regen_report===false || info.report_generating) return false;
-  // Available per the case payload (config + the last live answer for it) is
-  // enough to start. Waiting for this page's own probe cost ~10s on every open;
-  // the regeneration is itself the real test, and _autoRegenOnce stops a model
-  // that turns out to fail from being tried again.
-  // A LIVE check only: on config alone an air-gapped box with a saved key counted as
-  // connected, and every new setting "regenerated" into another offline report.
-  if(!(ls && ls.available===true && ls.checked_live===true)) return false;
-  // Written under the settings in use NOW: this model already had its try and
-  // this is what it produced. Only a template from DIFFERENT settings (no key,
-  // another provider...) is worth regenerating. This is what stops a failing
-  // model being retried, in every tab, rather than per-tab memory.
-  if(ls.config_id && info.report_config_id && info.report_config_id===ls.config_id) return false;
-  const m=/\n\n---\n_Deterministic report — ([\s\S]*?)_\n\s*$/.exec(md||'');
-  if(!m) return false;                                          // narrated, or no tag
-  return !/no live narration was requested|AI model was not used/i.test(m[1]);
-}
-const _autoRegenTried=new Set();
-function _autoRegenOnce(info){
-  // Backstop, per saved report: never fire twice for the same report under the
-  // same settings (a double draw, a reload while the stamp is missing on an old
-  // report). Keyed on settings alone it blocked a real case: Codex worked, a
-  // switch to Claude wrote a template, and back on Codex nothing happened
-  // because "Codex was already tried". report_written_at makes each saved
-  // report its own key.
-  const ls=info.llm_status||{};
-  const k='autoRegen:'+info.case_id+':'+(ls.config_id||'')+':'+(info.report_written_at||'');
-  let seen=_autoRegenTried.has(k);
-  try{ seen = seen || sessionStorage.getItem(k)==='1'; sessionStorage.setItem(k,'1'); }catch(e){}
-  _autoRegenTried.add(k);
-  return !seen;
-}
-function maybeAutoRegen(){
-  const info=curInfo;
-  // _fresh: the case data came from the server just now. A remembered view can
-  // show a template the server has already replaced with an AI report.
-  // Any tab: a working model connecting is worth acting on wherever the operator
-  // is. The toast says so; the report refreshes on its own when it is ready.
-  if(!info || !info._fresh) return;
-  if(!shouldAutoRegen(info, window._md||'', info.llm_status)) return;
-  if(!_autoRegenOnce(info)) return;
-  toast('An AI model is now available. Regenerating this report…');
-  regenReport(info.case_id);
-}
 // THE STATUS AREA IS ONE SLOT. It holds exactly one of: the "generating" banner,
 // or the template/air-gap banner, or nothing — never two. It used to be two
 // siblings drawn at different times: the template banner at tab-draw time and a
@@ -1249,7 +1202,6 @@ function pollReportGen(id){
         const was=(curInfo.llm_status||{}).config_id, now=info.llm_status.config_id;
         if(now && now!==was){
           curInfo.llm_status=info.llm_status; curInfo._fresh=true;
-          maybeAutoRegen();
         }
       }
       if(!info.report_generating){
@@ -1431,7 +1383,6 @@ async function _railCfg(){
     fusion_modules:[...document.querySelectorAll('#cf-modules input[data-mod]:checked')].map(c=>c.dataset.mod),
     excluded_hosts:[..._hostExc],            // hosts unchecked = dropped from report/LLM
     masking:{enabled:$('#cf-mask').checked, patterns:$('#cf-maskpat').value.split('\n').map(s=>s.trim()).filter(Boolean)},
-    auto_regen_report:$('#cf-autoregen') ? $('#cf-autoregen').checked : undefined,
     auto_report:$('#cf-autoreport') ? $('#cf-autoreport').checked : undefined
   };
   if(logo) cfg.customer_logo_b64=logo;

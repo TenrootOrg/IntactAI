@@ -428,11 +428,6 @@ def get_case(case_id):
                     # above. It never calls the model and never redraws the view; the
                     # narrative still waits for an explicit Rescan.
                     "auto_fuse": bool(d.get("auto_fuse", True)),
-                    # Regenerate a TEMPLATE report by itself when the operator opens
-                    # this case and an AI model has since become reachable. Default
-                    # ON, absent included. The per-case escape hatch: off restores
-                    # the manual Regenerate button as the only way, with no deploy.
-                    "auto_regen_report": bool(d.get("auto_regen_report", True)),
                     # Re-narrate by itself when new data lands. OFF unless the
                     # operator ticks it: rebuilding the graph is free and happens
                     # anyway, writing the report costs tokens and minutes, so it

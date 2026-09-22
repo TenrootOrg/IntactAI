@@ -189,7 +189,10 @@ document.addEventListener('alpine:init', () => {
                 if (response.ok) {
                     window.currentConfig = this.config;
                     this.showMessage('Agentic settings saved', 'success');
-                    this._refreshCaseAnalysis();
+                    // Deliberately does NOT touch Case Analysis. Reloading it made
+                    // saving a model kick a report generation on every case whose
+                    // report was a template — minutes of model time and real tokens
+                    // for someone who came here to type an API key. Saving saves.
                     // Fire-and-forget catalog refresh for the just-saved
                     // provider so the model dropdown picks up the full
                     // live list (Anthropic / OpenAI / Gemini /v1/models
