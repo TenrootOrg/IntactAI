@@ -4725,7 +4725,7 @@ def case_hosts(case_id) -> list:
     for label in (d.get("excluded_hosts") or []):
         if label and keys.norm_host(label) not in listed:
             out.append({"host": label, "os": os_by.get(str(label).lower()) or "unknown",
-                        "kind": "endpoint", "sources": [], "excluded": True})
+                        "kind": "endpoint", "sources": [], "excluded": True, "hidden": False})
     out.sort(key=lambda h: (h["os"], h["host"].lower()))
     return out
 
