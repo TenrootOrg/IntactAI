@@ -200,6 +200,12 @@
   .zoomcard{flex:1 1 220px;min-width:200px;border:1px solid var(--bd);border-radius:7px;padding:10px 12px;background:var(--bg,#0d1117);border-left:3px solid var(--muted)}
   .zoomcard.sev-critical{border-left-color:#f85149}.zoomcard.sev-high{border-left-color:#db6d28}
   .zoomcard.sev-medium{border-left-color:#d29922}.zoomcard.sev-low{border-left-color:#3fb950}
+  .scopebar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 12px}
+  .scopebar .lbl{font-size:12px;color:var(--muted)}
+  .scopechip{border:1px solid var(--bd);border-radius:999px;padding:5px 12px;font-size:12px;
+             background:var(--bg,#0d1117);color:var(--fg);cursor:pointer}
+  .scopechip:hover{border-color:#58a6ff}
+  .scopechip.on{border-color:#58a6ff;background:rgba(88,166,255,.12);cursor:default;font-weight:600}
   .zt-title{font-weight:600;font-size:13px;margin-bottom:3px}
   .zt-meta{font-size:11px;color:var(--muted)}
   .zt-win{font-size:10px;color:var(--muted);font-family:var(--mono,monospace);margin:4px 0 8px}
@@ -709,6 +715,15 @@ function renderRisk(info){
 // facts about the case; these two are facts about how it is PRICED and what the
 // fusion ontology saves -- the same subject as the model line they now sit
 // under, and configuration rather than a headline.
+// A zoomed-in scope OWNS the time window and the host exclusions below: the zoom
+// set them, not the operator. Without this line the rail reads as if someone had
+// hand-excluded twenty hosts and set a one-week window.
+function scopeRailNote(info){
+  const sc=((info&&info.scopes)||[]).find(s=>s.active);
+  if(!sc || sc.id==='full') return '';
+  return `<div class="cfghint">Scope <b>${esc(sc.label)}</b> is active: the time window and
+    the excluded hosts below come from it. Use the Scope row above the report to go back to the full case.</div>`;
+}
 function renderConfig(info){
   const alt=info.report_altitude||'auto', mk=info.masking||{}, tw=info.time_window||{};
   const opt=(v,l,cur)=>`<option value="${v}" ${cur===v?'selected':''}>${l}</option>`;
@@ -716,6 +731,7 @@ function renderConfig(info){
     <div class="cfgwrap">
       <div class="cfgcol">
         <h4>Scope</h4>
+        ${scopeRailNote(info)}
         <label>Time window — start</label><input id="cf-start" value="${esc(tw.start||'')}" placeholder="pick date + time…"/>
         <label>Time window — end <span style="color:var(--muted)">(empty = up to now)</span></label><input id="cf-end" value="${esc(tw.end||'')}" placeholder="empty = now / open"/>
         <label>Min severity</label>
@@ -965,7 +981,7 @@ function renderReport(info){
     <span id="regenslot">${regenButtonHtml(info)}</span>
     ${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}
     <span style="color:var(--muted);font-size:11px;margin-left:auto">auto-generated on first scan · regenerate to apply Timeline changes</span>
-  </div><div id="zoomcards">${_zoomHtml.id===id?_zoomHtml.html:''}</div><div class="md">${mdToHtml(mdBody)}</div>`;
+  </div>${scopeChipsHtml(info)}<div id="zoomcards">${_zoomHtml.id===id?_zoomHtml.html:''}</div><div class="md">${mdToHtml(mdBody)}</div>`;
   clampEvidence($('#tabc'));
   loadZoomTargets(id);   // macro report -> clickable "Analyze this scope" presets
   // A page reload (or a tab switch back to Analysis) while a generation is
@@ -1011,10 +1027,35 @@ async function applyZoom(id,i){
   setTab('log'); if(typeof logRefresh==='function') logRefresh();
   try{
     await api('/api/cases/'+id+'/zoom',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({window:t.window, host_labels:t.host_labels})});
-    toast('The focused analysis is ready.');
+      body:JSON.stringify({window:t.window, host_labels:t.host_labels,
+                           label:(t.name?('Phase '+t.n+' — '+t.name):t.title)})});
+    toast('The focused analysis is ready. Use the Scope row above the report to go back.');
     setTab('report'); openCase(id);
   }catch(e){ toast('The scope could not be analysed: '+((e&&e.message)||e)); }
+}
+
+// Every scope this case has been analysed at: the full case plus each timeframe
+// zoomed into, each keeping its own report, window, host set and fused graph.
+// Clicking one restores it — no model call, no tokens. Hidden until there is
+// somewhere to go back TO (a case that was never zoomed has one scope, or none).
+function scopeChipsHtml(info){
+  const sc=(info&&info.scopes)||[]; if(sc.length<2) return '';
+  return `<div class="scopebar"><span class="lbl">Scope:</span>`+ sc.map(s=>{
+    const win=((s.window||{}).start||'')+(s.window&&s.window.end?(' → '+s.window.end):'');
+    return s.active
+      ? `<span class="scopechip on" title="${esc(win)}">${esc(s.label)}</span>`
+      : `<button class="scopechip" title="${esc(win)}" onclick="switchScope('${esc(info.case_id)}','${esc(s.id)}')">${esc(s.label)}</button>`;
+  }).join('')+`</div>`;
+}
+async function switchScope(id,sid){
+  toast('Switching scope. Progress is shown in the Log.');
+  setTab('log'); if(typeof logRefresh==='function') logRefresh();
+  try{
+    await api('/api/cases/'+id+'/scope',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id:sid})});
+    toast('Scope restored, with the report it was analysed with.');
+    setTab('report'); openCase(id);
+  }catch(e){ toast('The scope could not be restored: '+((e&&e.message)||e)); }
 }
 
 // A real case is several model calls (one per phase, then a synthesis) over the

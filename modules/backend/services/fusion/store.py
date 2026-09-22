@@ -2350,12 +2350,19 @@ def _read_graph_sidecar(case_id):
 
 
 def _delete_graph_sidecar(case_id) -> None:
-    try:
-        os.remove(_graph_path(case_id))
-    except FileNotFoundError:
-        pass
-    except Exception:
-        pass
+    """The case's fused graph AND every per-scope cache of it (`<case>__<scope>.json`,
+    see the scope section below). Both callers that delete case data — delete_case()
+    and the maintenance purge — go through here, so the scope caches can never be
+    left behind as orphan files; the purge's size estimate already scans the whole
+    directory, so they are counted as reclaimable too."""
+    import glob as _glob
+    for p in [_graph_path(case_id), *_glob.glob(_scope_path(case_id, "*"))]:
+        try:
+            os.remove(p)
+        except FileNotFoundError:
+            pass
+        except Exception:                                # noqa: BLE001
+            pass
 
 
 def _counts_from_graph_dict(fg) -> dict:
@@ -2434,6 +2441,224 @@ def _filter_graph_by_hosts(g, excluded_labels) -> FusionGraph:
             gv.relationships.append(r)
     gv.rebuild_indexes()
     return gv
+
+
+# ── Report scopes: one case, several saved reports ───────────────────────────
+# A long case is split into phases (render.zoom_targets) and "Analyze this scope"
+# narrows the case to one of them. That narrowing used to be a ONE-WAY DOOR: the
+# zoom wrote the phase window + "every other host is excluded" onto the case and
+# re-fused, and since a case has exactly ONE report slot (details.report_md), the
+# macro narrative was overwritten with no copy anywhere. The operator could not
+# get back (QA TASK-12679) — the zoom cards are gone at focused altitude, so not
+# even a breadcrumb was left.
+#
+# A SCOPE is that whole state: {time window, excluded hosts, report, fused graph}.
+# The ACTIVE scope stays exactly where it lives today (case details + the
+# canonical sidecar), so load_graph/view_graph/the report/chat/Risk/Timeline are
+# untouched; switching is a save-then-restore of those same slots. The graph is
+# cached per scope beside the canonical one, so going back and forth costs a file
+# copy instead of a re-fuse — and when the cache no longer matches the case
+# (new runs, a verdict, changed modules) it is ignored and the case is re-fused.
+MAX_SCOPES = 8                 # zoom_targets caps at 6 phases + "full"
+FULL_SCOPE_ID = "full"
+FULL_SCOPE_LABEL = "Full case"
+
+
+def _scope_path(case_id, scope_id):
+    return os.path.join(_FUSION_GRAPH_DIR, f"{case_id}__{scope_id}.json")
+
+
+def scope_id_for_window(window) -> str:
+    """Stable id from the window itself, so re-entering the same timeframe
+    overwrites that scope instead of piling up a duplicate."""
+    w = window or {}
+    digits = "".join(ch for ch in f"{w.get('start') or ''}{w.get('end') or ''}" if ch.isdigit())
+    return f"tf_{digits}" if digits else FULL_SCOPE_ID
+
+
+def _scopes(d) -> list:
+    return [s for s in (d.get("report_scopes") or []) if isinstance(s, dict) and s.get("id")]
+
+
+def _active_scope_id(d) -> str:
+    return d.get("active_scope") or FULL_SCOPE_ID
+
+
+def _scope_sig(d, entry, baseline=None) -> str:
+    """_graph_filter_signature for a case AS IT WOULD BE under this scope: the
+    scope's own window + host exclusion, everything else (severity, modules,
+    dispositions, engine version) from the case as it is now. That is what makes
+    a cached graph verifiable — a disposition or an engine bump invalidates every
+    scope's cache, a different scope's window does not."""
+    probe = dict(d)
+    probe["time_window"] = entry.get("window") or None
+    probe["excluded_hosts"] = entry.get("excluded_hosts") or []
+    return _graph_filter_signature(probe, baseline)
+
+
+def _copy_graph_file(src, dst) -> bool:
+    """Atomic copy between sidecar paths (tmp + os.replace, like _write_graph_sidecar)."""
+    import shutil
+    try:
+        if not os.path.exists(src):
+            return False
+        os.makedirs(_FUSION_GRAPH_DIR, exist_ok=True)
+        tmp = dst + ".tmp"
+        shutil.copyfile(src, tmp)
+        os.replace(tmp, dst)
+        return True
+    except Exception as e:                               # noqa: BLE001 — a cache, never fatal
+        print(f"[FUSION] scope graph copy failed ({src} -> {dst}): {e}", flush=True)
+        return False
+
+
+def _scope_snapshot_fields(d) -> dict:
+    """The live case state a scope owns."""
+    return {"window": d.get("time_window") or None,
+            "excluded_hosts": list(d.get("excluded_hosts") or []),
+            "report_md": d.get("report_md") or "",
+            "report_config_id": d.get("report_config_id"),
+            "report_written_at": d.get("report_written_at"),
+            "report_dirty": bool(d.get("report_dirty")),
+            "report_run_ids": list(d.get("report_run_ids") or []),
+            "fused_run_ids": list(d.get("fused_run_ids") or []),
+            "used_at": _now_iso()}
+
+
+def _evict_scopes(case_id, scopes, keep_ids) -> list:
+    """Bound the disk: drop the least recently used scopes above MAX_SCOPES and
+    delete their cached graphs. Never evicts the active scope or "full"."""
+    if len(scopes) <= MAX_SCOPES:
+        return scopes
+    protected = set(keep_ids) | {FULL_SCOPE_ID}
+    droppable = sorted((s for s in scopes if s["id"] not in protected),
+                       key=lambda s: s.get("used_at") or "")
+    drop = {s["id"] for s in droppable[:len(scopes) - MAX_SCOPES]}
+    for sid in drop:
+        try:
+            os.remove(_scope_path(case_id, sid))
+        except FileNotFoundError:
+            pass
+        except Exception:                                # noqa: BLE001
+            pass
+    return [s for s in scopes if s["id"] not in drop]
+
+
+def _snapshot_active_scope(case_id, d, *, label=None) -> None:
+    """Save the live state into the ACTIVE scope's entry + cache its fused graph.
+
+    Runs before every switch (and before the first zoom, which is what creates
+    the "full" entry), so a scope always carries the newest report and graph the
+    operator produced inside it — including one a Refusion just rebuilt, which is
+    how a Refusion "overwrites the same timeframe inside the case"."""
+    sid = _active_scope_id(d)
+    entry = {"id": sid, "label": label or (FULL_SCOPE_LABEL if sid == FULL_SCOPE_ID else None),
+             **_scope_snapshot_fields(d)}
+    baseline = None if d.get("is_baseline") else load_baseline(
+        _env_key_from_members(_members_for_case(case_id, d)))
+    entry["graph_filter_sig"] = _scope_sig(d, entry, baseline)
+    entry["cached"] = _copy_graph_file(_graph_path(case_id), _scope_path(case_id, sid))
+    scopes = _scopes(d)
+    prev = next((s for s in scopes if s["id"] == sid), None)
+    if prev:
+        entry["label"] = entry["label"] or prev.get("label")
+        scopes = [entry if s["id"] == sid else s for s in scopes]
+    else:
+        scopes = scopes + [entry]
+    _merge_case_details(case_id, {"report_scopes": _evict_scopes(case_id, scopes, {sid})})
+
+
+def enter_scope(case_id, label, window, host_labels) -> str:
+    """Zoom: remember where we are, then make the target window the active scope.
+    The caller re-fuses into it (the zoom route's existing rescan). Returns the id."""
+    d = get_case(case_id) or {}
+    _snapshot_active_scope(case_id, d)
+    d = get_case(case_id) or {}                          # re-read: scopes just changed
+    sid = scope_id_for_window(window)
+    scopes = _scopes(d)
+    entry = next((s for s in scopes if s["id"] == sid), None)
+    if entry:
+        entry["label"] = label or entry.get("label")
+        entry["window"] = window
+        entry["used_at"] = _now_iso()
+    else:
+        scopes.append({"id": sid, "label": label, "window": window,
+                       "excluded_hosts": [], "report_md": "", "cached": False,
+                       "used_at": _now_iso()})
+    _merge_case_details(case_id, {"report_scopes": _evict_scopes(case_id, scopes, {sid}),
+                                  "active_scope": sid})
+    return sid
+
+
+def switch_scope(case_id, scope_id) -> dict:
+    """Go to a saved scope (usually back to "Full case"): restore its window, host
+    set and report, and its fused graph from cache when the cache still matches
+    the case. Never calls the model — the saved report is reused verbatim."""
+    d = get_case(case_id)
+    if not d:
+        raise KeyError("case not found")
+    if report_generation_active(d):
+        # A report in flight would be written into whichever scope is active when
+        # it lands. Refuse rather than misfile a narrative that cost real tokens.
+        raise ReportGenerationBusy("a report is being generated for this case")
+    cur = _active_scope_id(d)
+    target = next((s for s in _scopes(d) if s["id"] == scope_id), None)
+    if not target:
+        raise KeyError(f"unknown scope {scope_id}")
+    if scope_id == cur:
+        return {"status": "unchanged", "scope": scope_id}
+    _snapshot_active_scope(case_id, d)
+    label = target.get("label") or scope_id
+    patch = {"active_scope": scope_id,
+             "time_window": target.get("window") or d.get("time_window"),
+             "excluded_hosts": list(target.get("excluded_hosts") or []),
+             "report_md": target.get("report_md") or "",
+             "report_config_id": target.get("report_config_id"),
+             "report_written_at": target.get("report_written_at"),
+             "report_dirty": bool(target.get("report_dirty")),
+             "report_run_ids": list(target.get("report_run_ids") or [])}
+    _merge_case_details(case_id, patch)
+    d = get_case(case_id) or {}
+    baseline = None if d.get("is_baseline") else load_baseline(
+        _env_key_from_members(_members_for_case(case_id, d)))
+    fresh = (target.get("cached")
+             and target.get("graph_filter_sig") == _scope_sig(d, target, baseline)
+             and set(target.get("fused_run_ids") or []) == set(d.get("fused_run_ids") or [])
+             and not stale_member_runs(case_id, d)
+             and _copy_graph_file(_scope_path(case_id, scope_id), _graph_path(case_id)))
+    if fresh:
+        fg = _read_graph_sidecar(case_id) or {}
+        _merge_case_details(case_id, {"graph_counts": _counts_from_graph_dict(fg),
+                                      "fused_settings_sig": _settings_sig(d),
+                                      "graph_filter_sig": target.get("graph_filter_sig"),
+                                      "fused_run_ids": list(target.get("fused_run_ids") or []),
+                                      "fused_at": _now_iso()})
+        log_case_event(case_id, f"Scope · switched to {label}", "success",
+                       "restored from this scope's saved report and cached graph — "
+                       "no re-fusion, no model call")
+        return {"status": "switched", "scope": scope_id, "refused": False}
+    log_case_event(case_id, f"Scope · switched to {label}", "info",
+                   "the saved graph for this scope is out of date (the case changed "
+                   "since) — rebuilding it from the evidence; the saved report is kept")
+    # force_report=False: the restored report is reused verbatim, so the rebuild
+    # cannot overwrite it with a template (see _fuse_case_locked's reuse branch).
+    fuse_case(case_id, force_report=False, trigger=TRIGGER_MANUAL_REFUSION)
+    d = get_case(case_id) or {}
+    _snapshot_active_scope(case_id, d, label=label)      # cache what we just built
+    return {"status": "switched", "scope": scope_id, "refused": True}
+
+
+def scopes_for_payload(d) -> list:
+    """Ids + labels for the chips row. Never the stored markdown."""
+    active = _active_scope_id(d)
+    return [{"id": s["id"],
+             "label": s.get("label") or (FULL_SCOPE_LABEL if s["id"] == FULL_SCOPE_ID else s["id"]),
+             "window": s.get("window") or {},
+             "report_written_at": s.get("report_written_at"),
+             "has_report": bool(s.get("report_md")),
+             "cached": bool(s.get("cached")),
+             "active": s["id"] == active}
+            for s in _scopes(d)]
 
 
 def _log_checklist_outcome(case_id, outcome, items):
