@@ -42,6 +42,8 @@ function run({ railMounted = true, rescanReply = {} } = {}) {
     toast: (m) => calls.toasts.push(m),
     openCase: (id) => calls.openCase.push(id),
     _hostExc: new Set(),        // hosts unticked in the rail; empty for this test
+    _caseExc: new Set(),        // hosts excluded case-wide by the old control
+    _hostList: [],              // host picker not loaded yet
     _noHostSelected: () => false,   // at least one host ticked (the guard is tested in the page)
     curInfo: { case_id: 'case_1' },   // what every tab redraws from
     console,

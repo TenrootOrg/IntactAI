@@ -764,7 +764,7 @@ function renderConfig(info){
         <div class="cfghint">Only when the new data actually changes this case — a collection filtered out by the time window, the severity floor or the host set would produce the same report.</div>        <div style="font-size:11px;color:var(--muted);margin-top:8px">Chat always sends the full case graph; the report always shows the real command line, path &amp; hash per high finding (masked if masking is on).</div>
       </div>
       <div class="cfgcol">
-        <h4>Hosts (include)</h4>
+        <h4>Hosts (include) <span style="text-transform:none;font-weight:normal;color:var(--muted)">— this timeframe only</span></h4>
         <label>Filter by name</label>
         <input id="cf-hostfilter" placeholder="type to filter…" oninput="renderHosts()"/>
         <div class="row" style="gap:6px;margin:5px 0">
@@ -978,8 +978,8 @@ function scopeBarHtml(info){
   // The label IS the timeframe (the backend names every scope by its dates), so
   // nothing is appended to it but whether it has been written up yet.
   // "[N hosts]" is LIVE — the hosts with evidence in that timeframe of the case as
-  // it is now. Each scope hides its own hosts ("Hosts in this scope"), which moves
-  // only its count; Configuration's exclusion is case-wide and moves every one.
+  // it is now. Configuration's host list belongs to the timeframe on screen, so
+  // unticking a host moves only that timeframe's count.
   const hosts=n=>(typeof n==='number')?` [${n} host${n===1?'':'s'}]`:'';
   const opts=sc.map(s=>
     `<option value="${esc(s.id)}" ${s.active?'selected':''}>${esc(s.label)}${hosts(s.hosts)}${s.has_report?'':' · no report yet'}</option>`
@@ -988,7 +988,6 @@ function scopeBarHtml(info){
   return `<div class="scopebar">
       <span class="lbl">Scope</span>
       <select onchange="switchScope('${esc(info.case_id)}',this.value)">${opts}</select>
-      <button class="ghost" onclick="scopeHostsToggle('${esc(info.case_id)}')" title="Hide hosts in this scope only. Other scopes and the case's evidence are not changed.">Hosts in this scope${asList(act.hidden_hosts).length?' ('+asList(act.hidden_hosts).length+' hidden)':''}</button>
       <button class="ghost" onclick="scopeNewToggle()">+ New scope</button>
       ${act.id&&act.id!=='full'?`<button class="ghost" onclick="scopeDelete('${esc(info.case_id)}','${esc(act.id)}')" title="Forget this window and the report written in it. No evidence is deleted.">Delete scope</button>`:''}
     </div>` + (window._scopeNewOpen?`<div class="scopenew">
@@ -997,36 +996,7 @@ function scopeBarHtml(info){
       <button onclick="scopeCreate('${esc(info.case_id)}')">Create</button>
       <button class="ghost" onclick="scopeNewToggle()">Cancel</button>
       <span class="hint">A scope is a way of reading this case, not a new copy of it: the evidence, the verdicts and the identities stay the case's, and each scope keeps its own report and chat.</span>
-    </div>`:'') + (window._scopeHostsOpen?`<div class="scopenew">
-      <div id="sc-hosts" style="flex-basis:100%;max-height:200px;overflow:auto">loading…</div>
-      <button onclick="scopeHostsSave('${esc(info.case_id)}')">Save</button>
-      <button class="ghost" onclick="scopeHostsToggle('${esc(info.case_id)}')">Cancel</button>
-      <span class="hint">Unticked hosts are hidden in this scope only — its Timeline, Risk, Identities, chat and report. Nothing is re-fused and other scopes are not changed. Hosts excluded in Configuration are out of the whole case.</span>
     </div>`:'');
-}
-// Per-scope host list. Loaded when opened; the ticks are local until Save.
-let _scHidden=new Set();
-function scopeHostsToggle(id){
-  window._scopeHostsOpen=!window._scopeHostsOpen;
-  if(curInfo) render(curInfo, window._md||'', curInfo.counts||{});
-  if(!window._scopeHostsOpen) return;
-  api('/api/cases/'+id+'/hosts').then(d=>{
-    const hs=asList(d.hosts); _scHidden=new Set(hs.filter(h=>h.hidden).map(h=>h.host));
-    const el=$('#sc-hosts'); if(!el) return;
-    el.innerHTML=hs.length?hs.map(h=>h.excluded
-      ?`<label class="hostrow" style="color:var(--muted)"><input type="checkbox" disabled style="width:auto"/> <span class="t">${esc(h.host)}</span> excluded from the case in Configuration</label>`
-      :`<label class="hostrow"><input type="checkbox" ${_scHidden.has(h.host)?'':'checked'} style="width:auto" onchange="this.checked?_scHidden.delete('${jsa(h.host)}'):_scHidden.add('${jsa(h.host)}')"/> <span class="t">${esc(h.host)}</span></label>`).join('')
-      :'<i style="color:var(--muted)">no hosts in the fused data yet</i>';
-  }).catch(e=>toast('Hosts could not be loaded: '+((e&&e.message)||e)));
-}
-async function scopeHostsSave(id){
-  try{
-    await api('/api/cases/'+id+'/scope/hosts',{method:'PUT',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({hidden:[..._scHidden]})});
-    window._scopeHostsOpen=false;
-    await openCase(id);
-    regenReport(id);          // this scope's report, for its new host list
-  }catch(e){ toast('The hosts could not be saved: '+((e&&e.message)||e)); }
 }
 // The dates under the case name belong to whatever is selected, or the case.
 function scopeSinceHtml(info, tw){
@@ -1036,7 +1006,6 @@ function scopeSinceHtml(info, tw){
 }
 function scopeNewToggle(){ window._scopeNewOpen=!window._scopeNewOpen; if(curInfo) render(curInfo, window._md||'', curInfo.counts||{}); }
 async function switchScope(id,sid){
-  window._scopeHostsOpen=false;     // the list being edited belonged to the scope we are leaving
   try{
     await api('/api/cases/'+id+'/scope',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({id:sid})});
@@ -1349,12 +1318,16 @@ function _fileToDataUrl(f){return new Promise(res=>{if(!f)return res(null);const
 // Host identities come from the fused graph (deduped endpoints + cloud accounts).
 // A checked box = INCLUDED; unchecking adds the host to the excluded set, which the
 // backend drops from the report/LLM (token saving) on Save.
-let _hostList=[], _hostExc=new Set();
+// _hostExc = unticked here. Unticking hides a host in the TIMEFRAME ON SCREEN only
+// (scope_hidden_hosts). _caseExc = hosts excluded from the whole case by the old
+// case-wide control; ticking one back removes it from that list.
+let _hostList=[], _hostExc=new Set(), _caseExc=new Set();
 const _GRP_ORDER=['windows','linux','darwin','macos','unknown','aws','azure','cloud'];
 function loadHosts(id){
   $('#cf-hosts').innerHTML='loading…';
   api('/api/cases/'+id+'/hosts').then(d=>{_hostList=d.hosts||[];
-    _hostExc=new Set(_hostList.filter(h=>h.excluded).map(h=>h.host));
+    _caseExc=new Set(_hostList.filter(h=>h.excluded).map(h=>h.host));
+    _hostExc=new Set(_hostList.filter(h=>h.excluded||h.hidden).map(h=>h.host));
     renderHosts();
   });
 }
@@ -1425,10 +1398,13 @@ async function _railCfg(){
     chat_send_full_context:true,   // LOCKED on (backend enforces regardless)
     report_detail:'explicit',       // LOCKED to explicit (backend enforces regardless)
     fusion_modules:[...document.querySelectorAll('#cf-modules input[data-mod]:checked')].map(c=>c.dataset.mod),
-    excluded_hosts:[..._hostExc],            // hosts unchecked = dropped from report/LLM
+    excluded_hosts:[..._caseExc].filter(h=>_hostExc.has(h)),        // legacy case-wide; only ever shrinks
+    scope_hidden_hosts:[..._hostExc].filter(h=>!_caseExc.has(h)),   // this timeframe only
     masking:{enabled:$('#cf-mask').checked, patterns:$('#cf-maskpat').value.split('\n').map(s=>s.trim()).filter(Boolean)},
     auto_report:$('#cf-autoreport') ? $('#cf-autoreport').checked : undefined
   };
+  // Hosts not loaded yet = nothing known to send; an empty list would clear them.
+  if(!_hostList.length){ delete cfg.excluded_hosts; delete cfg.scope_hidden_hosts; }
   if(logo) cfg.customer_logo_b64=logo;
   return cfg;
 }

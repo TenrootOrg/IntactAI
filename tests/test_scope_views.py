@@ -620,6 +620,23 @@ class EachTimeframeHasItsOwnHosts(unittest.TestCase):
         self.assertEqual(["ALCA01"], store.active_scope_hidden_hosts(self.d))
         self.assertNotIn("asset:b", store.view_graph(CASE, self.d).entities)
 
+    def test_configuration_hosts_are_the_timeframe_on_screen(self):
+        """Live: unticking a host in Configuration while reading 2016-09-01 moved
+        the whole case and every other timeframe from 10 hosts to 9."""
+        here = store.create_scope(CASE, None, WIN)
+        store.set_analysis_config(CASE, {"scope_hidden_hosts": ["ALCA01"], "excluded_hosts": []})
+        self.assertEqual(["ALCA01"], store.active_scope_hidden_hosts(self.d))
+        self.assertEqual([], self.d.get("excluded_hosts"), "nothing case-wide")
+        counts = self._hosts()
+        self.assertEqual(1, counts[here])
+        self.assertEqual(2, counts["full"], "the whole case is untouched")
+
+    def test_saving_the_same_list_again_is_not_a_change(self):
+        store.set_scope_hidden_hosts(CASE, ["ALCA01"])
+        with mock.patch.object(store, "log_case_event") as log:
+            store.set_scope_hidden_hosts(CASE, ["ALCA01"])
+        log.assert_not_called()
+
     def test_the_whole_case_can_hide_a_host_too(self):
         store.set_scope_hidden_hosts(CASE, ["ALCA01"])
         self.assertEqual(1, store.scope_counts(CASE, self.d)["hosts"])

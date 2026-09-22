@@ -2751,8 +2751,10 @@ def set_scope_hidden_hosts(case_id, hosts) -> dict:
         raise KeyError("case not found")
     hidden = sorted({str(h).strip() for h in (hosts or []) if str(h).strip()}, key=str.lower)
     sid = _active_scope_id(d)
-    _save_active_scope(case_id, d)                  # makes sure the entry exists (the whole case)
     before = active_scope_hidden_hosts(d)
+    if sorted(before, key=str.lower) == hidden:     # every Save posts it; only a change counts
+        return {"scope": sid, "hidden_hosts": hidden}
+    _save_active_scope(case_id, d)                  # makes sure the entry exists (the whole case)
     _upsert_scope(case_id, {"id": sid, "hidden_hosts": hidden, "report_dirty": True})
     # Both caches are keyed to the fuse, which this does not change.
     _merge_case_details(case_id, {"scope_counts": None, "scope_hosts": None,
@@ -4095,6 +4097,10 @@ def set_analysis_config(case_id, cfg) -> dict:
             log_case_event(case_id, "Configuration save", "error",
                            f"database write failed: {e}")
             raise
+    # Configuration's host list is the SELECTED TIMEFRAME's: unticking a host there
+    # moved every scope's count while the operator was reading one of them.
+    if isinstance(cfg.get("scope_hidden_hosts"), list):
+        set_scope_hidden_hosts(case_id, cfg["scope_hidden_hosts"])
     return {k: ("<logo>" if k == "customer_logo_b64" else v) for k, v in patch.items()}
 
 

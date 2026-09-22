@@ -148,8 +148,8 @@ const fail = (w, d) => { console.log('  FAIL ' + w + (d ? '\n       ' + d : ''))
 
 const build = (lookup, all) => {
   const doc = { querySelector: lookup, querySelectorAll: all || (() => []) };
-  return new Function('$','_fileToDataUrl','_hostExc','document',
-    src + '; return _railCfg;')(lookup, async () => null, new Set(), doc);
+  return new Function('$','_fileToDataUrl','_hostExc','_caseExc','_hostList','document',
+    src + '; return _railCfg;')(lookup, async () => null, new Set(), new Set(), [], doc);
 };
 
 (async () => {
