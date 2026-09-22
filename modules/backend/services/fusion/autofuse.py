@@ -34,10 +34,12 @@ WHAT IT STILL WILL NOT DO
     period collapses a whole multi-host hunt into a single rebuild.
   - It never redraws anyone's screen. It updates the stored graph and report; the
     case view picks the new report up on its own.
-  - It never runs on a case whose operator turned it off, and the narration half
-    is OFF by default (`auto_report`): landing data rebuilds the graph, which is
-    free, and the report waits for the operator to ask for it. Operator's call:
-    "we shouldn't make immediately report for each case, only if they selected".
+  - It never runs on a case whose operator turned it off. The narration half is
+    ON by default (`auto_report`) but narrowly: the SCOPE THE OPERATOR IS IN, and
+    only when the new data actually falls inside that scope's time window. Data
+    outside it cannot change what the scope's report describes, so re-narrating
+    would buy the identical text; the other saved scopes keep their own reports
+    until someone opens them. Untick it per case to spend nothing automatically.
 
 WHAT IT MUST NOT DROP
 The previous background path wrapped its fuse in `except: pass`, so a fuse that
@@ -105,20 +107,32 @@ def _enabled(store, case_id, d):
 
 
 def _report_enabled(d):
-    """Should the automatic fuse also re-narrate the report? By default NO.
+    """Should the automatic fuse also re-narrate the report? By default YES — for
+    the scope on screen, and only when that scope's data actually moved.
 
     This half SPENDS MONEY when a model is configured, which the graph half never
-    does. It used to be on for every case, so a collection landing anywhere bought
-    a full report — two to three minutes of model time — that nobody had asked
-    for, and with report scopes it would have bought one for whichever scope
-    happened to be active. The operator's rule is "only if they selected".
-
-    So: landing data rebuilds the GRAPH (free, automatic, every case) and the
-    report waits. The case says it is behind the data and the Regenerate button
-    is right there. `auto_report: true` per case brings the old behaviour back —
-    the tick in Configuration — for anyone who wants the report never to lag.
+    does, so the question is not "always or never" but WHICH REPORT. A scope is a
+    time window: a collection whose events fall outside it cannot change what that
+    scope's report describes, and re-narrating it would buy an identical report.
+    So the rule is the selected scope + a real change (_scope_data_changed), never
+    a sweep of every saved scope. Untick it per case to spend nothing at all.
     """
-    return bool(d.get("auto_report"))
+    return d.get("auto_report") is not False
+
+
+def _scope_data_changed(before, after) -> bool:
+    """Did the fuse actually change what the ACTIVE scope holds?
+
+    Compared on the scope's own counts, which is exactly the question: the fuse
+    rebuilt the graph under the scope's window and host set, so if findings,
+    entities and links all came back the same, the new data landed outside this
+    scope and its report would be re-narrated into the identical text. Unknown
+    (a legacy case with no counts) reads as CHANGED — never skip on ignorance.
+    """
+    if not before or not after:
+        return True
+    keys = ("findings", "entities", "links", "cross_host", "hosts")
+    return any(before.get(k) != after.get(k) for k in keys)
 
 
 def cancel(case_id) -> bool:
@@ -303,6 +317,9 @@ def _fire(case_id, reason="new data", attempt=0) -> None:
         # with counts), so anything added around it duplicates. The gap this
         # feature was missing is EARLIER — between pressing Fetch and the fuse
         # being armed — and it is filled by the recollect worker, not here.
+        # What the scope on screen held BEFORE the fuse. A scope is a time window,
+        # so data landing outside it cannot change it — see _scope_data_changed.
+        _before = (store.get_case(case_id) or {}).get("graph_counts") or {}
         try:
             store.fuse_case(case_id,
                             trigger=store.TRIGGER_AUTOMATIC_RUN_LANDED,
@@ -311,7 +328,7 @@ def _fire(case_id, reason="new data", attempt=0) -> None:
             # The graph is current. Bring the words that describe it up to date
             # too — SEPARATELY, so a narration that fails or is refused never
             # rolls back or re-marks the fuse that just succeeded.
-            _regenerate_report(case_id, d)
+            _regenerate_report(case_id, d, before_counts=_before)
         except store.FusionBusy:
             # Nothing was attempted, so this is not an incomplete fuse.
             store._merge_case_details(case_id, {"auto_fuse_incomplete": False})
@@ -339,7 +356,7 @@ def _fire(case_id, reason="new data", attempt=0) -> None:
             pass
 
 
-def _regenerate_report(case_id, d=None, attempt=0) -> None:
+def _regenerate_report(case_id, d=None, attempt=0, before_counts=None) -> None:
     """Re-narrate a case whose graph just changed under it.
 
     Narrates with the model when one is configured and with the deterministic
@@ -386,6 +403,18 @@ def _regenerate_report(case_id, d=None, attempt=0) -> None:
                 "came before it. Click Regenerate report to bring it up to date "
                 "(this one spends tokens), or tick the automatic option in "
                 "Configuration.")
+            return
+        if before_counts is not None and not _scope_data_changed(
+                before_counts, (store.get_case(case_id) or {}).get("graph_counts") or {}):
+            # The data landed outside the scope on screen. Re-narrating it would
+            # spend a full model run to produce the same words.
+            _scope = (d.get("active_scope") or "full")
+            store.log_case_event(
+                case_id, "Report · already current", "info",
+                f"the new data is outside this scope"
+                + (f" ({_scope})" if _scope != "full" else " (the full case)")
+                + " — nothing it describes changed, so no report was generated. "
+                  "Other saved scopes keep their own reports; open one to refresh it.")
             return
         use_llm = False
         try:

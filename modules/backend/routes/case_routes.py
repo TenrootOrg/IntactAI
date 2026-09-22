@@ -430,7 +430,7 @@ def get_case(case_id):
                     # operator ticks it: rebuilding the graph is free and happens
                     # anyway, writing the report costs tokens and minutes, so it
                     # waits to be asked for. The case says it is behind meanwhile.
-                    "auto_report": bool(d.get("auto_report")),
+                    "auto_report": d.get("auto_report") is not False,
                     # Exactly which runs the STORED graph was built from. The case
                     # view snapshots this at render time and the staleness poll
                     # compares against it, which is how "new runs arrived" is told

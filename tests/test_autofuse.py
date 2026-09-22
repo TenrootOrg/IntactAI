@@ -327,17 +327,11 @@ class TestTheFuseItselfNeverCallsTheModel(_Base):
 
 
 class TestItRenarratesAfterTheFuse(_Base):
-    """What the narration half does ON A CASE THAT ASKED FOR IT (`auto_report`).
+    """What the narration half does: the words must follow the numbers, or the
+    counts move while the Executive Summary still describes the previous
+    collection. On by default, for the ACTIVE SCOPE only and only when that
+    scope's data actually moved (_scope_data_changed); untickable per case."""
 
-    It is off by default — writing a report costs a full model run, so it waits
-    for the operator (TestTheReportWaitsForTheOperator below). Ticked, the words
-    must follow the numbers: the counts moving while the Executive Summary
-    describes the previous collection is the failure this half exists to prevent.
-    """
-
-    def setUp(self):
-        super().setUp()
-        self.store.case = {"name": "QA case", "auto_report": True}
 
     def test_a_fuse_is_followed_by_a_report(self):
         autofuse.schedule("case_1")
@@ -404,26 +398,32 @@ class TestItRenarratesAfterTheFuse(_Base):
         self.settle()
         self.assertEqual(self.store.reports, [])
 
-    def test_landing_data_refreshes_the_graph_and_leaves_the_report_alone(self):
-        # The default, and the operator's rule: rebuilding the graph is free and
-        # automatic; writing a report costs a full model run and waits to be asked
-        # for. The case says it is behind instead.
-        self.store.case = {"name": "QA case"}
+    def test_narration_can_be_turned_off_per_case(self):
+        # The escape hatch: keep the graph current, spend nothing.
+        self.store.case = {"name": "QA case", "auto_report": False}
         autofuse.schedule("case_1")
         self.settle()
         self.assertEqual(len(self.store.fuses), 1, "the graph half must still run")
-        self.assertEqual(self.store.reports, [], "nothing may be narrated by itself")
+        self.assertEqual(self.store.reports, [], "and nothing may be narrated")
 
-    def test_narration_can_be_turned_on_per_case(self):
-        self.store.case = {"name": "QA case", "auto_report": True}
-        autofuse.schedule("case_1")
-        self.settle()
-        self.assertEqual(len(self.store.reports), 1)
-
-    def test_absent_auto_report_reads_as_off(self):
-        self.assertFalse(autofuse._report_enabled({}))
+    def test_absent_auto_report_reads_as_on(self):
+        self.assertTrue(autofuse._report_enabled({}))
         self.assertTrue(autofuse._report_enabled({"auto_report": True}))
         self.assertFalse(autofuse._report_enabled({"auto_report": False}))
+
+    def test_data_outside_the_active_scope_is_not_re_narrated(self):
+        """A scope is a TIME WINDOW. A collection whose events fall outside it
+        cannot change what that scope's report describes, so re-narrating it would
+        buy the identical text for a full model run."""
+        same = {"findings": 25, "entities": 243, "links": 104, "hosts": 3, "cross_host": 1}
+        self.assertFalse(autofuse._scope_data_changed(same, dict(same)))
+        self.assertTrue(autofuse._scope_data_changed(same, dict(same, findings=26)))
+        self.assertTrue(autofuse._scope_data_changed(same, dict(same, hosts=4)))
+
+    def test_an_unknown_before_or_after_counts_as_changed(self):
+        """Never skip a report on ignorance — a legacy case has no counts."""
+        self.assertTrue(autofuse._scope_data_changed({}, {"findings": 1}))
+        self.assertTrue(autofuse._scope_data_changed({"findings": 1}, {}))
 
     def test_a_report_failure_does_not_undo_the_fuse(self):
         # The crash-loop flag is the fuse's, and it was cleared before this step.
@@ -451,12 +451,9 @@ class TestABusyReportIsRetried(_Base):
     The in-flight report was started from the PREVIOUS graph, so it will finish
     describing data the case has already moved past. Dropping the second request
     leaves exactly the stale report this feature exists to prevent. All of this
-    is the ticked-on path (`auto_report`), which is the only one that narrates.
+    is the narration path, which a case can switch off entirely (`auto_report`).
     """
 
-    def setUp(self):
-        super().setUp()
-        self.store.case = {"name": "QA case", "auto_report": True}
 
     def test_a_busy_report_is_retried(self):
         self.store.report_busy_times = 1
