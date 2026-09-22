@@ -313,11 +313,8 @@ def _delete_runs_preserve_cases(c, run_id, include_system=False):
         if not isinstance(d, dict):
             continue
         changed = False
-        # report_scopes/active_scope carry a FULL SAVED REPORT each, built from the
-        # evidence this purge is deleting — one click on a scope chip would restore
-        # one verbatim, which is exactly what stripping report_md exists to prevent.
         for k in ("fusion_graph", "graph_counts", "fused_run_ids", "report_md",
-                  "report_html", "stale_run_ids", "report_scopes", "active_scope"):
+                  "report_html", "stale_run_ids"):
             if k in d:
                 d.pop(k, None)
                 changed = True

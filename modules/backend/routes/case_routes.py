@@ -448,11 +448,6 @@ def get_case(case_id):
                     # estimated USD cost of one Rescan (LLM) with the configured model.
                     "cost_estimate": store.estimate_rescan_cost(d),
                     "fusion_modules": store.normalize_modules(d.get("fusion_modules")),
-                    # Saved report scopes (the macro case + every phase zoomed into)
-                    # and which one is on screen. Ids + labels only — the stored
-                    # markdown never rides in this payload.
-                    "scopes": store.scopes_for_payload(d),
-                    "active_scope": store._active_scope_id(d),
                     "modules_catalog": store.fusion_modules_catalog(),
                     # Staleness split: data (new runs not in the graph) drives the
                     # Refusion hint; report (new runs not in the narrative) drives
@@ -580,34 +575,9 @@ def apply_zoom(case_id):
     excluded = sorted(all_labels - keep)              # keep ONLY the target's hosts
     cfg = {"time_window": {"start": win["start"], "end": win["end"]},
            "excluded_hosts": excluded}
-    # Save where we are FIRST (report + window + hosts + the fused graph) and make
-    # the target a named scope, so the operator can come back to the full case —
-    # this used to be a one-way door that overwrote the macro report (TASK-12679).
-    sid = store.enter_scope(case_id, body.get("label") or None, cfg["time_window"])
     res = store.rescan(case_id, cfg, trigger=store.TRIGGER_MANUAL_REFUSION)
-    return jsonify({"case_id": case_id, "status": "zoomed", "scope": sid,
+    return jsonify({"case_id": case_id, "status": "zoomed",
                     "scoped_to": sorted(keep), "window": cfg["time_window"], **res})
-
-
-@case_bp.route("/api/cases/<case_id>/scope", methods=["POST"])
-def switch_case_scope(case_id):
-    """Switch the case to one of its saved scopes — normally back to "Full case"
-    after a zoom. Restores that scope's window, host set and report, and its fused
-    graph from cache when the cache still matches the case. Deterministic: no LLM,
-    no tokens. Body: {id}."""
-    body = request.get_json(silent=True) or {}
-    sid = (body.get("id") or "").strip()
-    if not sid:
-        return jsonify({"error": "scope id required"}), 400
-    try:
-        return jsonify({"case_id": case_id, **store.switch_scope(case_id, sid)})
-    except KeyError as e:
-        return jsonify({"error": str(e)}), 404
-    except store.ReportGenerationBusy:
-        return jsonify({"error": "a report is being generated for this case — "
-                                 "wait for it to finish", "busy": True}), 409
-    # FusionBusy is NOT caught here on purpose: the blueprint's errorhandler already
-    # answers it with the 409 every route must agree on (tests/test_case_fuse_races).
 
 
 @case_bp.route("/api/cases/<case_id>/investigate", methods=["POST"])

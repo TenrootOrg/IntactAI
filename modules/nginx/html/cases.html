@@ -200,12 +200,6 @@
   .zoomcard{flex:1 1 220px;min-width:200px;border:1px solid var(--bd);border-radius:7px;padding:10px 12px;background:var(--bg,#0d1117);border-left:3px solid var(--muted)}
   .zoomcard.sev-critical{border-left-color:#f85149}.zoomcard.sev-high{border-left-color:#db6d28}
   .zoomcard.sev-medium{border-left-color:#d29922}.zoomcard.sev-low{border-left-color:#3fb950}
-  .scopebar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 12px}
-  .scopebar .lbl{font-size:12px;color:var(--muted)}
-  .scopechip{border:1px solid var(--bd);border-radius:999px;padding:5px 12px;font-size:12px;
-             background:var(--bg,#0d1117);color:var(--fg);cursor:pointer}
-  .scopechip:hover{border-color:#58a6ff}
-  .scopechip.on{border-color:#58a6ff;background:rgba(88,166,255,.12);cursor:default;font-weight:600}
   .zt-title{font-weight:600;font-size:13px;margin-bottom:3px}
   .zt-meta{font-size:11px;color:var(--muted)}
   .zt-win{font-size:10px;color:var(--muted);font-family:var(--mono,monospace);margin:4px 0 8px}
@@ -285,6 +279,11 @@ function toast(m,ms){const t=$('#toast');if(!t)return;t.textContent=m;t.style.di
   window._toastT=setTimeout(()=>{t.classList.remove('show');     // fade out
     setTimeout(()=>{if(!t.classList.contains('show'))t.style.display='none';},400);},ms||2800);}
 function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+// A payload field that should be a list but is not (missing, null, a string, a
+// number) must never take a whole tab down — drawTab catches the throw and writes
+// "could not be drawn", which is what the operator then stares at.
+// tests/case_ui_stress.js drives exactly this, one mutilated field at a time.
+function asList(v){ return Array.isArray(v) ? v : []; }
 // safe value for a single-quoted JS string literal inside a double-quoted HTML on* attribute.
 // esc() only handles &<> — ids can contain backslashes (adatumlab\nofl) which the JS parser
 // reads as escapes (\n -> newline), and quotes; JS-escape first, then HTML-encode for the attr.
@@ -560,10 +559,9 @@ function render(info,md,g){
     <div class="outwrap">
       <div class="row" style="justify-content:space-between">
         <div><h1 style="margin:0;font-size:19px">${esc(info.name||info.case_id)}</h1>
-          <div id="case-since" style="color:var(--muted);font-size:12px">${scopePrefix(info)}${tw.start?('since '+esc(tw.start)):'no start date'}</div></div>
+          <div id="case-since" style="color:var(--muted);font-size:12px">${tw.start?('since '+esc(tw.start)):'no start date'}</div></div>
       </div>
       <div id="statbar" style="margin:6px 0 14px">${statSpans(g)}</div>
-      ${scopeChipsHtml(info)}
       <div class="tabs">
         <!-- Tab ORDER is the investigative order, not the order these were built.
              Analysis + Chat lead: the narrative and the way you interrogate it.
@@ -716,15 +714,6 @@ function renderRisk(info){
 // facts about the case; these two are facts about how it is PRICED and what the
 // fusion ontology saves -- the same subject as the model line they now sit
 // under, and configuration rather than a headline.
-// A zoomed-in scope OWNS the time window and the host exclusions below: the zoom
-// set them, not the operator. Without this line the rail reads as if someone had
-// hand-excluded twenty hosts and set a one-week window.
-function scopeRailNote(info){
-  const sc=asList(info&&info.scopes).find(s=>s.active);
-  if(!sc || sc.id==='full') return '';
-  return `<div class="cfghint">Scope <b>${esc(sc.label)}</b> is active: the time window and
-    the excluded hosts below come from it. Use the Scope row above the report to go back to the full case.</div>`;
-}
 function renderConfig(info){
   const alt=info.report_altitude||'auto', mk=info.masking||{}, tw=info.time_window||{};
   const opt=(v,l,cur)=>`<option value="${v}" ${cur===v?'selected':''}>${l}</option>`;
@@ -732,10 +721,8 @@ function renderConfig(info){
     <div class="cfgwrap">
       <div class="cfgcol">
         <h4>Scope</h4>
-        ${scopeRailNote(info)}
         <label>Time window — start</label><input id="cf-start" value="${esc(tw.start||'')}" placeholder="pick date + time…"/>
         <label>Time window — end <span style="color:var(--muted)">(empty = up to now)</span></label><input id="cf-end" value="${esc(tw.end||'')}" placeholder="empty = now / open"/>
-        <div class="cfghint">A different time window becomes a scope of its own: what is on screen now keeps its report, hosts and graph, one click away on the Scope row. Host changes stay in the current scope.</div>
         <label>Min severity</label>
         <select id="cf-sev">${['informational','low','medium','high','critical'].map(s=>opt(s,s,info.min_severity||'informational')).join('')}</select>
         <label style="margin-top:8px">Entity limit <span style="color:var(--muted)">(graph size)</span></label>
@@ -757,9 +744,8 @@ function renderConfig(info){
         <textarea id="cf-maskpat" placeholder="one per line, e.g. ACME Corp" title="Your own values to mask, on top of the automatic ones — an organisation or customer name, a project name, a person, anything you would rather not send. One per line. Plain text masks that exact value (ACME Corp). *.corp.local masks anything matching the wildcard. alice|bob masks either. /regex/ masks anything the regular expression matches. An invalid line is ignored." style="min-height:38px">${esc((mk.patterns||[]).join('\n'))}</textarea>
         <div class="cfghint">Anything else you want hidden — the organisation's name, a project, a person: <code>ACME Corp</code>, <code>*.corp.local</code>, <code>alice|bob</code>, <code>/regex/</code>.</div>
         <label style="margin-top:8px" title="When this case's report was written without the AI model and a model is connected now, opening the case on the Analysis tab regenerates it with the model once. Untick to only ever regenerate with the button."><input type="checkbox" id="cf-autoregen" ${info.auto_regen_report!==false?'checked':''} style="width:auto"/> Regenerate the template report automatically once an AI model is connected</label>
-        <label style="margin-top:8px" title="When a new collection or upload lands in this case, write a new report for it straight away — for the scope you are in, and only when the new data actually falls inside that scope's time window. Folding the data into the graph is free and happens either way; writing the report costs a full model run, so it is never spent on a scope whose data did not move. Untick to spend nothing automatically: the Analysis tab still tells you the report is behind, with the Regenerate button beside it."><input type="checkbox" id="cf-autoreport" ${info.auto_report!==false?'checked':''} style="width:auto"/> Regenerate the report automatically when new data lands <span style="color:var(--muted)">(spends tokens)</span></label>
-        <div class="cfghint">Only the scope you are in, and only when the new data falls inside its time window — data outside it would produce the same report. Other saved scopes keep theirs until you open them.</div>
-        <div style="font-size:11px;color:var(--muted);margin-top:8px">Chat always sends the full case graph; the report always shows the real command line, path &amp; hash per high finding (masked if masking is on).</div>
+        <label style="margin-top:8px" title="When a new collection or upload lands in this case, write a new report for it straight away — but only when the new data actually changed what the case holds. Folding the data into the graph is free and happens either way; writing the report costs a full model run, so it is never spent on data the case filtered out. Untick to spend nothing automatically: the Analysis tab still tells you the report is behind, with the Regenerate button beside it."><input type="checkbox" id="cf-autoreport" ${info.auto_report!==false?'checked':''} style="width:auto"/> Regenerate the report automatically when new data lands <span style="color:var(--muted)">(spends tokens)</span></label>
+        <div class="cfghint">Only when the new data actually changes this case — a collection filtered out by the time window, the severity floor or the host set would produce the same report.</div>        <div style="font-size:11px;color:var(--muted);margin-top:8px">Chat always sends the full case graph; the report always shows the real command line, path &amp; hash per high finding (masked if masking is on).</div>
       </div>
       <div class="cfgcol">
         <h4>Hosts (include)</h4>
@@ -1036,53 +1022,10 @@ async function applyZoom(id,i){
   setTab('log'); if(typeof logRefresh==='function') logRefresh();
   try{
     await api('/api/cases/'+id+'/zoom',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({window:t.window, host_labels:t.host_labels,
-                           label:(t.name?('Phase '+t.n+' — '+t.name):t.title)})});
-    toast('The focused analysis is ready. Use the Scope row above the report to go back.');
+      body:JSON.stringify({window:t.window, host_labels:t.host_labels})});
+    toast('The focused analysis is ready.');
     setTab('report'); openCase(id);
   }catch(e){ toast('The scope could not be analysed: '+((e&&e.message)||e)); }
-}
-
-// Every scope this case has been analysed at: the full case plus each timeframe
-// zoomed into, each keeping its own report, window, host set and fused graph.
-// Clicking one restores it — no model call, no tokens. Hidden until there is
-// somewhere to go back TO (a case that was never zoomed has one scope, or none).
-// A payload field that should be a list but is not (missing, null, a string, a
-// number) must never take a whole tab down — drawTab catches the throw and writes
-// "could not be drawn", which is what the operator then stares at. Every renderer
-// that maps over a payload list goes through here. tests/case_ui_stress.js drives
-// exactly this, one mutilated field at a time.
-function asList(v){ return Array.isArray(v) ? v : []; }
-function scopeChipsHtml(info){
-  const sc=asList(info&&info.scopes); if(sc.length<2) return '';
-  const tip=s=>{
-    const w=s.window||{};
-    return (w.start||'')+(w.end?(' → '+w.end):'')
-         + (s.report_written_at?('\nReport written '+s.report_written_at):'\nNo report yet');
-  };
-  return `<div class="scopebar"><span class="lbl">Scope:</span>`+ sc.map(s=>
-    s.active
-      ? `<span class="scopechip on" title="${esc(tip(s))}">${esc(s.label)}</span>`
-      : `<button class="scopechip" title="${esc(tip(s))}" onclick="switchScope('${esc(info.case_id)}','${esc(s.id)}')">${esc(s.label)}</button>`
-  ).join('')+`</div>`;
-}
-// Every tab renders the ACTIVE scope: the Timeline, Risk, Identities and the stat
-// bar are the narrowed case, not the whole one. Saying "since <phase start>" and
-// "3 hosts" with nothing else on screen is how a zoomed case gets mistaken for a
-// small one.
-function scopePrefix(info){
-  const sc=asList(info&&info.scopes).find(s=>s.active);
-  return (!sc || sc.id==='full') ? '' : esc(sc.label)+' · ';
-}
-async function switchScope(id,sid){
-  toast('Switching scope. Progress is shown in the Log.');
-  setTab('log'); if(typeof logRefresh==='function') logRefresh();
-  try{
-    await api('/api/cases/'+id+'/scope',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({id:sid})});
-    toast('Scope restored, with the report it was analysed with.');
-    setTab('report'); openCase(id);
-  }catch(e){ toast('The scope could not be restored: '+((e&&e.message)||e)); }
 }
 
 // A real case is several model calls (one per phase, then a synthesis) over the
@@ -1447,7 +1390,6 @@ async function doRefusion(id){
     // case. Not a failure — the config posted above IS persisted and a retry re-fuses
     // with it — so say so instead of showing the red "failed" toast.
     if(r && r.busy) toast('This case is already being re-fused. Please try again shortly.');
-    else if(r && r.scope_label) toast('Refusion complete. This timeframe is now the scope "'+r.scope_label+'" — the previous one is on the Scope row.');
     else toast('Refusion complete. Data, risk and timeline are up to date.');
   }catch(e){ toast('Refusion failed. See the Log for details.'); }
   // Re-read the case. The rail's settings were just persisted server-side, but

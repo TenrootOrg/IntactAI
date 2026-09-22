@@ -95,6 +95,10 @@ function load(dom, calls) {
     get: (t, k) => (k in t ? t[k] : () => ''),
   });
   const code = [
+    // the page's own helper, not a copy of it: the proxy scope below turns any
+    // name it does not know into () => '', which is how a missing helper reads
+    // as "not a function" three frames deep instead of as a missing helper.
+    slice('function asList(v){', '\n// safe value for a single-quoted'),
     slice('function renderConfig(info){', 'function loadHosts(id){'),
     slice('let _cfgDirty=false;', 'function drawTab(md){'),
     slice('async function _railCfg(){', '// Rescan (LLM) = SAVE config'),

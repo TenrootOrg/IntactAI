@@ -330,7 +330,7 @@ class TestItRenarratesAfterTheFuse(_Base):
     """What the narration half does: the words must follow the numbers, or the
     counts move while the Executive Summary still describes the previous
     collection. On by default, for the ACTIVE SCOPE only and only when that
-    scope's data actually moved (_scope_data_changed); untickable per case."""
+    scope's data actually moved (_case_data_changed); untickable per case."""
 
 
     def test_a_fuse_is_followed_by_a_report(self):
@@ -411,19 +411,19 @@ class TestItRenarratesAfterTheFuse(_Base):
         self.assertTrue(autofuse._report_enabled({"auto_report": True}))
         self.assertFalse(autofuse._report_enabled({"auto_report": False}))
 
-    def test_data_outside_the_active_scope_is_not_re_narrated(self):
-        """A scope is a TIME WINDOW. A collection whose events fall outside it
-        cannot change what that scope's report describes, so re-narrating it would
-        buy the identical text for a full model run."""
+    def test_data_the_case_filtered_out_is_not_re_narrated(self):
+        """A case has a time window, a severity floor and a host set. A collection
+        filtered out by them changes nothing the report describes, so re-narrating
+        would buy the identical text for a full model run."""
         same = {"findings": 25, "entities": 243, "links": 104, "hosts": 3, "cross_host": 1}
-        self.assertFalse(autofuse._scope_data_changed(same, dict(same)))
-        self.assertTrue(autofuse._scope_data_changed(same, dict(same, findings=26)))
-        self.assertTrue(autofuse._scope_data_changed(same, dict(same, hosts=4)))
+        self.assertFalse(autofuse._case_data_changed(same, dict(same)))
+        self.assertTrue(autofuse._case_data_changed(same, dict(same, findings=26)))
+        self.assertTrue(autofuse._case_data_changed(same, dict(same, hosts=4)))
 
     def test_an_unknown_before_or_after_counts_as_changed(self):
         """Never skip a report on ignorance — a legacy case has no counts."""
-        self.assertTrue(autofuse._scope_data_changed({}, {"findings": 1}))
-        self.assertTrue(autofuse._scope_data_changed({"findings": 1}, {}))
+        self.assertTrue(autofuse._case_data_changed({}, {"findings": 1}))
+        self.assertTrue(autofuse._case_data_changed({"findings": 1}, {}))
 
     def test_a_report_failure_does_not_undo_the_fuse(self):
         # The crash-loop flag is the fuse's, and it was cleared before this step.

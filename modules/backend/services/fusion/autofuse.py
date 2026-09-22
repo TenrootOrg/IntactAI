@@ -35,11 +35,10 @@ WHAT IT STILL WILL NOT DO
   - It never redraws anyone's screen. It updates the stored graph and report; the
     case view picks the new report up on its own.
   - It never runs on a case whose operator turned it off. The narration half is
-    ON by default (`auto_report`) but narrowly: the SCOPE THE OPERATOR IS IN, and
-    only when the new data actually falls inside that scope's time window. Data
-    outside it cannot change what the scope's report describes, so re-narrating
-    would buy the identical text; the other saved scopes keep their own reports
-    until someone opens them. Untick it per case to spend nothing automatically.
+    ON by default (`auto_report`) but only when the new data actually changed what
+    the case holds: a collection whose events fall outside the case's time window
+    cannot change what the report describes, so re-narrating would buy the
+    identical text. Untick it per case to spend nothing automatically.
 
 WHAT IT MUST NOT DROP
 The previous background path wrapped its fuse in `except: pass`, so a fuse that
@@ -107,26 +106,24 @@ def _enabled(store, case_id, d):
 
 
 def _report_enabled(d):
-    """Should the automatic fuse also re-narrate the report? By default YES — for
-    the scope on screen, and only when that scope's data actually moved.
+    """Should the automatic fuse also re-narrate the report? By default YES, but
+    only when the fuse actually changed what the case holds.
 
     This half SPENDS MONEY when a model is configured, which the graph half never
-    does, so the question is not "always or never" but WHICH REPORT. A scope is a
-    time window: a collection whose events fall outside it cannot change what that
-    scope's report describes, and re-narrating it would buy an identical report.
-    So the rule is the selected scope + a real change (_scope_data_changed), never
-    a sweep of every saved scope. Untick it per case to spend nothing at all.
+    does. A case is filtered by a time window, a severity floor and a host set, so
+    data landing outside them changes nothing the report describes and
+    re-narrating buys the identical text — see _case_data_changed.
     """
     return d.get("auto_report") is not False
 
 
-def _scope_data_changed(before, after) -> bool:
-    """Did the fuse actually change what the ACTIVE scope holds?
+def _case_data_changed(before, after) -> bool:
+    """Did the fuse actually change what the case holds?
 
-    Compared on the scope's own counts, which is exactly the question: the fuse
-    rebuilt the graph under the scope's window and host set, so if findings,
-    entities and links all came back the same, the new data landed outside this
-    scope and its report would be re-narrated into the identical text. Unknown
+    Compared on the graph's own counts, which is exactly the question: the fuse
+    rebuilt it under the case's window, severity floor and host set, so if
+    findings, entities and links all came back the same, the new data was filtered
+    out and the report would be re-narrated into the identical text. Unknown
     (a legacy case with no counts) reads as CHANGED — never skip on ignorance.
     """
     if not before or not after:
@@ -317,8 +314,7 @@ def _fire(case_id, reason="new data", attempt=0) -> None:
         # with counts), so anything added around it duplicates. The gap this
         # feature was missing is EARLIER — between pressing Fetch and the fuse
         # being armed — and it is filled by the recollect worker, not here.
-        # What the scope on screen held BEFORE the fuse. A scope is a time window,
-        # so data landing outside it cannot change it — see _scope_data_changed.
+        # What the case held BEFORE the fuse — see _case_data_changed.
         _before = (store.get_case(case_id) or {}).get("graph_counts") or {}
         try:
             store.fuse_case(case_id,
@@ -404,17 +400,15 @@ def _regenerate_report(case_id, d=None, attempt=0, before_counts=None) -> None:
                 "(this one spends tokens), or tick the automatic option in "
                 "Configuration.")
             return
-        if before_counts is not None and not _scope_data_changed(
+        if before_counts is not None and not _case_data_changed(
                 before_counts, (store.get_case(case_id) or {}).get("graph_counts") or {}):
-            # The data landed outside the scope on screen. Re-narrating it would
-            # spend a full model run to produce the same words.
-            _scope = (d.get("active_scope") or "full")
+            # Filtered out by the case's window, severity floor or host set.
+            # Re-narrating would spend a full model run to produce the same words.
             store.log_case_event(
                 case_id, "Report · already current", "info",
-                f"the new data is outside this scope"
-                + (f" ({_scope})" if _scope != "full" else " (the full case)")
-                + " — nothing it describes changed, so no report was generated. "
-                  "Other saved scopes keep their own reports; open one to refresh it.")
+                "the new data is outside this case's time window, severity floor or "
+                "host set — nothing the report describes changed, so no report was "
+                "generated")
             return
         use_llm = False
         try:
