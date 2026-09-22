@@ -1564,32 +1564,49 @@ def _group_simultaneous_detections(g: FusionGraph, grouping: dict) -> None:
 
 
 # ---------------------------------------------------- coordinated activity
-# Tactic buckets — a cheap, robust proxy for ATT&CK tactics when Hayabusa rows
-# lack consistent MITRE tags. Keyword match on the SIGMA detection title.
-_TACTIC_KW = {
-    "execution": ("powershell", "base64", "encoded", "scriptblock", "mshta",
-                  "rundll", "wscript", "cscript", "pwsh", "wmi exec"),
-    "persistence": ("autorun", "run key", "service install", "scheduled task",
-                    "new service", "registry run", "startup"),
-    "defense_evasion": ("log file cleared", "eventlog cleared", "insecure level",
-                        "disable", "bypass", "policies", "amsi", "etw"),
-    "discovery": ("discovery", "recon", "whoami", "net user", "nltest", "dclist",
-                  "enumerat", "reconnaissance"),
-    "c2_network": ("net conn", "download", "beacon", "webrequest", "remote thread",
-                   "dns query", "named pipe"),
-    "credential": ("lsass", "mimikatz", "credential", "ntds", "sam dump"),
-}
-# Tunable by calibrate.sweep — the bar for a coordinated-activity finding AFTER
-# baseline-subtraction (so these count only NON-baseline detections).
-COORD_MIN_TITLES = 3
-COORD_MIN_TACTICS = 2
+# A burst is measured in ATT&CK TECHNIQUES, which every detection source carries
+# or can derive from its rule name (_techniques_for_title) — Windows, Linux,
+# cloud, memory alike. It used to be a hand-written keyword list of Windows
+# PowerShell/LSASS words: nothing else could ever match it, and on a QA case it
+# recognised fewer events (72) than the technique ids do (81).
+COORD_MIN_TITLES = 3            # distinct detections
+COORD_MIN_TECHNIQUES = 2        # distinct ATT&CK techniques among them
+# When a source carries no technique at all (a detector we cannot map), diversity
+# has to come from the detections themselves, so ask for more of them.
+COORD_MIN_TITLES_NO_TECHNIQUE = 5
 
-
-# A burst ends after a quiet WEEK. Measured on a QA collection: the window-wide
-# grouping called 69 detections spread over nine months "coordinated", while a
-# 24-hour gap split one eight-day lab exercise into four findings.
+# A burst ends after this much quiet. Measured: at a WEEK, one row covered six
+# days and 32 detections and read as a single moment on the timeline. Hours, not
+# days, is what "fired together" can mean.
 # ponytail: a fixed gap; tune by calibrate.sweep if real campaigns pause longer.
-COORD_MAX_GAP_HOURS = 168
+COORD_MAX_GAP_HOURS = 2
+
+
+def _event_techniques(e) -> set:
+    """ATT&CK techniques for one detection event, parent ids (T1059.001 -> T1059)
+    so one rule family does not look like two."""
+    ids = list((e.attrs or {}).get("mitre") or [])
+    ids += _techniques_for_title((e.attrs or {}).get("title") or e.label)
+    return {str(t).split(".")[0] for t in ids if t}
+
+
+def _short(text, cap=46) -> str:
+    """A detection name short enough for a row, cut on a word, never mid-word."""
+    t = " ".join(str(text or "").split())
+    if len(t) <= cap:
+        return t
+    cut = t[:cap].rsplit(" ", 1)[0]
+    return (cut or t[:cap]).rstrip(",;:-") + "…"
+
+
+def _span_label(seconds: float) -> str:
+    if seconds < 90:
+        return f"{int(seconds)} sec"
+    if seconds < 5400:
+        return f"{round(seconds / 60)} min"
+    if seconds < 86400 * 2:
+        return f"{round(seconds / 3600, 1):g} h"
+    return f"{round(seconds / 86400, 1):g} days"
 
 
 def _bursts(evs: list) -> list:
@@ -1615,11 +1632,6 @@ def _bursts(evs: list) -> list:
         return out
     except Exception:                                         # noqa: BLE001
         return [list(evs)]
-
-
-def _tactics_of(title: str) -> set:
-    t = (title or "").lower()
-    return {k for k, kws in _TACTIC_KW.items() if any(w in t for w in kws)}
 
 
 def _coordinated_activity(g: FusionGraph, *, window=None, baseline=None) -> None:
@@ -1666,10 +1678,23 @@ def _coordinated_activity(g: FusionGraph, *, window=None, baseline=None) -> None
     for (asset_id, logged), burst_src in per_asset.items():
       for evs in _bursts(burst_src):
         titles = {e.attrs.get("title") or e.label for e in evs}
-        tactics = set().union(*[_tactics_of(e.attrs.get("title") or e.label) for e in evs]) \
-            if evs else set()
-        if len(titles) < COORD_MIN_TITLES or len(tactics) < COORD_MIN_TACTICS:
+        techs = set().union(*[_event_techniques(e) for e in evs]) if evs else set()
+        if techs:
+            if len(titles) < COORD_MIN_TITLES or len(techs) < COORD_MIN_TECHNIQUES:
+                continue
+        elif len(titles) < COORD_MIN_TITLES_NO_TECHNIQUE:
             continue
+        ts_all = sorted(t for t in (e.first_seen for e in evs) if t)
+        _lo, _hi = keys.to_utc_dt(ts_all[0]), keys.to_utc_dt(ts_all[-1]) if ts_all else (None, None)
+        span = _span_label((_hi - _lo).total_seconds()) if (_lo and _hi) else "one moment"
+        # THE ROW HAS TO SAY WHAT IT IS. "Coordinated suspicious activity" told the
+        # reader nothing — what fired, how long it ran, or why it is one row (QA
+        # TASK-12667). The name is built from the detections inside it, so it works
+        # for any source without a per-source phrase list.
+        _named = sorted(titles, key=lambda t: (-sum(1 for e in evs
+                                                    if (e.attrs.get("title") or e.label) == t), t))
+        _lead = ", ".join(_short(t) for t in _named[:3])
+        _more = f" +{len(titles) - 3} more" if len(titles) > 3 else ''
         host = _host_label(g, asset_id) + (f" (logged as {logged})" if logged else "")
         # Fingerprint on the actual composition (titles), not just the host —
         # otherwise an operator dispositioning ONE burst as benign silently
@@ -1679,15 +1704,21 @@ def _coordinated_activity(g: FusionGraph, *, window=None, baseline=None) -> None
         # differently-composed burst with an equal-or-lower count).
         composition_fp = hashlib.sha1(("|".join(sorted(titles)) + (f"@{logged}" if logged else "")).encode()).hexdigest()[:8]
         g.add_finding(Finding(
-            id=_fid("coord", asset_id, composition_fp), title=f"Coordinated suspicious activity on {host}",
+            id=_fid("coord", asset_id, composition_fp),
+            title=f"Burst of {len(titles)} detections in {span} — {_lead}{_more} on {host}",
             severity="high", confidence="high",
-            summary=f"{len(titles)} distinct non-baseline SIGMA detections spanning "
-                    f"{len(tactics)} ATT&CK tactics ({', '.join(sorted(tactics))}) fired on "
-                    f"{host} inside the incident window — a coordinated-activity pattern, not "
-                    f"isolated noise. Detections: {', '.join(sorted(titles)[:8])}.",
+            summary=f"{len(titles)} distinct non-baseline detections"
+                    + (f" across {len(techs)} ATT&CK techniques ({', '.join(sorted(techs))})"
+                       if techs else "")
+                    + f" fired on {host} between {ts_all[0][:19]}Z and {ts_all[-1][:19]}Z "
+                      f"({span}) — a coordinated-activity pattern, not isolated noise. Each of "
+                      f"them is too low-severity to reach the timeline on its own; together "
+                      f"they are the finding. Detections: {', '.join(sorted(titles)[:8])}"
+                    + ("…" if len(titles) > 8 else "") + ".",
             entity_ids=[e.id for e in evs[:25]], asset_ids=[asset_id],
-            sources=["agentic"], evidence=list(evs[0].evidence),
-            mitre=[], ts=min((e.first_seen for e in evs if e.first_seen), default=None),
+            sources=sorted({s for e in evs for s in (e.sources or [])}) or ["agentic"],
+            evidence=list(evs[0].evidence),
+            mitre=sorted(techs), ts=ts_all[0] if ts_all else None,
             kind="derived",
             occ_count=len(evs),
             occ_latest=max((e.first_seen for e in evs if e.first_seen), default=None)))

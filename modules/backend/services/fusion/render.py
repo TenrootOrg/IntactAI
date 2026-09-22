@@ -2327,7 +2327,10 @@ def timeline_md(graph, findings, *, window=None, eff_detail="summary",
     tl = sorted((f for f in findings
                  if f.ts and in_window(f.ts, window)
                  and f.kind != "cross_host"                         # in Cross-Host Correlation
-                 and not f.title.startswith("Coordinated suspicious activity")  # vacuous rollup
+                 # The burst row used to be excluded as a vacuous rollup ("Coordinated
+                 # suspicious activity" named nothing). It now names the detections it
+                 # holds and their span, and it is the only place the medium-severity
+                 # signals under the floor are visible at all — so it belongs here.
                  and sev.at_least(f.severity, "high")),
                 key=lambda f: (f.ts, -sev.rank(f.severity)))
     if not tl:

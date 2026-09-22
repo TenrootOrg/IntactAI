@@ -110,28 +110,28 @@ def evaluate(verbose=True) -> dict:
     return out
 
 
-def sweep(titles_grid=(2, 3, 4, 5), tactics_grid=(2, 3)) -> list:
+def sweep(titles_grid=(2, 3, 4, 5), techniques_grid=(2, 3)) -> list:
     """Grid-sweep the coordinated-activity thresholds over the labeled fixtures and
     report each config's macro-F1 — so the operating point is chosen against ground
     truth (recognise the attack, zero FP on clean), not guessed."""
     rows = []
-    saved = (correlate.COORD_MIN_TITLES, correlate.COORD_MIN_TACTICS)
+    saved = (correlate.COORD_MIN_TITLES, correlate.COORD_MIN_TECHNIQUES)
     try:
         for mt in titles_grid:
-            for ta in tactics_grid:
-                correlate.COORD_MIN_TITLES, correlate.COORD_MIN_TACTICS = mt, ta
+            for ta in techniques_grid:
+                correlate.COORD_MIN_TITLES, correlate.COORD_MIN_TECHNIQUES = mt, ta
                 res = evaluate(verbose=False)
                 macro = sum(s["f1"] for s in res.values()) / max(len(res), 1)
                 clean_fp = res.get("clean", {}).get("fp", 0)
                 attack_r = res.get("attack", {}).get("recall", 0)
-                rows.append({"min_titles": mt, "min_tactics": ta, "macro_f1": round(macro, 3),
+                rows.append({"min_titles": mt, "min_techniques": ta, "macro_f1": round(macro, 3),
                              "clean_fp": clean_fp, "attack_recall": attack_r})
     finally:
-        correlate.COORD_MIN_TITLES, correlate.COORD_MIN_TACTICS = saved
+        correlate.COORD_MIN_TITLES, correlate.COORD_MIN_TECHNIQUES = saved
     rows.sort(key=lambda r: (-r["macro_f1"], r["clean_fp"], -r["min_titles"]))
-    print("min_titles min_tactics macro_f1 clean_fp attack_recall")
+    print("min_titles min_techniques macro_f1 clean_fp attack_recall")
     for r in rows:
-        print(f"    {r['min_titles']:>2}        {r['min_tactics']:>2}        "
+        print(f"    {r['min_titles']:>2}        {r['min_techniques']:>2}        "
               f"{r['macro_f1']:>5}     {r['clean_fp']:>2}        {r['attack_recall']}")
     return rows
 

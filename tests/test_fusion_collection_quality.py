@@ -411,45 +411,68 @@ class ActivityBeforeTheCurrentName(unittest.TestCase):
 
 
 class CoordinatedActivityIsOneBurst(unittest.TestCase):
-    """69 detections over nine months were called one coordinated burst."""
+    """69 detections over nine months were called one coordinated burst, and the row
+    was named "Coordinated suspicious activity" — which says nothing about what
+    fired, for how long, or why it is one row (QA TASK-12667)."""
 
     WINDOW = {"start": "2016-01-01T00:00:00Z", "end": None}
 
     def _rows(self, day, titles, computer=HOST):
-        return [_sigma(t, ts=f"{day}T07:{10 + i:02d}:00Z", level="medium", computer=computer)
+        return [_sigma(t, ts=f"{day}T07:{10 + i:02d}:00Z", level="medium", computer=computer,
+                       record=hash((day, t)) % 100000)
                 for i, t in enumerate(titles)]
 
     def _fuse_window(self, rows):
         ents, rels = map_agentic({"Windows.Hayabusa.Rules": rows}, run_id="r1", hostnames=HOSTNAMES)
         g = correlate.assemble("c", [(ents, rels)], ["r1"], min_severity="medium", window=self.WINDOW)
-        return [f for f in g.findings if f.title.startswith("Coordinated suspicious activity")]
+        return [f for f in g.findings if f.kind == "derived" and f.title.startswith("Burst of")]
 
-    def test_bursts_weeks_apart_are_separate_findings(self):
-        coord = self._fuse_window(
-            self._rows("2026-08-01", ["Suspicious PowerShell Invocation", "Security Eventlog Cleared", "LSASS Access"])
-            + self._rows("2026-09-01", ["Encoded Command Seen", "Defender Disable Attempt", "Mimikatz Detected"]))
-        self.assertEqual(2, len(coord), [f.summary for f in coord])
-
-    def test_one_campaign_over_a_few_days_stays_one_finding(self):
-        """A 24-hour gap split an eight-day lab exercise into four findings."""
-        coord = self._fuse_window(
-            self._rows("2026-09-01", ["Suspicious PowerShell Invocation", "Security Eventlog Cleared", "LSASS Access"])
-            + self._rows("2026-09-04", ["Encoded Command Seen", "Defender Disable Attempt", "Mimikatz Detected"]))
-        self.assertEqual(1, len(coord), [f.summary for f in coord])
-
-    def test_one_burst_is_still_one_finding(self):
-        coord = self._fuse_window(
-            self._rows("2026-09-01", ["Suspicious PowerShell Invocation", "Security Eventlog Cleared", "LSASS Access"]))
+    def test_the_row_says_what_fired_and_for_how_long(self):
+        coord = self._fuse_window(self._rows(
+            "2026-09-01", ["Suspicious PowerShell Invocation", "Security Eventlog Cleared",
+                           "LSASS Access"]))
         self.assertEqual(1, len(coord))
-        self.assertEqual(f"Coordinated suspicious activity on {HOST}", coord[0].title)
+        self.assertEqual("Burst of 3 detections in 2 min — LSASS Access, Security Eventlog "
+                         f"Cleared, Suspicious PowerShell Invocation on {HOST}", coord[0].title)
+        self.assertIn("too low-severity to reach the timeline on its own", coord[0].summary)
+        self.assertIn("T1003", coord[0].mitre, "the techniques it spans, for filters")
+
+    def test_hours_of_quiet_end_a_burst(self):
+        """At a WEEK, one row covered six days and 32 detections on a live case."""
+        coord = self._fuse_window(
+            self._rows("2026-09-01", ["Suspicious PowerShell Invocation", "Security Eventlog Cleared",
+                                      "LSASS Access"])
+            + self._rows("2026-09-04", ["Encoded Command Seen", "Defender Disable Attempt",
+                                        "Mimikatz Detected"]))
+        self.assertEqual(2, len(coord), [f.title for f in coord])
+
+    def test_diversity_is_measured_in_attack_techniques_not_words(self):
+        """The old gate was a keyword list of Windows PowerShell/LSASS words —
+        nothing from another source could ever match it."""
+        one_technique = self._fuse_window(self._rows(
+            "2026-09-01", ["Suspicious PowerShell Invocation", "Powershell Encoded Command",
+                           "Malicious PowerShell Commandlets"]))
+        self.assertEqual([], one_technique, "three names, one technique, is not a pattern")
+        named = self._fuse_window(self._rows(
+            "2026-09-01", ["Suspicious PowerShell Invocation", "LSASS Access",
+                           "Security Eventlog Cleared"]))
+        self.assertEqual(1, len(named))
+
+    def test_a_source_with_no_techniques_needs_more_detections(self):
+        few = self._fuse_window(self._rows("2026-09-01", ["Odd Thing A", "Odd Thing B", "Odd Thing C"]))
+        self.assertEqual([], few, "nothing maps to a technique — three names prove nothing")
+        many = self._fuse_window(self._rows(
+            "2026-09-01", [f"Odd Thing {c}" for c in "ABCDE"]))
+        self.assertEqual(1, len(many))
 
     def test_a_burst_under_an_old_name_is_labelled_and_kept_apart(self):
         coord = self._fuse_window(
-            self._rows("2025-12-05", ["Suspicious PowerShell Invocation", "Security Eventlog Cleared", "LSASS Access"], computer=OLD)
-            + self._rows("2026-09-01", ["Encoded Command Seen", "Defender Disable Attempt", "Mimikatz Detected"]))
-        titles = sorted(f.title for f in coord)
-        self.assertEqual([f"Coordinated suspicious activity on {HOST}",
-                          f"Coordinated suspicious activity on {HOST} (logged as {OLD})"], titles)
+            self._rows("2025-12-05", ["Suspicious PowerShell Invocation", "Security Eventlog Cleared",
+                                      "LSASS Access"], computer=OLD)
+            + self._rows("2026-09-01", ["Encoded Command Seen", "Defender Disable Attempt",
+                                        "Mimikatz Detected"]))
+        self.assertEqual(2, len(coord), [f.title for f in coord])
+        self.assertTrue(any(f"(logged as {OLD})" in f.title for f in coord), [f.title for f in coord])
 
 
 if __name__ == "__main__":
