@@ -82,10 +82,15 @@ class TheFuseActsOnIt(unittest.TestCase):
             self.src = fh.read()
 
     def test_the_checklist_is_gated_on_it(self):
-        self.assertIn("if allow_llm and (not _no_route or _offline) and not d.get(\"disposition_checklist\")",
-                      self.src,
+        # Matched in two pieces, not as one line: the same `if` also carries the
+        # scope gate now (a checklist is generated once for the life of a case, so
+        # it must not be born inside a zoomed scope). What must not come back is
+        # calling a provider the report just failed to reach.
+        self.assertIn("if allow_llm and (not _no_route or _offline)", self.src,
                       "the checklist must not call a provider the report just "
                       "failed to reach")
+        self.assertIn('and not d.get("disposition_checklist")', self.src,
+                      "and it must still only run when the case has no checklist")
 
     def test_both_failure_paths_set_it(self):
         """generate_report usually ABSORBS the failure and returns a template, so
