@@ -200,6 +200,14 @@
   .zoomcard{flex:1 1 220px;min-width:200px;border:1px solid var(--bd);border-radius:7px;padding:10px 12px;background:var(--bg,#0d1117);border-left:3px solid var(--muted)}
   .zoomcard.sev-critical{border-left-color:#f85149}.zoomcard.sev-high{border-left-color:#db6d28}
   .zoomcard.sev-medium{border-left-color:#d29922}.zoomcard.sev-low{border-left-color:#3fb950}
+  .scopebar{display:flex;gap:8px;align-items:center;margin:0 0 12px;flex-wrap:wrap}
+  .scopebar .lbl{font-size:12px;color:var(--muted)}
+  .scopebar select{font-size:12px;padding:4px 8px;min-width:230px}
+  .scopebar .ghost{font-size:11px;padding:3px 9px}
+  .scopenew{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 12px;
+            padding:9px 11px;border:1px solid var(--bd);border-radius:7px;background:rgba(88,166,255,.05)}
+  .scopenew input{font-size:12px;padding:4px 7px}
+  .scopenew .hint{font-size:11px;color:var(--muted);flex-basis:100%}
   .zt-title{font-weight:600;font-size:13px;margin-bottom:3px}
   .zt-meta{font-size:11px;color:var(--muted)}
   .zt-win{font-size:10px;color:var(--muted);font-family:var(--mono,monospace);margin:4px 0 8px}
@@ -458,7 +466,9 @@ function openCase(id){
   // NOTE: we deliberately do NOT fetch /graph here — it's multi-MB and the tabs
   // only need counts (served on /api/cases/<id> as info.counts). Avoids a slow
   // load on every open.
-  Promise.all([api('/api/cases/'+id),api('/api/cases/'+id+'/report')])
+  // Returned, so a caller can wait for the case to be on screen before doing the
+  // next thing (applyZoom selects a scope, then asks for that scope's report).
+  return Promise.all([api('/api/cases/'+id),api('/api/cases/'+id+'/report')])
    .then(([info,rep])=>{
      if(seq!==window._openSeq) return;          // a newer open superseded this one
      rememberView(id,info,rep);
@@ -559,9 +569,10 @@ function render(info,md,g){
     <div class="outwrap">
       <div class="row" style="justify-content:space-between">
         <div><h1 style="margin:0;font-size:19px">${esc(info.name||info.case_id)}</h1>
-          <div id="case-since" style="color:var(--muted);font-size:12px">${tw.start?('since '+esc(tw.start)):'no start date'}</div></div>
+          <div id="case-since" style="color:var(--muted);font-size:12px">${scopeSinceHtml(info, tw)}</div></div>
       </div>
       <div id="statbar" style="margin:6px 0 14px">${statSpans(g)}</div>
+      <div id="scopebar">${scopeBarHtml(info)}</div>
       <div class="tabs">
         <!-- Tab ORDER is the investigative order, not the order these were built.
              Analysis + Chat lead: the narrative and the way you interrogate it.
@@ -988,6 +999,76 @@ function renderReport(info){
   // ever reached without going through render().
   pollReportGen(id);
 }
+// ── Scopes: one fused case, many saved windows ──────────────────────────────
+// The case holds ONE set of data — every event, identity, finding and verdict. A
+// scope is a saved time window the case is read through: pick one and every tab
+// shows the part of the case inside it, and the model is sent that same part.
+// Switching is a view change on the server (no re-fusion, no model call), so it
+// answers in milliseconds; what a scope stores of its own is its report and its
+// chat.
+function _scopeDates(w){
+  const a=((w||{}).start||'').slice(0,10), b=((w||{}).end||'').slice(0,10);
+  return a ? (b ? a+' → '+b : 'from '+a) : '';
+}
+function scopeBarHtml(info){
+  const sc=asList(info&&info.scopes);
+  // One scope is just "the whole case" — nothing to choose between yet, so the
+  // bar stays out of the way until the first window is saved.
+  if(sc.length<2 && !window._scopeNewOpen) return '';
+  const opts=sc.map(s=>{
+    const dates=_scopeDates(s.window), behind=(!s.has_report&&s.id!=='full')?' · no report yet':'';
+    return `<option value="${esc(s.id)}" ${s.active?'selected':''}>${esc(s.label)}${dates?' · '+esc(dates):''}${behind}</option>`;
+  }).join('');
+  const act=sc.find(s=>s.active)||{};
+  return `<div class="scopebar">
+      <span class="lbl">Scope</span>
+      <select onchange="switchScope('${esc(info.case_id)}',this.value)">${opts}</select>
+      <button class="ghost" onclick="scopeNewToggle()">+ New scope</button>
+      ${act.id&&act.id!=='full'?`<button class="ghost" onclick="scopeDelete('${esc(info.case_id)}','${esc(act.id)}')" title="Forget this window and the report written in it. No evidence is deleted.">Delete scope</button>`:''}
+    </div>` + (window._scopeNewOpen?`<div class="scopenew">
+      <input id="sc-from" placeholder="from (YYYY-MM-DD)"/>
+      <input id="sc-to" placeholder="to (YYYY-MM-DD)"/>
+      <button onclick="scopeCreate('${esc(info.case_id)}')">Create</button>
+      <button class="ghost" onclick="scopeNewToggle()">Cancel</button>
+      <span class="hint">A scope is a way of reading this case, not a new copy of it: the evidence, the verdicts and the identities stay the case's, and each scope keeps its own report and chat.</span>
+    </div>`:'');
+}
+// The dates under the case name belong to whatever is selected, or the case.
+function scopeSinceHtml(info, tw){
+  const act=asList(info&&info.scopes).find(s=>s.active);
+  if(act && act.id!=='full' && (act.window||{}).start)
+    return esc(act.label)+' · '+esc(_scopeDates(act.window));
+  return tw.start?('since '+esc(tw.start)):'no start date';
+}
+function scopeNewToggle(){ window._scopeNewOpen=!window._scopeNewOpen; if(curInfo) render(curInfo, window._md||'', curInfo.counts||{}); }
+async function switchScope(id,sid){
+  try{
+    await api('/api/cases/'+id+'/scope',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id:sid})});
+    openCase(id);            // instant: a view change, nothing was fused
+  }catch(e){ toast('The scope could not be selected: '+((e&&e.message)||e)); openCase(id); }
+}
+async function scopeCreate(id){
+  const from=($('#sc-from')||{}).value||'', to=($('#sc-to')||{}).value||'';
+  if(!from){ toast('A scope needs a start date.'); return; }
+  const iso=v=>v && v.length===10 ? v+'T00:00:00' : v;
+  try{
+    await api('/api/cases/'+id+'/scopes',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({window:{start:iso(from), end:iso(to)||null}})});
+    window._scopeNewOpen=false;
+    toast('Scope created. Generate its report when you want one.');
+    openCase(id);
+  }catch(e){ toast('The scope could not be created: '+((e&&e.message)||e)); }
+}
+async function scopeDelete(id,sid){
+  if(!confirm('Forget this scope?\n\nIts saved window, report and chat are removed. The case\u2019s evidence, verdicts and identities are not touched.')) return;
+  try{
+    await api('/api/cases/'+id+'/scopes/'+encodeURIComponent(sid),{method:'DELETE'});
+    toast('Scope deleted. No evidence was removed.');
+    openCase(id);
+  }catch(e){ toast('The scope could not be deleted: '+((e&&e.message)||e)); }
+}
+
 // Macro report -> the macro->micro loop: the backend's deterministic zoom_targets
 // (suspicious host-cluster + time-window hotspots) as one-click "Analyze this scope"
 // presets. Clicking narrows the case (time window + host subset) and re-fuses, which
@@ -1016,16 +1097,20 @@ function loadZoomTargets(id){
     if(el.innerHTML!==html) el.innerHTML=html;
   }).catch(()=>{});      // a failed refresh keeps the cards already on screen
 }
+// A phase card creates a SCOPE and selects it — instant, nothing is fused — and
+// then generates that scope's report, which is what the button promises.
 async function applyZoom(id,i){
   const t=_zoomTargets[i]; if(!t) return;
-  toast('Analysing the scope "'+t.title+'". Progress is shown in the Log.');
-  setTab('log'); if(typeof logRefresh==='function') logRefresh();
+  const label=(t.name?('Phase '+t.n+' — '+t.name):t.title);
   try{
     await api('/api/cases/'+id+'/zoom',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({window:t.window, host_labels:t.host_labels})});
-    toast('The focused analysis is ready.');
-    setTab('report'); openCase(id);
-  }catch(e){ toast('The scope could not be analysed: '+((e&&e.message)||e)); }
+      body:JSON.stringify({window:t.window, host_labels:t.host_labels, label})});
+  }catch(e){ toast('The scope could not be created: '+((e&&e.message)||e)); return; }
+  toast('Scope "'+label+'" selected. Writing its report — progress is in the Log.');
+  // Re-read first, so the page is ON the new scope before the report is asked
+  // for: regenReport takes over the redraw and the generating banner from here.
+  await openCase(id);
+  regenReport(id);                         // the report this scope was asked for
 }
 
 // A real case is several model calls (one per phase, then a synthesis) over the

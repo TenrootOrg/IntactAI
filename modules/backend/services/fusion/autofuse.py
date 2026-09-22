@@ -118,13 +118,14 @@ def _report_enabled(d):
 
 
 def _case_data_changed(before, after) -> bool:
-    """Did the fuse actually change what the case holds?
+    """Did the fuse actually change what the SELECTED SCOPE holds?
 
-    Compared on the graph's own counts, which is exactly the question: the fuse
-    rebuilt it under the case's window, severity floor and host set, so if
-    findings, entities and links all came back the same, the new data was filtered
-    out and the report would be re-narrated into the identical text. Unknown
-    (a legacy case with no counts) reads as CHANGED — never skip on ignorance.
+    Compared on that scope's own counts — the case's when none is selected. It is
+    exactly the question being asked: the fuse rebuilt the case under its window,
+    severity floor and host set, and the scope then narrows it to the window the
+    operator is reading through. If findings, entities and links all come back the
+    same, the new data cannot change what this report says. Unknown (a legacy case
+    with no counts) reads as CHANGED — never skip a report on ignorance.
     """
     if not before or not after:
         return True
@@ -314,8 +315,15 @@ def _fire(case_id, reason="new data", attempt=0) -> None:
         # with counts), so anything added around it duplicates. The gap this
         # feature was missing is EARLIER — between pressing Fetch and the fuse
         # being armed — and it is filled by the recollect worker, not here.
-        # What the case held BEFORE the fuse — see _case_data_changed.
-        _before = (store.get_case(case_id) or {}).get("graph_counts") or {}
+        # What the SELECTED SCOPE held before the fuse. New data that falls outside
+        # the window the operator is reading through changes nothing they can see,
+        # and re-narrating it would buy the identical report — see
+        # _case_data_changed. For a case with no scope selected this is the whole
+        # case's counts, exactly as before.
+        try:
+            _before = store.scope_counts(case_id) or {}
+        except Exception:                          # noqa: BLE001 — never block the fuse
+            _before = {}
         try:
             store.fuse_case(case_id,
                             trigger=store.TRIGGER_AUTOMATIC_RUN_LANDED,
@@ -400,15 +408,23 @@ def _regenerate_report(case_id, d=None, attempt=0, before_counts=None) -> None:
                 "(this one spends tokens), or tick the automatic option in "
                 "Configuration.")
             return
-        if before_counts is not None and not _case_data_changed(
-                before_counts, (store.get_case(case_id) or {}).get("graph_counts") or {}):
-            # Filtered out by the case's window, severity floor or host set.
-            # Re-narrating would spend a full model run to produce the same words.
+        try:
+            _after = store.scope_counts(case_id) or {}
+        except Exception:                          # noqa: BLE001
+            _after = {}
+        if before_counts is not None and not _case_data_changed(before_counts, _after):
+            # Outside the selected scope's window, or filtered out by the case's
+            # severity floor or host set. Re-narrating would spend a full model run
+            # to produce the same words.
+            _sid = store._active_scope_id(d)
             store.log_case_event(
                 case_id, "Report · already current", "info",
-                "the new data is outside this case's time window, severity floor or "
-                "host set — nothing the report describes changed, so no report was "
-                "generated")
+                ("the new data is outside the scope you are reading"
+                 if _sid != store.FULL_SCOPE_ID else
+                 "the new data is outside this case's time window, severity floor or "
+                 "host set")
+                + " — nothing this report describes changed, so none was generated. "
+                  "Other saved scopes keep their own reports; open one to refresh it.")
             return
         use_llm = False
         try:

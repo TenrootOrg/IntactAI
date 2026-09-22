@@ -403,7 +403,14 @@ def get_case(case_id):
                     # null-guarded for cases created before these existed
                     "dispositions": d.get("dispositions") or [],
                     "token_ab": d.get("token_ab") or {},
-                    "counts": store.graph_counts(case_id),
+                    # The stat bar follows the SELECTED scope (the whole case when
+                    # none is selected), so the header never describes a different
+                    # slice from the tabs under it.
+                    "counts": store.scope_counts(case_id, d),
+                    # Saved windows this case can be read through. Ids, labels and
+                    # windows only — a scope's report and chat never ride here.
+                    "scopes": store.scopes_for_payload(d),
+                    "active_scope": store._active_scope_id(d),
                     # entity-cap textbox + module picker (velociraptor default;
                     # memory optional; timesketch/cve/cloud disabled for now)
                     # Single entity knob: sizes the stored graph AND the LLM payload.
@@ -518,7 +525,7 @@ def get_case_risk(case_id):
     if not d:
         return jsonify({"error": "case not found"}), 404
     g = store.view_graph(case_id, d)        # excluded hosts are out of every view
-    rows = render.risk_table(g, window=d.get("time_window") or None,
+    rows = render.risk_table(g, window=store.view_window(d),
                              min_severity=d.get("min_severity") or "informational")
     return jsonify({"case_id": case_id, "rows": rows, "total": len(rows),
                     "is_stale": bool(store.stale_member_runs(case_id, d))})
@@ -533,7 +540,7 @@ def get_zoom_targets(case_id):
     if not d:
         return jsonify({"error": "case not found"}), 404
     g = store.view_graph(case_id, d)
-    win = d.get("time_window") or None
+    win = store.view_window(d)
     ms = d.get("min_severity") or "informational"
     _mode = d.get("report_altitude") or "auto"
     altitude, reason = render._resolve_altitude(g, window=win, min_severity=ms, mode=_mode)
@@ -558,26 +565,72 @@ def get_zoom_targets(case_id):
 
 @case_bp.route("/api/cases/<case_id>/zoom", methods=["POST"])
 def apply_zoom(case_id):
-    """Apply a zoom preset from the macro report: narrow the case to a target's hosts
-    + time window and re-fuse (deterministic — the focused report renders at the new
-    altitude). The operator can then hit Rescan (LLM) for the focused narrative.
-    Body: {window:{start,end}, host_labels:[...]}."""
+    """Turn a phase card into a SCOPE: save its time window and select it, so every
+    tab shows the part of the case inside that window. Deterministic and instant —
+    nothing is fused, nothing is copied, and the case's own settings are untouched.
+    The report for the scope is the operator's next click.
+    Body: {window:{start,end}, host_labels:[...], label?}."""
     d = store.get_case(case_id)
     if not d:
         return jsonify({"error": "case not found"}), 404
     body = request.get_json(silent=True) or {}
     win = body.get("window") or {}
     keep = {h for h in (body.get("host_labels") or []) if h}
-    if not (win.get("start") and win.get("end")) or not keep:
-        return jsonify({"error": "zoom needs window.start, window.end and host_labels"}), 400
-    g = store.load_graph(case_id)
-    all_labels = {a.label for a in g.by_type("asset")}
-    excluded = sorted(all_labels - keep)              # keep ONLY the target's hosts
-    cfg = {"time_window": {"start": win["start"], "end": win["end"]},
-           "excluded_hosts": excluded}
-    res = store.rescan(case_id, cfg, trigger=store.TRIGGER_MANUAL_REFUSION)
-    return jsonify({"case_id": case_id, "status": "zoomed",
-                    "scoped_to": sorted(keep), "window": cfg["time_window"], **res})
+    if not (win.get("start") and win.get("end")):
+        return jsonify({"error": "a scope needs window.start and window.end"}), 400
+    # A phase card is a SCOPE: it saves the window and selects it. It used to
+    # re-fuse the case into that window and rewrite excluded_hosts to "everything
+    # but these", which destroyed the case's own view and could not be undone.
+    sid = store.create_scope(case_id, body.get("label"),
+                             {"start": win["start"], "end": win["end"]})
+    return jsonify({"case_id": case_id, "status": "scoped", "scope": sid,
+                    "hosts_in_window": sorted(keep), "window": win})
+
+
+@case_bp.route("/api/cases/<case_id>/scopes", methods=["POST"])
+def create_case_scope(case_id):
+    """Create a scope — a saved time window this case can be read through — and
+    select it. Nothing is fused and no evidence is copied. Body: {window:{start,end},
+    label?}."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    body = request.get_json(silent=True) or {}
+    try:
+        sid = store.create_scope(case_id, body.get("label"), body.get("window") or {})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"case_id": case_id, "scope": sid, "status": "created"})
+
+
+@case_bp.route("/api/cases/<case_id>/scope", methods=["POST"])
+def switch_case_scope(case_id):
+    """Select one of this case's saved scopes. A VIEW CHANGE: no fuse, no model
+    call, no evidence touched. Body: {id}."""
+    body = request.get_json(silent=True) or {}
+    sid = (body.get("id") or "").strip()
+    if not sid:
+        return jsonify({"error": "scope id required"}), 400
+    try:
+        return jsonify({"case_id": case_id, **store.switch_scope(case_id, sid)})
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+    except store.ReportGenerationBusy:
+        return jsonify({"error": "a report is being generated for this case — wait "
+                                 "for it to finish", "busy": True}), 409
+    # FusionBusy is left to the blueprint's own handler, so every route answers it
+    # the same way (tests/test_case_fuse_races.py).
+
+
+@case_bp.route("/api/cases/<case_id>/scopes/<scope_id>", methods=["DELETE"])
+def delete_case_scope(case_id, scope_id):
+    """Forget a saved window and the report and chat written in it. No evidence is
+    deleted — the case's graph, verdicts and identities are untouched."""
+    try:
+        return jsonify({"case_id": case_id, **store.delete_scope(case_id, scope_id)})
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
 
 @case_bp.route("/api/cases/<case_id>/investigate", methods=["POST"])

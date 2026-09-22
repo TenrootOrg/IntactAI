@@ -2469,15 +2469,75 @@ def load_graph(case_id) -> FusionGraph:
     return FusionGraph.from_dict(fg)
 
 
-def view_graph(case_id, d=None) -> FusionGraph:
-    """The case graph as every Case Analysis view must see it: with the hosts the
-    operator excluded in Configuration taken out. The report and the Timeline
-    applied the exclusion; the Risk tab, the timeframe cards, chat and Identities
-    read load_graph() directly and kept showing an excluded host."""
+def view_graph(case_id, d=None, *, scoped=True) -> FusionGraph:
+    """The case graph as every Case Analysis view must see it: the hosts the
+    operator excluded in Configuration taken out, and — when a SCOPE is active —
+    narrowed to that scope's time window. The report and the Timeline applied the
+    exclusion; the Risk tab, the timeframe cards, chat and Identities read
+    load_graph() directly and kept showing an excluded host.
+
+    The scope is applied HERE, once, so every view that reads this function
+    narrows together — Timeline, Risk, Identities, chat and the report all show the
+    same slice, and the model is sent the same slice. Identities in particular can
+    be scoped no other way: resolve_identities has no window parameter, it only
+    ever sees the graph it is handed.
+
+    `scoped=False` is the whole case regardless of which scope is selected — for
+    the few readers that must see everything (the host picker, a clicked finding's
+    detail). Those mostly read load_graph directly and are unaffected either way.
+    """
     d = d if d is not None else (get_case(case_id) or {})
     g = _filter_graph_by_hosts(load_graph(case_id), d.get("excluded_hosts"))
+    if scoped:
+        g = _filter_graph_by_window(g, active_scope_window(d))
     g.identity_decisions = _identity_decisions(d)   # people grouped as the Identities tab shows
     return g
+
+
+def _filter_graph_by_window(g, window) -> FusionGraph:
+    """A view of the graph restricted to a time window — the primitive a scope is
+    made of. Measured at 1 ms on a 5,561-entity case, against 36 s to re-fuse the
+    same window, and it stores nothing.
+
+    Mirrors the INGEST filter (correlate.assemble) rather than inventing a second
+    rule, because the two must agree:
+
+      * `_STRUCTURAL_TYPES` (asset / account / ioc / identity / config) are NEVER
+        time-judged. They anchor the graph, so filtering them by first_seen orphans
+        every edge they carry and the scoped graph comes out edgeless — the exact
+        failure correlate.py documents at its own window filter.
+      * an entity with no timestamp is KEPT, never silently dropped (in_window
+        says so too), and so is one whose activity STRADDLES the window: first_seen
+        before it, last_seen inside it.
+      * an entity cited by a finding that is in the window is kept regardless, so a
+        finding never renders with its evidence missing.
+
+    Findings are filtered on their own ts, which is what every render.* view
+    already does (render.scope, render.timeline); doing it here as well is
+    idempotent and makes the graph itself honest for the views that take no window
+    at all — identities being the one that has no window parameter to take.
+    """
+    from .correlate import in_window, _STRUCTURAL_TYPES
+    if not window:
+        return g
+    gv = FusionGraph(case_id=g.case_id, run_ids=list(g.run_ids))
+    gv.identity_decisions = getattr(g, "identity_decisions", None)
+    findings = [f for f in g.findings if in_window(f.ts, window)]
+    cited = {eid for f in findings for eid in (f.entity_ids or [])}
+    keep = set()
+    for e in g.entities.values():
+        if e.type in _STRUCTURAL_TYPES or e.id in cited:
+            pass                                   # pivots and cited evidence always
+        elif not in_window(e.first_seen, window) and not in_window(e.last_seen, window):
+            continue                               # wholly outside, on both bounds
+        gv.entities[e.id] = e
+        keep.add(e.id)
+    gv.findings = findings
+    for r in g.relationships:
+        if r.src in keep and r.dst in keep:
+            gv.relationships.append(r)
+    gv.rebuild_indexes()
+    return gv
 
 
 def _filter_graph_by_hosts(g, excluded_labels) -> FusionGraph:
@@ -2517,6 +2577,267 @@ def _filter_graph_by_hosts(g, excluded_labels) -> FusionGraph:
     gv.rebuild_indexes()
     return gv
 
+
+
+# ── Scopes: one fused case, many saved windows ───────────────────────────────
+# A case is fused ONCE and keeps one set of data — every event, identity, finding
+# and verdict. A SCOPE is a saved time window the case is read through: it shows,
+# and sends to the model, only what falls inside it. Nothing about a scope is
+# fused and no evidence is duplicated, so a scope stores its own report and chat
+# and nothing else (~100 KB), and switching one is a filter, not a rebuild.
+#
+# Measured on a live 5,561-entity case: filtering to a window is 1 ms, re-fusing
+# the same window is 36 s. On a 1,000-client engagement the case graph is ~0.5 GB,
+# so a graph per scope — what the first build did — was ~4 GB per case.
+#
+# The line that keeps this coherent:
+#   FUSE-TIME settings belong to the case (window bound, severity floor, modules,
+#   excluded hosts, masking). VIEW-TIME settings belong to the scope (its window).
+# Analyst decisions — verdicts, identity confirm/decline, manual events — are the
+# CASE's: a verdict is keyed to a finding_id and findings only exist at fuse time,
+# so triage once and every scope that shows that finding shows the verdict.
+FULL_SCOPE_ID = "full"
+FULL_SCOPE_LABEL = "Full case"
+MAX_SCOPES = 12
+
+
+def _scopes(d) -> list:
+    return [s for s in (d.get("scopes") or []) if isinstance(s, dict) and s.get("id")]
+
+
+def _active_scope_id(d) -> str:
+    return d.get("active_scope") or FULL_SCOPE_ID
+
+
+def _active_scope(d) -> dict | None:
+    sid = _active_scope_id(d)
+    return next((s for s in _scopes(d) if s["id"] == sid), None)
+
+
+def active_scope_window(d) -> dict | None:
+    """The window every view narrows to, or None for the whole case."""
+    return ((_active_scope(d) or {}).get("window")) or None
+
+
+def view_window(d) -> dict | None:
+    """What to pass as `window=` to render.*: the scope's when one is selected,
+    otherwise the case's own fuse bound (which the stored graph already satisfies,
+    so passing it again is idempotent — every render.* re-applies it defensively)."""
+    return active_scope_window(d) or (d.get("time_window") or None)
+
+
+def scope_id_for_window(window) -> str:
+    """Stable id from the window itself, so re-entering the same timeframe lands on
+    the scope that already exists instead of piling up a duplicate."""
+    w = window or {}
+    digits = "".join(ch for ch in f"{w.get('start') or ''}{w.get('end') or ''}" if ch.isdigit())
+    return f"w{digits}" if digits else FULL_SCOPE_ID
+
+
+def _window_label(w) -> str:
+    a, b = (w.get("start") or "")[:10], (w.get("end") or "")[:10]
+    return f"{a} → {b}" if b else f"from {a}"
+
+
+# The live case fields a scope owns. Everything else on the case row — the graph,
+# the verdicts, the identities, the configuration, the log — is the case's.
+_SCOPE_FIELDS = ("report_md", "report_written_at", "report_config_id", "report_dirty",
+                 "report_run_ids", "chat_messages", "token_ab", "report_llm_calls",
+                 "scope_counts")
+
+
+def _live_scope_fields(d) -> dict:
+    return {k: d.get(k) for k in _SCOPE_FIELDS}
+
+
+def _scope_restore_patch(entry) -> dict:
+    """The entry put back onto the live case row. Absent keys are cleared, not
+    left behind, or a new scope would open showing the previous one's report."""
+    out = {k: entry.get(k) for k in _SCOPE_FIELDS}
+    out["report_md"] = entry.get("report_md") or ""
+    out["chat_messages"] = list(entry.get("chat_messages") or [])
+    out["report_dirty"] = bool(entry.get("report_dirty"))
+    return out
+
+
+def _upsert_scope(case_id, entry, *, active=None) -> None:
+    """Write one scope entry, under the lock, so two browser tabs cannot clobber
+    each other's list (the lost-update this file's _mutate_list_field exists for)."""
+    def _apply(cur):
+        cur = [s for s in (cur or []) if isinstance(s, dict) and s.get("id")]
+        out = [entry if s["id"] == entry["id"] else s for s in cur]
+        if not any(s["id"] == entry["id"] for s in cur):
+            out.append(entry)
+        return _evict_scopes(case_id, out, {entry["id"], _active_scope_id(get_case(case_id) or {})})
+    _mutate_list_field(case_id, "scopes", _apply)
+    if active is not None:
+        _merge_case_details(case_id, {"active_scope": active})
+
+
+def _evict_scopes(case_id, scopes, keep_ids) -> list:
+    """Bound the list. A scope holds no evidence, so evicting one costs only its
+    saved report — the window can be re-created and re-analysed at any time."""
+    if len(scopes) <= MAX_SCOPES:
+        return scopes
+    protected = set(keep_ids) | {FULL_SCOPE_ID}
+    droppable = sorted((s for s in scopes if s["id"] not in protected),
+                       key=lambda s: (bool(s.get("report_md")), s.get("used_at") or ""))
+    drop = {s["id"] for s in droppable[:len(scopes) - MAX_SCOPES]}
+    if drop:
+        log_case_event(case_id, f"Scope · dropped {len(drop)}", "info",
+                       f"a case keeps its {MAX_SCOPES} most recent scopes; the least "
+                       f"recently used were removed (the ones holding a report are kept "
+                       f"longest). No evidence is affected — re-create the window to "
+                       f"analyse it again")
+    return [s for s in scopes if s["id"] not in drop]
+
+
+def _save_active_scope(case_id, d) -> None:
+    """Put the live report and chat back into the scope they belong to, before the
+    view moves somewhere else."""
+    sid = _active_scope_id(d)
+    prev = _active_scope(d) or {}
+    _upsert_scope(case_id, {"id": sid,
+                            "label": prev.get("label") or (FULL_SCOPE_LABEL if sid == FULL_SCOPE_ID else sid),
+                            "window": prev.get("window") or None,
+                            "used_at": _now_iso(),
+                            **_live_scope_fields(d)})
+
+
+def create_scope(case_id, label, window) -> str:
+    """Add a scope (from a phase card, or from "+ New scope") and select it. The
+    window is a LENS — nothing is fused, nothing is copied, and the case's own
+    time window (what it fuses) is untouched."""
+    d = get_case(case_id) or {}
+    if not (window or {}).get("start"):
+        raise ValueError("a scope needs a start date")
+    _save_active_scope(case_id, d)
+    d = get_case(case_id) or {}
+    sid = scope_id_for_window(window)
+    known = next((s for s in _scopes(d) if s["id"] == sid), None)
+    entry = dict(known or {})
+    entry.update({"id": sid, "label": label or (known or {}).get("label") or _window_label(window),
+                  "window": {"start": window.get("start"), "end": window.get("end")},
+                  "used_at": _now_iso()})
+    if not known:                                    # a fresh window starts empty
+        entry.update({k: None for k in _SCOPE_FIELDS})
+        entry["report_md"], entry["chat_messages"] = "", []
+    _upsert_scope(case_id, entry, active=sid)
+    _merge_case_details(case_id, _scope_restore_patch(entry))
+    log_case_event(case_id, f"Scope · {entry['label']}", "info",
+                   ("selected again" if known else "created") +
+                   f" — {_window_label(entry['window'])}. The case's evidence is "
+                   f"unchanged; this is a view of it")
+    return sid
+
+
+def switch_scope(case_id, scope_id) -> dict:
+    """Select a saved scope. A VIEW CHANGE: no fuse, no model call, no evidence
+    touched — the live report and chat are swapped for that scope's, and every tab
+    re-reads the same graph through the new window."""
+    d = get_case(case_id)
+    if not d:
+        raise KeyError("case not found")
+    if report_generation_active(d):
+        # The report worker writes into whichever scope is selected when it lands.
+        raise ReportGenerationBusy("a report is being generated for this case")
+    cur = _active_scope_id(d)
+    if scope_id == cur:
+        return {"status": "unchanged", "scope": scope_id}
+    target = (next((s for s in _scopes(d) if s["id"] == scope_id), None)
+              if scope_id != FULL_SCOPE_ID else
+              (next((s for s in _scopes(d) if s["id"] == FULL_SCOPE_ID), None) or {"id": FULL_SCOPE_ID}))
+    if target is None:
+        raise KeyError(f"unknown scope {scope_id}")
+    _save_active_scope(case_id, d)
+    patch = _scope_restore_patch(target)
+    patch["active_scope"] = scope_id
+    _merge_case_details(case_id, patch)
+    _upsert_scope(case_id, {**target, "used_at": _now_iso()})
+    label = target.get("label") or (FULL_SCOPE_LABEL if scope_id == FULL_SCOPE_ID else scope_id)
+    log_case_event(case_id, f"Scope · switched to {label}", "success",
+                   "the case's evidence is unchanged — every tab now shows the part "
+                   "of it inside this window")
+    return {"status": "switched", "scope": scope_id,
+            "has_report": bool(patch.get("report_md"))}
+
+
+def delete_scope(case_id, scope_id) -> dict:
+    """Forget a saved window and the report and chat written in it. NO EVIDENCE IS
+    DELETED — the case's graph, verdicts and identities are untouched."""
+    if scope_id == FULL_SCOPE_ID:
+        raise ValueError("the full case cannot be deleted")
+    d = get_case(case_id) or {}
+    if not any(s["id"] == scope_id for s in _scopes(d)):
+        raise KeyError(f"unknown scope {scope_id}")
+    if _active_scope_id(d) == scope_id:              # leave the operator somewhere real
+        switch_scope(case_id, FULL_SCOPE_ID)
+    _mutate_list_field(case_id, "scopes",
+                       lambda cur: [s for s in (cur or []) if s.get("id") != scope_id])
+    log_case_event(case_id, "Scope · deleted", "info",
+                   "the window and the report written in it are gone; the case's "
+                   "evidence, verdicts and identities are untouched")
+    return {"deleted": True, "scope": scope_id}
+
+
+def _counts_from_graph(g) -> dict:
+    """The stat-bar counts straight off a graph OBJECT — same shape as
+    _counts_from_graph_dict, without serialising 5,000 entities to ask."""
+    ts = sorted(t for t in (f.ts for f in g.findings) if t)
+    span = None
+    if ts:
+        lo, hi = keys.to_utc_dt(ts[0]), keys.to_utc_dt(ts[-1])
+        if lo and hi:
+            span = (hi - lo).days
+    return {"hosts": sum(1 for e in g.entities.values() if e.type == "asset"),
+            "entities": len(g.entities), "links": len(g.relationships),
+            "findings": len(g.findings),
+            "cross_host": sum(1 for f in g.findings if f.kind == "cross_host"),
+            "evidence_first": ts[0] if ts else None,
+            "evidence_last": ts[-1] if ts else None,
+            "evidence_span_days": span}
+
+
+def scope_counts(case_id, d=None) -> dict:
+    """The stat bar for the SELECTED scope. The whole case keeps its precomputed
+    counts (no graph read); a scope's are computed once per fuse and cached on the
+    case row, because the case payload is polled every few seconds and loading the
+    graph each time would cost 0.13 s on a small case and far more on a real one."""
+    d = d if d is not None else (get_case(case_id) or {})
+    if not active_scope_window(d):
+        return graph_counts(case_id)
+    cached = d.get("scope_counts") or {}
+    if cached.get("of_fuse") and cached.get("of_fuse") == d.get("fused_at"):
+        return {k: v for k, v in cached.items() if k != "of_fuse"}
+    counts = _counts_from_graph(view_graph(case_id, d))
+    try:
+        _merge_case_details(case_id, {"scope_counts": {**counts, "of_fuse": d.get("fused_at")}})
+    except Exception:                                # noqa: BLE001 — a cache, never fatal
+        pass
+    return counts
+
+
+def scopes_for_payload(d) -> list:
+    """What the dropdown renders. Ids, labels and windows only — never the stored
+    report or chat. The full case is always first, whether or not it has an entry
+    yet, because it is where a case starts."""
+    active = _active_scope_id(d)
+    rows, seen = [], set()
+    for s in _scopes(d):
+        seen.add(s["id"])
+        rows.append({"id": s["id"],
+                     "label": s.get("label") or (FULL_SCOPE_LABEL if s["id"] == FULL_SCOPE_ID else s["id"]),
+                     "window": s.get("window") or {},
+                     "report_written_at": s.get("report_written_at"),
+                     "has_report": bool(s.get("report_md")),
+                     "active": s["id"] == active})
+    if FULL_SCOPE_ID not in seen:
+        rows.insert(0, {"id": FULL_SCOPE_ID, "label": FULL_SCOPE_LABEL, "window": {},
+                        "report_written_at": d.get("report_written_at"),
+                        "has_report": bool(d.get("report_md")),
+                        "active": active == FULL_SCOPE_ID})
+    rows.sort(key=lambda r: (r["id"] != FULL_SCOPE_ID, (r["window"] or {}).get("start") or ""))
+    return rows
 
 
 def _log_checklist_outcome(case_id, outcome, items):
@@ -3083,10 +3404,11 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
         set_branding(case_id, audience=audience)
     d = get_case(case_id)
     g = load_graph(case_id)
-    window = d.get("time_window") or None
+    # The SELECTED scope's window: this report describes that slice of the case,
+    # and is stored with the scope it was written for.
+    window = view_window(d)
     min_sev = d.get("min_severity", "informational")
-    gv = _filter_graph_by_hosts(g, d.get("excluded_hosts"))
-    gv.identity_decisions = _identity_decisions(d)
+    gv = view_graph(case_id, d)
     # masking (customer-facing): anonymize host/user/ip in the LLM payload + narrative.
     # This is the LLM path (use_llm=True) where masking actually matters — the first-scan
     # path is deterministic. Build it here too so anonymization is applied on Rescan.
@@ -4010,13 +4332,16 @@ def get_timeline(case_id) -> list:
     'pending'), suggested_benign (analyst hinted it looks expected), manual."""
     from services.fusion.correlate import _wm_new_activity
     d = get_case(case_id)
-    g = _filter_graph_by_hosts(load_graph(case_id), d.get("excluded_hosts"))
+    # view_graph, not a hand-rolled host filter: it applies the SCOPE too, so the
+    # Timeline shows the part of the case inside the selected window. The events
+    # and the verdicts below are the case's — one list, triaged once.
+    g = view_graph(case_id, d)
     vrec = {v.get("finding_id"): v for v in (d.get("timeline_validations") or [])}
     fwm = {f.id: f.watermark() for f in g.findings}     # current occurrence watermark
     # analyst "looks benign" suggestions (the old checklist) -> inline hint
     suggested = {it.get("finding_id") for it in (d.get("disposition_checklist") or [])
                  if it.get("suggestion") == "benign"}
-    rows = render.timeline(g, window=d.get("time_window") or None)
+    rows = render.timeline(g, window=view_window(d))
     for r in rows:
         fid = r.get("finding_id")
         v = vrec.get(fid)
@@ -4177,7 +4502,7 @@ def chat_case(case_id, question) -> str:
             mask = None
     try:
         ans = llm_sim.chat(g, question, history=d.get("chat_messages") or [],
-                           window=d.get("time_window") or None,
+                           window=view_window(d),
                            min_severity=d.get("min_severity", "informational"),
                            run_id=case_id, dispositions=d.get("dispositions") or None,
                            validations=d.get("timeline_validations") or None,
