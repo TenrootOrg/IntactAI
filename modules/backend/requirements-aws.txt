@@ -1,0 +1,13 @@
+# AWS Module Dependencies
+#
+# boto3 was in NO requirements file, while every live AWS collector
+# (services/aws/{cloudtrail,guardduty,accessanalyzer,iam}_runner.py) does
+# `import boto3` and each one's is_available() answers
+# "boto3 not installed" when it is missing. The result was a scan that ran to
+# completion with zero records and the message "No data collected" — which is
+# also what a clean account produces. Same shape as the Gemini provider note in
+# requirements-agentic.txt: supported on paper only.
+#
+# install_deps.py installs every requirements-<mod>.txt unconditionally, so
+# this file is all that is needed.
+boto3>=1.34,<2

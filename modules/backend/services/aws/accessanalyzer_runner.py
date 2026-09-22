@@ -11,17 +11,13 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional
 
+from . import boto_client
+from .boto_client import FATAL_KINDS, AwsFatal, classify
+
 
 def _safe_client(service: str, aws_config: Dict[str, Any], region: str):
-    import boto3
-    kwargs = {
-        "aws_access_key_id": aws_config["access_key_id"],
-        "aws_secret_access_key": aws_config["secret_access_key"],
-        "region_name": region,
-    }
-    if aws_config.get("session_token"):
-        kwargs["aws_session_token"] = aws_config["session_token"]
-    return boto3.client(service, **kwargs)
+    """Bounded client (see boto_client) — the library defaults are 60s x 5."""
+    return boto_client.client(service, aws_config, region)
 
 
 def is_available(aws_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -88,18 +84,21 @@ def collect_accessanalyzer(
     regions_to_scan = regions or [aws_config.get("region", "us-east-1")]
     out: List[Dict] = []
     total_analyzers = 0
+    # Unreadable != nothing found. See guardduty_runner for the same rule.
+    unread: List[str] = []
     for region in regions_to_scan:
         if is_cancelled_func and is_cancelled_func():
             break
         try:
             aa = _safe_client("accessanalyzer", aws_config, region)
-        except Exception as e:
-            log(f"[accessanalyzer] region={region} client failed: {e}", "warning")
-            continue
-        try:
             analyzers = aa.list_analyzers().get("analyzers") or []
         except Exception as e:
-            log(f"[accessanalyzer] list_analyzers({region}) failed: {e}", "warning")
+            kind, msg = classify(e)
+            unread.append(region)
+            log(f"[accessanalyzer] region={region} unreadable — {msg}", "warning")
+            if kind in FATAL_KINDS:
+                log(f"[accessanalyzer] aborting after {len(out)} finding(s) — {msg}", "error")
+                break
             continue
         total_analyzers += len(analyzers)
         for a in analyzers:
@@ -112,7 +111,15 @@ def collect_accessanalyzer(
                     for f in page.get("findings") or []:
                         out.append(_normalize_finding(f, arn, region))
             except Exception as e:
-                log(f"[accessanalyzer] region={region} analyzer={arn} failed: {e}", "warning")
+                kind, msg = classify(e)
+                unread.append(f"{region}/{arn.rsplit('/', 1)[-1]}")
+                log(f"[accessanalyzer] region={region} analyzer={arn} failed — {msg}", "warning")
+                if kind in FATAL_KINDS:
+                    raise AwsFatal(kind, msg, partial=out)
                 continue
+    if unread:
+        log(f"[accessanalyzer] {len(unread)} of {len(regions_to_scan)} region(s)/analyzer(s) "
+            f"could not be read ({', '.join(unread[:10])}) — a zero-finding result "
+            f"here does NOT mean nothing is publicly exposed", "error")
     log(f"[accessanalyzer] {len(out)} findings across {total_analyzers} analyzer(s) in {len(regions_to_scan)} region(s)", "info")
     return out

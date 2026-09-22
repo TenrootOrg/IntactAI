@@ -416,13 +416,25 @@ def collect_azure_logs(
                         )
                         if ual_result.get('skipped'):
                             log(f"{source_name} skipped: {ual_result.get('reason', 'Exchange Online not available')}", "info")
-                        elif ual_result['success'] and ual_result['records']:
+                        elif ual_result['records']:
+                            # Records first, success second. A timed-out or
+                            # failed UAL pull now returns what the container
+                            # had already written (dfir_o365rc._harvest_output)
+                            # — requiring success==True here threw that away
+                            # and made the operator re-run the 30-minute query.
                             # No collector-side dedup; SIGMA needs full data.
                             # Dedup happens at prompt-rendering time keyed
                             # on correlationId (analyzers._analyze_timeline).
                             normalized = normalize_logs(ual_result['records'], source_info.get('sigma_prefix', source))
                             collected_data[source_info['sigma_prefix']] = normalized
-                            log(f"Collected {len(normalized)} records from {source_name}", "success")
+                            if ual_result.get('error'):
+                                status['errors'].append(
+                                    f"{source_name}: PARTIAL — kept {len(normalized)} record(s) "
+                                    f"collected before the failure: {ual_result['error']}")
+                                log(f"{source_name}: PARTIAL — {len(normalized)} records kept, "
+                                    f"collection did not finish: {ual_result['error'][:200]}", "warning")
+                            else:
+                                log(f"Collected {len(normalized)} records from {source_name}", "success")
                         elif ual_result['error']:
                             status['errors'].append(f"{source_name}: {ual_result['error']}")
                             log(f"{source_name}: {ual_result['error'][:200]}", "warning")
@@ -447,10 +459,18 @@ def collect_azure_logs(
                             end_date=end_date or datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
                             logger=log
                         )
-                        if act_result['success'] and act_result['records']:
+                        if act_result['records']:
+                            # See the UAL branch: keep partial output when the
+                            # run failed after writing some of it.
                             normalized = normalize_logs(act_result['records'], source_info.get('sigma_prefix', source))
                             collected_data[source_info['sigma_prefix']] = normalized
-                            log(f"Collected {len(normalized)} records from {source_name}", "success")
+                            if act_result.get('error'):
+                                status['errors'].append(
+                                    f"{source_name}: PARTIAL — kept {len(normalized)} record(s): {act_result['error']}")
+                                log(f"{source_name}: PARTIAL — {len(normalized)} records kept, "
+                                    f"collection did not finish: {act_result['error'][:200]}", "warning")
+                            else:
+                                log(f"Collected {len(normalized)} records from {source_name}", "success")
                         elif act_result.get('error'):
                             status['errors'].append(f"{source_name}: {act_result['error']}")
                             log(f"{source_name}: {act_result['error'][:200]}", "warning")
@@ -813,7 +833,10 @@ def parse_csv_file(file_path: str) -> List[Dict]:
 
         try:
             dialect = csv.Sniffer().sniff(sample)
-        except:
+        except csv.Error:
+            # Bare `except:` here also swallowed KeyboardInterrupt and any
+            # MemoryError on a large sample. Sniffer raises csv.Error and
+            # nothing else when it cannot find a delimiter.
             dialect = csv.excel
 
         reader = csv.DictReader(f, dialect=dialect)

@@ -300,7 +300,10 @@ def start_scan():
             # Build options with identity filters
             options = {
                 'time_filter': data.get('time_filter'),
-                'min_severity': data.get('min_severity', 'medium'),
+                # No default: injecting 'medium' meant a blueprint's own
+                # declared floor could never apply. None => the pipeline uses
+                # the blueprint's. Mirrors routes/aws_routes.py.
+                'min_severity': data.get('min_severity'),
                 'scope_mode': scope_mode,
                 'target_users': target_users,
                 'target_ips': target_ips,
@@ -332,9 +335,10 @@ def start_scan():
                 options=options
             )
 
-            if is_cancelled(run_id):
-                return
-
+            # Store and persist FIRST. Behind the cancel check, stopping a
+            # run threw away everything already collected from the tenant —
+            # and a UAL pull is the 5-10 minute phase nobody wants to repeat.
+            # Same fix as routes/aws_routes.py.
             _azure_runs[run_id] = result
 
             # Persist raw data to disk so it survives backend restart
@@ -345,6 +349,9 @@ def start_scan():
                     json.dump(result, f, default=str)
             except Exception as persist_err:
                 print(f"[AZURE] Warning: Could not persist raw data: {persist_err}", flush=True)
+
+            if is_cancelled(run_id):
+                return
 
             if result.get('status') == 'failed':
                 update_run_status(run_id, "failed", error=result.get('error', 'Unknown error'))

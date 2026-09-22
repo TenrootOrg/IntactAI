@@ -22,6 +22,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from services.workflow_service import add_log_to_run, is_cancelled
 
+from .boto_client import AwsFatal
+
 _FAKE_DATA_DIR = Path(__file__).parent / "fake_data"
 
 # Opt-in, and OFF by default. The bundled fixtures are deliberately
@@ -150,7 +152,10 @@ def _stub_collect(
     baseline that doesn't depend on a customer's account."""
     cfg = LOG_SOURCES.get(source)
     if not cfg:
-        log(f"[AWS] Unknown source: {source}", "warning")
+        # A requested source we do not know how to collect is a promise this
+        # run cannot keep — error level so it lands in the collection status
+        # instead of scrolling past as a warning.
+        log(f"[AWS] Unknown source requested and NOT collected: {source}", "error")
         return []
     sigma_prefix = cfg.get('sigma_prefix', 'AWS')
 
@@ -187,6 +192,12 @@ def _stub_collect(
                 log(f"[AWS] {cfg['name']}: 0 live events in window — using fixture as backstop", "info")
             else:
                 log(f"[AWS] {cfg['name']}: CloudTrail runner unavailable ({avail.get('message')}) — using fixture", "warning")
+        except AwsFatal:
+            # Bad credentials / no route: re-raised so collect_aws_logs keeps
+            # the partial records and marks the source failed. Swallowing it
+            # here would silently substitute (or, with demo data off, report
+            # zero) for an account we were locked out of.
+            raise
         except Exception as e:
             log(f"[AWS] {cfg['name']}: CloudTrail call raised {e!r} — using fixture", "error")
 
@@ -211,6 +222,12 @@ def _stub_collect(
                 log(f"[AWS] {cfg['name']}: GuardDuty has 0 active findings or no detectors — using fixture as backstop", "info")
             else:
                 log(f"[AWS] {cfg['name']}: GuardDuty runner unavailable ({avail.get('message')}) — using fixture", "warning")
+        except AwsFatal:
+            # Bad credentials / no route: re-raised so collect_aws_logs keeps
+            # the partial records and marks the source failed. Swallowing it
+            # here would silently substitute (or, with demo data off, report
+            # zero) for an account we were locked out of.
+            raise
         except Exception as e:
             log(f"[AWS] {cfg['name']}: GuardDuty call raised {e!r} — using fixture", "error")
 
@@ -235,6 +252,12 @@ def _stub_collect(
                 log(f"[AWS] {cfg['name']}: 0 Access Analyzer findings or no analyzer configured — using fixture as backstop", "info")
             else:
                 log(f"[AWS] {cfg['name']}: Access Analyzer runner unavailable ({avail.get('message')}) — using fixture", "warning")
+        except AwsFatal:
+            # Bad credentials / no route: re-raised so collect_aws_logs keeps
+            # the partial records and marks the source failed. Swallowing it
+            # here would silently substitute (or, with demo data off, report
+            # zero) for an account we were locked out of.
+            raise
         except Exception as e:
             log(f"[AWS] {cfg['name']}: Access Analyzer call raised {e!r} — using fixture", "error")
 
@@ -260,6 +283,12 @@ def _stub_collect(
                 log(f"[AWS] {cfg['name']}: boto3 enumeration returned no principals — falling back to fixture", "warning")
             else:
                 log(f"[AWS] {cfg['name']}: iam_runner unavailable ({avail.get('message')}) — using fixture", "warning")
+        except AwsFatal:
+            # Bad credentials / no route: re-raised so collect_aws_logs keeps
+            # the partial records and marks the source failed. Swallowing it
+            # here would silently substitute (or, with demo data off, report
+            # zero) for an account we were locked out of.
+            raise
         except Exception as e:
             log(f"[AWS] {cfg['name']}: iam_runner call raised {e!r} — using fixture", "error")
 
@@ -309,19 +338,34 @@ def collect_aws_logs(
     freshness_window_days: Optional[float] = None,
     max_events_per_region: Optional[int] = None,
     log_func: Optional[Callable[[str, str], None]] = None,
-) -> Dict[str, List[Dict]]:
+) -> Tuple[Dict[str, List[Dict]], Dict[str, Any]]:
     """Collect AWS logs for the requested `sources`.
 
-    Returns a dict keyed by `sigma_prefix` (e.g. `AWS.CloudTrail`) →
-    list of records. Same shape `services.azure.collectors.collect_azure_logs`
-    returns, so the rest of the pipeline is provider-agnostic.
+    Returns `(data, status)`:
+      - data: dict keyed by `sigma_prefix` (e.g. `AWS.CloudTrail`) → records.
+      - status: {'errors', 'sources_attempted', 'sources_with_data',
+                 'sources_failed'} — the same second return value
+        `services.azure.collectors.collect_azure_logs` has always had, and
+        whose absence here was the whole problem: every per-source failure
+        existed only as a line in the run log, so the run itself reported
+        `collection: complete` no matter how much of the account it had been
+        refused. An operator reading the result could not tell a clean
+        account from a locked-out one.
 
-    In this scaffold every source's collector is a fixture loader. The
-    real implementation will call boto3 here and keep the same
-    return shape.
+    `errors` is fed by the runners' own error-level log lines — `log_func` is
+    already the single channel all four of them report through, so this needs
+    no new parameter on any runner signature.
     """
+    status: Dict[str, Any] = {
+        'errors': [],
+        'sources_attempted': [],
+        'sources_with_data': [],
+        'sources_failed': [],
+    }
 
     def log(msg: str, level: str = "info") -> None:
+        if level == "error":
+            status['errors'].append(msg)
         if log_func:
             log_func(msg, level)
         if run_id:
@@ -368,17 +412,34 @@ def collect_aws_logs(
         if is_cancelled(run_id):
             log("[AWS] Collection cancelled", "warning")
             break
-        records = _stub_collect(
-            source, log,
-            aws_config=aws_config,
-            regions=regions,
-            resource_arn=resource_arn,
-            target_principal_arns=target_principal_arns,
-            time_filter=time_filter if isinstance(time_filter, dict) else None,
-            is_cancelled_func=_is_cancelled_for_runner,
-            freshness_window_days=freshness_window_days,
-            max_events_per_region=max_events_per_region,
-        )
+        status['sources_attempted'].append(source)
+        try:
+            records = _stub_collect(
+                source, log,
+                aws_config=aws_config,
+                regions=regions,
+                resource_arn=resource_arn,
+                target_principal_arns=target_principal_arns,
+                time_filter=time_filter if isinstance(time_filter, dict) else None,
+                is_cancelled_func=_is_cancelled_for_runner,
+                freshness_window_days=freshness_window_days,
+                max_events_per_region=max_events_per_region,
+            )
+        except AwsFatal as fatal:
+            # A fatal runner error carries the records it had already read.
+            # Source five blowing up must not cost us sources one to four,
+            # nor this source's own partial haul.
+            records = fatal.partial
+            status['sources_failed'].append(source)
+            log(f"[AWS] {source}: aborted — {fatal.message}. Keeping "
+                f"{len(records)} record(s) already collected.", "error")
+        except Exception as ex:
+            # Nothing under here is supposed to raise, but an unhandled one
+            # used to take the WHOLE collection down (the loop had no guard),
+            # discarding every source that had already succeeded.
+            records = []
+            status['sources_failed'].append(source)
+            log(f"[AWS] {source}: collector raised {ex!r} — other sources continue", "error")
         if not records:
             continue
         prefix = LOG_SOURCES[source]['sigma_prefix']
@@ -386,10 +447,13 @@ def collect_aws_logs(
         # slices). Merge under the prefix so downstream SIGMA + analyzer
         # see them grouped — same convention as Azure.
         results.setdefault(prefix, []).extend(records)
+        status['sources_with_data'].append(source)
 
     total = sum(len(v) for v in results.values())
-    log(f"[AWS] Collection complete — {total} records across {len(results)} sources", "info")
-    return results
+    log(f"[AWS] Collection complete — {total} records across {len(results)} sources "
+        f"({len(status['sources_with_data'])}/{len(status['sources_attempted'])} sources "
+        f"returned data, {len(status['errors'])} error(s))", "info")
+    return results, status
 
 
 # =============================================================================

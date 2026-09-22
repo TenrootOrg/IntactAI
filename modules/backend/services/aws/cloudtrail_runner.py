@@ -22,6 +22,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
+from . import boto_client
+from .boto_client import FATAL_KINDS, AwsFatal, classify
+
 # High-signal CloudTrail event names for `light` mode.
 #
 # Ordering matters: events earlier in the tuple are queried first and,
@@ -58,15 +61,9 @@ DEFAULT_LOOKBACK_HOURS = 24
 
 
 def _safe_client(service: str, aws_config: Dict[str, Any], region: str):
-    import boto3
-    kwargs = {
-        "aws_access_key_id": aws_config["access_key_id"],
-        "aws_secret_access_key": aws_config["secret_access_key"],
-        "region_name": region,
-    }
-    if aws_config.get("session_token"):
-        kwargs["aws_session_token"] = aws_config["session_token"]
-    return boto3.client(service, **kwargs)
+    """Bounded client — see boto_client for why the timeouts matter here most
+    (this module makes 25 LookupEvents passes per region in `light` mode)."""
+    return boto_client.client(service, aws_config, region)
 
 
 def is_available(aws_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -200,6 +197,7 @@ def _collect_for_region(
 ) -> List[Dict[str, Any]]:
     """LookupEvents loop for one region."""
     out: List[Dict] = []
+    break_region = False
 
     # Build LookupAttributes — LookupEvents only accepts ONE attribute
     # at a time. We make multiple passes and dedupe by EventId.
@@ -230,6 +228,11 @@ def _collect_for_region(
     else:
         attr_passes = [None]   # full sweep — no filter
 
+    # A pass that fails is a HOLE in the evidence, not a detail. Counted here
+    # and reported once per region below: "0 events" and "we were denied 25
+    # times" have to look different to the operator.
+    failed_passes: Dict[str, int] = {}
+
     for attrs in attr_passes:
         if is_cancelled_func and is_cancelled_func():
             log(f"[cloudtrail] cancelled in region={region}", "warning")
@@ -246,7 +249,18 @@ def _collect_for_region(
                     next_token=next_token,
                 )
             except Exception as e:
-                log(f"[cloudtrail] region={region} lookup failed: {e}", "warning")
+                kind, msg = classify(e)
+                if kind in FATAL_KINDS:
+                    # Every remaining pass and region fails identically —
+                    # burning another hour proves nothing. Carry the events
+                    # already collected out with the failure.
+                    raise AwsFatal(kind, f"region={region}: {msg}", partial=out)
+                failed_passes[kind] = failed_passes.get(kind, 0) + 1
+                log(f"[cloudtrail] region={region} lookup failed — {msg}", "warning")
+                # cloudtrail:LookupEvents is a single permission, so a denial
+                # applies to the other 24 passes in this region too — stop
+                # instead of logging the same refusal 25 times.
+                break_region = (kind == "denied")
                 break
             for raw in resp.get("Events", []) or []:
                 out.append(_normalize_event(raw))
@@ -266,6 +280,14 @@ def _collect_for_region(
             if page > max_pages:
                 log(f"[cloudtrail] region={region} hit page cap {max_pages}", "warning")
                 break
+        if break_region:
+            break
+
+    if failed_passes:
+        detail = ", ".join(f"{k}x{n}" for k, n in sorted(failed_passes.items()))
+        log(f"[cloudtrail] region={region}: {sum(failed_passes.values())} of "
+            f"{len(attr_passes)} lookup passes failed ({detail}) — this region's "
+            f"CloudTrail events are INCOMPLETE", "error")
     return out
 
 
@@ -318,27 +340,41 @@ def collect_cloudtrail(
 
     regions_to_scan = regions or [aws_config.get("region", "us-east-1")]
     all_events: List[Dict] = []
+    regions_done: List[str] = []
     for region in regions_to_scan:
         if is_cancelled_func and is_cancelled_func():
             break
         try:
             client = _safe_client("cloudtrail", aws_config, region)
         except Exception as e:
-            log(f"[cloudtrail] region={region} client failed: {e}", "warning")
+            kind, msg = classify(e)
+            log(f"[cloudtrail] region={region} client failed — {msg}", "error")
+            if kind in FATAL_KINDS:
+                break
             continue
-        region_events = _collect_for_region(
-            client=client,
-            region=region,
-            start_dt=start_dt,
-            end_dt=end_dt,
-            event_names=event_names,
-            username_filters=username_filters,
-            max_events=max_events_per_region,
-            log=log,
-            is_cancelled_func=is_cancelled_func,
-        )
+        try:
+            region_events = _collect_for_region(
+                client=client,
+                region=region,
+                start_dt=start_dt,
+                end_dt=end_dt,
+                event_names=event_names,
+                username_filters=username_filters,
+                max_events=max_events_per_region,
+                log=log,
+                is_cancelled_func=is_cancelled_func,
+            )
+        except AwsFatal as fatal:
+            # Region four dying must not lose regions one to three, nor the
+            # events this region produced before it died.
+            all_events.extend(fatal.partial)
+            log(f"[cloudtrail] aborting after {len(regions_done)} of "
+                f"{len(regions_to_scan)} region(s) — {fatal.message}. Keeping the "
+                f"{len(all_events)} event(s) already collected.", "error")
+            break
         log(f"[cloudtrail] region={region}: {len(region_events)} events", "info")
         all_events.extend(region_events)
+        regions_done.append(region)
 
     # Dedupe by EventId (same event can appear in multiple per-name passes)
     dedup: Dict[str, Dict] = {}

@@ -36,6 +36,36 @@ def _docker_image() -> str:
         return f"anssi/dfir-o365rc:{os.environ.get('DFIR_O365RC_VERSION', 'latest')}"
 
 
+def _harvest_output(output_dir: str, log=None) -> list:
+    """Read every JSON file DFIR-O365RC left in `output_dir`.
+
+    WHY THIS IS CALLED ON THE FAILURE PATHS TOO. Every early return below used
+    to `shutil.rmtree(output_dir)` and return `records: []` — on timeout, on a
+    non-zero exit, on a fatal auth error. But the container writes its output
+    incrementally, one file per day/record-type, so a UAL pull that dies at
+    minute 28 of a 30-minute budget has most of the tenant's audit log already
+    on disk. Deleting it means the operator's only way back is to re-run the
+    whole Purview query. Collected evidence has to outlive the failure that
+    interrupted it.
+    """
+    records = []
+    files = glob.glob(f"{output_dir}/**/*.json", recursive=True)
+    for json_file in files:
+        try:
+            with open(json_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                records.extend(data)
+            elif isinstance(data, dict):
+                records.append(data)
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            if log:
+                log(f"Warning: Could not parse {os.path.basename(json_file)}: {e}", "warning")
+    if records and log:
+        log(f"Harvested {len(records)} record(s) from {len(files)} output file(s)", "info")
+    return records
+
+
 def _cleanup_container(container_name: str):
     """Remove a DFIR-O365RC container if it exists (prevent orphans)."""
     try:
@@ -353,8 +383,10 @@ def collect_unified_audit_log(
             error = start_result.stderr[:300]
             log(f"Failed to start container: {error}", "error")
             _cleanup_container(container_name)
+            partial = _harvest_output(output_dir, log)
             shutil.rmtree(output_dir, ignore_errors=True)
-            return {'success': False, 'records': [], 'error': f'Container start failed: {error}'}
+            return {'success': False, 'records': partial, 'partial': bool(partial),
+                    'error': f'Container start failed: {error}'}
 
         # Register cleanup so stop can kill the container
         if run_id:
@@ -555,8 +587,9 @@ def collect_unified_audit_log(
     except Exception as e:
         log(f"Failed to run DFIR-O365RC: {e}", "error")
         _cleanup_container(container_name)
+        partial = _harvest_output(output_dir, log)
         shutil.rmtree(output_dir, ignore_errors=True)
-        return {'success': False, 'records': [], 'error': str(e)}
+        return {'success': False, 'records': partial, 'partial': bool(partial), 'error': str(e)}
 
     # Always cleanup container (in case --rm didn't work due to kill)
     _cleanup_container(container_name)
@@ -564,38 +597,36 @@ def collect_unified_audit_log(
     if fatal_error_seen and fatal_error_message:
         error = f"DFIR-O365RC fatal error — {fatal_error_message}"
         log(error, "error")
+        partial = _harvest_output(output_dir, log)
         shutil.rmtree(output_dir, ignore_errors=True)
-        return {'success': False, 'records': [], 'error': error}
+        return {'success': False, 'records': partial, 'partial': bool(partial), 'error': error}
 
     if timed_out:
         error = "DFIR-O365RC timed out. Possible causes: (1) Exchange Online inactive/blocked on this tenant (2) Certificate not uploaded to App Registration (3) Missing Exchange.ManageAsApp permission or View-only audit logs role"
         log(error, "warning")
+        # The likeliest case for partial evidence: a long UAL pull killed at
+        # the deadline with most days already written.
+        partial = _harvest_output(output_dir, log)
+        if partial:
+            log(f"Keeping {len(partial)} record(s) collected before the timeout", "warning")
         shutil.rmtree(output_dir, ignore_errors=True)
-        return {'success': False, 'records': [], 'error': error}
+        return {'success': False, 'records': partial, 'partial': bool(partial), 'error': error}
 
     if exit_code != 0:
         log(f"DFIR-O365RC exited with code {exit_code}", "warning")
+        partial = _harvest_output(output_dir, log)
+        if partial:
+            log(f"Keeping {len(partial)} record(s) written before the failure", "warning")
         shutil.rmtree(output_dir, ignore_errors=True)
-        return {'success': False, 'records': [], 'error': f'DFIR-O365RC failed (exit code {exit_code}). Check logs above for details.'}
+        return {'success': False, 'records': partial, 'partial': bool(partial),
+                'error': f'DFIR-O365RC failed (exit code {exit_code}). Check logs above for details.'}
 
     # Parse JSON output files
-    records = []
-    json_files = glob.glob(f"{output_dir}/**/*.json", recursive=True)
-    log(f"Found {len(json_files)} output files", "info")
+    records = _harvest_output(output_dir, log)
 
-    for json_file in json_files:
-        try:
-            with open(json_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    records.extend(data)
-                elif isinstance(data, dict):
-                    # Some outputs are single objects
-                    records.append(data)
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            log(f"Warning: Could not parse {os.path.basename(json_file)}: {e}", "warning")
-
-    # Cleanup temp directory
+    # Cleanup temp directory — safe here and on the failure paths above,
+    # because the records are in memory by now and the pipeline persists them
+    # with the run.
     shutil.rmtree(output_dir, ignore_errors=True)
 
     log(f"Collected {len(records)} raw Unified Audit Log records", "success")
@@ -686,8 +717,10 @@ def _run_dfir_command(
         if start_result.returncode != 0:
             error = start_result.stderr[:300]
             _cleanup_container(container_name)
+            partial = _harvest_output(output_dir, log)
             shutil.rmtree(output_dir, ignore_errors=True)
-            return {'success': False, 'records': [], 'error': f'Container start failed: {error}'}
+            return {'success': False, 'records': partial, 'partial': bool(partial),
+                    'error': f'Container start failed: {error}'}
 
         # Wait for container to finish (with timeout AND fatal-error early-exit).
         # Same fatal patterns as collect_unified_audit_log — auth failures and
@@ -764,36 +797,29 @@ def _run_dfir_command(
 
     except Exception as e:
         _cleanup_container(container_name)
+        partial = _harvest_output(output_dir, log)
         shutil.rmtree(output_dir, ignore_errors=True)
-        return {'success': False, 'records': [], 'error': str(e)}
+        return {'success': False, 'records': partial, 'partial': bool(partial), 'error': str(e)}
 
     _cleanup_container(container_name)
 
     if timed_out:
+        partial = _harvest_output(output_dir, log)
         shutil.rmtree(output_dir, ignore_errors=True)
-        return {'success': False, 'records': [], 'error': f'Command timed out after {timeout_seconds}s'}
+        return {'success': False, 'records': partial, 'partial': bool(partial),
+                'error': f'Command timed out after {timeout_seconds}s'}
 
     if exit_code != 0:
         # Extract meaningful error from logs
         error_lines = [l for l in container_logs.split('\n') if 'error' in l.lower() or 'exception' in l.lower()]
         error_msg = error_lines[0][:300] if error_lines else f'Exit code {exit_code}'
+        partial = _harvest_output(output_dir, log)
         shutil.rmtree(output_dir, ignore_errors=True)
-        return {'success': False, 'records': [], 'error': error_msg}
+        return {'success': False, 'records': partial, 'partial': bool(partial), 'error': error_msg}
 
     # Parse JSON output files
-    records = []
     json_files = glob.glob(f"{output_dir}/**/*.json", recursive=True)
-
-    for json_file in json_files:
-        try:
-            with open(json_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    records.extend(data)
-                elif isinstance(data, dict):
-                    records.append(data)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            pass
+    records = _harvest_output(output_dir, log)
 
     shutil.rmtree(output_dir, ignore_errors=True)
     return {'success': True, 'records': records, 'error': None, 'files_count': len(json_files)}

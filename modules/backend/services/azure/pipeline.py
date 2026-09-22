@@ -27,6 +27,12 @@ from services.workflow_logger import add_log_to_run
 from services.workflow_service import update_run_status as _update_run_status
 
 
+# Hoisted from _run_post_collection_phases, where it was defined halfway down
+# the function and therefore unusable by the severity resolution above it.
+# Same ladder as services/aws/pipeline.SEVERITY_RANK.
+SEVERITY_RANK = {'informational': 0, 'low': 1, 'medium': 2, 'high': 3, 'critical': 4}
+
+
 def _set_progress(run_id: str, pct: int) -> None:
     """Update workflow progress percentage if run_id is set."""
     if run_id:
@@ -131,8 +137,21 @@ def _run_post_collection_phases(
     _set_progress(run_id, 65)
     phase_start("detection")
 
-    min_severity = options.get('min_severity') or bp_settings.get('min_severity', 'low')
+    # `bp_settings.get('min_severity')` never matched anything: every built-in
+    # blueprint carries min_severity as a SIBLING of `settings`, not inside it
+    # (see get_azure_blueprints), so this silently resolved to 'low' and a
+    # blueprint's declared floor was dead config. Same defect as
+    # services/aws/pipeline._resolve_min_severity, fixed the same way.
+    declared_severity = blueprint.get('min_severity') or bp_settings.get('min_severity') or 'low'
+    min_severity = options.get('min_severity') or declared_severity
     add_log_to_run(run_id, f"[AZURE] Minimum severity filter: {min_severity}+", "info")
+    if SEVERITY_RANK.get(min_severity, 1) > SEVERITY_RANK.get(declared_severity, 1):
+        result.setdefault('degraded', []).append(
+            f"blueprint '{blueprint.get('name', 'Custom')}' declares a {declared_severity}+ "
+            f"floor but this run was launched with {min_severity}+ — findings between "
+            f"the two are dropped, not absent"
+        )
+        add_log_to_run(run_id, f"[AZURE] DEGRADED: {result['degraded'][-1]}", "warning")
     findings, detection_status = run_sigma_rules(
         logs=collected_data,
         min_level=min_severity,
@@ -162,7 +181,6 @@ def _run_post_collection_phases(
         add_log_to_run(run_id, f"[AZURE]   {rname}: {rcount}", "info")
 
     # ---- Phase 4b: UAL pre-detected findings ----
-    SEVERITY_RANK = {'informational': 0, 'low': 1, 'medium': 2, 'high': 3, 'critical': 4}
     min_rank = SEVERITY_RANK.get(min_severity, 1)
 
     ual_events = collected_data.get('Azure.UnifiedAudit', [])
@@ -311,7 +329,7 @@ def run_azure_pipeline(
             add_log_to_run(run_id, f"Target IPs: {', '.join(target_ips)}", "info")
         if pivot_mode:
             add_log_to_run(run_id, "Pivot Mode: ON (will discover other accounts from same IPs)", "info")
-        add_log_to_run(run_id, f"Min Severity: {options.get('min_severity', 'medium')}", "info")
+        add_log_to_run(run_id, f"Min Severity: {options.get('min_severity') or blueprint.get('min_severity') or 'low'}", "info")
         add_log_to_run(run_id, "=" * 50, "info")
 
         # Validate SIGMA rules are available

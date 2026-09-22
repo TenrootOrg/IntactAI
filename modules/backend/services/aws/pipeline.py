@@ -68,6 +68,31 @@ def _set_progress(run_id: str, pct: int) -> None:
             pass
 
 
+def _note_degraded(result: Dict, run_id: str, message: str) -> None:
+    """Record a place where this run delivers LESS than it was asked for.
+
+    Every entry lands in `result['degraded']`, which the status route returns,
+    so "the blueprint said full CloudTrail and we ran the light slices" is
+    part of the RESULT rather than one line the operator had to be watching
+    the log to catch.
+    """
+    result.setdefault('degraded', []).append(message)
+    add_log_to_run(run_id, f"[AWS] DEGRADED: {message}", "warning")
+
+
+def _resolve_min_severity(options: Dict, blueprint: Dict, bp_settings: Dict) -> tuple:
+    """(effective floor, floor the blueprint declares).
+
+    `bp_settings.get('min_severity')` — what this used to read — never matched
+    anything: every built-in blueprint carries `min_severity` as a SIBLING of
+    `settings`, not inside it (see get_aws_blueprints below). So the fallback
+    always resolved to the hardcoded 'low' and a blueprint's declared floor
+    was dead config.
+    """
+    declared = blueprint.get('min_severity') or bp_settings.get('min_severity') or 'low'
+    return (options.get('min_severity') or declared), declared
+
+
 def _make_phase_timer(run_id: str):
     import time as _time
     starts: Dict[str, float] = {}
@@ -107,6 +132,12 @@ def _run_post_collection_phases(
     """Phases 3-5 (collect-only): normalize, detect. LLM analysis +
     reporting happen at Case Analysis (fusion)."""
 
+    # Hold the records from the first line on. If anything below raises, the
+    # caller's `except` still returns a result that CARRIES the evidence —
+    # re-collecting an account (or re-uploading the export) because a
+    # post-processing step tripped is exactly the cost this avoids.
+    result['collected_data'] = collected_data
+
     # Phase 3 — normalize + time filter
     try:
         normalize_all_results(collected_data)
@@ -143,16 +174,34 @@ def _run_post_collection_phases(
     add_log_to_run(run_id, "[AWS] Phase 4: Running SIGMA detection rules...", "info")
     _set_progress(run_id, 65)
     phase_start("detection")
-    min_severity = options.get('min_severity') or bp_settings.get('min_severity', 'low')
+    min_severity, declared_severity = _resolve_min_severity(options, blueprint, bp_settings)
     add_log_to_run(run_id, f"[AWS] Minimum severity filter: {min_severity}+", "info")
+    if SEVERITY_RANK.get(min_severity, 1) > SEVERITY_RANK.get(declared_severity, 1):
+        _note_degraded(
+            result, run_id,
+            f"blueprint '{blueprint.get('name', 'Custom')}' declares a "
+            f"{declared_severity}+ floor but this run was launched with "
+            f"{min_severity}+ — findings between the two are dropped, not absent",
+        )
     aws_rules = load_aws_rules()
+    if not aws_rules:
+        # validate_rules_directory() above checks the AZURE subtree (see
+        # azure/sigma_runner.py:AZURE_RULES_PATH), so it reports "valid" while
+        # the AWS subtree is empty. Zero rules then produces zero findings and
+        # a detection phase marked complete — "nothing was looked for" wearing
+        # the clothes of "nothing was found".
+        _note_degraded(
+            result, run_id,
+            "no AWS SIGMA rules could be loaded — detection ran ZERO rules, so a "
+            "0-finding result means nothing was looked for, not that the account is clean",
+        )
     findings, detection_status = run_sigma_rules(
         logs=collected_data,
         rules=aws_rules,
         min_level=min_severity,
     )
     result['phases']['detection'] = {
-        'status': 'complete',
+        'status': 'complete' if aws_rules else 'degraded',
         'rules_executed': detection_status.get('rules_count', 0),
         'total_findings': detection_status.get('total_findings', 0),
         'findings_by_severity': detection_status.get('matches_by_severity', {}),
@@ -278,7 +327,8 @@ def run_aws_pipeline(
         add_log_to_run(run_id, f"Regions: {', '.join(options.get('regions') or [aws_config.get('region', 'us-east-1')])}", "info")
         if options.get('target_principals'):
             add_log_to_run(run_id, f"Target principals: {', '.join(options['target_principals'])}", "info")
-        add_log_to_run(run_id, f"Min Severity: {options.get('min_severity', 'medium')}", "info")
+        _eff_sev, _decl_sev = _resolve_min_severity(options, blueprint, bp_settings)
+        add_log_to_run(run_id, f"Min Severity: {_eff_sev} (blueprint declares {_decl_sev})", "info")
         # Tell the run-log which collectors are live tools vs still on
         # fixtures. Updated as each tool integration lands.
         try:
@@ -310,6 +360,28 @@ def run_aws_pipeline(
         if not rules_valid:
             add_log_to_run(run_id, f"[AWS] Warning: {rules_msg}", "warning")
 
+        # Bounded reachability + credential check BEFORE any collection.
+        # Without it, a box with no route to AWS spends 25 LookupEvents passes
+        # x every region x the boto3 socket timeout before reporting "no data
+        # collected" — the run looks alive for hours and then lies about why
+        # it found nothing. The same one call also catches expired/wrong keys,
+        # which otherwise reach the operator as an empty (clean-looking) scan.
+        # Skipped only for the explicit no-credential demo-fixture mode, which
+        # never talks to AWS at all.
+        if aws_config.get('access_key_id'):
+            from .boto_client import preflight
+            pre = preflight(aws_config, lambda m, l="info": add_log_to_run(run_id, m, l))
+            if not pre['ok']:
+                result['phases']['validation'] = {'status': 'failed', 'reason': pre['kind']}
+                result['status'] = 'error'
+                result['error'] = pre['message']
+                result['end_time'] = datetime.utcnow().isoformat()
+                add_log_to_run(run_id, f"[AWS] Aborting before collection: {pre['message']}", "error")
+                phase_end("validation")
+                return result
+            result['aws_account'] = pre['account']
+            result['aws_identity'] = pre['arn']
+
         result['phases']['validation'] = {'status': 'complete'}
         _set_progress(run_id, 10)
         phase_end("validation")
@@ -321,7 +393,25 @@ def run_aws_pipeline(
         sources = bp_settings.get('sources') or list(LOG_SOURCES.keys())
         if 'all' in sources:
             sources = list(LOG_SOURCES.keys())
-        collected_data = collect_aws_logs(
+
+        # The request's cloudtrail_mode used to win unconditionally, and the
+        # UI always sends one (default 'light'). So "Full Investigation" —
+        # which declares cloudtrail_mode='full' and asks for the
+        # cloudtrail_full source — silently ran the light console+iam slices
+        # instead (see collect_aws_logs, which drops cloudtrail_full in light
+        # mode). The blueprint still loses to an explicit request, but the
+        # downgrade is now part of the result.
+        declared_ct = bp_settings.get('cloudtrail_mode', 'light')
+        ct_mode = options.get('cloudtrail_mode') or declared_ct
+        if declared_ct == 'full' and ct_mode != 'full':
+            _note_degraded(
+                result, run_id,
+                f"blueprint '{blueprint.get('name', 'Custom')}' collects FULL CloudTrail; "
+                f"this run was launched with cloudtrail_mode={ct_mode}, so the "
+                f"cloudtrail_full source is not collected",
+            )
+
+        collected_data, collection_status = collect_aws_logs(
             run_id=run_id,
             aws_config=aws_config,
             sources=sources,
@@ -329,7 +419,7 @@ def run_aws_pipeline(
             regions=options.get('regions'),
             target_principals=options.get('target_principals'),
             scope_mode=options.get('scope_mode', 'targeted'),
-            cloudtrail_mode=options.get('cloudtrail_mode', bp_settings.get('cloudtrail_mode', 'light')),
+            cloudtrail_mode=ct_mode,
             # Use the same `time_range_days` the rest of the scan honours
             # as the freshness window for IAM users/keys. See iam_runner
             # for what gets bumped to critical; this collapses the two
@@ -340,16 +430,49 @@ def run_aws_pipeline(
             max_events_per_region=options.get('max_events_per_region') or bp_settings.get('max_events_per_region'),
         )
         total_records = sum(len(v) for v in collected_data.values())
+        collection_errors = collection_status.get('errors', [])
+        # Attach the evidence to the result NOW, before anything that can
+        # raise. Everything below used to run with `collected_data` living
+        # only in this local, so any failure in normalize/SIGMA threw away a
+        # completed collection and the operator had to re-pull the whole
+        # account to try again.
+        result['collected_data'] = collected_data
         result['phases']['collection'] = {
-            'status': 'complete',
+            'status': 'complete' if not collection_errors else 'partial',
+            'sources_requested': sources,
             'sources_collected': list(collected_data.keys()),
+            'sources_with_data': collection_status.get('sources_with_data', []),
+            'sources_failed': collection_status.get('sources_failed', []),
             'total_records': total_records,
+            'errors': collection_errors,
         }
+        for err in collection_errors:
+            add_log_to_run(run_id, f"[AWS] Collection error: {err}", "warning")
+        if collection_errors:
+            add_log_to_run(
+                run_id,
+                f"[AWS] Collection PARTIAL — {total_records} record(s) from "
+                f"{len(collection_status.get('sources_with_data', []))} of "
+                f"{len(collection_status.get('sources_attempted', []))} sources; "
+                f"{len(collection_errors)} error(s) above. What was collected is kept.",
+                "warning",
+            )
         if not collected_data:
-            add_log_to_run(run_id, "[AWS] No data collected — pipeline stopping.", "warning")
-            result['status'] = 'completed'
-            result['message'] = 'No data collected'
             phase_end("collection")
+            if collection_errors:
+                # Zero records AND errors is a failed run, not a clean one.
+                # It used to report status 'completed' / "No data collected",
+                # which reads identically to a genuinely empty account.
+                result['status'] = 'error'
+                result['error'] = (
+                    f"No data collected — every source failed. First cause: {collection_errors[0]}"
+                )
+                add_log_to_run(run_id, f"[AWS] {result['error']}", "error")
+                return result
+            add_log_to_run(run_id, "[AWS] No records in the selected window and no "
+                                   "collection errors — this account is clean for this scope.", "info")
+            result['status'] = 'completed'
+            result['message'] = 'No records in the selected window (no collection errors)'
             return result
         phase_end("collection")
 
@@ -375,6 +498,10 @@ def run_aws_pipeline(
         result['traceback'] = traceback.format_exc()
         result['end_time'] = datetime.utcnow().isoformat()
         add_log_to_run(run_id, f"[AWS] Pipeline failed: {e}", "error")
+        kept = sum(len(v) for v in (result.get('collected_data') or {}).values())
+        if kept:
+            add_log_to_run(run_id, f"[AWS] {kept} collected record(s) are kept on this "
+                                   f"failed run — re-run analysis instead of re-collecting.", "info")
     return result
 
 
@@ -416,6 +543,7 @@ def run_aws_on_existing(
         result['error'] = str(e)
         result['traceback'] = traceback.format_exc()
         result['end_time'] = datetime.utcnow().isoformat()
+        result.setdefault('collected_data', uploaded_data)
         add_log_to_run(run_id, f"[AWS] Offline pipeline failed: {e}", "error")
     return result
 

@@ -3,9 +3,9 @@ AWS Automation API Routes
 
 Endpoints mirror `azure_routes.py`. Online mode goes through
 `services.aws.pipeline.run_aws_pipeline`; offline mode parses uploaded
-log files and calls `run_aws_on_existing`. Currently the online path
-relies on stub collectors that return fixture data — real boto3
-integration lands in a follow-up mission.
+log files and calls `run_aws_on_existing`. The online path collects live via
+boto3 (services/aws/*_runner.py); the bundled fixtures are opt-in demo data
+only (INTACT_AWS_DEMO_FIXTURES, see services/aws/collectors.py).
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from services.aws.pipeline import (
     run_aws_on_existing,
     run_aws_pipeline,
 )
-from services.aws.collectors import parse_uploaded_logs
+from services.aws.collectors import demo_fixtures_enabled, parse_uploaded_logs
 from services.aws.sigma_runner import (
     validate_rules_directory,
     list_custom_rules,
@@ -110,7 +110,14 @@ def get_aws_status():
                 'online_mode': has_credentials,
                 'offline_mode': True,
             },
-            'note': 'Collectors are currently stub fixtures — real boto3 integration is a follow-up mission.',
+            # This used to read "collectors are currently stub fixtures".
+            # They are live boto3 now, and demo fixtures are opt-in via
+            # INTACT_AWS_DEMO_FIXTURES (collectors.py) — so report which one
+            # this appliance is actually in rather than a stale sentence.
+            'demo_fixtures': demo_fixtures_enabled(),
+            'note': ('DEMO MODE: collectors fall back to bundled SYNTHETIC fixtures — '
+                     'results are not evidence.' if demo_fixtures_enabled()
+                     else 'Collectors are live boto3 (CloudTrail, GuardDuty, Access Analyzer, IAM).'),
         })
     except Exception as e:
         return jsonify({'status': 'error', 'error': str(e)}), 500
@@ -337,7 +344,11 @@ def start_scan():
 
             options = {
                 'time_filter': data.get('time_filter'),
-                'min_severity': data.get('min_severity', 'medium'),
+                # No default here on purpose: injecting 'medium' meant the
+                # blueprint's own declared floor (informational for Full
+                # Investigation) could never apply. None => pipeline uses the
+                # blueprint's.
+                'min_severity': data.get('min_severity'),
                 'scope_mode': scope_mode,
                 'target_principals': target_principals,
                 'regions': data.get('regions'),
@@ -367,9 +378,11 @@ def start_scan():
                 options=options,
             )
 
-            if is_cancelled(run_id):
-                return
-
+            # Store and persist FIRST. This used to sit behind the cancel
+            # check, so stopping a run threw away everything it had already
+            # collected from the account — the operator's only way back was to
+            # re-pull it all. The pipeline returns partial results on cancel
+            # (see its is_cancelled early returns); they are evidence.
             _aws_runs[run_id] = result
 
             try:
@@ -378,6 +391,9 @@ def start_scan():
                     json.dump(result, f, default=str)
             except Exception as persist_err:
                 print(f"[AWS] Warning: Could not persist raw data: {persist_err}", flush=True)
+
+            if is_cancelled(run_id):
+                return
 
             if result.get('status') == 'failed' or result.get('status') == 'error':
                 update_run_status(run_id, 'failed', error=result.get('error', 'Unknown error'))
@@ -449,7 +465,7 @@ def upload_logs():
         parsed_data = parse_uploaded_logs(saved_paths)
         total_records = sum(len(v) for v in parsed_data.values())
 
-        _aws_runs[run_id] = {
+        upload_record = {
             'status': 'uploaded',
             'mode': 'offline',
             'uploaded_files': uploaded_files,
@@ -457,6 +473,18 @@ def upload_logs():
             'total_records': total_records,
             'upload_time': datetime.utcnow().isoformat(),
         }
+        _aws_runs[run_id] = upload_record
+        # Persist the parsed upload too, not just the analysed result. It used
+        # to live ONLY in this dict, so a backend restart between upload and
+        # analyze-offline (routine on this box — the startup heal restarts it)
+        # made /analyze-offline answer "Invalid or missing run_id" for evidence
+        # the operator had already handed us.
+        try:
+            os.makedirs(PERSIST_DIR, exist_ok=True)
+            with open(f"{PERSIST_DIR}/{run_id}.json", 'w') as f:
+                json.dump(upload_record, f, default=str)
+        except Exception as persist_err:
+            print(f"[AWS] Warning: Could not persist upload: {persist_err}", flush=True)
 
         # Register workflow row at upload time
         try:
@@ -510,9 +538,10 @@ def analyze_offline():
     try:
         data = request.json or {}
         run_id = data.get('run_id')
-        if not run_id or run_id not in _aws_runs:
+        # _load_run, not _aws_runs: the upload survives a restart on disk.
+        run_data = _load_run(run_id) if run_id else None
+        if not run_data:
             return jsonify({'error': 'Invalid or missing run_id'}), 400
-        run_data = _aws_runs[run_id]
         if run_data.get('mode') != 'offline':
             return jsonify({'error': 'This endpoint is for offline mode only'}), 400
         uploaded_data = run_data.get('collected_data', {})
@@ -525,7 +554,7 @@ def analyze_offline():
 
         options = {
             'time_filter': data.get('time_filter'),
-            'min_severity': data.get('min_severity', 'medium'),
+            'min_severity': data.get('min_severity'),   # see start_scan
             'blueprint': blueprint,
             'aws_config': data.get('aws_config') or {},
         }
@@ -536,11 +565,13 @@ def analyze_offline():
             try:
                 update_run_status(run_id, 'running', progress=15)
                 result = run_aws_on_existing(run_id=run_id, uploaded_data=uploaded_data, options=options)
-                _aws_runs[run_id].update(result)
+                merged = dict(run_data)
+                merged.update(result)
+                _aws_runs[run_id] = merged
                 try:
                     os.makedirs(PERSIST_DIR, exist_ok=True)
                     with open(f"{PERSIST_DIR}/{run_id}.json", 'w') as f:
-                        json.dump(_aws_runs[run_id], f, default=str)
+                        json.dump(merged, f, default=str)
                 except Exception as persist_err:
                     print(f"[AWS] persist failed: {persist_err}", flush=True)
                 if result.get('status') == 'error':
@@ -616,6 +647,12 @@ def get_run_status(run_id):
             'start_time': run_data.get('start_time'),
             'end_time': run_data.get('end_time'),
             'error': run_data.get('error'),
+            # A run that collected three regions out of four, or ran the light
+            # CloudTrail slices under a blueprint promising full, has to say so
+            # HERE — the workflow log is not a result.
+            'degraded': run_data.get('degraded', []),
+            'collection_errors': (run_data.get('phases', {}).get('collection', {}) or {}).get('errors', []),
+            'synthetic': bool(run_data.get('synthetic')),
             'phase_timings': phase_timings,
             'llm_metrics': llm_metrics,
             'sigma_rule_tally': sigma_rule_tally,

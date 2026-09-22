@@ -21,18 +21,13 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
+from . import boto_client
+from .boto_client import classify
+
 
 def _safe_client(service: str, aws_config: Dict[str, Any]):
-    """Build a boto3 client from the IntactAI aws_config shape."""
-    import boto3
-    kwargs = {
-        "aws_access_key_id": aws_config["access_key_id"],
-        "aws_secret_access_key": aws_config["secret_access_key"],
-        "region_name": aws_config.get("region", "us-east-1"),
-    }
-    if aws_config.get("session_token"):
-        kwargs["aws_session_token"] = aws_config["session_token"]
-    return boto3.client(service, **kwargs)
+    """Build a bounded boto3 client from the IntactAI aws_config shape."""
+    return boto_client.client(service, aws_config)
 
 
 def is_available(aws_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -52,7 +47,7 @@ def is_available(aws_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     return result
 
 
-def _policy_is_effective_admin(iam, policy_arn: str) -> bool:
+def _policy_is_effective_admin(iam, policy_arn: str, gaps: Optional[List[str]] = None) -> bool:
     """A policy is 'effective admin' if any Allow statement grants
     Action='*' on Resource='*'. Mirrors how CloudFox's IsAdminRole?
     detection looks beyond the AdministratorAccess ARN."""
@@ -78,11 +73,17 @@ def _policy_is_effective_admin(iam, policy_arn: str) -> bool:
             if "*" in actions and "*" in resources:
                 return True
         return False
-    except Exception:
+    except Exception as e:
+        # A DENIED GetPolicy used to read as "not an admin". That is the worst
+        # possible default for this check: the least-privileged scanning key
+        # produces the cleanest-looking account. Record the gap so the caller
+        # can say the answer is unknown rather than no.
+        if gaps is not None:
+            gaps.append(f"policy {policy_arn}: {classify(e)[1]}")
         return False
 
 
-def _inline_policies_are_effective_admin(iam, user_name: str) -> bool:
+def _inline_policies_are_effective_admin(iam, user_name: str, gaps: Optional[List[str]] = None) -> bool:
     """Same check, applied to a user's inline policies."""
     try:
         names = iam.list_user_policies(UserName=user_name).get("PolicyNames", [])
@@ -103,11 +104,13 @@ def _inline_policies_are_effective_admin(iam, user_name: str) -> bool:
                 if "*" in actions and "*" in resources:
                     return True
         return False
-    except Exception:
+    except Exception as e:
+        if gaps is not None:
+            gaps.append(f"inline policies of {user_name}: {classify(e)[1]}")
         return False
 
 
-def _is_admin_principal(iam, user_name: str, attached: List[Dict]) -> bool:
+def _is_admin_principal(iam, user_name: str, attached: List[Dict], gaps: Optional[List[str]] = None) -> bool:
     """A user is 'admin' if they have AdministratorAccess attached OR any
     custom managed policy grants *:*  OR any inline policy grants *:* ."""
     admin_arns = {
@@ -120,9 +123,9 @@ def _is_admin_principal(iam, user_name: str, attached: List[Dict]) -> bool:
             return True
         # Customer-managed policy — inspect its document
         if "::aws:policy/" not in arn:
-            if _policy_is_effective_admin(iam, arn):
+            if _policy_is_effective_admin(iam, arn, gaps):
                 return True
-    return _inline_policies_are_effective_admin(iam, user_name)
+    return _inline_policies_are_effective_admin(iam, user_name, gaps)
 
 
 def _severity_for_principal(
@@ -210,7 +213,7 @@ def collect_iam_principals(
     try:
         iam = _safe_client("iam", aws_config)
     except Exception as e:
-        log(f"[iam] failed to create boto3 client: {e}", "error")
+        log(f"[iam] failed to create boto3 client — {classify(e)[1]}", "error")
         return []
 
     # Identity-scoped path: when caller passes specific IAM user ARNs we
@@ -249,7 +252,7 @@ def collect_iam_principals(
                 all_users.extend(page.get("Users", []))
             log(f"[iam] enumerated {len(all_users)} users — inspecting policies + keys", "info")
     except Exception as e:
-        log(f"[iam] list_users failed: {e}", "error")
+        log(f"[iam] list_users failed — {classify(e)[1]}", "error")
         return []
 
     for u in all_users:
@@ -260,26 +263,36 @@ def collect_iam_principals(
         arn = u["Arn"]
         user_id = u["UserId"]
 
+        # Every failed sub-call below makes this principal look SAFER than it
+        # is (no policies => not admin, no devices => MFA on is unknowable but
+        # recorded as off, no keys => nothing to steal). Collected per user and
+        # stamped on the record so a posture finding derived from a half-read
+        # principal is never presented as a complete answer.
+        gaps: List[str] = []
+
         try:
             attached = iam.list_attached_user_policies(UserName=name).get("AttachedPolicies", [])
         except Exception as e:
+            gaps.append(f"attached policies: {classify(e)[1]}")
             log(f"[iam] list_attached_user_policies({name}) failed: {e}", "warning")
             attached = []
 
         try:
             keys = iam.list_access_keys(UserName=name).get("AccessKeyMetadata", [])
         except Exception as e:
+            gaps.append(f"access keys: {classify(e)[1]}")
             log(f"[iam] list_access_keys({name}) failed: {e}", "warning")
             keys = []
 
         try:
             mfa_devices = iam.list_mfa_devices(UserName=name).get("MFADevices", [])
             has_mfa = len(mfa_devices) > 0
-        except Exception:
+        except Exception as e:
+            gaps.append(f"MFA devices: {classify(e)[1]}")
             has_mfa = False
 
         active_keys = [k for k in keys if k.get("Status") == "Active"]
-        is_admin = _is_admin_principal(iam, name, attached)
+        is_admin = _is_admin_principal(iam, name, attached, gaps)
 
         # ---- Age-based DFIR filters ----------------------------------
         # Both fresh-user and fresh-key checks share the same window
@@ -369,6 +382,9 @@ def collect_iam_principals(
             "_severity": severity,
             "check_title": title,
             "Title": title,
+            # Empty on a fully-readable principal. Non-empty means admin/MFA/key
+            # answers above are "as far as we could see", not "no".
+            "CollectionGaps": gaps,
         })
 
     admin_count = sum(1 for r in records if r.get("IsAdmin"))
@@ -376,4 +392,9 @@ def collect_iam_principals(
         f"[iam] {len(records)} principals enumerated; {admin_count} admin",
         "info",
     )
+    incomplete = [r["ResourceName"] for r in records if r.get("CollectionGaps")]
+    if incomplete:
+        log(f"[iam] {len(incomplete)} of {len(records)} principals could only be "
+            f"read PARTIALLY ({', '.join(incomplete[:10])}) — their admin/MFA/key "
+            f"posture is understated, not clean", "error")
     return records
