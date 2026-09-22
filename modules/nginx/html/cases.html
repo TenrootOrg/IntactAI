@@ -73,6 +73,14 @@
   /* Air between finding groups: the first bullet after an evidence block starts a
      new finding, and needs to look like one. */
   .md li.sub + li:not(.sub){margin-top:12px}
+  /* A timeline ROW is one line too: a recurring detection's span, count and host
+     list wrapped it onto two, so one entry read as two. Same "more" affordance. */
+  .md li.ev{line-height:1.6}
+  .md li.ev.clip{max-height:1.75em;overflow:hidden;cursor:pointer;position:relative}
+  .md li.ev.clip::after{content:'⌄ more';position:absolute;right:0;bottom:0;
+    padding:0 4px 0 14px;font-size:10px;color:var(--acc);background:var(--panel)}
+  .md li.ev.clip.open{max-height:none}
+  .md li.ev.clip.open::after{content:'⌃ less';position:static;padding-left:8px;background:none}
   .md strong{color:#fff}
   .chip{display:inline-block;font-size:11px;padding:1px 7px;border-radius:9px;margin-right:5px}
   .c-critical{background:rgba(248,81,73,.18);color:var(--crit)} .c-high{background:rgba(219,109,40,.18);color:var(--high)}
@@ -1958,7 +1966,7 @@ function ask(id){
 // and let a click open them, rather than truncating: the operator asked for the
 // end of the string, so it has to be present to be reachable.
 function clampEvidence(root){
-  (root||document).querySelectorAll('.md li.sub').forEach(li=>{
+  (root||document).querySelectorAll('.md li.sub, .md li.ev').forEach(li=>{
     li.classList.remove('clip','open');
     li.classList.add('clip');                     // apply the max-height first…
     // +4, not +1: line boxes round sub-pixel and an inline <code> can sit a
@@ -1968,7 +1976,7 @@ function clampEvidence(root){
   });
 }
 document.addEventListener('click',e=>{
-  const li = e.target && e.target.closest && e.target.closest('.md li.sub.clip');
+  const li = e.target && e.target.closest && e.target.closest('.md li.sub.clip, .md li.ev.clip');
   if(li) li.classList.toggle('open');
 });
 
@@ -2004,7 +2012,10 @@ function mdToHtml(md){
       // A class rather than a nested <ul>: `<ul>` as a direct child of `<ul>`
       // is invalid, and this renderer is deliberately minimal. Indent, tone
       // and spacing carry the hierarchy instead.
-      out.push('<li'+(ind>=2?' class="sub"':'')+'>'+t+'</li>');}
+      // A top-level line that opens with a timestamp is a timeline row (ev):
+      // clamped to one line like the evidence under it.
+      const ev=ind<2 && /^`\d{4}-\d{2}-\d{2}/.test(m[2]);
+      out.push('<li'+(ind>=2?' class="sub"':(ev?' class="ev"':''))+'>'+t+'</li>');}
     else if(/^\s*$/.test(line)){closeUL();out.push('<br/>');}
     else {closeUL();out.push('<p>'+inline(line)+'</p>');}
   });
