@@ -720,5 +720,76 @@ class ModulesThatFuseNothing(unittest.TestCase):
         self.assertIn('if d.get("report_md") and (not force_report or _empty_keep):', src)
 
 
+class ARefusionReportIsTheTimeframes(unittest.TestCase):
+    """Live on test1: a Refusion from 2016-09-01 with ALDC03 hidden sent the model
+    byte-identical phases to the run before — the Refusion path narrated the whole
+    case, whatever timeframe was on screen. Drives the real fuse_case."""
+
+    def _fuse(self, d, switch_to=None):
+        g = _g()
+        g.upsert(schema.Entity(id="asset:b", type="asset", label="ALDC03"))
+        g.upsert(schema.Entity(id="ev:b", type="event", label="on ALDC03", first_seen=INSIDE,
+                               attrs={"_assets": ["asset:b"]}))
+        g.findings.append(schema.Finding(id="f_b", title="on ALDC03", severity="high",
+                                         confidence="high", summary="", entity_ids=["ev:b"],
+                                         asset_ids=["asset:b"], ts=INSIDE))
+        g.rebuild_indexes()
+        seen = {}
+
+        def _report(graph, window=None, **kw):
+            seen["findings"] = sorted(f.id for f in graph.findings)
+            seen["window"] = window
+            if switch_to:                       # the operator moves while the model runs
+                store.switch_scope(CASE, switch_to)
+            return "# the report\n"
+        ws = mock.MagicMock()
+        ws.update_run_status.side_effect = lambda cid, st, details=None: d.update(details or {})
+        patches = [
+            mock.patch.object(store, "get_case", side_effect=lambda cid: dict(d)),
+            mock.patch.object(store, "_merge_case_details", side_effect=lambda c, p: d.update(p)),
+            mock.patch.object(store, "_mutate_list_field",
+                              side_effect=lambda c, f, m: d.update({f: m(d.get(f) or [])})),
+            mock.patch.object(store, "log_case_event"),
+            mock.patch.object(store, "_ws", return_value=ws),
+            mock.patch.object(store, "_members_for_case", return_value=[]),
+            mock.patch.object(store, "_write_graph_sidecar", return_value=True),
+            mock.patch.object(store.correlate, "assemble", return_value=g),
+            mock.patch.object(store.llm_sim, "generate_report", side_effect=_report),
+            mock.patch.object(store.llm_sim, "generate_disposition_checklist", return_value=[]),
+            mock.patch.object(store.llm_sim, "_use_real", return_value=False),
+        ]
+        for p in patches:
+            p.start()
+        try:
+            store.fuse_case(CASE, contributions_override=[], force_report=True,
+                            trigger=store.TRIGGER_MANUAL_REFUSION, allow_llm=False)
+        finally:
+            for p in patches:
+                p.stop()
+        return seen
+
+    def _case(self):
+        sid = store.scope_id_for_window(WIN)
+        return sid, {"name": "QA", "report_md": "# old\n", "active_scope": sid,
+                     "time_window": {"start": "2011-01-01T00:00:00", "end": "2026-12-31T00:00:00"},
+                     "scopes": [{"id": "full", "report_md": "# whole case\n"},
+                                {"id": sid, "window": dict(WIN), "hidden_hosts": ["ALDC03"],
+                                 "report_md": "# old\n"}]}
+
+    def test_the_report_sees_the_timeframes_window_and_hosts(self):
+        _, d = self._case()
+        seen = self._fuse(d)
+        self.assertEqual(["f_in"], seen["findings"], "f_out is outside the window, f_b is on ALDC03")
+        self.assertEqual(WIN, seen["window"])
+        self.assertEqual("# the report\n", d["report_md"])
+
+    def test_switching_away_mid_run_files_the_report_under_its_timeframe(self):
+        sid, d = self._case()
+        self._fuse(d, switch_to="full")
+        entry = next(s for s in d["scopes"] if s["id"] == sid)
+        self.assertEqual("# the report\n", entry["report_md"])
+        self.assertEqual("# whole case\n", d["report_md"], "the whole case keeps its own")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

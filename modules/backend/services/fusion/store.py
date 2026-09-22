@@ -1924,6 +1924,18 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     except Exception as _e:                                   # noqa: BLE001
         _degrade("host exclusion", _e)
         gv = g                    # report on every host rather than on none
+    # The REPORT is the selected timeframe's: its window and its hidden hosts. This
+    # path narrates without regenerate_report, and read the whole case — a Refusion
+    # from 2016-09-01 with ALDC03 hidden sent the model byte-identical phases to
+    # the one before the host was hidden. The checklist stays case-level (gv).
+    _gen_scope = _active_scope_id(d)
+    _rwindow = view_window(d)
+    try:
+        gr = _filter_graph_by_window(_filter_graph_by_hosts(gv, active_scope_hidden_hosts(d)),
+                                     active_scope_window(d))
+    except Exception as _e:                                   # noqa: BLE001
+        _degrade("timeframe view", _e)
+        gr = gv
     # The report + advisory are the heavy narrative. Generate them ONLY on the FIRST
     # fuse (no report yet); afterwards they stay FROZEN until the operator clicks
     # Rescan (store.regenerate_report). This keeps the per-action re-fuses (timeline
@@ -2043,7 +2055,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                              kwargs={"write_off": False}, daemon=True).start()
         try:
             report = llm_sim.generate_report(
-                gv, window=window, min_severity=min_sev,
+                gr, window=_rwindow, min_severity=min_sev,
                 initial_access=d.get("initial_access_estimate"),
                 case_name=d.get("name", "Case"), run_id=case_id,
                 audience=d.get("audience", "both"), language=d.get("language", "en"),
@@ -2186,7 +2198,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         _degrade("graph pruning", _e)
         pruned = g.to_dict()      # unpruned is bigger, never wrong
     try:
-        _llm_calls = (_expected_llm_calls(gv, d, window, min_sev)
+        _llm_calls = (_expected_llm_calls(gr, d, _rwindow, min_sev)
                       if _narrate
                       else (d.get("report_llm_calls") or 0))
     except Exception as _e:                                   # noqa: BLE001
@@ -2196,8 +2208,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
           f"{len(pruned.get('entities') or {}):,} entities → sidecar", pct=95)
     if not _write_graph_sidecar(case_id, pruned):
         _plog("Refusion · graph write", "error", "sidecar write failed (see backend log)")
-    ws.update_run_status(case_id, "completed",
-                         details={"fusion_graph": {},
+    _details = {"fusion_graph": {},
                                   "graph_counts": _counts_from_graph_dict(pruned),
                                   "report_md": report,
                                   "report_config_id": _report_cfg_id,
@@ -2233,7 +2244,21 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                                   "report_run_ids": report_members,
                                   # True when this fuse left the report frozen (triage/
                                   # disposition re-fuse) → UI shows "report not up to date".
-                                  "report_dirty": report_dirty})
+                                  "report_dirty": report_dirty}
+    _report_keys = ("report_md", "report_config_id", "report_written_at",
+                    "report_llm_calls", "report_run_ids", "report_dirty")
+    try:
+        _details["report_counts"] = _counts_from_graph(gr)   # what "behind" compares to
+    except Exception:                                         # noqa: BLE001
+        pass
+    # File the report under the timeframe it was written FOR. The operator may have
+    # switched while the model ran; landing on the live row would put it under
+    # whichever timeframe is on screen now.
+    if _active_scope_id(get_case(case_id) or {}) != _gen_scope:
+        write_report_for_scope(case_id, _gen_scope,
+                               {k: _details.pop(k) for k in _report_keys + ("report_counts",)
+                                if k in _details})
+    ws.update_run_status(case_id, "completed", details=_details)
     # Checklist: fill ONLY when the case still has none, and do it under the run lock.
     # It used to ride along in the bulk patch above, computed from a snapshot read at
     # the TOP of this function — ~33 s earlier on a real case (9 hosts / 18.7k
