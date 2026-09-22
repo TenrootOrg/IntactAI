@@ -2490,7 +2490,8 @@ def view_graph(case_id, d=None, *, scoped=True) -> FusionGraph:
     d = d if d is not None else (get_case(case_id) or {})
     g = _filter_graph_by_hosts(load_graph(case_id), d.get("excluded_hosts"))
     if scoped:
-        g = _filter_graph_by_window(g, active_scope_window(d))
+        g = _filter_graph_by_window(_filter_graph_by_hosts(g, active_scope_hidden_hosts(d)),
+                                    active_scope_window(d))
     g.identity_decisions = _identity_decisions(d)   # people grouped as the Identities tab shows
     return g
 
@@ -2718,11 +2719,43 @@ def active_scope_window(d) -> dict | None:
     return ((_active_scope(d) or {}).get("window")) or None
 
 
+def active_scope_hidden_hosts(d) -> list:
+    """Hosts hidden in the selected scope only. Configuration's excluded_hosts takes
+    a host out of the fusion for the whole case; this takes it out of one timeframe's
+    view, at read time — no re-fusion, and no other scope changes."""
+    return list((_active_scope(d) or {}).get("hidden_hosts") or [])
+
+
 def view_window(d) -> dict | None:
     """What to pass as `window=` to render.*: the scope's when one is selected,
     otherwise the case's own fuse bound (which the stored graph already satisfies,
     so passing it again is idempotent — every render.* re-applies it defensively)."""
     return active_scope_window(d) or (d.get("time_window") or None)
+
+
+def set_scope_hidden_hosts(case_id, hosts) -> dict:
+    """Hide hosts in the SELECTED scope only — every other scope, and the case's
+    fusion, are untouched. Nothing is re-fused; the scope's counts are recomputed
+    on next read and its report is marked behind."""
+    d = get_case(case_id)
+    if not d:
+        raise KeyError("case not found")
+    hidden = sorted({str(h).strip() for h in (hosts or []) if str(h).strip()}, key=str.lower)
+    sid = _active_scope_id(d)
+    _save_active_scope(case_id, d)                  # makes sure the entry exists (the whole case)
+    before = active_scope_hidden_hosts(d)
+    _upsert_scope(case_id, {"id": sid, "hidden_hosts": hidden, "report_dirty": True})
+    # Both caches are keyed to the fuse, which this does not change.
+    _merge_case_details(case_id, {"scope_counts": None, "scope_hosts": None,
+                                  "report_dirty": True})
+    d = get_case(case_id) or {}
+    label = (_full_scope_label(d) if sid == FULL_SCOPE_ID
+             else (_active_scope(d) or {}).get("label") or "")
+    log_case_event(case_id, f"Scope · hosts · {label}", "info",
+                   f"hidden in this scope only: {', '.join(hidden) or 'none'} "
+                   f"(was {', '.join(before) or 'none'}). Other scopes and the case's "
+                   f"evidence are unchanged")
+    return {"scope": sid, "hidden_hosts": hidden}
 
 
 def scope_id_for_window(window) -> str:
@@ -2771,7 +2804,9 @@ def _upsert_scope(case_id, entry, *, active=None) -> None:
     each other's list (the lost-update this file's _mutate_list_field exists for)."""
     def _apply(cur):
         cur = [s for s in (cur or []) if isinstance(s, dict) and s.get("id")]
-        out = [entry if s["id"] == entry["id"] else s for s in cur]
+        # Merge, not replace: callers rebuild an entry from the fields they own
+        # (report, chat), and a replace dropped the ones they did not (hidden_hosts).
+        out = [{**s, **entry} if s["id"] == entry["id"] else s for s in cur]
         if not any(s["id"] == entry["id"] for s in cur):
             out.append(entry)
         return _evict_scopes(case_id, out, {entry["id"], _active_scope_id(get_case(case_id) or {})})
@@ -2942,7 +2977,7 @@ def scope_counts(case_id, d=None) -> dict:
     case row, because the case payload is polled every few seconds and loading the
     graph each time would cost 0.13 s on a small case and far more on a real one."""
     d = d if d is not None else (get_case(case_id) or {})
-    if not active_scope_window(d):
+    if not active_scope_window(d) and not active_scope_hidden_hosts(d):
         return graph_counts(case_id)
     cached = d.get("scope_counts") or {}
     # `rule` versions the cache: counts cached under the old definition of "hosts"
@@ -3007,8 +3042,9 @@ def scope_host_counts(case_id, d=None) -> dict:
         return {}
     counts = {FULL_SCOPE_ID: _active_hosts(whole)}
     for s in _scopes(d):
-        if s["id"] != FULL_SCOPE_ID and s.get("window"):
-            counts[s["id"]] = _active_hosts(_filter_graph_by_window(whole, s["window"]))
+        if s.get("window") or s.get("hidden_hosts"):
+            counts[s["id"]] = _active_hosts(_filter_graph_by_window(
+                _filter_graph_by_hosts(whole, s.get("hidden_hosts")), s.get("window")))
     try:
         _merge_case_details(case_id, {"scope_hosts": {"of_fuse": d.get("fused_at"),
                                                       "rule": _COUNTS_RULE,
@@ -3054,12 +3090,14 @@ def scopes_for_payload(d, host_counts=None) -> list:
                      "report_written_at": s.get("report_written_at"),
                      "has_report": bool(s.get("report_md")),
                      "hosts": (host_counts or {}).get(s["id"]),
+                     "hidden_hosts": list(s.get("hidden_hosts") or []),
                      "active": s["id"] == active})
     if FULL_SCOPE_ID not in seen:
         rows.insert(0, {"id": FULL_SCOPE_ID, "label": _full_scope_label(d), "window": {},
                         "report_written_at": d.get("report_written_at"),
                         "has_report": bool(d.get("report_md")),
                         "hosts": (host_counts or {}).get(FULL_SCOPE_ID),
+                        "hidden_hosts": [],
                         "active": active == FULL_SCOPE_ID})
     rows.sort(key=lambda r: (r["id"] != FULL_SCOPE_ID, (r["window"] or {}).get("start") or ""))
     return rows
@@ -4653,6 +4691,7 @@ def case_hosts(case_id) -> list:
     d = get_case(case_id)
     g = load_graph(case_id)
     excluded = {keys.norm_host(h) for h in (d.get("excluded_hosts") or [])}
+    hidden = {keys.norm_host(h) for h in active_scope_hidden_hosts(d)}
     os_by = {}
     try:
         from services.velociraptor_service import get_clients_from_snapshot
@@ -4671,13 +4710,15 @@ def case_hosts(case_id) -> list:
             parts = a.id.split(":")
             out.append({"host": label, "os": parts[2] if len(parts) > 2 else "cloud",
                         "kind": "cloud", "sources": list(a.sources or []),
-                        "excluded": keys.norm_host(label) in excluded})
+                        "excluded": keys.norm_host(label) in excluded,
+                        "hidden": keys.norm_host(label) in hidden})
         else:
             cid = a.id.split(":")[-1]
             os_name = os_by.get(str(label).lower()) or os_by.get(str(cid).lower()) or "unknown"
             out.append({"host": label, "os": os_name, "kind": "endpoint",
                         "sources": list(a.sources or []),
-                        "excluded": keys.norm_host(label) in excluded})
+                        "excluded": keys.norm_host(label) in excluded,
+                        "hidden": keys.norm_host(label) in hidden})
     # An excluded host is no longer in a graph fused after the exclusion, but the
     # picker must still list it so it can be ticked back in.
     listed = {keys.norm_host(h["host"]) for h in out}

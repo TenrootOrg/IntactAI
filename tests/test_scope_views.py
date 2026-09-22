@@ -569,5 +569,62 @@ class AWindowPastTheCaseGrowsTheCase(unittest.TestCase):
                          d["time_window"], "and the case now covers the wider window")
 
 
+class EachTimeframeHasItsOwnHosts(unittest.TestCase):
+    """Hiding a host in one timeframe hides it there only. Excluding ALCA01 in
+    Configuration moved every scope's [N hosts] — the operator asked for each
+    timeframe to keep its own list."""
+
+    def setUp(self):
+        self.d = {"name": "QA", "report_md": MACRO_MD, "fused_at": "2026-09-22T09:00:00"}
+        g = _g()
+        g.upsert(schema.Entity(id="asset:b", type="asset", label="ALCA01"))
+        g.upsert(schema.Entity(id="ev:b", type="event", label="on ALCA01", first_seen=INSIDE,
+                               attrs={"_assets": ["asset:b"]}))
+        g.rebuild_indexes()
+        patches = [
+            mock.patch.object(store, "get_case", side_effect=lambda cid: dict(self.d)),
+            mock.patch.object(store, "_merge_case_details",
+                              side_effect=lambda cid, patch: self.d.update(patch)),
+            mock.patch.object(store, "_mutate_list_field",
+                              side_effect=lambda cid, f, m: self.d.update({f: m(self.d.get(f) or [])})),
+            mock.patch.object(store, "log_case_event"),
+            mock.patch.object(store, "fuse_case", side_effect=AssertionError("hiding must not fuse")),
+            mock.patch.object(store, "load_graph", side_effect=lambda cid: g),
+        ]
+        for p in patches:
+            p.start(); self.addCleanup(p.stop)
+
+    def _hosts(self):
+        return store.scope_host_counts(CASE, self.d)
+
+    def test_hiding_moves_only_the_selected_scope(self):
+        before = store.create_scope(CASE, None, {"start": "2025-01-01T00:00:00",
+                                                 "end": "2025-01-05T00:00:00"})
+        here = store.create_scope(CASE, None, WIN)
+        self.assertEqual(2, self._hosts()[here])
+        was = self._hosts()[before]
+        store.set_scope_hidden_hosts(CASE, ["ALCA01"])
+        counts = self._hosts()
+        self.assertEqual(1, counts[here], "the scope it was hidden in drops it")
+        self.assertEqual(was, counts[before], "another timeframe is untouched")
+        self.assertEqual(2, counts["full"], "the whole case keeps it")
+        self.assertNotIn("asset:b", store.view_graph(CASE, self.d).entities)
+        self.assertNotIn("ALCA01", self.d.get("excluded_hosts") or [], "never case-wide")
+
+    def test_the_list_survives_switching_away_and_back(self):
+        sid = store.create_scope(CASE, None, WIN)
+        store.set_scope_hidden_hosts(CASE, ["ALCA01"])
+        store.switch_scope(CASE, "full")
+        self.assertIn("asset:b", store.view_graph(CASE, self.d).entities)
+        store.switch_scope(CASE, sid)
+        self.assertEqual(["ALCA01"], store.active_scope_hidden_hosts(self.d))
+        self.assertNotIn("asset:b", store.view_graph(CASE, self.d).entities)
+
+    def test_the_whole_case_can_hide_a_host_too(self):
+        store.set_scope_hidden_hosts(CASE, ["ALCA01"])
+        self.assertEqual(1, store.scope_counts(CASE, self.d)["hosts"])
+        self.assertEqual(1, self._hosts()["full"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

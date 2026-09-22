@@ -616,6 +616,19 @@ def switch_case_scope(case_id):
     # the same way (tests/test_case_fuse_races.py).
 
 
+@case_bp.route("/api/cases/<case_id>/scope/hosts", methods=["PUT"])
+def set_scope_hosts(case_id):
+    """Hide hosts in the selected scope only. Body: {hidden:[host, ...]}. No fuse;
+    other scopes and Configuration's case-wide exclusion are untouched."""
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body.get("hidden"), list):
+        return jsonify({"error": "hidden must be a list of hosts"}), 400
+    try:
+        return jsonify({"case_id": case_id, **store.set_scope_hidden_hosts(case_id, body["hidden"])})
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+
+
 @case_bp.route("/api/cases/<case_id>/scopes/<scope_id>", methods=["DELETE"])
 def delete_case_scope(case_id, scope_id):
     """Forget a saved window and the report and chat written in it. No evidence is
