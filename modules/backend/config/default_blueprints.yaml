@@ -448,14 +448,22 @@ azure:
 # scans nothing is worse than one that scans everything). The `mode:`
 # field stays a schema-only placeholder the runtime overrides.
 #
-# The 12-plugin curated set (excludes HollowProcesses — known to take
-# 12+ min on a 5 GB dump) is the empirically validated sweet spot from
-# the PoC at ~/volweb-poc/.
+# The curated set (excludes HollowProcesses — known to take 12+ min on a
+# 5 GB dump) is the empirically validated sweet spot from the PoC at
+# ~/volweb-poc/.
+#
+# Every class path below must be one VolWeb actually registers
+# (services/memory/defaults.py:KNOWN_VOL3_PLUGINS mirrors that registry).
+# The engine filters the requested list against its own JSON registry and
+# drops unknown names with no row and no error: before 2026-09-22 this file
+# named six plugins VolWeb 3.16.0 does not have, and "Memory Analysis:
+# Credentials" ran one of its three. tests/test_memory_symbols_airgap.py
+# enforces it.
 memory:
 
   - id: memory_layered_default
     name: "Memory Analysis: Curated standard (recommended)"
-    description: "12-plugin curated set covering process discovery, persistence, network, and registry — the empirically-validated sweet spot from the PoC. Excludes HollowProcesses (12+ min on a 5 GB dump)."
+    description: "11-plugin curated set covering process discovery, persistence, network, and registry — the empirically-validated sweet spot from the PoC. Excludes HollowProcesses (12+ min on a 5 GB dump)."
     is_default: true
     settings:
       mode: plugin
@@ -471,7 +479,6 @@ memory:
         - volatility3.plugins.windows.netscan.NetScan
         - volatility3.plugins.windows.netstat.NetStat
         - volatility3.plugins.windows.registry.userassist.UserAssist
-        - volatility3.plugins.windows.registry.printkey.PrintKey
       yara_rulesets: []
       yara_categories: []          # broad-net: scan the full corpus (recommended default)
       compression: "None"         # MUST stay None — see services/memory/defaults.py
@@ -518,14 +525,16 @@ memory:
 
   - id: memory_all_plugins
     name: "Memory Analysis: All plugins (deep dive)"
-    description: "Every plugin VolWeb advertises for this dump — resolved at runtime via volweb.list_plugins(). Includes HollowProcesses (12+ min by itself). Use only after triage has flagged a host worth the wall-clock."
+    description: "All 68 plugins VolWeb can run against a Windows dump — expanded from the shipped catalog at dispatch. Includes HollowProcesses (12+ min by itself). Use only after triage has flagged a host worth the wall-clock."
     is_default: true
     settings:
       mode: plugin
-      # `['*']` is a marker — pipeline.py expands it at dispatch time by
-      # asking VolWeb which plugins are available for this evidence,
-      # so the set stays correct as VolWeb adds/removes plugins
-      # without us hardcoding 60+ class paths here.
+      # `['*']` is a marker — pipeline.py expands it at dispatch time from
+      # services/memory/defaults.py:KNOWN_VOL3_PLUGINS, the mirror of VolWeb's
+      # own plugin registry. It used to expand by asking VolWeb which plugins
+      # exist FOR THIS EVIDENCE, which is empty until an extraction has
+      # already run — so this blueprint fell through to the curated 12 on
+      # every first run and "deep dive" was a synonym for "standard".
       plugin_set:
         - '*'
       yara_rulesets: []
@@ -543,7 +552,7 @@ memory:
 
   - id: memory_process_deep
     name: "Memory Analysis: Process Anomalies"
-    description: "Process discovery + lineage + DLL inventory, code-injection finder (Malfind), and the expensive HollowProcesses + Hollowfind structural checks. ~6 min runtime — worth it on a confirmed-bad host."
+    description: "Process discovery + lineage + DLL/module inventory, code-injection finder (Malfind), ProcessGhosting, and the expensive HollowProcesses structural check. ~6 min runtime — worth it on a confirmed-bad host."
     is_default: true
     settings:
       mode: plugin
@@ -553,9 +562,9 @@ memory:
         - volatility3.plugins.windows.pstree.PsTree
         - volatility3.plugins.windows.cmdline.CmdLine
         - volatility3.plugins.windows.dlllist.DllList
-        - volatility3.plugins.windows.handles.Handles
+        - volatility3.plugins.windows.ldrmodules.LdrModules
         - volatility3.plugins.windows.malfind.Malfind
-        - volatility3.plugins.windows.hollowfind.Hollowfind
+        - volatility3.plugins.windows.processghosting.ProcessGhosting
         - volatility3.plugins.windows.hollowprocesses.HollowProcesses
       yara_rulesets: []
       # Process anomalies: in-memory implants, injected code, offensive
@@ -567,7 +576,7 @@ memory:
 
   - id: memory_persistence_deep
     name: "Memory Analysis: Persistence"
-    description: "Services, named mutexes, loaded kernel modules, execution-history (UserAssist, Run/RunOnce registry keys) and kernel-level hooks (DriverScan, Callbacks, SSDT) — catches persistence techniques that survive a reboot. ~3 min."
+    description: "Services, named mutexes, loaded kernel modules, execution history (UserAssist), scheduled tasks, and kernel-level hooks (DriverScan, Callbacks, SSDT) — catches persistence techniques that survive a reboot. ~3 min."
     is_default: true
     settings:
       mode: plugin
@@ -576,7 +585,7 @@ memory:
         - volatility3.plugins.windows.mutantscan.MutantScan
         - volatility3.plugins.windows.modules.Modules
         - volatility3.plugins.windows.registry.userassist.UserAssist
-        - volatility3.plugins.windows.registry.printkey.PrintKey
+        - volatility3.plugins.windows.registry.scheduled_tasks.ScheduledTasks
         - volatility3.plugins.windows.driverscan.DriverScan
         - volatility3.plugins.windows.callbacks.Callbacks
         - volatility3.plugins.windows.ssdt.SSDT
@@ -615,9 +624,9 @@ memory:
     settings:
       mode: plugin
       plugin_set:
-        - volatility3.plugins.windows.hashdump.Hashdump
+        - volatility3.plugins.windows.registry.hashdump.Hashdump
         - volatility3.plugins.windows.cachedump.Cachedump
-        - volatility3.plugins.windows.lsadump.Lsadump
+        - volatility3.plugins.windows.registry.lsadump.Lsadump
       yara_rulesets: []
       # Credentials: credential-theft tooling — Mimikatz/Rubeus and
       # info-stealers that harvest secrets from memory.

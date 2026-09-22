@@ -47,42 +47,40 @@ from .cleanup import cleanup_after_run
 from .defaults import (
     ACQUISITION_DEFAULTS,
     CURATED_PLUGINS,
+    KNOWN_VOL3_PLUGINS,
     DISK_PREFLIGHT_MULTIPLIER,
     YARA_CATEGORY_KEYWORDS,
 )
 from .volweb_client import VolWebClient, VolWebError
 
 
-def _resolve_plugin_set(blueprint: dict | None, client: "VolWebClient",
-                        evidence_id: int, log) -> tuple[str, ...]:
+def _resolve_plugin_set(blueprint: dict | None, log) -> tuple[str, ...]:
     """Pick the Vol3 plugin list to extract for this run.
 
     Resolution order:
       1. Blueprint's `settings.plugin_set` if non-empty and not the
          all-plugins marker.
-      2. Marker ``['*']`` → query VolWeb for every plugin row it
-         registered for this evidence (one row per plugin VolWeb knows
-         how to run against this dump's profile). Used by the
-         `memory_all_plugins` blueprint so the set stays correct as
-         VolWeb adds/removes plugins, without us hardcoding 60+ class
-         paths in the YAML.
-      3. Fallback to ``CURATED_PLUGINS`` (the 12-plugin sweet-spot
-         set from the PoC).
+      2. Marker ``['*']`` → every plugin in ``defaults.KNOWN_VOL3_PLUGINS``,
+         the in-tree mirror of VolWeb's own plugin registry.
+      3. Fallback to ``CURATED_PLUGINS`` (the sweet-spot set from the PoC).
+
+    ``['*']`` used to be resolved by asking VolWeb which plugins it had
+    registered FOR THIS EVIDENCE. There are no such rows until an extraction
+    has already run — the table is populated BY the run we are about to
+    dispatch — so the lookup returned an empty list on every first run and this
+    function fell through to the curated set with a "resolved to empty list"
+    warning nobody read. "All plugins (deep dive)" has therefore been running
+    the same 12 plugins as "Curated standard" for its whole life. The catalog
+    is static, VolWeb's registry is static, and the two are kept in step by
+    tests/test_memory_symbols_airgap.py — so the static expansion is both
+    correct and available before the first row exists.
     """
     raw = (blueprint.get("settings") or {}).get("plugin_set") if blueprint else None
     raw = list(raw or [])
 
     if raw == ['*']:
-        try:
-            rows = client.list_plugins(evidence_id) or []
-        except Exception as e:
-            log(f"'*' resolution failed ({e!s}) — falling back to curated set", "warning")
-            return CURATED_PLUGINS
-        names = tuple(r['name'] for r in rows if r.get('name'))
-        if not names:
-            log("'*' resolved to empty list — falling back to curated set", "warning")
-            return CURATED_PLUGINS
-        log(f"'*' resolved to {len(names)} plugins available for evidence {evidence_id}", "info")
+        names = tuple(path for _group, path in KNOWN_VOL3_PLUGINS)
+        log(f"'*' resolved to all {len(names)} plugins VolWeb can run", "info")
         return names
 
     return tuple(raw) if raw else CURATED_PLUGINS
@@ -569,6 +567,11 @@ def run_memory_pipeline(
     # running — tells cleanup to PRESERVE media/<id>/ so in-flight
     # matches aren't destroyed (2026-06-17 incident).
     yarascan_incomplete: bool = False
+    # Set True while a plugin extraction is in flight and left True if it ends
+    # without results — tells cleanup to KEEP the dump (host copy, VolWeb
+    # staging, Velociraptor flow) so a retry costs nothing. A run that got
+    # nothing out of the image is exactly the run whose image you still need.
+    dump_preserved: bool = False
     client = VolWebClient(
         logger=lambda m, level="info": add_log_to_run(run_id, m, level),
     )
@@ -590,6 +593,7 @@ def run_memory_pipeline(
             volweb_client=client,
             delete_evidence_row=False,   # operator's report+plugin rows stay
             preserve_evidence_dir=yarascan_incomplete,
+            preserve_dump=dump_preserved,
             logger=log,
         )
 
@@ -648,21 +652,30 @@ def run_memory_pipeline(
             client.stage_media_dir(evidence_id)
             plugins_to_run: tuple[str, ...] = ()
             if run_plugins:
-                plugins_to_run = _resolve_plugin_set(blueprint, client, evidence_id, log)
+                plugins_to_run = _resolve_plugin_set(blueprint, log)
             _yara_rulesets, _yara_rules = (None, None)
             if run_yara:
                 _yara_rulesets, _yara_rules = _resolve_yara_scan_targets(blueprint, client, log)
+            extract_task_id: str | None = None
             if run_plugins:
-                client.trigger_extraction(evidence_id, plugins_to_run)
+                extract_task_id = client.trigger_extraction(evidence_id, plugins_to_run)
             if run_yara:
                 client.trigger_yarascan(evidence_id, rulesets=_yara_rulesets, rules=_yara_rules)
             log("pipeline: extract — " + _extract_queued_label(plugins_to_run, run_plugins, run_yara), "info")
 
             if run_plugins:
+                nonlocal dump_preserved
                 ext_started = time.time()
+                # Assume the image is still needed until a plugin row proves
+                # otherwise. Set BEFORE the wait so it also holds when the wait
+                # raises (worker down, symbols missing, operator cancel) —
+                # every one of those is a run the operator will want to retry
+                # against this dump rather than re-acquire.
+                dump_preserved = True
                 plugin_map, plugins_done = client.wait_for_plugin_results(
                     evidence_id,
                     plugins_to_run,
+                    task_id=extract_task_id,
                     timeout_s=plugin_timeout_s,
                     cancel_check=cancel,
                     on_progress=lambda done, total: _bump(
@@ -670,6 +683,9 @@ def run_memory_pipeline(
                         cumulative + int(_PHASE_WEIGHTS["extract"] * (done / max(total, 1))),
                     ),
                 )
+                # Results landed and the wait reached a real terminal state:
+                # the image has done its job and cleanup reclaims it as always.
+                dump_preserved = not (plugins_done and plugin_map)
                 cumulative += _PHASE_WEIGHTS["extract"]
                 # Report what actually happened. This line used to be an
                 # unconditional "plugins complete … " at SUCCESS level, so a

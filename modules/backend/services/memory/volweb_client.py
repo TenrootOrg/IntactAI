@@ -29,6 +29,7 @@ That keeps this client unit-testable against a bare VolWeb instance.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -51,6 +52,29 @@ _YARASCAN_PLUGIN_NAME = "volatility3.plugins.yarascan.latest"
 # because a stalled extract is almost always this container being down, and the
 # operator needs the name in the log line to act on it.
 _VOLWEB_WORKER_CONTAINER = "intact_volweb_workers"
+
+# Where VolWeb tells Volatility3 to look for operator-supplied ISF symbol
+# files: `volatility_engine/utils.py` does
+# `volatility3.symbols.__path__ += [os.path.abspath("media/symbols")]`, and the
+# worker's cwd is /home/app/web. Backed by the `volweb_volweb_media` volume, so
+# both worker containers and the backend see the same directory.
+_VOLWEB_SYMBOLS_DIR = "/home/app/web/media/symbols"
+
+# What a symbol failure looks like in the extraction worker's log. Every one of
+# these is a line Vol3 or VolWeb's engine emits when automagic found the kernel
+# but could not get its PDB, which ends the task in ~36s with zero plugin rows
+# and a Celery SUCCESS. Matched case-insensitively against `docker logs`.
+#
+# The first two are the pair seen on the customer bundle this was diagnosed
+# from: "Symbol file could not be downloaded from remote server" (vol3's
+# pdbutil, after msdl.microsoft.com was unreachable) followed by VolWeb's own
+# "Unsatisfied requirements:" from engine.py's UnsatisfiedException handler.
+_SYMBOL_FAILURE_MARKERS = (
+    "symbol file could not be downloaded",
+    "unsatisfied requirements",
+    "no suitable kernels found",
+    "required symbol library path not found",
+)
 
 # ---------------------------------------------------------------------------
 # Poll / heartbeat cadence for the two wait_* loops.
@@ -690,14 +714,30 @@ class VolWebClient:
     # Selective plugin extraction
     # ------------------------------------------------------------------
 
-    def trigger_extraction(self, evidence_id: int, plugins: Iterable[str]) -> None:
-        """Dispatch the curated plugin set in ONE call.
+    def trigger_extraction(self, evidence_id: int, plugins: Iterable[str]) -> str | None:
+        """Dispatch the curated plugin set in ONE call. Returns the Celery task id.
 
         **Important:** VolWeb's ``/api/evidence/tasks/selective-
         extraction/`` endpoint resets the entire plugin table for an
         evidence on each call. Two successive calls would wipe the
         first run's results. The pipeline always issues exactly one
         invocation per evidence, with the full plugin list.
+
+        The task id is the only handle that can tell "still working" apart from
+        "finished and produced nothing", which is the difference between a
+        40-second failure and a 30-minute one. It is NOT in the POST body —
+        ``SelectiveExtractionTask.post`` answers a bare ``{"message":
+        "Selective extraction started"}``. It goes on the EVIDENCE ROW:
+        the view writes ``evidence.celery_task_id = result.id`` before it
+        responds, and ``tasks.py:start_selective_extraction``'s ``finally``
+        clears it the moment the task ends, whichever way it ended (read out of
+        forensicxlab/volweb-backend:3.16.0 on this appliance). So we read it
+        straight back off the evidence.
+
+        Returns ``None`` if that read-back fails or comes back empty — callers
+        then keep exactly the behaviour they had before (timeout budget,
+        idle-grace, worker-alive probe). This is an EXTRA signal, not a
+        replacement for any of them.
         """
         plugin_list = list(plugins)
         if not plugin_list:
@@ -711,6 +751,26 @@ class VolWebClient:
         )
         if isinstance(resp, dict) and resp.get("error"):
             raise VolWebError(f"selective-extraction error: {resp.get('error')}")
+        snapshot = self._evidence_snapshot(evidence_id)
+        task_id = str((snapshot or {}).get("celery_task_id") or "") or None
+        if task_id:
+            self._log(f"selective-extraction task id: {task_id}", "info")
+        return task_id
+
+    def _evidence_snapshot(self, evidence_id: int) -> dict | None:
+        """The evidence row as VolWeb currently sees it, or ``None``.
+
+        Never raises, and that is the point: this is polled inside the wait
+        loop to decide whether the extraction task is over, and a transient
+        502 from a restarting daphne must read as "don't know" (keep waiting),
+        never as "the task finished". ``EvidenceSerializer`` is
+        ``fields = "__all__"``, so ``status``, ``extraction_control`` and
+        ``celery_task_id`` all come through.
+        """
+        try:
+            return self.get_evidence(evidence_id)
+        except Exception:
+            return None
 
     def list_plugins(self, evidence_id: int) -> list[dict]:
         """Return ALL VolatilityPlugin rows for an evidence.
@@ -849,6 +909,108 @@ class VolWebClient:
         if out == "false":
             return False
         return None
+
+    def windows_symbol_isf_count(self) -> int | None:
+        """How many Volatility3 ISF symbol files VolWeb can see locally.
+
+        Counts what an operator can stage for an air-gapped box — loose
+        ``.json``/``.json.xz``/``.json.gz`` ISFs and whole ``.zip`` symbol
+        packs (Vol3 2.28 reads ISFs straight out of a zip; see
+        ``IntermediateSymbolTable.file_symbol_url``). Zero means a Windows
+        dump can only be analysed with internet access to Microsoft's symbol
+        server.
+
+        Best-effort like every other docker probe here: ``None`` is "can't
+        tell" and must never be treated as zero.
+        """
+        container = self._resolve_backend_container()
+        if not container:
+            return None
+        try:
+            r = subprocess.run(
+                [
+                    "docker", "exec", container, "sh", "-c",
+                    f"find {_VOLWEB_SYMBOLS_DIR} -type f "
+                    f"\\( -name '*.json' -o -name '*.json.xz' -o -name '*.json.gz' "
+                    f"-o -name '*.zip' \\) 2>/dev/null | wc -l",
+                ],
+                capture_output=True, text=True, timeout=30,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return None
+        if r.returncode != 0:
+            return None
+        try:
+            return int((r.stdout or "").strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            return None
+
+    def extraction_failure_reason(self, *, since_s: int = 1800) -> str | None:
+        """Read the extraction worker's log and name the real cause, or ``None``.
+
+        The failure this was written for reports itself as a SUCCESS: Vol3's
+        automagic finds the kernel, fails to download ``ntkrnlmp.pdb``, raises
+        UnsatisfiedException, and the Celery task ends normally in ~36s having
+        constructed zero plugins. The only place the truth is written down is
+        the worker's log, so that is where we look. Without this the operator
+        gets "extraction produced nothing", and QA goes looking at timeouts and
+        dump size — neither of which has anything to do with it.
+
+        Returns a ready-to-log sentence, or ``None`` when the log shows no
+        symbol failure (the caller then reports the generic "nothing came back"
+        line, which is still true).
+        """
+        name = _config_value("worker_container", default=None) or _VOLWEB_WORKER_CONTAINER
+        try:
+            r = subprocess.run(
+                ["docker", "logs", "--since", f"{int(since_s)}s", "--tail", "500", name],
+                capture_output=True, text=True, timeout=30,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return None
+        # Celery logs to stderr; docker splits the streams. Read both or this
+        # finds nothing on a box where it would have found everything.
+        text = (r.stdout or "") + "\n" + (r.stderr or "")
+        evidence_line = next(
+            (
+                ln.strip()
+                for ln in reversed(text.splitlines())
+                if any(m in ln.lower() for m in _SYMBOL_FAILURE_MARKERS)
+            ),
+            None,
+        )
+        if not evidence_line:
+            return None
+
+        parts = [
+            "Volatility could not get kernel symbols for this image — no plugin "
+            "could run (this is NOT a timeout and NOT a problem with the dump). "
+            f"The extraction worker logged: {evidence_line[-220:]}"
+        ]
+        # vol3's pdbutil prints the exact pdbconv arguments for the kernel it
+        # could not resolve. When it's in the log, hand the operator the command
+        # instead of a description of one.
+        hint = re.search(r"pdbconv\.py\s+-p\s+(\S+)\s+-g\s+(\S+)", text)
+        if hint:
+            parts.append(
+                f"The image needs the ISF for {hint.group(1)} {hint.group(2)}."
+            )
+        count = self.windows_symbol_isf_count()
+        if count == 0:
+            parts.append(
+                f"{_VOLWEB_SYMBOLS_DIR} is EMPTY, so nothing could satisfy it "
+                f"offline either."
+            )
+        elif count:
+            parts.append(
+                f"{_VOLWEB_SYMBOLS_DIR} holds {count} symbol file(s), none "
+                f"matching this kernel."
+            )
+        parts.append(
+            "Fix: give the box access to msdl.microsoft.com, or stage the ISF "
+            "offline — see docs/MEMORY_SYMBOLS_AIRGAP.md."
+        )
+        return " ".join(parts)
 
     def stage_media_dir(self, evidence_id: int) -> None:
         """Best-effort: ensure ``/home/app/web/media/<evidence_id>/``
@@ -1030,6 +1192,7 @@ class VolWebClient:
         evidence_id: int,
         expected_plugins: Iterable[str],
         *,
+        task_id: str | None = None,
         timeout_s: int = 1800,
         poll_s: int = _PLUGIN_POLL_S,
         cancel_check: Callable[[], bool] | None = None,
@@ -1073,6 +1236,12 @@ class VolWebClient:
             landed; rows=0 means it has written literally nothing.
           * After ``no_rows_warn_s`` with zero rows, say so, and probe whether
             the worker is even running — see the escalation block below.
+          * With ``task_id`` (from :meth:`trigger_extraction`), abort the
+            moment the dispatched Celery task reaches a terminal state with
+            zero result rows — see the block below. Every escape hatch above
+            still applies unchanged; this only ADDS the one signal none of them
+            could give: the difference between "still working" and "finished,
+            produced nothing".
         """
         wanted = set(expected_plugins)
         started_at = time.time()
@@ -1163,6 +1332,41 @@ class VolWebClient:
                         "warning",
                     )
                 return done, True
+
+            # AUTHORITATIVE "nothing is coming": the task we dispatched is
+            # over and not one plugin produced a row.
+            #
+            # `celery_task_id` is written to the evidence row by the view
+            # before it answers our POST and cleared by the task's own
+            # `finally` block when it ends, so it no longer being ours means
+            # the task reached a terminal state — Celery SUCCESS included.
+            # That is the case none of the other exits can see: on the customer
+            # bundle this fix came from, Vol3 failed to download ntkrnlmp.pdb,
+            # the task "succeeded in 36.09s: None" having constructed zero
+            # plugins, and this loop then waited out the remaining ~29 minutes
+            # before reporting a timeout that had nothing to do with time.
+            #
+            # Guarded on `not done` — partial results belong to the task_done /
+            # idle-grace exits above — and on a snapshot that actually came
+            # back: `_evidence_snapshot` returns None on a flaky read, and
+            # "don't know" must never be read as "finished".
+            if task_id and not done:
+                ev = self._evidence_snapshot(evidence_id)
+                if ev is not None and str(ev.get("celery_task_id") or "") != task_id:
+                    elapsed_s = int(time.time() - started_at)
+                    reason = self.extraction_failure_reason() or (
+                        f"VolWeb's extraction task ended without producing a "
+                        f"single plugin row (evidence status={ev.get('status')}). "
+                        f"Check `docker logs --tail 200 {_VOLWEB_WORKER_CONTAINER}`."
+                    )
+                    self._log(
+                        f"plugin extract: task {task_id} reached a terminal state "
+                        f"after {elapsed_s}s with 0/{len(wanted)} plugins — "
+                        f"aborting instead of waiting out the remaining "
+                        f"{max(0, int(deadline - time.time())) // 60}m. {reason}",
+                        "error",
+                    )
+                    raise VolWebError(reason)
 
             # All wanted plugins reached a terminal state — done.
             if len(done) + len(errored) >= len(wanted):

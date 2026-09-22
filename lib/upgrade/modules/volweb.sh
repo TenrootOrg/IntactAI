@@ -83,6 +83,13 @@ upgrade_module_volweb() {
         if declare -F seed_yara_rulesets >/dev/null; then
             seed_yara_rulesets || log_warn "  YARA ruleset seeding had issues — refresh via Maintenance later"
         fi
+        # Symbols live in the volweb_media volume, which survives the upgrade
+        # -- so this is normally a no-op that simply REPORTS coverage. It
+        # matters on the upgrade-as-install path (module enabled, never
+        # deployed) and when a release starts shipping a symbol pack.
+        if declare -F seed_volweb_symbols >/dev/null; then
+            seed_volweb_symbols || log_warn "  Volatility symbol seeding had issues"
+        fi
         discard_backup "$bak"
     fi
     return $rc

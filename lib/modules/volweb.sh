@@ -620,3 +620,106 @@ seed_yara_rulesets() {
     log_success "  YARA seeding dispatched (rule validation runs async in workers-yarascan)"
     return 0
 }
+
+# ---------------------------------------------------------------------------
+# seed_volweb_symbols [seed-dir]
+#
+# Stage operator-supplied Volatility3 ISF symbol files into VolWeb's media
+# volume, and SAY whether Windows memory analysis can work offline on this box.
+#
+# Why this exists: Volatility3 cannot parse a Windows image without the ISF for
+# that exact kernel build. It has no bundled Windows symbols at all -- it
+# derives them on demand by downloading ntkrnlmp.pdb from
+# msdl.microsoft.com and converting it. On an air-gapped appliance that
+# download fails, vol3 raises UnsatisfiedException, VolWeb's selective
+# extraction ends in ~36s having constructed ZERO plugins, and Celery reports
+# SUCCESS. Every Windows MEMORY run on such a box fails, and until this seeding
+# existed nothing in the install said so.
+#
+# Where they go: volatility_engine/utils.py inside the VolWeb image does
+#   volatility3.symbols.__path__ += [os.path.abspath("media/symbols")]
+# with cwd=/home/app/web, so /home/app/web/media/symbols (the shared
+# volweb_media volume) is the supported drop point. Vol3 2.28 indexes loose
+# .json/.json.xz/.json.gz ISFs AND reads them straight out of a .zip symbol
+# pack (IntermediateSymbolTable.file_symbol_url), so either shape works and
+# nothing needs unpacking.
+#
+# docker cp, not a host-side copy into the volume: the volume path is
+# root-owned under /var/lib/docker and the installer must not assume it can
+# write there. Same mechanism _seed_yara_from_bundle() already uses.
+#
+# Idempotent: a file already present in the container is left alone, so
+# re-running install or an upgrade never re-copies an 800 MB pack.
+seed_volweb_symbols() {
+    local seed_dir="${1:-${SCRIPT_DIR}/data/volweb-symbols}"
+    local dest="/home/app/web/media/symbols"
+
+    local volweb_enabled
+    volweb_enabled=$(read_config "['modules']['volweb']['enabled']")
+    if ! is_enabled "$volweb_enabled"; then
+        log_info "  VolWeb disabled — skipping Volatility symbol seeding"
+        return 0
+    fi
+    if ! is_module_installed intact_volweb_backend; then
+        log_warn "  intact_volweb_backend not running — skipping Volatility symbol seeding"
+        return 1
+    fi
+
+    docker exec intact_volweb_backend mkdir -p "$dest" >/dev/null 2>&1
+
+    local staged=0 present=0 f base
+    if [[ -d "$seed_dir" ]]; then
+        while IFS= read -r f; do
+            base="$(basename "$f")"
+            if docker exec intact_volweb_backend test -e "${dest}/${base}" >/dev/null 2>&1; then
+                present=$((present + 1))
+                continue
+            fi
+            if docker cp "$f" "intact_volweb_backend:${dest}/${base}" >/dev/null 2>&1; then
+                staged=$((staged + 1))
+            else
+                log_warn "    ✗ ${base}: docker cp into intact_volweb_backend failed"
+            fi
+        done < <(find "$seed_dir" -type f \
+            \( -name '*.json' -o -name '*.json.xz' -o -name '*.json.gz' -o -name '*.zip' \) \
+            2>/dev/null)
+    fi
+    if (( staged > 0 )); then
+        # docker cp lands files owned by root; the worker runs as `app`. World
+        # -readable is enough to READ an ISF, but the cache index writes
+        # nothing here, so a chown is cheap insurance against a restrictive
+        # umask on the operator's staging machine.
+        docker exec intact_volweb_backend chown -R app:app "$dest" >/dev/null 2>&1
+        log_success "  Staged ${staged} Volatility symbol file(s) into VolWeb"
+    fi
+
+    # Report what the box actually HAS, not what we just copied -- an operator
+    # who dropped files in by hand, or a previous install that already seeded
+    # them, must read as covered.
+    local have
+    have="$(docker exec intact_volweb_backend sh -c \
+        "find ${dest} -type f \\( -name '*.json' -o -name '*.json.xz' -o -name '*.json.gz' -o -name '*.zip' \\) 2>/dev/null | wc -l" \
+        2>/dev/null | tr -d '\r' | tail -1)"
+    [[ "$have" =~ ^[0-9]+$ ]] || have=0
+
+    if (( have > 0 )); then
+        log_success "  VolWeb Windows symbols: ${have} ISF file(s)/pack(s) present — offline memory analysis is covered"
+        return 0
+    fi
+
+    # Zero. On a box with internet this is normal (vol3 fetches per kernel from
+    # Microsoft on first use); air-gapped it is a guaranteed failure, so the
+    # wording differs. Never fail the install over it: an operator may be
+    # installing today and staging symbols tomorrow.
+    if [[ "${INTACT_AIRGAP:-0}" == "1" ]]; then
+        log_warn "  VolWeb has NO Volatility symbols and this is an air-gapped install."
+        log_warn "  Every Windows memory analysis will fail in ~40s with"
+        log_warn "  'could not get kernel symbols'. Stage ISF files into"
+        log_warn "  data/volweb-symbols/ and re-run — see docs/MEMORY_SYMBOLS_AIRGAP.md"
+    else
+        log_info "  VolWeb has no pre-staged Volatility symbols — Windows dumps will"
+        log_info "  resolve them from msdl.microsoft.com on first use. For an air-gapped"
+        log_info "  site, stage them first: docs/MEMORY_SYMBOLS_AIRGAP.md"
+    fi
+    return 0
+}

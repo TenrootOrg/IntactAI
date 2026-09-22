@@ -500,6 +500,13 @@ for p in glob.glob(f'{work}/*/manifests/intact.json') + glob.glob(f'{work}/*/man
         "tools|${SCRIPT_DIR}/data/tools|Velociraptor tool"
         "artifacts/velociraptor|${SCRIPT_DIR}/data/tools|Velociraptor artifact bundle"
         "yara_rulesets|${_yara_seed}/yara_rulesets|VolWeb YARA ruleset"
+        # Volatility3 ISF symbols. Consumer: lib/modules/volweb.sh:
+        # seed_volweb_symbols, which docker-cp's them into VolWeb's media
+        # volume. Nothing ships them today (the Microsoft pack is 801 MiB and
+        # is per-site anyway) -- staging is wired first so a release CAN, and
+        # so an operator who drops a kernel's ISF into a package gets it
+        # installed rather than ignored.
+        "volweb_symbols|${SCRIPT_DIR}/data/volweb-symbols|VolWeb Volatility symbol"
     )
     local _sp _srcdir _destdir _label _f _n
     for _sp in "${_stage_pairs[@]}"; do

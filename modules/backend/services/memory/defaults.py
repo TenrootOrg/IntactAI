@@ -10,7 +10,7 @@ value so they don't get tweaked carelessly.
 # Volatility 3 — curated plugin list
 # ---------------------------------------------------------------------------
 #
-# 12 plugins that gave the best signal in the PoC's 3-way comparison on
+# 11 plugins that gave the best signal in the PoC's 3-way comparison on
 # DESKTOP-566AT85. The full available-plugin catalog from VolWeb is 68
 # entries; most are low-signal for an LLM (driver/IRP/kernel inventory,
 # bootkey-dependent stuff that fails on Win10) or duplicative.
@@ -20,8 +20,10 @@ value so they don't get tweaked carelessly.
 # file hashes. Observed runtime on a 3-5 GB Win10/11 dump: 12+ minutes.
 # It is the only plugin that has ever monopolised the Celery worker for
 # longer than the rest combined. ``Hollowfind`` (a cheaper structural
-# check) is also dropped from the default set; if an operator wants it
-# they can add it via a custom blueprint.
+# check) is also dropped from the default set — and in any case VolWeb
+# 3.16.0 does not register Hollowfind at all, so it could not run if it
+# were listed; if an operator wants HollowProcesses they can add it via a
+# custom blueprint.
 CURATED_PLUGINS: tuple[str, ...] = (
     # Process discovery + lineage
     "volatility3.plugins.windows.pslist.PsList",
@@ -39,7 +41,13 @@ CURATED_PLUGINS: tuple[str, ...] = (
     "volatility3.plugins.windows.netstat.NetStat",
     # Registry / execution history
     "volatility3.plugins.windows.registry.userassist.UserAssist",
-    "volatility3.plugins.windows.registry.printkey.PrintKey",
+    # PrintKey was the 12th entry and never once ran: VolWeb 3.16.0 does not
+    # register `registry.printkey.PrintKey` in volweb_plugins.json, so the
+    # engine dropped it from the list without a row or an error and every log
+    # line since has counted out of a 12 that could only ever reach 11.
+    # Removed rather than substituted — `registry.scheduled_tasks.
+    # ScheduledTasks` and `registry.amcache.Amcache` are the registered
+    # registry plugins if an operator wants that signal back, via a blueprint.
 )
 
 # ---------------------------------------------------------------------------
@@ -48,78 +56,117 @@ CURATED_PLUGINS: tuple[str, ...] = (
 #
 # Used by the Blueprints page's memory editor to render a checkbox grid
 # (operator picks plugins by ticking boxes instead of typing dotted
-# class paths). Grouped by purpose so the UI can render section headers.
+# class paths) AND to expand the `['*']` all-plugins marker at dispatch.
 #
-# This list is the "menu" the operator sees — it doesn't constrain what
-# VolWeb actually runs. A custom blueprint can still reference any
-# class path the operator types directly in default_blueprints.yaml,
-# and the `['*']` marker resolves to whatever VolWeb advertises for the
-# specific dump at run time.
+# This is a VERBATIM mirror of what VolWeb will actually run: the union of
+# `volatility_engine/volweb_plugins.json` + `volweb_misc.json` inside the
+# forensicxlab/volweb-backend image, windows section, grouped by VolWeb's own
+# category labels. It is NOT "every Vol3 plugin that exists".
 #
-# Tradeoff: a static list won't track new Vol3 plugins released after
-# this file ships, so operators who need bleeding-edge plugins use the
-# `['*']` blueprint or edit YAML directly. Worth it for the discovery
-# benefit at the 95% case.
+# That distinction is load-bearing. engine.py:start_selective_extraction
+# filters the requested list against those two registries
+# (`main_selected = [p for p in selected_plugins if p in all_main]`) and
+# SILENTLY DROPS anything else — no row, no error, no log line. The previous
+# hand-written catalog carried 12 names VolWeb 3.16.0 does not register
+# (handles.Handles, hollowfind.Hollowfind, hashdump.Hashdump, lsadump.Lsadump,
+# registry.printkey.PrintKey, mftscan.MFTScan, memmap.Memmap, statistics.
+# Statistics, vadinfo.VadInfo, vadwalk.VadWalk, virtmap.VirtMap,
+# registry.cmdline.CmdLine) and was missing 36 that it does — so the operator
+# ticked boxes for plugins that could never run, and the shipped "Credentials"
+# blueprint (Hashdump + Lsadump + Cachedump) ran exactly ONE of its three.
+# Verified 2026-09-22 against the image on this appliance
+# (forensicxlab/volweb-backend:3.16.0): 66 main + 2 misc = 68 windows plugins.
+#
+# Re-derive after a VolWeb bump, don't hand-edit:
+#   docker cp intact_volweb_backend:/home/app/web/volatility_engine/volweb_plugins.json -
+# tests/test_memory_symbols_airgap.py fails if CURATED_PLUGINS or any shipped
+# blueprint names something outside this catalog.
 KNOWN_VOL3_PLUGINS: tuple[tuple[str, str], ...] = (
-    # ── Process discovery + lineage ──
-    ("Process discovery + lineage", "volatility3.plugins.windows.pslist.PsList"),
-    ("Process discovery + lineage", "volatility3.plugins.windows.psscan.PsScan"),
-    ("Process discovery + lineage", "volatility3.plugins.windows.pstree.PsTree"),
-    ("Process discovery + lineage", "volatility3.plugins.windows.cmdline.CmdLine"),
-    ("Process discovery + lineage", "volatility3.plugins.windows.dlllist.DllList"),
-    ("Process discovery + lineage", "volatility3.plugins.windows.handles.Handles"),
-    ("Process discovery + lineage", "volatility3.plugins.windows.ldrmodules.LdrModules"),
-    ("Process discovery + lineage", "volatility3.plugins.windows.getsids.GetSIDs"),
-    ("Process discovery + lineage", "volatility3.plugins.windows.privileges.Privs"),
-    ("Process discovery + lineage", "volatility3.plugins.windows.sessions.Sessions"),
-    ("Process discovery + lineage", "volatility3.plugins.windows.envars.Envars"),
-    ("Process discovery + lineage", "volatility3.plugins.windows.vadinfo.VadInfo"),
-    ("Process discovery + lineage", "volatility3.plugins.windows.vadwalk.VadWalk"),
+    # ── Processes ──
+    ("Processes", "volatility3.plugins.windows.cmdline.CmdLine"),
+    ("Processes", "volatility3.plugins.windows.debugregisters.DebugRegisters"),
+    ("Processes", "volatility3.plugins.windows.dlllist.DllList"),
+    ("Processes", "volatility3.plugins.windows.envars.Envars"),
+    ("Processes", "volatility3.plugins.windows.joblinks.JobLinks"),
+    ("Processes", "volatility3.plugins.windows.ldrmodules.LdrModules"),
+    ("Processes", "volatility3.plugins.windows.mutantscan.MutantScan"),
+    ("Processes", "volatility3.plugins.windows.orphan_kernel_threads.Threads"),
+    ("Processes", "volatility3.plugins.windows.privileges.Privs"),
+    ("Processes", "volatility3.plugins.windows.pslist.PsList"),
+    ("Processes", "volatility3.plugins.windows.psscan.PsScan"),
+    ("Processes", "volatility3.plugins.windows.pstree.PsTree"),
+    ("Processes", "volatility3.plugins.windows.registry.amcache.Amcache"),
+    ("Processes", "volatility3.plugins.windows.sessions.Sessions"),
+    ("Processes", "volatility3.plugins.windows.suspended_threads.SuspendedThreads"),
+    ("Processes", "volatility3.plugins.windows.svclist.SvcList"),
+    ("Processes", "volatility3.plugins.windows.svcscan.SvcScan"),
+    ("Processes", "volatility3.plugins.windows.thrdscan.ThrdScan"),
+    ("Processes", "volatility3.plugins.windows.threads.Threads"),
 
-    # ── Injection / hollowing / malware indicators ──
-    ("Injection / hollowing / malware", "volatility3.plugins.windows.malfind.Malfind"),
-    ("Injection / hollowing / malware", "volatility3.plugins.windows.hollowfind.Hollowfind"),
-    ("Injection / hollowing / malware", "volatility3.plugins.windows.hollowprocesses.HollowProcesses"),
+    # ── Malware ──
+    ("Malware", "volatility3.plugins.windows.cmdscan.CmdScan"),
+    ("Malware", "volatility3.plugins.windows.consoles.Consoles"),
+    ("Malware", "volatility3.plugins.windows.direct_system_calls.DirectSystemCalls"),
+    ("Malware", "volatility3.plugins.windows.hollowprocesses.HollowProcesses"),
+    ("Malware", "volatility3.plugins.windows.iat.IAT"),
+    ("Malware", "volatility3.plugins.windows.indirect_system_calls.IndirectSystemCalls"),
+    ("Malware", "volatility3.plugins.windows.malfind.Malfind"),
+    ("Malware", "volatility3.plugins.windows.processghosting.ProcessGhosting"),
+    ("Malware", "volatility3.plugins.windows.psxview.PsXView"),
+    ("Malware", "volatility3.plugins.windows.ssdt.SSDT"),
+    ("Malware", "volatility3.plugins.windows.suspicious_threads.SuspiciousThreads"),
+    ("Malware", "volatility3.plugins.windows.unhooked_system_calls.unhooked_system_calls"),
+    ("Malware", "volatility3.plugins.windows.verinfo.VerInfo"),
 
-    # ── Persistence + drivers + kernel hooks ──
-    ("Persistence + drivers + kernel hooks", "volatility3.plugins.windows.svcscan.SvcScan"),
-    ("Persistence + drivers + kernel hooks", "volatility3.plugins.windows.mutantscan.MutantScan"),
-    ("Persistence + drivers + kernel hooks", "volatility3.plugins.windows.modscan.ModScan"),
-    ("Persistence + drivers + kernel hooks", "volatility3.plugins.windows.modules.Modules"),
-    ("Persistence + drivers + kernel hooks", "volatility3.plugins.windows.callbacks.Callbacks"),
-    ("Persistence + drivers + kernel hooks", "volatility3.plugins.windows.ssdt.SSDT"),
-    ("Persistence + drivers + kernel hooks", "volatility3.plugins.windows.driverscan.DriverScan"),
-    ("Persistence + drivers + kernel hooks", "volatility3.plugins.windows.drivermodule.DriverModule"),
-    ("Persistence + drivers + kernel hooks", "volatility3.plugins.windows.driverirp.DriverIrp"),
-    ("Persistence + drivers + kernel hooks", "volatility3.plugins.windows.devicetree.DeviceTree"),
+    # ── Kernel ──
+    ("Kernel", "volatility3.plugins.windows.callbacks.Callbacks"),
+    ("Kernel", "volatility3.plugins.windows.devicetree.DeviceTree"),
+    ("Kernel", "volatility3.plugins.windows.driverirp.DriverIrp"),
+    ("Kernel", "volatility3.plugins.windows.drivermodule.DriverModule"),
+    ("Kernel", "volatility3.plugins.windows.driverscan.DriverScan"),
+    ("Kernel", "volatility3.plugins.windows.modscan.ModScan"),
+    ("Kernel", "volatility3.plugins.windows.modules.Modules"),
+    ("Kernel", "volatility3.plugins.windows.svcdiff.SvcDiff"),
+    ("Kernel", "volatility3.plugins.windows.timers.Timers"),
+    ("Kernel", "volatility3.plugins.windows.unloadedmodules.UnloadedModules"),
 
     # ── Network ──
     ("Network", "volatility3.plugins.windows.netscan.NetScan"),
     ("Network", "volatility3.plugins.windows.netstat.NetStat"),
 
-    # ── Credentials (bootkey-dependent) ──
-    ("Credentials (bootkey-dependent)", "volatility3.plugins.windows.hashdump.Hashdump"),
-    ("Credentials (bootkey-dependent)", "volatility3.plugins.windows.lsadump.Lsadump"),
-    ("Credentials (bootkey-dependent)", "volatility3.plugins.windows.cachedump.Cachedump"),
+    # ── Registry ──
+    ("Registry", "volatility3.plugins.windows.registry.certificates.Certificates"),
+    ("Registry", "volatility3.plugins.windows.registry.getcellroutine.GetCellRoutine"),
+    ("Registry", "volatility3.plugins.windows.registry.hivelist.HiveList"),
+    ("Registry", "volatility3.plugins.windows.registry.hivescan.HiveScan"),
+    ("Registry", "volatility3.plugins.windows.registry.scheduled_tasks.ScheduledTasks"),
+    ("Registry", "volatility3.plugins.windows.registry.userassist.UserAssist"),
 
-    # ── Registry / execution history ──
-    ("Registry / execution history", "volatility3.plugins.windows.registry.userassist.UserAssist"),
-    ("Registry / execution history", "volatility3.plugins.windows.registry.printkey.PrintKey"),
-    ("Registry / execution history", "volatility3.plugins.windows.registry.hivelist.HiveList"),
-    ("Registry / execution history", "volatility3.plugins.windows.registry.hivescan.HiveScan"),
-    ("Registry / execution history", "volatility3.plugins.windows.registry.cmdline.CmdLine"),
+    # ── Security ──
+    ("Security", "volatility3.plugins.windows.cachedump.Cachedump"),
+    ("Security", "volatility3.plugins.windows.getservicesids.GetServiceSIDs"),
+    ("Security", "volatility3.plugins.windows.getsids.GetSIDs"),
+    ("Security", "volatility3.plugins.windows.registry.hashdump.Hashdump"),
+    ("Security", "volatility3.plugins.windows.registry.lsadump.Lsadump"),
+    ("Security", "volatility3.plugins.windows.skeleton_key_check.Skeleton_Key_Check"),
+    ("Security", "volatility3.plugins.windows.truecrypt.Passphrase"),
 
     # ── Filesystem ──
     ("Filesystem", "volatility3.plugins.windows.filescan.FileScan"),
-    ("Filesystem", "volatility3.plugins.windows.mftscan.MFTScan"),
     ("Filesystem", "volatility3.plugins.windows.mbrscan.MBRScan"),
+    ("Filesystem", "volatility3.plugins.windows.mftscan.ADS"),
+    ("Filesystem", "volatility3.plugins.windows.mftscan.ResidentData"),
+    ("Filesystem", "volatility3.plugins.windows.shimcachemem.ShimcacheMem"),
+    ("Filesystem", "volatility3.plugins.windows.symlinkscan.SymlinkScan"),
 
-    # ── Profile / kernel info ──
-    ("Profile / kernel info", "volatility3.plugins.windows.info.Info"),
-    ("Profile / kernel info", "volatility3.plugins.windows.virtmap.VirtMap"),
-    ("Profile / kernel info", "volatility3.plugins.windows.statistics.Statistics"),
-    ("Profile / kernel info", "volatility3.plugins.windows.getservicesids.GetServiceSIDs"),
-    ("Profile / kernel info", "volatility3.plugins.windows.memmap.Memmap"),
+    # ── GUI ──
+    ("GUI", "volatility3.plugins.windows.deskscan.DeskScan"),
+    ("GUI", "volatility3.plugins.windows.desktops.Desktops"),
+    ("GUI", "volatility3.plugins.windows.windows.Windows"),
+    ("GUI", "volatility3.plugins.windows.windowstations.WindowStations"),
+
+    # ── Other ──
+    ("Other", "volatility3.plugins.windows.info.Info"),
 )
 
 

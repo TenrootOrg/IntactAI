@@ -272,3 +272,11 @@ qa/**/qa-runs/
 # what survives here is per-box incident state, never something to commit.
 modules/*/.env.upgrade-bak-*
 backups/
+
+# Operator-staged Volatility3 ISF symbol files for air-gapped Windows memory
+# analysis (lib/modules/volweb.sh:seed_volweb_symbols copies them into VolWeb's
+# media volume). A single kernel's ISF is ~230 KB; the full Microsoft pack is
+# 801 MiB. Never source, always site-specific -- keep the directory, ignore
+# what lands in it. See docs/MEMORY_SYMBOLS_AIRGAP.md.
+data/volweb-symbols/*
+!data/volweb-symbols/.gitkeep

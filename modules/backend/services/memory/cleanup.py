@@ -104,6 +104,7 @@ def cleanup_after_run(
     volweb_client: VolWebClient | None,
     delete_evidence_row: bool = False,
     preserve_evidence_dir: bool = False,
+    preserve_dump: bool = False,
     logger: Callable[[str, str], None] | None = None,
 ) -> None:
     """Sweep every place memory data lands.
@@ -119,6 +120,13 @@ def cleanup_after_run(
         operator wants the analysis to survive auto-purge).
       volweb_client: optional client for the DB-row delete. Passed in
         rather than constructed so the same auth state is reused.
+      preserve_dump: keep the memory image itself — the host ``.raw``, the
+        copy VolWeb staged, and the Velociraptor flow that holds the
+        server-side copy. Set when an extraction produced nothing, so the
+        operator can retry against the dump they already have instead of
+        re-acquiring 9.2 GB from the endpoint. Same shape as
+        ``preserve_evidence_dir``, one level up: that one protects the
+        yarascan results, this one protects the evidence they came from.
 
     Never raises. Failures are logged at ``warning`` level.
 
@@ -132,12 +140,27 @@ def cleanup_after_run(
         log("cleanup: skipped (NO_CLEANUP=1)", "info")
         return
 
+    if preserve_dump:
+        # Say it once, up front, naming all three places — an operator reading
+        # a failed run's log needs to know the retry is free before they go
+        # and re-acquire. The three skips below are what makes it true.
+        log(
+            "cleanup: PRESERVING the memory image — the extraction produced "
+            "nothing, so destroying it would cost a full re-acquisition from "
+            "the endpoint for a run that never got past symbol resolution. "
+            f"Kept: host {host_path or '(none)'}, VolWeb staging "
+            f"{evidence_filename or '(none)'}, and the Velociraptor flow "
+            f"{flow_id or '(none)'}. Fix the cause and re-run against the same "
+            "dump (Memory → Upload existing dump).",
+            "warning",
+        )
+
     # 1. Velociraptor server-side (must come first — needs uploads.json).
-    if client_id and flow_id:
+    if client_id and flow_id and not preserve_dump:
         cleanup_velociraptor_flow(client_id, flow_id, logger=log)
 
     # 2. Host-side .raw from the local extract step.
-    if host_path:
+    if host_path and not preserve_dump:
         _remove_host_dump(host_path, log)
 
     # 3. VolWeb-side residue.
@@ -150,7 +173,7 @@ def cleanup_after_run(
         # is still reading it: the worker holds an open fd, so Linux
         # keeps the inode alive until the scan finishes (unlink only
         # drops the name). Freeing the path matters on disk-tight hosts.
-        if evidence_filename:
+        if evidence_filename and not preserve_dump:
             _remove_volweb_media_raw(evidence_filename, log)
         # The per-evidence dir (media/<id>/) holds the yarascan
         # results jsonl the worker streams into. If the scan is STILL

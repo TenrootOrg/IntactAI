@@ -71,6 +71,11 @@ start_services() {
     if ! seed_yara_rulesets; then
         log_warn "  YARA ruleset seeding had issues — refresh via Maintenance later"
     fi
+    # Volatility symbols, same placement and for the same reason: it talks to
+    # intact_volweb_backend, which deploy_volweb brought up above. Advisory
+    # only -- it reports whether this box can analyse a Windows dump offline
+    # and never fails the install.
+    seed_volweb_symbols || true
     echo ""
     deploy_nginx
     echo ""
