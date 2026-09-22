@@ -4051,27 +4051,68 @@ def set_analysis_config(case_id, cfg) -> dict:
     return {k: ("<logo>" if k == "customer_logo_b64" else v) for k, v in patch.items()}
 
 
-def _scope_from_rescan(case_id, cfg) -> tuple:
-    """Refusion with a DIFFERENT time window means "read this timeframe" — it makes
-    a scope of it and selects it. Refusion with the timeframe already on screen
-    means "apply what else I changed" (fewer hosts, another severity floor, other
-    modules): the same scope is kept and only the case is re-fused.
+def _reaches_outside(tw, bound) -> bool:
+    """Does the window `tw` reach past the case's fuse bound, on either side? An
+    open end ("up to now") reaches past a fixed one. A case with no bound at all
+    holds everything, so nothing reaches past it."""
+    if not (bound or {}).get("start"):
+        return False
+    ts, bs = keys.to_utc_dt(tw.get("start")), keys.to_utc_dt(bound.get("start"))
+    if ts and bs and ts < bs:
+        return True
+    te, be = tw.get("end"), bound.get("end")
+    if be and not te:
+        return True
+    tde, bde = keys.to_utc_dt(te), keys.to_utc_dt(be)
+    return bool(tde and bde and tde > bde)
 
-    The window posted by the rail is therefore NOT the case's fuse bound any more.
-    It cannot be: narrowing what the case FUSES would empty every other scope, so
-    an operator who looked at one week would silently lose the rest of the case.
-    The case keeps fusing everything it collected; scopes read within it.
-    Returns (cfg_without_window, window_to_scope_to_or_None).
+
+def _union_window(a, b) -> dict:
+    """The smallest window holding both: earlier start, later end, open if either
+    end is open."""
+    def _pick(x, y, earlier):
+        dx, dy = keys.to_utc_dt(x), keys.to_utc_dt(y)
+        if not dx: return y
+        if not dy: return x
+        return x if ((dx <= dy) if earlier else (dx >= dy)) else y
+    end = None if not (a.get("end") and b.get("end")) else _pick(a["end"], b["end"], False)
+    return {"start": _pick(a.get("start"), b.get("start"), True), "end": end}
+
+
+def _scope_from_rescan(case_id, cfg) -> tuple:
+    """What a Refusion from the rail's time window MEANS. Three cases:
+
+      * the timeframe already on screen -> "apply what else I changed" (fewer
+        hosts, another severity floor, other modules): nothing about scopes moves;
+      * a timeframe INSIDE what the case holds -> "read this", a scope of its own;
+      * a timeframe reaching OUTSIDE what the case holds -> the CASE GROWS to cover
+        it. Its fuse bound widens, the Refusion pulls in the older (or newer)
+        evidence, and the operator lands on the whole case, which is now that
+        window.
+
+    The third case is what keeps the whole-case entry the WIDEST one by
+    construction. Before it, a window reaching past the bound became a scope, but
+    the fuse bound did not move, so the scope showed exactly what the whole case
+    showed and promised evidence that was never fused — measured live: scopes from
+    2016-09-01 and 2011-06-01 on a case bounded at 2016-09-22 each bought a full
+    six-phase report of the same 151 findings. A scope only ever NARROWS; growing is
+    the case's job.
+
+    Returns (cfg, window_to_scope_to_or_None, grew).
     """
     cfg = dict(cfg or {})
     tw = cfg.pop("time_window", None) or None
     if not (tw or {}).get("start"):
-        return cfg, None
+        return cfg, None, False
     d = get_case(case_id) or {}
-    cur = active_scope_window(d) or (d.get("time_window") or {})
+    bound = d.get("time_window") or {}
+    if _reaches_outside(tw, bound):
+        cfg["time_window"] = _union_window(bound, tw)     # the case itself grows
+        return cfg, None, True
+    cur = active_scope_window(d) or bound
     same = (str(cur.get("start") or "") == str(tw.get("start") or "")
             and str(cur.get("end") or "") == str(tw.get("end") or ""))
-    return cfg, (None if same else tw)
+    return cfg, (None if same else tw), False
 
 
 def rescan(case_id, cfg=None, trigger=None) -> dict:
@@ -4079,12 +4120,30 @@ def rescan(case_id, cfg=None, trigger=None) -> dict:
     regenerate. Replaces the bare re-fuse for the UI. Rescan is an explicit rebuild,
     so it DOES refresh the report (deterministically — reflecting the new masking /
     host-exclusion / severity); the premium LLM narrative is the Regenerate button."""
-    cfg, _new_window = _scope_from_rescan(case_id, cfg)
+    cfg, _new_window, _grew = _scope_from_rescan(case_id, cfg)
     if cfg:
         set_analysis_config(case_id, cfg)
-    if _new_window:
-        # A timeframe the operator has not read before: make it a scope and select
-        # it, so the re-fused case comes back with that window on screen.
+    if _grew:
+        # The whole case is now wider. Put the operator on it, and forget any saved
+        # scope that has become identical to it — it would only duplicate the
+        # whole case, report and all.
+        _bound = (get_case(case_id) or {}).get("time_window") or {}
+        if _active_scope_id(get_case(case_id) or {}) != FULL_SCOPE_ID:
+            switch_scope(case_id, FULL_SCOPE_ID)
+        # Drop ONLY exact duplicates of the new whole case. Every narrower scope
+        # is still a narrower scope and keeps its report and chat.
+        _mutate_list_field(case_id, "scopes", lambda cur: [
+            x for x in (cur or [])
+            if x.get("id") == FULL_SCOPE_ID
+            or scope_id_for_window(x.get("window")) != scope_id_for_window(_bound)])
+        log_case_event(case_id, "Scope · the case grew", "info",
+                       f"the window you picked reaches past what the case held, so the "
+                       f"case now covers {_window_label(_bound)} and is being re-fused "
+                       f"to pull in that evidence. You are on the whole case.")
+    elif _new_window:
+        # A timeframe inside the case the operator has not read before: make it a
+        # scope and select it, so the re-fused case comes back with that window on
+        # screen.
         create_scope(case_id, None, _new_window)
     # Rebuild via the flag, NOT by blanking report_md first. Blanking happened
     # outside the fuse lock, so when the case was already fusing the FusionBusy

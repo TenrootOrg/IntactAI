@@ -12,6 +12,7 @@ edge, and dropping evidence a kept finding cites.
 """
 import os
 import sys
+import types
 import unittest
 
 for _p in (os.path.dirname(os.path.abspath(__file__)),
@@ -484,29 +485,88 @@ class RefusionAndTimeframes(unittest.TestCase):
             p.start(); self.addCleanup(p.stop)
 
     def test_the_same_timeframe_makes_no_new_scope(self):
-        cfg, win = store._scope_from_rescan(CASE, {"time_window": dict(self.d["time_window"]),
-                                                   "excluded_hosts": ["HOSTB"]})
+        cfg, win, _ = store._scope_from_rescan(CASE, {"time_window": dict(self.d["time_window"]),
+                                                      "excluded_hosts": ["HOSTB"]})
         self.assertIsNone(win, "nothing new to read — just apply the other edits")
         self.assertEqual({"excluded_hosts": ["HOSTB"]}, cfg)
 
     def test_a_different_timeframe_becomes_a_scope(self):
-        cfg, win = store._scope_from_rescan(CASE, {"time_window": PHASE_WIN})
+        cfg, win, _ = store._scope_from_rescan(CASE, {"time_window": PHASE_WIN})
         self.assertEqual(PHASE_WIN, win)
 
     def test_the_window_never_narrows_what_the_case_fuses(self):
         """If it did, reading one week would empty every other scope — the case
         would silently lose the rest of itself."""
-        cfg, _ = store._scope_from_rescan(CASE, {"time_window": PHASE_WIN,
-                                                 "min_severity": "high"})
+        cfg, _, _ = store._scope_from_rescan(CASE, {"time_window": PHASE_WIN,
+                                                    "min_severity": "high"})
         self.assertNotIn("time_window", cfg)
         self.assertEqual({"min_severity": "high"}, cfg)
 
     def test_the_timeframe_is_compared_against_the_scope_on_screen(self):
         store.create_scope(CASE, None, PHASE_WIN)
-        _, win = store._scope_from_rescan(CASE, {"time_window": dict(PHASE_WIN)})
+        _, win, _ = store._scope_from_rescan(CASE, {"time_window": dict(PHASE_WIN)})
         self.assertIsNone(win, "already reading it")
-        _, win2 = store._scope_from_rescan(CASE, {"time_window": OTHER_WIN})
-        self.assertEqual(OTHER_WIN, win2)
+        # a different window INSIDE the case (one past its bound grows the case
+        # instead — AWindowPastTheCaseGrowsTheCase)
+        inside = {"start": "2020-01-01T00:00:00", "end": "2021-01-01T00:00:00"}
+        _, win2, _ = store._scope_from_rescan(CASE, {"time_window": inside})
+        self.assertEqual(inside, win2)
+
+
+class AWindowPastTheCaseGrowsTheCase(unittest.TestCase):
+    """Live: scopes starting 2016-09-01 and 2011-06-01 on a case bounded at
+    2016-09-22 showed exactly the whole case's data — nothing older was ever fused —
+    and each bought a full six-phase report of the same 151 findings."""
+
+    BOUND = {"start": "2016-09-22T11:08:10", "end": "2026-09-22T11:08:10"}
+
+    def test_reaching_past_the_start_grows_the_case_instead_of_making_a_scope(self):
+        with mock.patch.object(store, "get_case", return_value={"time_window": dict(self.BOUND)}):
+            cfg, win, grew = store._scope_from_rescan(CASE, {"time_window": {
+                "start": "2011-06-01T11:08:00", "end": "2026-09-22T11:08:10"}})
+        self.assertTrue(grew)
+        self.assertIsNone(win, "a window past the case is not a scope")
+        self.assertEqual({"start": "2011-06-01T11:08:00", "end": "2026-09-22T11:08:10"},
+                         cfg["time_window"], "the fuse bound widens to cover it")
+
+    def test_an_open_end_reaches_past_a_fixed_one(self):
+        self.assertTrue(store._reaches_outside({"start": "2020-01-01T00:00:00", "end": None},
+                                               self.BOUND))
+
+    def test_a_window_inside_the_case_is_still_a_scope(self):
+        with mock.patch.object(store, "get_case", return_value={"time_window": dict(self.BOUND)}):
+            cfg, win, grew = store._scope_from_rescan(CASE, {"time_window": PHASE_WIN})
+        self.assertFalse(grew)
+        self.assertEqual(PHASE_WIN, win)
+        self.assertNotIn("time_window", cfg, "a scope never narrows what the case fuses")
+
+    def test_the_union_takes_the_earlier_start_and_the_later_or_open_end(self):
+        self.assertEqual({"start": "2011-06-01T00:00:00", "end": "2026-09-22T11:08:10"},
+                         store._union_window(self.BOUND, {"start": "2011-06-01T00:00:00",
+                                                          "end": "2020-01-01T00:00:00"}))
+        self.assertIsNone(store._union_window(self.BOUND, {"start": "2011-06-01T00:00:00",
+                                                           "end": None})["end"])
+
+    def test_growing_keeps_every_narrower_scope(self):
+        """The argument-order slip that would have deleted them all."""
+        d = {"time_window": dict(self.BOUND), "active_scope": "full",
+             "scopes": [{"id": "full"},
+                        {"id": store.scope_id_for_window(PHASE_WIN), "window": PHASE_WIN,
+                         "report_md": "# phase\n"}]}
+        with mock.patch.object(store, "get_case", side_effect=lambda cid: dict(d)), \
+             mock.patch.object(store, "_merge_case_details", side_effect=lambda c, p: d.update(p)), \
+             mock.patch.object(store, "_mutate_list_field",
+                               side_effect=lambda c, f, m: d.update({f: m(d.get(f) or [])})), \
+             mock.patch.object(store, "log_case_event"), \
+             mock.patch.object(store, "fuse_case", return_value=types.SimpleNamespace(
+                 entities={}, relationships=[], findings=[])):
+            store.rescan(CASE, {"time_window": {"start": "2011-06-01T00:00:00",
+                                                "end": "2026-09-22T11:08:10"}})
+        ids = [x["id"] for x in d["scopes"]]
+        self.assertIn(store.scope_id_for_window(PHASE_WIN), ids,
+                      "a narrower scope is still a scope, report and all")
+        self.assertEqual({"start": "2011-06-01T00:00:00", "end": "2026-09-22T11:08:10"},
+                         d["time_window"], "and the case now covers the wider window")
 
 
 if __name__ == "__main__":
