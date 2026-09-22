@@ -63,9 +63,19 @@ class ASupersededResultIsNeverWritten(unittest.TestCase):
     def test_the_narrative_write_is_gated(self):
         regen = body(STORE, "def regenerate_report(")
         gate = regen.index("if not _generation_is_current(case_id, gen_id):")
-        write = regen.index("_merge_case_details(case_id, _narrative_patch)")
+        # The write goes through write_report_for_scope now — a report belongs to
+        # the timeframe it was generated for, whichever one is being read when it
+        # lands. The guarantee asserted here is unchanged: check before writing.
+        write = regen.index("write_report_for_scope(case_id, _gen_scope, _narrative_patch)")
         self.assertLess(gate, write, "check BEFORE writing, or the old model's report "
                                      "lands over the new one")
+
+    def test_the_report_is_written_into_the_scope_it_was_generated_for(self):
+        """Captured at the START of the run, not read back at the end: the operator
+        is free to read another timeframe while it runs."""
+        regen = body(STORE, "def regenerate_report(")
+        self.assertLess(regen.index("_gen_scope = _active_scope_id(d)"),
+                        regen.index("write_report_for_scope("))
 
     def test_the_discard_is_visible_in_the_case_log(self):
         self.assertIn('"Report · late result discarded"', body(STORE, "def regenerate_report("))

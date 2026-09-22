@@ -198,13 +198,6 @@ class ScopesAreLensesNotCopies(unittest.TestCase):
         with self.assertRaises(ValueError):
             store.delete_scope(CASE, "full")
 
-    def test_a_report_in_flight_blocks_a_switch(self):
-        store.create_scope(CASE, "Phase 2", PHASE_WIN)
-        self.d["report_generating"] = True
-        self.d["report_generating_started_at"] = store._now_iso()
-        with self.assertRaises(store.ReportGenerationBusy):
-            store.switch_scope(CASE, "full")
-
     def test_a_scope_needs_a_start_date(self):
         with self.assertRaises(ValueError):
             store.create_scope(CASE, "nope", {"end": "2026-01-01T00:00:00"})
@@ -216,6 +209,124 @@ class ScopesAreLensesNotCopies(unittest.TestCase):
         self.assertEqual("full", rows[0]["id"])
         self.assertTrue(any(r["active"] for r in rows))
         self.assertFalse(any("report_md" in r or "chat_messages" in r for r in rows))
+
+
+class WhatTheOperatorReadsBack(unittest.TestCase):
+    """The names, the log stamps and the report's home — the four things QA found
+    wrong on the first live run."""
+
+    def setUp(self):
+        self.d = {"name": "QA", "report_md": "# whole case\n", "chat_messages": [],
+                  "time_window": {"start": "2016-09-22T10:00:23", "end": "2026-09-22T10:00:23"},
+                  "fused_at": "t0"}
+        patches = [
+            mock.patch.object(store, "get_case", side_effect=lambda cid: dict(self.d)),
+            mock.patch.object(store, "_merge_case_details",
+                              side_effect=lambda cid, patch: self.d.update(patch)),
+            mock.patch.object(store, "_mutate_list_field",
+                              side_effect=lambda cid, f, m: self.d.update({f: m(self.d.get(f) or [])})),
+            mock.patch.object(store, "log_case_event"),
+            mock.patch.object(store, "load_graph", return_value=_g()),
+            mock.patch.object(store, "fuse_case", side_effect=AssertionError("must not fuse")),
+        ]
+        for p in patches:
+            p.start(); self.addCleanup(p.stop)
+
+    def test_a_scope_is_named_by_its_timeframe_to_the_second(self):
+        """Two phases of the same day are different timeframes, so the name cannot
+        stop at the date."""
+        store.create_scope(CASE, None, {"start": "2026-06-14T09:39:49",
+                                        "end": "2026-06-21T14:35:13"})
+        labels = [r["label"] for r in store.scopes_for_payload(self.d)]
+        self.assertIn("2026-06-14 09:39:49 → 2026-06-21 14:35:13", labels)
+        self.assertFalse(any("Phase" in l for l in labels))
+
+    def test_there_is_no_full_case_entry_only_the_whole_timeframe(self):
+        """No parent sitting above the others: the default entry is named by the
+        case's own dates, like every other entry in the list."""
+        store.create_scope(CASE, None, PHASE_WIN)
+        rows = store.scopes_for_payload(self.d)
+        full = next(r for r in rows if r["id"] == "full")
+        self.assertEqual("2016-09-22 10:00:23 → 2026-09-22 10:00:23", full["label"])
+        self.assertFalse(any(r["label"] == "Full case" for r in rows))
+
+    def test_the_whole_timeframe_relabels_when_the_case_window_changes(self):
+        self.d["time_window"] = {"start": "2015-01-01T00:00:00", "end": "2018-01-01T00:00:00"}
+        rows = store.scopes_for_payload(self.d)
+        self.assertEqual("2015-01-01 00:00:00 → 2018-01-01 00:00:00", rows[0]["label"])
+
+    def test_a_report_lands_in_the_scope_it_was_generated_for(self):
+        """It runs for minutes and the operator is free to read elsewhere: the
+        narrative must not follow the view."""
+        sid = store.create_scope(CASE, None, PHASE_WIN)
+        store.switch_scope(CASE, "full")                 # walked away mid-generation
+        on_screen = store.write_report_for_scope(CASE, sid, {"report_md": "# june\n",
+                                                             "report_dirty": False})
+        self.assertFalse(on_screen, "and the caller is told it is not on screen")
+        self.assertEqual("# whole case\n", self.d["report_md"], "the view is untouched")
+        entry = next(s for s in self.d["scopes"] if s["id"] == sid)
+        self.assertEqual("# june\n", entry["report_md"], "it is saved where it belongs")
+        store.switch_scope(CASE, sid)
+        self.assertEqual("# june\n", self.d["report_md"], "and is there when you go back")
+
+    def test_a_report_in_flight_no_longer_blocks_reading_another_timeframe(self):
+        sid = store.create_scope(CASE, None, PHASE_WIN)
+        self.d["report_generating"] = True
+        self.d["report_generating_started_at"] = store._now_iso()
+        store.switch_scope(CASE, "full")                 # must not raise
+        self.assertEqual("full", self.d["active_scope"])
+
+    def test_the_log_stamps_scope_work_and_leaves_case_work_alone(self):
+        for act in ("Report saved", "Chat · sending to LLM", "Checklist · complete"):
+            self.assertTrue(store._SCOPE_STAMPED_ACTIONS.match(act), act)
+        for act in ("Refusion · starting", "Config · Time window", "Scope · switched to X",
+                    "New data landed", "Configuration saved"):
+            self.assertIsNone(store._SCOPE_STAMPED_ACTIONS.match(act), act)
+
+
+class RefusionAndTimeframes(unittest.TestCase):
+    """The operator's rule: Refusion with the timeframe already on screen just
+    applies the other edits; Refusion with a different one reads that timeframe."""
+
+    def setUp(self):
+        self.d = {"name": "QA", "report_md": "# whole case\n", "chat_messages": [],
+                  "time_window": {"start": "2016-09-22T10:00:23", "end": "2026-09-22T10:00:23"}}
+        patches = [
+            mock.patch.object(store, "get_case", side_effect=lambda cid: dict(self.d)),
+            mock.patch.object(store, "_merge_case_details",
+                              side_effect=lambda cid, patch: self.d.update(patch)),
+            mock.patch.object(store, "_mutate_list_field",
+                              side_effect=lambda cid, f, m: self.d.update({f: m(self.d.get(f) or [])})),
+            mock.patch.object(store, "log_case_event"),
+            mock.patch.object(store, "load_graph", return_value=_g()),
+        ]
+        for p in patches:
+            p.start(); self.addCleanup(p.stop)
+
+    def test_the_same_timeframe_makes_no_new_scope(self):
+        cfg, win = store._scope_from_rescan(CASE, {"time_window": dict(self.d["time_window"]),
+                                                   "excluded_hosts": ["HOSTB"]})
+        self.assertIsNone(win, "nothing new to read — just apply the other edits")
+        self.assertEqual({"excluded_hosts": ["HOSTB"]}, cfg)
+
+    def test_a_different_timeframe_becomes_a_scope(self):
+        cfg, win = store._scope_from_rescan(CASE, {"time_window": PHASE_WIN})
+        self.assertEqual(PHASE_WIN, win)
+
+    def test_the_window_never_narrows_what_the_case_fuses(self):
+        """If it did, reading one week would empty every other scope — the case
+        would silently lose the rest of itself."""
+        cfg, _ = store._scope_from_rescan(CASE, {"time_window": PHASE_WIN,
+                                                 "min_severity": "high"})
+        self.assertNotIn("time_window", cfg)
+        self.assertEqual({"min_severity": "high"}, cfg)
+
+    def test_the_timeframe_is_compared_against_the_scope_on_screen(self):
+        store.create_scope(CASE, None, PHASE_WIN)
+        _, win = store._scope_from_rescan(CASE, {"time_window": dict(PHASE_WIN)})
+        self.assertIsNone(win, "already reading it")
+        _, win2 = store._scope_from_rescan(CASE, {"time_window": OTHER_WIN})
+        self.assertEqual(OTHER_WIN, win2)
 
 
 if __name__ == "__main__":

@@ -2597,8 +2597,24 @@ def _filter_graph_by_hosts(g, excluded_labels) -> FusionGraph:
 # CASE's: a verdict is keyed to a finding_id and findings only exist at fuse time,
 # so triage once and every scope that shows that finding shows the verdict.
 FULL_SCOPE_ID = "full"
-FULL_SCOPE_LABEL = "Full case"
 MAX_SCOPES = 12
+# There is no parent scope. The entry with no window of its own is the case's
+# WHOLE timeframe, and it is named by its dates like every other entry, so the
+# dropdown is one flat list of timeframes rather than a hierarchy.
+ALL_EVIDENCE_LABEL = "All evidence"
+
+
+def _full_scope_label(d) -> str:
+    """The default entry's name: the case's own window, or what it actually holds
+    when no window is set. Derived, never stored, so changing the case's window in
+    Configuration re-labels it instead of leaving a stale name behind."""
+    tw = d.get("time_window") or {}
+    if tw.get("start"):
+        return _window_label(tw)
+    gc = d.get("graph_counts") or {}
+    if gc.get("evidence_first"):
+        return _window_label({"start": gc["evidence_first"], "end": gc.get("evidence_last")})
+    return ALL_EVIDENCE_LABEL
 
 
 def _scopes(d) -> list:
@@ -2635,8 +2651,15 @@ def scope_id_for_window(window) -> str:
 
 
 def _window_label(w) -> str:
-    a, b = (w.get("start") or "")[:10], (w.get("end") or "")[:10]
-    return f"{a} → {b}" if b else f"from {a}"
+    """A timeframe IS the name — dates AND times, to the second. Two phases of the
+    same day are different timeframes, and a label that stopped at the date could
+    not tell them apart."""
+    def _t(v):
+        v = str(v or "").replace("T", " ").rstrip("Z")
+        return v[:19] if len(v) >= 19 else v[:10]
+    w = w or {}
+    a, b = _t(w.get("start")), _t(w.get("end"))
+    return f"{a} → {b}" if (a and b) else (f"from {a}" if a else ALL_EVIDENCE_LABEL)
 
 
 # The live case fields a scope owns. Everything else on the case row — the graph,
@@ -2698,7 +2721,8 @@ def _save_active_scope(case_id, d) -> None:
     sid = _active_scope_id(d)
     prev = _active_scope(d) or {}
     _upsert_scope(case_id, {"id": sid,
-                            "label": prev.get("label") or (FULL_SCOPE_LABEL if sid == FULL_SCOPE_ID else sid),
+                            "label": (_full_scope_label(d) if sid == FULL_SCOPE_ID
+                                      else prev.get("label") or _window_label(prev.get("window"))),
                             "window": prev.get("window") or None,
                             "used_at": _now_iso(),
                             **_live_scope_fields(d)})
@@ -2716,7 +2740,7 @@ def create_scope(case_id, label, window) -> str:
     sid = scope_id_for_window(window)
     known = next((s for s in _scopes(d) if s["id"] == sid), None)
     entry = dict(known or {})
-    entry.update({"id": sid, "label": label or (known or {}).get("label") or _window_label(window),
+    entry.update({"id": sid, "label": label or _window_label(window),
                   "window": {"start": window.get("start"), "end": window.get("end")},
                   "used_at": _now_iso()})
     if not known:                                    # a fresh window starts empty
@@ -2738,9 +2762,10 @@ def switch_scope(case_id, scope_id) -> dict:
     d = get_case(case_id)
     if not d:
         raise KeyError("case not found")
-    if report_generation_active(d):
-        # The report worker writes into whichever scope is selected when it lands.
-        raise ReportGenerationBusy("a report is being generated for this case")
+    # A report in flight NO LONGER BLOCKS THIS. It remembers the scope it was
+    # generated for and writes there when it lands (write_report_for_scope), so
+    # the operator can read anywhere while it runs — which is the whole point of
+    # generation being backgrounded.
     cur = _active_scope_id(d)
     if scope_id == cur:
         return {"status": "unchanged", "scope": scope_id}
@@ -2754,7 +2779,8 @@ def switch_scope(case_id, scope_id) -> dict:
     patch["active_scope"] = scope_id
     _merge_case_details(case_id, patch)
     _upsert_scope(case_id, {**target, "used_at": _now_iso()})
-    label = target.get("label") or (FULL_SCOPE_LABEL if scope_id == FULL_SCOPE_ID else scope_id)
+    label = (_full_scope_label(d) if scope_id == FULL_SCOPE_ID
+             else target.get("label") or _window_label(target.get("window")))
     log_case_event(case_id, f"Scope · switched to {label}", "success",
                    "the case's evidence is unchanged — every tab now shows the part "
                    "of it inside this window")
@@ -2817,6 +2843,34 @@ def scope_counts(case_id, d=None) -> dict:
     return counts
 
 
+def write_report_for_scope(case_id, scope_id, patch) -> bool:
+    """Save a finished report into the scope it was GENERATED FOR, whichever scope
+    is on screen by the time it lands.
+
+    A report runs for minutes. Blocking the operator from looking anywhere else
+    meanwhile (which is what switch_scope used to do) trades one problem for a
+    worse one; letting the write land wherever the view happens to be would file a
+    narrative that cost real tokens under the wrong window. So the generation
+    remembers its scope and writes there: into that scope's entry always, and onto
+    the live case row only while that scope is still the one being read.
+
+    Returns True when the operator is looking at it right now.
+    """
+    d = get_case(case_id) or {}
+    on_screen = _active_scope_id(d) == scope_id
+    if on_screen:
+        _merge_case_details(case_id, patch)
+    prev = next((s for s in _scopes(d) if s["id"] == scope_id), None) or {}
+    entry = {"id": scope_id,
+             "label": prev.get("label") or (_full_scope_label(d) if scope_id == FULL_SCOPE_ID
+                                            else _window_label(prev.get("window"))),
+             "window": prev.get("window") or None, "used_at": prev.get("used_at") or _now_iso(),
+             **{k: prev.get(k) for k in _SCOPE_FIELDS},
+             **{k: v for k, v in patch.items() if k in _SCOPE_FIELDS}}
+    _upsert_scope(case_id, entry)
+    return on_screen
+
+
 def scopes_for_payload(d) -> list:
     """What the dropdown renders. Ids, labels and windows only — never the stored
     report or chat. The full case is always first, whether or not it has an entry
@@ -2826,13 +2880,14 @@ def scopes_for_payload(d) -> list:
     for s in _scopes(d):
         seen.add(s["id"])
         rows.append({"id": s["id"],
-                     "label": s.get("label") or (FULL_SCOPE_LABEL if s["id"] == FULL_SCOPE_ID else s["id"]),
+                     "label": (_full_scope_label(d) if s["id"] == FULL_SCOPE_ID
+                               else s.get("label") or _window_label(s.get("window"))),
                      "window": s.get("window") or {},
                      "report_written_at": s.get("report_written_at"),
                      "has_report": bool(s.get("report_md")),
                      "active": s["id"] == active})
     if FULL_SCOPE_ID not in seen:
-        rows.insert(0, {"id": FULL_SCOPE_ID, "label": FULL_SCOPE_LABEL, "window": {},
+        rows.insert(0, {"id": FULL_SCOPE_ID, "label": _full_scope_label(d), "window": {},
                         "report_written_at": d.get("report_written_at"),
                         "has_report": bool(d.get("report_md")),
                         "active": active == FULL_SCOPE_ID})
@@ -2944,19 +2999,35 @@ def _now_iso() -> str:
 _CASE_LOG_CAP = 500
 
 
+# Actions that happen INSIDE a timeframe and are stamped with it (see below).
+_SCOPE_STAMPED_ACTIONS = __import__("re").compile(
+    r"^(Report|Chat|Checklist|Regenerate|LLM|POST report|Synthes)", __import__("re").I)
+
+
 def log_case_event(case_id, action, status="ok", detail="", detail_max=500, **meta) -> None:
     """Append an entry to the case's activity log. Best-effort + bounded: logging
     must NEVER raise into (or break) the action it records. Captures both the
     action and its outcome (ok/error) so the Log tab can follow everything that
     happens inside Case Analysis."""
     try:
-        if not get_case(case_id):
+        _d = get_case(case_id)
+        if not _d:
             return                       # not a real case (e.g. 'quick', calibration ids)
         lvl = str(status or "ok").lower()
         if lvl not in ("info", "ok", "success", "warning", "error"):
             lvl = "ok"
-        entry = {"ts": _now_iso() + "Z", "action": str(action)[:120],
-                 "status": lvl, "detail": str(detail)[:max(1, int(detail_max or 500))]}
+        act = str(action)[:120]
+        # WHICH TIMEFRAME THIS HAPPENED IN. A report, a chat turn and a checklist
+        # belong to the scope that was being read when they ran, and the log used
+        # to say only "Report saved" — with several scopes in a case the operator
+        # could not tell which report that was. The case-level work (fusing,
+        # configuration, the scope switches themselves) is deliberately left
+        # unstamped: it belongs to the case, not to one window of it.
+        if _SCOPE_STAMPED_ACTIONS.match(act) and _active_scope_id(_d) != FULL_SCOPE_ID:
+            act = f"{act} · {_window_label(active_scope_window(_d))}"
+        entry = {"ts": _now_iso() + "Z", "action": act[:160],
+                 "status": lvl, "detail": str(detail)[:max(1, int(detail_max or 500))],
+                 "scope": _active_scope_id(_d)}
         for k, v in (meta or {}).items():
             entry[k] = v
 
@@ -3405,7 +3476,10 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
     d = get_case(case_id)
     g = load_graph(case_id)
     # The SELECTED scope's window: this report describes that slice of the case,
-    # and is stored with the scope it was written for.
+    # and is stored with the scope it was written for. The id is captured HERE, at
+    # the start, because the run takes minutes and the operator is free to go and
+    # read another timeframe meanwhile — see write_report_for_scope.
+    _gen_scope = _active_scope_id(d)
     window = view_window(d)
     min_sev = d.get("min_severity", "informational")
     gv = view_graph(case_id, d)
@@ -3549,9 +3623,12 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
         return {"report_md": d.get("report_md"), "audience": d.get("audience", "both"),
                 "discarded": True}
     try:
-        _merge_case_details(case_id, _narrative_patch)
+        _on_screen = write_report_for_scope(case_id, _gen_scope, _narrative_patch)
         log_case_event(case_id, "Report saved", "success",
-                       f"narrative written to the database ({len(report or ''):,} chars)")
+                       f"narrative written to the database ({len(report or ''):,} chars)"
+                       + ("" if _on_screen else
+                          " — into the scope it was generated for, which is not the "
+                          "one you are reading now; select it to see the report"))
     except Exception as e:
         log_case_event(case_id, "Report save", "error", f"database write failed: {e}")
         raise
@@ -3772,13 +3849,41 @@ def set_analysis_config(case_id, cfg) -> dict:
     return {k: ("<logo>" if k == "customer_logo_b64" else v) for k, v in patch.items()}
 
 
+def _scope_from_rescan(case_id, cfg) -> tuple:
+    """Refusion with a DIFFERENT time window means "read this timeframe" — it makes
+    a scope of it and selects it. Refusion with the timeframe already on screen
+    means "apply what else I changed" (fewer hosts, another severity floor, other
+    modules): the same scope is kept and only the case is re-fused.
+
+    The window posted by the rail is therefore NOT the case's fuse bound any more.
+    It cannot be: narrowing what the case FUSES would empty every other scope, so
+    an operator who looked at one week would silently lose the rest of the case.
+    The case keeps fusing everything it collected; scopes read within it.
+    Returns (cfg_without_window, window_to_scope_to_or_None).
+    """
+    cfg = dict(cfg or {})
+    tw = cfg.pop("time_window", None) or None
+    if not (tw or {}).get("start"):
+        return cfg, None
+    d = get_case(case_id) or {}
+    cur = active_scope_window(d) or (d.get("time_window") or {})
+    same = (str(cur.get("start") or "") == str(tw.get("start") or "")
+            and str(cur.get("end") or "") == str(tw.get("end") or ""))
+    return cfg, (None if same else tw)
+
+
 def rescan(case_id, cfg=None, trigger=None) -> dict:
     """THE config-driven action: persist the rail's variables then re-correlate +
     regenerate. Replaces the bare re-fuse for the UI. Rescan is an explicit rebuild,
     so it DOES refresh the report (deterministically — reflecting the new masking /
     host-exclusion / severity); the premium LLM narrative is the Regenerate button."""
+    cfg, _new_window = _scope_from_rescan(case_id, cfg)
     if cfg:
         set_analysis_config(case_id, cfg)
+    if _new_window:
+        # A timeframe the operator has not read before: make it a scope and select
+        # it, so the re-fused case comes back with that window on screen.
+        create_scope(case_id, None, _new_window)
     # Rebuild via the flag, NOT by blanking report_md first. Blanking happened
     # outside the fuse lock, so when the case was already fusing the FusionBusy
     # below left the report erased with nothing to regenerate it -- an operator
@@ -3792,6 +3897,7 @@ def rescan(case_id, cfg=None, trigger=None) -> dict:
     _merge_case_details(case_id, {"auto_fuse_incomplete": False})
     return {"entities": len(g.entities), "relationships": len(g.relationships),
             "findings": len(g.findings),
+            "scope_created": _window_label(_new_window) if _new_window else None,
             "cross_host_findings": sum(1 for f in g.findings if f.kind == "cross_host")}
 
 

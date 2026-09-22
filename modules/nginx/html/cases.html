@@ -726,7 +726,13 @@ function renderRisk(info){
 // fusion ontology saves -- the same subject as the model line they now sit
 // under, and configuration rather than a headline.
 function renderConfig(info){
-  const alt=info.report_altitude||'auto', mk=info.masking||{}, tw=info.time_window||{};
+  const alt=info.report_altitude||'auto', mk=info.masking||{};
+  // The window in the rail is the TIMEFRAME BEING READ — the selected scope's, or
+  // the case's whole span when none is selected. Editing it and pressing Refusion
+  // reads a new timeframe (it becomes a scope); leaving it alone re-fuses the case
+  // with whatever else changed.
+  const _asc=asList(info.scopes).find(s=>s.active);
+  const tw=(_asc && _asc.id!=='full' && (_asc.window||{}).start) ? _asc.window : (info.time_window||{});
   const opt=(v,l,cur)=>`<option value="${v}" ${cur===v?'selected':''}>${l}</option>`;
   $('#tabc').innerHTML=`
     <div class="cfgwrap">
@@ -734,6 +740,7 @@ function renderConfig(info){
         <h4>Scope</h4>
         <label>Time window — start</label><input id="cf-start" value="${esc(tw.start||'')}" placeholder="pick date + time…"/>
         <label>Time window — end <span style="color:var(--muted)">(empty = up to now)</span></label><input id="cf-end" value="${esc(tw.end||'')}" placeholder="empty = now / open"/>
+        <div class="cfghint">The timeframe you are reading. Change it and press <b>Refusion</b> and it becomes a scope of its own, selected — the case still holds everything it collected, so your other scopes are untouched. Leave it as it is and Refusion just applies your other changes (hosts, severity, modules) to the case.</div>
         <label>Min severity</label>
         <select id="cf-sev">${['informational','low','medium','high','critical'].map(s=>opt(s,s,info.min_severity||'informational')).join('')}</select>
         <label style="margin-top:8px">Entity limit <span style="color:var(--muted)">(graph size)</span></label>
@@ -1015,10 +1022,11 @@ function scopeBarHtml(info){
   // One scope is just "the whole case" — nothing to choose between yet, so the
   // bar stays out of the way until the first window is saved.
   if(sc.length<2 && !window._scopeNewOpen) return '';
-  const opts=sc.map(s=>{
-    const dates=_scopeDates(s.window), behind=(!s.has_report&&s.id!=='full')?' · no report yet':'';
-    return `<option value="${esc(s.id)}" ${s.active?'selected':''}>${esc(s.label)}${dates?' · '+esc(dates):''}${behind}</option>`;
-  }).join('');
+  // The label IS the timeframe (the backend names every scope by its dates), so
+  // nothing is appended to it but whether it has been written up yet.
+  const opts=sc.map(s=>
+    `<option value="${esc(s.id)}" ${s.active?'selected':''}>${esc(s.label)}${s.has_report?'':' · no report yet'}</option>`
+  ).join('');
   const act=sc.find(s=>s.active)||{};
   return `<div class="scopebar">
       <span class="lbl">Scope</span>
@@ -1036,8 +1044,7 @@ function scopeBarHtml(info){
 // The dates under the case name belong to whatever is selected, or the case.
 function scopeSinceHtml(info, tw){
   const act=asList(info&&info.scopes).find(s=>s.active);
-  if(act && act.id!=='full' && (act.window||{}).start)
-    return esc(act.label)+' · '+esc(_scopeDates(act.window));
+  if(act && act.id!=='full') return 'showing '+esc(act.label);
   return tw.start?('since '+esc(tw.start)):'no start date';
 }
 function scopeNewToggle(){ window._scopeNewOpen=!window._scopeNewOpen; if(curInfo) render(curInfo, window._md||'', curInfo.counts||{}); }
@@ -1101,12 +1108,12 @@ function loadZoomTargets(id){
 // then generates that scope's report, which is what the button promises.
 async function applyZoom(id,i){
   const t=_zoomTargets[i]; if(!t) return;
-  const label=(t.name?('Phase '+t.n+' — '+t.name):t.title);
+  const label=_scopeDates(t.window);     // the timeframe is the name
   try{
     await api('/api/cases/'+id+'/zoom',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({window:t.window, host_labels:t.host_labels, label})});
+      body:JSON.stringify({window:t.window, host_labels:t.host_labels})});
   }catch(e){ toast('The scope could not be created: '+((e&&e.message)||e)); return; }
-  toast('Scope "'+label+'" selected. Writing its report — progress is in the Log.');
+  toast('Timeframe '+label+' selected. Writing its report — progress is in the Log.');
   // Re-read first, so the page is ON the new scope before the report is asked
   // for: regenReport takes over the redraw and the generating banner from here.
   await openCase(id);
@@ -1475,6 +1482,7 @@ async function doRefusion(id){
     // case. Not a failure — the config posted above IS persisted and a retry re-fuses
     // with it — so say so instead of showing the red "failed" toast.
     if(r && r.busy) toast('This case is already being re-fused. Please try again shortly.');
+    else if(r && r.scope_created) toast('Refusion complete. Now reading '+r.scope_created+' — it is in the Scope list.');
     else toast('Refusion complete. Data, risk and timeline are up to date.');
   }catch(e){ toast('Refusion failed. See the Log for details.'); }
   // Re-read the case. The rail's settings were just persisted server-side, but
