@@ -343,7 +343,7 @@ class ARefuseThatReusesItsReportMustNotCrash(unittest.TestCase):
 
     def test_narrate_is_bound_on_the_reuse_path(self):
         src = _read_source("modules/backend/services/fusion/store.py")
-        reuse = src.split('if d.get("report_md") and not force_report:')[1]
+        reuse = src.split('if d.get("report_md") and (not force_report or _empty_keep):')[1]
         reuse = reuse.split("\n    else:")[0]
         self.assertIn("_narrate = False", reuse,
                       "the patch below reads _narrate; leaving it unbound on "

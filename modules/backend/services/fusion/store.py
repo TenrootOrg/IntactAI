@@ -1939,7 +1939,16 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     # Refusion tries again and a connection that came back is used at once.
     _no_route = False
     _offline = None              # set when provider_route() found no route before narrating
-    if d.get("report_md") and not force_report:
+    # An EMPTY graph never replaces a written report. Unticking the only module a
+    # case's runs come from fused 0 entities and a Refusion then paid the model to
+    # overwrite a 51,852-char report with "nothing to analyse" — measured live.
+    _empty_keep = bool(d.get("report_md") and force_report and not g.entities)
+    if _empty_keep:
+        _plog("Refusion · report kept", "warning",
+              "the fused graph is empty (no run in this case matches the selected "
+              "modules, hosts or window), so the existing report was kept and no "
+              "model call was made. Fix the selection and Refusion again", pct=88)
+    if d.get("report_md") and (not force_report or _empty_keep):
         report = d.get("report_md")
         # NO NARRATION ON THIS PATH -- the report is reused verbatim. Bound here
         # because the patch below reads it: it was assigned ONLY in the else
@@ -4144,13 +4153,64 @@ def _scope_from_rescan(case_id, cfg) -> tuple:
         return cfg, None, False
     d = get_case(case_id) or {}
     bound = d.get("time_window") or {}
+    cur = active_scope_window(d) or bound
+    # Checked FIRST: the dates on screen, untouched, mean "apply my other edits".
+    # Checked second, a module change made inside a scope older than the case
+    # (a leftover from before this rule) grew the case to that scope and lost the
+    # whole case's timeframe and report — measured live on test1.
+    if (str(cur.get("start") or "") == str(tw.get("start") or "")
+            and str(cur.get("end") or "") == str(tw.get("end") or "")):
+        return cfg, None, False
     if _reaches_outside(tw, bound):
         cfg["time_window"] = _union_window(bound, tw)     # the case itself grows
         return cfg, None, True
-    cur = active_scope_window(d) or bound
-    same = (str(cur.get("start") or "") == str(tw.get("start") or "")
-            and str(cur.get("end") or "") == str(tw.get("end") or ""))
-    return cfg, (None if same else tw), False
+    return cfg, tw, False
+
+
+def modules_with_runs(case_id, d=None) -> list:
+    """The fusion modules at least one of this case's runs belongs to. A module
+    selection that shares none of them fuses nothing."""
+    d = d if d is not None else (get_case(case_id) or {})
+    ws = _ws()
+    # ponytail: one run lookup per member on every payload poll; cache per member set if a case grows to thousands of runs
+    runs = [ws.get_automation_run(rid) or {} for rid in _members_for_case(case_id, d)]
+    return [m["name"] for m in fusion_modules_catalog()
+            if any(_run_passes_gate(r, {"fusion_modules": [m["name"]]}) for r in runs)]
+
+
+def _grow_scopes(case_id, old_bound, new_bound) -> None:
+    """The case now covers `new_bound`. NO TIMEFRAME IS LOST:
+
+      * the old whole case becomes a scope of its own, with its report and chat —
+        it is a narrower timeframe now, not a stale one;
+      * a scope equal to the new bound IS the whole case now, so its report and
+        chat become the whole case's instead of being thrown away.
+
+    The operator lands on the whole case. One list mutation, under the lock."""
+    d = get_case(case_id) or {}
+    _save_active_scope(case_id, d)                  # the live report goes home first
+    d = get_case(case_id) or {}
+    full = next((s for s in _scopes(d) if s["id"] == FULL_SCOPE_ID), None) or {}
+    new_id = scope_id_for_window(new_bound)
+    twin = next((s for s in _scopes(d) if s["id"] != FULL_SCOPE_ID
+                 and scope_id_for_window(s.get("window")) == new_id), None)
+    carry = ("hidden_hosts",) + _SCOPE_FIELDS
+    new_full = {"id": FULL_SCOPE_ID, "label": _window_label(new_bound), "window": None,
+                "used_at": _now_iso(), **{k: (twin or full).get(k) for k in carry}}
+    old = None
+    if (old_bound or {}).get("start") and scope_id_for_window(old_bound) != new_id:
+        old = {"id": scope_id_for_window(old_bound), "label": _window_label(old_bound),
+               "window": {"start": old_bound.get("start"), "end": old_bound.get("end")},
+               "used_at": _now_iso(), **{k: full.get(k) for k in carry}}
+
+    def _apply(cur):
+        out = [s for s in (cur or []) if isinstance(s, dict) and s.get("id")
+               and s["id"] not in (FULL_SCOPE_ID, (twin or {}).get("id"), (old or {}).get("id"))]
+        return [new_full] + out + ([old] if old else [])
+    _mutate_list_field(case_id, "scopes", _apply)
+    patch = _scope_restore_patch(new_full)
+    patch.update({"active_scope": FULL_SCOPE_ID, "scope_hosts": None, "scope_counts": None})
+    _merge_case_details(case_id, patch)
 
 
 def rescan(case_id, cfg=None, trigger=None) -> dict:
@@ -4158,26 +4218,24 @@ def rescan(case_id, cfg=None, trigger=None) -> dict:
     regenerate. Replaces the bare re-fuse for the UI. Rescan is an explicit rebuild,
     so it DOES refresh the report (deterministically — reflecting the new masking /
     host-exclusion / severity); the premium LLM narrative is the Regenerate button."""
+    if "fusion_modules" in (cfg or {}):
+        _have = modules_with_runs(case_id)
+        if _have and not set(normalize_modules(cfg.get("fusion_modules") or [])) & set(_have):
+            raise ValueError("none of this case's runs come from the selected modules, "
+                             "so nothing would be fused — select one of: "
+                             + ", ".join(_FUSION_MODULE_LABELS.get(m, m) for m in _have))
     cfg, _new_window, _grew = _scope_from_rescan(case_id, cfg)
+    _old_bound = dict((get_case(case_id) or {}).get("time_window") or {})
     if cfg:
         set_analysis_config(case_id, cfg)
     if _grew:
-        # The whole case is now wider. Put the operator on it, and forget any saved
-        # scope that has become identical to it — it would only duplicate the
-        # whole case, report and all.
         _bound = (get_case(case_id) or {}).get("time_window") or {}
-        if _active_scope_id(get_case(case_id) or {}) != FULL_SCOPE_ID:
-            switch_scope(case_id, FULL_SCOPE_ID)
-        # Drop ONLY exact duplicates of the new whole case. Every narrower scope
-        # is still a narrower scope and keeps its report and chat.
-        _mutate_list_field(case_id, "scopes", lambda cur: [
-            x for x in (cur or [])
-            if x.get("id") == FULL_SCOPE_ID
-            or scope_id_for_window(x.get("window")) != scope_id_for_window(_bound)])
+        _grow_scopes(case_id, _old_bound, _bound)
         log_case_event(case_id, "Scope · the case grew", "info",
                        f"the window you picked reaches past what the case held, so the "
                        f"case now covers {_window_label(_bound)} and is being re-fused "
-                       f"to pull in that evidence. You are on the whole case.")
+                       f"to pull in that evidence. You are on the whole case; "
+                       f"{_window_label(_old_bound)} is kept as a scope with its report.")
     elif _new_window:
         # A timeframe inside the case the operator has not read before: make it a
         # scope and select it, so the re-fused case comes back with that window on

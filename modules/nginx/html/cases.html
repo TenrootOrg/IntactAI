@@ -753,7 +753,7 @@ function renderConfig(info){
         <div id="cf-modules">
           ${asList(info.modules_catalog).map(m=>{const on=asList(info.fusion_modules).includes(m.name),dis=!m.available;
             const badge=dis?'<span class="modbadge dis">disabled</span>':(m.default?'<span class="modbadge def">default</span>':'');
-            return `<label class="modrow${dis?' dis':''}${on?' on':''}"><input type="checkbox" data-mod="${m.name}" ${on?'checked':''} ${dis?'disabled':''}/> <span class="t">${esc(m.label)}</span>${badge}</label>`;}).join('')}
+            return `<label class="modrow${dis?' dis':''}${on?' on':''}"><input type="checkbox" data-mod="${m.name}" ${on?'checked':''} ${dis?'disabled':''} onchange="_refusionGuard()"/> <span class="t">${esc(m.label)}</span>${badge}</label>`;}).join('')}
         </div>
         <label style="margin-top:8px"><input type="checkbox" id="cf-mask" ${mk.enabled?'checked':''} style="width:auto"/> Mask <span class="info" title="Replaces identifying values with placeholders (Hostname1, Username2, ExternalIP3) in everything sent to the AI model — the report payload and every chat question. Covers host names, user names, IP addresses, e-mail addresses, domains, GUIDs and credentials found in the case. The answer comes back masked and the real values are put back before you see it, so the report and chat you read are unchanged. The case data itself is never altered; this only controls what leaves the appliance. Use it when the AI model is a cloud provider and the customer's names must not reach it.">i</span></label>
         <div class="cfghint">Hides host names, user names, IPs, e-mails, domains and credentials from the AI model (<code>Hostname1</code>, <code>Username2</code>, <code>ExternalIP3</code>); you still see the real values.</div>
@@ -1361,7 +1361,7 @@ function loadHosts(id){
 function renderHosts(){
   const q=(($('#cf-hostfilter')||{}).value||'').toLowerCase();
   const hs=_hostList.filter(h=>!q||(h.host||'').toLowerCase().includes(q));
-  if(!hs.length){$('#cf-hosts').innerHTML='<i style="color:var(--muted)">no hosts in the fused data yet — Rescan after a collection lands</i>';return;}
+  if(!hs.length){$('#cf-hosts').innerHTML='<i style="color:var(--muted)">no hosts in the fused data yet — Rescan after a collection lands</i>';_refusionGuard();return;}
   const groups={}; hs.forEach(h=>{(groups[h.os]=groups[h.os]||[]).push(h);});
   const order=Object.keys(groups).sort((a,b)=>{const ia=_GRP_ORDER.indexOf(a),ib=_GRP_ORDER.indexOf(b);return (ia<0?99:ia)-(ib<0?99:ib);});
   let out='';
@@ -1374,10 +1374,19 @@ function renderHosts(){
 }
 // Every host unticked = nothing to fuse. Refusion is disabled and says why.
 function _noHostSelected(){ return _hostList.length>0 && _hostList.every(h=>_hostExc.has(h.host)); }
+// Modules that share none of the case's runs = nothing to fuse, same as no host.
+function _noModuleRuns(){
+  const have=asList(curInfo&&curInfo.modules_with_runs); if(!have.length) return false;
+  const on=[...document.querySelectorAll('#cf-modules input[data-mod]:checked')].map(c=>c.dataset.mod);
+  return !on.some(m=>have.includes(m));
+}
 function _refusionGuard(){
-  const none=_noHostSelected(), b=$('#cf-refusion'), hint=$('#cf-refusion-hint');
+  const noHost=_noHostSelected(), noMod=!noHost&&_noModuleRuns(), none=noHost||noMod;
+  const b=$('#cf-refusion'), hint=$('#cf-refusion-hint');
   if(b){ b.disabled=none; b.style.opacity=none?'.5':''; b.style.cursor=none?'not-allowed':''; }
-  if(hint) hint.style.display=none?'':'none';
+  if(hint){ hint.style.display=none?'':'none';
+    const labels=asList(curInfo&&curInfo.modules_catalog).filter(m=>asList(curInfo.modules_with_runs).includes(m.name)).map(m=>m.label);
+    hint.textContent=noMod?'None of this case\u2019s runs come from the selected modules, so nothing would be fused. Select '+labels.join(' or ')+' to run Refusion.':'Select at least one host to run Refusion.'; }
 }
 function toggleHost(host,inc){ inc?_hostExc.delete(host):_hostExc.add(host); _refusionGuard(); }   // checked=include
 function hostSelectAll(inc){

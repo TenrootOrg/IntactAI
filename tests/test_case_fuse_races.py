@@ -416,7 +416,7 @@ class TestRescanWiring(unittest.TestCase):
 
     def test_the_report_branch_honours_the_flag(self):
         code = _code_only(self.src, _fn(self.tree, "_fuse_case_locked"))
-        self.assertIn('if d.get("report_md") and not force_report:', code)
+        self.assertIn('if d.get("report_md") and (not force_report or _empty_keep):', code)
 
     def test_regenerate_report_writes_only_after_generating(self):
         """The same hazard one door along: it must never clear then generate."""

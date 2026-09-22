@@ -451,6 +451,7 @@ def get_case(case_id):
                     "cost_estimate": store.estimate_rescan_cost(d),
                     "fusion_modules": store.normalize_modules(d.get("fusion_modules")),
                     "modules_catalog": store.fusion_modules_catalog(),
+                    "modules_with_runs": store.modules_with_runs(case_id, d),
                     # Staleness split: data (new runs not in the graph) drives the
                     # Refusion hint; report (new runs not in the narrative) drives
                     # the Rescan (LLM) hint. Neither auto-runs on load.
@@ -934,8 +935,11 @@ def rescan(case_id):
     # The UI names the button it came from; anything else is an API caller.
     _trigs = {"refusion": store.TRIGGER_MANUAL_REFUSION,
               "rescan_llm": store.TRIGGER_MANUAL_RESCAN}
-    res = store.rescan(case_id, cfg,
-                       trigger=_trigs.get(cfg.get("trigger"), store.TRIGGER_API_FUSE))
+    try:
+        res = store.rescan(case_id, cfg,
+                           trigger=_trigs.get(cfg.get("trigger"), store.TRIGGER_API_FUSE))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     return jsonify({"case_id": case_id, "status": "rescanned", **res})
 
 

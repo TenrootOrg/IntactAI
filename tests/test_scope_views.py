@@ -626,5 +626,82 @@ class EachTimeframeHasItsOwnHosts(unittest.TestCase):
         self.assertEqual(1, self._hosts()["full"])
 
 
+class GrowingLosesNoTimeframe(unittest.TestCase):
+    """Live on test1: on a leftover 2011 scope (older than the 2016 case), the
+    operator unticked a module and pressed Refusion. The untouched 2011 dates grew
+    the case, the 2011 scope was dropped as a duplicate, and the 2016 whole case —
+    timeframe and 51,852-char report — was gone."""
+
+    BOUND = {"start": "2016-06-02T11:08:00", "end": "2026-09-22T11:08:10"}
+    OLD = {"start": "2011-06-01T11:08:00", "end": "2026-09-22T11:08:10"}
+
+    def setUp(self):
+        self.d = {"time_window": dict(self.BOUND), "active_scope": "full",
+                  "report_md": "# 2016 whole case\n", "chat_messages": [{"role": "user"}],
+                  "scopes": [{"id": "full", "report_md": "# 2016 whole case\n"},
+                             {"id": store.scope_id_for_window(self.OLD), "window": dict(self.OLD),
+                              "report_md": "# 2011\n", "chat_messages": []}]}
+        d = self.d
+        patches = [
+            mock.patch.object(store, "get_case", side_effect=lambda cid: dict(d)),
+            mock.patch.object(store, "_merge_case_details", side_effect=lambda c, p: d.update(p)),
+            mock.patch.object(store, "_mutate_list_field",
+                              side_effect=lambda c, f, m: d.update({f: m(d.get(f) or [])})),
+            mock.patch.object(store, "log_case_event"),
+            mock.patch.object(store, "load_graph", return_value=_g()),
+            mock.patch.object(store, "modules_with_runs", return_value=[]),
+            mock.patch.object(store, "fuse_case", return_value=types.SimpleNamespace(
+                entities={}, relationships=[], findings=[])),
+        ]
+        for p in patches:
+            p.start(); self.addCleanup(p.stop)
+
+    def _ids(self):
+        return {x["id"]: x for x in self.d["scopes"]}
+
+    def test_the_dates_on_screen_untouched_never_grow_the_case(self):
+        store.switch_scope(CASE, store.scope_id_for_window(self.OLD))
+        cfg, win, grew = store._scope_from_rescan(CASE, {"time_window": dict(self.OLD),
+                                                         "min_severity": "high"})
+        self.assertFalse(grew)
+        self.assertIsNone(win)
+        self.assertEqual({"min_severity": "high"}, cfg, "only the other edits apply")
+
+    def test_growing_keeps_the_old_whole_case_as_a_scope_with_its_report(self):
+        store.rescan(CASE, {"time_window": {"start": "2010-01-01T00:00:00",
+                                            "end": "2026-09-22T11:08:10"}})
+        old = self._ids()[store.scope_id_for_window(self.BOUND)]
+        self.assertEqual("# 2016 whole case\n", old["report_md"])
+        self.assertEqual(self.BOUND, old["window"])
+        self.assertIn(store.scope_id_for_window(self.OLD), self._ids(), "2011 is narrower now")
+        self.assertEqual("full", self.d["active_scope"])
+
+    def test_a_scope_that_becomes_the_whole_case_hands_over_its_report(self):
+        store.switch_scope(CASE, store.scope_id_for_window(self.OLD))
+        store.switch_scope(CASE, "full")
+        store.rescan(CASE, {"time_window": dict(self.OLD)})      # typed on the whole case
+        ids = self._ids()
+        self.assertEqual("# 2011\n", ids["full"]["report_md"], "the 2011 report is the case's now")
+        self.assertNotIn(store.scope_id_for_window(self.OLD), ids, "not duplicated")
+        self.assertEqual("# 2016 whole case\n", ids[store.scope_id_for_window(self.BOUND)]["report_md"])
+        self.assertEqual("# 2011\n", self.d["report_md"], "and it is what is on screen")
+
+
+class ModulesThatFuseNothing(unittest.TestCase):
+
+    def test_refusion_is_refused_when_no_run_matches_the_modules(self):
+        with mock.patch.object(store, "modules_with_runs", return_value=["velociraptor_agentic"]), \
+             mock.patch.object(store, "fuse_case", side_effect=AssertionError("must not fuse")), \
+             mock.patch.object(store, "set_analysis_config",
+                               side_effect=AssertionError("must not save")):
+            with self.assertRaises(ValueError):
+                store.rescan(CASE, {"fusion_modules": ["memory", "aws"]})
+
+    def test_an_empty_graph_keeps_the_written_report(self):
+        src = open(store.__file__).read()
+        self.assertIn('_empty_keep = bool(d.get("report_md") and force_report and not g.entities)', src)
+        self.assertIn('if d.get("report_md") and (not force_report or _empty_keep):', src)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
