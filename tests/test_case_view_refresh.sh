@@ -99,7 +99,10 @@ ZPY
 # The banner is replaced by the report regenerating itself. If that stops
 # happening this file's whole argument collapses, so it is asserted here too.
 AF="${ROOT}/modules/backend/services/fusion/autofuse.py"
-grep -q '_regenerate_report(case_id, d)' "$AF" \
+# Matched without the argument list: the call now carries the counts from before
+# the fuse (it only narrates when the data actually changed), and the promise this
+# asserts is that an automatic fuse still refreshes the report at all.
+grep -q '_regenerate_report(case_id, d' "$AF" \
   || { echo "  FAIL an automatic fuse no longer regenerates the report -- the banner was removed on the promise that it would"; fails=$((fails+1)); }
 grep -q 'def _report_enabled' "$AF" \
   || { echo "  FAIL the auto_report escape hatch is gone -- narration is the half that spends money"; fails=$((fails+1)); }
