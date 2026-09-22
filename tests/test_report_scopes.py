@@ -11,6 +11,7 @@ import os
 import shutil
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -45,6 +46,9 @@ class ScopeCase(unittest.TestCase):
             mock.patch.object(store, "get_case", side_effect=lambda cid: dict(self.d)),
             mock.patch.object(store, "_merge_case_details",
                               side_effect=lambda cid, patch: self.d.update(patch)),
+            mock.patch.object(store, "_mutate_list_field",
+                              side_effect=lambda cid, f, m: self.d.update(
+                                  {f: m(self.d.get(f) or [])})),
             mock.patch.object(store, "log_case_event"),
             mock.patch.object(store, "load_baseline", return_value=None),
             mock.patch.object(store, "_members_for_case", return_value=["r1"]),
@@ -61,6 +65,8 @@ class ScopeCase(unittest.TestCase):
         self.fused.append((force_report, allow_llm))
         self._write_graph({"entities": {"rebuilt": {"type": "asset"}}, "findings": [],
                            "relationships": []})
+        # rescan() reads counts off the returned graph
+        return types.SimpleNamespace(entities={}, relationships=[], findings=[])
 
     def _write_graph(self, fg):
         os.makedirs(self.tmp, exist_ok=True)
@@ -73,7 +79,7 @@ class ScopeCase(unittest.TestCase):
 
     # ---- entering a scope keeps the macro state -----------------------------
     def _zoom(self):
-        sid = store.enter_scope(CASE, "Phase 3 — Ransomware prep", PHASE_WIN, ["HOSTA"])
+        sid = store.enter_scope(CASE, "Phase 3 — Ransomware prep", PHASE_WIN)
         # what the zoom route's rescan does next:
         self.d.update({"time_window": dict(PHASE_WIN), "excluded_hosts": ["HOSTB", "HOSTC"],
                        "report_md": PHASE_MD, "report_config_id": "cfg-phase"})
@@ -126,10 +132,18 @@ class ScopeCase(unittest.TestCase):
         with mock.patch.object(store, "stale_member_runs", return_value=["r2"]):
             self.assertTrue(store.switch_scope(CASE, "full")["refused"])
 
+    def test_re_read_evidence_invalidates_the_cache(self):
+        """Fetch re-reads a member run and re-fuses it with the SAME run ids and the
+        same settings, so every other check agrees while the cache holds the rows
+        from before the fetch. Only graph_built_at catches it."""
+        self._zoom()
+        self.d["graph_built_at"] = "2026-09-22T09:00:00"     # a fuse happened since
+        self.assertTrue(store.switch_scope(CASE, "full")["refused"])
+
     def test_re_entering_the_same_timeframe_overwrites_that_scope(self):
         sid = self._zoom()
         store.switch_scope(CASE, "full")
-        again = store.enter_scope(CASE, "Phase 3 — Ransomware prep", PHASE_WIN, ["HOSTA"])
+        again = store.enter_scope(CASE, "Phase 3 — Ransomware prep", PHASE_WIN)
         self.assertEqual(again, sid)
         self.assertEqual(len([s for s in self.d["report_scopes"] if s["id"] == sid]), 1)
 
@@ -150,7 +164,7 @@ class ScopeCase(unittest.TestCase):
         self._zoom()
         for i in range(store.MAX_SCOPES + 3):
             win = {"start": f"2026-01-{i + 1:02d}T00:00:00", "end": f"2026-01-{i + 2:02d}T00:00:00"}
-            store.enter_scope(CASE, f"Phase {i}", win, ["HOSTA"])
+            store.enter_scope(CASE, f"Phase {i}", win)
             store.switch_scope(CASE, "full")
         self.assertLessEqual(len(self.d["report_scopes"]), store.MAX_SCOPES)
         ids = {s["id"] for s in self.d["report_scopes"]}
@@ -173,6 +187,60 @@ class ScopeCase(unittest.TestCase):
         self.assertEqual([r["label"] for r in rows if r["id"] == "full"], ["Full case"])
 
 
+class AHandPickedWindowIsItsOwnScope(ScopeCase):
+    """QA's follow-up: "what happens when the user selects a different timeframe in
+    Configuration? That isn't related to the macro." It used to overwrite whatever
+    scope was on screen — silently destroying the macro report on the next switch."""
+
+    CUSTOM = {"start": "2026-01-02T00:00:00", "end": "2026-01-09T00:00:00"}
+
+    def _rescan(self, win, hosts=None):
+        return store.rescan(CASE, {"time_window": dict(win),
+                                   "excluded_hosts": hosts or []})
+
+    def test_a_new_window_forks_a_scope_and_rescues_the_full_case(self):
+        # A case that never zoomed has no scopes at all — the fork is what creates
+        # "full", so the macro report is saved rather than overwritten.
+        res = self._rescan(self.CUSTOM)
+        ids = {s["id"]: s for s in self.d["report_scopes"]}
+        self.assertIn("full", ids)
+        self.assertEqual(ids["full"]["report_md"], MACRO_MD)
+        self.assertEqual(ids["full"]["window"], MACRO_WIN)
+        self.assertEqual(self.d["active_scope"], store.scope_id_for_window(self.CUSTOM))
+        self.assertTrue(res["scope_label"].startswith("Custom 2026-01-02"))
+
+    def test_the_same_window_again_edits_in_place(self):
+        self._rescan(self.CUSTOM)
+        n = len(self.d["report_scopes"])
+        self.assertIsNone(self._rescan(self.CUSTOM)["scope_label"], "no second fork")
+        self.assertEqual(len(self.d["report_scopes"]), n)
+
+    def test_changing_only_the_hosts_does_not_fork(self):
+        self.assertIsNone(self._rescan(MACRO_WIN, ["HOSTB"])["scope_label"],
+                          "a host is an edit of the timeframe you are in")
+        self.assertEqual(self.d.get("report_scopes"), None)
+
+    def test_picking_an_existing_scopes_window_returns_to_it(self):
+        self._rescan(self.CUSTOM)
+        res = self._rescan(MACRO_WIN)                    # back to the full case's own window
+        self.assertEqual(self.d["active_scope"], "full", res)
+        self.assertEqual(self.d["report_md"], MACRO_MD)
+
+    def test_the_zoom_path_does_not_fork_twice(self):
+        store.enter_scope(CASE, "Phase 3", PHASE_WIN)
+        n = len(self.d["report_scopes"])
+        self.assertIsNone(self._rescan(PHASE_WIN)["scope_label"],
+                          "the zoom already entered this scope")
+        self.assertEqual(len(self.d["report_scopes"]), n)
+        self.assertEqual(self.d["active_scope"], store.scope_id_for_window(PHASE_WIN))
+
+    def test_a_verdict_marks_every_saved_report_behind(self):
+        self._rescan(self.CUSTOM)
+        store._report_behind(CASE)
+        full = next(s for s in self.d["report_scopes"] if s["id"] == "full")
+        self.assertTrue(full["report_dirty"], "the macro report predates the verdict too")
+
+
 class TheChipsAreOnThePage(unittest.TestCase):
     PAGE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "modules/nginx/html/cases.html")
@@ -181,8 +249,14 @@ class TheChipsAreOnThePage(unittest.TestCase):
         with open(self.PAGE) as f:
             self.html = f.read()
 
-    def test_the_report_tab_renders_the_scope_row(self):
-        self.assertIn("scopeChipsHtml(info)", self.html)
+    def test_every_tab_renders_the_scope_row(self):
+        # In the case HEADER, not inside renderReport: a zoomed case must say so on
+        # Timeline, Risk, Identities and Chat too, and the way back must be there.
+        hdr = self.html.split('<div id="statbar"')[1].split('<div class="tabs">')[0]
+        self.assertIn("scopeChipsHtml(info)", hdr)
+        self.assertNotIn("scopeChipsHtml", self.html.split("function renderReport(")[1]
+                         .split("function ")[0])
+        self.assertIn("scopePrefix(info)", self.html)
         self.assertIn("function switchScope(", self.html.replace("async function switchScope(",
                                                                  "function switchScope("))
         self.assertIn("/scope'", self.html)

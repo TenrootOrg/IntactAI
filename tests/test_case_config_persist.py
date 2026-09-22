@@ -70,9 +70,16 @@ class TheBackendStoresWhatTheRailSends(unittest.TestCase):
                          f"the rail posts these but set_analysis_config ignores them: {missing}")
 
     def test_the_window_lower_bound_is_never_left_empty(self):
+        # The fallback moved into _normalized_window, which rescan also calls: a
+        # hand-picked window forks its own scope and the scope id is derived from
+        # the window AS STORED, so both sides must normalise it the same way.
         cfg = self.store[self.store.index("def set_analysis_config(case_id, cfg)"):
                          self.store.index("def rescan(case_id, cfg=None, trigger=None)")]
-        self.assertIn("_default_window", cfg,
+        self.assertIn("_normalized_window(case_id, cfg.get(\"time_window\"))", cfg,
+                      "the stored window must go through one normaliser")
+        norm = self.store[self.store.index("def _normalized_window(case_id, tw)"):
+                          self.store.index("def set_analysis_config(case_id, cfg)")]
+        self.assertIn("_default_window", norm,
                       "an empty 'from' must fall back to a concrete bound, not an open one")
 
 

@@ -894,6 +894,14 @@ def import_case_bundle(zip_path, *, run_id=None, name=None, cancel=None) -> dict
                 new_det.pop(k, None)
             new_det["name"] = disp
             new_det["member_run_ids"] = new_members
+            # The bundle carries each saved scope's REPORT but not its cached graph
+            # (only the live sidecar is zipped), so nothing here has a cache. Say so:
+            # switch_scope falls back to a re-fuse either way, but the case payload
+            # would otherwise advertise caches that do not exist on this appliance.
+            if isinstance(new_det.get("report_scopes"), list):
+                new_det["report_scopes"] = [{**s, "cached": False}
+                                            for s in new_det["report_scopes"]
+                                            if isinstance(s, dict)]
             new_det["imported"] = {
                 "at": _now_iso(),
                 "from_version": man.get("product_version"),

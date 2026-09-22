@@ -560,9 +560,10 @@ function render(info,md,g){
     <div class="outwrap">
       <div class="row" style="justify-content:space-between">
         <div><h1 style="margin:0;font-size:19px">${esc(info.name||info.case_id)}</h1>
-          <div id="case-since" style="color:var(--muted);font-size:12px">${tw.start?('since '+esc(tw.start)):'no start date'}</div></div>
+          <div id="case-since" style="color:var(--muted);font-size:12px">${scopePrefix(info)}${tw.start?('since '+esc(tw.start)):'no start date'}</div></div>
       </div>
       <div id="statbar" style="margin:6px 0 14px">${statSpans(g)}</div>
+      ${scopeChipsHtml(info)}
       <div class="tabs">
         <!-- Tab ORDER is the investigative order, not the order these were built.
              Analysis + Chat lead: the narrative and the way you interrogate it.
@@ -734,6 +735,7 @@ function renderConfig(info){
         ${scopeRailNote(info)}
         <label>Time window — start</label><input id="cf-start" value="${esc(tw.start||'')}" placeholder="pick date + time…"/>
         <label>Time window — end <span style="color:var(--muted)">(empty = up to now)</span></label><input id="cf-end" value="${esc(tw.end||'')}" placeholder="empty = now / open"/>
+        <div class="cfghint">A different time window becomes a scope of its own: what is on screen now keeps its report, hosts and graph, one click away on the Scope row. Host changes stay in the current scope.</div>
         <label>Min severity</label>
         <select id="cf-sev">${['informational','low','medium','high','critical'].map(s=>opt(s,s,info.min_severity||'informational')).join('')}</select>
         <label style="margin-top:8px">Entity limit <span style="color:var(--muted)">(graph size)</span></label>
@@ -987,7 +989,7 @@ function renderReport(info){
     <span id="regenslot">${regenButtonHtml(info)}</span>
     ${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}
     <span style="color:var(--muted);font-size:11px;margin-left:auto">auto-generated on first scan · regenerate to apply Timeline changes</span>
-  </div>${scopeChipsHtml(info)}<div id="zoomcards">${_zoomHtml.id===id?_zoomHtml.html:''}</div><div class="md">${mdToHtml(mdBody)}</div>`;
+  </div><div id="zoomcards">${_zoomHtml.id===id?_zoomHtml.html:''}</div><div class="md">${mdToHtml(mdBody)}</div>`;
   clampEvidence($('#tabc'));
   loadZoomTargets(id);   // macro report -> clickable "Analyze this scope" presets
   // A page reload (or a tab switch back to Analysis) while a generation is
@@ -1046,12 +1048,24 @@ async function applyZoom(id,i){
 // somewhere to go back TO (a case that was never zoomed has one scope, or none).
 function scopeChipsHtml(info){
   const sc=(info&&info.scopes)||[]; if(sc.length<2) return '';
-  return `<div class="scopebar"><span class="lbl">Scope:</span>`+ sc.map(s=>{
-    const win=((s.window||{}).start||'')+(s.window&&s.window.end?(' → '+s.window.end):'');
-    return s.active
-      ? `<span class="scopechip on" title="${esc(win)}">${esc(s.label)}</span>`
-      : `<button class="scopechip" title="${esc(win)}" onclick="switchScope('${esc(info.case_id)}','${esc(s.id)}')">${esc(s.label)}</button>`;
-  }).join('')+`</div>`;
+  const tip=s=>{
+    const w=s.window||{};
+    return (w.start||'')+(w.end?(' → '+w.end):'')
+         + (s.report_written_at?('\nReport written '+s.report_written_at):'\nNo report yet');
+  };
+  return `<div class="scopebar"><span class="lbl">Scope:</span>`+ sc.map(s=>
+    s.active
+      ? `<span class="scopechip on" title="${esc(tip(s))}">${esc(s.label)}</span>`
+      : `<button class="scopechip" title="${esc(tip(s))}" onclick="switchScope('${esc(info.case_id)}','${esc(s.id)}')">${esc(s.label)}</button>`
+  ).join('')+`</div>`;
+}
+// Every tab renders the ACTIVE scope: the Timeline, Risk, Identities and the stat
+// bar are the narrowed case, not the whole one. Saying "since <phase start>" and
+// "3 hosts" with nothing else on screen is how a zoomed case gets mistaken for a
+// small one.
+function scopePrefix(info){
+  const sc=((info&&info.scopes)||[]).find(s=>s.active);
+  return (!sc || sc.id==='full') ? '' : esc(sc.label)+' · ';
 }
 async function switchScope(id,sid){
   toast('Switching scope. Progress is shown in the Log.');
@@ -1426,6 +1440,7 @@ async function doRefusion(id){
     // case. Not a failure — the config posted above IS persisted and a retry re-fuses
     // with it — so say so instead of showing the red "failed" toast.
     if(r && r.busy) toast('This case is already being re-fused. Please try again shortly.');
+    else if(r && r.scope_label) toast('Refusion complete. This timeframe is now the scope "'+r.scope_label+'" — the previous one is on the Scope row.');
     else toast('Refusion complete. Data, risk and timeline are up to date.');
   }catch(e){ toast('Refusion failed. See the Log for details.'); }
   // Re-read the case. The rail's settings were just persisted server-side, but

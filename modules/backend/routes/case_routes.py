@@ -583,8 +583,7 @@ def apply_zoom(case_id):
     # Save where we are FIRST (report + window + hosts + the fused graph) and make
     # the target a named scope, so the operator can come back to the full case —
     # this used to be a one-way door that overwrote the macro report (TASK-12679).
-    sid = store.enter_scope(case_id, body.get("label") or None,
-                            cfg["time_window"], sorted(keep))
+    sid = store.enter_scope(case_id, body.get("label") or None, cfg["time_window"])
     res = store.rescan(case_id, cfg, trigger=store.TRIGGER_MANUAL_REFUSION)
     return jsonify({"case_id": case_id, "status": "zoomed", "scope": sid,
                     "scoped_to": sorted(keep), "window": cfg["time_window"], **res})
@@ -607,9 +606,8 @@ def switch_case_scope(case_id):
     except store.ReportGenerationBusy:
         return jsonify({"error": "a report is being generated for this case — "
                                  "wait for it to finish", "busy": True}), 409
-    except store.FusionBusy:
-        return jsonify({"error": "the case is being re-fused — try again in a moment",
-                        "busy": True}), 409
+    # FusionBusy is NOT caught here on purpose: the blueprint's errorhandler already
+    # answers it with the 409 every route must agree on (tests/test_case_fuse_races).
 
 
 @case_bp.route("/api/cases/<case_id>/investigate", methods=["POST"])
