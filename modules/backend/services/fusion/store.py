@@ -2562,22 +2562,34 @@ def _filter_graph_by_window(g, window) -> FusionGraph:
         if r.dst in active:
             reached.add(r.src)
     host_ids = {a for f in findings for a in (f.asset_ids or [])}
-    users = set()
+    # name -> the hosts where the window's evidence named it. WHERE matters: the
+    # same user name exists on many machines, and matching on the name alone pulled
+    # in every one of them — measured live, "srv" came back with 5 accounts in a
+    # scope that touched it on one host, including an account on a machine the
+    # window never reached.
+    users = {}
+
+    def _named(name, hosts):
+        for n in {name, name.split("\\")[-1]}:
+            users.setdefault(n, set()).update(hosts)
+
     for eid in active:
         a = g.entities[eid].attrs or {}
-        host_ids.update(a.get("_assets") or [])
+        here = set(a.get("_assets") or [])
+        host_ids.update(here)
         for k in ("ev_user", "user", "acct", "subject"):
             v = str(a.get(k) or "").strip().lower()
             if v:
-                users.update({v, v.split("\\")[-1]})
+                _named(v, here)
         # ...and the profile folder in a path. On Windows that is often the ONLY
         # place an account is named: a file dropped in C:\Users\adim_std\Desktop
         # has no user field at all. Measured on a live case, one of the three
         # people a two-week window's findings named appeared nowhere else.
         for val in a.values():
             if isinstance(val, str) and "\\users\\" in val.lower():
-                users.update(m.group(1).lower() for m in _PROFILE_DIR.finditer(val)
-                             if m.group(1).lower() not in _NOT_A_PERSON)
+                for m in _PROFILE_DIR.finditer(val):
+                    if m.group(1).lower() not in _NOT_A_PERSON:
+                        _named(m.group(1).lower(), here)
 
     def _pivot_in_window(e) -> bool:
         if e.id in reached:
@@ -2586,7 +2598,16 @@ def _filter_graph_by_window(g, window) -> FusionGraph:
             return e.id in host_ids
         if e.type == "account":
             lab = str(e.label or "").strip().lower()
-            return lab in users or lab.split("\\")[-1] in users
+            where = users.get(lab)
+            if where is None:
+                where = users.get(lab.split("\\")[-1])
+            if where is None:
+                return False
+            # Named, and on a machine where it was named. An account with no host
+            # (a domain account seen only in directory data) or evidence with no
+            # host cannot be placed, so neither side is allowed to rule it out.
+            mine = set((e.attrs or {}).get("_assets") or [])
+            return not mine or not where or bool(mine & where)
         return False
 
     keep = set()
@@ -2872,7 +2893,8 @@ def delete_scope(case_id, scope_id) -> dict:
 # window filter stopped keeping pivots nothing in the window reaches, so a
 # scope's entity count fell (342 -> 120 on a live case) under the same fused_at.
 # 4: profile folders in paths name users too (120 -> 127).
-_COUNTS_RULE = 4
+# 5: a name matches an account only on the machine where it was named.
+_COUNTS_RULE = 5
 
 
 def _active_hosts(g) -> int:

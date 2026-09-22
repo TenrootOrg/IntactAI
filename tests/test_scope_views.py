@@ -349,6 +349,19 @@ class OnlyThePeopleAndPivotsTheWindowReaches(unittest.TestCase):
         g.rebuild_indexes()
         self.assertIn("account:adim", store._filter_graph_by_window(g, WIN).entities)
 
+    def test_a_name_matches_only_the_account_on_the_machine_it_was_named_on(self):
+        """Live: "srv" came back with 5 accounts in a scope that named it on one
+        host, including one on a machine the window never reached."""
+        g = self._g2()
+        g.upsert(schema.Entity(id="asset:far", type="asset", label="FAR-HOST"))
+        g.upsert(schema.Entity(id="account:almogs_far", type="account", label="almogs",
+                               first_seen=BEFORE, attrs={"_assets": ["asset:far"]}))
+        g.rebuild_indexes()
+        v = store._filter_graph_by_window(g, WIN)
+        self.assertIn("account:almogs", v.entities, "the one on the host that named him")
+        self.assertNotIn("account:almogs_far", v.entities,
+                         "a same-name account elsewhere is somebody else's evidence")
+
     def test_shared_profile_folders_name_nobody(self):
         g = self._g2()
         g.upsert(schema.Entity(id="account:public", type="account", label="public",
