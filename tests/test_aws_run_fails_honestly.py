@@ -41,7 +41,7 @@ for _p in (os.path.dirname(os.path.abspath(__file__)),
         sys.path.insert(0, _p)
 
 import _optional_deps  # noqa: F401,E402
-_optional_deps.stub("markupsafe")  # werkzeug imports it; sigma_runner imports werkzeug
+_optional_deps.stub("markupsafe", "werkzeug", "werkzeug.utils")  # sigma_runner imports werkzeug; CI has none
 
 from services.aws import boto_client, collectors, pipeline  # noqa: E402
 
