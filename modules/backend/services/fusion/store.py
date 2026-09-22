@@ -2806,6 +2806,31 @@ def delete_scope(case_id, scope_id) -> dict:
     return {"deleted": True, "scope": scope_id}
 
 
+# Bump when the definition of a cached count changes (see scope_counts).
+_COUNTS_RULE = 2
+
+
+def _active_hosts(g) -> int:
+    """Hosts that have EVIDENCE in this view — not the hosts it merely contains.
+
+    Hosts are structural, so _filter_graph_by_window deliberately never drops them
+    (they anchor every edge). Counting asset nodes therefore reported every host in
+    the case for every scope: a window that touched 7 machines said "9 hosts",
+    measured on a live case. A host counts here when something that is not a pivot
+    — an event, a process, a file — carries it in `_assets`. Intersected with the
+    asset nodes still present, so a host excluded in Configuration cannot leak back
+    in through a surviving entity's stale `_assets` list.
+    """
+    from .correlate import _STRUCTURAL_TYPES
+    present = {e.id for e in g.entities.values() if e.type == "asset"}
+    hosts = set()
+    for e in g.entities.values():
+        if e.type in _STRUCTURAL_TYPES:
+            continue
+        hosts.update(a for a in ((e.attrs or {}).get("_assets") or []) if a in present)
+    return len(hosts)
+
+
 def _counts_from_graph(g) -> dict:
     """The stat-bar counts straight off a graph OBJECT — same shape as
     _counts_from_graph_dict, without serialising 5,000 entities to ask."""
@@ -2815,7 +2840,7 @@ def _counts_from_graph(g) -> dict:
         lo, hi = keys.to_utc_dt(ts[0]), keys.to_utc_dt(ts[-1])
         if lo and hi:
             span = (hi - lo).days
-    return {"hosts": sum(1 for e in g.entities.values() if e.type == "asset"),
+    return {"hosts": _active_hosts(g),
             "entities": len(g.entities), "links": len(g.relationships),
             "findings": len(g.findings),
             "cross_host": sum(1 for f in g.findings if f.kind == "cross_host"),
@@ -2833,11 +2858,15 @@ def scope_counts(case_id, d=None) -> dict:
     if not active_scope_window(d):
         return graph_counts(case_id)
     cached = d.get("scope_counts") or {}
-    if cached.get("of_fuse") and cached.get("of_fuse") == d.get("fused_at"):
-        return {k: v for k, v in cached.items() if k != "of_fuse"}
+    # `rule` versions the cache: counts cached under the old definition of "hosts"
+    # (every asset node) would otherwise keep saying 9 until the case next fused.
+    if (cached.get("of_fuse") and cached.get("of_fuse") == d.get("fused_at")
+            and cached.get("rule") == _COUNTS_RULE):
+        return {k: v for k, v in cached.items() if k not in ("of_fuse", "rule")}
     counts = _counts_from_graph(view_graph(case_id, d))
     try:
-        _merge_case_details(case_id, {"scope_counts": {**counts, "of_fuse": d.get("fused_at")}})
+        _merge_case_details(case_id, {"scope_counts": {**counts, "of_fuse": d.get("fused_at"),
+                                                       "rule": _COUNTS_RULE}})
     except Exception:                                # noqa: BLE001 — a cache, never fatal
         pass
     return counts
@@ -2871,7 +2900,38 @@ def write_report_for_scope(case_id, scope_id, patch) -> bool:
     return on_screen
 
 
-def scopes_for_payload(d) -> list:
+def scope_host_counts(case_id, d=None) -> dict:
+    """{scope_id: hosts with evidence in that timeframe}, for the dropdown.
+
+    A LIVE number, not part of a scope's identity: hosts are case-level, so
+    excluding one re-fuses the case and every scope's count moves with it, while
+    the scope itself — its timeframe — stays exactly what it was. Computed once per
+    fuse (one graph load, one 1 ms filter per scope) and cached on the case row,
+    because the payload that carries it is polled every few seconds."""
+    d = d if d is not None else (get_case(case_id) or {})
+    cached = d.get("scope_hosts") or {}
+    if (cached.get("of_fuse") and cached.get("of_fuse") == d.get("fused_at")
+            and cached.get("rule") == _COUNTS_RULE
+            and set(cached.get("counts") or {}) >= {s["id"] for s in _scopes(d)}):
+        return cached.get("counts") or {}
+    try:
+        whole = view_graph(case_id, d, scoped=False)
+    except Exception:                                # noqa: BLE001 — a label, never fatal
+        return {}
+    counts = {FULL_SCOPE_ID: _active_hosts(whole)}
+    for s in _scopes(d):
+        if s["id"] != FULL_SCOPE_ID and s.get("window"):
+            counts[s["id"]] = _active_hosts(_filter_graph_by_window(whole, s["window"]))
+    try:
+        _merge_case_details(case_id, {"scope_hosts": {"of_fuse": d.get("fused_at"),
+                                                      "rule": _COUNTS_RULE,
+                                                      "counts": counts}})
+    except Exception:                                # noqa: BLE001 — a cache
+        pass
+    return counts
+
+
+def scopes_for_payload(d, host_counts=None) -> list:
     """What the dropdown renders. Ids, labels and windows only — never the stored
     report or chat. The full case is always first, whether or not it has an entry
     yet, because it is where a case starts."""
@@ -2885,11 +2945,13 @@ def scopes_for_payload(d) -> list:
                      "window": s.get("window") or {},
                      "report_written_at": s.get("report_written_at"),
                      "has_report": bool(s.get("report_md")),
+                     "hosts": (host_counts or {}).get(s["id"]),
                      "active": s["id"] == active})
     if FULL_SCOPE_ID not in seen:
         rows.insert(0, {"id": FULL_SCOPE_ID, "label": _full_scope_label(d), "window": {},
                         "report_written_at": d.get("report_written_at"),
                         "has_report": bool(d.get("report_md")),
+                        "hosts": (host_counts or {}).get(FULL_SCOPE_ID),
                         "active": active == FULL_SCOPE_ID})
     rows.sort(key=lambda r: (r["id"] != FULL_SCOPE_ID, (r["window"] or {}).get("start") or ""))
     return rows

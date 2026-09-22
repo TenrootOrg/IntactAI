@@ -977,8 +977,12 @@ function scopeBarHtml(info){
   if(sc.length<2 && !window._scopeNewOpen) return '';
   // The label IS the timeframe (the backend names every scope by its dates), so
   // nothing is appended to it but whether it has been written up yet.
+  // "[N hosts]" is LIVE — the hosts with evidence in that timeframe of the case as
+  // it is now. Excluding a host in Configuration moves every scope's count; it
+  // never renames a scope or makes a new one (a scope is its timeframe).
+  const hosts=n=>(typeof n==='number')?` [${n} host${n===1?'':'s'}]`:'';
   const opts=sc.map(s=>
-    `<option value="${esc(s.id)}" ${s.active?'selected':''}>${esc(s.label)}${s.has_report?'':' · no report yet'}</option>`
+    `<option value="${esc(s.id)}" ${s.active?'selected':''}>${esc(s.label)}${hosts(s.hosts)}${s.has_report?'':' · no report yet'}</option>`
   ).join('');
   const act=sc.find(s=>s.active)||{};
   return `<div class="scopebar">

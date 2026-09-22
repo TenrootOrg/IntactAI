@@ -409,7 +409,7 @@ def get_case(case_id):
                     "counts": store.scope_counts(case_id, d),
                     # Saved windows this case can be read through. Ids, labels and
                     # windows only — a scope's report and chat never ride here.
-                    "scopes": store.scopes_for_payload(d),
+                    "scopes": store.scopes_for_payload(d, store.scope_host_counts(case_id, d)),
                     "active_scope": store._active_scope_id(d),
                     # entity-cap textbox + module picker (velociraptor default;
                     # memory optional; timesketch/cve/cloud disabled for now)

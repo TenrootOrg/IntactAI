@@ -284,6 +284,27 @@ class WhatTheOperatorReadsBack(unittest.TestCase):
             self.assertIsNone(store._SCOPE_STAMPED_ACTIONS.match(act), act)
 
 
+class HostsInATimeframe(unittest.TestCase):
+    """Hosts are structural, so the window filter keeps every one of them. Counting
+    asset nodes made every scope report every host in the case — a window that
+    touched 7 machines read "9 hosts", measured live."""
+
+    def test_a_scope_counts_only_hosts_with_evidence_in_it(self):
+        g = _g()
+        g.upsert(schema.Entity(id="asset:b", type="asset", label="QUIET-HOST"))
+        v = store._filter_graph_by_window(g, WIN)
+        self.assertIn("asset:b", v.entities, "the pivot survives the window, by design")
+        self.assertEqual(1, store._active_hosts(v),
+                         "but a host with no evidence in the window is not counted")
+        self.assertEqual(1, store._counts_from_graph(v)["hosts"], "and the header agrees")
+
+    def test_a_host_excluded_in_configuration_cannot_leak_back(self):
+        """A surviving entity's _assets may still name an excluded host."""
+        g = _g()
+        g.entities["ev:in"].attrs["_assets"] = ["asset:a", "asset:gone"]
+        self.assertEqual(1, store._active_hosts(g), "asset:gone is no longer a node")
+
+
 class RefusionAndTimeframes(unittest.TestCase):
     """The operator's rule: Refusion with the timeframe already on screen just
     applies the other edits; Refusion with a different one reads that timeframe."""
