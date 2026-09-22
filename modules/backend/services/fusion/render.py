@@ -781,7 +781,60 @@ _DETAIL_LABELS = {"user": "User", "proc": "Process", "cmdline": "Command", "pid"
                   "threat": "Threat", "eid": "Event ID", "logonid": "Logon ID",
                   "subject": "Subject", "domain": "Domain", "sha256": "SHA256",
                   "md5": "MD5", "imphash": "Imphash", "initiated": "Initiated",
-                  "channel": "Channel", "record": "Record", "recordid": "Record ID"}
+                  "channel": "Channel", "record": "Record", "recordid": "Record ID",
+                  # Measured on a real case: every key Hayabusa actually emitted that
+                  # the fallback turned into a word nobody reads — "Lid", "Pguid",
+                  # "Tgtsid", "Tgtmachineid", "Srcport".
+                  "srcport": "Source port", "protocol": "Protocol", "lid": "Logon ID",
+                  "pguid": "Process GUID", "tgtsid": "Target SID",
+                  "tgtmachineid": "Target machine ID", "tgtuser": "Target user",
+                  "srcuser": "Source user", "srchost": "Source host",
+                  "tgthost": "Target host", "logontype": "Logon type",
+                  "sid": "SID", "guid": "GUID", "ruleauthor": "Rule author",
+                  "severity": "Rule severity", "type": "Type"}
+
+# One reading order for every evidence line, whatever the rule happened to emit:
+# WHO, then WHAT RAN, then WHERE, then the hashes, then the rest. The fields
+# arrived in the collector's own order, so two lines from the same detection could
+# list the same facts in a different sequence and had to be read word by word.
+# Anything not named here keeps its place at the end, in the order it arrived.
+_FIELD_ORDER = ("User", "Target user", "Source user", "Account", "Domain", "SID",
+                "Target SID", "Logon ID", "Logon type", "Process", "Command",
+                "Parent command", "Parent PID", "PID", "Process GUID", "Image",
+                "Path", "Service", "Start type", "Source host", "Source IP",
+                "Source port", "Target host", "Target IP", "Target port", "Protocol",
+                "Target machine ID", "SHA256", "MD5", "Imphash", "Hashes", "Threat",
+                "Rule severity", "Type", "Log", "Channel", "Event ID", "Record ID",
+                "Record", "Subject", "Time")
+_FIELD_RANK = {lbl: i for i, lbl in enumerate(_FIELD_ORDER)}
+
+# Carried even when the event already names a process: without them the line says
+# who and what ran, but not what was FOUND — which is the whole point of a
+# detection. Everything else is left out when a process is known, so the line
+# stays readable.
+_ALWAYS_FIELDS = ("Threat", "Path", "Service", "Start type", "Account", "Target IP",
+                  "Target port", "SHA256", "MD5", "Hashes", "Rule severity")
+
+
+# Defender names what it found with its own resource syntax, and the raw string
+# reached the report: "file:_C:\Temp\x.exe", or a whole behaviour record —
+# "behavior:_process: C:\Users\srv\Desktop\mimikatz.exe, pid:9924:6894…;
+# process:_pid:9924,ProcessStart:1340292790". The path is the one thing the
+# analyst needs off that line.
+_DEF_RES_PREFIX = _tf_re.compile(r"^[a-z]+:_\s*")
+
+
+def _clean_resource(v) -> str:
+    """Defender's resource string reduced to the path it is about. Anything that
+    is not in that shape is returned unchanged."""
+    v = str(v or "").strip()
+    if ":_" not in v[:24]:
+        return v
+    v = v.split(";")[0].strip()              # drop the trailing process:_pid record
+    v = _DEF_RES_PREFIX.sub("", v)
+    if v.lower().startswith("process:"):     # behavior:_process: <path>, pid:N
+        v = v.split(":", 1)[1].strip()
+    return v.split(", pid:")[0].strip() or str(v)
 
 
 def _detail_fields(text) -> list:
@@ -794,6 +847,8 @@ def _detail_fields(text) -> list:
         from .mappers import details as _det
         for k, v in (_det.parse_details(text) or {}).items():
             v = str(v).strip()
+            if k in ("path", "image", "file"):
+                v = _clean_resource(v)
             if v and v.lower() not in ("-", "n/a", "none", "unknown"):
                 out.append((_DETAIL_LABELS.get(k, k.replace("_", " ").capitalize()), v))
     except Exception:                                  # noqa: BLE001 — never break a report
@@ -820,14 +875,14 @@ def _finding_evidence(graph, f, *, cap_events=EXPLICIT_EVENTS_PER_FINDING,
         # mix its own `user=X` and `sha256=Y` with the collector's raw Details
         # string, which is ` ¦ `-delimited "Key: value" — one line carried three
         # punctuation styles and repeated the user (QA TASK-12671).
-        parts, seen = [], set()
+        parts, seen = [], set()      # (label, value) — ordered at the end
 
         def add(label, value):
             v = _v(value)
             if not v or (label.lower(), v.lower()) in seen:
                 return
             seen.add((label.lower(), v.lower()))
-            parts.append(f"{label}: {v}")
+            parts.append((label, v))
 
         add("User", a.get("ev_user"))
         has_proc = False
@@ -853,17 +908,29 @@ def _finding_evidence(graph, f, *, cap_events=EXPLICIT_EVENTS_PER_FINDING,
         # name a command line or a process are untouched — whether those should
         # also carry their description is a density judgement, not this bug.
         detail_txt = _v(a.get("details"))
-        if detail_txt and not has_proc:
+        if detail_txt:
             # The collector's own "Key: value ¦ Key: value" is read into the same
             # shape, so nothing already shown is repeated and the separator is ours.
             fields = _detail_fields(detail_txt)
             if fields:
+                # WHAT WAS DETECTED IS NOT OPTIONAL. These fields used to be read
+                # only when the event named no process — so a Defender alert that
+                # DID name one rendered as "User: NT AUTHORITY\SYSTEM · Process:
+                # WmiPrvSE.exe" and dropped "Threat: Trojan:Win32/Bearfoos.B!ml"
+                # and the file it found. An operator reading that line cannot tell
+                # why a Windows service process is a severe alert.
                 for k, v in fields:
+                    if has_proc and k not in _ALWAYS_FIELDS:
+                        continue          # with a process known, keep the line tight
                     add(k, v)
-            else:
-                parts.append(detail_txt)
+            elif not has_proc:
+                parts.append(("", detail_txt))     # prose: no label, keeps its place
         if not parts:
             continue
+        # One reading order, whatever the rule emitted (see _FIELD_ORDER). sorted()
+        # is stable, so anything unnamed keeps the order it arrived in.
+        parts.sort(key=lambda kv: _FIELD_RANK.get(kv[0], len(_FIELD_ORDER)))
+        parts = [f"{k}: {v}" if k else v for k, v in parts]
         # Flatten to ONE clean line: raw details can carry newlines / tabs / backticks
         # (e.g. a multi-line Defender message + URL) which would break the markdown
         # inline-code span and corrupt the whole report. Collapse + neutralise.

@@ -1332,20 +1332,34 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
             names = sorted({str(e.attrs.get("name") or e.label) for e in evs})
             orig = next((e.attrs.get("original_name") for e in evs if e.attrs.get("original_name")), None)
             shown = ", ".join(names[:6]) + ("…" if len(names) > 6 else "")
-            if orig:
+            # NOT EVERY ROW HERE IS A RENAME. The artifact also flags a binary by
+            # its known tool name (AdFind, ProcessHacker, procdump), where the file
+            # still carries its own original name — 14 of 18 on a real case, each
+            # titled "Renamed binary: AdFind.exe copied as AdFind.exe", which reads
+            # as nonsense and buries the four that WERE renamed. Compared without
+            # the extension, because "procdump" shipping as "procdump.exe" is the
+            # same file naming itself the same way, not a disguise.
+            def _stem(x):
+                x = str(x or "").strip().lower()
+                return x[:-4] if x.endswith(".exe") else x
+            renamed = bool(orig) and any(_stem(orig) != _stem(n) for n in names)
+            if renamed:
                 rtitle = f"Renamed binary: {orig} copied as {shown}"
             elif len(names) == 1:
-                rtitle = f"Renamed binary: {names[0]}"
+                rtitle = f"Known tool on disk: {names[0]}"
             else:
-                rtitle = f"Renamed binary copied as {shown}"
+                rtitle = f"Known tool on disk: {shown}"
             paths = sorted({str(e.attrs.get("path")) for e in evs if e.attrs.get("path")})
             g.add_finding(Finding(
                 id=_fid("det", f"{asset_id}:renamed:{extra}"),
                 title=f"{rtitle} on {host}",
                 severity=top.severity, confidence="high" if len(names) > 1 else "medium",
-                summary=(f"One file (SHA256 {extra[:16]}…"
-                         + (f", originally {orig}" if orig else "")
-                         + f") exists under {len(names)} name(s) on {host}: "
+                summary=(((f"One file (SHA256 {extra[:16]}…"
+                           + (f", originally {orig}" if orig else "")
+                           + f") exists under {len(names)} name(s) on {host}: ")
+                          if renamed else
+                          (f"A binary the detection set names as an attacker tool "
+                           f"(SHA256 {extra[:16]}…), under its own name on {host}: "))
                          + "; ".join(paths[:6]) + ("…" if len(paths) > 6 else "") + "."),
                 entity_ids=[e.id for e in evs[:25]], asset_ids=[asset_id],
                 sources=sorted({s for e in evs for s in e.sources}),
