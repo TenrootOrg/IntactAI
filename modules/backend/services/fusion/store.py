@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import threading
 import traceback
 
@@ -2494,6 +2495,12 @@ def view_graph(case_id, d=None, *, scoped=True) -> FusionGraph:
     return g
 
 
+# C:\Users\<name>\ — the account a Windows path belongs to.
+_PROFILE_DIR = re.compile(r"\\users\\([^\\/:*?\"<>|]+)\\", re.I)
+# Profile folders that exist on every machine and belong to nobody.
+_NOT_A_PERSON = {"public", "default", "default user", "all users"}
+
+
 def _filter_graph_by_window(g, window) -> FusionGraph:
     """A view of the graph restricted to a time window — the primitive a scope is
     made of. Measured at 1 ms on a 5,561-entity case, against 36 s to re-fuse the
@@ -2563,6 +2570,14 @@ def _filter_graph_by_window(g, window) -> FusionGraph:
             v = str(a.get(k) or "").strip().lower()
             if v:
                 users.update({v, v.split("\\")[-1]})
+        # ...and the profile folder in a path. On Windows that is often the ONLY
+        # place an account is named: a file dropped in C:\Users\adim_std\Desktop
+        # has no user field at all. Measured on a live case, one of the three
+        # people a two-week window's findings named appeared nowhere else.
+        for val in a.values():
+            if isinstance(val, str) and "\\users\\" in val.lower():
+                users.update(m.group(1).lower() for m in _PROFILE_DIR.finditer(val)
+                             if m.group(1).lower() not in _NOT_A_PERSON)
 
     def _pivot_in_window(e) -> bool:
         if e.id in reached:
@@ -2856,7 +2871,8 @@ def delete_scope(case_id, scope_id) -> dict:
 # Bump when the definition of a cached count changes (see scope_counts). 3: the
 # window filter stopped keeping pivots nothing in the window reaches, so a
 # scope's entity count fell (342 -> 120 on a live case) under the same fused_at.
-_COUNTS_RULE = 3
+# 4: profile folders in paths name users too (120 -> 127).
+_COUNTS_RULE = 4
 
 
 def _active_hosts(g) -> int:

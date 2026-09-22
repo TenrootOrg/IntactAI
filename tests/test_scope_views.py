@@ -338,6 +338,25 @@ class OnlyThePeopleAndPivotsTheWindowReaches(unittest.TestCase):
         self.assertNotIn("ioc:old", v.entities)
         self.assertIn("ioc:1.2.3.4", v.entities, "the one an in-window event contacted stays")
 
+    def test_a_user_named_only_by_a_profile_folder_is_kept(self):
+        """On Windows the profile folder in a path is often the ONLY place an
+        account is named — a file on C:\\Users\\adim_std\\Desktop has no user
+        field. Live: one of the three people a window named appeared only there."""
+        g = self._g2()
+        g.upsert(schema.Entity(id="account:adim", type="account", label="adatumlab\\adim_std",
+                               first_seen=BEFORE, attrs={"_assets": ["asset:a"]}))
+        g.entities["ev:in"].attrs["path"] = "C:\\Users\\adim_std\\Desktop\\tool.exe"
+        g.rebuild_indexes()
+        self.assertIn("account:adim", store._filter_graph_by_window(g, WIN).entities)
+
+    def test_shared_profile_folders_name_nobody(self):
+        g = self._g2()
+        g.upsert(schema.Entity(id="account:public", type="account", label="public",
+                               first_seen=BEFORE))
+        g.entities["ev:in"].attrs["path"] = "C:\\Users\\Public\\Downloads\\x.exe"
+        g.rebuild_indexes()
+        self.assertNotIn("account:public", store._filter_graph_by_window(g, WIN).entities)
+
     def test_the_whole_case_is_untouched(self):
         g = self._g2()
         self.assertIs(g, store._filter_graph_by_window(g, None))
