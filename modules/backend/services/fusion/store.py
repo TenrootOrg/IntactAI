@@ -2853,8 +2853,10 @@ def delete_scope(case_id, scope_id) -> dict:
     return {"deleted": True, "scope": scope_id}
 
 
-# Bump when the definition of a cached count changes (see scope_counts).
-_COUNTS_RULE = 2
+# Bump when the definition of a cached count changes (see scope_counts). 3: the
+# window filter stopped keeping pivots nothing in the window reaches, so a
+# scope's entity count fell (342 -> 120 on a live case) under the same fused_at.
+_COUNTS_RULE = 3
 
 
 def _active_hosts(g) -> int:
