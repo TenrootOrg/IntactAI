@@ -327,13 +327,17 @@ class TestTheFuseItselfNeverCallsTheModel(_Base):
 
 
 class TestItRenarratesAfterTheFuse(_Base):
-    """New data must update the WORDS, not just the numbers.
+    """What the narration half does ON A CASE THAT ASKED FOR IT (`auto_report`).
 
-    The old behaviour rebuilt the graph and left the report frozen behind a
-    banner asking the operator to press Regenerate. The counts moved, the
-    Executive Summary did not, and nobody pressed the button — so the report an
-    analyst read routinely described the previous collection.
+    It is off by default — writing a report costs a full model run, so it waits
+    for the operator (TestTheReportWaitsForTheOperator below). Ticked, the words
+    must follow the numbers: the counts moving while the Executive Summary
+    describes the previous collection is the failure this half exists to prevent.
     """
+
+    def setUp(self):
+        super().setUp()
+        self.store.case = {"name": "QA case", "auto_report": True}
 
     def test_a_fuse_is_followed_by_a_report(self):
         autofuse.schedule("case_1")
@@ -400,16 +404,24 @@ class TestItRenarratesAfterTheFuse(_Base):
         self.settle()
         self.assertEqual(self.store.reports, [])
 
-    def test_narration_can_be_turned_off_on_its_own(self):
-        # The support escape hatch: keep the graph current, stop spending tokens.
-        self.store.case = {"name": "QA case", "auto_report": False}
+    def test_landing_data_refreshes_the_graph_and_leaves_the_report_alone(self):
+        # The default, and the operator's rule: rebuilding the graph is free and
+        # automatic; writing a report costs a full model run and waits to be asked
+        # for. The case says it is behind instead.
+        self.store.case = {"name": "QA case"}
         autofuse.schedule("case_1")
         self.settle()
         self.assertEqual(len(self.store.fuses), 1, "the graph half must still run")
-        self.assertEqual(self.store.reports, [])
+        self.assertEqual(self.store.reports, [], "nothing may be narrated by itself")
 
-    def test_absent_auto_report_reads_as_on(self):
-        self.assertTrue(autofuse._report_enabled({}))
+    def test_narration_can_be_turned_on_per_case(self):
+        self.store.case = {"name": "QA case", "auto_report": True}
+        autofuse.schedule("case_1")
+        self.settle()
+        self.assertEqual(len(self.store.reports), 1)
+
+    def test_absent_auto_report_reads_as_off(self):
+        self.assertFalse(autofuse._report_enabled({}))
         self.assertTrue(autofuse._report_enabled({"auto_report": True}))
         self.assertFalse(autofuse._report_enabled({"auto_report": False}))
 
@@ -438,8 +450,13 @@ class TestABusyReportIsRetried(_Base):
 
     The in-flight report was started from the PREVIOUS graph, so it will finish
     describing data the case has already moved past. Dropping the second request
-    leaves exactly the stale report this feature exists to prevent.
+    leaves exactly the stale report this feature exists to prevent. All of this
+    is the ticked-on path (`auto_report`), which is the only one that narrates.
     """
+
+    def setUp(self):
+        super().setUp()
+        self.store.case = {"name": "QA case", "auto_report": True}
 
     def test_a_busy_report_is_retried(self):
         self.store.report_busy_times = 1

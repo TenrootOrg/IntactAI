@@ -3464,6 +3464,7 @@ _CONFIG_LABELS = {
     "customer_name": "Customer name", "master_prompt": "Master prompt",
     "customer_logo_b64": "Customer logo", "report_detail": "Report detail",
     "auto_regen_report": "Auto-regenerate report when a model connects",
+    "auto_report": "Auto-regenerate report when new data lands",
 }
 
 
@@ -3540,6 +3541,11 @@ def set_analysis_config(case_id, cfg) -> dict:
                 autofuse.cancel(case_id)
             except Exception:
                 pass
+    if "auto_report" in cfg:               # re-narrate by itself when new data
+                                           # lands. OFF by default: the graph half
+                                           # is free, this half spends tokens, and
+                                           # a report is the operator's call.
+        patch["auto_report"] = bool(cfg.get("auto_report"))
     if "auto_regen_report" in cfg:         # the Analysis tab may regenerate a template
                                            # report itself once a model is reachable;
                                            # off = the manual button only

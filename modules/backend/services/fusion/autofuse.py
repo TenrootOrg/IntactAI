@@ -35,8 +35,9 @@ WHAT IT STILL WILL NOT DO
   - It never redraws anyone's screen. It updates the stored graph and report; the
     case view picks the new report up on its own.
   - It never runs on a case whose operator turned it off, and the narration half
-    has its own switch (`auto_report: false`) for a customer who wants the graph
-    kept current without spending tokens.
+    is OFF by default (`auto_report`): landing data rebuilds the graph, which is
+    free, and the report waits for the operator to ask for it. Operator's call:
+    "we shouldn't make immediately report for each case, only if they selected".
 
 WHAT IT MUST NOT DROP
 The previous background path wrapped its fuse in `except: pass`, so a fuse that
@@ -104,18 +105,20 @@ def _enabled(store, case_id, d):
 
 
 def _report_enabled(d):
-    """Should the automatic fuse also re-narrate the report?
+    """Should the automatic fuse also re-narrate the report? By default NO.
 
-    Yes, and there is no UI for it either — a report that does not describe the
-    case's current data is not a preference, it is a wrong report.
+    This half SPENDS MONEY when a model is configured, which the graph half never
+    does. It used to be on for every case, so a collection landing anywhere bought
+    a full report — two to three minutes of model time — that nobody had asked
+    for, and with report scopes it would have bought one for whichever scope
+    happened to be active. The operator's rule is "only if they selected".
 
-    But this half SPENDS MONEY when a model is configured, which the graph half
-    never does, so it gets its own stored key. `auto_report: false` on the case
-    row keeps the graph current and freezes the narrative — the old behaviour,
-    available per case for a customer who is watching their token bill, without a
-    downgrade. Absent — which is every case — reads as ON.
+    So: landing data rebuilds the GRAPH (free, automatic, every case) and the
+    report waits. The case says it is behind the data and the Regenerate button
+    is right there. `auto_report: true` per case brings the old behaviour back —
+    the tick in Configuration — for anyone who wants the report never to lag.
     """
-    return d.get("auto_report") is not False
+    return bool(d.get("auto_report"))
 
 
 def cancel(case_id) -> bool:
@@ -374,7 +377,16 @@ def _regenerate_report(case_id, d=None, attempt=0) -> None:
         if not d:
             return                             # case deleted while we waited
         if not _report_enabled(d):
-            return                             # narration turned off for this case
+            # Say so ONCE, where the operator looks: the graph moved, the words
+            # did not. Silence here is what made "is my report current?" a
+            # question nobody could answer from the screen.
+            store.log_case_event(
+                case_id, "Report · not refreshed", "info",
+                "the new data is in the case graph; the report still describes what "
+                "came before it. Click Regenerate report to bring it up to date "
+                "(this one spends tokens), or tick the automatic option in "
+                "Configuration.")
+            return
         use_llm = False
         try:
             from services.fusion import llm_sim

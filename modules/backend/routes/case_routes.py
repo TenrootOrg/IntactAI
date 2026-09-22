@@ -426,6 +426,11 @@ def get_case(case_id):
                     # ON, absent included. The per-case escape hatch: off restores
                     # the manual Regenerate button as the only way, with no deploy.
                     "auto_regen_report": bool(d.get("auto_regen_report", True)),
+                    # Re-narrate by itself when new data lands. OFF unless the
+                    # operator ticks it: rebuilding the graph is free and happens
+                    # anyway, writing the report costs tokens and minutes, so it
+                    # waits to be asked for. The case says it is behind meanwhile.
+                    "auto_report": bool(d.get("auto_report")),
                     # Exactly which runs the STORED graph was built from. The case
                     # view snapshots this at render time and the staleness poll
                     # compares against it, which is how "new runs arrived" is told
