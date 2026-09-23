@@ -190,6 +190,17 @@ parse_upgrade_args() {
     if (( UPGRADE_LIST )); then
         return 0
     fi
+    # --velo-refresh re-registers this box's own tools and artifacts. It has no
+    # target release by design (the docs give it as a standalone maintenance
+    # command), but the "nothing to upgrade to" check below rejected it, so the
+    # documented command could never run.
+    if (( UPGRADE_VELO_REFRESH_ONLY )); then
+        if [[ -n "$UPGRADE_TAG" || ${#UPGRADE_PACKAGE_ARGS[@]} -gt 0 ]]; then
+            echo "--velo-refresh is its own maintenance mode -- do not give it a release tag or --package." >&2
+            exit 2
+        fi
+        return 0
+    fi
     if [[ -n "$UPGRADE_PLAN_TAG" ]]; then
         if [[ -n "$UPGRADE_TAG" || ${#UPGRADE_PACKAGE_ARGS[@]} -gt 0 ]]; then
             echo "--plan is its own read-only mode -- give it a tag, not a release tag or --package too." >&2
