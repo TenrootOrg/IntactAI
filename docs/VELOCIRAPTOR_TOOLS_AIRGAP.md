@@ -245,6 +245,20 @@ import: 2 registered, 0 failed
 `add` and `import` make no network calls, so both work with the cable pulled, and
 re-running either is harmless.
 
+**A folder you carry to twice keeps its old map.** `import` registers what the map
+names and says what it left out, so a file dropped into an old carry folder is
+never silently skipped:
+
+```
+registered etl2pcapng -> etl2pcapng.zip
+  WARNING: 1 file(s) here are not named in velo_tools.map and were NOT registered:
+    brand_new.zip
+    add each with: velo_tools.sh add <TOOL> /home/tenroot/my-tools/<FILE>
+import: 1 registered, 0 failed
+```
+
+A map line written with spaces instead of a TAB is an error, not a skipped line.
+
 A tool of your own works exactly the same — there is nothing to look up:
 
 ```bash

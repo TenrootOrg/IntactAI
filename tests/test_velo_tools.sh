@@ -114,6 +114,28 @@ test_import_reports_a_file_named_in_the_map_but_not_carried() {
     assert_contains "$(cat "${root}/err")" "missing file for Missing" "names the tool"
 }
 
+test_import_says_which_carried_files_the_map_leaves_out() {
+    # A folder reused between carries keeps its old map: new files dropped into
+    # it were left out in silence while import reported success.
+    local root; root="$(_fake)"
+    echo a > "${root}/carry/hayabusa.zip"; echo b > "${root}/carry/brand_new.zip"
+    printf 'Hayabusa-2.14.0\thayabusa.zip\n' > "${root}/carry/velo_tools.map"
+    local out; out="$(_run "$root" import "${root}/carry")"
+    assert_eq "$?" "0" "the mapped tool still registers"
+    assert_contains "$out" "brand_new.zip" "names the file it did not register"
+    assert_contains "$out" "NOT registered" "says plainly that it was left out"
+    assert_not_contains "$(cat "${root}/docker.calls")" "brand_new" "and really did not register it"
+}
+
+test_import_refuses_a_map_written_with_spaces_instead_of_tabs() {
+    local root; root="$(_fake)"
+    echo a > "${root}/carry/hayabusa.zip"
+    printf 'Hayabusa-2.14.0 hayabusa.zip\n' > "${root}/carry/velo_tools.map"
+    _run "$root" import "${root}/carry" >/dev/null
+    assert_ne "$?" "0" "fails rather than registering nothing and reporting success"
+    assert_contains "$(cat "${root}/err")" "no TAB" "says what is wrong with the line"
+}
+
 test_import_without_a_map_points_at_the_add_command() {
     local root; root="$(_fake)"
     _run "$root" import "${root}/carry" >/dev/null

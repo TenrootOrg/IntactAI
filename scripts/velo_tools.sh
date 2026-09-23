@@ -322,10 +322,17 @@ cmd_import() {
     require_container || return 1
 
     local ok=0 failed=0 line tool fname
+    local -a mapped=() bad_lines=()
     while IFS= read -r line; do
         [[ -z "$line" || "$line" == \#* ]] && continue
-        [[ "$line" == *$'\t'* ]] || continue
+        # A line with no TAB used to be skipped in silence, so a map written with
+        # spaces registered NOTHING and still reported success.
+        if [[ "$line" != *$'\t'* ]]; then
+            bad_lines+=("$line")
+            continue
+        fi
         tool="${line%%$'\t'*}"; fname="${line#*$'\t'}"
+        mapped+=("$fname")
         if [[ ! -f "${dir}/${fname}" ]]; then
             err "missing file for ${tool}: ${dir}/${fname}"
             failed=$((failed + 1)); continue
@@ -333,6 +340,28 @@ cmd_import() {
         if cmd_add ${force_arg:+$force_arg} "$tool" "${dir}/${fname}"; then ok=$((ok + 1)); else failed=$((failed + 1)); fi
     done < "$map"
 
+    # A carried file the map does not name is NOT registered — say so. A folder
+    # reused between carries keeps its old map, so new files dropped into it were
+    # silently left out while the command reported success.
+    local -a unmapped=() f base
+    for f in "${dir}"/*; do
+        [[ -f "$f" ]] || continue
+        base="$(basename "$f")"
+        [[ "$base" == "$MAP_NAME" ]] && continue
+        local m seen=0
+        for m in ${mapped[@]+"${mapped[@]}"}; do [[ "$m" == "$base" ]] && { seen=1; break; }; done
+        (( seen )) || unmapped+=("$base")
+    done
+    if (( ${#bad_lines[@]} )); then
+        err "${#bad_lines[@]} line(s) in ${MAP_NAME} have no TAB between the tool name and the file, and were skipped:"
+        for f in "${bad_lines[@]}"; do err "  ${f}"; done
+        failed=$((failed + ${#bad_lines[@]}))
+    fi
+    if (( ${#unmapped[@]} )); then
+        log "  WARNING: ${#unmapped[@]} file(s) here are not named in ${MAP_NAME} and were NOT registered:"
+        for f in "${unmapped[@]}"; do log "    ${f}"; done
+        log "    add each with: $(basename "${BASH_SOURCE[0]}") add <TOOL> ${dir}/<FILE>"
+    fi
     log "import: ${ok} registered, ${failed} failed"
     (( failed )) && return 1
     return 0
@@ -499,14 +528,22 @@ print(json.loads(l).get("state","") if l.strip() else "")' 2>/dev/null)"
 cmd_status() {
     require_container || return 1
     log "Stored on this server (served to endpoints, no internet needed):"
+    # The server can hold the SAME tool twice (two identical inventory rows —
+    # seen live for VelociraptorWindowsMSI), which printed it twice and counted
+    # it twice. One line per distinct tool+file; a name registered under two
+    # different files still shows both, because that is a real difference.
     velo_vql "SELECT name, filename FROM inventory() WHERE serve_locally AND hash ORDER BY name" \
         | python3 -c "
 import json,sys
-n=0
+seen=[]
 for l in sys.stdin:
     if l.strip():
-        d=json.loads(l); n+=1; print(f\"  {d.get('name','')}  <-  {d.get('filename','')}\")
-print(f'  ({n} tool(s))')"
+        d=json.loads(l); row=(d.get('name',''), d.get('filename',''))
+        if row not in seen:
+            seen.append(row)
+for name, fn in seen:
+    print(f'  {name}  <-  {fn}')
+print(f'  ({len(seen)} tool(s))')"
     local missing
     missing="$(cmd_list 2>/dev/null | grep -cvE '^#|^$')"
     log "Missing (an artifact wants them, this server has not got them): ${missing:-0}"
