@@ -42,6 +42,11 @@ document.addEventListener('alpine:init', () => {
         dumpsLoading: false,
         selectedDump: '',
         reuseStatus: '',
+        // Pull another case's memory findings in by workflow id.
+        adoptId: '',
+        adoptStatus: '',
+        adoptFailed: false,
+        adopting: false,
         // Default case name: "Memory YYYY-MM-DD" so operators get a
         // sensible group out of the box without having to type one.
         caseName: 'Volatile Memory ' + new Date().toISOString().split('T')[0],
@@ -186,6 +191,41 @@ document.addEventListener('alpine:init', () => {
                 this.reuseStatus = String(e);
             } finally {
                 this.dispatching = false;
+            }
+        },
+
+        // --------------------------------------------------------------
+        // Pull another case's findings
+        // --------------------------------------------------------------
+        async adoptRun() {
+            const ident = (this.adoptId || '').trim();
+            if (!ident) { this.adoptFailed = true; this.adoptStatus = 'paste a workflow id first'; return; }
+            this.adopting = true;
+            this.adoptFailed = false;
+            this.adoptStatus = '';
+            try {
+                const r = await fetch('/api/memory/adopt', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ run_id: ident }),
+                });
+                const j = await r.json();
+                if (!r.ok || !j.run_id) {
+                    this.adoptFailed = true;
+                    this.adoptStatus = j.error || `HTTP ${r.status}`;
+                    return;
+                }
+                this.adoptStatus = `pulled ${j.plugin_rows} plugin rows and ${j.yara_hits} YARA hits. Opening Workflows…`;
+                this.adoptId = '';
+                if (Alpine.store('workflows')?.refresh) Alpine.store('workflows').refresh();
+                setTimeout(() => {
+                    if (Alpine.store('app')?.switchTab) Alpine.store('app').switchTab('workflows');
+                }, 1200);
+            } catch (e) {
+                this.adoptFailed = true;
+                this.adoptStatus = String(e);
+            } finally {
+                this.adopting = false;
             }
         },
 

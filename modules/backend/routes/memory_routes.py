@@ -490,6 +490,161 @@ def upload_memory_dump():
 
 
 # ---------------------------------------------------------------------------
+# Pull another case's memory findings in by workflow id
+# ---------------------------------------------------------------------------
+#
+# Velociraptor's "Add by ID" does this by re-reading the rows from a server
+# that still holds them, copying nothing (velociraptor_routes._adopt_from_workflow).
+# Memory cannot: VolWeb's per-evidence dir holds the yarascan results and
+# cleanup reclaims it with the image, so a live re-fetch at fuse time loses
+# every hit. What we copy instead is the snapshot the pipeline writes BEFORE
+# cleanup — memory_payload.json, the plugin rows + yara hits, which is exactly
+# what the model reads and nothing else. Never the image, never the evidence.
+
+# Fields worth carrying to the new run. Everything else is deliberately left
+# behind — see _adopt_details().
+_ADOPT_CARRY = ("client_id", "client_name", "case_name", "mode",
+                "blueprint", "blueprint_id")
+
+
+def _payload_path(run_id: str) -> str | None:
+    """The run's fusion snapshot, under whichever downloads root exists."""
+    import os
+    for base in (f"/app/data/downloads/{run_id}", f"/data/downloads/{run_id}"):
+        p = os.path.join(base, "memory_payload.json")
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _adopt_details(source_details: dict, source_run_id: str) -> dict:
+    """What the copied run remembers about the run it came from.
+
+    The omissions are the point. `host_path`, `upload_dir`, `_cleanup_state`,
+    `evidence_id` and `evidence_filename` all name storage the SOURCE case
+    owns: the case purge deletes `host_path` outright, so carrying it over
+    would mean deleting this case destroys the other case's memory image and
+    its VolWeb evidence. A copy of the findings owns none of that.
+    """
+    out = {k: source_details.get(k) for k in _ADOPT_CARRY if source_details.get(k) is not None}
+    out["trigger"] = "adopt"
+    out["adopted_from"] = source_run_id
+    return out
+
+
+@memory_bp.route("/api/memory/adopt", methods=["POST"])
+def adopt_memory_run():
+    """Copy another case's memory findings into the active case.
+
+    Body: ``{"run_id": "memory_1790012609712"}`` — a workflow id as the
+    Workflows page shows it.
+    """
+    if not _is_module_enabled():
+        return jsonify({"error": "Memory module is not enabled."}), 400
+
+    import json
+    import os
+    import shutil
+
+    from services.workflow_service import _resolve_case_id
+    from routes.velociraptor_routes import _is_workflow_run_id
+
+    data = request.get_json(silent=True) or {}
+    source_run_id = (data.get("run_id") or data.get("id") or "").strip()
+
+    # Shape first — the id is used to build filesystem paths below, and the
+    # same rule the Velociraptor adopt applies keeps ../.. out of them.
+    if not _is_workflow_run_id(source_run_id):
+        return jsonify({"error": f"{source_run_id!r} is not a workflow id. Copy one "
+                                 f"from the Workflows page, e.g. memory_1790012609712."}), 400
+
+    case_id = _resolve_case_id("memory", None)
+    if not case_id:
+        return jsonify({"error": "No active case to pull into."}), 400
+
+    source = _get_run(source_run_id)
+    if not source:
+        return jsonify({"error": f"No workflow with id {source_run_id}. "
+                                 f"Copy it from the Workflows page."}), 404
+    if source.get("automation_type") != "memory":
+        return jsonify({"error": f"{source_run_id} is a "
+                                 f"{source.get('automation_type') or 'non-memory'} run. "
+                                 f"Velociraptor collections are pulled from the "
+                                 f"Velociraptor tab's Add by ID."}), 400
+    if source.get("case_id") == case_id:
+        return jsonify({"error": f"{source_run_id} is already part of this case.",
+                        "duplicate": True, "run_id": source_run_id}), 409
+
+    # Already pulled here? Scoped to the case, like the Velociraptor check: the
+    # same run legitimately feeds two cases, this only stops it feeding one
+    # case twice. A failed copy does not count — it left nothing behind.
+    from services.workflow_service import get_automation_runs_by_case
+    for run in (get_automation_runs_by_case(case_id) or []):
+        if (run.get("status") or "").lower() in ("failed", "cancelled", "error", "stopped"):
+            continue
+        if (run.get("details") or {}).get("adopted_from") == source_run_id:
+            return jsonify({"error": f"{source_run_id} has already been pulled into this "
+                                     f"case as {run.get('run_id')}.",
+                            "duplicate": True, "run_id": run.get("run_id")}), 409
+
+    src_payload = _payload_path(source_run_id)
+    if not src_payload:
+        return jsonify({"error": f"{source_run_id} has no extracted findings to pull "
+                                 f"(status {source.get('status') or 'unknown'}). A run that "
+                                 f"failed before extraction, or one from before the "
+                                 f"findings snapshot existed, holds nothing to copy."}), 400
+
+    src_details = source.get("details") or {}
+    host = src_details.get("client_name") or src_details.get("client_id") or source_run_id
+    run_id = create_automation_run(
+        automation_type="memory",
+        name=f"Memory (adopted) — {host}",
+        details=_adopt_details(src_details, source_run_id),
+        case_id=case_id,
+    )
+
+    # Copy the snapshot into the NEW run's own download dir. A fresh id, never
+    # the source's: reusing it would let this case's purge delete the other
+    # case's payload (services/fusion/case_bundle.py says why at length).
+    dest_dir = os.path.join(os.path.dirname(os.path.dirname(src_payload)), run_id)
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+        shutil.copy2(src_payload, os.path.join(dest_dir, "memory_payload.json"))
+    except OSError as e:
+        update_run_status(run_id, "failed", error=f"could not copy the findings: {e}")
+        return jsonify({"error": f"could not copy the findings: {e}"}), 500
+
+    try:
+        with open(os.path.join(dest_dir, "memory_payload.json")) as fh:
+            snap = json.load(fh)
+        n_plugins = sum(len(v) for v in (snap.get("plugins") or {}).values()
+                        if hasattr(v, "__len__"))
+        n_yara = len(snap.get("yara") or [])
+    except Exception:                        # noqa: BLE001 — a count, not the copy
+        n_plugins = n_yara = 0
+
+    add_log_to_run(
+        run_id,
+        f"memory: pulled the findings of {source_run_id} into this case — "
+        f"{n_plugins} plugin rows, {n_yara} YARA hits. The memory image and the "
+        f"VolWeb evidence stay with the original run; this case holds a copy of "
+        f"the findings only.",
+        "info",
+    )
+    # Terminal status arms the debounced auto-fuse (workflow_service), which is
+    # what makes the findings show up in Case Analysis.
+    update_run_status(run_id, "completed", progress=100)
+
+    return jsonify({
+        "run_id": run_id,
+        "from_run": source_run_id,
+        "plugin_rows": n_plugins,
+        "yara_hits": n_yara,
+        "message": f"Pulled {host}'s memory findings into the case",
+    }), 202
+
+
+# ---------------------------------------------------------------------------
 # Dumps the appliance already holds
 # ---------------------------------------------------------------------------
 #
