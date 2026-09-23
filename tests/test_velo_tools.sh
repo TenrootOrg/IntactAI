@@ -29,9 +29,19 @@ case "\$1" in
         [[ "\$2" == "-f" ]] && { echo true; exit 0; }
         exit 0 ;;
 esac
-# the URL an artifact declares for a tool
-if [[ "\$*" == *"url AS u"* ]]; then
-    [[ -s "${root}/tool_url" ]] && echo "{\"u\":\"\$(cat "${root}/tool_url")\"}"
+# what the list query sees: the rows the test planted
+if [[ "\$*" == *"AS Artifact"* ]]; then
+    [[ -s "${root}/list_rows" ]] && cat "${root}/list_rows"
+    exit 0
+fi
+# the URL an artifact declares for a tool: per-tool file first, then the default
+if [[ "\$*" == *"url AS u FROM"* ]]; then
+    t="\$(sed -n "s/.*name = '\\([^']*\\)'.*/\\1/p" <<< "\$*" | head -1)"
+    if [[ -n "\$t" && -s "${root}/url.\$t" ]]; then
+        echo "{\"u\":\"\$(cat "${root}/url.\$t")\"}"
+    elif [[ -s "${root}/tool_url" ]]; then
+        echo "{\"u\":\"\$(cat "${root}/tool_url")\"}"
+    fi
     exit 0
 fi
 # the endpoints and when they were last seen
@@ -315,6 +325,21 @@ test_the_carried_map_is_readable_by_the_far_end() {
     _curl_logging "$root"
     _run "$root" fetch "${root}/list.tsv" --out "${root}/carry" >/dev/null
     assert_eq "$(stat -c '%a' "${root}/carry/velo_tools.map")" "644" "not mktemp's 600"
+}
+
+test_selftest_moves_past_a_tool_it_cannot_install() {
+    # Live: the first missing tool alphabetically was ESETLogCollector, whose
+    # vendor serves a newer build than the artifact pins, and the next was an FTK
+    # download behind a 403. selftest reported four failures about an appliance
+    # that was working perfectly.
+    local root; root="$(_fake)"
+    printf '{"Tool":"Aunfetchable","Url":"https://example.test/u.zip","Expected":"","Artifact":"A"}\n{"Tool":"Fine","Url":"https://example.test/fine.zip","Expected":"","Artifact":"B"}\n' \
+        > "${root}/list_rows"
+    echo "https://example.test/fine.zip" > "${root}/url.Fine"   # only this one resolves
+    _curl_logging "$root"
+    local out; out="$(_run "$root" selftest)"
+    assert_contains "$out" "installed Fine" "moves on and installs the one that works"
+    assert_not_contains "$out" "FAIL  could not install" "and does not call the appliance broken"
 }
 
 test_fetch_refuses_a_list_that_matched_nothing() {

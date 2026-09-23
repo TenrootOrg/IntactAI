@@ -504,12 +504,38 @@ cmd_selftest() {
     log "   ${missing} tool(s) missing"
     [[ "$missing" -gt 0 ]] && _ok "list works" || _skip "nothing missing to test with"
 
-    # A tool with a public URL, so `install` has something to fetch.
-    [[ -n "$tool" ]] || tool="$(awk -F'\t' '$1 !~ /^#/ && $2 != "" {print $1; exit}' <<<"$listing")"
-    [[ -n "$tool" ]] || { _skip "no missing tool has a public URL — pass --tool NAME"; log "SUMMARY: ${pass} pass, ${fail} fail, ${skip} skip"; return 0; }
+    # A tool with a public URL, so `install` has something to fetch — and one
+    # that can ACTUALLY be installed today. Picking the first name alphabetically
+    # landed on ESETLogCollector, whose vendor serves a newer build than the
+    # artifact pins: the chain then reported four failures about an appliance
+    # that was working perfectly. Try a few before concluding anything.
+    local -a candidates=()
+    if [[ -n "$tool" ]]; then
+        candidates=("$tool")
+    else
+        while IFS= read -r c; do [[ -n "$c" ]] && candidates+=("$c"); done < <(
+            awk -F'\t' '$1 !~ /^#/ && $2 != "" {print $1}' <<<"$listing" | head -"${VELO_SELFTEST_TRIES:-5}")
+    fi
+    [[ ${#candidates[@]} -gt 0 ]] || { _skip "no missing tool has a public URL — pass --tool NAME"; log "SUMMARY: ${pass} pass, ${fail} fail, ${skip} skip"; return 0; }
 
-    log "2. install '${tool}' by name (download + register)"
-    if cmd_install "$tool" >/dev/null 2>&1; then _ok "installed ${tool}"; else _bad "could not install ${tool}"; fi
+    log "2. install a missing tool by name (download + register)"
+    local cand installed="" last_err=""
+    for cand in "${candidates[@]}"; do
+        last_err="$(cmd_install "$cand" 2>&1 >/dev/null)" && { installed="$cand"; break; }
+        log "   ${cand}: ${last_err##*ERROR: }" | head -1
+    done
+    if [[ -n "$installed" ]]; then
+        tool="$installed"
+        _ok "installed ${tool}"
+    elif [[ "$last_err" == *"hash mismatch"* ]]; then
+        # Upstream moved the file; nothing here is broken and nothing is proved.
+        _skip "every tool tried has drifted from the hash its artifact pins (last: ${candidates[-1]}) — pass --tool NAME"
+        log ""
+        log "SUMMARY: ${pass} pass, ${fail} fail, ${skip} skip"
+        return 0
+    else
+        _bad "could not install any of: ${candidates[*]}"
+    fi
 
     log "3. is it stored on the server?"
     local row hash filename
