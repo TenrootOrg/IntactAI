@@ -8,6 +8,10 @@ Input payload (already-trimmed dicts the analyzer produces):
 from __future__ import annotations
 
 from .. import keys
+# The Velociraptor mapper's account keying, reused deliberately: domain
+# accounts become one global node and local ones are asset-scoped, so the same
+# person seen in memory and in a collection is ONE identity, not two.
+from .agentic import _account_eid
 from ..schema import Entity, Relationship, EvidenceRef
 from ..anomaly import score_row
 from ..severity import from_anomaly
@@ -164,6 +168,48 @@ def map_memory(payload: dict, *, run_id: str, asset: str, hostname=None) -> tupl
         pid = F.get(r, *F.PID)
         if pid is not None and seen_proc.get(str(pid)):
             rels.append(Relationship(seen_proc[str(pid)], sid, "ran_service", sources=[MODULE]))
+
+    # ---- sessions -> who was logged on, and what they ran ---------------
+    #
+    # The only identity signal memory carries. Without it a memory-only case
+    # has a Risk table and a Timeline and an EMPTY Identities tab, because
+    # nothing else here emits an account: processes, services and connections
+    # are all things, not people.
+    #
+    # Keyed through the SAME helper the Velociraptor mapper uses, so
+    # `DESKTOP-566AT85/vagrant` out of a memory image and `vagrant` out of SAM
+    # are one account rather than two entries for one person.
+    for r in by_short.get("sessions", []):
+        raw_user = F.get(r, "User Name", "UserName", "User", default=None)
+        if not raw_user:
+            continue
+        # "N/A" FIRST, before the separator swap: sessions writes DOMAIN/user
+        # and the graph speaks DOMAIN\user, so rewriting the slash first turns
+        # the literal "N/A" into the domain account "n\a" — 38 processes' worth
+        # of a person who does not exist, on the real image this was built from.
+        user = str(raw_user).strip()
+        if user.lower() in ("", "n/a", "-", "n\\a", "/", "\\"):
+            continue
+        # Strip the separator before rewriting it: sessions writes an
+        # unqualified account as "/SYSTEM", which would otherwise arrive as
+        # the user "\system" — the same principal under a second name.
+        user = user.strip("/\\").replace("/", "\\")
+        # The machine's own account. Real, but not a person, and listing it in
+        # Identities beside the humans is noise.
+        if user.rstrip("\\").endswith("$"):
+            continue
+        aeid, dom, usr = _account_eid(asset, None, user, local_hosts=[hostname] if hostname else [])
+        if not aeid:
+            continue
+        ents.append(_ent(aeid, "account", (f"{dom}\\{usr}" if dom else usr),
+                         asset, run_id, f"sessions/{usr}",
+                         user=usr, domain=dom or None,
+                         session_type=F.get(r, "Session Type", "SessionType", default=None)))
+        pid = F.get(r, "Process ID", "ProcessID", *F.PID)
+        if pid is not None and seen_proc.get(str(pid)):
+            rels.append(Relationship(aeid, seen_proc[str(pid)], "executed",
+                                     sources=[MODULE],
+                                     ts=F.get(r, "Create Time", "CreateTime", default=None)))
 
     # ---- yara hits -> yarahit + matched --------------------------------
     for h in yara:

@@ -25,6 +25,12 @@ value so they don't get tweaked carelessly.
 # were listed; if an operator wants HollowProcesses they can add it via a
 # custom blueprint.
 CURATED_PLUGINS: tuple[str, ...] = (
+    # WHO was on the box. The only identity signal a memory image carries:
+    # every other plugin here reports things (processes, services,
+    # connections), not people, so without this a memory-only case has a Risk
+    # table, a Timeline, and an empty Identities tab. Measured on a 5 GB
+    # image: 6 seconds, and it names the user of each running process.
+    "volatility3.plugins.windows.sessions.Sessions",
     # Process discovery + lineage
     "volatility3.plugins.windows.pslist.PsList",
     "volatility3.plugins.windows.psscan.PsScan",
