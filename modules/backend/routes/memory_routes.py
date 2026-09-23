@@ -707,6 +707,24 @@ def adopt_memory_run():
 # them apart.
 
 
+def _origin_rank(o: dict) -> tuple:
+    """How well this run identifies the machine the image came from.
+
+    Higher is better: a Velociraptor client id beats a bare hostname, which
+    beats neither, and among equals the OLDEST wins — that is the run that
+    created the file rather than one that read it afterwards.
+    """
+    has_id = 1 if (o or {}).get("client_id") else 0
+    has_host = 1 if (o or {}).get("client_name") else 0
+    # Negate the timestamp's ordering by comparing it inverted: older == better.
+    return (has_id, has_host, _invert_ts((o or {}).get("created_at") or ""))
+
+
+def _invert_ts(ts: str) -> str:
+    """Sort key where an EARLIER timestamp compares GREATER."""
+    return "".join(chr(0x10FFFF - ord(c)) if ord(c) < 0x10FFFF else c for c in ts)
+
+
 def _dump_origins() -> dict:
     """Map dump path → the run that produced it, for the listing's labels."""
     origins = {}
@@ -719,12 +737,15 @@ def _dump_origins() -> dict:
             path = det.get("host_path") or (det.get("_cleanup_state") or {}).get("host_path")
             if not path:
                 continue
-            # Newest wins: the same path can be re-analysed many times, and the
-            # operator cares which run put the file there, not who read it.
-            prev = origins.get(path)
-            if prev and prev.get("created_at", "") > (w.get("created_at") or ""):
-                continue
-            origins[path] = {
+            # WHO PUT THE FILE THERE, not who read it last. The same path is
+            # re-analysed many times, and a re-analysis carries no client_id
+            # and no hostname — so "newest wins" quietly replaced the
+            # acquisition that knows which endpoint this image came from with
+            # a run that knows nothing, and the next re-analysis then had
+            # nothing to inherit and fell back to guessing at the file name.
+            # Prefer a run that can identify the host; break ties by age,
+            # oldest first, because that is the one that created the file.
+            cand = {
                 "run_id": w.get("run_id"),
                 "client_name": det.get("client_name"),
                 # The acquisition's Velociraptor client id — what makes a
@@ -736,6 +757,10 @@ def _dump_origins() -> dict:
                 "created_at": w.get("created_at"),
                 "status": w.get("status"),
             }
+            prev = origins.get(path)
+            if prev is not None and _origin_rank(prev) >= _origin_rank(cand):
+                continue
+            origins[path] = cand
     except Exception:                       # noqa: BLE001 — labels are a nicety
         pass
     return origins

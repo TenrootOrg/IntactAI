@@ -143,5 +143,42 @@ class TestTheFilenameIsTheLastResortNotTheRunId(unittest.TestCase):
         self.assertIn("client_name: (this.uploadHost || '').trim()", js)
 
 
+class TestTheOriginIsWhoeverPutTheFileThere(unittest.TestCase):
+    """The same image is re-analysed many times, and a re-analysis carries no
+    client_id and no hostname. "Newest wins" therefore replaced the acquisition
+    — the only run that knows which endpoint the image came from — with a run
+    that knows nothing, so the NEXT re-analysis had nothing to inherit and fell
+    back to guessing at the file name. Seen live: the kept image's origin read
+    client_id=None, client_name=None."""
+
+    rank = staticmethod(_load(ROUTES, "_origin_rank",
+                              {"_invert_ts": _load(ROUTES, "_invert_ts")}))
+
+    ACQ = {"client_id": "C.fe85", "client_name": "DESKTOP-566AT85",
+           "created_at": "2026-09-23T10:17:22"}
+    REUSE = {"client_id": None, "client_name": None,
+             "created_at": "2026-09-23T12:21:00"}
+    NAMED = {"client_id": None, "client_name": "DESKTOP-566AT85",
+             "created_at": "2026-09-23T13:00:00"}
+
+    def test_the_acquisition_outranks_a_later_reanalysis(self):
+        self.assertGreater(self.rank(self.ACQ), self.rank(self.REUSE))
+
+    def test_a_client_id_outranks_a_bare_hostname(self):
+        """Only the id merges the asset with that host's collection."""
+        self.assertGreater(self.rank(self.ACQ), self.rank(self.NAMED))
+
+    def test_a_hostname_outranks_nothing_at_all(self):
+        self.assertGreater(self.rank(self.NAMED), self.rank(self.REUSE))
+
+    def test_among_equals_the_older_run_wins(self):
+        older = dict(self.REUSE, created_at="2026-09-23T09:00:00")
+        self.assertGreater(self.rank(older), self.rank(self.REUSE),
+                           "the run that CREATED the file is the older one")
+
+    def test_a_missing_timestamp_does_not_crash_the_ranking(self):
+        self.assertIsInstance(self.rank({}), tuple)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
