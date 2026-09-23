@@ -71,7 +71,7 @@ class TestTheHookAcceptsAMemoryUpload(unittest.TestCase):
 class TestTheUploadedImageReachesThePipeline(unittest.TestCase):
 
     SRC = _read("modules/backend/routes/upload_routes.py")
-    BLK = SRC[SRC.index("def run_memory_upload"):][:5200]
+    BLK = SRC[SRC.index("def run_memory_upload"):][:7600]
 
     def test_it_is_staged_onto_the_volume_volweb_can_read(self):
         """/data/memory_dumps IS VolWeb's media/staging. Anywhere else and the
@@ -308,6 +308,38 @@ class TestTheUploadLogReadsInOrder(unittest.TestCase):
         """A long-lived process gathering a 32-char id per upload."""
         blk = self.SRC[self.SRC.index("def _mark_upload_finished("):][:600]
         self.assertIn("len(_finished_uploads) > 256", blk)
+
+
+class TestAFailedUploadDoesNotStrandTheImage(unittest.TestCase):
+    """If the run fails before the pipeline takes the image — a ZIP with no
+    memory file in it, a file too small to be a dump, any exception on the way
+    — the staged copy is nobody's: the pipeline's cleanup never ran and no
+    other code knows the path. Caught live on a 5 MB test file, which failed
+    the "too small to be a memory dump" check and left itself on the analysis
+    volume. On a real dump that is gigabytes."""
+
+    SRC = _read("modules/backend/routes/upload_routes.py")
+    BLK = SRC[SRC.index("def run_memory_upload"):][:7000]
+
+    def test_ownership_is_tracked(self):
+        self.assertIn("dispatched = False", self.BLK)
+        self.assertIn("dispatched = True", self.BLK)
+
+    def test_the_pipeline_takes_ownership_immediately_before_it_runs(self):
+        self.assertLess(self.BLK.index("dispatched = True"),
+                        self.BLK.index("memory_pipeline.run_memory_pipeline("))
+
+    def test_an_unowned_image_is_reclaimed(self):
+        tail = self.BLK[self.BLK.index("finally:"):]
+        self.assertIn("if not dispatched:", tail)
+        self.assertIn("shutil.rmtree(staging", tail)
+
+    def test_a_dispatched_run_keeps_its_image(self):
+        """The pipeline owns it from that point: reclaiming it here would
+        delete the image out from under a run that is still analysing it."""
+        tail = self.BLK[self.BLK.index("finally:"):]
+        self.assertNotIn("shutil.rmtree(staging, ignore_errors=True)\n                        add_log",
+                         tail.replace("if not dispatched:", "X"))
 
 
 if __name__ == "__main__":

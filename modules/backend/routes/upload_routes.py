@@ -688,6 +688,11 @@ def handle_tus_hook():
 
                 def run_memory_upload():
                     import shutil
+                    # Set the moment the pipeline takes ownership of the image.
+                    # Until then a failure here has to reclaim the staged file
+                    # itself: nothing else knows it exists, and on a real dump
+                    # that is gigabytes stranded on the analysis volume.
+                    dispatched = False
                     from services.memory import pipeline as memory_pipeline
                     from services.memory.upload_extract import (
                         UploadExtractError, extract_memory_from_upload,
@@ -741,6 +746,7 @@ def handle_tus_hook():
                             except OSError:
                                 pass
                             return
+                        dispatched = True
                         memory_pipeline.run_memory_pipeline(
                             run_id=run_id,
                             client_id="",
@@ -760,6 +766,17 @@ def handle_tus_hook():
                         add_log_to_run(run_id, f"upload: pipeline failed — {e}", "error")
                         update_run_status(run_id, "failed", error=str(e))
                     finally:
+                        # Failed before the pipeline took the image? Then the
+                        # staged copy is ours to reclaim — the pipeline's own
+                        # cleanup never ran and nothing else knows the path.
+                        if not dispatched:
+                            try:
+                                shutil.rmtree(staging, ignore_errors=True)
+                                add_log_to_run(run_id,
+                                               "reclaimed the staged image (it was never analysed)",
+                                               "info")
+                            except Exception:            # noqa: BLE001
+                                pass
                         # The tus file is moved, not copied, so nothing is left
                         # on the upload volume — but a failure before the move
                         # would strand it there.
