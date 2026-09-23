@@ -108,6 +108,20 @@ def _resolve_dump_path(raw: str) -> tuple[bool, str]:
     return True, real
 
 
+def _host_from_dump_name(name: str) -> str | None:
+    """A hostname out of a dump's filename, when the name carries one.
+
+    Acquisition writes ``<HOST>-<FLOW>.raw`` (``DESKTOP-566AT85-F.DAPQ….raw``),
+    so everything before the Velociraptor flow id is the host. Anything else
+    keeps its stem: for a carried-in file that is a label about the evidence,
+    which beats a run id, and it is never presented as more than a guess.
+    """
+    import re
+    stem = re.sub(r"\.(raw|bin|mem|dmp|dd|zip)$", "", str(name or ""), flags=re.I)
+    m = re.match(r"^(.+?)-(F\.[0-9A-Za-z]+)$", stem)
+    return (m.group(1) if m else stem) or None
+
+
 def _resolve_keep_dump(requested: Any, blueprint: dict | None) -> bool:
     """Should the memory image survive this run?
 
@@ -223,6 +237,22 @@ def start_memory_run():
 
     client_name = (data.get("client_name") or "").strip() or None
     case_name = (data.get("case_name") or "").strip() or "Volatile Memory"
+
+    if dump_path and not (client_name and client_id):
+        # Re-analysing an image we acquired: the run that captured it knows
+        # exactly which endpoint it came from. Inheriting that is what puts the
+        # findings on the right host — without it the fuse has nothing to go on
+        # and the Risk table grows a "host" named after the run id, next to the
+        # real machine the image was taken from.
+        import os as _o
+        origin = (_dump_origins().get(dump_path) or {})
+        client_name = client_name or origin.get("client_name")
+        client_id = client_id or (origin.get("client_id") or "")
+        if not (client_name or client_id):
+            # Never acquired here (carried in, or from before origins were
+            # recorded). The file name is at least about the evidence, which a
+            # run id is not.
+            client_name = _host_from_dump_name(_o.path.basename(dump_path))
 
     # Resolve blueprint (optional) — settings precedence:
     # explicit ``mode`` in request > blueprint.settings.mode > "layered"
@@ -433,6 +463,10 @@ def upload_memory_dump():
             pass
         return jsonify({"error": f"write failed: {e}"}), 500
 
+    # No host given: the file name is at least about the evidence, and an
+    # acquisition's own name carries the host (<HOST>-<FLOW>.raw). Anything is
+    # better than letting the fuse fall back to the run id for an asset name.
+    client_name = client_name or _host_from_dump_name(safe_name)
     label = client_name or safe_name
     # Sensible default case: ISO date so repeated uploads on the same
     # day group together. Mirrors the frontend default.
@@ -693,6 +727,11 @@ def _dump_origins() -> dict:
             origins[path] = {
                 "run_id": w.get("run_id"),
                 "client_name": det.get("client_name"),
+                # The acquisition's Velociraptor client id — what makes a
+                # re-analysis land on the SAME asset as that host's collection
+                # rather than beside it.
+                "client_id": det.get("client_id")
+                             or (det.get("_cleanup_state") or {}).get("client_id"),
                 "case_id": w.get("case_id"),
                 "created_at": w.get("created_at"),
                 "status": w.get("status"),

@@ -747,10 +747,20 @@ def handle_tus_hook():
                                 pass
                             return
                         dispatched = True
+                        # Which machine this image is FROM. Without it the fuse
+                        # has nothing to identify the host by and the findings
+                        # land on an asset named after the run instead of
+                        # merging with that endpoint's other evidence. The file
+                        # name is the fallback: a guess about the evidence beats
+                        # a run id, and an acquisition's own name carries the
+                        # host anyway (<HOST>-<FLOW>.raw).
+                        from routes.memory_routes import _host_from_dump_name
+                        _host = ((metadata.get('client_name') or '').strip()
+                                 or _host_from_dump_name(original_filename))
                         memory_pipeline.run_memory_pipeline(
                             run_id=run_id,
                             client_id="",
-                            client_name=(metadata.get('client_name') or '').strip() or None,
+                            client_name=_host,
                             mode=mode,
                             case_name=(metadata.get('case_name') or '').strip() or None
                                       or f"Memory {datetime.now().strftime('%Y-%m-%d')}",

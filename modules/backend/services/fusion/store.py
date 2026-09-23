@@ -1017,8 +1017,28 @@ def _delete_run_payloads(rid, det=None) -> None:
 
 
 def _memory_contribution(rid, det):
-    asset = keys.asset_id(det.get("client_id") or rid)
-    host = det.get("client_name")
+    # WHICH HOST this memory came from, in order of how much we actually know:
+    #
+    #   client_id   an acquisition — the same key Velociraptor uses, so the
+    #               asset merges with that host's collection outright.
+    #   hostname    an upload or a re-analysis. Keyed by host so that
+    #               _resolve_host_assets folds it into the client_id asset of
+    #               the same machine when there is one, and stands alone as a
+    #               named host when there is not.
+    #   neither     nothing identifies the machine, so the run is all we have.
+    #
+    # That last case used to be the ONLY case for an uploaded image: the asset
+    # was keyed AND labelled by the run id, so the Risk table listed hosts
+    # called "memory_1790168052142" that could never merge with the
+    # Velociraptor data for the very same box.
+    cid = (det.get("client_id") or "").strip()
+    host = (det.get("client_name") or "").strip() or None
+    if cid:
+        asset = keys.asset_id(cid)
+    elif host:
+        asset = keys.asset_id_from_host(host)
+    else:
+        asset = keys.asset_id(rid)
     # Prefer the run-time snapshot the memory pipeline persists BEFORE its
     # cleanup purges the VolWeb evidence dir. The yarascan results live in a
     # file under that dir, so a live re-fetch here 404s and silently drops
