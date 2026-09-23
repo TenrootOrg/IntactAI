@@ -77,6 +77,37 @@ def _get_run(run_id: str) -> dict | None:
     return file_get_workflow(run_id)
 
 
+_DUMPS_DIR = "/data/memory_dumps"
+# Anything smaller than this is not a memory image — it is a stray file, a
+# half-written download or a .part. Same floor register_existing_file uses
+# before it will insert a VolWeb row.
+_MIN_DUMP_BYTES = 1024 * 1024
+
+
+def _resolve_dump_path(raw: str) -> tuple[bool, str]:
+    """Resolve an operator-supplied dump path, or say why not.
+
+    The path arrives from the browser and ends up being read by the pipeline
+    and interpolated into a `docker exec` inside the VolWeb container, so it
+    is contained to the dumps volume the same way the case purge contains its
+    deletes: resolve symlinks FIRST, then require the real path to sit under
+    /data/memory_dumps. `..` and a symlink pointing out of the volume both
+    fail that check; a prefix test on the raw string would pass both.
+    """
+    import os
+    if not raw:
+        return False, "dump_path is required"
+    real = os.path.realpath(raw)
+    root = os.path.realpath(_DUMPS_DIR)
+    if real != root and not real.startswith(root + os.sep):
+        return False, f"dump_path must be a file inside {_DUMPS_DIR}"
+    if not os.path.isfile(real):
+        return False, f"no such dump: {raw}"
+    if os.path.getsize(real) < _MIN_DUMP_BYTES:
+        return False, f"{raw} is too small to be a memory image"
+    return True, real
+
+
 def _resolve_keep_dump(requested: Any, blueprint: dict | None) -> bool:
     """Should the memory image survive this run?
 
@@ -128,42 +159,67 @@ def _spawn_pipeline(run_id: str, **kwargs: Any) -> None:
 
 @memory_bp.route("/api/memory/run", methods=["POST"])
 def start_memory_run():
-    """Kick off a memory pipeline against one client.
+    """Kick off a memory pipeline against one client, or against a dump the
+    appliance already holds.
 
     Request body::
 
       {
-        "client_id": "C.3653059e5f15efc6",
+        "client_id": "C.3653059e5f15efc6",         // acquire from this endpoint
         "client_name": "DESKTOP-566AT85",          // optional, log nicety
         "blueprint_id": "memory_layered_default",  // optional
         "mode": "layered",                         // optional override
-        "case_name": "Cust X — June 2026"          // optional VolWeb case
+        "case_name": "Cust X — June 2026",         // optional VolWeb case
+        "keep_dump": false                         // optional, keep the image
       }
+
+    or, INSTEAD of ``client_id``::
+
+      { "dump_path": "/data/memory_dumps/HOST-F.123.raw" }
+
+    which re-analyses an image already on the shared volume — no endpoint, no
+    acquisition, no second copy of the file anywhere.
     """
     if not _is_module_enabled():
         return jsonify({"error": "Memory module is not enabled."}), 400
 
-    # Pre-flight: dispatching Windows.Memory.Acquisition requires the
-    # Velociraptor server to be reachable. The /upload route does NOT
-    # share this guard because that flow consumes an operator-supplied
-    # dump file directly — no endpoint-side acquisition involved.
-    from services.container_status import require_velociraptor
-    err, vstatus = require_velociraptor('memory')
-    if err:
-        return jsonify(err), vstatus
-
     data = request.get_json(silent=True) or {}
 
     client_id = (data.get("client_id") or "").strip()
-    if not client_id:
-        return jsonify({"error": "client_id is required"}), 400
+    dump_path = (data.get("dump_path") or "").strip()
 
-    # SHAPE VALIDATION (Mythos #2 extended): `client_id` is downstream-
-    # interpolated into VQL strings via the memory acquisition path.
-    # Same Velociraptor `C.<hex>` shape constraint as everywhere else.
-    from services.vql_safety import is_valid_client_id
-    if not is_valid_client_id(client_id):
-        return jsonify({"error": "client_id must match C.<hex>"}), 400
+    if dump_path:
+        # Re-analysing a dump we already hold: no endpoint is involved, so the
+        # Velociraptor guard below must not apply (it would block the one path
+        # that works when Velociraptor is down).
+        if client_id:
+            return jsonify({
+                "error": "send either client_id (acquire) or dump_path "
+                         "(re-analyse an image already on the appliance), not both"
+            }), 400
+        ok, resolved_or_err = _resolve_dump_path(dump_path)
+        if not ok:
+            return jsonify({"error": resolved_or_err}), 400
+        dump_path = resolved_or_err
+    else:
+        # Pre-flight: dispatching Windows.Memory.Acquisition requires the
+        # Velociraptor server to be reachable. The /upload and dump_path
+        # routes do NOT share this guard because those flows consume a dump
+        # file directly — no endpoint-side acquisition involved.
+        from services.container_status import require_velociraptor
+        err, vstatus = require_velociraptor('memory')
+        if err:
+            return jsonify(err), vstatus
+
+        if not client_id:
+            return jsonify({"error": "client_id is required"}), 400
+
+        # SHAPE VALIDATION (Mythos #2 extended): `client_id` is downstream-
+        # interpolated into VQL strings via the memory acquisition path.
+        # Same Velociraptor `C.<hex>` shape constraint as everywhere else.
+        from services.vql_safety import is_valid_client_id
+        if not is_valid_client_id(client_id):
+            return jsonify({"error": "client_id must match C.<hex>"}), 400
 
     client_name = (data.get("client_name") or "").strip() or None
     case_name = (data.get("case_name") or "").strip() or "Volatile Memory"
@@ -195,6 +251,12 @@ def start_memory_run():
     # Keep the memory image after the run? Same precedence idiom as the
     # timeouts below: explicit request > blueprint.settings > default (off).
     keep_dump = _resolve_keep_dump(data.get("keep_dump"), blueprint)
+    if dump_path:
+        # Re-analysing an image the operator deliberately kept. Reclaiming it
+        # at the end of this run would consume the thing they saved — and the
+        # obvious next step, "try again with YARA too", would need a fresh
+        # acquisition. Keeping is not optional on this path.
+        keep_dump = True
 
     timeouts = {}
     for k in ("acquire_flow_timeout_s", "plugin_timeout_s", "yarascan_timeout_s"):
@@ -205,10 +267,15 @@ def start_memory_run():
             except (TypeError, ValueError):
                 return jsonify({"error": f"{k} must be an integer (seconds)"}), 400
 
-    label = client_name or client_id
-    name = f"Memory ({mode}) — {label}"
+    import os as _os
+    if dump_path:
+        label = client_name or _os.path.basename(dump_path)
+        name = f"Memory ({mode}) — reuse: {label}"
+    else:
+        label = client_name or client_id
+        name = f"Memory ({mode}) — {label}"
     details = {
-        "trigger": "manual",
+        "trigger": "reuse" if dump_path else "manual",
         "mode": mode,
         "client_id": client_id,
         "client_name": client_name,
@@ -222,11 +289,19 @@ def start_memory_run():
     run_id = create_automation_run(automation_type="memory", name=name, details=details)
     add_log_to_run(
         run_id,
-        f"memory: queued client={client_id} mode={mode}"
+        (f"memory: queued dump={dump_path} mode={mode}" if dump_path
+         else f"memory: queued client={client_id} mode={mode}")
         + (f" timeouts={timeouts}" if timeouts else "")
         + (" keep_dump=yes" if keep_dump else ""),
         "info",
     )
+    if dump_path:
+        add_log_to_run(
+            run_id,
+            "memory: re-analysing an image already on the appliance — no "
+            "acquisition, and the image is kept when this run ends",
+            "info",
+        )
     update_run_status(run_id, "running", progress=1)
 
     _spawn_pipeline(
@@ -238,6 +313,7 @@ def start_memory_run():
         blueprint=blueprint,
         timeouts=timeouts or None,
         keep_dump=keep_dump,
+        from_upload_path=dump_path or None,
     )
 
     return jsonify({
@@ -411,6 +487,80 @@ def upload_memory_dump():
         "mode": mode,
         "message": f"Memory pipeline started for upload ({bytes_written // 1024 // 1024} MB)",
     }), 202
+
+
+# ---------------------------------------------------------------------------
+# Dumps the appliance already holds
+# ---------------------------------------------------------------------------
+#
+# The dumps volume is shared, not per-case: an image one case kept is readable
+# by every case, so "re-use a dump" and "import a dump from another case" are
+# the same listing. It says where each file came from so the operator can tell
+# them apart.
+
+
+def _dump_origins() -> dict:
+    """Map dump path → the run that produced it, for the listing's labels."""
+    origins = {}
+    try:
+        from services.storage.workflow_store import load_workflows
+        for w in load_workflows() or []:
+            if w.get("automation_type") != "memory":
+                continue
+            det = w.get("details") or {}
+            path = det.get("host_path") or (det.get("_cleanup_state") or {}).get("host_path")
+            if not path:
+                continue
+            # Newest wins: the same path can be re-analysed many times, and the
+            # operator cares which run put the file there, not who read it.
+            prev = origins.get(path)
+            if prev and prev.get("created_at", "") > (w.get("created_at") or ""):
+                continue
+            origins[path] = {
+                "run_id": w.get("run_id"),
+                "client_name": det.get("client_name"),
+                "case_id": w.get("case_id"),
+                "created_at": w.get("created_at"),
+                "status": w.get("status"),
+            }
+    except Exception:                       # noqa: BLE001 — labels are a nicety
+        pass
+    return origins
+
+
+@memory_bp.route("/api/memory/dumps", methods=["GET"])
+def list_memory_dumps():
+    """Memory images currently on the appliance, newest first."""
+    if not _is_module_enabled():
+        return jsonify({"error": "Memory module is not enabled."}), 400
+
+    import os
+    origins = _dump_origins()
+    out = []
+    # One level of recursion: uploads land in _uploads/<id>/<file>, everything
+    # else sits at the top. Deeper than that is not ours.
+    for root, _dirs, files in os.walk(_DUMPS_DIR):
+        depth = root[len(_DUMPS_DIR):].strip(os.sep).count(os.sep)
+        if depth > 1:
+            continue
+        for fn in files:
+            p = os.path.join(root, fn)
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            if not os.path.isfile(p) or st.st_size < _MIN_DUMP_BYTES:
+                continue
+            out.append({
+                "path": p,
+                "name": os.path.relpath(p, _DUMPS_DIR),
+                "size_bytes": st.st_size,
+                "mtime": st.st_mtime,
+                "origin": origins.get(p),
+            })
+    out.sort(key=lambda d: d["mtime"], reverse=True)
+    total = sum(d["size_bytes"] for d in out)
+    return jsonify({"dumps": out, "count": len(out), "total_bytes": total})
 
 
 # ---------------------------------------------------------------------------

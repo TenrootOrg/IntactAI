@@ -300,6 +300,28 @@ def _bump(run_id: str, percent: int, log_msg: str | None = None) -> None:
         add_log_to_run(run_id, log_msg, "info")
 
 
+def _staging_relative_path(host_path: str, dumps_dir: str) -> str | None:
+    """Where VolWeb sees ``host_path``, relative to its media/staging — or
+    None when the file is not on the shared volume at all.
+
+    ``intact_memory_dumps`` is mounted at ``/data/memory_dumps`` here and at
+    ``/home/app/web/media/staging`` inside VolWeb, so a file under the former
+    is ALREADY readable by the extraction workers under the latter. Symlinks
+    are resolved before the containment test: a link pointing out of the
+    volume is not on the volume, whatever its path looks like.
+    """
+    import os
+    try:
+        real = os.path.realpath(host_path)
+        root = os.path.realpath(dumps_dir)
+    except OSError:
+        return None
+    if not real.startswith(root + os.sep):
+        return None
+    rel = os.path.relpath(real, root)
+    return rel if rel and not rel.startswith("..") else None
+
+
 def _persist_cleanup_state(run_id: str, **fields) -> None:
     """Mirror the in-flight acquisition's identifiers (client_id, flow_id,
     host_path, evidence_id/filename) into the workflow row's `details` as
@@ -780,20 +802,36 @@ def run_memory_pipeline(
             # ------------------------------------------------------------
             # Phase 3 (still runs) — Upload to VolWeb
             # ------------------------------------------------------------
-            log(f"pipeline: upload — chunked to VolWeb case={case_name!r}", "info")
             case_id = client.ensure_case(case_name)
-            evidence_id = client.upload_evidence(
-                host_path,
-                case_id=case_id,
-                os_name="windows",
-                cancel_check=cancel,
-                progress_cb=lambda sent, total, mbps: add_log_to_run(
-                    run_id,
-                    f"upload: {sent//1024//1024}/{total//1024//1024} MB  ({mbps:.1f} MB/s)",
-                    "info",
-                ),
-            )
-            evidence_filename = client.get_evidence(evidence_id).get("name")
+            # /data/memory_dumps IS VolWeb's media/staging — one shared volume
+            # under two names. A file already sitting there needs a DB row, not
+            # a multi-GB HTTP round-trip that lands a SECOND copy in
+            # volweb_media. The acquire path has always done this; the offline
+            # path uploaded, so every browser upload and every re-analysis paid
+            # for a duplicate of the image. Same trick, same guard rails
+            # (register_existing_file verifies the file and fixes ownership).
+            _staging_rel = _staging_relative_path(host_path, dumps_dir)
+            if _staging_rel:
+                log("pipeline: register — the image is already on VolWeb's volume "
+                    "(no upload, no second copy)", "info")
+                evidence_id = client.register_existing_file(
+                    _staging_rel, case_id=case_id, os_name="windows",
+                )
+                evidence_filename = _staging_rel
+            else:
+                log(f"pipeline: upload — chunked to VolWeb case={case_name!r}", "info")
+                evidence_id = client.upload_evidence(
+                    host_path,
+                    case_id=case_id,
+                    os_name="windows",
+                    cancel_check=cancel,
+                    progress_cb=lambda sent, total, mbps: add_log_to_run(
+                        run_id,
+                        f"upload: {sent//1024//1024}/{total//1024//1024} MB  ({mbps:.1f} MB/s)",
+                        "info",
+                    ),
+                )
+                evidence_filename = client.get_evidence(evidence_id).get("name")
             _persist_cleanup_state(run_id, evidence_id=evidence_id, evidence_filename=evidence_filename)
             cumulative += _PHASE_WEIGHTS["upload"]
             _bump(run_id, cumulative, f"upload: evidence_id={evidence_id}")

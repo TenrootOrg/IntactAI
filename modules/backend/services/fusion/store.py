@@ -989,7 +989,13 @@ def _delete_run_payloads(rid, det=None) -> None:
             pass
     # The memory image itself, when the run died before its own cleanup ran (or
     # NO_CLEANUP was set). Gigabytes each; the path is in the run's own details.
-    for key in ("host_path", "upload_dir"):
+    #
+    # A "reuse" run READ an image that some other run acquired and the operator
+    # chose to keep — it did not create it and must not destroy it. Purging the
+    # case that re-analysed a dump would otherwise delete the image out from
+    # under the case that owns it. The owner's own purge still reclaims it.
+    _reused = (det or {}).get("trigger") == "reuse"
+    for key in () if _reused else ("host_path", "upload_dir"):
         p = (det or {}).get(key) or ((det or {}).get("cleanup_state") or {}).get(key)
         if not p or not str(p).startswith(("/data/memory_dumps", "/app/data/memory_dumps")):
             continue                       # only ever inside the dump directory

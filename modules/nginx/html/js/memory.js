@@ -36,6 +36,12 @@ document.addEventListener('alpine:init', () => {
         // default — on is a standing ~9 GB/host disk cost, and TabReset puts
         // it back to off on tab re-entry, which is the behaviour we want.
         keepDump: false,
+        // Images already on the shared dumps volume — any case's, since the
+        // volume is not per-case. Loaded on tab entry and on Refresh.
+        dumps: [],
+        dumpsLoading: false,
+        selectedDump: '',
+        reuseStatus: '',
         // Default case name: "Memory YYYY-MM-DD" so operators get a
         // sensible group out of the box without having to type one.
         caseName: 'Volatile Memory ' + new Date().toISOString().split('T')[0],
@@ -86,7 +92,7 @@ document.addEventListener('alpine:init', () => {
                 });
                 window.memoryClientManager = memoryClientManager;
             }
-            await Promise.all([this.refreshClients(), this.refreshBlueprints()]);
+            await Promise.all([this.refreshClients(), this.refreshBlueprints(), this.loadDumps()]);
         },
 
         async refreshClients() {
@@ -122,6 +128,65 @@ document.addEventListener('alpine:init', () => {
             const pluginSet = (bp && bp.settings && bp.settings.plugin_set) || [];
             if (pluginSet.length === 0) return 'yara';
             return this.includeYara ? 'layered' : 'plugin';
+        },
+
+        // --------------------------------------------------------------
+        // Dumps already on the appliance
+        // --------------------------------------------------------------
+        async loadDumps() {
+            this.dumpsLoading = true;
+            try {
+                const r = await fetch('/api/memory/dumps');
+                const j = await r.json();
+                this.dumps = (j && j.dumps) || [];
+                // A dump can be purged between loads — don't leave a stale
+                // selection pointing at a file that is gone.
+                if (!this.dumps.some(d => d.path === this.selectedDump)) this.selectedDump = '';
+            } catch (_) {
+                this.dumps = [];
+            } finally {
+                this.dumpsLoading = false;
+            }
+        },
+
+        dumpLabel(d) {
+            const gb = (d.size_bytes / (1024 * 1024 * 1024));
+            const size = gb >= 1 ? gb.toFixed(1) + ' GB'
+                                 : Math.round(d.size_bytes / (1024 * 1024)) + ' MB';
+            const when = d.mtime ? new Date(d.mtime * 1000).toLocaleString() : '';
+            const o = d.origin;
+            const from = o ? `from ${o.client_name || o.run_id}` : 'origin unknown';
+            return [size, when, from].filter(Boolean).join(' · ');
+        },
+
+        async startReuse() {
+            if (!this.selectedDump) { this.reuseStatus = 'pick an image first'; return; }
+            this.dispatching = true;
+            this.reuseStatus = '';
+            try {
+                const r = await fetch('/api/memory/run', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        dump_path: this.selectedDump,
+                        blueprint_id: this.blueprintId || undefined,
+                        mode: this.derivedMode(),
+                        case_name: this.caseName || ('Volatile Memory ' + new Date().toISOString().split('T')[0]),
+                    }),
+                });
+                const j = await r.json();
+                if (!r.ok || !j.run_id) {
+                    this.reuseStatus = j.error || `HTTP ${r.status}`;
+                    return;
+                }
+                this.reuseStatus = `started: ${j.run_id}`;
+                if (Alpine.store('workflows')?.refresh) Alpine.store('workflows').refresh();
+                if (Alpine.store('app')?.switchTab) Alpine.store('app').switchTab('workflows');
+            } catch (e) {
+                this.reuseStatus = String(e);
+            } finally {
+                this.dispatching = false;
+            }
         },
 
         // --------------------------------------------------------------
@@ -316,7 +381,16 @@ document.addEventListener('alpine:init', () => {
     // input; _pollTimer is a live handle that must not be orphaned (nulling
     // it leaks the interval); dispatching is the double-submit guard and
     // clearing it mid-dispatch would let a second run through.
+    // `dumps` is a cache like `blueprints` — wiping it would blank the picker
+    // on every tab switch. `selectedDump`/`reuseStatus` ARE operator input and
+    // reset as normal.
     TabReset.arm(Alpine.store('memory'), 'modules-memory',
                  { keep: ['blueprints', 'blueprintsLoadedAt', '_pollTimer',
-                          'dispatching'] });
+                          'dispatching', 'dumps'] });
+
+    // Re-scan on entry so an image a run has just kept is listed without the
+    // operator having to press Refresh.
+    window.addEventListener('automation-tab-entered', (ev) => {
+        if (ev.detail === 'modules-memory') Alpine.store('memory').loadDumps();
+    });
 });
