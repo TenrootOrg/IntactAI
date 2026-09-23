@@ -569,6 +569,7 @@ def run_memory_pipeline(
     from_upload_path: str | None = None,
     timeouts: dict | None = None,
     keep_dump: bool = False,
+    fallback_host: str | None = None,
 ) -> None:
     # Resolved timeouts in seconds. Operator override (UI textbox)
     # wins over blueprint.settings, which wins over defaults. Defaults
@@ -1019,6 +1020,13 @@ def run_memory_pipeline(
         # ----------------------------------------------------------------
         try:
             _found_host = _persist_fusion_payload(run_id, client, evidence_id, log)
+            # The image outranks the file name: one is a fact about the
+            # machine, the other is a label somebody typed. So the fallback is
+            # only applied once the image has had its say.
+            if not client_name and not _found_host and fallback_host:
+                _found_host = fallback_host
+                log(f"pipeline: host unknown — using the file name, {fallback_host}",
+                    "warning")
             if _found_host and not client_name:
                 # Write it where fusion looks. Without this the asset is keyed
                 # by the run id and the findings land on a "host" that is not a

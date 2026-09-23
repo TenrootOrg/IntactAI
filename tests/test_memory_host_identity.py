@@ -131,11 +131,14 @@ class TestTheFilenameIsTheLastResortNotTheRunId(unittest.TestCase):
         self.assertIsNone(host_from_name(""))
         self.assertIsNone(host_from_name(None))
 
-    def test_the_upload_paths_use_it(self):
-        self.assertIn("_host_from_dump_name(safe_name)",
-                      _read("modules/backend/routes/memory_routes.py"))
-        self.assertIn("_host_from_dump_name(original_filename)",
-                      _read("modules/backend/routes/upload_routes.py"))
+    def test_the_upload_paths_pass_it_as_a_FALLBACK_not_an_answer(self):
+        """Passing it as client_name would satisfy "do we know the host?" and
+        the image would never be asked — the guess would beat the fact."""
+        mem = _read("modules/backend/routes/memory_routes.py")
+        up = _read("modules/backend/routes/upload_routes.py")
+        self.assertIn("fallback_host = _host_from_dump_name(safe_name)", mem)
+        self.assertIn("fallback_host=_host_from_dump_name(original_filename)", up)
+        self.assertNotIn("client_name=_host,", up)
 
     def test_the_operator_can_name_the_host_on_the_upload_tab(self):
         self.assertIn("uploadHost", _read("modules/nginx/html/partials/memory.html"))
@@ -228,8 +231,17 @@ class TestTheImageCanNameItself(unittest.TestCase):
 
     def test_what_it_finds_is_written_where_fusion_looks(self):
         src = _read("modules/backend/services/memory/pipeline.py")
-        blk = src[src.index("_found_host = _persist_fusion_payload"):][:800]
+        blk = src[src.index("_found_host = _persist_fusion_payload"):][:1600]
         self.assertIn('d.__setitem__("client_name", _h)', blk)
+
+    def test_the_image_outranks_the_file_name(self):
+        """One is a fact about the machine, the other is a label somebody
+        typed, so the fallback only applies once the image has had its say."""
+        src = _read("modules/backend/services/memory/pipeline.py")
+        blk = src[src.index("_found_host = _persist_fusion_payload"):][:1200]
+        self.assertIn("if not client_name and not _found_host and fallback_host:", blk)
+        self.assertLess(blk.index("_found_host = _persist_fusion_payload"),
+                        blk.index("fallback_host:"))
 
     def test_it_never_overrides_a_host_we_were_told(self):
         src = _read("modules/backend/services/memory/pipeline.py")
