@@ -180,5 +180,61 @@ class TestTheOriginIsWhoeverPutTheFileThere(unittest.TestCase):
         self.assertIsInstance(self.rank({}), tuple)
 
 
+class TestTheImageCanNameItself(unittest.TestCase):
+    """The best answer for an image carried in from outside: ask the evidence.
+
+    Windows puts COMPUTERNAME in every process's environment block, so the
+    envars plugin carries it — 137 rows of it on a real 5 GB image. That is a
+    fact about the machine, unlike a file name, which is a label somebody
+    typed. Row shape below is copied from a real extraction.
+    """
+
+    PIPE = os.path.join(ROOT, "modules/backend/services/memory/pipeline.py")
+    fn = staticmethod(_load(os.path.join(ROOT, "modules/backend/services/memory/pipeline.py"),
+                            "_hostname_from_plugins"))
+    REAL = {"volatility3.plugins.windows.envars.Envars": [
+        {"PID": 836, "Block": "0x1104b70", "Value": "DESKTOP-566AT85",
+         "Process": "winlogon.exe", "Variable": "COMPUTERNAME", "__children": []},
+        {"PID": 836, "Value": "C:\\Windows", "Process": "winlogon.exe",
+         "Variable": "SystemRoot", "__children": []},
+    ]}
+
+    def test_it_reads_the_name_out_of_the_image(self):
+        self.assertEqual(self.fn(self.REAL), "DESKTOP-566AT85")
+
+    def test_lowercase_keys_are_accepted_too(self):
+        """Key casing has moved between volatility versions."""
+        self.assertEqual(
+            self.fn({"envars": [{"variable": "computername", "value": "BOX-1"}]}),
+            "BOX-1")
+
+    def test_a_payload_without_envars_yields_nothing(self):
+        self.assertIsNone(self.fn({"volatility3.plugins.windows.pslist.PsList":
+                                   [{"PID": 1}]}))
+
+    def test_junk_rows_do_not_crash_it(self):
+        self.assertIsNone(self.fn({}))
+        self.assertIsNone(self.fn(None))
+        self.assertIsNone(self.fn({"envars": [None, "string", {}, {"Variable": "PATH"}]}))
+
+    def test_an_empty_value_is_not_a_hostname(self):
+        self.assertIsNone(self.fn({"envars": [{"Variable": "COMPUTERNAME", "Value": "  "}]}))
+
+    def test_envars_is_only_added_when_the_host_is_unknown(self):
+        """It is an extra plugin on every run otherwise, for an answer we
+        already have from Velociraptor."""
+        src = _read("modules/backend/services/memory/pipeline.py")
+        self.assertIn("if not (client_id or client_name) and _ENVARS not in plugins_to_run:", src)
+
+    def test_what_it_finds_is_written_where_fusion_looks(self):
+        src = _read("modules/backend/services/memory/pipeline.py")
+        blk = src[src.index("_found_host = _persist_fusion_payload"):][:800]
+        self.assertIn('d.__setitem__("client_name", _h)', blk)
+
+    def test_it_never_overrides_a_host_we_were_told(self):
+        src = _read("modules/backend/services/memory/pipeline.py")
+        self.assertIn("if _found_host and not client_name:", src)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

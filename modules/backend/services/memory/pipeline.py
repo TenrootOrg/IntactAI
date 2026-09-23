@@ -54,6 +54,11 @@ from .defaults import (
 from .volweb_client import VolWebClient, VolWebError
 
 
+# Carries COMPUTERNAME in every process's environment block — the only plugin
+# whose output names the machine the image came from.
+_ENVARS = "volatility3.plugins.windows.envars.Envars"
+
+
 def _resolve_plugin_set(blueprint: dict | None, log) -> tuple[str, ...]:
     """Pick the Vol3 plugin list to extract for this run.
 
@@ -482,7 +487,35 @@ def _build_extraction_only_report(
     return "\n".join(parts)
 
 
-def _persist_fusion_payload(run_id, client, evidence_id, log) -> None:
+def _hostname_from_plugins(plugins: dict) -> str | None:
+    """The machine's own name, read out of the image.
+
+    Windows puts COMPUTERNAME in every process's environment block, so the
+    `envars` plugin carries it. This is the only source that comes from the
+    EVIDENCE rather than from around it: an acquisition knows the host because
+    Velociraptor told us, and a re-analysis inherits that — but an image
+    carried in from somewhere else has nothing but its file name, which is a
+    label someone typed, not a fact about the machine.
+
+    Returns None when envars was not run or the variable is not there; the
+    caller keeps whatever it had.
+    """
+    for name, rows in (plugins or {}).items():
+        if "envars" not in str(name).lower():
+            continue
+        for r in (rows or []):
+            if not isinstance(r, dict):
+                continue
+            # Key casing varies with the volatility version; match on meaning.
+            var = str(r.get("Variable") or r.get("variable") or "").strip().upper()
+            if var == "COMPUTERNAME":
+                val = str(r.get("Value") or r.get("value") or "").strip()
+                if val:
+                    return val
+    return None
+
+
+def _persist_fusion_payload(run_id, client, evidence_id, log) -> str | None:
     """Snapshot the memory fusion payload (plugin rows + yara hits) to
     ``/data/downloads/<run_id>/memory_payload.json`` BEFORE cleanup runs.
 
@@ -516,6 +549,7 @@ def _persist_fusion_payload(run_id, client, evidence_id, log) -> None:
         f"({plugin_rows} plugin rows, {len(hits)} yara hits)",
         "info",
     )
+    return _hostname_from_plugins(plugins)
 
 
 # ---------------------------------------------------------------------------
@@ -692,6 +726,15 @@ def run_memory_pipeline(
             plugins_to_run: tuple[str, ...] = ()
             if run_plugins:
                 plugins_to_run = _resolve_plugin_set(blueprint, log)
+                # Nobody told us which machine this image is from — an image
+                # carried in from outside. Ask the image: Windows puts
+                # COMPUTERNAME in every process's environment block, so one
+                # extra plugin turns "no idea" into the host's own name, taken
+                # from the evidence rather than from a file name someone typed.
+                if not (client_id or client_name) and _ENVARS not in plugins_to_run:
+                    plugins_to_run = plugins_to_run + (_ENVARS,)
+                    log("pipeline: host unknown — adding envars to read "
+                        "COMPUTERNAME out of the image itself", "info")
             _yara_rulesets, _yara_rules = (None, None)
             if run_yara:
                 _yara_rulesets, _yara_rules = _resolve_yara_scan_targets(blueprint, client, log)
@@ -975,7 +1018,17 @@ def run_memory_pipeline(
         # every yara hit vanishes from the graph. See _persist_fusion_payload.
         # ----------------------------------------------------------------
         try:
-            _persist_fusion_payload(run_id, client, evidence_id, log)
+            _found_host = _persist_fusion_payload(run_id, client, evidence_id, log)
+            if _found_host and not client_name:
+                # Write it where fusion looks. Without this the asset is keyed
+                # by the run id and the findings land on a "host" that is not a
+                # host, next to the real machine's other evidence.
+                client_name = _found_host
+                mutate_run_details(
+                    run_id,
+                    lambda d, _h=_found_host: d.__setitem__("client_name", _h))
+                log(f"pipeline: host identified from the image itself — {_found_host}",
+                    "success")
         except Exception as _pe:  # noqa: BLE001 — never block completion on the snapshot
             log(
                 f"persist: fusion-payload snapshot failed ({_pe}) — fusion will fall "
