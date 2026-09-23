@@ -61,39 +61,41 @@ require_container() {
         err "container ${VELO_CONTAINER} not found (is this the appliance?)"; return 1; }
     [[ "$(docker inspect -f '{{.State.Running}}' "$VELO_CONTAINER" 2>/dev/null)" == "true" ]] || {
         err "container ${VELO_CONTAINER} is not running"; return 1; }
+    # RUNNING IS NOT READY. The docs' own remove section restarts Velociraptor,
+    # and the next command ran against an engine that answers nothing: install
+    # then said "no download URL known for Takajo-2.5.0" for a tool whose
+    # artifact declares one. So when the container started moments ago, wait for
+    # it. Nothing to pay in the normal case: the age check is one docker inspect.
+    local age
+    age="$(container_age_seconds)"
+    [[ "$age" =~ ^[0-9]+$ ]] || return 0
+    (( age < ${VELO_RECENT_START:-180} )) || return 0
+    local i
+    for (( i = 0; i <= ${VELO_READY_WAIT:-60}; i += 3 )); do
+        engine_answering && return 0
+        (( i == 0 )) && log "Velociraptor restarted ${age}s ago — waiting for its query engine…"
+        sleep 3
+    done
+    err "Velociraptor is running but its query engine is still not answering."
+    err "  Look: docker logs --tail 50 ${VELO_CONTAINER}"
+    return 1
 }
 
-# RUNNING IS NOT READY. Straight after `docker restart` — which the remove
-# section of the docs tells you to do — the container is up but the query engine
-# is not, so every VQL answers nothing and the script blamed the tool: "no
-# download URL known for Takajo-2.5.0", for a tool whose artifact declares one.
-# Checked only when a lookup came back empty, so it costs nothing in the normal
-# case.
 engine_answering() {
     [[ -n "$(velo_vql 'SELECT 1 AS ok FROM scope()' 2>/dev/null | head -1)" ]]
 }
 
-warn_if_not_ready() {
-    engine_answering && return 1
-    # Only claim "still starting" when the container really did start moments
-    # ago; otherwise an empty answer means what it says and the caller's own
-    # message is the right one.
-    local started age
+container_age_seconds() {
+    local started
     started="$(docker inspect -f '{{.State.StartedAt}}' "$VELO_CONTAINER" 2>/dev/null)"
-    age="$(VELO_STARTED="$started" python3 -c '
+    VELO_STARTED="$started" python3 -c '
 import os, datetime
 try:
     t = os.environ.get("VELO_STARTED", "").strip().split(".")[0].rstrip("Z")
     d = datetime.datetime.strptime(t, "%Y-%m-%dT%H:%M:%S")
     print(int((datetime.datetime.utcnow() - d).total_seconds()))
 except Exception:
-    print(99999)' 2>/dev/null)"
-    [[ "${age:-99999}" =~ ^[0-9]+$ ]] || return 1
-    (( age < ${VELO_RECENT_START:-180} )) || return 1
-    err "Velociraptor is running but its query engine is not answering yet"
-    err "  (the container started ${age}s ago; a restart takes a few seconds)."
-    err "  Try again in a moment, or look: docker logs --tail 50 ${VELO_CONTAINER}"
-    return 0
+    print("")' 2>/dev/null
 }
 
 # A tool name and a file name both end up inside a VQL string literal. Rather
@@ -358,7 +360,6 @@ cmd_install() {
 l=sys.stdin.readline()
 print(json.loads(l).get("u","") if l.strip() else "")' 2>/dev/null)"
         if [[ -z "$url" ]]; then
-            if warn_if_not_ready; then failed=$((failed + 1)); continue; fi
             err "no download URL known for '${tool}'"
             err "  either no artifact asks for it, or it has no public download (a vendor installer)."
             err "  Get the file yourself, then: velo_tools.sh add ${tool} <file>"
