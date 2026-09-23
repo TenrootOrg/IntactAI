@@ -62,6 +62,10 @@ bash scripts/velo_tools.sh list > /tmp/missing.tsv
 grep -E '^Hayabusa-2.14.0|^FileYaraWindows' /tmp/missing.tsv > /tmp/want.tsv
 ```
 
+Use names from **your** list: those two are examples, and a tool this server
+already holds is not in `list` at all. `fetch` refuses a list that matched
+nothing rather than sending you off with an empty folder.
+
 **2. On a machine with internet** — it needs the repo checkout, `curl` and
 `python3`, no Docker — download them into a folder:
 

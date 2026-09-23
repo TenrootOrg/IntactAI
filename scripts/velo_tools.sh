@@ -173,8 +173,19 @@ cmd_fetch() {
         fi
     done < <([[ "$listfile" == "-" ]] && cat || cat "$listfile")
 
+    # AN EMPTY CARRY FOLDER IS NOT A SUCCESS. A list that matched nothing (a grep
+    # for tools this box already holds, a file with only its header) used to end
+    # with "carry <dir> to the appliance" — and the operator found out at the
+    # air-gapped site that the USB was empty.
+    if (( ok == 0 && skipped == 0 && failed == 0 )); then
+        err "nothing to fetch: no tool rows in ${listfile}"
+        err "  every row was blank or a comment. Check what your filter matched:"
+        err "    grep -c . ${listfile}   # rows, including the '# N tool(s) missing' header"
+        err "  A tool this server already holds is not in 'list', so a filter naming one matches nothing."
+        return 1
+    fi
     log "fetch: ${ok} downloaded, ${skipped} without a public URL, ${failed} failed"
-    log "carry ${out} (files + ${MAP_NAME}) to the appliance, then: velo_tools.sh import ${out}"
+    (( ok )) && log "carry ${out} (files + ${MAP_NAME}) to the appliance, then: velo_tools.sh import ${out}"
     (( failed )) && return 1
     return 0
 }

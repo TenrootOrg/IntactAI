@@ -286,6 +286,18 @@ test_a_tool_test_against_a_live_endpoint_runs() {
     assert_not_contains "$out" "offline" "and is not called offline"
 }
 
+test_fetch_refuses_a_list_that_matched_nothing() {
+    # Live: the page's own example filter matched nothing on a box that already
+    # held both tools, and fetch still said "carry <dir> to the appliance".
+    local root; root="$(_fake)"
+    printf '# 52 tool(s) missing\n# TOOL\tURL\tSHA\tARTIFACTS\n' > "${root}/list.tsv"
+    _curl_logging "$root"
+    _run "$root" fetch "${root}/list.tsv" --out "${root}/carry" >/dev/null
+    assert_ne "$?" "0" "fails instead of sending an empty folder to the site"
+    assert_contains "$(cat "${root}/err")" "nothing to fetch" "says what happened"
+    assert_not_contains "$(cat "${root}/out" 2>/dev/null)" "carry " "and does not say to carry it"
+}
+
 test_fetch_refuses_a_download_that_does_not_match_the_pinned_hash() {
     local root; root="$(_fake)"
     printf '# TOOL\tURL\tSHA\tARTIFACTS\nHayabusa-2.14.0\thttps://example.test/hayabusa.zip\tdeadbeef\tW.H.Rules\n' \
