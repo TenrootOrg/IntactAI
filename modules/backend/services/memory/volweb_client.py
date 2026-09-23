@@ -112,6 +112,29 @@ _PLUGIN_NO_ROWS_WARN_S = 600
 _PLUGIN_PARTIAL_FLOOR = 0.66
 
 
+def _extraction_task_ended(ev: dict | None) -> bool:
+    """Has the selective-extraction task we dispatched reached a terminal state?
+
+    Decided from ``celery_task_id`` being EMPTY, never from it being *different*.
+    The field is one slot shared by every task that touches the evidence — the
+    extraction view and the yarascan view both write their task id to it — but
+    only the extraction task's own ``finally`` (and an explicit stop) ever
+    writes it back to "". So:
+
+      ``""``            our task ran its finally: it is over.
+      another id        the yarascan we ourselves dispatched a second later
+                        claimed the slot. It says nothing about ours.
+      ``None`` snapshot a flaky read. "Don't know" is never "finished".
+
+    Reading "different" as "ended" made every layered run (plugins + YARA, the
+    UI default) fail about six seconds in, because that is exactly how long it
+    took us to dispatch the yarascan after the extraction.
+    """
+    if ev is None:
+        return False
+    return not str(ev.get("celery_task_id") or "").strip()
+
+
 def _config_value(*keys: str, default: str = "") -> str:
     """Pull a string config value from the IntactAI runtime config DB.
 
@@ -1355,9 +1378,22 @@ class VolWebClient:
             # idle-grace exits above — and on a snapshot that actually came
             # back: `_evidence_snapshot` returns None on a flaky read, and
             # "don't know" must never be read as "finished".
+            #
+            # EMPTY, not merely "different". `celery_task_id` is ONE field
+            # shared by every task that touches the evidence: the yarascan view
+            # writes its own id to it too (volatility_engine/views.py — the
+            # extraction view at ~347 and the yarascan view at ~693 both
+            # `evidence.save(update_fields=["celery_task_id"])`). In layered
+            # mode we dispatch the yarascan a second after the extraction, so
+            # the field stops being ours immediately — and reading that as "our
+            # task ended" failed EVERY layered run about six seconds in, which
+            # is the default the UI ships with. Only the task's own `finally`
+            # writes "", so only "" is evidence that a task finished; a
+            # different id means somebody else claimed the row and says nothing
+            # about ours.
             if task_id and not done:
                 ev = self._evidence_snapshot(evidence_id)
-                if ev is not None and str(ev.get("celery_task_id") or "") != task_id:
+                if _extraction_task_ended(ev):
                     elapsed_s = int(time.time() - started_at)
                     reason = self.extraction_failure_reason() or (
                         f"VolWeb's extraction task ended without producing a "
