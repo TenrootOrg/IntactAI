@@ -27,6 +27,25 @@ upload_bp = Blueprint('uploads', __name__)
 # instead of continuing the same workflow.
 _upload_runs = {}
 
+# Uploads whose post-finish has already been handled. tusd does not serialise
+# its hooks: the last few post-receive calls routinely land AFTER post-finish,
+# so the tail of the upload ("Uploading: 98%", "Uploading: 100%") was being
+# stitched into the log behind "Upload complete" and "staging the image…",
+# which reads like the analysis started before the upload ended. Anything that
+# arrives after the finish is stale by definition — drop it.
+_finished_uploads = set()
+
+
+def _mark_upload_finished(upload_id):
+    if not upload_id:
+        return
+    _finished_uploads.add(upload_id)
+    # The process is long-lived and every upload adds a 32-char id. Keep the
+    # recent ones and let the rest go rather than growing without limit.
+    if len(_finished_uploads) > 256:
+        for old in list(_finished_uploads)[:128]:
+            _finished_uploads.discard(old)
+
 
 def _resolve_upload_run(upload_id, *, pop=False):
     """Return the run_id for this upload — from the in-memory map, or recovered
@@ -466,6 +485,14 @@ def handle_tus_hook():
             # Get workflow run_id (don't pop, just get)
             run_id = _resolve_upload_run(upload_id)
 
+            if upload_id in _finished_uploads:
+                # post-finish already ran for this upload; this chunk's hook is
+                # simply late. Logging it now would put the end of the upload
+                # after the start of the analysis.
+                print(f"[TUS HOOK] late post-receive for finished {upload_id} — ignored",
+                      flush=True)
+                return jsonify({"ok": True})
+
             if run_id and total_size > 0:
                 percentage = (offset / total_size) * 100
                 offset_mb = offset / (1024 * 1024)
@@ -522,6 +549,10 @@ def handle_tus_hook():
             # Get workflow run_id from pre-create (recover from storage if the
             # in-memory map was lost to a restart — keeps this ONE workflow).
             run_id = _resolve_upload_run(upload_id, pop=True)
+
+            # Close the door on late progress hooks BEFORE writing the first
+            # completion line, so none of them can interleave behind it.
+            _mark_upload_finished(upload_id)
 
             print(f"[TUS HOOK] Upload complete: {original_filename}", flush=True)
             print(f"[TUS HOOK] File path: {file_path}", flush=True)

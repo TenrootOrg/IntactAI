@@ -272,5 +272,43 @@ class TestStopReachesTheUploadItself(unittest.TestCase):
         self.assertIn("if (uploadId && window.TusUploader", blk)
 
 
+class TestTheUploadLogReadsInOrder(unittest.TestCase):
+    """tusd does not serialise its hooks. The last post-receive calls routinely
+    arrive AFTER post-finish, so a real run logged:
+
+        Upload complete: 1535.9 MB received
+        staging 1536 MB onto the analysis volume…
+        Uploading: 98% (1504.0 / 1535.9 MB)
+        Uploading: 100% (1535.9 / 1535.9 MB)
+
+    — the end of the upload filed behind the start of the analysis, which reads
+    as though the analysis began before the file had arrived.
+    """
+
+    SRC = _read("modules/backend/routes/upload_routes.py")
+
+    def test_finished_uploads_are_remembered(self):
+        self.assertIn("_finished_uploads = set()", self.SRC)
+        self.assertIn("def _mark_upload_finished(", self.SRC)
+
+    def test_a_late_progress_hook_is_dropped(self):
+        blk = self.SRC[self.SRC.index("elif event_type == 'post-receive':"):][:1400]
+        self.assertIn("if upload_id in _finished_uploads:", blk)
+        self.assertLess(blk.index("if upload_id in _finished_uploads:"),
+                        blk.index("if run_id and total_size > 0:"),
+                        "the drop must come before anything is written")
+
+    def test_the_door_closes_before_the_first_completion_line(self):
+        """Marking it finished AFTER logging would leave the same race open."""
+        blk = self.SRC[self.SRC.index("elif event_type == 'post-finish':"):][:3000]
+        self.assertLess(blk.index("_mark_upload_finished(upload_id)"),
+                        blk.index('add_log_to_run(run_id, f"Upload complete'))
+
+    def test_the_set_does_not_grow_for_ever(self):
+        """A long-lived process gathering a 32-char id per upload."""
+        blk = self.SRC[self.SRC.index("def _mark_upload_finished("):][:600]
+        self.assertIn("len(_finished_uploads) > 256", blk)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
