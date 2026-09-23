@@ -108,20 +108,6 @@ def _resolve_dump_path(raw: str) -> tuple[bool, str]:
     return True, real
 
 
-def _host_from_dump_name(name: str) -> str | None:
-    """A hostname out of a dump's filename, when the name carries one.
-
-    Acquisition writes ``<HOST>-<FLOW>.raw`` (``DESKTOP-566AT85-F.DAPQ….raw``),
-    so everything before the Velociraptor flow id is the host. Anything else
-    keeps its stem: for a carried-in file that is a label about the evidence,
-    which beats a run id, and it is never presented as more than a guess.
-    """
-    import re
-    stem = re.sub(r"\.(raw|bin|mem|dmp|dd|zip)$", "", str(name or ""), flags=re.I)
-    m = re.match(r"^(.+?)-(F\.[0-9A-Za-z]+)$", stem)
-    return (m.group(1) if m else stem) or None
-
-
 def _resolve_keep_dump(requested: Any, blueprint: dict | None) -> bool:
     """Should the memory image survive this run?
 
@@ -237,7 +223,6 @@ def start_memory_run():
 
     client_name = (data.get("client_name") or "").strip() or None
     case_name = (data.get("case_name") or "").strip() or "Volatile Memory"
-    fallback_host = None
 
     if dump_path and not (client_name and client_id):
         # Re-analysing an image we acquired: the run that captured it knows
@@ -249,11 +234,9 @@ def start_memory_run():
         origin = (_dump_origins().get(dump_path) or {})
         client_name = client_name or origin.get("client_name")
         client_id = client_id or (origin.get("client_id") or "")
-        if not (client_name or client_id):
-            # Never acquired here (carried in, or from before origins were
-            # recorded). Leave the host unknown so the pipeline can read it out
-            # of the image, and keep the file name only as the last resort.
-            fallback_host = _host_from_dump_name(_o.path.basename(dump_path))
+        # Nothing inherited (carried in, or from before origins were
+        # recorded) means the host stays unknown here — the pipeline reads it
+        # out of the image itself once the extraction has run.
 
     # Resolve blueprint (optional) — settings precedence:
     # explicit ``mode`` in request > blueprint.settings.mode > "layered"
@@ -345,7 +328,6 @@ def start_memory_run():
         timeouts=timeouts or None,
         keep_dump=keep_dump,
         from_upload_path=dump_path or None,
-        fallback_host=fallback_host,
     )
 
     return jsonify({
@@ -465,10 +447,8 @@ def upload_memory_dump():
             pass
         return jsonify({"error": f"write failed: {e}"}), 500
 
-    # No host given: leave it unknown so the pipeline reads the name out of the
-    # image, with the file name as the last resort (an acquisition's own name
-    # carries the host: <HOST>-<FLOW>.raw).
-    fallback_host = _host_from_dump_name(safe_name)
+    # No host given: leave it unknown. The pipeline reads the name out of the
+    # image itself — a file name is a label somebody typed, not a fact.
     label = client_name or safe_name
     # Sensible default case: ISO date so repeated uploads on the same
     # day group together. Mirrors the frontend default.
@@ -527,8 +507,7 @@ def upload_memory_dump():
                 blueprint=blueprint,
                 from_upload_path=raw_path,
                 keep_dump=keep_dump,
-                fallback_host=fallback_host,
-            )
+                    )
         except UploadExtractError as ue:
             add_log_to_run(run_id, f"upload: extract failed — {ue}", "error")
             update_run_status(run_id, "failed", error=str(ue))

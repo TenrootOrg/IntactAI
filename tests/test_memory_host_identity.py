@@ -38,9 +38,6 @@ def _load(path, name, extra=None):
     return ns[name]
 
 
-host_from_name = _load(ROUTES, "_host_from_dump_name")
-
-
 class TestTheAssetIsKeyedByWhatWeActuallyKnow(unittest.TestCase):
     """Executes the key choice from _memory_contribution against each of the
     three states a memory run can be in."""
@@ -110,42 +107,6 @@ class TestAReanalysisInheritsTheHostItCameFrom(unittest.TestCase):
         self.assertIn("client_name = client_name or", blk)
 
 
-class TestTheFilenameIsTheLastResortNotTheRunId(unittest.TestCase):
-
-    def test_an_acquisition_filename_gives_up_its_host(self):
-        self.assertEqual(host_from_name("DESKTOP-566AT85-F.DAPQED9223N0Q.raw"),
-                         "DESKTOP-566AT85")
-
-    def test_a_hostname_containing_dashes_survives(self):
-        self.assertEqual(host_from_name("WIN-UK1GV882OK6-F.ABC123.raw"),
-                         "WIN-UK1GV882OK6")
-
-    def test_an_ordinary_name_keeps_its_stem(self):
-        self.assertEqual(host_from_name("MemoryDump_Lab6.raw"), "MemoryDump_Lab6")
-
-    def test_every_accepted_extension_is_stripped(self):
-        for ext in ("raw", "bin", "mem", "dmp", "dd", "zip", "RAW"):
-            self.assertEqual(host_from_name(f"BOX.{ext}"), "BOX")
-
-    def test_nothing_in_nothing_out(self):
-        self.assertIsNone(host_from_name(""))
-        self.assertIsNone(host_from_name(None))
-
-    def test_the_upload_paths_pass_it_as_a_FALLBACK_not_an_answer(self):
-        """Passing it as client_name would satisfy "do we know the host?" and
-        the image would never be asked — the guess would beat the fact."""
-        mem = _read("modules/backend/routes/memory_routes.py")
-        up = _read("modules/backend/routes/upload_routes.py")
-        self.assertIn("fallback_host = _host_from_dump_name(safe_name)", mem)
-        self.assertIn("fallback_host=_host_from_dump_name(original_filename)", up)
-        self.assertNotIn("client_name=_host,", up)
-
-    def test_the_operator_can_name_the_host_on_the_upload_tab(self):
-        self.assertIn("uploadHost", _read("modules/nginx/html/partials/memory.html"))
-        js = _read("modules/nginx/html/js/memory.js")
-        self.assertIn("client_name: (this.uploadHost || '').trim()", js)
-
-
 class TestTheOriginIsWhoeverPutTheFileThere(unittest.TestCase):
     """The same image is re-analysed many times, and a re-analysis carries no
     client_id and no hostname. "Newest wins" therefore replaced the acquisition
@@ -194,34 +155,34 @@ class TestTheImageCanNameItself(unittest.TestCase):
 
     PIPE = os.path.join(ROOT, "modules/backend/services/memory/pipeline.py")
     fn = staticmethod(_load(os.path.join(ROOT, "modules/backend/services/memory/pipeline.py"),
-                            "_hostname_from_plugins"))
-    REAL = {"volatility3.plugins.windows.envars.Envars": [
+                            "_hostname_from_rows"))
+    REAL = [
         {"PID": 836, "Block": "0x1104b70", "Value": "DESKTOP-566AT85",
          "Process": "winlogon.exe", "Variable": "COMPUTERNAME", "__children": []},
         {"PID": 836, "Value": "C:\\Windows", "Process": "winlogon.exe",
          "Variable": "SystemRoot", "__children": []},
-    ]}
+    ]
 
     def test_it_reads_the_name_out_of_the_image(self):
         self.assertEqual(self.fn(self.REAL), "DESKTOP-566AT85")
 
     def test_lowercase_keys_are_accepted_too(self):
         """Key casing has moved between volatility versions."""
-        self.assertEqual(
-            self.fn({"envars": [{"variable": "computername", "value": "BOX-1"}]}),
-            "BOX-1")
+        self.assertEqual(self.fn([{"variable": "computername", "value": "BOX-1"}]), "BOX-1")
 
-    def test_a_payload_without_envars_yields_nothing(self):
-        self.assertIsNone(self.fn({"volatility3.plugins.windows.pslist.PsList":
-                                   [{"PID": 1}]}))
+    def test_a_linux_image_names_itself_too(self):
+        self.assertEqual(self.fn([{"Variable": "HOSTNAME", "Value": "srv-01"}]), "srv-01")
+
+    def test_rows_without_the_variable_yield_nothing(self):
+        self.assertIsNone(self.fn([{"Variable": "PATH", "Value": "/usr/bin"}]))
 
     def test_junk_rows_do_not_crash_it(self):
-        self.assertIsNone(self.fn({}))
+        self.assertIsNone(self.fn([]))
         self.assertIsNone(self.fn(None))
-        self.assertIsNone(self.fn({"envars": [None, "string", {}, {"Variable": "PATH"}]}))
+        self.assertIsNone(self.fn([None, "string", {}, {"Variable": "PATH"}]))
 
     def test_an_empty_value_is_not_a_hostname(self):
-        self.assertIsNone(self.fn({"envars": [{"Variable": "COMPUTERNAME", "Value": "  "}]}))
+        self.assertIsNone(self.fn([{"Variable": "COMPUTERNAME", "Value": "  "}]))
 
     def test_envars_is_only_added_when_the_host_is_unknown(self):
         """It is an extra plugin on every run otherwise, for an answer we
@@ -231,21 +192,11 @@ class TestTheImageCanNameItself(unittest.TestCase):
 
     def test_what_it_finds_is_written_where_fusion_looks(self):
         src = _read("modules/backend/services/memory/pipeline.py")
-        blk = src[src.index("_found_host = _persist_fusion_payload"):][:1600]
-        self.assertIn('d.__setitem__("client_name", _h)', blk)
-
-    def test_the_image_outranks_the_file_name(self):
-        """One is a fact about the machine, the other is a label somebody
-        typed, so the fallback only applies once the image has had its say."""
-        src = _read("modules/backend/services/memory/pipeline.py")
-        blk = src[src.index("_found_host = _persist_fusion_payload"):][:1200]
-        self.assertIn("if not client_name and not _found_host and fallback_host:", blk)
-        self.assertLess(blk.index("_found_host = _persist_fusion_payload"),
-                        blk.index("fallback_host:"))
+        self.assertIn('d.__setitem__("client_name", _h)', src)
 
     def test_it_never_overrides_a_host_we_were_told(self):
         src = _read("modules/backend/services/memory/pipeline.py")
-        self.assertIn("if _found_host and not client_name:", src)
+        self.assertIn("if not (client_id or client_name) and evidence_id:", src)
 
 
 if __name__ == "__main__":

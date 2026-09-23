@@ -487,35 +487,59 @@ def _build_extraction_only_report(
     return "\n".join(parts)
 
 
-def _hostname_from_plugins(plugins: dict) -> str | None:
-    """The machine's own name, read out of the image.
+def _hostname_from_rows(rows) -> str | None:
+    """The machine's own name out of `envars` rows, or None.
 
-    Windows puts COMPUTERNAME in every process's environment block, so the
-    `envars` plugin carries it. This is the only source that comes from the
-    EVIDENCE rather than from around it: an acquisition knows the host because
-    Velociraptor told us, and a re-analysis inherits that — but an image
-    carried in from somewhere else has nothing but its file name, which is a
-    label someone typed, not a fact about the machine.
-
-    Returns None when envars was not run or the variable is not there; the
-    caller keeps whatever it had.
+    Windows puts COMPUTERNAME in every process's environment block and Linux
+    puts HOSTNAME, so this is the one source that comes from the EVIDENCE
+    rather than from around it. Matches on meaning, not key casing: that has
+    moved between volatility versions.
     """
-    for name, rows in (plugins or {}).items():
-        if "envars" not in str(name).lower():
+    for r in (rows or []):
+        if not isinstance(r, dict):
             continue
-        for r in (rows or []):
-            if not isinstance(r, dict):
-                continue
-            # Key casing varies with the volatility version; match on meaning.
-            var = str(r.get("Variable") or r.get("variable") or "").strip().upper()
-            if var == "COMPUTERNAME":
-                val = str(r.get("Value") or r.get("value") or "").strip()
-                if val:
-                    return val
+        var = str(r.get("Variable") or r.get("variable") or "").strip().upper()
+        if var in ("COMPUTERNAME", "HOSTNAME"):
+            val = str(r.get("Value") or r.get("value") or "").strip()
+            if val:
+                return val
     return None
 
 
-def _persist_fusion_payload(run_id, client, evidence_id, log) -> str | None:
+def _hostname_from_image(client, evidence_id, log, *, wait_s: int = 120) -> str | None:
+    """Ask the image what machine it came from.
+
+    Goes to VolWeb for the envars rows DIRECTLY instead of reading the fusion
+    snapshot: that snapshot is filtered to the curated plugin set, so envars
+    rows were discarded before anything could look at them — the reason a first
+    attempt at this silently fell through to guessing at the file name.
+
+    Polls, because the extraction wait can return before VolWeb has written the
+    last plugin's rows: measured, the task reported done ~8s after our wait
+    ended. Gives up quietly — an image that cannot name itself is a fact about
+    the image, not an error.
+    """
+    deadline = time.time() + max(wait_s, 0)
+    while True:
+        try:
+            for p in client.list_plugins(evidence_id) or []:
+                name = str(p.get("name") or "")
+                if "envars" not in name.lower() or not p.get("results"):
+                    continue
+                full = client.fetch_plugin(evidence_id, name) or {}
+                host = _hostname_from_rows(
+                    full.get("artefacts") or full.get("artefact") or [])
+                if host:
+                    return host
+        except Exception as e:                      # noqa: BLE001
+            log(f"host lookup: could not read envars ({e})", "warning")
+            return None
+        if time.time() >= deadline:
+            return None
+        time.sleep(5)
+
+
+def _persist_fusion_payload(run_id, client, evidence_id, log) -> None:
     """Snapshot the memory fusion payload (plugin rows + yara hits) to
     ``/data/downloads/<run_id>/memory_payload.json`` BEFORE cleanup runs.
 
@@ -549,7 +573,7 @@ def _persist_fusion_payload(run_id, client, evidence_id, log) -> str | None:
         f"({plugin_rows} plugin rows, {len(hits)} yara hits)",
         "info",
     )
-    return _hostname_from_plugins(plugins)
+
 
 
 # ---------------------------------------------------------------------------
@@ -569,7 +593,6 @@ def run_memory_pipeline(
     from_upload_path: str | None = None,
     timeouts: dict | None = None,
     keep_dump: bool = False,
-    fallback_host: str | None = None,
 ) -> None:
     # Resolved timeouts in seconds. Operator override (UI textbox)
     # wins over blueprint.settings, which wins over defaults. Defaults
@@ -976,6 +999,25 @@ def run_memory_pipeline(
             )
 
         # ----------------------------------------------------------------
+        # Who is this? — only when nothing else could tell us.
+        # ----------------------------------------------------------------
+        if not (client_id or client_name) and evidence_id:
+            _found = _hostname_from_image(client, evidence_id, log)
+            if _found:
+                client_name = _found
+                mutate_run_details(
+                    run_id, lambda d, _h=_found: d.__setitem__("client_name", _h))
+                log(f"pipeline: host read out of the image itself — {_found}", "success")
+            else:
+                # Left unnamed on purpose. A guess from the file name was tried
+                # and removed: it put a label somebody typed where a hostname
+                # belongs, and merged nothing.
+                log("pipeline: the image does not name its host (no COMPUTERNAME "
+                    "in envars) — these findings will not merge with an endpoint's "
+                    "other evidence. Set the host on the Upload tab to fix that.",
+                    "warning")
+
+        # ----------------------------------------------------------------
         # Phase 5 — Report (extraction-only). Memory is a COLLECTOR: the LLM
         # analysis + reporting now happen at Case Analysis (fusion). We emit a
         # minimal extraction-only report for the workflow's own download; the
@@ -1019,24 +1061,7 @@ def run_memory_pipeline(
         # every yara hit vanishes from the graph. See _persist_fusion_payload.
         # ----------------------------------------------------------------
         try:
-            _found_host = _persist_fusion_payload(run_id, client, evidence_id, log)
-            # The image outranks the file name: one is a fact about the
-            # machine, the other is a label somebody typed. So the fallback is
-            # only applied once the image has had its say.
-            if not client_name and not _found_host and fallback_host:
-                _found_host = fallback_host
-                log(f"pipeline: host unknown — using the file name, {fallback_host}",
-                    "warning")
-            if _found_host and not client_name:
-                # Write it where fusion looks. Without this the asset is keyed
-                # by the run id and the findings land on a "host" that is not a
-                # host, next to the real machine's other evidence.
-                client_name = _found_host
-                mutate_run_details(
-                    run_id,
-                    lambda d, _h=_found_host: d.__setitem__("client_name", _h))
-                log(f"pipeline: host identified from the image itself — {_found_host}",
-                    "success")
+            _persist_fusion_payload(run_id, client, evidence_id, log)
         except Exception as _pe:  # noqa: BLE001 — never block completion on the snapshot
             log(
                 f"persist: fusion-payload snapshot failed ({_pe}) — fusion will fall "

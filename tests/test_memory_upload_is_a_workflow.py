@@ -96,7 +96,7 @@ class TestTheUploadedImageReachesThePipeline(unittest.TestCase):
     def test_it_refuses_to_run_without_a_workflow_row(self):
         """Silently analysing with nowhere to report is worse than not running:
         the operator would watch Workflows for a row that never appears."""
-        tail = self.SRC[self.SRC.index("def run_memory_upload"):][:6500]
+        tail = self.SRC[self.SRC.index("def run_memory_upload"):][:8200]
         self.assertIn("if not run_id:", tail)
 
     def test_the_tus_file_is_not_left_on_the_upload_volume(self):

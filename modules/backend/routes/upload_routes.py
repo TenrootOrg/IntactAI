@@ -747,23 +747,16 @@ def handle_tus_hook():
                                 pass
                             return
                         dispatched = True
-                        # Which machine this image is FROM. Without it the fuse
-                        # has nothing to identify the host by and the findings
-                        # land on an asset named after the run instead of
-                        # merging with that endpoint's other evidence. The file
-                        # name is the fallback: a guess about the evidence beats
-                        # a run id, and an acquisition's own name carries the
-                        # host anyway (<HOST>-<FLOW>.raw).
-                        # The operator's answer if they gave one; otherwise
-                        # leave it unknown so the pipeline can read the name
-                        # out of the image, and keep the file name as the
-                        # fallback for when even that finds nothing.
-                        from routes.memory_routes import _host_from_dump_name
+                        # Which machine this image is FROM. The operator's
+                        # answer if they gave one; otherwise left unknown, and
+                        # the pipeline reads the name out of the image itself.
+                        # Without either, the findings land on an asset named
+                        # after the run instead of merging with that endpoint's
+                        # other evidence.
                         memory_pipeline.run_memory_pipeline(
                             run_id=run_id,
                             client_id="",
                             client_name=(metadata.get('client_name') or '').strip() or None,
-                            fallback_host=_host_from_dump_name(original_filename),
                             mode=mode,
                             case_name=(metadata.get('case_name') or '').strip() or None
                                       or f"Memory {datetime.now().strftime('%Y-%m-%d')}",
