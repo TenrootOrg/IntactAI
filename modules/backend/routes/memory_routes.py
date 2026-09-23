@@ -359,7 +359,23 @@ def upload_memory_dump():
     if not f or not f.filename:
         return jsonify({"error": "uploaded file is empty"}), 400
 
-    mode = (request.form.get("mode") or "layered").strip().lower()
+    # The blueprint decides WHICH plugins run. The page has always sent it here
+    # and this route has never read it, so an uploaded dump ran the pipeline's
+    # curated fallback whatever the operator picked — "All plugins (deep dive)"
+    # on the Upload tab quietly produced the same 11 plugins as "Curated".
+    bp_id = (request.form.get("blueprint_id") or "").strip()
+    blueprint = None
+    if bp_id:
+        blueprint = get_blueprint(_BLUEPRINT_TYPE, bp_id)
+        if not blueprint:
+            return jsonify({"error": f"blueprint {bp_id!r} not found"}), 404
+
+    # Same precedence as /run: explicit mode > blueprint.settings.mode > default.
+    mode = (request.form.get("mode") or "").strip().lower()
+    if not mode and blueprint:
+        mode = ((blueprint.get("settings") or {}).get("mode") or "").lower()
+    if not mode:
+        mode = "layered"
     if mode not in _VALID_MODES:
         return jsonify({"error": f"invalid mode: {mode!r}"}), 400
 
@@ -432,6 +448,8 @@ def upload_memory_dump():
         "upload_filename": safe_name,
         "upload_bytes": bytes_written,
         "case_name": case_name,
+        "blueprint_id": bp_id or None,
+        "blueprint": (blueprint or {}).get("name") if blueprint else None,
         "keep_dump": keep_dump,
         # The per-upload staging dir is this run's to clean; record it so the
         # case purge can reclaim it (store.py looks for exactly this key and
@@ -470,6 +488,7 @@ def upload_memory_dump():
                 client_name=client_name,
                 mode=mode,
                 case_name=case_name,
+                blueprint=blueprint,
                 from_upload_path=raw_path,
                 keep_dump=keep_dump,
             )
