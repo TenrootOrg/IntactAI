@@ -145,7 +145,7 @@ cmd_fetch() {
             skipped=$((skipped + 1)); continue
         fi
         fname="$(basename "${url%%\?*}")"
-        if curl -fL --retry 3 --connect-timeout 30 -o "${out}/${fname}" "$url"; then
+        if curl -fsSL --retry 3 --connect-timeout 30 -o "${out}/${fname}" "$url"; then
             # The map is what makes the tool land under its REAL name on the
             # other side; the file name alone is not enough to register with.
             # One line per tool: fetching into the same folder twice used to
