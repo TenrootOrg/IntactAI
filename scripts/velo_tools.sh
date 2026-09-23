@@ -124,7 +124,10 @@ cmd_fetch() {
     done
     [[ -n "$listfile" ]] || { err "usage: velo_tools.sh fetch <list.tsv|-> --out DIR"; return 1; }
     [[ -n "$out" ]] || { err "--out DIR is required"; return 1; }
-    [[ "$listfile" == "-" || -f "$listfile" ]] || { err "no such file: $listfile"; return 1; }
+    # -r, not -f: a process substitution (fetch <(grep ...)) and a fifo are
+    # readable but not regular files, and rejecting them sent the operator back
+    # to writing a temp file for no reason.
+    [[ "$listfile" == "-" || -r "$listfile" ]] || { err "cannot read: $listfile"; return 1; }
     mkdir -p "$out" || return 1
 
     local ok=0 skipped=0 failed=0 line tool url rest fname want_sha got_sha

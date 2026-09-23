@@ -286,6 +286,15 @@ test_a_tool_test_against_a_live_endpoint_runs() {
     assert_not_contains "$out" "offline" "and is not called offline"
 }
 
+test_fetch_accepts_a_process_substitution() {
+    # `fetch <(grep ... missing.tsv)` failed with "no such file: /dev/fd/63".
+    local root; root="$(_fake)"
+    _curl_logging "$root"
+    local out; out="$(_run "$root" fetch <(printf 'Gimphash\thttps://example.test/g.exe\t\tA\n') --out "${root}/carry")"
+    assert_eq "$?" "0" "reads it"
+    assert_contains "$out" "1 downloaded" "and fetches what it lists"
+}
+
 test_fetch_refuses_a_list_that_matched_nothing() {
     # Live: the page's own example filter matched nothing on a box that already
     # held both tools, and fetch still said "carry <dir> to the appliance".
