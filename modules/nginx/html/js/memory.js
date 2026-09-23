@@ -79,9 +79,12 @@ document.addEventListener('alpine:init', () => {
         // Offline upload state
         // --------------------------------------------------------------
         uploadFile: null,            // File object selected via input
-        uploading: false,
-        uploadProgress: 0,           // 0-100, driven by XHR onprogress
-        uploadStatus: '',            // operator-facing one-liner
+        uploading: false,            // double-submit guard only — there is no
+                                     // upload UI on this page by design: the
+                                     // run row owns progress, logs and the
+                                     // outcome, and a second progress bar on a
+                                     // tab nobody is watching only disagrees
+                                     // with the first one.
 
         // --------------------------------------------------------------
         // Bootstrap
@@ -299,8 +302,6 @@ document.addEventListener('alpine:init', () => {
 
         setUploadFile(f) {
             this.uploadFile = f || null;
-            this.uploadStatus = '';
-            this.uploadProgress = 0;
         },
 
         uploadSizeLabel() {
@@ -325,14 +326,12 @@ document.addEventListener('alpine:init', () => {
          *  byte lands -- so the upload itself is logged, has progress, and any
          *  failure is on the run where the operator is already looking. */
         startUpload() {
-            if (!this.uploadFile) { this.uploadStatus = 'pick a file first'; return; }
+            if (!this.uploadFile) return;                 // the button is disabled anyway
             if (typeof tus === 'undefined' || typeof TusUploader === 'undefined') {
-                this.uploadStatus = 'upload component not loaded — reload the page';
+                alert('Upload component not loaded — reload the page.');
                 return;
             }
             this.uploading = true;
-            this.uploadStatus = 'starting upload…';
-            this.uploadProgress = 0;
 
             const uploader = new TusUploader({
                 purpose: 'memory',
@@ -345,24 +344,33 @@ document.addEventListener('alpine:init', () => {
                     case_name: this.caseName || ('Volatile Memory ' + new Date().toISOString().split('T')[0]),
                     keep_dump: this.keepDump ? '1' : '0',
                 },
-                onProgress: (info) => {
-                    this.uploadProgress = Math.round((info && info.percentage) || 0);
-                    this.uploadStatus = `uploading… ${this.uploadProgress}%`;
-                },
+                // No progress UI here on purpose: we hand off to Workflows
+                // immediately (below), and the tusd post-receive hook writes
+                // "Uploading: N%" onto the run itself. Two progress bars for
+                // one upload, one of them on a tab nobody is looking at, is
+                // how they end up disagreeing.
+                onProgress: () => {},
                 onSuccess: () => {
                     this.uploading = false;
-                    this.uploadProgress = 100;
-                    this.uploadStatus = 'uploaded — analysis continues in Workflows';
-                    this.uploadFile = null;
                     if (Alpine.store('workflows')?.refresh) Alpine.store('workflows').refresh();
-                    if (Alpine.store('app')?.switchTab) Alpine.store('app').switchTab('workflows');
                 },
                 onError: (error) => {
+                    // The operator is on the Workflows tab by now — an alert is
+                    // the only thing that reaches them there. Same as the
+                    // Velociraptor import.
                     this.uploading = false;
-                    this.uploadStatus = `upload failed: ${(error && error.message) || error}`;
+                    alert(`Memory upload failed: ${(error && error.message) || error}`);
                 },
             });
             uploader.upload(this.uploadFile);
+
+            // Follow the work, like the Velociraptor import does. The upload
+            // keeps running after the tab switch — the run row is created by
+            // the tusd hook before the first chunk lands, and carries the
+            // progress, the log and the terminal state.
+            this.uploadFile = null;
+            if (Alpine.store('workflows')?.refresh) Alpine.store('workflows').refresh();
+            if (Alpine.store('app')?.switchTab) Alpine.store('app').switchTab('workflows');
         },
 
         // --------------------------------------------------------------

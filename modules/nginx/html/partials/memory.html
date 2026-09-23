@@ -313,31 +313,16 @@
                         </div>
 
                         <p class="text-xs text-gray-500 mt-3">
-                            The upload is resumable and is tracked as a workflow — it survives a dropped connection
-                            or a page refresh, and the run appears in <span class="text-gray-400">Workflows</span>
-                            before the first byte lands, so progress, logs and any failure are all in one place.
+Resumable — it survives a dropped connection or a page refresh. The run opens in
+                            <span class="text-gray-400">Workflows</span> before the first byte lands, and everything
+                            after that — progress, logs, failures — happens there.
                         </p>
 
-                        <!-- Upload progress (tus, chunked) -->
-                        <div x-show="$store.memory.uploadProgress > 0 && $store.memory.uploadProgress < 100" class="mt-4">
-                            <div class="flex justify-between text-xs text-gray-400 mb-1">
-                                <span>Uploading…</span>
-                                <span x-text="$store.memory.uploadProgress + '%'"></span>
-                            </div>
-                            <div class="bg-gray-700 rounded-full h-2 overflow-hidden">
-                                <div class="bg-indigo-500 h-full transition-all"
-                                     :style="`width: ${$store.memory.uploadProgress}%`"></div>
-                            </div>
-                        </div>
-
                         <div class="flex items-center justify-end gap-3 pt-4 mt-4 border-t border-gray-700">
-                            <span x-show="$store.memory.uploadStatus" class="text-xs text-gray-400"
-                                  x-text="$store.memory.uploadStatus"></span>
                             <button @click="$store.memory.startUpload()"
                                     :disabled="!$store.memory.uploadFile || $store.memory.uploading"
                                     class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-6 py-2 rounded-lg text-sm font-medium text-white">
-                                <span x-show="!$store.memory.uploading">Upload &amp; Analyze</span>
-                                <span x-show="$store.memory.uploading">Uploading…</span>
+Upload &amp; Analyze
                             </button>
                         </div>
                     </div>

@@ -271,7 +271,7 @@ const shown = (win, el) => {
     console.log('  SKIP no kept image on this appliance to pick');
   }
 
-  console.log('\n-- upload: the form carries the mode and the keep choice --');
+  console.log('\n-- upload: hands off to Workflows and shows nothing here --');
   byText('Upload a dump').click();
   await sleep(300);
   store.setUploadFile(new win.File([new Uint8Array(4096)], 'PhysicalMemory.raw',
@@ -281,6 +281,7 @@ const shown = (win, el) => {
   dispatched.length = 0;
   byText('Upload & Analyze').click();
   await sleep(800);
+  const tabAfter = win.Alpine.store('app').currentTab;
   const up = dispatched.find(d => /uploads/.test(d.url));
   check(!!up, 'pressing Upload & Analyze starts a RESUMABLE upload, not a giant POST');
   if (up) {
@@ -290,6 +291,14 @@ const shown = (win, el) => {
     check(!!up.body.case_id || up.body.case_id === '', 'the workspace rides in the tus metadata');
     check(String(up.file || '').includes('PhysicalMemory.raw'), 'it hands over the chosen file');
   }
+  // The operator follows the work, like the Velociraptor import — the run row
+  // is created by the tusd hook before the first chunk lands and owns progress.
+  check(tabAfter === 'workflows',
+        `pressing Upload moves straight to Workflows (landed on ${tabAfter})`);
+  check(store.uploadFile === null, 'the file picker is cleared on hand-off');
+  const leftovers = ['uploadProgress', 'uploadStatus'].filter(k => k in store);
+  check(leftovers.length === 0,
+        `no upload UI state is left on the memory page (${leftovers.join(', ') || 'none'})`);
 
   console.log('\n-- pull from another case --');
   byText('Pull from another case').click();
