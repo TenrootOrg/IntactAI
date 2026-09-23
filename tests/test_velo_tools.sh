@@ -167,6 +167,23 @@ test_import_refuses_a_map_written_with_spaces_instead_of_tabs() {
     assert_contains "$(cat "${root}/err")" "no TAB" "says what is wrong with the line"
 }
 
+test_import_names_an_installer_tool_from_the_shipped_inventory() {
+    # `import data/tools` is the documented way back after the Docker volumes are
+    # deleted. The installer's own tools are in no velo_tools.map, so it used to
+    # leave Autoruns, LastActivityView, lolrmm and the Velociraptor binaries
+    # unregistered — 10 files on this appliance.
+    local root; root="$(_fake)"
+    echo x > "${root}/carry/autorunsc64.exe"
+    echo y > "${root}/carry/nothing_knows_this.bin"
+    printf '# empty map\n' > "${root}/carry/velo_tools.map"
+    local out; out="$(_run "$root" import "${root}/carry")"
+    assert_contains "$(cat "${root}/docker.calls")" "tool='Autorun_amd64'" \
+        "the shipped inventory names autorunsc64.exe"
+    assert_contains "$out" "registered Autorun_amd64 -> autorunsc64.exe" "and says so"
+    assert_contains "$out" "1 file(s) here are named by neither" "the genuinely unnamed file is reported"
+    assert_contains "$out" "nothing_knows_this.bin" "by name"
+}
+
 test_import_without_a_map_points_at_the_add_command() {
     local root; root="$(_fake)"
     _run "$root" import "${root}/carry" >/dev/null

@@ -193,7 +193,10 @@ it straight back. Judge the result by the `hash` field of `inventory()`, not by
   datastore (the Docker volume `velociraptor_velociraptor_datastore`). An upgrade
   keeps that volume and `data/tools/`; deleting Docker volumes (for example
   `scripts/clean.sh --volumes`) deletes the registrations. Put them all back with
-  `bash scripts/velo_tools.sh import data/tools`.
+  `bash scripts/velo_tools.sh import data/tools`. That names files from
+  `velo_tools.map` first and from the shipped `data/tools_inventory.yaml` after,
+  so the installer's own tools come back too; anything neither can name is
+  reported rather than registered under a guessed name.
 - **A newer artifact can want a newer tool version** under a different name
   (`Hayabusa-2.14.0` → `Hayabusa-3.9.0`). After importing artifacts, run `list`
   again.

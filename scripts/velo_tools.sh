@@ -343,6 +343,38 @@ print(json.loads(l).get("u","") if l.strip() else "")' 2>/dev/null)"
 # ---------------------------------------------------------------------------
 # import — replay a carry folder's map (or the appliance's own). No network.
 # ---------------------------------------------------------------------------
+name_from_inventory() {
+    # The tool name the SHIPPED inventory gives a file, or "" — the same
+    # pattern -> name table `upgrade.sh --velo-refresh` uses. This is what makes
+    # `import data/tools` able to put the installer's own tools back: they were
+    # staged by the installer and are not in velo_tools.map.
+    local base="$1"
+    INTACT_TOOLS_YAML="${INTACT_TOOLS_YAML:-${SCRIPT_DIR}/data/tools_inventory.yaml}" \
+    INTACT_TOOL_FILE="$base" python3 - <<'PY' 2>/dev/null
+import os, re
+try:
+    import yaml
+except Exception:
+    raise SystemExit(0)
+path = os.environ["INTACT_TOOLS_YAML"]
+name = os.environ["INTACT_TOOL_FILE"]
+try:
+    inv = (yaml.safe_load(open(path, encoding="utf-8")) or {}).get("velociraptor_inventory") or []
+except Exception:
+    raise SystemExit(0)
+for entry in inv:
+    tool, pat = entry.get("tool_name"), entry.get("file_pattern")
+    if not tool or not pat:
+        continue
+    try:
+        if re.match(pat, name):
+            print(tool)
+            break
+    except re.error:
+        continue
+PY
+}
+
 cmd_import() {
     local force_arg=""
     local args=()
@@ -395,9 +427,22 @@ cmd_import() {
         for f in "${bad_lines[@]}"; do err "  ${f}"; done
         failed=$((failed + ${#bad_lines[@]}))
     fi
-    if (( ${#unmapped[@]} )); then
-        log "  WARNING: ${#unmapped[@]} file(s) here are not named in ${MAP_NAME} and were NOT registered:"
-        for f in "${unmapped[@]}"; do log "    ${f}"; done
+    # A file the map does not name may still be one the SHIPPED inventory knows —
+    # every tool the installer staged is in that table and in no map. Falling back
+    # to it is what makes `import data/tools` put the default tools back after the
+    # Docker volumes were deleted; before this it left them unregistered.
+    local -a unnamed=()
+    for f in ${unmapped[@]+"${unmapped[@]}"}; do
+        tool="$(name_from_inventory "$f")"
+        if [[ -n "$tool" ]]; then
+            if cmd_add ${force_arg:+$force_arg} "$tool" "${dir}/${f}"; then ok=$((ok + 1)); else failed=$((failed + 1)); fi
+        else
+            unnamed+=("$f")
+        fi
+    done
+    if (( ${#unnamed[@]} )); then
+        log "  WARNING: ${#unnamed[@]} file(s) here are named by neither ${MAP_NAME} nor the shipped inventory, and were NOT registered:"
+        for f in "${unnamed[@]}"; do log "    ${f}"; done
         log "    add each with: $(basename "${BASH_SOURCE[0]}") add <TOOL> ${dir}/<FILE>"
     fi
     log "import: ${ok} registered, ${failed} failed"
