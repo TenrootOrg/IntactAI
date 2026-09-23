@@ -602,10 +602,15 @@ class VolWebClient:
         # 1) Verify the file actually exists on the shared volume +
         #    fix ownership (Velociraptor wrote it as root from the
         #    other side of the bind mount; VolWeb workers run as `app`).
+        # The basename can originate from an operator-supplied upload, so it is
+        # untrusted data reaching a shell — quote it rather than wrapping it in
+        # literal single quotes, which a name containing one would escape.
+        import shlex
+        _q = shlex.quote(staging_path)
         check = subprocess.run(
             [
                 "docker", "exec", backend_container, "sh", "-c",
-                f"chown app:app '{staging_path}' 2>/dev/null; stat -c '%s' '{staging_path}'",
+                f"chown app:app {_q} 2>/dev/null; stat -c '%s' {_q}",
             ],
             capture_output=True, text=True, timeout=10,
         )

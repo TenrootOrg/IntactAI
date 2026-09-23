@@ -58,10 +58,13 @@ def _remove_volweb_media_raw(
     if not evidence_filename:
         return
     container = _backend_container_name()
+    # The filename traces back to an operator-supplied upload, so it is
+    # untrusted data reaching a shell — and this one is an `rm`. Quote it.
+    import shlex
     cmd = [
         "docker", "exec", container, "sh", "-c",
-        f"rm -f /home/app/web/media/evidences/{evidence_filename} "
-        f"/home/app/web/media/staging/{evidence_filename}",
+        f"rm -f {shlex.quote(f'/home/app/web/media/evidences/{evidence_filename}')} "
+        f"{shlex.quote(f'/home/app/web/media/staging/{evidence_filename}')}",
     ]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
