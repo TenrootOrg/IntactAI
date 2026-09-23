@@ -145,7 +145,13 @@ cmd_fetch() {
         if curl -fL --retry 3 --connect-timeout 30 -o "${out}/${fname}" "$url"; then
             # The map is what makes the tool land under its REAL name on the
             # other side; the file name alone is not enough to register with.
-            printf '%s\t%s\n' "$tool" "$fname" >> "${out}/${MAP_NAME}"
+            # One line per tool: fetching into the same folder twice used to
+            # append a second line, so import then registered it twice.
+            local fmap="${out}/${MAP_NAME}" ftmp
+            ftmp="$(mktemp)" || return 1
+            [[ -f "$fmap" ]] && grep -v -P "^\Q${tool}\E\t" "$fmap" > "$ftmp" 2>/dev/null
+            printf '%s\t%s\n' "$tool" "$fname" >> "$ftmp"
+            mv "$ftmp" "$fmap"
             # An artifact may pin the tool's sha256. Downloading "the latest"
             # of a pinned tool gives a file the endpoint will refuse, and the
             # refusal happens at collection time, at the customer site.
@@ -188,6 +194,19 @@ for l in sys.stdin:
         print(json.loads(l).get("h","") or "")
         break' 2>/dev/null
 }
+
+stored_hash_for() {
+    # The sha256 the SERVER already holds for a tool, or "" when it holds none.
+    local tool="$1"
+    velo_vql "SELECT hash FROM inventory() WHERE name = '${tool}' AND serve_locally AND hash LIMIT 1" 2>/dev/null \
+        | python3 -c 'import sys,json
+for l in sys.stdin:
+    l=l.strip()
+    if l:
+        print(json.loads(l).get("hash","") or "")
+        break' 2>/dev/null
+}
+
 
 cmd_add() {
     local force=0
@@ -286,6 +305,23 @@ print(json.loads(l).get("u","") if l.strip() else "")' 2>/dev/null)"
             err "  either no artifact asks for it, or it has no public download (a vendor installer)."
             err "  Get the file yourself, then: velo_tools.sh add ${tool} <file>"
             failed=$((failed + 1)); continue
+        fi
+        # ALREADY DONE IS NOT A REASON TO DOWNLOAD AGAIN. Re-running install at
+        # a site (or after an upgrade) used to re-fetch every tool over the
+        # customer's link and re-register the same bytes. Skip when the server
+        # already holds it — and, when the artifact pins a hash, only when what
+        # it holds is that file. --force re-downloads regardless.
+        if [[ -z "$force_arg" ]]; then
+            local have want
+            have="$(stored_hash_for "$tool")"
+            want="$(expected_hash_for "$tool")"
+            if [[ -n "$have" && ( -z "$want" || "$have" == "$want" ) ]]; then
+                log "${tool}: already stored on the server — skipping (use --force to download again)"
+                ok=$((ok + 1)); continue
+            fi
+            if [[ -n "$have" && -n "$want" && "$have" != "$want" ]]; then
+                log "${tool}: stored copy does not match the hash the artifact pins — downloading the right one"
+            fi
         fi
         fname="$(basename "${url%%\?*}")"
         log "${tool}: downloading ${url}"

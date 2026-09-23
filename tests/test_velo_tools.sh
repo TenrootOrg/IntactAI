@@ -29,6 +29,16 @@ case "\$1" in
         [[ "\$2" == "-f" ]] && { echo true; exit 0; }
         exit 0 ;;
 esac
+# the URL an artifact declares for a tool
+if [[ "\$*" == *"url AS u"* ]]; then
+    [[ -s "${root}/tool_url" ]] && echo "{\"u\":\"\$(cat "${root}/tool_url")\"}"
+    exit 0
+fi
+# what the server already stores, for the re-run checks
+if [[ "\$*" == *"FROM inventory()"*"serve_locally AND hash"* ]]; then
+    [[ -s "${root}/stored_sha" ]] && echo "{\"hash\":\"\$(cat "${root}/stored_sha")\"}"
+    exit 0
+fi
 # the expected-hash lookup: answer with whatever the test planted
 if [[ "\$*" == *expected_hash* ]]; then
     [[ -s "${root}/expect_sha" ]] && echo "{\"h\":\"\$(cat "${root}/expect_sha")\"}"
@@ -39,6 +49,20 @@ echo '{"r":{"name":"x","serve_locally":true}}'
 EOF
     chmod +x "${root}/bin/docker"
     echo "$root"
+}
+
+# A curl stub that writes the -o target and records that it ran, so a test can
+# prove a re-run downloaded nothing.
+_curl_logging() {
+    local root="$1"
+    cat > "${root}/bin/curl" <<'CURL'
+#!/bin/bash
+[[ -n "${VELO_TEST_CURL_LOG:-}" ]] && echo DOWNLOADED >> "$VELO_TEST_CURL_LOG"
+out=""; while [[ $# -gt 0 ]]; do [[ "$1" == "-o" ]] && { out="$2"; shift; }; shift; done
+[[ -n "$out" ]] && printf 'payload' > "$out"
+exit 0
+CURL
+    chmod +x "${root}/bin/curl"
 }
 
 _run() {  # _run <root> <args...>
@@ -179,6 +203,39 @@ EOF
         "map carries the real tool name next to the file"
     assert_contains "$out" "no public URL" "says which tool needs the vendor"
     assert_contains "$out" "hash matches" "verified the pinned hash"
+}
+
+test_install_does_not_download_a_tool_the_server_already_holds() {
+    # Re-running install at a site used to re-fetch every tool over the
+    # customer's link and register the same bytes again.
+    local root; root="$(_fake)"
+    echo "abc123" > "${root}/stored_sha"
+    echo "https://example.test/hayabusa.zip" > "${root}/tool_url"
+    _curl_logging "$root"
+    local out; out="$(VELO_TEST_CURL_LOG="${root}/curl.log" _run "$root" install Hayabusa-2.14.0)"
+    assert_eq "$?" "0" "install succeeds"
+    assert_contains "$out" "already stored" "says it is already there"
+    assert_false test -s "${root}/curl.log"
+}
+
+test_install_downloads_again_when_the_stored_copy_is_the_wrong_version() {
+    local root; root="$(_fake)"
+    echo "abc123" > "${root}/stored_sha"          # what the server holds
+    echo "deadbeef" > "${root}/expect_sha"        # what the artifact pins
+    echo "https://example.test/hayabusa.zip" > "${root}/tool_url"
+    _curl_logging "$root"
+    local out; out="$(VELO_TEST_CURL_LOG="${root}/curl.log" _run "$root" install Hayabusa-2.14.0)"
+    assert_contains "$out" "does not match the hash" "says why it downloads anyway"
+    assert_true test -s "${root}/curl.log"
+}
+
+test_fetching_twice_into_the_same_folder_keeps_one_map_line() {
+    local root; root="$(_fake)"
+    printf 'Hayabusa-2.14.0\thttps://example.test/hayabusa.zip\t\tW.H.Rules\n' > "${root}/list.tsv"
+    _curl_logging "$root"
+    _run "$root" fetch "${root}/list.tsv" --out "${root}/carry" >/dev/null
+    _run "$root" fetch "${root}/list.tsv" --out "${root}/carry" >/dev/null
+    assert_eq "$(grep -c . "${root}/carry/velo_tools.map")" "1" "one line per tool, not one per run"
 }
 
 test_fetch_refuses_a_download_that_does_not_match_the_pinned_hash() {
