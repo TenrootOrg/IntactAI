@@ -223,5 +223,54 @@ class TestTheRowMovesWhileBytesArrive(unittest.TestCase):
         self.assertIn("add_log_to_run", blk)
 
 
+class TestStopReachesTheUploadItself(unittest.TestCase):
+    """SHARED upload layer, not memory-only.
+
+    js/upload.js has had an abort() since it was written and nothing ever
+    called it — not the Velociraptor collector import, not Timesketch, not the
+    memory upload. So "Stop" marked the row cancelled while the browser carried
+    on streaming, and the hook fired minutes later for a run that was over.
+    The backend guard added alongside this catches that server-side; this
+    stops the bytes at the source, for every module that uploads.
+    """
+
+    JS = _read("modules/nginx/html/js/upload.js")
+    WF = _read("modules/nginx/html/js/stores/workflows.js")
+
+    def test_an_upload_is_registered_once_tusd_names_it(self):
+        self.assertIn("_registerActive(upload)", self.JS)
+        self.assertIn("TusUploader._active.set(id, this)", self.JS)
+
+    def test_it_is_forgotten_when_it_finishes_or_fails(self):
+        """A registry that only grows would abort a later upload that happened
+        to reuse the id, and holds the File alive."""
+        self.assertEqual(2, self.JS.count("TusUploader._active.delete(this._registeredId)"))
+
+    def test_aborting_also_terminates_it_server_side(self):
+        """abort(true) makes tus DELETE the upload, which fires tusd's
+        post-terminate hook and reclaims the partial file. Without the flag the
+        bytes already sent sit on the upload volume for ever."""
+        blk = self.JS[self.JS.index("    abort() {"):][:600]
+        self.assertIn("this.currentUpload.abort(true)", blk)
+
+    def test_stop_aborts_before_it_asks_the_server(self):
+        blk = self.WF[self.WF.index("async stopWorkflow(runId)"):][:1600]
+        self.assertIn("TusUploader.abortUpload(uploadId)", blk)
+        self.assertLess(blk.index("TusUploader.abortUpload(uploadId)"),
+                        blk.index("/stop`, { method: 'POST' }"),
+                        "stop the bytes first, then mark the row")
+
+    def test_it_finds_the_upload_by_the_runs_own_details(self):
+        """details.upload_id is the only join between a run row and the upload
+        still streaming in this browser."""
+        blk = self.WF[self.WF.index("async stopWorkflow(runId)"):][:1600]
+        self.assertIn("(run.details || {}).upload_id", blk)
+
+    def test_a_run_with_no_upload_is_unaffected(self):
+        """Every other run type reaches this code too — it must be a no-op."""
+        blk = self.WF[self.WF.index("async stopWorkflow(runId)"):][:1600]
+        self.assertIn("if (uploadId && window.TusUploader", blk)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

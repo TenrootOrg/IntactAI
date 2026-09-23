@@ -296,6 +296,19 @@ document.addEventListener('alpine:init', () => {
         async stopWorkflow(runId) {
             if (!confirm('Stop this workflow? Running operations will be cancelled.')) return;
             try {
+                // Stop the UPLOAD too, when this run still has one streaming.
+                // Stopping only the row leaves the browser sending chunks: the
+                // tus hook then fires minutes later for a run that is already
+                // over, and the backend does the work anyway (a stopped memory
+                // upload still staged 1.5 GB and registered VolWeb evidence).
+                // Harmless for every other run type — nothing is registered.
+                try {
+                    const run = (this.runs || []).find(r => (r.id || r.run_id) === runId);
+                    const uploadId = run && (run.details || {}).upload_id;
+                    if (uploadId && window.TusUploader && TusUploader.abortUpload(uploadId)) {
+                        console.log('[workflows] aborted the in-flight upload for', runId);
+                    }
+                } catch (e) { /* the server-side stop below is what matters */ }
                 const response = await fetch(`/api/dashboard/automation/${runId}/stop`, { method: 'POST' });
                 if (response.ok) {
                     this.load();

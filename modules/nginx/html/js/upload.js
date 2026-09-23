@@ -111,11 +111,20 @@ class TusUploader {
             metadata: uploadMetadata,
 
             onError: (error) => {
+                if (this._registeredId) TusUploader._active.delete(this._registeredId);
                 console.error('[TusUploader] Upload error:', error);
                 this.onError(error);
             },
 
             onProgress: (bytesUploaded, bytesTotal) => {
+                // Register by tus upload id the first time the server has
+                // assigned one, so the Workflows Stop button can reach an
+                // upload that is still streaming. Without it "Stop" only marks
+                // the ROW cancelled: the browser keeps sending chunks, the hook
+                // fires minutes later and the backend stages gigabytes for a
+                // run that is already over. abort() existed all along and
+                // nothing ever called it.
+                this._registerActive(upload);
                 const percentage = ((bytesUploaded / bytesTotal) * 100).toFixed(1);
                 const speed = this._calculateSpeed(bytesUploaded);
                 const eta = this._calculateETA(bytesUploaded, bytesTotal, speed);
@@ -132,6 +141,7 @@ class TusUploader {
             },
 
             onSuccess: () => {
+                if (this._registeredId) TusUploader._active.delete(this._registeredId);
                 console.log('[TusUploader] Upload complete:', upload.url);
                 this.onSuccess(upload);
             },
@@ -187,13 +197,36 @@ class TusUploader {
         return upload;
     }
 
+    /** Remember this upload under the id tusd assigned it. */
+    _registerActive(upload) {
+        if (this._registeredId) return;
+        const id = String(upload.url || '').split('/').filter(Boolean).pop();
+        if (!id) return;
+        this._registeredId = id;
+        TusUploader._active.set(id, this);
+    }
+
+    /** Stop an upload that is still streaming, by its tus upload id. */
+    static abortUpload(uploadId) {
+        const up = uploadId && TusUploader._active.get(uploadId);
+        if (!up) return false;
+        up.abort();
+        TusUploader._active.delete(uploadId);
+        console.log('[TusUploader] aborted upload', uploadId);
+        return true;
+    }
+
     /**
      * Abort the current upload
      */
     abort() {
         if (this.currentUpload) {
             console.log('[TusUploader] Aborting upload');
-            this.currentUpload.abort();
+            // true = also DELETE the upload on the server, which fires tusd's
+            // post-terminate hook and reclaims the partial file. Without it the
+            // bytes already sent sit on the upload volume for ever.
+            try { this.currentUpload.abort(true); }
+            catch (e) { this.currentUpload.abort(); }
             this.currentUpload = null;
         }
     }
@@ -342,6 +375,7 @@ function initDropzone(dropzoneId, fileInputId, onFileSelected) {
 }
 
 // Export for use in other modules
+TusUploader._active = new Map();
 window.TusUploader = TusUploader;
 window.formatBytes = formatBytes;
 window.initDropzone = initDropzone;
