@@ -100,9 +100,9 @@ class TestTheCacheChainWasBumped(unittest.TestCase):
         memory_v = int(re.search(r"js/memory\.js\?v=(\d+)", index).group(1))
         # The values themselves are arbitrary; what matters is that this file
         # is updated with them, so a future change has to look at the chain.
-        self.assertGreaterEqual(partial_v, 93)
-        self.assertGreaterEqual(loader_v, 77)
-        self.assertGreaterEqual(memory_v, 14)
+        self.assertGreaterEqual(partial_v, 94)
+        self.assertGreaterEqual(loader_v, 78)
+        self.assertGreaterEqual(memory_v, 15)
 
 
 if __name__ == "__main__":

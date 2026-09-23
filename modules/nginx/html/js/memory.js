@@ -312,80 +312,57 @@ document.addEventListener('alpine:init', () => {
             return b + ' B';
         },
 
-        /** Multi-GB POST — use XHR (not fetch) so we get real progress
-         *  events. fetch + ReadableStream upload progress isn't widely
-         *  supported yet in Chromium's Alpine context. */
+        /** Resumable upload, the same way Velociraptor imports a collector ZIP.
+         *
+         *  It used to be one giant XHR POST to /api/memory/upload, which nginx
+         *  refuses above client_max_body_size (500M) with an HTML 413 page --
+         *  so a 1.5 GB image died as "parse error: Unexpected token '<'", with
+         *  no workflow row, no log line and nothing to retry, because the
+         *  request never reached Flask at all.
+         *
+         *  tus chunks the file, survives a dropped connection or a page
+         *  refresh, and the tusd hook opens the workflow row before the first
+         *  byte lands -- so the upload itself is logged, has progress, and any
+         *  failure is on the run where the operator is already looking. */
         startUpload() {
             if (!this.uploadFile) { this.uploadStatus = 'pick a file first'; return; }
-            // This XHR bypasses the window.fetch System->Default auto-recover, so
-            // redirect off the System workspace up front (mirrors the tus-upload
-            // guard). blockIfSystem now switches to Default and resolves false;
-            // re-enter once it's settled so the XHR tags the right workspace.
-            if (window.ActiveCase && window.ActiveCase.blockIfSystem && !this._wsRedirected) {
-                this._wsRedirected = true;
-                window.ActiveCase.blockIfSystem().then(() => this.startUpload());
+            if (typeof tus === 'undefined' || typeof TusUploader === 'undefined') {
+                this.uploadStatus = 'upload component not loaded — reload the page';
                 return;
             }
-            this._wsRedirected = false;
             this.uploading = true;
-            this.uploadStatus = '';
+            this.uploadStatus = 'starting upload…';
             this.uploadProgress = 0;
 
-            const fd = new FormData();
-            fd.append('file', this.uploadFile);
-            if (this.blueprintId) fd.append('blueprint_id', this.blueprintId);
-            fd.append('mode', this.derivedMode());
-            fd.append('case_name', this.caseName || ('Volatile Memory ' + new Date().toISOString().split('T')[0]));
-            fd.append('keep_dump', this.keepDump ? '1' : '0');
-            // No client_name for now — the operator can rename the
-            // workflow from the Workflows table if they care.
-
-            const xhr = new XMLHttpRequest();
-            xhr.open('POST', '/api/memory/upload', true);
-            // Raw XHR bypasses the window.fetch X-Case-Id hook, so set the active
-            // workspace header explicitly — otherwise the run lands in Default.
-            try {
-                const _cid = window.ActiveCase && window.ActiveCase.get && window.ActiveCase.get();
-                if (_cid) xhr.setRequestHeader('X-Case-Id', _cid);
-            } catch (_) {}
-            xhr.upload.addEventListener('progress', (e) => {
-                if (e.lengthComputable) {
-                    this.uploadProgress = Math.round((e.loaded / e.total) * 100);
-                }
+            const uploader = new TusUploader({
+                purpose: 'memory',
+                // Everything the pipeline needs, decided HERE while the
+                // operator's choices are on screen. The hook reads them back at
+                // post-finish; nothing has to be remembered in the browser.
+                metadata: {
+                    mode: this.derivedMode(),
+                    blueprint_id: this.blueprintId || '',
+                    case_name: this.caseName || ('Volatile Memory ' + new Date().toISOString().split('T')[0]),
+                    keep_dump: this.keepDump ? '1' : '0',
+                },
+                onProgress: (info) => {
+                    this.uploadProgress = Math.round((info && info.percentage) || 0);
+                    this.uploadStatus = `uploading… ${this.uploadProgress}%`;
+                },
+                onSuccess: () => {
+                    this.uploading = false;
+                    this.uploadProgress = 100;
+                    this.uploadStatus = 'uploaded — analysis continues in Workflows';
+                    this.uploadFile = null;
+                    if (Alpine.store('workflows')?.refresh) Alpine.store('workflows').refresh();
+                    if (Alpine.store('app')?.switchTab) Alpine.store('app').switchTab('workflows');
+                },
+                onError: (error) => {
+                    this.uploading = false;
+                    this.uploadStatus = `upload failed: ${(error && error.message) || error}`;
+                },
             });
-            xhr.onreadystatechange = () => {
-                if (xhr.readyState !== 4) return;
-                this.uploading = false;
-                try {
-                    const j = JSON.parse(xhr.responseText || '{}');
-                    if (xhr.status >= 200 && xhr.status < 300 && j.run_id) {
-                        this.currentRunId = j.run_id;
-                        this.currentStatus = 'running';
-                        this.currentProgress = 1;
-                        this.uploadStatus = `started: ${j.run_id}`;
-                        // Reset file picker so a successful run is
-                        // visually distinct from "still queued".
-                        this.uploadFile = null;
-                        // Run status lives on the Workflows page — refresh
-                        // it and navigate there on dispatch.
-                        if (Alpine.store('workflows') && typeof Alpine.store('workflows').refresh === 'function') {
-                            Alpine.store('workflows').refresh();
-                        }
-                        if (Alpine.store('app')?.switchTab) {
-                            Alpine.store('app').switchTab('workflows');
-                        }
-                    } else {
-                        this.uploadStatus = j.error || `HTTP ${xhr.status}`;
-                    }
-                } catch (e) {
-                    this.uploadStatus = `parse error: ${e.message}`;
-                }
-            };
-            xhr.onerror = () => {
-                this.uploading = false;
-                this.uploadStatus = 'network error';
-            };
-            xhr.send(fd);
+            uploader.upload(this.uploadFile);
         },
 
         // --------------------------------------------------------------

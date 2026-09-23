@@ -108,24 +108,6 @@ function boot() {
     beforeParse(win) {
       win.fetch = makeFetch();
       win.scrollTo = () => {};
-      // The upload button goes through raw XHR (it needs upload progress), so
-      // a fetch shim alone leaves that whole tab untested. Record what it sends
-      // and answer 202 — same deal as the intercepted fetch POSTs.
-      win.XMLHttpRequest = class {
-        open(method, url) { this._m = method; this._u = url; }
-        setRequestHeader(k, v) { (this._h = this._h || {})[k] = v; }
-        get upload() { return { addEventListener() {} }; }
-        send(fd) {
-          const body = {};
-          if (fd && typeof fd.entries === 'function') {
-            for (const [k, v] of fd.entries()) body[k] = (v && v.name) ? `<file ${v.name}>` : v;
-          }
-          dispatched.push({ url: this._u, body, headers: this._h || {} });
-          this.readyState = 4; this.status = 202;
-          this.responseText = JSON.stringify({ run_id: 'memory_TESTONLY', status: 'running' });
-          if (this.onreadystatechange) this.onreadystatechange();
-        }
-      };
       // The partial loader appends <script src="js/alpine.min.js"> once the
       // partials are in, and jsdom would try to fetch that over HTTP. Inline
       // the file the moment a src is assigned, so Alpine really does start
@@ -150,6 +132,27 @@ function boot() {
   });
 }
 
+// The page inlines vendor/tus/tus.min.js, so the real client is defined when
+// the document loads and would clobber anything set in beforeParse. Replace it
+// AFTER load: what this harness checks is what the panel asks tus to send —
+// actually moving bytes is the tusd hook's job and is tested on the box.
+function installTusStub(win) {
+  win.tus = {
+    Upload: class {
+      constructor(file, opts) { this.file = file; this.opts = opts || {}; }
+      findPreviousUploads() { return Promise.resolve([]); }
+      resumeFromPreviousUpload() {}
+      abort() {}
+      start() {
+        dispatched.push({ url: this.opts.endpoint || '/api/uploads/',
+                          body: this.opts.metadata || {},
+                          file: this.file && this.file.name });
+        if (this.opts.onSuccess) this.opts.onSuccess();
+      }
+    },
+  };
+}
+
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 // x-show sets display:none on the element itself; walk up for a hidden ancestor.
 const shown = (win, el) => {
@@ -165,6 +168,7 @@ const shown = (win, el) => {
   const win = dom.window;
   await new Promise(r => win.addEventListener('load', r));
   await sleep(2500);                       // partials inject, Alpine starts
+  installTusStub(win);
 
   const doc = win.document;
   const store = win.Alpine.store('memory');
@@ -277,13 +281,14 @@ const shown = (win, el) => {
   dispatched.length = 0;
   byText('Upload & Analyze').click();
   await sleep(800);
-  const up = dispatched.find(d => /\/api\/memory\/upload$/.test(d.url));
-  check(!!up, 'pressing Upload & Analyze POSTs /api/memory/upload');
+  const up = dispatched.find(d => /uploads/.test(d.url));
+  check(!!up, 'pressing Upload & Analyze starts a RESUMABLE upload, not a giant POST');
   if (up) {
+    check(up.body.purpose === 'memory', `it uploads with purpose=memory (${up.body.purpose})`);
     check(up.body.mode === 'plugin', `it sends the derived mode (${up.body.mode})`);
     check(up.body.keep_dump === '0', `it sends keep_dump=0 when unticked (sent ${up.body.keep_dump})`);
-    check(String(up.body.file || '').includes('PhysicalMemory.raw'), 'it attaches the chosen file');
-    check(!!up.headers['X-Case-Id'] || true, 'the workspace header is set on the raw XHR');
+    check(!!up.body.case_id || up.body.case_id === '', 'the workspace rides in the tus metadata');
+    check(String(up.file || '').includes('PhysicalMemory.raw'), 'it hands over the chosen file');
   }
 
   console.log('\n-- pull from another case --');

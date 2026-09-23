@@ -312,7 +312,13 @@
                                   x-text="$store.memory.uploadFile ? ($store.memory.uploadFile.name + ' — ' + $store.memory.uploadSizeLabel()) : ''"></span>
                         </div>
 
-                        <!-- Upload progress (visible during XHR) -->
+                        <p class="text-xs text-gray-500 mt-3">
+                            The upload is resumable and is tracked as a workflow — it survives a dropped connection
+                            or a page refresh, and the run appears in <span class="text-gray-400">Workflows</span>
+                            before the first byte lands, so progress, logs and any failure are all in one place.
+                        </p>
+
+                        <!-- Upload progress (tus, chunked) -->
                         <div x-show="$store.memory.uploadProgress > 0 && $store.memory.uploadProgress < 100" class="mt-4">
                             <div class="flex justify-between text-xs text-gray-400 mb-1">
                                 <span>Uploading…</span>

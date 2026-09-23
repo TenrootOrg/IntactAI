@@ -12,6 +12,8 @@ import json
 import threading
 import traceback
 import base64
+import time
+from datetime import datetime
 
 from services.workflow_service import create_automation_run, add_log_to_run, update_run_status
 
@@ -265,13 +267,13 @@ def handle_tus_hook():
             purpose = metadata.get('purpose', '')
             filename = metadata.get('filename', '')
 
-            if purpose not in ['velociraptor', 'timesketch', 'upgrade_package', 'agentic_external', 'case_import']:
+            if purpose not in ['velociraptor', 'timesketch', 'upgrade_package', 'agentic_external', 'case_import', 'memory']:
                 print(f"[TUS HOOK] Rejected: Invalid purpose '{purpose}'", flush=True)
                 return jsonify({
                     "RejectUpload": True,
                     "HTTPResponse": {
                         "StatusCode": 400,
-                        "Body": json.dumps({"error": "Invalid upload purpose. Must be 'velociraptor', 'timesketch', 'upgrade_package', 'agentic_external', or 'case_import'"})
+                        "Body": json.dumps({"error": "Invalid upload purpose. Must be 'velociraptor', 'timesketch', 'upgrade_package', 'agentic_external', 'case_import' or 'memory'"})
                     }
                 }), 200  # Return 200 but with RejectUpload flag
 
@@ -293,6 +295,21 @@ def handle_tus_hook():
                         "HTTPResponse": {
                             "StatusCode": 400,
                             "Body": json.dumps({"error": "Upgrade packages must be .tar.gz, .tgz or .tar files"})
+                        }
+                    }), 200
+            elif purpose == 'memory':
+                # A memory image, or the Velociraptor "Prepare Download" /
+                # offline-collector ZIP that carries one. Same list the Memory
+                # panel's file picker advertises, so a file the browser let the
+                # operator choose is never rejected here.
+                allowed_extensions = ['.raw', '.bin', '.mem', '.dmp', '.zip']
+                if not any(filename.lower().endswith(ext) for ext in allowed_extensions):
+                    print(f"[TUS HOOK] Rejected: not a memory image '{filename}'", flush=True)
+                    return jsonify({
+                        "RejectUpload": True,
+                        "HTTPResponse": {
+                            "StatusCode": 400,
+                            "Body": json.dumps({"error": f"Memory images must be one of: {', '.join(allowed_extensions)}"})
                         }
                     }), 200
             elif purpose == 'agentic_external':
@@ -339,6 +356,14 @@ def handle_tus_hook():
             if purpose == 'case_import':
                 workflow_type = 'case_import'
                 workflow_name = f"Import case: {filename}"
+            elif purpose == 'memory':
+                # NOT "memory_upload": the row has to BE a memory run. `memory`
+                # is what AGENTIC_TYPES makes a case member, what the fusion
+                # store dispatches to _memory_contribution, and what the restart
+                # reaper knows how to reap. A type of its own would upload
+                # perfectly and then contribute nothing to the case, silently.
+                workflow_type = 'memory'
+                workflow_name = f"Memory (upload) — {filename}"
             else:
                 workflow_type = f"{purpose}_upload"
                 workflow_name = f"Upload: {filename}"
@@ -599,6 +624,87 @@ def handle_tus_hook():
 
                 thread = threading.Thread(target=run_timesketch_processing, daemon=True)
                 thread.start()
+
+            elif purpose == 'memory':
+                # Hand the uploaded image to the same pipeline /api/memory/run
+                # uses. It must sit on the shared dumps volume: that volume IS
+                # VolWeb's media/staging, so the extraction workers can read it
+                # where it lands and no copy is made into VolWeb. tusd writes to
+                # its own volume, so this one move is unavoidable — it is logged
+                # as its own step rather than looking like a stall.
+                print(f"[TUS HOOK] Memory image uploaded: {original_filename}", flush=True)
+
+                def run_memory_upload():
+                    import shutil
+                    from services.memory import pipeline as memory_pipeline
+                    from services.memory.upload_extract import (
+                        UploadExtractError, extract_memory_from_upload,
+                    )
+                    staging = f"/data/memory_dumps/_uploads/{upload_id}"
+                    dest = os.path.join(staging, original_filename)
+                    try:
+                        os.makedirs(staging, exist_ok=True)
+                        add_log_to_run(run_id, f"staging {size_mb:.0f} MB onto the analysis volume…")
+                        t0 = time.time()
+                        shutil.move(file_path, dest)
+                        rate = size_mb / max(time.time() - t0, 0.001)
+                        add_log_to_run(run_id, f"staged at {dest} ({rate:.0f} MB/s)")
+                        update_run_status(run_id, "running", progress=15)
+
+                        raw_path = extract_memory_from_upload(
+                            dest, staging_dir=staging,
+                            logger=lambda m, level="info": add_log_to_run(run_id, m, level),
+                        )
+                        if raw_path != dest:
+                            try:
+                                os.remove(dest)      # the ZIP; we have the image
+                            except OSError:
+                                pass
+
+                        mode = (metadata.get('mode') or 'layered').strip().lower()
+                        bp_id = (metadata.get('blueprint_id') or '').strip()
+                        blueprint = None
+                        if bp_id:
+                            from services.storage.blueprint_store import get_blueprint
+                            blueprint = get_blueprint('memory', bp_id)
+                            if not blueprint:
+                                add_log_to_run(
+                                    run_id,
+                                    f"blueprint {bp_id!r} no longer exists — using the defaults",
+                                    "warning")
+                        keep = (metadata.get('keep_dump') or '').strip().lower() in ('1', 'true', 'yes', 'on')
+                        memory_pipeline.run_memory_pipeline(
+                            run_id=run_id,
+                            client_id="",
+                            client_name=(metadata.get('client_name') or '').strip() or None,
+                            mode=mode,
+                            case_name=(metadata.get('case_name') or '').strip() or None
+                                      or f"Memory {datetime.now().strftime('%Y-%m-%d')}",
+                            blueprint=blueprint,
+                            from_upload_path=raw_path,
+                            keep_dump=keep,
+                        )
+                    except UploadExtractError as ue:
+                        add_log_to_run(run_id, f"upload: extract failed — {ue}", "error")
+                        update_run_status(run_id, "failed", error=str(ue))
+                    except Exception as e:                       # noqa: BLE001
+                        traceback.print_exc()
+                        add_log_to_run(run_id, f"upload: pipeline failed — {e}", "error")
+                        update_run_status(run_id, "failed", error=str(e))
+                    finally:
+                        # The tus file is moved, not copied, so nothing is left
+                        # on the upload volume — but a failure before the move
+                        # would strand it there.
+                        try:
+                            if os.path.exists(file_path):
+                                os.remove(file_path)
+                        except OSError:
+                            pass
+
+                if not run_id:
+                    print("[TUS HOOK] memory upload has no run row — refusing", flush=True)
+                    return jsonify({"error": "no workflow run for this upload"}), 500
+                threading.Thread(target=run_memory_upload, daemon=True).start()
 
             elif purpose == 'agentic_external':
                 # External log file for agentic collection - no processing needed
