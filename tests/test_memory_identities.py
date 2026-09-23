@@ -91,6 +91,24 @@ class TestTheDefaultRunProducesIdentities(unittest.TestCase):
         blk = src[start:src.index("\n)", start)]
         self.assertIn("sessions.Sessions", blk)
 
+    def test_every_shipped_blueprint_that_runs_plugins_collects_it(self):
+        """CURATED_PLUGINS is only the FALLBACK — a blueprint with its own
+        plugin_set overrides it entirely, and every run from the UI picks one.
+        Adding it to the curated set alone changed nothing: a real run after
+        that still queued 11 plugins and produced no identities."""
+        import yaml
+        with open(os.path.join(ROOT, "modules/backend/config/default_blueprints.yaml"),
+                  encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh)
+        missing = []
+        for bp in doc.get("memory", []):
+            ps = (bp.get("settings") or {}).get("plugin_set") or []
+            if not ps or ps == ["*"]:
+                continue                       # yara-only, or everything already
+            if not any("sessions" in p.lower() for p in ps):
+                missing.append(bp["id"])
+        self.assertEqual(missing, [], f"these ship without identity data: {missing}")
+
     def test_it_is_in_the_catalog_volweb_can_actually_run(self):
         """A plugin VolWeb does not register silently produces nothing."""
         src = _read("modules/backend/services/memory/defaults.py")

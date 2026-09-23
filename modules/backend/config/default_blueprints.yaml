@@ -463,11 +463,12 @@ memory:
 
   - id: memory_layered_default
     name: "Memory Analysis: Curated standard (recommended)"
-    description: "11-plugin curated set covering process discovery, persistence, network, and registry — the empirically-validated sweet spot from the PoC. Excludes HollowProcesses (12+ min on a 5 GB dump)."
+    description: "12-plugin curated set covering who was logged on, process discovery, persistence, network, and registry — the empirically-validated sweet spot from the PoC. Excludes HollowProcesses (12+ min on a 5 GB dump)."
     is_default: true
     settings:
       mode: plugin
       plugin_set:
+        - volatility3.plugins.windows.sessions.Sessions
         - volatility3.plugins.windows.pslist.PsList
         - volatility3.plugins.windows.psscan.PsScan
         - volatility3.plugins.windows.pstree.PsTree
@@ -509,6 +510,7 @@ memory:
     settings:
       mode: plugin
       plugin_set:
+        - volatility3.plugins.windows.sessions.Sessions
         - volatility3.plugins.windows.pslist.PsList
         - volatility3.plugins.windows.cmdline.CmdLine
         - volatility3.plugins.windows.malfind.Malfind
@@ -557,6 +559,7 @@ memory:
     settings:
       mode: plugin
       plugin_set:
+        - volatility3.plugins.windows.sessions.Sessions
         - volatility3.plugins.windows.pslist.PsList
         - volatility3.plugins.windows.psscan.PsScan
         - volatility3.plugins.windows.pstree.PsTree
@@ -581,6 +584,7 @@ memory:
     settings:
       mode: plugin
       plugin_set:
+        - volatility3.plugins.windows.sessions.Sessions
         - volatility3.plugins.windows.svcscan.SvcScan
         - volatility3.plugins.windows.mutantscan.MutantScan
         - volatility3.plugins.windows.modules.Modules
@@ -604,6 +608,7 @@ memory:
     settings:
       mode: plugin
       plugin_set:
+        - volatility3.plugins.windows.sessions.Sessions
         - volatility3.plugins.windows.netscan.NetScan
         - volatility3.plugins.windows.netstat.NetStat
         - volatility3.plugins.windows.pslist.PsList
@@ -624,6 +629,7 @@ memory:
     settings:
       mode: plugin
       plugin_set:
+        - volatility3.plugins.windows.sessions.Sessions
         - volatility3.plugins.windows.registry.hashdump.Hashdump
         - volatility3.plugins.windows.cachedump.Cachedump
         - volatility3.plugins.windows.registry.lsadump.Lsadump
