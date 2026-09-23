@@ -155,6 +155,9 @@ cmd_fetch() {
             [[ -f "$fmap" ]] && grep -v -P "^\Q${tool}\E\t" "$fmap" > "$ftmp" 2>/dev/null
             printf '%s\t%s\n' "$tool" "$fname" >> "$ftmp"
             mv "$ftmp" "$fmap"
+            # mktemp makes it 600; the folder is carried between machines and
+            # often read by another user at the far end.
+            chmod 644 "$fmap" 2>/dev/null || true
             # An artifact may pin the tool's sha256. Downloading "the latest"
             # of a pinned tool gives a file the endpoint will refuse, and the
             # refusal happens at collection time, at the customer site.
@@ -163,6 +166,13 @@ cmd_fetch() {
                 if [[ "$got_sha" != "$want_sha" ]]; then
                     err "hash mismatch for ${tool}: the artifact expects ${want_sha}, this download is ${got_sha}"
                     err "  the URL now serves a different version — get the pinned one, or update the artifact"
+                    # DO NOT CARRY A FILE THE ENDPOINT WILL REFUSE. The rejected
+                    # download and its map line used to stay in the folder, so the
+                    # operator carried it to the site and `import` failed there.
+                    rm -f "${out}/${fname}"
+                    local rtmp; rtmp="$(mktemp)" || return 1
+                    grep -v -P "^\Q${tool}\E\t" "${out}/${MAP_NAME}" > "$rtmp" 2>/dev/null
+                    mv "$rtmp" "${out}/${MAP_NAME}"
                     failed=$((failed + 1))
                     continue
                 fi

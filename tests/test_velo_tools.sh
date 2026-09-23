@@ -295,6 +295,28 @@ test_fetch_accepts_a_process_substitution() {
     assert_contains "$out" "1 downloaded" "and fetches what it lists"
 }
 
+test_fetch_does_not_carry_a_download_that_failed_its_hash() {
+    # Live: ESET's "latest" URL serves a newer build than the artifact pins. The
+    # rejected file AND its map line stayed in the carry folder, so the operator
+    # took to the site a file the endpoint would refuse.
+    local root; root="$(_fake)"
+    printf 'Good\thttps://example.test/good.zip\t\tA\nPinned\thttps://example.test/pinned.zip\tdeadbeef\tB\n' > "${root}/list.tsv"
+    _curl_logging "$root"
+    _run "$root" fetch "${root}/list.tsv" --out "${root}/carry" >/dev/null
+    assert_ne "$?" "0" "reports the failure"
+    assert_false test -f "${root}/carry/pinned.zip"
+    assert_not_contains "$(cat "${root}/carry/velo_tools.map")" "Pinned" "and no map line for it"
+    assert_contains "$(cat "${root}/carry/velo_tools.map")" "Good" "the good one is still carried"
+}
+
+test_the_carried_map_is_readable_by_the_far_end() {
+    local root; root="$(_fake)"
+    printf 'Good\thttps://example.test/good.zip\t\tA\n' > "${root}/list.tsv"
+    _curl_logging "$root"
+    _run "$root" fetch "${root}/list.tsv" --out "${root}/carry" >/dev/null
+    assert_eq "$(stat -c '%a' "${root}/carry/velo_tools.map")" "644" "not mktemp's 600"
+}
+
 test_fetch_refuses_a_list_that_matched_nothing() {
     # Live: the page's own example filter matched nothing on a box that already
     # held both tools, and fetch still said "carry <dir> to the appliance".
