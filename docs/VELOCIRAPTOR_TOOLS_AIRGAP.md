@@ -107,7 +107,9 @@ says to use `add`.)
 
 Registrations are recorded in `data/tools/velo_tools.map`, which
 `sudo bash scripts/upgrade.sh --velo-refresh` replays, so a tool of your own
-survives an upgrade under its name.
+survives an upgrade under its name. That replay adds and re-registers only:
+measured on a live appliance, a lost custom tool came back with its hash while
+the other 89 tools and all 843 artifacts were untouched.
 
 ## Hashes: why an add can be refused
 
@@ -211,13 +213,17 @@ it straight back. Judge the result by the `hash` field of `inventory()`, not by
 ## What has been verified
 
 Every command here was run on a live appliance: `list`, `status`, `install` (one
-name, several names, and a re-run that downloads nothing), `add`, `add --force`,
-`import` with a map, without a map and with a stale map, `fetch` (including twice
-into the same folder), the refusals (no public URL, pinned-hash mismatch, invalid
-name), `selftest`, removal (`tools rm` + restart) and the `--velo-refresh` tool
-replay. A registered tool was downloaded back over its endpoint-facing URL and the
-sha256 matched.
+name, several names, and a re-run that downloads nothing), `add` (including a
+custom collector and a vendor installer), `import` with a map, without a map, with
+a stale map and over `data/tools`, `fetch` (twice into one folder, and against a
+filter that matched nothing), the refusals (no public URL, pinned-hash mismatch),
+`selftest`, `test --tool` against an offline endpoint, the bulk downloader,
+removal (`tools rm` + restart) and `sudo bash scripts/upgrade.sh --velo-refresh`.
+A registered tool was downloaded back over its endpoint-facing URL and the sha256
+matched, and the refresh put a lost custom tool back without touching anything
+else.
 
-Not yet proven: an **endpoint** downloading a tool (no client was enrolled, so
-`selftest` reports that step as SKIP), a full optional-tier bulk download, and
-`fetch` run on a separate laptop rather than on the appliance.
+Not yet proven: an **endpoint** downloading a tool — every client enrolled on the
+test box came from an imported dataset and was last seen days ago, so that step is
+a SKIP; a full optional-tier bulk download; and `fetch` run on a separate laptop
+rather than on the appliance.
