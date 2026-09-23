@@ -72,7 +72,7 @@ _velo_refresh_artifacts() {
     local present tmp
     tmp="$(mktemp)"
 
-    velo_vql 'SELECT name FROM artifact_definitions()' \
+    velo_vql_api 'SELECT name FROM artifact_definitions()' \
         | python3 -c "
 import json,sys
 for l in sys.stdin:
@@ -104,7 +104,7 @@ for l in sys.stdin:
             # literal are [A-Za-z0-9+/=]. No shell escaping, no VQL escaping,
             # and the whole query is one argv element to docker exec.
             b64="$(base64 -w0 < "$f")"
-            if velo_vql "SELECT artifact_set(definition=base64decode(string='${b64}')) AS r FROM scope()" \
+            if velo_vql_api "SELECT artifact_set(definition=base64decode(string='${b64}')) AS r FROM scope()" \
                  | grep -q '"r"'; then
                 imported=$((imported + 1))
             else
@@ -204,7 +204,7 @@ PY
             unnamed_list+="${unnamed_list:+, }${base}"
             continue
         fi
-        if velo_vql "SELECT inventory_add(tool='${tool}', serve_locally=TRUE, file='/tools/${base}', filename='${base}', accessor='file') AS r FROM scope()" \
+        if velo_vql_api "SELECT inventory_add(tool='${tool}', serve_locally=TRUE, file='/tools/${base}', filename='${base}', accessor='file') AS r FROM scope()" \
              | grep -q '"r"'; then
             registered=$((registered + 1))
         else

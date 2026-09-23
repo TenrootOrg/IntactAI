@@ -381,7 +381,8 @@ _run_refresh() {  # _run_refresh <root>; prints the VQL it would send
       SCRIPT_DIR="$root"
       log_info()  { echo "INFO $*"; }
       log_warn()  { echo "WARN $*"; }
-      velo_vql()  { echo "VQL $1" >> "${root}/vql"; echo '{"r":{}}'; }
+      velo_vql()      { echo "VQL $1" >> "${root}/vql"; echo '{"r":{}}'; }
+      velo_vql_api()  { echo "VQL $1" >> "${root}/vql"; echo '{"r":{}}'; }
       source "${REPO}/lib/upgrade/velo_refresh.sh" >/dev/null 2>&1
       _velo_refresh_tools "" )
 }
@@ -400,6 +401,25 @@ test_refresh_names_tools_from_the_map_and_the_shipped_patterns() {
     assert_contains "$vql" "tool='InHouseCollector'" "operator's own tool from the map"
     assert_not_contains "$vql" "tool='autorunsc64.exe'" "never registers a file name as a tool"
     assert_contains "$out" "3 registered by name" "counts what it did"
+}
+
+test_refresh_registers_against_the_running_server_not_a_second_copy() {
+    # `query --config server.config.yaml` starts a NEW local Velociraptor whose
+    # writes the running server discards. Live: the refresh said "37 tools
+    # registered by name" and registered none — a custom tool added by the
+    # operator was gone after the refresh that is meant to replay it.
+    local root; root="$(_refresh_root)"
+    echo c > "${root}/data/tools/inhouse_collector.exe"
+    printf 'InHouseCollector\tinhouse_collector.exe\n' > "${root}/data/tools/velo_tools.map"
+    ( set +u
+      SCRIPT_DIR="$root"
+      log_info() { :; }; log_warn() { :; }
+      velo_vql()     { echo "CONFIG $1" >> "${root}/calls"; echo '{"r":{}}'; }
+      velo_vql_api() { echo "API $1"    >> "${root}/calls"; echo '{"r":{}}'; }
+      source "${REPO}/lib/upgrade/velo_refresh.sh" >/dev/null 2>&1
+      _velo_refresh_tools "" ) >/dev/null
+    assert_contains "$(grep inventory_add "${root}/calls")" "API " "registers through the running server"
+    assert_not_contains "$(grep inventory_add "${root}/calls")" "CONFIG " "never through a second local copy"
 }
 
 test_refresh_reports_a_file_it_cannot_name_instead_of_inventing_one() {

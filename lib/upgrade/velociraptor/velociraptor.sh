@@ -33,6 +33,29 @@ velo_vql() {
         query "$1" --format jsonl 2>/dev/null
 }
 
+# THE RUNNING SERVER, not a second copy of it.
+#
+# `query --config server.config.yaml` starts a NEW local Velociraptor process:
+# it reads the datastore directly, sees only the built-in artifacts (not the
+# ~400 loaded via --definitions), and anything it WRITES — inventory_add,
+# artifact_set — is discarded when the running server writes its own in-memory
+# copy back. Measured on this appliance: --velo-refresh reported "37 tools
+# registered by name" and registered none of them; a custom tool added by the
+# operator was gone after the refresh that is supposed to replay it.
+#
+# So every call that must reach the live server goes through the API config.
+# Falls back to velo_vql on an older container that has no api.config.yaml.
+velo_vql_api() {
+    if "${DOCKER_BIN:-docker}" exec intact_velociraptor \
+            test -f /velociraptor/api.config.yaml 2>/dev/null; then
+        "${DOCKER_BIN:-docker}" exec intact_velociraptor \
+            /velociraptor/velociraptor --api_config /velociraptor/api.config.yaml \
+            query "$1" --format jsonl 2>/dev/null
+    else
+        velo_vql "$1"
+    fi
+}
+
 velo_vql_ready() {
     local timeout="${1:-120}" i
     for (( i = 0; i < timeout; i += 5 )); do
