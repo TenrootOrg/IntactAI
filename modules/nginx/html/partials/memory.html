@@ -303,23 +303,6 @@
                             <em>Prepare Download</em> / offline-collector ZIP. We'll detect the
                             <code class="text-indigo-300">PhysicalMemory</code> file inside the ZIP automatically.
                         </p>
-                        <!-- Which machine this image came from. Without it the
-                             fuse has nothing to identify the host by, and the
-                             findings land on a "host" named after the run
-                             instead of merging with that endpoint's other
-                             evidence. Optional, because a carried-in image
-                             whose origin nobody knows is still worth analysing. -->
-                        <div class="mb-3">
-                            <label class="block text-sm font-medium text-gray-300 mb-1">Host name</label>
-                            <input type="text" x-model="$store.memory.uploadHost"
-                                   placeholder="DESKTOP-566AT85 — the machine this image was taken from"
-                                   class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none">
-                            <p class="text-xs text-gray-500 mt-1">
-                                Type the endpoint's name and these findings join that host's other evidence in the
-                                case. Leave it blank and the file name is used instead.
-                            </p>
-                        </div>
-
                         <div class="flex items-center gap-3 bg-gray-900 border border-dashed border-gray-600 rounded px-4 py-4">
                             <input type="file"
                                    accept=".raw,.bin,.mem,.dmp,.zip"
@@ -330,7 +313,11 @@
                         </div>
 
                         <p class="text-xs text-gray-500 mt-3">
-Resumable — it survives a dropped connection or a page refresh. The run opens in
+                            The host is read out of the image itself, so these findings join that endpoint's
+                            other evidence in the case — nothing to type.
+                        </p>
+                        <p class="text-xs text-gray-500 mt-2">
+                            Resumable — it survives a dropped connection or a page refresh. The run opens in
                             <span class="text-gray-400">Workflows</span> before the first byte lands, and everything
                             after that — progress, logs, failures — happens there.
                         </p>

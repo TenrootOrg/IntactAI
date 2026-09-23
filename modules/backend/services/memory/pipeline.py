@@ -1013,8 +1013,8 @@ def run_memory_pipeline(
                 # and removed: it put a label somebody typed where a hostname
                 # belongs, and merged nothing.
                 log("pipeline: the image does not name its host (no COMPUTERNAME "
-                    "in envars) — these findings will not merge with an endpoint's "
-                    "other evidence. Set the host on the Upload tab to fix that.",
+                    "in envars) — these findings stay on their own asset instead "
+                    "of merging with an endpoint's other evidence.",
                     "warning")
 
         # ----------------------------------------------------------------

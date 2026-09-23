@@ -79,7 +79,6 @@ document.addEventListener('alpine:init', () => {
         // Offline upload state
         // --------------------------------------------------------------
         uploadFile: null,            // File object selected via input
-        uploadHost: '',              // which endpoint the image came from
         uploading: false,            // double-submit guard only — there is no
                                      // upload UI on this page by design: the
                                      // run row owns progress, logs and the
@@ -340,7 +339,6 @@ document.addEventListener('alpine:init', () => {
                 // operator's choices are on screen. The hook reads them back at
                 // post-finish; nothing has to be remembered in the browser.
                 metadata: {
-                    client_name: (this.uploadHost || '').trim(),
                     mode: this.derivedMode(),
                     blueprint_id: this.blueprintId || '',
                     case_name: this.caseName || ('Volatile Memory ' + new Date().toISOString().split('T')[0]),
@@ -371,7 +369,6 @@ document.addEventListener('alpine:init', () => {
             // the tusd hook before the first chunk lands, and carries the
             // progress, the log and the terminal state.
             this.uploadFile = null;
-            this.uploadHost = '';
             if (Alpine.store('workflows')?.refresh) Alpine.store('workflows').refresh();
             if (Alpine.store('app')?.switchTab) Alpine.store('app').switchTab('workflows');
         },
