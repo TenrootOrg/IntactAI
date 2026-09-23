@@ -96,7 +96,7 @@ class TestTheUploadedImageReachesThePipeline(unittest.TestCase):
     def test_it_refuses_to_run_without_a_workflow_row(self):
         """Silently analysing with nowhere to report is worse than not running:
         the operator would watch Workflows for a row that never appears."""
-        tail = self.SRC[self.SRC.index("def run_memory_upload"):][:4000]
+        tail = self.SRC[self.SRC.index("def run_memory_upload"):][:6500]
         self.assertIn("if not run_id:", tail)
 
     def test_the_tus_file_is_not_left_on_the_upload_volume(self):
@@ -149,6 +149,78 @@ class TestTheDirectApiRouteStillFitsAMemoryImage(unittest.TestCase):
         """Lifting it for everything would make every other endpoint an
         unbounded ingestion point."""
         self.assertIn("client_max_body_size 500M;", self.CONF)
+
+
+
+
+class TestStoppingAnUploadActuallyStopsTheWork(unittest.TestCase):
+    """tus knows nothing about workflows. Pressing Stop marks the run
+    cancelled, the browser keeps sending chunks, and post-finish arrives
+    minutes later -- so an upload that was stopped 28 seconds in still staged
+    1.5 GB onto the dumps volume and registered VolWeb evidence for a run that
+    was already over. Measured, with the gigabytes left behind."""
+
+    SRC = _read("modules/backend/routes/upload_routes.py")
+
+    def test_there_is_a_stopped_check(self):
+        self.assertIn("def _run_was_stopped(", self.SRC)
+
+    def test_it_reads_the_row_not_the_cancel_event(self):
+        """request_stop() pops the in-memory cancel registry as it fires, so by
+        post-finish there is nothing left to ask -- the row is the only truth."""
+        blk = self.SRC[self.SRC.index("def _run_was_stopped("):][:900]
+        self.assertIn("get_workflow(run_id)", blk)
+        for state in ("cancelled", "stopped", "failed"):
+            self.assertIn(state, blk)
+
+    def test_a_stopped_run_is_never_staged_or_dispatched(self):
+        # Anchored on the dispatch, not on `elif purpose == 'memory'` — that
+        # appears twice (pre-create validation, then post-finish dispatch).
+        blk = self.SRC[self.SRC.index("memory upload has no run row"):][:1600]
+        self.assertIn("if _run_was_stopped(run_id):", blk)
+        self.assertLess(blk.index("if _run_was_stopped(run_id):"),
+                        blk.index("threading.Thread(target=run_memory_upload"),
+                        "the check must come BEFORE the work is dispatched")
+
+    def test_the_operator_is_told_the_upload_was_thrown_away(self):
+        """add_log_to_run drops writes to a cancelled run as post-stop
+        residue. This one is not residue, it is the outcome: without force
+        the run's last word is "Stop requested by user" and nothing says that
+        gigabytes finished uploading and were discarded."""
+        blk = self.SRC[self.SRC.index("memory upload has no run row"):][:1600]
+        self.assertIn('force=True', blk)
+
+    def test_the_discarded_image_is_removed(self):
+        blk = self.SRC[self.SRC.index("memory upload has no run row"):][:1600]
+        self.assertIn("os.remove(file_path)", blk)
+
+    def test_a_stop_during_staging_is_caught_too(self):
+        """Staging a multi-GB image takes long enough for a Stop to land in the
+        middle of it, and the pipeline would not notice: the cancel event it
+        registers is a fresh one, never set."""
+        blk = self.SRC[self.SRC.index("def run_memory_upload"):][:6000]
+        self.assertIn("if _run_was_stopped(run_id):", blk)
+        self.assertLess(blk.index("if _run_was_stopped(run_id):"),
+                        blk.index("memory_pipeline.run_memory_pipeline("))
+
+
+class TestTheRowMovesWhileBytesArrive(unittest.TestCase):
+    """The bar and the log were updated together, only at 10% boundaries, so a
+    multi-GB upload sat frozen at "2%" for minutes and read as a hung run --
+    which is exactly when an operator stops an upload that is working fine."""
+
+    SRC = _read("modules/backend/routes/upload_routes.py")
+    BLK = SRC[SRC.index("elif event_type == 'post-receive':"):][:2200]
+
+    def test_progress_is_written_for_every_chunk(self):
+        prog = self.BLK.index('update_run_status(run_id, "running", progress=int(percentage / 10))')
+        gate = self.BLK.index("if should_log or percentage >= 99:")
+        self.assertLess(prog, gate, "the bar is still gated behind the log interval")
+
+    def test_the_log_is_still_rate_limited(self):
+        """Moving the bar per chunk must not mean a log line per chunk."""
+        blk = self.BLK[self.BLK.index("if should_log or percentage >= 99:"):][:300]
+        self.assertIn("add_log_to_run", blk)
 
 
 if __name__ == "__main__":

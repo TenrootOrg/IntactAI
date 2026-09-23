@@ -52,6 +52,23 @@ def _resolve_upload_run(upload_id, *, pop=False):
     return None
 
 
+def _run_was_stopped(run_id):
+    """Did the operator stop this run while its upload was still going?
+
+    tus knows nothing about our workflows: pressing Stop marks the run
+    cancelled but the browser carries on sending chunks, so post-finish can
+    arrive minutes later for a run that is already over. Read the row rather
+    than the in-memory cancel event -- request_stop() pops that registry as
+    soon as it fires, so by the time we get here it is gone.
+    """
+    try:
+        from services.file_storage_service import get_workflow
+        status = ((get_workflow(run_id) or {}).get("status") or "").lower()
+        return status in ("cancelled", "canceled", "stopped", "failed")
+    except Exception:                       # noqa: BLE001 — never block an upload
+        return False
+
+
 def decode_tus_metadata(metadata_str):
     """Decode tus metadata from base64-encoded key-value pairs
 
@@ -464,11 +481,15 @@ def handle_tus_hook():
                     (offset_mb > 50 and int(offset_mb / 50) > int((offset_mb - 5) / 50))  # Every 50MB
                 )
 
+                # The BAR moves on every chunk, the LOG only every 10%. These
+                # were tied together, so a multi-GB upload sat frozen at "2%"
+                # for minutes between log lines and read as a hung run -- which
+                # is exactly when an operator presses Stop on an upload that
+                # was working perfectly. Writing progress per chunk is ~1 write
+                # per 32 MB, which is nothing.
+                update_run_status(run_id, "running", progress=int(percentage / 10))
                 if should_log or percentage >= 99:
                     add_log_to_run(run_id, f"Uploading: {percentage:.0f}% ({offset_mb:.1f} / {total_mb:.1f} MB)")
-                    # Update progress (upload is 0-10% of total workflow)
-                    workflow_progress = int(percentage / 10)  # 0-10%
-                    update_run_status(run_id, "running", progress=workflow_progress)
 
                 print(f"[TUS HOOK] Progress: {upload_id} - {percentage:.1f}%", flush=True)
 
@@ -673,6 +694,22 @@ def handle_tus_hook():
                                     f"blueprint {bp_id!r} no longer exists — using the defaults",
                                     "warning")
                         keep = (metadata.get('keep_dump') or '').strip().lower() in ('1', 'true', 'yes', 'on')
+                        # Staging a multi-GB image takes long enough for a Stop
+                        # to land in the middle of it. The pipeline would not
+                        # notice: request_stop() pops the cancel event, so the
+                        # fresh one the pipeline registers is not set and it
+                        # would run to completion against a cancelled row.
+                        if _run_was_stopped(run_id):
+                            add_log_to_run(run_id,
+                                           "Stopped while the image was being staged — "
+                                           "discarding it and analysing nothing.",
+                                           "warning", force=True)
+                            try:
+                                os.remove(raw_path)
+                                os.rmdir(staging)
+                            except OSError:
+                                pass
+                            return
                         memory_pipeline.run_memory_pipeline(
                             run_id=run_id,
                             client_id="",
@@ -704,6 +741,29 @@ def handle_tus_hook():
                 if not run_id:
                     print("[TUS HOOK] memory upload has no run row — refusing", flush=True)
                     return jsonify({"error": "no workflow run for this upload"}), 500
+
+                # Stopping a run does NOT stop tus: the browser keeps sending
+                # chunks and this hook still fires, minutes later. Staging the
+                # image and registering VolWeb evidence for a run the operator
+                # already cancelled is work nobody asked for, and it leaves the
+                # gigabytes behind. Check before spending any of it.
+                if _run_was_stopped(run_id):
+                    try:
+                        os.remove(file_path)
+                    except OSError:
+                        pass
+                    # force=True: this is not post-cancel residue, it is the
+                    # OUTCOME. Without it the run's last word is "Stop
+                    # requested by user" and nothing says that gigabytes
+                    # finished uploading and were thrown away.
+                    add_log_to_run(
+                        run_id,
+                        f"Upload finished after the run was stopped — the {size_mb:.0f} MB "
+                        f"image was discarded and nothing was analysed.",
+                        "warning", force=True)
+                    print(f"[TUS HOOK] {run_id} was stopped — discarded the upload", flush=True)
+                    return jsonify({"ok": True})
+
                 threading.Thread(target=run_memory_upload, daemon=True).start()
 
             elif purpose == 'agentic_external':
