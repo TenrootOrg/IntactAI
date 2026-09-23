@@ -1,4 +1,5 @@
-            <div x-show="$store.app.currentTab === 'modules-memory'" data-automation-tab="modules-memory" x-transition class="tab-panel">
+            <div x-show="$store.app.currentTab === 'modules-memory'" data-automation-tab="modules-memory" x-transition class="tab-panel"
+                 x-data="{ memoryTab: 'acquire' }">
                 <div class="flex items-center justify-between mb-2">
                     <h2 class="text-3xl font-bold text-white">Volatile Memory</h2>
                 </div>
@@ -55,8 +56,42 @@
                         and extract findings. The findings feed the case for analysis.
                     </p>
 
-                    <!-- Card 1 — Blueprint + YARA toggle + Investigation name -->
-                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
+                    <!-- Four ways to get memory into the case. They were stacked
+                         down one page with "OR" dividers, which made the panel a
+                         long scroll where the option you wanted was rarely the one
+                         on screen. Same tab pattern as the Velociraptor panel. -->
+                    <div class="flex gap-1 border-b border-gray-700 mb-6">
+                        <button @click="memoryTab = 'acquire'"
+                            :class="memoryTab === 'acquire' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-gray-400 hover:text-gray-300'"
+                            class="px-4 py-2 text-sm font-medium -mb-px whitespace-nowrap">
+                            Acquire from endpoint
+                        </button>
+                        <button @click="memoryTab = 'reuse'; $store.memory.loadDumps()"
+                            :class="memoryTab === 'reuse' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-gray-400 hover:text-gray-300'"
+                            class="px-4 py-2 text-sm font-medium -mb-px whitespace-nowrap">
+                            Use a kept image
+                            <span x-show="$store.memory.dumps.length"
+                                  class="ml-1 text-[10px] bg-gray-700 text-gray-300 rounded px-1.5 py-0.5"
+                                  x-text="$store.memory.dumps.length"></span>
+                        </button>
+                        <button @click="memoryTab = 'upload'"
+                            :class="memoryTab === 'upload' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-gray-400 hover:text-gray-300'"
+                            class="px-4 py-2 text-sm font-medium -mb-px whitespace-nowrap">
+                            Upload a dump
+                        </button>
+                        <button @click="memoryTab = 'adopt'"
+                            :class="memoryTab === 'adopt' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-gray-400 hover:text-gray-300'"
+                            class="px-4 py-2 text-sm font-medium -mb-px whitespace-nowrap">
+                            Pull from another case
+                        </button>
+                    </div>
+
+                    <!-- Card 1 — Blueprint + YARA toggle + Investigation name.
+                         Shared by the three tabs that actually run an analysis;
+                         "Pull from another case" copies finished findings and runs
+                         nothing, so none of it applies there. -->
+                    <div x-show="memoryTab !== 'adopt'"
+                         class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
                         <label class="block text-sm font-medium text-gray-300 mb-2">Blueprint</label>
                         <select x-model="$store.memory.blueprintId"
                                 class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none">
@@ -102,7 +137,18 @@
                              the file lives and that only ONE copy is kept,
                              because the obvious worry is storing the same
                              memory twice (fs + Velociraptor). -->
-                        <div class="mt-4 pt-4 border-t border-gray-700">
+                        <!-- Not offered on the "use a kept image" tab: re-analysing
+                             an image the operator deliberately kept always keeps it
+                             (the server forces it), so a checkbox there would be a
+                             lie. Say so instead. -->
+                        <div x-show="memoryTab === 'reuse'" class="mt-4 pt-4 border-t border-gray-700">
+                            <div class="text-xs text-gray-500">
+                                The image you pick stays on the appliance after this run — re-analysing one never
+                                consumes it.
+                            </div>
+                        </div>
+
+                        <div x-show="memoryTab !== 'reuse'" class="mt-4 pt-4 border-t border-gray-700">
                             <label class="flex items-center gap-3 cursor-pointer">
                                 <input type="checkbox" x-model="$store.memory.keepDump"
                                        class="w-4 h-4 rounded border-gray-600 bg-gray-900 text-purple-600 focus:ring-purple-500">
@@ -165,8 +211,9 @@
                         </div>
                     </div>
 
+                    <!-- ==================== ACQUIRE TAB ==================== -->
                     <!-- Card 2 — Target client picker (Timesketch-style markup) -->
-                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
+                    <div x-show="memoryTab === 'acquire'" class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
                         <div class="flex items-center justify-between mb-2">
                             <label class="block text-sm font-medium text-gray-300">Select Client for Acquisition</label>
                             <button type="button" onclick="window.memoryClientManager ? window.memoryClientManager.refresh(this) : Alpine.store('memory').refreshClients()"
@@ -186,7 +233,7 @@
                     </div>
 
                     <!-- Dispatch (live acquire) -->
-                    <div class="flex items-center justify-end gap-3 mb-6">
+                    <div x-show="memoryTab === 'acquire'" class="flex items-center justify-end gap-3 mb-6">
                         <span x-show="$store.memory.lastStatus" class="text-xs text-gray-400" x-text="$store.memory.lastStatus"></span>
                         <button @click="$store.memory.startRun()"
                                 :disabled="!$store.memory.selectedClient || $store.memory.dispatching"
@@ -196,19 +243,11 @@
                         </button>
                     </div>
 
-                    <!-- ──────────────────────────────────────────────────
-                         OR — re-use an image the appliance already holds.
-                         The dumps volume is shared, not per-case, so a dump
+                    <!-- ==================== KEPT IMAGE TAB ====================
+                         The dumps volume is shared, not per-case, so an image
                          kept by ANY case shows up here — that is also the
-                         "import a memory image from another case" path.
-                         ────────────────────────────────────────────────── -->
-                    <div class="flex items-center gap-3 my-2 text-xs text-gray-500">
-                        <div class="flex-1 h-px bg-gray-700"></div>
-                        <span>OR — use a dump already on the appliance</span>
-                        <div class="flex-1 h-px bg-gray-700"></div>
-                    </div>
-
-                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
+                         "import a memory image from another case" path. -->
+                    <div x-show="memoryTab === 'reuse'" class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
                         <div class="flex items-center justify-between mb-2">
                             <div>
                                 <label class="block text-sm font-medium text-gray-300">Kept memory images</label>
@@ -254,16 +293,8 @@
                         </div>
                     </div>
 
-                    <!-- ──────────────────────────────────────────────────
-                         OR — Upload an already-acquired dump (offline path)
-                         ────────────────────────────────────────────────── -->
-                    <div class="flex items-center gap-3 my-2 text-xs text-gray-500">
-                        <div class="flex-1 h-px bg-gray-700"></div>
-                        <span>OR — upload an already-acquired dump</span>
-                        <div class="flex-1 h-px bg-gray-700"></div>
-                    </div>
-
-                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
+                    <!-- ==================== UPLOAD TAB ==================== -->
+                    <div x-show="memoryTab === 'upload'" class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
                         <label class="block text-sm font-medium text-gray-300 mb-1">Memory dump file</label>
                         <p class="text-xs text-gray-500 mb-3">
                             Accepts a raw memory image (<code class="text-indigo-300">.raw</code>,
@@ -305,20 +336,12 @@
                         </div>
                     </div>
 
-                    <!-- ──────────────────────────────────────────────────
-                         OR — pull another case's memory findings by id.
-                         Mirrors the Velociraptor tab's "Add by ID", but
-                         copies the findings snapshot rather than re-reading
-                         from a server: VolWeb does not keep the YARA results
-                         once the image is reclaimed.
-                         ────────────────────────────────────────────────── -->
-                    <div class="flex items-center gap-3 my-2 text-xs text-gray-500">
-                        <div class="flex-1 h-px bg-gray-700"></div>
-                        <span>OR — pull memory findings from another case</span>
-                        <div class="flex-1 h-px bg-gray-700"></div>
-                    </div>
-
-                    <div class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
+                    <!-- ==================== PULL-BY-ID TAB ====================
+                         Mirrors the Velociraptor tab's "Add by ID", but copies
+                         the findings snapshot rather than re-reading from a
+                         server: VolWeb does not keep the YARA results once the
+                         image is reclaimed. -->
+                    <div x-show="memoryTab === 'adopt'" class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
                         <p class="text-xs text-gray-500 mb-3">
                             Copy a memory run's findings — the Volatility plugin rows and YARA hits that feed the
                             analysis — into this case, without re-running anything. The memory image and the VolWeb

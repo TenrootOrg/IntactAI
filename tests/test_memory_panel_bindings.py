@@ -51,6 +51,41 @@ class TestThePanelOnlyBindsWhatTheStoreHas(unittest.TestCase):
             self.assertIn(f"$store.memory.{name}", self.panel, f"{name} is not used by the panel")
 
 
+class TestEveryTabHasSomethingBehindIt(unittest.TestCase):
+    """The four ways of getting memory into a case are tabs now. A tab name
+    typo'd in one place and not the other renders an EMPTY tab — the button
+    highlights, nothing appears, and nothing errors."""
+
+    TABS = {"acquire", "reuse", "upload", "adopt"}
+
+    def setUp(self):
+        self.panel = _read(PANEL)
+        self.buttons = set(re.findall(r"memoryTab = '(\w+)'", self.panel))
+        self.panels = set(re.findall(r"memoryTab (?:===|!==) '(\w+)'", self.panel))
+
+    def test_the_expected_four_tabs_exist(self):
+        self.assertEqual(self.buttons, self.TABS)
+
+    def test_no_button_leads_nowhere(self):
+        self.assertEqual(self.buttons - self.panels, set())
+
+    def test_no_panel_is_unreachable(self):
+        self.assertEqual(self.panels - self.buttons, set())
+
+    def test_the_panel_declares_the_tab_state(self):
+        self.assertIn("x-data=\"{ memoryTab: 'acquire' }\"", self.panel)
+
+    def test_the_dividers_are_gone(self):
+        """They were the thing being replaced; leaving one behind means a
+        section escaped the restructure and renders on every tab."""
+        self.assertNotIn("OR —", self.panel)
+
+    def test_the_shared_settings_card_is_hidden_where_it_does_not_apply(self):
+        """Pull-from-another-case copies finished findings and runs nothing, so
+        blueprint/YARA/timeouts would be a form that does nothing."""
+        self.assertIn("memoryTab !== 'adopt'", self.panel)
+
+
 class TestTheCacheChainWasBumped(unittest.TestCase):
     """memory.html is loaded by the partial loader and memory.js by index.html,
     each behind a hand-written ?v=. Ship a change without bumping them and the
@@ -65,8 +100,8 @@ class TestTheCacheChainWasBumped(unittest.TestCase):
         memory_v = int(re.search(r"js/memory\.js\?v=(\d+)", index).group(1))
         # The values themselves are arbitrary; what matters is that this file
         # is updated with them, so a future change has to look at the chain.
-        self.assertGreaterEqual(partial_v, 92)
-        self.assertGreaterEqual(loader_v, 76)
+        self.assertGreaterEqual(partial_v, 93)
+        self.assertGreaterEqual(loader_v, 77)
         self.assertGreaterEqual(memory_v, 14)
 
 
