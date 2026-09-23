@@ -94,6 +94,31 @@
                             </label>
                         </div>
 
+                        <!-- Keep the image — the acquisition is the expensive
+                             part (20+ min and ~9 GB off the endpoint), so an
+                             operator who expects to re-run needs a way to say
+                             "don't reclaim it". Off by default: on is a
+                             standing ~9 GB/host disk cost. The text says where
+                             the file lives and that only ONE copy is kept,
+                             because the obvious worry is storing the same
+                             memory twice (fs + Velociraptor). -->
+                        <div class="mt-4 pt-4 border-t border-gray-700">
+                            <label class="flex items-center gap-3 cursor-pointer">
+                                <input type="checkbox" x-model="$store.memory.keepDump"
+                                       class="w-4 h-4 rounded border-gray-600 bg-gray-900 text-purple-600 focus:ring-purple-500">
+                                <div>
+                                    <div class="text-sm font-medium text-gray-300">Keep the memory image after analysis</div>
+                                    <div class="text-xs text-gray-500">
+                                        The <code class="text-indigo-300">.raw</code> stays on the appliance in
+                                        <code class="text-indigo-300">/data/memory_dumps</code> so you can re-run against it
+                                        without acquiring again (~9&nbsp;GB per host). Only that one copy is kept — the
+                                        Velociraptor-side copy is always removed, so the image is never stored twice.
+                                        Reclaim it later from Settings → Purge.
+                                    </div>
+                                </div>
+                            </label>
+                        </div>
+
                         <div class="mt-5 pt-4 border-t border-gray-700">
                             <label class="block text-sm font-medium text-gray-300 mb-2">Investigation name</label>
                             <input type="text" x-model="$store.memory.caseName"

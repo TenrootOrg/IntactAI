@@ -155,6 +155,9 @@ _RERUN_SPECS = {
         'blueprint_id': d.get('blueprint_id'),
         'include_yara': d.get('include_yara', True),
         'case_name': d.get('case_name'),
+        # Carry the operator's retention choice, or a rerun silently deletes
+        # the image of a run that was explicitly told to keep it.
+        'keep_dump': bool(d.get('keep_dump')),
     }),
 }
 

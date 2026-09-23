@@ -104,7 +104,7 @@ def cleanup_after_run(
     volweb_client: VolWebClient | None,
     delete_evidence_row: bool = False,
     preserve_evidence_dir: bool = False,
-    preserve_dump: bool = False,
+    preserve_dump: bool | str = False,
     logger: Callable[[str, str], None] | None = None,
 ) -> None:
     """Sweep every place memory data lands.
@@ -120,13 +120,24 @@ def cleanup_after_run(
         operator wants the analysis to survive auto-purge).
       volweb_client: optional client for the DB-row delete. Passed in
         rather than constructed so the same auth state is reused.
-      preserve_dump: keep the memory image itself — the host ``.raw``, the
-        copy VolWeb staged, and the Velociraptor flow that holds the
-        server-side copy. Set when an extraction produced nothing, so the
-        operator can retry against the dump they already have instead of
+      preserve_dump: keep the memory image so a retry costs nothing instead of
         re-acquiring 9.2 GB from the endpoint. Same shape as
         ``preserve_evidence_dir``, one level up: that one protects the
         yarascan results, this one protects the evidence they came from.
+        WHO asked decides how much is kept — pass the reason, not just a bool:
+
+        ``"operator"``
+          The operator ticked "keep the memory image". Keep ONE copy: the host
+          ``.raw`` (which is also VolWeb's staging file — same inode on the
+          shared volume) and delete the Velociraptor flow as usual. Holding
+          both would store the same memory twice, ~1.5x the dump for nothing.
+        ``"no_results"`` (or plain ``True``)
+          The extraction produced nothing, so we kept the image automatically.
+          Keep the Velociraptor flow TOO: when nothing came out of the image,
+          the extracted ``.raw`` is itself a suspect and the server-side copy
+          is the only untouched original left to retry from.
+        ``False``/``""``
+          Reclaim everything (the default).
 
     Never raises. Failures are logged at ``warning`` level.
 
@@ -140,7 +151,21 @@ def cleanup_after_run(
         log("cleanup: skipped (NO_CLEANUP=1)", "info")
         return
 
-    if preserve_dump:
+    # An operator-requested keep holds ONE copy; an automatic keep holds the
+    # untouched server-side original as well. See the docstring.
+    keep_velociraptor_flow = bool(preserve_dump) and preserve_dump != "operator"
+
+    if preserve_dump == "operator":
+        log(
+            "cleanup: PRESERVING the memory image — you asked to keep it. Kept: "
+            f"host {host_path or '(none)'} (the same file VolWeb reads as "
+            f"staging/{evidence_filename or '(none)'} — one copy, not two). The "
+            f"Velociraptor flow {flow_id or '(none)'} is removed as usual so the "
+            "image is never stored twice. Re-run against it from Memory → Use a "
+            "dump already on the appliance, or reclaim it in Settings → Purge.",
+            "warning",
+        )
+    elif preserve_dump:
         # Say it once, up front, naming all three places — an operator reading
         # a failed run's log needs to know the retry is free before they go
         # and re-acquire. The three skips below are what makes it true.
@@ -151,12 +176,12 @@ def cleanup_after_run(
             f"Kept: host {host_path or '(none)'}, VolWeb staging "
             f"{evidence_filename or '(none)'}, and the Velociraptor flow "
             f"{flow_id or '(none)'}. Fix the cause and re-run against the same "
-            "dump (Memory → Upload existing dump).",
+            "dump (Memory → Use a dump already on the appliance).",
             "warning",
         )
 
     # 1. Velociraptor server-side (must come first — needs uploads.json).
-    if client_id and flow_id and not preserve_dump:
+    if client_id and flow_id and not keep_velociraptor_flow:
         cleanup_velociraptor_flow(client_id, flow_id, logger=log)
 
     # 2. Host-side .raw from the local extract step.

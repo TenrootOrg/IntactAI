@@ -77,6 +77,19 @@ def _get_run(run_id: str) -> dict | None:
     return file_get_workflow(run_id)
 
 
+def _resolve_keep_dump(requested: Any, blueprint: dict | None) -> bool:
+    """Should the memory image survive this run?
+
+    Precedence mirrors the timeout overrides: an explicit value in the request
+    wins, then ``blueprint.settings.keep_dump``, then off. ``None`` means "not
+    specified" — an explicit ``false`` must be able to override a blueprint
+    that says true, which is why this is not a plain ``or`` chain.
+    """
+    if requested is not None:
+        return bool(requested)
+    return bool(((blueprint or {}).get("settings") or {}).get("keep_dump"))
+
+
 def _run_visible_in_active_workspace(run: dict) -> bool:
     """Mirror dashboard_routes.py's / azure_routes.py's own workspace check:
     run_id is a predictable ``{automation_type}_{millis}`` string, so without
@@ -179,6 +192,10 @@ def start_memory_run():
     # the pipeline if provided; otherwise blueprint.settings → defaults.
     # Front-end UI lets the operator bump these for huge dumps or
     # slow hardware without touching defaults.
+    # Keep the memory image after the run? Same precedence idiom as the
+    # timeouts below: explicit request > blueprint.settings > default (off).
+    keep_dump = _resolve_keep_dump(data.get("keep_dump"), blueprint)
+
     timeouts = {}
     for k in ("acquire_flow_timeout_s", "plugin_timeout_s", "yarascan_timeout_s"):
         v = data.get(k)
@@ -199,13 +216,15 @@ def start_memory_run():
         "blueprint_id": bp_id or None,
         "blueprint": (blueprint or {}).get("name") if blueprint else None,
         "timeouts": timeouts or None,
+        "keep_dump": keep_dump,
     }
 
     run_id = create_automation_run(automation_type="memory", name=name, details=details)
     add_log_to_run(
         run_id,
         f"memory: queued client={client_id} mode={mode}"
-        + (f" timeouts={timeouts}" if timeouts else ""),
+        + (f" timeouts={timeouts}" if timeouts else "")
+        + (" keep_dump=yes" if keep_dump else ""),
         "info",
     )
     update_run_status(run_id, "running", progress=1)
@@ -218,6 +237,7 @@ def start_memory_run():
         case_name=case_name,
         blueprint=blueprint,
         timeouts=timeouts or None,
+        keep_dump=keep_dump,
     )
 
     return jsonify({
@@ -269,6 +289,9 @@ def upload_memory_dump():
 
     case_name = (request.form.get("case_name") or "").strip() or None
     client_name = (request.form.get("client_name") or "").strip() or None
+    # Multipart carries everything as text — "false"/"0"/"" all mean off.
+    _keep_raw = (request.form.get("keep_dump") or "").strip().lower()
+    keep_dump = _keep_raw in ("1", "true", "yes", "on")
 
     # Stream-save the upload to disk. Flask's `werkzeug.FileStorage`
     # already chunks at 16 KB — we never load the dump into memory.
@@ -333,6 +356,11 @@ def upload_memory_dump():
         "upload_filename": safe_name,
         "upload_bytes": bytes_written,
         "case_name": case_name,
+        "keep_dump": keep_dump,
+        # The per-upload staging dir is this run's to clean; record it so the
+        # case purge can reclaim it (store.py looks for exactly this key and
+        # never found it before).
+        "upload_dir": upload_dir,
     }
     run_id = create_automation_run(automation_type="memory", name=name, details=details)
     add_log_to_run(
@@ -367,6 +395,7 @@ def upload_memory_dump():
                 mode=mode,
                 case_name=case_name,
                 from_upload_path=raw_path,
+                keep_dump=keep_dump,
             )
         except UploadExtractError as ue:
             add_log_to_run(run_id, f"upload: extract failed — {ue}", "error")

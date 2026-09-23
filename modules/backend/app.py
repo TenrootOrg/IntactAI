@@ -410,6 +410,10 @@ def run_startup_initialization():
                                 evidence_filename=_state.get("evidence_filename"),
                                 volweb_client=None,
                                 delete_evidence_row=False,
+                                # The operator asked to keep this image (or the
+                                # run was started FROM one). Without this the
+                                # replay deletes the very file they kept.
+                                preserve_dump=_state.get("preserve_dump") or False,
                                 logger=lambda m, level="info": print(
                                     f"[STARTUP] [memory-cleanup {_run_id}] {m}", flush=True),
                             )

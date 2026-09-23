@@ -512,6 +512,7 @@ def run_memory_pipeline(
     blueprint: dict | None = None,
     from_upload_path: str | None = None,
     timeouts: dict | None = None,
+    keep_dump: bool = False,
 ) -> None:
     # Resolved timeouts in seconds. Operator override (UI textbox)
     # wins over blueprint.settings, which wins over defaults. Defaults
@@ -567,11 +568,16 @@ def run_memory_pipeline(
     # running — tells cleanup to PRESERVE media/<id>/ so in-flight
     # matches aren't destroyed (2026-06-17 incident).
     yarascan_incomplete: bool = False
-    # Set True while a plugin extraction is in flight and left True if it ends
-    # without results — tells cleanup to KEEP the dump (host copy, VolWeb
-    # staging, Velociraptor flow) so a retry costs nothing. A run that got
-    # nothing out of the image is exactly the run whose image you still need.
-    dump_preserved: bool = False
+    # Why the dump is being kept, "" for not kept — cleanup keeps a different
+    # amount for each (see cleanup_after_run's docstring).
+    #
+    #   "operator"   the operator ticked "keep the memory image", or this run
+    #                IS an existing dump the operator is re-analysing. Survives
+    #                every outcome: it is a standing instruction, not a guess.
+    #   "no_results" set while a plugin extraction is in flight and left set if
+    #                it ends without results — a run that got nothing out of the
+    #                image is exactly the run whose image you still need.
+    dump_preserved: str = "operator" if keep_dump else ""
     client = VolWebClient(
         logger=lambda m, level="info": add_log_to_run(run_id, m, level),
     )
@@ -610,6 +616,17 @@ def run_memory_pipeline(
             raise ValueError(f"invalid mode {mode!r}")
         log(f"pipeline: mode={mode} client={client_id} case={case_name!r}")
         _persist_cleanup_state(run_id, client_id=client_id or None)
+        if keep_dump:
+            # Persist the instruction, not just the intent: the boot reaper
+            # (app.py) and the case purge re-run cleanup from _cleanup_state
+            # after a crash, and without this they would delete the very image
+            # the operator asked to keep.
+            _persist_cleanup_state(run_id, preserve_dump="operator")
+            log(
+                "pipeline: the memory image will be KEPT after this run "
+                "(one copy, in /data/memory_dumps)",
+                "info",
+            )
 
         # Whether to run the VolWeb yarascan at all. The "Include YARA" checkbox
         # in the UI maps to the analysis mode: plugin = plugins only (NO yara),
@@ -671,7 +688,11 @@ def run_memory_pipeline(
                 # raises (worker down, symbols missing, operator cancel) —
                 # every one of those is a run the operator will want to retry
                 # against this dump rather than re-acquire.
-                dump_preserved = True
+                #
+                # Never downgrade an operator keep to an automatic one: the
+                # operator's instruction stands whatever the extraction did.
+                if dump_preserved != "operator":
+                    dump_preserved = "no_results"
                 plugin_map, plugins_done = client.wait_for_plugin_results(
                     evidence_id,
                     plugins_to_run,
@@ -684,8 +705,10 @@ def run_memory_pipeline(
                     ),
                 )
                 # Results landed and the wait reached a real terminal state:
-                # the image has done its job and cleanup reclaims it as always.
-                dump_preserved = not (plugins_done and plugin_map)
+                # the image has done its job and cleanup reclaims it as always
+                # — unless the operator asked to keep it, which outranks this.
+                if dump_preserved != "operator":
+                    dump_preserved = "" if (plugins_done and plugin_map) else "no_results"
                 cumulative += _PHASE_WEIGHTS["extract"]
                 # Report what actually happened. This line used to be an
                 # unconditional "plugins complete … " at SUCCESS level, so a

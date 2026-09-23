@@ -32,6 +32,10 @@ document.addEventListener('alpine:init', () => {
         // Blank = pipeline uses CURATED_PLUGINS fallback.
         blueprintId: 'memory_layered_default',
         includeYara: true,        // independent of blueprint — adds yarascan layer
+        // Keep the .raw after the run so a re-run costs nothing. Off by
+        // default — on is a standing ~9 GB/host disk cost, and TabReset puts
+        // it back to off on tab re-entry, which is the behaviour we want.
+        keepDump: false,
         // Default case name: "Memory YYYY-MM-DD" so operators get a
         // sensible group out of the box without having to type one.
         caseName: 'Volatile Memory ' + new Date().toISOString().split('T')[0],
@@ -135,6 +139,7 @@ document.addEventListener('alpine:init', () => {
                     blueprint_id: this.blueprintId || undefined,
                     mode: this.derivedMode(),
                     case_name: this.caseName || ('Volatile Memory ' + new Date().toISOString().split('T')[0]),
+                    keep_dump: !!this.keepDump,
                 };
                 // Only send timeouts the operator actually overrode —
                 // sending nulls / zeros would defeat the server-side
@@ -226,6 +231,7 @@ document.addEventListener('alpine:init', () => {
             if (this.blueprintId) fd.append('blueprint_id', this.blueprintId);
             fd.append('mode', this.derivedMode());
             fd.append('case_name', this.caseName || ('Volatile Memory ' + new Date().toISOString().split('T')[0]));
+            fd.append('keep_dump', this.keepDump ? '1' : '0');
             // No client_name for now — the operator can rename the
             // workflow from the Workflows table if they care.
 
