@@ -342,6 +342,45 @@ test_selftest_moves_past_a_tool_it_cannot_install() {
     assert_not_contains "$out" "FAIL  could not install" "and does not call the appliance broken"
 }
 
+test_install_says_the_server_is_starting_rather_than_blaming_the_tool() {
+    # Live: the docs' remove section restarts Velociraptor, and the very next
+    # install said "no download URL known for Takajo-2.5.0" — for a tool whose
+    # artifact declares one. The engine was simply not answering yet.
+    local root; root="$(_fake)"
+    cat > "${root}/bin/docker" <<EOF
+#!/bin/bash
+case "\$1" in
+    inspect)
+        [[ "\$2" == "-f" && "\$3" == *StartedAt* ]] && { date -u +%Y-%m-%dT%H:%M:%S.000000000Z; exit 0; }
+        [[ "\$2" == "-f" ]] && { echo true; exit 0; }
+        exit 0 ;;
+esac
+exit 0
+EOF
+    chmod +x "${root}/bin/docker"
+    _run "$root" install Takajo-2.5.0 >/dev/null
+    local e; e="$(cat "${root}/err")"
+    assert_contains "$e" "not answering yet" "says the server is not ready"
+    assert_not_contains "$e" "no download URL known" "instead of blaming the tool"
+}
+
+test_a_quiet_server_that_did_not_just_restart_still_reports_the_real_problem() {
+    local root; root="$(_fake)"
+    cat > "${root}/bin/docker" <<EOF
+#!/bin/bash
+case "\$1" in
+    inspect)
+        [[ "\$2" == "-f" && "\$3" == *StartedAt* ]] && { echo "2020-01-01T00:00:00.000000000Z"; exit 0; }
+        [[ "\$2" == "-f" ]] && { echo true; exit 0; }
+        exit 0 ;;
+esac
+exit 0
+EOF
+    chmod +x "${root}/bin/docker"
+    _run "$root" install VendorOnly >/dev/null
+    assert_contains "$(cat "${root}/err")" "no download URL known" "the ordinary message"
+}
+
 test_fetch_refuses_a_list_that_matched_nothing() {
     # Live: the page's own example filter matched nothing on a box that already
     # held both tools, and fetch still said "carry <dir> to the appliance".
