@@ -171,13 +171,20 @@ def cleanup_after_run(
     keep_velociraptor_flow = bool(preserve_dump) and preserve_dump != "operator"
 
     if preserve_dump == "operator":
+        # Only mention the Velociraptor copy when there IS one. A re-analysis or
+        # an uploaded dump never had a flow, and "the Velociraptor flow (none) is
+        # removed as usual" reads like something went wrong.
+        _flow_note = (
+            f" The Velociraptor flow {flow_id} is removed as usual so the image "
+            "is never stored twice."
+            if flow_id else ""
+        )
         log(
             "cleanup: PRESERVING the memory image — you asked to keep it. Kept: "
             f"host {host_path or '(none)'} (the same file VolWeb reads as "
-            f"staging/{evidence_filename or '(none)'} — one copy, not two). The "
-            f"Velociraptor flow {flow_id or '(none)'} is removed as usual so the "
-            "image is never stored twice. Re-run against it from Memory → Use a "
-            "dump already on the appliance, or reclaim it in Settings → Purge.",
+            f"staging/{evidence_filename or '(none)'} — one copy, not two)."
+            f"{_flow_note} Re-run against it from Memory → Use a kept image, or "
+            "reclaim it in Settings → Purge.",
             "warning",
         )
     elif preserve_dump:

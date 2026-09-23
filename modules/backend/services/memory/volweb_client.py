@@ -1040,6 +1040,47 @@ class VolWebClient:
         )
         return " ".join(parts)
 
+    def plugins_that_failed(self, names, *, since_s: int = 3600) -> dict:
+        """Which of ``names`` the extraction worker logged a failure for.
+
+        VolWeb stores a plugin that crashed exactly like one that found nothing:
+        no rows, ``error_message`` empty. The difference is only in the worker's
+        log, where vol3 prints
+
+            RUNNING: volatility3.plugins.windows.netstat.NetStat
+            WARNING  Could not run plugin: Unable to find _PrimitiveObject__…
+
+        The failure line does not name the plugin, so it is attributed to the
+        last one announced — which is what the ordering means, and the only
+        attribution available.
+
+        Best-effort by design: no docker, no log, nothing matched → ``{}``, and
+        the caller reports what it always did. It is never allowed to turn a
+        completed extraction into a failure.
+        """
+        wanted = {str(n).rsplit(".", 1)[-1] for n in (names or [])}
+        if not wanted:
+            return {}
+        container = _config_value("worker_container", default=None) or _VOLWEB_WORKER_CONTAINER
+        try:
+            r = subprocess.run(
+                ["docker", "logs", "--since", f"{int(since_s)}s", "--tail", "2000", container],
+                capture_output=True, text=True, timeout=30,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return {}
+        out = {}
+        current = None
+        for line in ((r.stdout or "") + "\n" + (r.stderr or "")).splitlines():
+            m = re.search(r"RUNNING:\s+(\S+)", line)
+            if m:
+                current = m.group(1).rsplit(".", 1)[-1]
+                continue
+            m = re.search(r"Could not run plugin:\s*(.+)", line)
+            if m and current in wanted:
+                out[current] = m.group(1).strip()[:180]
+        return out
+
     def stage_media_dir(self, evidence_id: int) -> None:
         """Best-effort: ensure ``/home/app/web/media/<evidence_id>/``
         exists inside the VolWeb backend container BEFORE triggering
@@ -1354,9 +1395,31 @@ class VolWebClient:
                     for w in wanted - set(done.keys()) - set(errored.keys())
                 )
                 if missing:
+                    # "Missing" covers two very different things, and saying so
+                    # matters: a plugin that ran and found nothing is a fact
+                    # about the host, a plugin that CRASHED is a hole in the
+                    # evidence. Read identically, "NetScan, NetStat missing"
+                    # invites the conclusion "no network connections" when in
+                    # truth vol3 failed to build its symbols. VolWeb's own
+                    # error_message is empty for these, so the worker log is the
+                    # only place the difference is written down.
+                    # Only THIS extraction's slice of the log. The same plugin
+                    # can have crashed in an earlier run and succeeded here (a
+                    # missing PDB downloads once and then works), and blaming a
+                    # quiet plugin for a stale failure is the same mistake in
+                    # the other direction. +60s of slack for the dispatch.
+                    crashed = self.plugins_that_failed(
+                        missing, since_s=int(time.time() - started_at) + 60,
+                    )
+                    quiet = [m for m in missing if m not in crashed]
+                    detail = []
+                    if quiet:
+                        detail.append(f"ran but found nothing: {', '.join(quiet)}")
+                    for pname, why in crashed.items():
+                        detail.append(f"{pname} FAILED to run — {why}")
                     self._log(
                         f"plugin extract: VolWeb task finished — {len(done)}/{len(wanted)} done, "
-                        f"missing (no row or empty results): {', '.join(missing)}",
+                        f"{len(missing)} with no rows ({'; '.join(detail)})",
                         "warning",
                     )
                 return done, True
