@@ -34,6 +34,13 @@ if [[ "\$*" == *"url AS u"* ]]; then
     [[ -s "${root}/tool_url" ]] && echo "{\"u\":\"\$(cat "${root}/tool_url")\"}"
     exit 0
 fi
+# the endpoints and when they were last seen
+if [[ "\$*" == *"FROM clients()"* ]]; then
+    if [[ -s "${root}/client_seen" ]]; then
+        echo "{\"client_id\":\"C.testclient01\",\"last_seen_at\":\$(cat "${root}/client_seen")}"
+    fi
+    exit 0
+fi
 # what the server already stores, for the re-run checks
 if [[ "\$*" == *"FROM inventory()"*"serve_locally AND hash"* ]]; then
     [[ -s "${root}/stored_sha" ]] && echo "{\"hash\":\"\$(cat "${root}/stored_sha")\"}"
@@ -237,6 +244,29 @@ test_fetching_twice_into_the_same_folder_keeps_one_map_line() {
     _run "$root" fetch "${root}/list.tsv" --out "${root}/carry" >/dev/null
     _run "$root" fetch "${root}/list.tsv" --out "${root}/carry" >/dev/null
     assert_eq "$(grep -c . "${root}/carry/velo_tools.map")" "1" "one line per tool, not one per run"
+}
+
+test_a_tool_test_against_an_offline_endpoint_is_a_skip_not_a_failure() {
+    # Live: every enrolled client came from an imported dataset and was last seen
+    # eight days ago. The collection queues, the flow stays RUNNING, and the test
+    # waited two minutes and then reported FAIL — of the tool, which was fine.
+    local root; root="$(_fake)"
+    echo "abc123" > "${root}/stored_sha"      # the tool IS on the server
+    python3 -c "import time; print(int((time.time()-8*86400)*1000000))" > "${root}/client_seen"
+    local out; out="$(_run "$root" test --tool etl2pcapng)"
+    assert_eq "$?" "2" "exits 2: could not prove, did not fail"
+    assert_contains "$out" "SKIP" "says SKIP"
+    assert_contains "$out" "days ago" "says how stale the endpoint is"
+    assert_not_contains "$(cat "${root}/docker.calls")" "collect_client" "no collection was queued"
+}
+
+test_a_tool_test_against_a_live_endpoint_runs() {
+    local root; root="$(_fake)"
+    echo "abc123" > "${root}/stored_sha"      # the tool IS on the server
+    python3 -c "import time; print(int((time.time()-30)*1000000))" > "${root}/client_seen"
+    local out; out="$(_run "$root" test --tool etl2pcapng)"
+    assert_ne "$?" "2" "a live endpoint is not skipped"
+    assert_not_contains "$out" "offline" "and is not called offline"
 }
 
 test_fetch_refuses_a_download_that_does_not_match_the_pinned_hash() {

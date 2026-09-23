@@ -135,6 +135,11 @@ It prints the endpoint, flow and result, ending in PASS or FAIL. Add
 `--client C.xxxx` to choose an endpoint; otherwise the most recently seen one is
 used.
 
+An endpoint that has not been seen for a while is **offline**: the collection
+would just queue until it comes back, so the test says SKIP and exits 2 rather
+than reporting a failure of the tool. Enrolled-but-stale clients (an imported
+dataset, a lab that was shut down) are the usual reason.
+
 `selftest` installs a missing tool and checks each step — the one that matters
 most fetches the file back over the **endpoint-facing URL** and compares the
 sha256 with what the server recorded. A step it cannot prove is `SKIP`, never a

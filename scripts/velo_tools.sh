@@ -470,10 +470,15 @@ l=sys.stdin.readline(); print(json.loads(l).get("serve_url","") if l.strip() els
 l=sys.stdin.readline(); print(json.loads(l).get("client_id","") if l.strip() else "")' 2>/dev/null)"
     if [[ -z "$client" ]]; then
         _skip "no endpoint is enrolled — install a client, then: velo_tools.sh test --tool ${tool}"
-    elif cmd_test --tool "$tool" --client "$client" >/dev/null 2>&1; then
-        _ok "endpoint ${client} downloaded ${tool}"
     else
-        _bad "endpoint ${client} did not get ${tool} — run: velo_tools.sh test --tool ${tool}"
+        cmd_test --tool "$tool" --client "$client" >/dev/null 2>&1
+        case "$?" in
+            0) _ok "endpoint ${client} downloaded ${tool}" ;;
+            # 2 = the endpoint is offline, so the collection is only queued. A
+            # step that cannot run is a SKIP, never a fail (and never a pass).
+            2) _skip "endpoint ${client} was last seen $(human_age "$(client_age_seconds "$client")") — start a live client, then: velo_tools.sh test --tool ${tool}" ;;
+            *) _bad "endpoint ${client} did not get ${tool} — run: velo_tools.sh test --tool ${tool}" ;;
+        esac
     fi
 
     log ""
@@ -491,6 +496,31 @@ l=sys.stdin.readline(); print(json.loads(l).get("client_id","") if l.strip() els
 # possible end-to-end check: no forensic artifact runs, nothing is collected
 # off the machine.
 # ---------------------------------------------------------------------------
+# How long after an endpoint was last seen a tool test is still worth running.
+# Beyond this the client is offline: the collection is queued for whenever it
+# comes back, so the test can neither pass nor fail.
+VELO_ENDPOINT_MAX_AGE="${VELO_ENDPOINT_MAX_AGE:-300}"
+
+client_age_seconds() {
+    # Seconds since this endpoint last talked to the server, or "" if unknown.
+    local c="$1" seen
+    seen="$(velo_vql "SELECT last_seen_at FROM clients() WHERE client_id = '${c}' LIMIT 1" 2>/dev/null \
+        | python3 -c 'import sys,json
+l=sys.stdin.readline()
+print(json.loads(l).get("last_seen_at","") if l.strip() else "")' 2>/dev/null)"
+    [[ -n "$seen" ]] || return 0
+    python3 -c "import time,sys; print(int(time.time() - ${seen}/1000000))" 2>/dev/null
+}
+
+human_age() {
+    local s="${1:-}"
+    [[ -n "$s" ]] || { echo "unknown"; return; }
+    if   (( s < 120 ));   then echo "${s}s ago"
+    elif (( s < 7200 ));  then echo "$(( s / 60 )) min ago"
+    elif (( s < 172800 ));then echo "$(( s / 3600 )) hours ago"
+    else echo "$(( s / 86400 )) days ago"; fi
+}
+
 cmd_test() {
     local tool="" client=""
     while [[ $# -gt 0 ]]; do
@@ -517,6 +547,19 @@ print(json.loads(l).get("client_id","") if l.strip() else "")' 2>/dev/null)"
     fi
     [[ -n "$client" ]] || { err "no endpoint is enrolled — install a client first, then re-run"; return 1; }
     valid_token "$client" || { err "client id looks wrong: ${client}"; return 1; }
+
+    # AN OFFLINE ENDPOINT CANNOT PROVE ANYTHING. The collection is queued until
+    # the client comes back, so the flow sits in RUNNING and the test used to
+    # wait two minutes and then report FAIL — measured on a box whose enrolled
+    # clients came from an imported dataset and were last seen eight days ago.
+    local age; age="$(client_age_seconds "$client")"
+    if [[ -n "$age" ]] && (( age > VELO_ENDPOINT_MAX_AGE )); then
+        log "endpoint : ${client}"
+        log "SKIP — that endpoint was last seen $(human_age "$age") and is offline."
+        log "  A tool test needs a live endpoint: start one, or name another with --client C.xxxx."
+        log "  Nothing is wrong with '${tool}' — the server stores it and serves it on request."
+        return 2
+    fi
 
     log "endpoint : ${client}"
     log "tool     : ${tool}"
