@@ -215,6 +215,7 @@ test_install_does_not_download_a_tool_the_server_already_holds() {
     local out; out="$(VELO_TEST_CURL_LOG="${root}/curl.log" _run "$root" install Hayabusa-2.14.0)"
     assert_eq "$?" "0" "install succeeds"
     assert_contains "$out" "already stored" "says it is already there"
+    assert_contains "$out" "0 added, 1 already stored" "and the summary does not claim it added one"
     assert_false test -s "${root}/curl.log"
 }
 

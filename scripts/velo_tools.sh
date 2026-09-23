@@ -293,7 +293,7 @@ cmd_install() {
     require_container || return 1
 
     local tmp; tmp="$(mktemp -d)" || return 1
-    local ok=0 failed=0 tool url fname
+    local ok=0 failed=0 held=0 tool url fname
     for tool in "${tools[@]}"; do
         valid_token "$tool" || { err "tool name has characters that are not allowed: ${tool}"; failed=$((failed + 1)); continue; }
         url="$(velo_vql "SELECT * FROM foreach(row={SELECT tools FROM artifact_definitions() WHERE tools}, query={SELECT url AS u FROM foreach(row=tools) WHERE name = '${tool}' AND url}) LIMIT 1" 2>/dev/null \
@@ -317,7 +317,7 @@ print(json.loads(l).get("u","") if l.strip() else "")' 2>/dev/null)"
             want="$(expected_hash_for "$tool")"
             if [[ -n "$have" && ( -z "$want" || "$have" == "$want" ) ]]; then
                 log "${tool}: already stored on the server — skipping (use --force to download again)"
-                ok=$((ok + 1)); continue
+                held=$((held + 1)); continue
             fi
             if [[ -n "$have" && -n "$want" && "$have" != "$want" ]]; then
                 log "${tool}: stored copy does not match the hash the artifact pins — downloading the right one"
@@ -333,7 +333,9 @@ print(json.loads(l).get("u","") if l.strip() else "")' 2>/dev/null)"
     done
     rm -rf "$tmp"
 
-    log "install: ${ok} added, ${failed} failed"
+    # Say what actually happened: reporting a skipped tool as "added" made a
+    # re-run read as if it had downloaded everything again.
+    log "install: ${ok} added, ${held} already stored, ${failed} failed"
     (( failed )) && return 1
     return 0
 }
