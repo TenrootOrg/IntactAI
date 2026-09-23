@@ -41,9 +41,13 @@ Write the list, keeping the rows you want:
 ```bash
 cd /home/tenroot/intact
 bash scripts/velo_tools.sh list > /tmp/missing.tsv
-awk -F'\t' 'NR>2 && $2 != "" {print; n++} n==5 {exit}' /tmp/missing.tsv > /tmp/want.tsv
-cut -f1 /tmp/want.tsv
+awk -F'\t' 'NR>2 && $2 ~ /releases\/download/ {print; n++} n==5 {exit}' /tmp/missing.tsv > /tmp/want.tsv
+cut -f1 /tmp/want.tsv        # what you are about to carry
 ```
+
+(That filter takes the first five whose URL is a pinned release download. A
+vendor's "latest" link often 404s or serves a newer build than the artifact
+expects, and `fetch` refuses those — it tells you which and carries the rest.)
 
 Download them where there is internet. `fetch` checks each file against the hash
 its artifact pins and writes `velo_tools.map`, so every file lands under its real
