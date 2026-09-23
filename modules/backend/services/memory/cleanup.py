@@ -39,6 +39,18 @@ def _remove_host_dump(host_path: str, log: Callable[[str, str], None]) -> None:
         if p.is_file():
             p.unlink()
             log(f"cleanup: removed host dump {host_path}", "info")
+        # An operator upload lands in its own `_uploads/<id>/` directory.
+        # Unlinking the file leaves that directory behind, one empty directory
+        # per upload, for ever. Only ever removes a now-empty per-upload dir:
+        # rmdir refuses a non-empty one, and the parent check keeps this away
+        # from the dumps root itself.
+        parent = p.parent
+        if parent.name and parent.parent.name == "_uploads":
+            try:
+                parent.rmdir()
+                log(f"cleanup: removed the upload staging dir {parent}", "info")
+            except OSError:
+                pass                   # not empty, or already gone — leave it
     except Exception as e:
         log(f"cleanup: host dump remove failed (non-fatal): {e}", "warning")
 

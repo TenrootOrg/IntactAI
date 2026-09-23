@@ -145,6 +145,56 @@ class TestTheImageIsNotCopied(unittest.TestCase):
         self.assertIsNone(self.rel(self.root, self.root))
 
 
+class TestAnUploadLeavesNothingBehind(unittest.TestCase):
+    """An upload lands in its own `_uploads/<id>/` directory. Unlinking the
+    file leaves that directory behind — one empty directory per upload, for
+    ever, on the volume the operator is told to watch for disk."""
+
+    def setUp(self):
+        import pathlib
+        import typing
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.tmp.name)
+        path = os.path.join(ROOT, "modules/backend/services/memory/cleanup.py")
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        fn = next(n for n in ast.parse(src).body
+                  if isinstance(n, ast.FunctionDef) and n.name == "_remove_host_dump")
+        ns = {"Path": pathlib.Path, "Callable": typing.Callable}
+        exec(compile(ast.get_source_segment(src, fn), path, "exec"), ns)
+        self.remove = ns["_remove_host_dump"]
+        self.log = lambda m, level="info": None
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_the_per_upload_directory_goes_with_its_file(self):
+        d = self.root / "_uploads" / "abc123"
+        d.mkdir(parents=True)
+        f = d / "PhysicalMemory.raw"
+        f.write_bytes(b"x")
+        self.remove(str(f), self.log)
+        self.assertFalse(f.exists())
+        self.assertFalse(d.exists(), "the empty upload dir was left behind")
+
+    def test_a_top_level_dump_does_not_take_the_dumps_root_with_it(self):
+        f = self.root / "HOST-F.1.raw"
+        f.write_bytes(b"x")
+        self.remove(str(f), self.log)
+        self.assertFalse(f.exists())
+        self.assertTrue(self.root.exists(), "the dumps directory itself must survive")
+
+    def test_an_upload_dir_holding_anything_else_is_left_alone(self):
+        d = self.root / "_uploads" / "keepme"
+        d.mkdir(parents=True)
+        a, b = d / "a.raw", d / "b.raw"
+        a.write_bytes(b"x")
+        b.write_bytes(b"x")
+        self.remove(str(a), self.log)
+        self.assertTrue(b.exists(), "a sibling file was destroyed")
+        self.assertTrue(d.exists())
+
+
 class TestTheRunThatReusesAnImageDoesNotConsumeIt(unittest.TestCase):
 
     def test_reuse_forces_the_keep(self):
