@@ -455,7 +455,7 @@ EOF
     assert_eq "$?" "0" "install succeeds"
     assert_contains "$(cat "${root}/curl.calls")" "https://example.test/takajo-2.5.0-win.zip" "downloads what the server named"
     assert_contains "$(cat "${root}/docker.calls")" "tool='Takajo-2.5.0'" "registers under that name"
-    assert_contains "$out" "1 added, 0 failed" "reports what it did"
+    assert_contains "$out" "1 added, 0 already stored, 0 failed" "reports what it did"
     assert_true test -f "${root}/tools/takajo-2.5.0-win.zip"
 }
 
