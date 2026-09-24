@@ -1374,7 +1374,9 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
             id=_did,
             title=f"{title} on {host}",
             severity=top.severity, confidence="medium",
-            summary=f"Detection '{title}' fired {len(evs)}× on {host}.",
+            # The title already names the source ("SIGMA: …", "MFT: …"), so
+            # wrapping it in "Detection '…'" reads as a source inside a source.
+            summary=f"{title} fired {len(evs)}× on {host}.",
             entity_ids=[e.id for e in evs[:25]], asset_ids=[asset_id],
             sources=top.sources, evidence=list(top.evidence), mitre=[],
             ts=top.first_seen, kind="single",

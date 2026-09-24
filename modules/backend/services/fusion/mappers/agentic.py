@@ -357,6 +357,30 @@ def win_event_ids(row) -> list:
         return []
 
 
+def _detection_prefix(row, artifact: str) -> str:
+    """How a detection should announce itself in the timeline.
+
+    A row with both a Windows channel and an event id came from a rule matching
+    the EVENT LOG — which is what Hayabusa reads too, so the two are one source
+    and get one name. Anything else keeps its artifact's short name: MFT and
+    LNK detections really are a different source and should say so.
+
+    CANNOT RAISE. It is called once per detection row while the graph is being
+    built, and a mapper that throws on one malformed row loses the whole fuse.
+    Anything unexpected -- a row that is not a dict, a missing artifact, a field
+    holding a list -- falls back to no prefix at all, which costs a word in the
+    timeline and nothing else.
+    """
+    try:
+        if isinstance(row, dict) and row.get("Channel") and (
+                row.get("EventID") or row.get("EID")):
+            return "SIGMA: "
+        short = str(artifact or "").split(".")[-1].strip()
+        return f"{short}: " if short else ""
+    except Exception:                                   # noqa: BLE001
+        return ""
+
+
 def _account_eid(asset, domain, user, local_hosts=()):
     """Domain accounts -> global node (cross-host); local -> asset-scoped.
 
@@ -1211,8 +1235,18 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                  channel=r.get("Channel") or None,
                                  eid_num=r.get("EventID") or None,
                                  win_ids=win_event_ids(r) or None,
-                                 title=(f"{artifact.split('.')[-1]}: {str(dname)[:60]}"
-                                        if dname else None)))
+                                 # ONE SOURCE, ONE NAME. A detection carrying a
+                                 # Windows channel AND an event id is a rule
+                                 # firing on the event log — the same source
+                                 # Hayabusa reads, so it is labelled the same
+                                 # way. Presenting it as "Evtx:" beside
+                                 # Hayabusa's "SIGMA:" made one source look
+                                 # like two detectors in the timeline
+                                 # (TASK-12662). Everything else keeps its
+                                 # artifact name, because MFT and LNK really
+                                 # are different sources.
+                                 title=(f"{_detection_prefix(r, artifact)}"
+                                        f"{str(dname)[:60]}" if dname else None)))
 
             # ---- hash extraction -> cross-host-capable IOC ---------------
             # Process artifacts handle their own hashes selectively above (only
