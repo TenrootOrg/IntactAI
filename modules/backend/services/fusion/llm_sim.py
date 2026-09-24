@@ -1907,6 +1907,16 @@ def generate_report(graph, *, window=None, min_severity="informational",
                      "NOT present in the case evidence and may be model artifacts — verify "
                      "before acting: " + ", ".join(f"`{h[:16]}…`" for h in _bad_h) + "\n"
                      if _bad_h else "")
+            # Jev (when enabled): statements the evidence does not support. Same rule
+            # as the hashes — flag beside the report, never cut the prose.
+            from . import jev as _jev
+            _bad_c = _jev.unsupported_claims(
+                narrative, payload_str, mask, run_id=run_id,
+                log_event=lambda t, lvl, msg: _case_event(run_id, t, lvl, msg))
+            if _bad_c:
+                gnote += ("\n\n> ⚠️ **Grounding check (Jev):** these statements could not be "
+                          "matched to the case evidence — verify before relying on them:\n"
+                          + "".join(f"> - {c}\n" for c in _bad_c))
             # In a segmented report the phases carry their own timelines, so the
             # case-wide one is scoped to what they did NOT cover.
             _tl_kw = {}

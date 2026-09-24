@@ -278,6 +278,68 @@ def suggest_identities(case_id, d, g) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Grounding check on a written report: which statements does the evidence the
+# model was given NOT support? Flagged beside the report — never removed.
+# ---------------------------------------------------------------------------
+import re  # noqa: E402
+
+_SENT = re.compile(r"(?<=[.!?])\s+")
+MAX_CLAIMS = 40
+UNSUPPORTED_BELOW = 0.3
+
+
+def _claims(narrative):
+    out = []
+    for line in (narrative or "").splitlines():
+        t = line.strip()
+        if not t or t.startswith(("#", "|", ">", "```", "_Narrative")):
+            continue
+        t = re.sub(r"^[-*+]\s+|^\d+\.\s+", "", t).replace("**", "").replace("`", "")
+        out += [c.strip() for c in _SENT.split(t) if 40 <= len(c.strip()) <= 400]
+    return out[:MAX_CLAIMS]
+
+
+def _supported_question(k):
+    return {"type": "noul",
+            "instructions": f"items.{k} is one statement from an incident report. `context` "
+                            "is the case evidence the report was written from. Is the "
+                            "statement supported by that evidence?",
+            "criteria": {"true": "The evidence states or directly implies it.",
+                         "false": "The evidence does not contain it, or contradicts it."}}
+
+
+def unsupported_claims(narrative, masked_payload, mask, *, run_id=None, log_event=None):
+    """Statements in `narrative` (real values) that Jev judges unsupported by the
+    (already masked) evidence payload. [] when off, skipped or all supported."""
+    if not enabled("grounding"):
+        return []
+    claims = _claims(narrative)
+    if not claims:
+        return []
+    # Truncating the evidence would make every claim about the cut part look
+    # unsupported — a false alarm is worse than no check.
+    if approx_tokens(masked_payload) > MAX_TOKENS * 3 // 4:
+        if log_event:
+            log_event("Report · Jev grounding check skipped", "info",
+                      f"the evidence (~{approx_tokens(masked_payload):,} tokens) is larger "
+                      f"than one Jev call can read")
+        return []
+    try:
+        answers = ask_each(claims, lambda c: masked(c, mask), _supported_question,
+                           context=masked_payload, run_id=run_id)
+    except Exception as e:  # noqa: BLE001
+        log.warning("jev: grounding check failed: %s", e)
+        return []
+    bad = [c for c, a in zip(claims, answers)
+           if isinstance(a, dict) and isinstance(a.get("noul"), (int, float))
+           and a["noul"] < UNSUPPORTED_BELOW]
+    if log_event:
+        log_event("Report · Jev grounding check", "warning" if bad else "info",
+                  f"{len(bad)} of {len(claims)} statements not matched to the evidence")
+    return bad
+
+
+# ---------------------------------------------------------------------------
 # Chat: does the analyst's message state a verdict? Only the DETECTION — the
 # offer it produces still needs the literal "confirm" to apply (the chat says
 # so, and a casual "yes" must never suppress a finding).
