@@ -527,10 +527,18 @@ function showCase(id,info,rep){
 
 // `c` is the lightweight counts object {hosts,entities,links,findings,cross_host}
 // served on /api/cases/<id>.counts — NOT the full graph (which is multi-MB).
+//
+// entities and links are DELIBERATELY not shown. Both are facts about the graph
+// rather than about the investigation: a real case reads 416 entities as 374
+// events + 20 processes + 12 IOCs + 9 accounts + 1 asset, and the operator
+// already browses each of those by type in Timeline / Identities / Risk. The
+// total answers nothing on its own. `links` was worse — 73 account-to-asset
+// edges with no view anywhere in the UI that can show them, so the number
+// raised a question the product could not answer. Bring either back only
+// alongside something clickable to bring it back TO.
 function statSpans(c){
   c=c||{};
-  return `<span class="stat"><b>${c.hosts||0}</b> hosts</span><span class="stat"><b>${c.entities||0}</b> entities</span>
-    <span class="stat"><b>${c.links||0}</b> links</span><span class="stat"><b>${c.findings||0}</b> findings</span>
+  return `<span class="stat"><b>${c.hosts||0}</b> hosts</span><span class="stat"><b>${c.findings||0}</b> findings</span>
     <span class="stat"><b style="color:var(--acc)">${c.cross_host||0}</b> cross-host</span>`;
 }
 
