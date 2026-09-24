@@ -623,6 +623,11 @@ def get_config():
             config = json.loads(json.dumps(config))  # cheap deep copy
             key = config['agentic']['online_llm']['api_key']
             config['agentic']['online_llm']['api_key'] = '••••••••' + key[-4:] if len(key) > 4 else '••••••••'
+        # Jev's own OpenRouter key: same masking.
+        if (config.get('agentic', {}).get('jev') or {}).get('api_key'):
+            config = json.loads(json.dumps(config))
+            key = config['agentic']['jev']['api_key']
+            config['agentic']['jev']['api_key'] = '••••••••' + key[-4:] if len(key) > 4 else '••••••••'
         return jsonify(config)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -645,6 +650,9 @@ def save_config():
             existing = _load_config()
             config['agentic']['online_llm']['api_key'] = \
                 existing.get('agentic', {}).get('online_llm', {}).get('api_key', '')
+        jv = config.get('agentic', {}).get('jev')
+        if isinstance(jv, dict) and str(jv.get('api_key') or '').startswith('••••'):
+            jv['api_key'] = (_load_config().get('agentic', {}).get('jev') or {}).get('api_key', '')
 
         # Which AI settings were in force BEFORE this save, so a change can be told
         # apart from re-saving the same thing.

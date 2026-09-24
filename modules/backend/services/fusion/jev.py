@@ -3,8 +3,9 @@
 Jev does not write text. It takes a `state` (any JSON) plus named questions,
 each a yes/no ("noul"), pick-one ("choice") or ordered "score", and returns a
 typed answer with probabilities. We reach it through OpenRouter's Decisions
-endpoint with the OpenRouter key the operator already configured, so there is
-no second key to manage — and no way to use it with any other provider.
+endpoint, with Jev's own OpenRouter key when one is set in Settings, else the
+main key while OpenRouter is the chat provider — so a box whose chat runs on
+Claude or a Codex subscription can still use it.
 
 EVERYTHING HERE IS A SUGGESTION. Nothing in this module, or in any caller,
 sets a disposition, merges an identity or edits a report on Jev's word: the
@@ -25,6 +26,9 @@ log = logging.getLogger(__name__)
 URL = "https://openrouter.ai/api/v1/systemone"
 USES = ("disposition", "relevance", "grounding", "identity", "chat_intent")
 DEFAULTS = {"enabled": False, "model": "jev-latest", "min_confidence": 0.8,
+            # Jev's own OpenRouter key. Empty = use the main key, which only works
+            # while OpenRouter is the selected chat provider.
+            "api_key": "",
             "uses": {u: True for u in USES}}
 # Cloudflare's model card gives a 32k-token context; stay well under it.
 MAX_TOKENS = 24000
@@ -48,6 +52,9 @@ def _key(cfg):
     # OpenRouter key is still sitting in the online block.
     if str(cfg.get("llm_mode", "online")).lower() != "online":
         return None
+    own = (cfg.get("jev") or {}).get("api_key")
+    if own:
+        return own
     online = cfg.get("online_llm") or {}
     if (online.get("provider") or "").lower() != "openrouter":
         return None

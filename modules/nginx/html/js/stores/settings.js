@@ -15,7 +15,7 @@ document.addEventListener('alpine:init', () => {
                 ollama_context_size: 65536,
                 ollama_timeout: 600,
                 // Fast decisions (Jev) — must match jev.DEFAULTS in services/fusion/jev.py
-                jev: { enabled: false, model: 'jev-latest', min_confidence: 0.8, uses: { disposition: true, relevance: true, grounding: true, identity: true, chat_intent: true } }
+                jev: { enabled: false, model: 'jev-latest', min_confidence: 0.8, api_key: '', uses: { disposition: true, relevance: true, grounding: true, identity: true, chat_intent: true } }
             },
             timesketch: {
                 llm_mode: 'google',

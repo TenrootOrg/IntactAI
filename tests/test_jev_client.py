@@ -57,6 +57,17 @@ class Enabled(unittest.TestCase):
         # offline mode means nothing leaves the box, key or no key
         self.assertFalse(jev.enabled("disposition", {**ON, "llm_mode": "offline"}))
 
+    def test_own_key_works_under_any_chat_provider(self):
+        codex = {"online_llm": {"provider": "codex-subscription", "api_key": "sk-or-old"},
+                 "jev": {"enabled": True, "api_key": "sk-or-jev"}}
+        self.assertTrue(jev.enabled("disposition", codex))
+        self.assertEqual(jev._key(codex), "sk-or-jev")
+        # without its own key, a non-OpenRouter provider's leftover key is NOT used
+        self.assertFalse(jev.enabled("disposition", {**codex, "jev": {"enabled": True}}))
+        # and its own key wins over the main one
+        self.assertEqual(jev._key({**ON, "jev": {"enabled": True, "api_key": "sk-or-jev"}}), "sk-or-jev")
+        self.assertIsNone(jev._key({**codex, "llm_mode": "offline"}))
+
     def test_defaults_are_not_mutated_by_settings(self):
         jev.settings({"jev": {"uses": {"grounding": False}}})
         self.assertTrue(jev.DEFAULTS["uses"]["grounding"])
