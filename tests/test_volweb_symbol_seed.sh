@@ -139,6 +139,68 @@ case "$OUT" in
     *) fail "it says symbols resolve from Microsoft on first use" "$OUT" ;;
 esac
 
+echo
+echo "== the library is handed to app even when nothing was staged =="
+# THE BUG THIS PINS, measured on a live appliance. The mkdir above runs through
+# `docker exec`, which is root, so symbols/ is created root-owned. The chown
+# that fixes that used to sit inside `if (( staged > 0 ))` -- and `staged` is 0
+# on every stock install, because data/volweb-symbols ships only a .gitkeep.
+# So VolWeb (running as `app`) could read what shipped and never write: the
+# harvest that copies a run's learned symbols out of the worker failed EACCES
+# into 2>/dev/null and reported 0 files, on a box with symbols sitting there.
+: > "$DOCKER_CALLS"
+SYMBOL_COUNT=0
+seed_volweb_symbols "$EMPTY" >/dev/null 2>&1
+if grep -q "exec intact_volweb_backend chown -R app:app" "$DOCKER_CALLS"; then
+    ok "an install that stages nothing still chowns the directory to app"
+else
+    fail "an install that stages nothing still chowns the directory to app" \
+         "$(cat "$DOCKER_CALLS")"
+fi
+
+echo
+echo "== an upgrade notices if the symbol library shrank =="
+# Sourcing lib/upgrade/modules/volweb.sh whole would drag in the engine; the
+# two functions under test are self-contained, so lift just those.
+eval "$(sed -n '/^_volweb_verify_symbols() {/,/^}/p' "${ROOT}/lib/upgrade/modules/volweb.sh")"
+NEXT_COUNT=""
+_volweb_symbol_count() { printf '%s' "$NEXT_COUNT"; }
+verify() { NEXT_COUNT="$2"; _volweb_verify_symbols "$1" 2>&1; }
+
+case "$(verify 3 1)" in
+    *"SYMBOL LIBRARY SHRANK: 3 -> 1"*) ok "losing files is named, with the numbers" ;;
+    *) fail "losing files is named, with the numbers" "$(verify 3 1)" ;;
+esac
+case "$(verify 3 1)" in
+    *"MEMORY_SYMBOLS_AIRGAP.md"*) ok "and points at how to re-seed" ;;
+    *) fail "and points at how to re-seed" "$(verify 3 1)" ;;
+esac
+case "$(verify 3 3)" in
+    *"symbol library intact (3 file(s))"*) ok "an unchanged library is reported as kept" ;;
+    *) fail "an unchanged library is reported as kept" "$(verify 3 3)" ;;
+esac
+case "$(verify 3 5)" in
+    *"intact (5 file(s))"*) ok "growing is fine -- a run may have learned symbols" ;;
+    *) fail "growing is fine" "$(verify 3 5)" ;;
+esac
+# EMPTY IS NOT ZERO. A docker hiccup, or a VolWeb that is not installed, reads
+# as "" -- and reporting that as data loss is how a tripwire trains people to
+# ignore it.
+if [[ -z "$(verify '' 3)" && -z "$(verify 3 '')" ]]; then
+    ok "a count it could not READ is never reported as a count that CHANGED"
+else
+    fail "a count it could not READ is never reported as a count that CHANGED" \
+         "before-empty:[$(verify '' 3)] after-empty:[$(verify 3 '')]"
+fi
+# Policy 'report': VolWeb being unhappy has never been allowed to fail an
+# upgrade, and symbols are recoverable in a way the Velociraptor CA is not.
+NEXT_COUNT=0
+if _volweb_verify_symbols 9 >/dev/null 2>&1; then
+    ok "but it never fails the upgrade"
+else
+    fail "but it never fails the upgrade"
+fi
+
 rm -rf "$SEED" "$EMPTY"
 
 echo

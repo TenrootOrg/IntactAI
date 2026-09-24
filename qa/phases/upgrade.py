@@ -97,6 +97,14 @@ def register(runner, cfg):
         detail["before"] = appliance.version_facts(root)
         appliance.canary_write()
         detail["canary_before"] = appliance.canary_count()
+        # The Volatility symbol library, counted while the old box is still
+        # live. It lives on the volweb_media volume, and no upgrade module
+        # removes a volume today — so this is a tripwire for the day one does.
+        # It is the same class of thing as the IRIS canary: state the operator
+        # cannot recreate, on an air-gapped box least of all.
+        symbols_before = appliance.symbol_count()
+        detail["symbols_before"] = symbols_before
+        ctx.set(_symbols_before=symbols_before)
 
         log_path = os.path.join(ctx.run_dir, "logs", f"upgrade-{route}.log")
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
@@ -150,6 +158,8 @@ def register(runner, cfg):
         if target:
             detail["after"] = appliance.assert_state(ctx, root, target, "after")
         appliance.assert_canary(ctx, "after")
+        appliance.assert_symbols_survived(
+            ctx, ctx.get("_symbols_before"), "after")
 
         # ADOPTION IS VERIFIED HERE, not inside the upgrade phase.
         #

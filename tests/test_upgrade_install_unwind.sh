@@ -64,6 +64,33 @@ else
     fail "the teardown keeps volumes" "an undo must never delete a volume"
 fi
 
+# THE WHOLE ENGINE, not just shared.sh. The check above only ever read one
+# file, so a `down -v` added to any module's own upgrade would pass CI green.
+# What is actually at stake: volweb_media holds the Volatility symbol library
+# the appliance accumulates as it works, and on an air-gapped box that library
+# is the only thing that makes memory analysis possible at all -- deleting it
+# is not "a volume gets recreated", it is the module losing its capability.
+# `^[^#]*` keeps this off COMMENT lines: shared.sh:265 and interrupt.sh:14 both
+# discuss `down -v` and `docker volume rm` in prose, and a check that cannot
+# tell code from the comment explaining the code is a check nobody can keep.
+offenders="$(grep -rnE '^[^#]*down[^|]*(-v|--volumes)' "${ROOT}/lib/upgrade" 2>/dev/null || true)"
+if [[ -z "$offenders" ]]; then
+    ok "no upgrade path anywhere deletes a volume with down -v"
+else
+    fail "no upgrade path anywhere deletes a volume with down -v" "$offenders"
+fi
+
+# `docker volume rm` is allowed in exactly one place: the Timesketch Postgres
+# major bump, which refuses to run without a dump in hand. Anywhere else it is
+# data loss with no backup behind it.
+rm_files="$(grep -rnE '^[^#]*docker volume rm' "${ROOT}/lib/upgrade" 2>/dev/null \
+            | grep -v 'timesketch/postgres.sh' || true)"
+if [[ -z "$rm_files" ]]; then
+    ok "docker volume rm appears only in the Timesketch postgres bump"
+else
+    fail "docker volume rm is confined to the allowlisted path" "$rm_files"
+fi
+
 echo
 echo "== the report says what actually happened =="
 C="${ROOT}/lib/upgrade/core.sh"

@@ -1114,20 +1114,40 @@ class VolWebClient:
                      or _VOLWEB_WORKER_CONTAINER)
         if not container:
             return -1
+        # Runs as ROOT (docker exec's default), then hands ownership back to
+        # `app`. It used to run as `app` — and on a stock fresh install the
+        # directory is ROOT-OWNED, because seed_volweb_symbols creates it with
+        # a root docker exec and its chown only fired when it had actually
+        # staged a file, which never happens: the shipped pack is empty.
+        # Every copy then failed with EACCES into 2>/dev/null and the harvest
+        # reported 0 without a word. Measured on a live box.
+        #
+        # Doing the ownership here as well as at install time means the harvest
+        # does not depend on who created the directory or in what order — it
+        # works on a fresh install, an upgraded one, and one where an operator
+        # dropped files in by hand as root.
+        # PYTHONPATH because this runs as root and volatility3 is installed
+        # under the `app` user's ~/.local — root's interpreter cannot import it
+        # (ModuleNotFoundError, measured). Additive, so it still resolves if a
+        # future image installs volatility3 system-wide instead.
         script = (
-            'SRC=$(python3 -c "import volatility3,os;'
-            'print(os.path.join(os.path.dirname(volatility3.__file__),\'symbols\'))") || exit 0; '
-            'DST=/home/app/web/media/symbols; mkdir -p "$DST" 2>/dev/null; '
+            'SP=$(ls -d /home/app/.local/lib/python3*/site-packages 2>/dev/null | head -1); '
+            'SRC=$(PYTHONPATH="$SP" python3 -c "import volatility3,os;'
+            'print(os.path.join(os.path.dirname(volatility3.__file__),\'symbols\'))" '
+            '2>/dev/null) || exit 0; '
+            '[ -n "$SRC" ] || exit 0; '
+            'DST=/home/app/web/media/symbols; mkdir -p "$DST" || exit 0; '
             'for d in windows linux mac; do '
             '  [ -d "$SRC/$d" ] || continue; mkdir -p "$DST/$d" 2>/dev/null; '
             '  cp -rn "$SRC/$d/." "$DST/$d/" 2>/dev/null; '
             'done; '
+            'chown -R app:app "$DST" 2>/dev/null; '
             'find "$DST" -type f \\( -name "*.json" -o -name "*.json.xz" '
             '-o -name "*.json.gz" \\) 2>/dev/null | wc -l'
         )
         try:
             r = subprocess.run(
-                ["docker", "exec", "--user", "app", container, "sh", "-c", script],
+                ["docker", "exec", container, "sh", "-c", script],
                 capture_output=True, text=True, timeout=120,
             )
             return int((r.stdout or "0").strip().splitlines()[-1])

@@ -201,12 +201,29 @@ class TestAnExtractionThatProducedNothingFailsFast(unittest.TestCase):
         self.assertNotIn("timed out", str(caught.exception).lower())
         self.assertIn("MEMORY_SYMBOLS_AIRGAP", str(caught.exception))
 
-    def test_it_says_so_at_error_level_with_the_task_id(self):
+    def test_it_says_so_with_the_task_id_but_does_not_condemn_the_run(self):
+        """Logged, never silent — but at WARNING, not error.
+
+        This test used to require `error`, and that requirement was wrong. An
+        error-level line increments the run's error_count, which auto-flips the
+        run to FAILED at the end. In a layered run the parallel yarascan is
+        still scanning while this fires, and a yarascan needs no symbols at
+        all: measured on this appliance with the kernel ISF removed and
+        msdl.microsoft.com blacked out, the plugin phase aborted at 8s and the
+        yarascan went on to return 14 real hits — and the run was marked
+        FAILED, hits and all.
+
+        Whether the run amounted to anything is decided once, by the caller,
+        after both halves are in (pipeline._extract_outcome_line). This line
+        reports a fact; it does not pass sentence."""
         with self.assertRaises(VolWebError):
             self.wait(task_id="T-1")
-        errors = [m for lvl, m in self.client.logged if lvl == "error"]
-        self.assertTrue(errors, "an abort must be logged, never silent")
-        self.assertIn("T-1", errors[-1])
+        warnings = [m for lvl, m in self.client.logged if lvl == "warning"]
+        self.assertTrue(warnings, "an abort must be logged, never silent")
+        self.assertIn("T-1", warnings[-1])
+        self.assertEqual([m for lvl, m in self.client.logged if lvl == "error"], [],
+                         "an error level here auto-fails a run that may still "
+                         "have yarascan results")
 
     def test_without_the_task_id_the_same_run_only_ever_times_out(self):
         """The old behaviour, still reachable: no authoritative signal, so the

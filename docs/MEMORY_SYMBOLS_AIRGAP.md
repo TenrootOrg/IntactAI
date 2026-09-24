@@ -40,6 +40,26 @@ appliance directory and run the installer or an upgrade:
 A release package that carries a `volweb_symbols/` directory is staged into the
 same place by `lib/package.sh`.
 
+The directory is created by a root `docker exec` and then **chowned to `app`**,
+unconditionally — VolWeb runs as `app`, and a root-owned `symbols/` means the
+appliance can read what shipped but can never add to it. That is invisible from
+the outside: runs still start, still finish, and quietly learn nothing.
+
+### `scripts/clean.sh --volumes` and `--all` DESTROY the symbol library
+
+`volweb_volweb_media` is an ordinary named volume, so both flags remove it along
+with everything else — and on an air-gapped box the ISFs in it cannot be fetched
+again. Before running either, copy them out:
+
+```bash
+docker run --rm -v volweb_volweb_media:/m -v "$PWD/data/volweb-symbols:/out" \
+    alpine sh -c 'cp -rn /m/symbols/. /out/ 2>/dev/null; true'
+```
+
+They are then re-seeded by the next install or upgrade. Upgrades do **not** need
+this: no upgrade module removes a volume, and `lib/upgrade/modules/volweb.sh`
+counts the library before and after and says so in the report if it shrank.
+
 ## Option 1 — one kernel, 230 KB (recommended)
 
 The smallest thing that actually works. You need one ISF per distinct Windows

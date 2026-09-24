@@ -59,6 +59,15 @@ upgrade_module_volweb() {
     u_undo_pin volweb
     u_do "pin volweb in config.yaml" -- _pin_module_version volweb "$target"
     u_do "stamp volweb sidecar pins" -- _u_stamp_transitive volweb
+    # What the symbol library holds BEFORE the swap. On an air-gapped box this
+    # library is the only reason memory analysis works at all -- every ISF in
+    # it was either carried in by hand or learned from a run that could reach
+    # Microsoft, and neither is repeatable offline. Nothing in this module
+    # deletes volumes today, so this is a tripwire rather than a fix: it turns
+    # "a future edit quietly wiped volweb_media" from something an operator
+    # discovers weeks later into a line in the upgrade report.
+    local _sym_before; _sym_before="$(_volweb_symbol_count)"
+
     u_do --timeout 900 "start volweb" -- _u_volweb_compose_up "$dir"
 
     # Policy 'report', matching the Python: a DOWN VolWeb is named loudly but
@@ -90,6 +99,7 @@ upgrade_module_volweb() {
         if declare -F seed_volweb_symbols >/dev/null; then
             seed_volweb_symbols || log_warn "  Volatility symbol seeding had issues"
         fi
+        _volweb_verify_symbols "$_sym_before"
         discard_backup "$bak"
     fi
     return $rc
@@ -98,6 +108,43 @@ upgrade_module_volweb() {
 # Four to six containers mount the shared volweb_media volume at once and race
 # its initialisation. These four messages are that race and nothing else, so
 # they are the only ones retried. Ported from volweb.py:110-183.
+# How many symbol files the library holds, or empty when it cannot be read.
+# EMPTY IS NOT ZERO: the distinction is the whole point of the check below.
+_volweb_symbol_count() {
+    docker exec intact_volweb_workers sh -c \
+        'find /home/app/web/media/symbols -type f \( -name "*.json" -o -name "*.json.xz" -o -name "*.json.gz" \) 2>/dev/null | wc -l' \
+        2>/dev/null | tr -dc '0-9'
+}
+
+# Did the upgrade keep the symbol library? Same shape as _velo_verify_ca: a
+# value we could not READ is never reported as a value that CHANGED, because a
+# transient docker hiccup must not look like data loss.
+#
+# Never fails the upgrade. VolWeb's policy here is 'report' and losing symbols
+# is recoverable (they can be re-downloaded or re-seeded) -- unlike the
+# Velociraptor CA, where a change strands every enrolled endpoint. It is loud
+# because the consequence is quiet: memory analysis simply stops working on an
+# air-gapped box, with nothing to say why.
+_volweb_verify_symbols() {
+    local before="$1" after
+    after="$(_volweb_symbol_count)"
+    if [[ -z "$before" || -z "$after" ]]; then
+        return 0
+    fi
+    if (( after < before )); then
+        log_error "  THE VOLATILITY SYMBOL LIBRARY SHRANK: ${before} -> ${after} file(s)"
+        log_error "  volweb_media is supposed to survive an upgrade. On an air-gapped"
+        log_error "  appliance these files are the only thing that makes memory"
+        log_error "  analysis possible — re-seed from data/volweb-symbols (see"
+        log_error "  docs/MEMORY_SYMBOLS_AIRGAP.md)."
+        return 0
+    fi
+    if (( before > 0 )); then
+        log_success "  symbol library intact (${after} file(s))"
+    fi
+    return 0
+}
+
 _u_volweb_compose_up() {
     local dir="$1" attempt
     for attempt in 1 2 3; do

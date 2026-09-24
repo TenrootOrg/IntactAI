@@ -184,3 +184,103 @@ def assert_canary(ctx, label=""):
         return
     ctx.check(f"{pfx}IRIS canary survived", n == "1",
               expected="1 row", actual=f"{n} row(s)")
+
+
+# --- the volatility symbol library -----------------------------------------
+#
+# VolWeb keeps downloaded and hand-seeded ISFs on the shared volweb_media
+# volume, and volatility3 searches it (volatility_engine/utils.py). On an
+# air-gapped appliance that directory is the ONLY reason memory analysis works:
+# nothing can be fetched from msdl.microsoft.com, so every symbol table either
+# arrived with the install or was learned by a run on a box that could reach
+# the internet. Losing it is silent — runs keep starting, keep finishing, and
+# keep returning nothing.
+#
+# Two separate properties, which is why there are two checks below:
+#   exists and is writable by `app`  — install got the ownership right
+#   count did not shrink             — the upgrade kept the volume
+#
+# The ownership one is not theoretical. seed_volweb_symbols() creates this
+# directory through a root `docker exec`, and its chown used to sit behind
+# `if (( staged > 0 ))` — which is never true on a stock install, because the
+# shipped pack holds only a .gitkeep. Every appliance therefore had a
+# root-owned symbols/ that VolWeb (running as `app`) could not write to, and
+# the harvest that copies a run's learned symbols out of the container failed
+# EACCES into /dev/null. Measured on a live box: 0 files copied, no error.
+
+SYMBOLS_DIR = "/home/app/web/media/symbols"
+SYMBOLS_CONTAINER = "intact_volweb_workers"
+
+
+def _symbols_sh(script, container=SYMBOLS_CONTAINER, timeout=60):
+    return _run(["docker", "exec", container, "sh", "-c", script], timeout)
+
+
+def symbol_count():
+    """How many ISFs the library holds, or None when it cannot be read.
+
+    None is NOT zero, and the callers depend on the difference: a docker hiccup
+    or a VolWeb that is legitimately not installed must never be reported as
+    symbols having been deleted.
+    """
+    out = _symbols_sh(
+        f"find {SYMBOLS_DIR} -type f "
+        r"\( -name '*.json' -o -name '*.json.xz' -o -name '*.json.gz' \) "
+        "| wc -l")
+    out = "".join(ch for ch in out if ch.isdigit())
+    return int(out) if out else None
+
+
+def symbols_writable():
+    """Can VolWeb's own user write to the library? (True/False/None)."""
+    probe = f"{SYMBOLS_DIR}/.qa_write_probe"
+    out = _symbols_sh(
+        f"test -d {SYMBOLS_DIR} || {{ echo NODIR; exit 0; }}; "
+        # su-exec/gosu are not in this image; `su app -s /bin/sh -c` is, and
+        # asking the kernel beats reading the mode bits — it accounts for the
+        # group, the sticky bit and anything a future base image changes.
+        f"su app -s /bin/sh -c 'touch {probe} 2>/dev/null && rm -f {probe} "
+        f"&& echo OK || echo DENIED'")
+    if "NODIR" in out:
+        return False
+    if "OK" in out:
+        return True
+    if "DENIED" in out:
+        return False
+    return None
+
+
+def assert_symbols_usable(ctx, label=""):
+    """Install-side: the library exists and `app` can write to it."""
+    pfx = f"{label}: " if label else ""
+    n = symbol_count()
+    if n is None:
+        ctx.check(f"{pfx}the Volatility symbol library is usable", True,
+                  actual="SKIPPED: no volweb worker to ask",
+                  note="not a failure; VolWeb is not installed on this box")
+        return None
+    w = symbols_writable()
+    ctx.check(f"{pfx}the Volatility symbol library is usable", w is True,
+              expected=f"{SYMBOLS_DIR} present and writable by app",
+              actual=f"{n} file(s), " + {True: "writable",
+                                         False: "NOT writable by app",
+                                         None: "writability unknown"}[w],
+              note="a root-owned symbols/ shipped for months: VolWeb could not "
+                   "write there, so nothing a run learned was ever kept and an "
+                   "air-gapped box silently lost memory analysis")
+    return n
+
+
+def assert_symbols_survived(ctx, before, label=""):
+    """Upgrade-side: the library did not shrink across the upgrade."""
+    pfx = f"{label}: " if label else ""
+    after = symbol_count()
+    if before is None or after is None:
+        ctx.check(f"{pfx}the Volatility symbol library survived", True,
+                  actual=f"SKIPPED: before={before} after={after}",
+                  note="a count we could not read is not a count that changed")
+        return
+    ctx.check(f"{pfx}the Volatility symbol library survived", after >= before,
+              expected=f">= {before} file(s)", actual=f"{after} file(s)",
+              note="volweb_media must outlive an upgrade; on an air-gapped box "
+                   "these files cannot be re-downloaded")

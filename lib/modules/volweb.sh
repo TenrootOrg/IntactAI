@@ -684,12 +684,18 @@ seed_volweb_symbols() {
             \( -name '*.json' -o -name '*.json.xz' -o -name '*.json.gz' -o -name '*.zip' \) \
             2>/dev/null)
     fi
+    # ALWAYS, not only when we staged something. `docker exec` runs as root, so
+    # the mkdir above creates this directory root-owned — and the shipped pack
+    # is empty (data/volweb-symbols holds only .gitkeep), so `staged` is 0 on
+    # every stock install and this chown never ran. VolWeb runs as `app`:
+    # a root-owned symbols/ means the appliance cannot write there at all, so
+    # the symbol library never accumulates and an operator uploading an ISF
+    # through the VolWeb UI is refused. Measured on a live box: with the
+    # directory root-owned, the harvest copied 0 files and reported nothing.
+    #
+    # World-readable is enough to READ an ISF, so this is about WRITING.
+    docker exec intact_volweb_backend chown -R app:app "$dest" >/dev/null 2>&1
     if (( staged > 0 )); then
-        # docker cp lands files owned by root; the worker runs as `app`. World
-        # -readable is enough to READ an ISF, but the cache index writes
-        # nothing here, so a chown is cheap insurance against a restrictive
-        # umask on the operator's staging machine.
-        docker exec intact_volweb_backend chown -R app:app "$dest" >/dev/null 2>&1
         log_success "  Staged ${staged} Volatility symbol file(s) into VolWeb"
     fi
 

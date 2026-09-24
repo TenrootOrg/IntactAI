@@ -54,9 +54,19 @@ def register(runner, cfg):
                   "Upload a real memory slice and prove the pipeline moves it",
                   needs=("features",))
     def memory_plumbing(ctx):
-        from lib import shell
+        from lib import shell, appliance
 
         detail = {}
+
+        # BEFORE the image, because this is the one thing here that is checked
+        # on every scenario including the pure-install ones, and it costs a
+        # second. "No symbols" is a PASS for the run below -- a kcore slice has
+        # no matching kernel ISF and never will -- but a symbol library the
+        # appliance cannot WRITE to is a different failure entirely, and one
+        # that no amount of running the pipeline would surface: the run still
+        # starts, still finishes, and still reports nothing.
+        detail["symbols"] = appliance.assert_symbols_usable(ctx)
+
         img = os.path.join(ctx.run_dir, "artifacts", "kcore-slice.raw")
         os.makedirs(os.path.dirname(img), exist_ok=True)
 

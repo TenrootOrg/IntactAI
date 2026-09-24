@@ -1060,6 +1060,16 @@ def run_memory_pipeline(
             if _n > 0:
                 log(f"symbols: library now holds {_n} file(s) — kept on the "
                     f"volume, so this kernel needs no download next time", "info")
+            else:
+                # NEVER SILENT. The first version only spoke when it succeeded,
+                # so a permission failure — the stock fresh-install state, where
+                # the directory is root-owned — looked exactly like a run that
+                # had nothing to keep. The library simply never grew and no log
+                # line anywhere said why.
+                log("symbols: nothing was kept from this run — the library is "
+                    "empty. If this repeats, check that "
+                    "/home/app/web/media/symbols is writable by `app` inside "
+                    "the VolWeb worker.", "warning")
         except Exception as _se:                        # noqa: BLE001
             log(f"symbols: could not keep this run's symbols ({_se})", "warning")
 
