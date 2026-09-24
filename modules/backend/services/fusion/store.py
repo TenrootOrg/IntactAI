@@ -4540,12 +4540,18 @@ def identity_view(case_id) -> dict:
                              "kind": "same_identity"})
         e["score"] = max(e["score"], c["score"])
         e["ambiguous"] = e["ambiguous"] or c.get("ambiguous", False)
+    # Jev's "same person?" probability for the pair, when it was asked (a hint
+    # beside Merge/Dismiss — never a merge).
+    from . import jev as _jev
+    jev_p = (d.get("jev_identity") or {}) if _jev.enabled("identity") else {}
     for e in pairs.values():
         ca, cb = e["cards"]
+        ps = [jev_p[m["id"]] for m in e["members"] if m["id"] in jev_p]
         for src, dst in ((ca, cb), (cb, ca)):
             src["suggestions"].append({
                 "id": e["members"][0]["id"], "other": dst["name"], "reason": e["reason"],
-                "score": e["score"], "ambiguous": e["ambiguous"], "members": e["members"]})
+                "score": e["score"], "ambiguous": e["ambiguous"], "members": e["members"],
+                "jev_p": max(ps) if ps else None})
     # people with a suggestion / more infrastructures / accounts first
     idents.sort(key=lambda it: (-len(it.get("suggestions") or []), -len(it["buckets"]),
                                 -len(it["accounts"]), it["key"]))

@@ -230,6 +230,54 @@ def suggestion_for(d_suggestions, fid, wm):
 
 
 # ---------------------------------------------------------------------------
+# Identity-match hints: "are these two accounts the same person?" for the pairs
+# the deterministic matcher only SUGGESTS (not corroborated, not decided).
+# Merge/Dismiss stay the analyst's buttons; this only adds a number beside them.
+# ---------------------------------------------------------------------------
+def _pending_identity_pairs(d, g):
+    from . import identities as idf
+    from .store import _identity_decisions
+    decisions = _identity_decisions(d)
+    fuzzy = idf.analyst_inputs(g, decisions, idf.compute_candidates(g))["fuzzy"]
+    return [c for c in fuzzy if not c.get("auto") and not decisions.get(c["id"])]
+
+
+def _pair_state(c):
+    return {"account_a": c.get("a_label"), "seen_on_a": c.get("a_ctx"),
+            "account_b": c.get("b_label"), "seen_on_b": c.get("b_ctx"),
+            "why_suggested": c.get("reason")}
+
+
+def _same_person_question(k):
+    return {"type": "noul",
+            "instructions": f"items.{k} is a pair of user accounts from a forensic case. "
+                            "Do both belong to the same real person?",
+            "criteria": {"true": "Same person (e.g. jsmith and john.smith@corp).",
+                         "false": "Different people who merely have similar names."}}
+
+
+def suggest_identities(case_id, d, g) -> int:
+    # Masking turns both names into unrelated pseudonyms, which destroys the only
+    # signal this question has. Skip rather than send noise.
+    if (d.get("masking") or {}).get("enabled"):
+        return 0
+    have = d.get("jev_identity") or {}
+    pairs = _pending_identity_pairs(d, g)
+    todo = [c for c in pairs if c["id"] not in have]
+    if not todo:
+        return 0
+    answers = ask_each(todo, _pair_state, _same_person_question, run_id=case_id)
+    new = dict(have)
+    for c, ans in zip(todo, answers):
+        if isinstance(ans, dict) and isinstance(ans.get("noul"), (int, float)):
+            new[c["id"]] = float(ans["noul"])
+    if new != have:
+        from .store import _merge_case_details
+        _merge_case_details(case_id, {"jev_identity": new})
+    return len(todo)
+
+
+# ---------------------------------------------------------------------------
 # After every fuse, off the fuse lock, one worker per case.
 # ---------------------------------------------------------------------------
 import threading  # noqa: E402
@@ -281,3 +329,5 @@ def _one_pass(case_id):
     g = view_graph(case_id, d, scoped=False)
     if enabled("disposition"):
         suggest_dispositions(case_id, d, g)
+    if enabled("identity"):
+        suggest_identities(case_id, d, g)
