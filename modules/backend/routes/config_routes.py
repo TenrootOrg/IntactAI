@@ -3,10 +3,12 @@
 Config Routes - Configuration endpoints (frontend config, cloud config)
 """
 
+import copy
 import json
 import time
 from flask import Blueprint, jsonify, request
 from services.file_storage_service import load_frontend_config, save_frontend_config
+from services.fusion.jev import DEFAULTS as JEV_DEFAULTS
 
 config_bp = Blueprint('config', __name__)
 
@@ -30,7 +32,9 @@ DEFAULT_CONFIG = {
             "provider": "openrouter",
             "api_key": "",
             "model": "~anthropic/claude-haiku-latest"
-        }
+        },
+        # Fast decisions (Jev) — off by default; see services/fusion/jev.py.
+        "jev": copy.deepcopy(JEV_DEFAULTS),
     }
 }
 

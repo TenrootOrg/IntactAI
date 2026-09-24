@@ -13,7 +13,9 @@ document.addEventListener('alpine:init', () => {
                 offline_llm: { provider: 'ollama', model: 'llama3.3:70b', url: 'http://localhost:11434' },
                 online_llm: { provider: 'openrouter', api_key: '', model: '~anthropic/claude-haiku-latest' },
                 ollama_context_size: 65536,
-                ollama_timeout: 600
+                ollama_timeout: 600,
+                // Fast decisions (Jev) — must match jev.DEFAULTS in services/fusion/jev.py
+                jev: { enabled: false, model: 'jev-latest', min_confidence: 0.8, uses: { disposition: true, relevance: true, grounding: true, identity: true, chat_intent: true } }
             },
             timesketch: {
                 llm_mode: 'google',
@@ -75,7 +77,10 @@ document.addEventListener('alpine:init', () => {
                         offline_llm: { ...this.config.agentic.offline_llm, ...data.agentic?.offline_llm },
                         online_llm: { ...this.config.agentic.online_llm, ...data.agentic?.online_llm },
                         ollama_context_size: data.agentic?.ollama_context_size || 65536,
-                        ollama_timeout: data.agentic?.ollama_timeout || 600
+                        ollama_timeout: data.agentic?.ollama_timeout || 600,
+                        // Listed here or Save drops it: saveAgentic() PUTs this whole block.
+                        jev: { ...this.config.agentic.jev, ...data.agentic?.jev,
+                               uses: { ...this.config.agentic.jev.uses, ...data.agentic?.jev?.uses } }
                     };
                 }
 
