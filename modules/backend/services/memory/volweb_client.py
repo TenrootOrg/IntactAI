@@ -1516,12 +1516,19 @@ class VolWebClient:
                         f"single plugin row (evidence status={ev.get('status')}). "
                         f"Check `docker logs --tail 200 {_VOLWEB_WORKER_CONTAINER}`."
                     )
+                    # WARNING, not error. An error-level line increments the
+                    # run's error_count, which auto-flips it to FAILED at the
+                    # end — and a run whose plugins could not construct may
+                    # still be returning YARA hits from the parallel scan,
+                    # which needs no symbols. The caller decides what this run
+                    # amounted to once BOTH halves are in; see
+                    # pipeline._extract_outcome_line.
                     self._log(
                         f"plugin extract: task {task_id} reached a terminal state "
                         f"after {elapsed_s}s with 0/{len(wanted)} plugins — "
                         f"aborting instead of waiting out the remaining "
                         f"{max(0, int(deadline - time.time())) // 60}m. {reason}",
-                        "error",
+                        "warning",
                     )
                     raise VolWebError(reason)
 

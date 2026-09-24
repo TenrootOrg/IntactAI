@@ -120,5 +120,73 @@ class TestTheSymbolFailureStaysInsideThePhase(unittest.TestCase):
         self.assertIn("Nothing else in this run can produce results.", self.SRC)
 
 
+class TestNothingBelowDecidesTheVerdict(unittest.TestCase):
+    """The client aborts the plugin wait and raises. It used to log that at
+    `error` first — and error-level lines increment error_count, which
+    auto-flips the run to FAILED at the end. So a run whose plugins could not
+    construct was marked failed even while the parallel yarascan was still
+    running and about to return hits. Seen live: "0/12 plugins" logged as an
+    error at 3s, yarascan still scanning 393s later.
+
+    The verdict belongs to the caller, once BOTH halves are in."""
+
+    SRC = _read("modules/backend/services/memory/volweb_client.py")
+
+    def test_the_abort_is_a_warning_not_an_error(self):
+        blk = self.SRC[self.SRC.index("reached a terminal state ") - 900:]
+        blk = blk[:blk.index("raise VolWebError(reason)")]
+        self.assertIn('"warning",', blk)
+        self.assertNotIn('"error",', blk)
+
+    def test_it_says_why_the_level_matters(self):
+        self.assertIn("auto-flips it to FAILED", self.SRC)
+
+
+class TestTheSymbolLibraryAccumulates(unittest.TestCase):
+    """Vol3 writes a downloaded ISF into its OWN PACKAGE directory, which is
+    container filesystem. Measured: 3 ISFs / 1.1 MB downloaded in one day;
+    recreating the worker took the package dir to 0 while the volume kept all
+    3. Without harvesting, every recreate and every VolWeb upgrade threw away
+    every symbol the box had resolved — and an air-gapped appliance could never
+    accumulate any at all."""
+
+    SRC = _read("modules/backend/services/memory/volweb_client.py")
+
+    def test_there_is_a_harvest(self):
+        self.assertIn("def harvest_symbols(self)", self.SRC)
+
+    def test_it_reads_the_worker_not_the_backend(self):
+        """Volatility runs in the extraction worker, so that is the only
+        container the downloads land in. Pointed at the backend it finds 0 and
+        silently does nothing — which is how the first cut was written."""
+        blk = self.SRC[self.SRC.index("def harvest_symbols(self)"):][:2600]
+        self.assertIn('_config_value("worker_container"', blk)
+        self.assertNotIn("_resolve_backend_container()", blk)
+
+    def test_it_copies_into_the_volume_on_vol3s_search_path(self):
+        blk = self.SRC[self.SRC.index("def harvest_symbols(self)"):][:2600]
+        self.assertIn("/home/app/web/media/symbols", blk)
+
+    def test_it_never_moves_and_never_overwrites(self):
+        """The package dir must stay valid for the running process, and an ISF
+        an operator seeded by hand always wins."""
+        blk = self.SRC[self.SRC.index("def harvest_symbols(self)"):][:2600]
+        self.assertIn("cp -rn", blk)
+        self.assertNotIn("mv ", blk)
+
+    def test_it_cannot_break_a_finished_run(self):
+        """Housekeeping after the results are already in."""
+        blk = self.SRC[self.SRC.index("def harvest_symbols(self)"):][:3400]
+        self.assertIn("except Exception:", blk)
+        self.assertIn("return -1", blk)
+
+    def test_the_pipeline_calls_it_and_survives_it_failing(self):
+        pipe = _read("modules/backend/services/memory/pipeline.py")
+        self.assertIn("client.harvest_symbols()", pipe)
+        blk = pipe[pipe.index("client.harvest_symbols()") - 400:]
+        blk = blk[:800]
+        self.assertIn("except Exception as _se:", blk)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
