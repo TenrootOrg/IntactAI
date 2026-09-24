@@ -212,8 +212,12 @@ SYMBOLS_DIR = "/home/app/web/media/symbols"
 SYMBOLS_CONTAINER = "intact_volweb_workers"
 
 
-def _symbols_sh(script, container=SYMBOLS_CONTAINER, timeout=60):
-    return _run(["docker", "exec", container, "sh", "-c", script], timeout)
+def _symbols_sh(script, container=None, timeout=60):
+    # SYMBOLS_CONTAINER read at CALL time, not bound as a default argument: a
+    # default is evaluated once at import, so a box that renames the worker
+    # (and any test that points this somewhere else) would be ignored.
+    return _run(["docker", "exec", container or SYMBOLS_CONTAINER,
+                 "sh", "-c", script], timeout)
 
 
 def symbol_count():
