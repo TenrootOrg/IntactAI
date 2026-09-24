@@ -278,6 +278,40 @@ def suggest_identities(case_id, d, g) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Chat: does the analyst's message state a verdict? Only the DETECTION — the
+# offer it produces still needs the literal "confirm" to apply (the chat says
+# so, and a casual "yes" must never suppress a finding).
+# ---------------------------------------------------------------------------
+CHAT_VERDICTS = {
+    "malicious": "The analyst states the activity is malicious or an attack.",
+    "benign": "The analyst states the activity is expected, legitimate or harmless.",
+    "none": "The message states no verdict (a question, instruction or other remark).",
+}
+
+
+def chat_verdict(question, d, g, run_id=None):
+    """'malicious' | 'benign' | 'none' when Jev is sure, else None (use keywords)."""
+    from .llm_sim import is_question
+    if not enabled("chat_intent") or is_question(question):
+        return None
+    try:
+        mask = mask_for(d, g)
+        ans = (ask({"message": masked(question or "", mask)},
+                   {"v": {"type": "choice", "criteria": CHAT_VERDICTS,
+                          "instructions": "The message is from a security analyst in a "
+                                          "case chat. Does it state a verdict?"}},
+                   run_id=run_id) or {}).get("v")
+    except Exception as e:  # noqa: BLE001
+        log.warning("jev: chat verdict skipped: %s", e)
+        return None
+    if not isinstance(ans, dict) or ans.get("choice") not in CHAT_VERDICTS:
+        return None
+    if float(ans.get("confidence") or 0) < min_confidence():
+        return None
+    return ans["choice"]
+
+
+# ---------------------------------------------------------------------------
 # After every fuse, off the fuse lock, one worker per case.
 # ---------------------------------------------------------------------------
 import threading  # noqa: E402

@@ -98,19 +98,32 @@ def _disp_attribution(q: str) -> str:
     return "other"
 
 
-def detect_disposition(graph, question: str):
+def is_question(question: str) -> bool:
+    q = (question or "").lower().strip().strip('"\u2019\'` ')
+    return q.endswith("?") or any(q.startswith(op) for op in _QUESTION_OPENERS)
+
+
+def detect_disposition(graph, question: str, verdict_hint=None):
     """If the message attributes activity as benign/IT/etc AND grounds to a real finding or
     entity, return a disposition dict; else None (caller falls back to normal chat). Grounding
-    is mandatory — the same anti-hallucination discipline as the analyst pass."""
+    is mandatory — the same anti-hallucination discipline as the analyst pass.
+
+    `verdict_hint` ('malicious' | 'benign' | 'none') is Jev's confident reading of the
+    message, when the operator enabled it; it replaces the keyword guess, which cannot
+    read Hebrew or "the backup server was compromised". Grounding, attribution and the
+    confirm-to-apply step are unchanged either way."""
     q = (question or "").lower().strip().strip('"\u2019\'` ')
     # Questions are read-only by definition. Applying a disposition to one lets
     # a plain enquiry suppress a finding and re-fuse the case behind the
     # operator's back, which is exactly what "who is the most malicious user"
     # did before this guard existed.
-    if q.endswith("?") or any(q.startswith(op) for op in _QUESTION_OPENERS):
+    if is_question(question):
         return None
-    verdict = ("malicious" if any(k in q for k in _DISP_MAL)
-               else ("benign" if any(k in q for k in _DISP_BENIGN) else None))
+    if verdict_hint is not None:
+        verdict = None if verdict_hint == "none" else verdict_hint
+    else:
+        verdict = ("malicious" if any(k in q for k in _DISP_MAL)
+                   else ("benign" if any(k in q for k in _DISP_BENIGN) else None))
     if not verdict:
         return None
     scope = ("environment" if any(k in q for k in ("environment", "everywhere", "always",

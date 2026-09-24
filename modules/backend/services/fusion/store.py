@@ -5024,7 +5024,9 @@ def chat_case(case_id, question) -> str:
         # anything else: the offer simply lapses, the question is answered normally
         _set_pending_disposition(case_id, None)
 
-    proposal = llm_sim.detect_disposition(g, question)
+    from . import jev
+    proposal = llm_sim.detect_disposition(g, question,
+                                          verdict_hint=jev.chat_verdict(question, d, g, run_id=case_id))
     model, provider, _m = _configured_fusion_model()
     log_case_event(case_id, "Chat · sending to LLM", "info",
                    f"model {model} ({provider})" if model else "no model configured")
