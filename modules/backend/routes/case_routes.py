@@ -539,19 +539,15 @@ def get_zoom_targets(case_id):
     d = store.get_case(case_id)
     if not d:
         return jsonify({"error": "case not found"}), 404
-    g = store.view_graph(case_id, d)
-    win = store.view_window(d)
-    ms = d.get("min_severity") or "informational"
-    _mode = d.get("report_altitude") or "auto"
-    altitude, reason = render._resolve_altitude(g, window=win, min_severity=ms, mode=_mode)
-    # analysable() drops the coverage rollup and any window too small to be a scope;
-    # the rollup is appended back as a non-clickable accounting row so the operator
-    # can still see what was left out.
-    _zt = (render.zoom_targets(g, window=win, min_severity=ms,
-                               force_phases=(_mode == "macro"))
-           if altitude == "macro" else [])
-    targets = render.analysable(_zt) + [z for z in _zt if z.get("rollup")]
+    altitude, reason, targets, g = store.scope_cards(case_id, d)
     if targets:
+        # Jev's estimate for each window, when on and current (computed after the
+        # fuse, never here — this route must stay instant and deterministic).
+        try:
+            from services.fusion import jev
+            jev.attach_scope_estimates(targets, d, g)
+        except Exception:                                 # noqa: BLE001
+            pass
         # The model named each window in the report ("### Timeframe 3 — Ransomware
         # prep & C2"); carry that onto the card so it says what the window IS, not
         # only when it was. Absent (deterministic report, or not yet narrated) the

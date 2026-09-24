@@ -1068,6 +1068,13 @@ let _zoomTargets=[];
 // answered, so they blinked whenever the tab redrew. The last cards stay on screen
 // until a different answer arrives.
 let _zoomHtml={id:null, html:''};
+// Jev's estimate for a scope card (Settings → Agentic → Fast decisions). Present
+// only when Jev is on and answered for exactly this window's findings.
+function _ztJev(t){
+  if(!t || typeof t.jev_p!=='number') return '';
+  const p=Math.round(t.jev_p*100);
+  return `<div class="zt-meta" style="color:#79c0ff" title="Jev's estimate from this window's findings — a second opinion to help pick where to zoom, not a verdict.">Jev: ${p}% likely attacker activity</div>`;
+}
 function loadZoomTargets(id){
   api('/api/cases/'+id+'/zoom_targets').then(d=>{
     const el=$('#zoomcards'); if(!el) return;
@@ -1079,6 +1086,7 @@ function loadZoomTargets(id){
           <div class="zt-title">${t.name ? esc('Phase '+t.n+' — '+t.name) : esc(t.title)}</div>
           <div class="zt-meta">${(t.host_labels||[]).length} host(s) · ${t.finding_count} finding(s)${t.cross_host?` · ${t.cross_host} cross-host`:''}${(t.mitre&&t.mitre.length)?` · ${esc(t.mitre.slice(0,3).join(', '))}`:''}</div>
           <div class="zt-win">${esc((t.window||{}).start||'')} → ${esc((t.window||{}).end||'')}</div>
+          ${_ztJev(t)}
           ${t.rollup ? '<div class="zt-meta" style="margin-top:6px">Accounting row — the windows not analysed individually. Not a scope.</div>' : `<button class="dlbtn zt-go" onclick="applyZoom('${esc(id)}',${i})">Analyze this scope →</button>`}
         </div>`).join('')+`</div></div>`;
     _zoomHtml={id, html};

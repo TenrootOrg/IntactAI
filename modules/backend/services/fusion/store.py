@@ -4856,6 +4856,24 @@ def case_hosts(case_id) -> list:
     return out
 
 
+def scope_cards(case_id, d=None):
+    """(altitude, reason, cards, graph) — the Analysis tab's scope cards, exactly as
+    GET /zoom_targets shows them. One definition, so Jev's per-scope estimate is
+    computed for the very windows the operator sees."""
+    d = get_case(case_id) if d is None else d
+    g = view_graph(case_id, d)
+    win = view_window(d)
+    ms = d.get("min_severity") or "informational"
+    mode = d.get("report_altitude") or "auto"
+    altitude, reason = render._resolve_altitude(g, window=win, min_severity=ms, mode=mode)
+    # analysable() drops the coverage rollup and any window too small to be a scope;
+    # the rollup is appended back as a non-clickable accounting row so the operator
+    # can still see what was left out.
+    zt = (render.zoom_targets(g, window=win, min_severity=ms, force_phases=(mode == "macro"))
+          if altitude == "macro" else [])
+    return altitude, reason, render.analysable(zt) + [z for z in zt if z.get("rollup")], g
+
+
 def get_timeline(case_id) -> list:
     """Unified case timeline: every finding (with its source artifact + 4-state
     validation) PLUS operator-added manual events, sorted by time. Honors

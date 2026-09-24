@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 
 URL = "https://openrouter.ai/api/v1/systemone"
 USES = ("disposition", "relevance", "grounding", "identity", "chat_intent", "injection",
-        "chat_confidence")
+        "chat_confidence", "scopes")
 DEFAULTS = {"enabled": False, "model": "jev-latest", "min_confidence": 0.8,
             # Jev's own OpenRouter key. Empty = use the main key, which only works
             # while OpenRouter is the selected chat provider.
@@ -472,6 +472,70 @@ def entity_estimates(question, d, g, run_id=None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Scope cards: for a broad case, "how likely is this window real attacker
+# activity?" on each card. Asked after the fuse and cached per exact set of
+# findings (+ their occurrences), so the cards themselves load instantly and a
+# window whose findings changed shows no stale number.
+# ---------------------------------------------------------------------------
+def _scope_sig(z, by_id):
+    import hashlib
+    parts = sorted(f"{fid}:{by_id[fid].watermark()}" for fid in z.get("finding_ids") or []
+                   if fid in by_id)
+    return hashlib.sha1("|".join(parts).encode()).hexdigest()[:16] if parts else None
+
+
+def _scope_state(z, by_id, g):
+    fs = sorted((by_id[i] for i in z.get("finding_ids") or [] if i in by_id),
+                key=lambda f: _SEV_RANK.get(f.severity, 4))[:15]
+    from .render import _finding_evidence
+    return {"window": z.get("window"), "hosts": z.get("host_labels") or [],
+            "mitre": z.get("mitre") or [],
+            "findings": [{"title": f.title, "severity": f.severity,
+                          "detected_by": list(f.sources or []),
+                          "evidence": _finding_evidence(g, f)[:3]} for f in fs]}
+
+
+def suggest_scopes(case_id, d) -> int:
+    from .store import _merge_case_details, scope_cards
+    altitude, _r, cards, g = scope_cards(case_id, d)
+    by_id = {f.id: f for f in g.findings}
+    have = d.get("jev_scopes") or {}
+    todo = [(z, sig) for z in cards if not z.get("rollup")
+            for sig in [_scope_sig(z, by_id)] if sig and sig not in have]
+    if todo:
+        mask = mask_for(d, g)
+        answers = ask_each(todo, lambda t: masked(_scope_state(t[0], by_id, g), mask), lambda k: {
+            "type": "noul",
+            "instructions": f"items.{k} is one time window of a forensic case: its hosts, "
+                            "techniques and findings. Does it show real attacker activity?",
+            "criteria": {"true": "An intrusion or attacker actions happened in this window.",
+                         "false": "Benign, administrative or detection noise."}}, run_id=case_id)
+        new = dict(have)
+        for (z, sig), a in zip(todo, answers):
+            if isinstance(a, dict) and isinstance(a.get("noul"), (int, float)):
+                new[sig] = round(float(a["noul"]), 3)
+    else:
+        new = dict(have)
+    live = {_scope_sig(z, by_id) for z in cards}
+    new = {k: v for k, v in new.items() if k in live}        # windows that no longer exist
+    if new != have:
+        _merge_case_details(case_id, {"jev_scopes": new})
+    return len(todo)
+
+
+def attach_scope_estimates(cards, d, g):
+    """Set card["jev_p"] where a current estimate exists. Nothing when off."""
+    if not enabled("scopes"):
+        return
+    by_id = {f.id: f for f in g.findings}
+    est = d.get("jev_scopes") or {}
+    for z in cards:
+        p = est.get(_scope_sig(z, by_id)) if not z.get("rollup") else None
+        if p is not None:
+            z["jev_p"] = p
+
+
+# ---------------------------------------------------------------------------
 # After every fuse, off the fuse lock, one worker per case.
 # ---------------------------------------------------------------------------
 import threading  # noqa: E402
@@ -484,7 +548,7 @@ def after_fuse(case_id) -> None:
     """Called by store.fuse_case once the lock is released. Never raises."""
     try:
         cfg = _cfg()
-        if not any(enabled(u, cfg) for u in ("disposition", "identity")):
+        if not any(enabled(u, cfg) for u in ("disposition", "identity", "scopes")):
             return
         with _workers_lock:
             if case_id in _running:
@@ -525,6 +589,8 @@ def _one_pass(case_id):
         suggest_dispositions(case_id, d, g)
     if enabled("identity"):
         suggest_identities(case_id, d, g)
+    if enabled("scopes"):
+        suggest_scopes(case_id, get_case(case_id) or d)
 
 
 # ---------------------------------------------------------------------------

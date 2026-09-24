@@ -368,6 +368,10 @@ def zoom_targets(graph, *, window=None, min_severity="informational",
             "hosts": sorted(hosts.keys()), "host_labels": labels,
             "window": {"start": start, "end": end}, "span_hours": span_h,
             "top_titles": titles,
+            # Which findings the window holds — for a per-window question (Jev's
+            # scope estimate). Not part of the model payload (timeframes_for_payload
+            # picks its own keys).
+            "finding_ids": [f.id for f in fs],
             "critical_count": sum(1 for f in fs if f.severity == "critical"),
             # Rank on what DISCRIMINATES. `severity` is the max in the group, so on a
             # real case every group reads "critical" off a handful of criticals and
