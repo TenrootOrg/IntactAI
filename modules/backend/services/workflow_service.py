@@ -49,6 +49,9 @@ _TERMINAL_STATUSES = ("completed", "success")
 SYSTEM_TYPES = {"upgrade", "online_upgrade", "prepare_package", "maintenance",
                 "system_purge", "support_bundle", "settings",
                 "case_import", "case_export",
+                # Jev relevance scoring: minutes of calls, started on demand,
+                # stoppable — a System action like export.
+                "jev_relevance",
                 # An imported upgrade PACKAGE upload is a system op, exactly like
                 # the `upgrade`/`online_upgrade` apply it feeds. Without this it
                 # was forced to the active/Default workspace while the apply run

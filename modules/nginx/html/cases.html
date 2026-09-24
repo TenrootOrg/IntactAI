@@ -1537,6 +1537,28 @@ function renderTimeline(id){
     // is often. The filter bar is rebuilt on the next full draw of the tab.
     if(reload && $('#tlrows')) tlPaint(); else tlBuild();});
 }
+// Jev relevance: the raw collected rows it judged most relevant, from the last
+// "Score collected rows" run. Collapsed by default — it is a lead list for the
+// analyst, not a verdict; nothing on the Timeline changes because of it.
+function tlRelLoad(){
+  const id=window._tlCase; if(!id) return;
+  api('/api/cases/'+id+'/relevance').then(d=>{ const box=$('#tlrel'); if(!box) return;
+    box.innerHTML=_tlRelHtml(d);}).catch(()=>{});
+}
+function _tlRelHtml(d){
+  const rows=(d&&d.rows)||[]; if(!d||!d.scored_at) return '';
+  const items=rows.map(r=>`<div style="display:flex;gap:8px;padding:2px 0;font-size:11px"><span style="color:#79c0ff;min-width:34px;text-align:right">${Math.round((+r.p||0)*100)}%</span><span class="arti">${esc(r.artifact)}</span><code style="white-space:pre-wrap;word-break:break-all">${esc(r.text)}</code></div>`).join('');
+  const partial=d.rows_scored<d.rows_total?` (stopped at ${d.rows_scored} of ${d.rows_total})`:'';
+  return `<details style="margin:6px 0"><summary style="cursor:pointer;color:var(--muted);font-size:12px">Jev: ${rows.length} most relevant collected rows · ${esc(d.rows_scored)} scored${esc(partial)} · ${esc(d.scored_at)}</summary>${items||'<i style="color:var(--muted);font-size:11px">none scored as relevant</i>'}</details>`;
+}
+function tlRelStart(){
+  const id=window._tlCase; if(!id) return;
+  fetch('/api/cases/'+id+'/relevance',{method:'POST'}).then(async r=>{
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){ toast('Relevance scoring could not start: '+(d.error||('HTTP '+r.status)), 6000); return; }
+    toast('Scoring started. Track it in Settings ▸ Actions; the list appears here when it finishes.', 4000);
+  }).catch(e=>toast('Relevance scoring could not start: '+e.message, 5000));
+}
 function tlBuild(){
   const rows=window._tlData||[], f=window._tlf;
   const arts=[...new Set(rows.flatMap(r=>r.artifacts||[]))].sort();
@@ -1558,8 +1580,10 @@ function tlBuild(){
         <option value="severity" ${f.order==='severity'?'selected':''}>order: severity</option>
       </select>
       <span class="grow"></span>
+      <button class="ghost" onclick="tlRelStart()" title="Jev scores every raw row collected for this case and lists the most relevant — runs as a System action (Settings → Actions). Needs Fast decisions (Jev) in Settings → Agentic.">Score collected rows</button>
       <button class="ghost" onclick="tlAddToggle()">+ Add event</button>
     </div>
+    <div id="tlrel"></div>
     <div id="tladd" class="tladd">
       <label>Time<input id="tla-ts" type="text" placeholder="2026-06-20T14:05" size="18"></label>
       <label>Host<input id="tla-host" type="text" placeholder="ALDC02" size="12"></label>
@@ -1569,6 +1593,7 @@ function tlBuild(){
       <button onclick="tlAddSubmit()">Add</button>
     </div>
     <div id="tlrows"></div>`;
+  tlRelLoad();
   tlPaint();
 }
 function tlVisible(){

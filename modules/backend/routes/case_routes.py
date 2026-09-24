@@ -34,6 +34,7 @@ def _report_filename(d, ext):
 import threading
 _export_lock = threading.Lock()
 _import_lock = threading.Lock()
+_relevance_lock = threading.Lock()      # one Jev relevance run at a time
 
 _BOOTSTRAP_DONE = False
 
@@ -778,6 +779,39 @@ def export_case(case_id):
     _bundle_thread(case_bundle.export_case_bundle, run_id, case_id, lock=_export_lock)
     return jsonify({"run_id": run_id, "case_id": case_id,
                     "estimate_bytes": plan["estimate_bytes"]}), 202
+
+
+@case_bp.route("/api/cases/<case_id>/relevance", methods=["POST"])
+def start_relevance(case_id):
+    """Score the case's raw collected rows with Jev — a System action. 202 + {run_id}."""
+    from services import workflow_service as ws
+    from services.fusion import jev
+    d = store.get_case(case_id)
+    if not d:
+        return jsonify({"error": "case not found"}), 404
+    if not jev.enabled("relevance"):
+        return jsonify({"error": "Jev relevance scoring is off — enable Fast decisions (Jev) "
+                                 "in Settings → Agentic, with the OpenRouter provider"}), 409
+    if not _relevance_lock.acquire(blocking=False):
+        return jsonify({"error": "a relevance run is already in progress; try again shortly",
+                        "busy": True}), 409
+    try:
+        run_id = ws.create_automation_run(
+            "jev_relevance", f"Score collected rows (Jev): {d.get('name') or case_id}",
+            details={"case_id": case_id, "case_name": d.get("name")})
+    except Exception as e:                                # noqa: BLE001
+        _relevance_lock.release()
+        return jsonify({"error": str(e)}), 500
+    _bundle_thread(jev.score_relevance, run_id, case_id, lock=_relevance_lock)
+    return jsonify({"run_id": run_id, "case_id": case_id}), 202
+
+
+@case_bp.route("/api/cases/<case_id>/relevance", methods=["GET"])
+def get_relevance(case_id):
+    d = store.get_case(case_id)
+    if not d:
+        return jsonify({"error": "case not found"}), 404
+    return jsonify(d.get("jev_relevance") or {})
 
 
 @case_bp.route("/api/cases/export/<run_id>/download", methods=["GET"])

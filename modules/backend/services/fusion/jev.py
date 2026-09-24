@@ -427,3 +427,127 @@ def _one_pass(case_id):
         suggest_dispositions(case_id, d, g)
     if enabled("identity"):
         suggest_identities(case_id, d, g)
+
+
+# ---------------------------------------------------------------------------
+# Relevance: score a case's RAW collected rows (Velociraptor results, cached
+# Timesketch events) for "worth an analyst's attention in this case?", and keep
+# the top of the list. A System action (Settings → Actions): it can take
+# minutes and many calls, so it is started on demand, can be stopped, and
+# shows its progress and log there. Cases hold no event store of their own, so
+# these rows are the only raw material there is.
+# ---------------------------------------------------------------------------
+MAX_ROWS = 20000          # a hard ceiling per run — bounded cost, said in the log
+KEEP = 200
+ROW_CHARS = 500
+RELEVANT_FROM = 0.5
+
+
+def _run_host(det):
+    h = det.get("client_name")
+    cl = det.get("clients")
+    if not h and isinstance(cl, list) and cl and isinstance(cl[0], dict):
+        h = cl[0].get("client_name")
+    hns = det.get("hostnames")
+    if not h and isinstance(hns, list) and hns:
+        h = hns[0]
+    return h
+
+
+def _case_rows(case_id, d, log_fn):
+    """(run_id, artifact, row_index, text) for every raw row, excluded hosts left out."""
+    from . import keys
+    from .store import _agentic_collected_data, _members_for_case, _ws
+    ws = _ws()
+    excluded = {keys.norm_host(h) for h in (d.get("excluded_hosts") or []) if h}
+    for rid in _members_for_case(case_id, d):
+        run = ws.get_automation_run(rid) or {}
+        det = run.get("details") or {}
+        host = _run_host(det)
+        if host and keys.norm_host(host) in excluded:
+            continue
+        evs = det.get("timeline_events") or det.get("events")
+        data = ({"timesketch": evs} if isinstance(evs, list) and evs
+                else _agentic_collected_data(rid, det, log=log_fn))
+        for artifact, rows in (data or {}).items():
+            if not isinstance(rows, list):
+                continue
+            for i, row in enumerate(rows):
+                text = json.dumps(row, default=str, ensure_ascii=False)[:ROW_CHARS]
+                if host:
+                    text = f"[{host}] {text}"
+                yield rid, artifact, i, text
+
+
+def _relevant_question(k):
+    return {"type": "noul",
+            "instructions": f"items.{k} is one raw row collected from a host in a forensic "
+                            "case; `context` lists the case's findings. Is this row relevant "
+                            "to the investigation — worth an analyst's attention?",
+            "criteria": {"true": "It shows attacker activity, or evidence about a finding.",
+                         "false": "Routine system noise unrelated to the findings."}}
+
+
+def score_relevance(case_id, *, run_id, cancel):
+    """The System action's body (see case_routes.start_relevance). Returns the
+    run's result details; raises on stop/failure after saving what it scored."""
+    from datetime import datetime
+    from services import workflow_service as ws
+    from .store import _merge_case_details, get_case, view_graph
+
+    def say(msg, level="info"):
+        ws.add_log_to_run(run_id, msg, level)
+
+    d = get_case(case_id)
+    if not d:
+        raise RuntimeError("case not found")
+    g = view_graph(case_id, d, scoped=False)
+    mask = mask_for(d, g)
+    rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    top = sorted(g.findings, key=lambda f: rank.get(f.severity, 4))[:30]
+    context = masked({"case_findings": [f.title for f in top]}, mask)
+
+    items = []
+    for it in _case_rows(case_id, d, lambda m, lvl="info": say(m, lvl)):
+        if len(items) >= MAX_ROWS:
+            say(f"More than {MAX_ROWS:,} rows — scoring the first {MAX_ROWS:,} only.", "warning")
+            break
+        items.append((*it, masked(it[3], mask)))       # masked once, sent as-is
+    if not items:
+        raise RuntimeError("this case has no collected rows to score")
+    say(f"Scoring {len(items):,} collected rows with Jev.")
+
+    scored, done = [], 0
+
+    def save():
+        best = sorted((s for s in scored if s["p"] >= RELEVANT_FROM),
+                      key=lambda s: -s["p"])[:KEEP]
+        _merge_case_details(case_id, {"jev_relevance": {
+            "scored_at": datetime.now().isoformat(timespec="seconds"),
+            "rows_scored": done, "rows_total": len(items), "rows": best}})
+        return best
+
+    for chunk in pack(items, lambda it: it[4],
+                      max_tokens=MAX_TOKENS - approx_tokens(context)):
+        if cancel.is_set():
+            save()
+            raise RuntimeError("stopped")
+        keys = [f"q{i}" for i in range(len(chunk))]
+        ans = ask({"context": context,
+                   "items": {k: it[4] for k, it in zip(keys, chunk)}},
+                  {k: _relevant_question(k) for k in keys}, run_id=run_id)
+        if ans is None:
+            save()
+            raise RuntimeError(f"Jev stopped answering after {done:,} of {len(items):,} "
+                               "rows — the rows scored so far are kept")
+        for k, (rid, artifact, i, text, _m) in zip(keys, chunk):
+            p = (ans.get(k) or {}).get("noul")
+            if isinstance(p, (int, float)):
+                scored.append({"run_id": rid, "artifact": artifact, "row": i,
+                               "text": text, "p": round(float(p), 3)})
+        done += len(chunk)
+        ws.update_run_status(run_id, "running", progress=int(done * 100 / len(items)))
+    best = save()
+    say(f"Done: {done:,} rows scored, {len(best)} kept as relevant (≥{RELEVANT_FROM:.0%}).",
+        "success")
+    return {"case_id": case_id, "rows_scored": done, "relevant": len(best)}

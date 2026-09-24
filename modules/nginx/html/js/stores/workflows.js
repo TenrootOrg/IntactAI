@@ -363,6 +363,8 @@ document.addEventListener('alpine:init', () => {
                 upgrade: 'bg-red-700',
                 support_bundle: 'bg-red-700',
                 maintenance: 'bg-red-700',
+                // Jev relevance scoring (reads data, changes nothing) — not red.
+                jev_relevance: 'bg-indigo-600',
             };
             return colors[type] || 'bg-slate-700';
         },
