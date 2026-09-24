@@ -918,7 +918,15 @@ function airGapBanner(ag){
 function reportStatusHtml(info){
   if(info && info.report_generating)
     return genStatusHtml(info.report_generating_elapsed_s, info.report_phase, info.report_phase_elapsed_s);
-  return airGapBanner(reportAirGap(window._md||'', info && info.llm_status)) + behindNote(info);
+  return airGapBanner(reportAirGap(window._md||'', info && info.llm_status)) + behindNote(info) + _jevNote(info);
+}
+// Jev's notice (Settings → Agentic → Fast decisions): findings it is confident are
+// malicious that nobody has reviewed yet. Only a pointer to the Timeline, where the
+// analyst decides; absent entirely when Jev is off or found nothing.
+function _jevNote(info){
+  const n=(info&&info.jev_unreviewed)||[]; if(!n.length) return '';
+  const names=n.slice(0,3).map(x=>esc(String(x.title||'').split(' on ')[0])).join(' · ');
+  return `<div class="agnote" style="border-color:#58a6ff">Jev: <b>${n.length}</b> finding${n.length===1?'':'s'} look${n.length===1?'s':''} malicious and ${n.length===1?'is':'are'} not reviewed yet — ${names}${n.length>3?' …':''}. Review ${n.length===1?'it':'them'} on the <b>Timeline</b>.</div>`;
 }
 // What the page on screen does not reflect yet, in one quiet line. Nothing runs by
 // itself: a Refusion or a regeneration is the operator's call (and the latter spends

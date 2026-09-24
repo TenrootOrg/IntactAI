@@ -222,10 +222,31 @@ def suggest_dispositions(case_id, d, g) -> int:
             new[f.id] = {"wm": f.watermark(), **s}
     live = {f.id for f in g.findings}
     new = {k: v for k, v in new.items() if k in live}      # findings that vanished
-    if new != have:
+    # The notice: findings Jev is sure are malicious and nobody has reviewed.
+    # Stored with titles so the case payload can show it without the graph.
+    floor = min_confidence()
+    title = {f.id: f.title for f in g.findings}
+    notice = [{"id": k, "title": title[k]} for k, v in new.items()
+              if v.get("label") == "true_positive" and v.get("confidence", 0) >= floor]
+    fresh = [n for n in notice if n["id"] in {f.id for f in todo}]
+    if new != have or notice != (d.get("jev_notice") or []):
         from .store import _merge_case_details
-        _merge_case_details(case_id, {"jev_suggestions": new})
+        _merge_case_details(case_id, {"jev_suggestions": new, "jev_notice": notice})
+    if fresh:
+        from .store import log_case_event
+        log_case_event(case_id, f"Jev · {len(fresh)} finding(s) look malicious — not reviewed yet",
+                       "warning", "; ".join(n["title"] for n in fresh)[:500],
+                       finding_ids=[n["id"] for n in fresh])
     return len(todo)
+
+
+def unreviewed_notice(d):
+    """The Analysis-tab notice: Jev's confident true-positives still unreviewed.
+    [] when Jev is off — the deterministic page shows nothing extra."""
+    if not enabled("disposition"):
+        return []
+    done = {v.get("finding_id") for v in (d.get("timeline_validations") or [])}
+    return [n for n in (d.get("jev_notice") or []) if n.get("id") not in done]
 
 
 def suggestion_for(d_suggestions, fid, wm):

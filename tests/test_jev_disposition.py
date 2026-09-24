@@ -48,9 +48,12 @@ class SuggestDispositions(unittest.TestCase):
             return [answers.get(f.id) for f in items]
         with mock.patch.object(jev, "ask_each", fake_ask_each), \
              mock.patch.object(jev, "finding_state", lambda g, f: {"id": f.id}), \
+             mock.patch.object(jev, "min_confidence", return_value=0.8), \
+             mock.patch.object(store, "log_case_event") as self.logged, \
              mock.patch.object(store, "_merge_case_details") as merge:
             n = jev.suggest_dispositions("c1", d, g)
-        written = merge.call_args.args[1]["jev_suggestions"] if merge.called else None
+        self.merged = merge.call_args.args[1] if merge.called else None
+        written = self.merged["jev_suggestions"] if merge.called else None
         return n, asked, written
 
     def test_only_unjudged_changed_findings_are_asked(self):
@@ -77,6 +80,27 @@ class SuggestDispositions(unittest.TestCase):
                                           {"a": None, "b": {"choice": "banana"}})
         self.assertEqual(asked, ["a", "b"])
         self.assertIsNone(written)
+
+
+class Notice(unittest.TestCase):
+    """Findings Jev is SURE are malicious, not yet reviewed: a notice, logged once."""
+
+    def test_notice_holds_confident_true_positives_and_logs_only_new_ones(self):
+        t = SuggestDispositions()
+        a, b, c = _f("a"), _f("b"), _f("c")
+        d = {"jev_suggestions": {"a": {"wm": a.watermark(), "label": "true_positive", "confidence": 0.9}}}
+        t.run_pass(d, [a, b, c], {"b": _ans("true_positive", 0.95), "c": _ans("true_positive", 0.5)})
+        self.assertEqual([n["id"] for n in t.merged["jev_notice"]], ["a", "b"])   # c is unsure
+        self.assertEqual(t.logged.call_args.kwargs["finding_ids"], ["b"])         # a was already known
+        self.assertIn("T b", t.logged.call_args.args[3])
+
+    def test_reviewed_findings_drop_out_and_off_shows_nothing(self):
+        d = {"jev_notice": [{"id": "a", "title": "A"}, {"id": "b", "title": "B"}],
+             "timeline_validations": [{"finding_id": "a", "status": "known"}]}
+        with mock.patch.object(jev, "enabled", return_value=True):
+            self.assertEqual(jev.unreviewed_notice(d), [{"id": "b", "title": "B"}])
+        with mock.patch.object(jev, "enabled", return_value=False):
+            self.assertEqual(jev.unreviewed_notice(d), [])
 
 
 class SuggestionFor(unittest.TestCase):
@@ -161,14 +185,19 @@ class Chip(unittest.TestCase):
         with open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
             src = fh.read()
         fn = re.search(r"function _tlJev\(r\)\{.*?\n\}", src, re.S)
+        note = re.search(r"function _jevNote\(info\)\{.*?\n\}", src, re.S)
+        self.assertTrue(note, "_jevNote missing from cases.html")
         states = re.search(r"const TL_STATES=\[.*?\];", src)
         self.assertTrue(fn and states, "_tlJev / TL_STATES missing from cases.html")
         js = (states.group(0) + "\nconst esc=s=>String(s).replace(/[<>&'\"]/g,'');\n"
-              + fn.group(0) + """
+              + fn.group(0) + "\n" + note.group(0) + """
 const out=[
   _tlJev({finding_id:'f1', jev:{label:'known', p:0.914}}),
   _tlJev({finding_id:'f1'}),
   _tlJev({finding_id:'f1', jev:{label:'nonsense', p:0.9}}),
+  _jevNote({jev_unreviewed:[{id:'a',title:'Log Cleared on HOST1'},{id:'b',title:'Mimikatz on HOST1'}]}),
+  _jevNote({jev_unreviewed:[]}),
+  _jevNote(null),
 ];
 console.log(JSON.stringify(out));""")
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as t:
@@ -178,7 +207,10 @@ console.log(JSON.stringify(out));""")
         finally:
             os.unlink(t.name)
         import json
-        chip, none, bad = json.loads(out)
+        chip, none, bad, notice, empty, nothing = json.loads(out)
+        self.assertIn("<b>2</b> findings look malicious", notice)
+        self.assertIn("Log Cleared · Mimikatz", notice)
+        self.assertEqual((empty, nothing), ("", ""))
         self.assertIn("Jev: likely Known · 91%", chip)
         self.assertIn("event.stopPropagation();tlValidate('f1','known')", chip)
         self.assertEqual((none, bad), ("", ""))

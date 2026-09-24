@@ -462,6 +462,9 @@ def get_case(case_id):
                     # report_dirty: triage/disposition re-fuses changed the data but left
                     # the report frozen — so the report may not reflect recent changes.
                     "report_dirty": bool(d.get("report_dirty")),
+                    # Jev (when on): findings it is sure are malicious that nobody
+                    # has reviewed on the Timeline yet. A notice, never an action.
+                    "jev_unreviewed": _jev_unreviewed(d),
                     # Saved settings (window, severity, hosts, modules) the fused data
                     # was not built under: they apply at the next Refusion.
                     "refusion_needed": store.refusion_needed(d),
@@ -779,6 +782,14 @@ def export_case(case_id):
     _bundle_thread(case_bundle.export_case_bundle, run_id, case_id, lock=_export_lock)
     return jsonify({"run_id": run_id, "case_id": case_id,
                     "estimate_bytes": plan["estimate_bytes"]}), 202
+
+
+def _jev_unreviewed(d):
+    try:
+        from services.fusion import jev
+        return jev.unreviewed_notice(d)
+    except Exception:                                     # noqa: BLE001
+        return []
 
 
 @case_bp.route("/api/cases/<case_id>/relevance", methods=["POST"])
