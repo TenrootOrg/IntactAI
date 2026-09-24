@@ -39,7 +39,8 @@ _DISP_MAL = ("confirmed malicious", "is malicious", "real attack", "true positiv
 # finding with "Malicious" in its title.
 _GENERIC_TITLE_TOK = {"sigma", "host", "suspicious", "activity", "detection", "coordinated",
                       "alert", "process", "service", "indicator", "account", "driver",
-                      "malicious", "benign", "attack", "threat", "user", "users"}
+                      "malicious", "benign", "attack", "threat", "user", "users",
+                      "related"}                   # "(+2 related)" is on many titles
 
 _STRIP_CHARS = '.!?"\u2019\'` '
 
@@ -130,12 +131,17 @@ def detect_disposition(graph, question: str, verdict_hint=None):
                                                    "fleet", "all hosts", "every host"))
              else "case")
     target = label = None
-    for f in graph.findings:                       # ground to a finding by a distinctive token
-        toks = [w for w in re.findall(r"[a-z0-9]{4,}", f.title.lower())
-                if w not in _GENERIC_TITLE_TOK]
-        if any(t in q for t in toks):
-            target, label = f.id, f.title.split(" on ")[0]
-            break
+    # Ground to the finding sharing the MOST distinctive title tokens with the
+    # message. The host suffix ("… on DESKTOP-16OJFO6") is left out: every finding
+    # on a host carries it, so "the log clearing on DESKTOP-16 was IT" used to
+    # ground to whichever finding came first — PowerShell Web Request, live.
+    best = 0
+    for f in graph.findings:
+        toks = {w for w in re.findall(r"[a-z0-9]{4,}", f.title.rsplit(" on ", 1)[0].lower())
+                if w not in _GENERIC_TITLE_TOK}
+        hits = sum(1 for t in toks if t in q)
+        if hits > best:
+            best, target, label = hits, f.id, f.title.split(" on ")[0]
     if not target:                                 # or to an entity by its label
         for e in graph.entities.values():
             if e.type in ("ioc", "account", "process", "service", "module") and e.label \

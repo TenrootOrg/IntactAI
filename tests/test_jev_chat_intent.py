@@ -71,6 +71,23 @@ class ChatVerdict(unittest.TestCase):
         ask.assert_not_called()
 
 
+class Grounding(unittest.TestCase):
+    """Found live: every title ends "on <host>", so a message naming the host
+    grounded to whichever finding came first."""
+
+    def test_host_suffix_does_not_ground_and_the_best_match_wins(self):
+        g = types.SimpleNamespace(entities={}, findings=[
+            Finding(id="ps", title="SIGMA: PowerShell Web Request (+1 related) on DESKTOP-16OJFO6",
+                    severity="high", confidence="high", summary=""),
+            Finding(id="log", title="SIGMA: Security Eventlog Cleared (+1 related) on DESKTOP-16OJFO6",
+                    severity="high", confidence="high", summary="")])
+        p = llm_sim.detect_disposition(g, "the eventlog cleared on desktop-16ojfo6 was our IT",
+                                       verdict_hint="benign")
+        self.assertEqual(p["target"], "log")
+        self.assertIsNone(llm_sim.detect_disposition(g, "desktop-16ojfo6 related work was fine",
+                                                     verdict_hint="benign"))
+
+
 class ConfirmStaysLiteral(unittest.TestCase):
     """Jev is never consulted on the reply to an offer."""
 
