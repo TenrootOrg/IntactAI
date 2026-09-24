@@ -1081,6 +1081,59 @@ class VolWebClient:
                 out[current] = m.group(1).strip()[:180]
         return out
 
+    def harvest_symbols(self) -> int:
+        """Keep the symbol files Volatility downloaded for this image.
+
+        Vol3 fetches a kernel's PDB from Microsoft, converts it to an ISF and
+        writes it into its OWN PACKAGE directory —
+        ``site-packages/volatility3/symbols/windows/ntkrnlmp.pdb/<GUID>.json.xz``
+        — which is container filesystem, not a volume. So every
+        `docker compose up --force-recreate` and every VolWeb image upgrade
+        threw away every symbol the appliance had ever resolved, and the next
+        run re-downloaded it. On a box with no egress it could never accumulate
+        at all. Measured here: three ISFs, 1.1 MB, all downloaded the same day,
+        all sitting in a directory that does not survive a restart.
+
+        `media/symbols` IS a volume and IS on vol3's search path (VolWeb adds it
+        in volatility_engine/utils.py), so copying them across is all it takes:
+        the appliance then builds its own symbol library as it works, which is
+        the only sustainable answer to "Microsoft ships new builds every day".
+
+        Runs in the EXTRACTION WORKER, not the backend: volatility executes
+        there, so that is the only container the downloads land in. Measured:
+        3 ISFs in intact_volweb_workers, 0 in the backend — a harvest pointed
+        at the backend finds nothing and silently does nothing.
+
+        Copy, never move, and never overwrite: the package dir stays valid for
+        the running process, and a seeded ISF an operator placed by hand always
+        wins. Returns how many files the library holds afterwards, or -1 if it
+        could not look. Never raises — this is housekeeping at the end of a run
+        that has already produced its results.
+        """
+        container = (_config_value("worker_container", default=None)
+                     or _VOLWEB_WORKER_CONTAINER)
+        if not container:
+            return -1
+        script = (
+            'SRC=$(python3 -c "import volatility3,os;'
+            'print(os.path.join(os.path.dirname(volatility3.__file__),\'symbols\'))") || exit 0; '
+            'DST=/home/app/web/media/symbols; mkdir -p "$DST" 2>/dev/null; '
+            'for d in windows linux mac; do '
+            '  [ -d "$SRC/$d" ] || continue; mkdir -p "$DST/$d" 2>/dev/null; '
+            '  cp -rn "$SRC/$d/." "$DST/$d/" 2>/dev/null; '
+            'done; '
+            'find "$DST" -type f \\( -name "*.json" -o -name "*.json.xz" '
+            '-o -name "*.json.gz" \\) 2>/dev/null | wc -l'
+        )
+        try:
+            r = subprocess.run(
+                ["docker", "exec", "--user", "app", container, "sh", "-c", script],
+                capture_output=True, text=True, timeout=120,
+            )
+            return int((r.stdout or "0").strip().splitlines()[-1])
+        except Exception:                               # noqa: BLE001
+            return -1
+
     def stage_media_dir(self, evidence_id: int) -> None:
         """Best-effort: ensure ``/home/app/web/media/<evidence_id>/``
         exists inside the VolWeb backend container BEFORE triggering

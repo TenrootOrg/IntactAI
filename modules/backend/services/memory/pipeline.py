@@ -114,6 +114,7 @@ def _extract_queued_label(plugins_to_run, run_plugins: bool, run_yara: bool) -> 
 
 def _extract_outcome_line(
     done_n: int, total_n: int, elapsed_s: int, completed: bool, budget_s: int,
+    *, yara_hits: int = 0,
 ) -> tuple[str, str]:
     """The post-extract log line and ITS LEVEL — ``(message, level)``.
 
@@ -123,39 +124,53 @@ def _extract_outcome_line(
     operator as a completed phase. That is the line a customer read before
     concluding the platform had hung.
 
-    Three outcomes, three levels:
-
-      completed              -> success
-      timed out, some done   -> warning (partial results are still usable)
-      timed out, none done   -> error
-
     The ``error`` level is load-bearing beyond its colour: ``add_log_to_run``
-    increments the run's ``error_count`` for it, so a zero-plugin extract shows
-    up on the dashboard row instead of only inside the log. The run itself is
-    deliberately NOT failed here — the parallel yarascan may still have found
-    real hits, and partial output beats none.
+    increments the run's ``error_count``, and a non-zero count auto-fails the
+    run. So it is reserved for a run that produced NOTHING AT ALL.
+
+    ``yara_hits`` is why this is decided after the yarascan rather than before
+    it. Volatility cannot construct a single windows plugin without the
+    kernel's ISF, and Microsoft ships new builds constantly — so "no plugin
+    ran" is a routine outcome for an image whose symbols we do not have yet.
+    The yarascan does not care: it is a raw byte scan. A run that resolved no
+    symbols but returned 84 YARA hits has produced real evidence and must not
+    be marked failed.
+
+      completed, some plugins        -> success
+      no plugins, but YARA hits      -> warning  (partial, still useful)
+      no plugins, no hits            -> error    (nothing came back)
+      timed out, some plugins        -> warning  (partial results are usable)
 
     Split out as a pure function so the level decision is testable without
     standing up the whole pipeline.
     """
-    if completed:
-        return (
-            f"pipeline: extract — plugins complete in {elapsed_s}s "
-            f"({done_n}/{total_n})",
-            "success",
-        )
     if done_n > 0:
+        if completed:
+            return (
+                f"pipeline: extract — plugins complete in {elapsed_s}s "
+                f"({done_n}/{total_n})",
+                "success",
+            )
         return (
             f"pipeline: extract — plugin wait hit the {budget_s}s budget at "
             f"{done_n}/{total_n}; continuing with partial results. Raise "
             f"plugin_timeout_s for large images.",
             "warning",
         )
+
+    _why = ("finished without extracting anything" if completed
+            else f"hit the {budget_s}s budget with ZERO plugins extracted")
+    if yara_hits:
+        return (
+            f"pipeline: extract — the plugin phase {_why}, so this run carries "
+            f"no memory artefacts; the yarascan still returned {yara_hits} hit(s), "
+            f"which do not depend on symbols and are in the case.",
+            "warning",
+        )
     return (
-        f"pipeline: extract — plugin wait hit the {budget_s}s budget with ZERO "
-        f"plugins extracted. The fused case report will have no memory "
-        f"artefacts. Check the VolWeb extraction worker "
-        f"(docker logs --tail 100 intact_volweb_workers).",
+        f"pipeline: extract — the plugin phase {_why} and the yarascan returned "
+        f"nothing, so this run produced no evidence at all. Check the VolWeb "
+        f"extraction worker (docker logs --tail 100 intact_volweb_workers).",
         "error",
     )
 
@@ -745,6 +760,8 @@ def run_memory_pipeline(
 
             Returns ``(cumulative, hit_count, yarascan_incomplete)``.
             """
+            plugin_error: str | None = None
+            _outcome: tuple | None = None
             log("pipeline: extract — " + _extract_phase_label(run_plugins, run_yara), "info")
             client.stage_media_dir(evidence_id)
             plugins_to_run: tuple[str, ...] = ()
@@ -782,17 +799,36 @@ def run_memory_pipeline(
                 # operator's instruction stands whatever the extraction did.
                 if dump_preserved != "operator":
                     dump_preserved = "no_results"
-                plugin_map, plugins_done = client.wait_for_plugin_results(
-                    evidence_id,
-                    plugins_to_run,
-                    task_id=extract_task_id,
-                    timeout_s=plugin_timeout_s,
-                    cancel_check=cancel,
-                    on_progress=lambda done, total: _bump(
-                        run_id,
-                        cumulative + int(_PHASE_WEIGHTS["extract"] * (done / max(total, 1))),
-                    ),
-                )
+                # A SYMBOL FAILURE IS NOT THE END OF THE RUN. Volatility needs
+                # the kernel's ISF to construct ANY windows plugin, and
+                # Microsoft ships new builds constantly, so an image whose
+                # symbols we cannot resolve today is routine rather than
+                # exceptional. It used to raise straight out of this phase,
+                # which skipped the yarascan below — and yarascan is a raw byte
+                # scan that needs no symbols at all. A layered run therefore
+                # threw away results it already had, because of a failure that
+                # could not affect them.
+                try:
+                    plugin_map, plugins_done = client.wait_for_plugin_results(
+                        evidence_id,
+                        plugins_to_run,
+                        task_id=extract_task_id,
+                        timeout_s=plugin_timeout_s,
+                        cancel_check=cancel,
+                        on_progress=lambda done, total: _bump(
+                            run_id,
+                            cumulative + int(_PHASE_WEIGHTS["extract"] * (done / max(total, 1))),
+                        ),
+                    )
+                except VolWebError as _pe:
+                    plugin_map, plugins_done, plugin_error = {}, True, str(_pe)
+                    log(
+                        f"pipeline: extract — no plugin could run ({_pe}). "
+                        + ("Continuing to the yarascan, which needs no symbols."
+                           if run_yara else
+                           "Nothing else in this run can produce results."),
+                        "warning",
+                    )
                 # Results landed and the wait reached a real terminal state:
                 # the image has done its job and cleanup reclaims it as always
                 # — unless the operator asked to keep it, which outranks this.
@@ -803,11 +839,13 @@ def run_memory_pipeline(
                 # unconditional "plugins complete … " at SUCCESS level, so a
                 # 30-minute timeout that extracted nothing read as a completed
                 # phase — the single most misleading line in the whole log.
-                msg, level = _extract_outcome_line(
-                    len(plugin_map), len(plugins_to_run),
-                    int(time.time() - ext_started), plugins_done, plugin_timeout_s,
-                )
-                log(msg, level)
+                # Reported AFTER the yarascan: the level depends on whether
+                # anything at all came out of this run, and at this point the
+                # yarascan has not been waited on yet. Logging "error" here
+                # auto-fails the run (error_count), which is wrong when the
+                # yarascan is about to return hits.
+                _outcome = (len(plugin_map), len(plugins_to_run),
+                            int(time.time() - ext_started), plugins_done)
                 if cancel():
                     raise RuntimeError("cancelled after plugin extract")
             else:
@@ -836,6 +874,19 @@ def run_memory_pipeline(
                 yarascan_incomplete = False
                 cumulative += _PHASE_WEIGHTS["yarascan"]   # credit the skipped phase so progress completes
                 _bump(run_id, cumulative, "extract: ready (yarascan skipped — plugin-only mode)")
+
+            if _outcome is not None:
+                msg, level = _extract_outcome_line(
+                    *_outcome, plugin_timeout_s, yara_hits=hit_count,
+                )
+                log(msg, level)
+            if plugin_error and hit_count:
+                log(
+                    f"pipeline: this run has YARA results but no plugin output — "
+                    f"the image's kernel symbols could not be resolved. "
+                    f"{hit_count} hit(s) still reached the case.",
+                    "warning",
+                )
 
             if cancel():
                 raise RuntimeError("cancelled after yarascan")
@@ -997,6 +1048,20 @@ def run_memory_pipeline(
             cumulative, hit_count, yarascan_incomplete = _extract_phase(
                 evidence_id, host_path, cumulative,
             )
+
+        # ----------------------------------------------------------------
+        # Keep whatever symbols this image taught us. Vol3 writes downloaded
+        # ISFs into its own package directory, which does not survive a
+        # container recreate — so without this the box re-downloads the same
+        # kernel every time, and an air-gapped one never accumulates anything.
+        # ----------------------------------------------------------------
+        try:
+            _n = client.harvest_symbols()
+            if _n > 0:
+                log(f"symbols: library now holds {_n} file(s) — kept on the "
+                    f"volume, so this kernel needs no download next time", "info")
+        except Exception as _se:                        # noqa: BLE001
+            log(f"symbols: could not keep this run's symbols ({_se})", "warning")
 
         # ----------------------------------------------------------------
         # Who is this? — only when nothing else could tell us.
