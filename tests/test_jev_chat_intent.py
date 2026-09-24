@@ -88,6 +88,45 @@ class Grounding(unittest.TestCase):
                                                      verdict_hint="benign"))
 
 
+class EntityEstimate(unittest.TestCase):
+    """"How likely is kobi malicious?" gets Jev's number for the account it names —
+    and nothing at all when Jev is off, the question is not about risk, the name
+    resolves to nothing, or nothing involves it."""
+
+    def graph(self):
+        from services.fusion.schema import Entity
+        acct = Entity(id="acct:kobia", type="account", label="kobia")
+        host = Entity(id="asset:h1", type="asset", label="ALClient022")
+        f = Finding(id="f9", title="Rubeus on ALClient022", severity="high",
+                    confidence="high", summary="", entity_ids=["acct:kobia"], asset_ids=["asset:h1"])
+        return types.SimpleNamespace(findings=[f], entities={e.id: e for e in (acct, host)})
+
+    def estimate(self, q, answer=({"noul": 0.34},), resolved=None, enabled=True):
+        g = self.graph()
+        res = {"resolved": [g.entities["acct:kobia"]] if resolved is None else resolved}
+        with mock.patch.object(jev, "enabled", return_value=enabled), \
+             mock.patch("services.fusion.resolve.resolve", return_value=res), \
+             mock.patch.object(jev, "_entity_state", lambda g, e, fs: {"entity": e.label}), \
+             mock.patch.object(jev, "ask_each", return_value=list(answer)) as ae:
+            return jev.entity_estimates(q, {}, g), ae
+
+    def test_names_the_account_its_basis_and_that_it_is_not_a_verdict(self):
+        out, _ = self.estimate("How confident are you that kobi is malicious user?")
+        self.assertIn("**kobia** (account): **34%** likely involved in malicious activity", out)
+        self.assertIn("from 1 finding on 1 host", out)
+        self.assertIn("not a verdict", out)
+
+    def test_silent_when_it_should_be(self):
+        q = "How confident are you that kobi is malicious user?"
+        self.assertEqual(self.estimate(q, enabled=False)[0], "")
+        out, ae = self.estimate("what did kobi run?")                       # not a risk question
+        self.assertEqual(out, "")
+        ae.assert_not_called()
+        self.assertEqual(self.estimate("kobi is malicious")[0], "")          # a statement, not a question
+        self.assertEqual(self.estimate(q, resolved=[])[0], "")               # names nothing
+        self.assertEqual(self.estimate(q, answer=(None,))[0], "")            # Jev did not answer
+
+
 class ConfirmStaysLiteral(unittest.TestCase):
     """Jev is never consulted on the reply to an offer."""
 

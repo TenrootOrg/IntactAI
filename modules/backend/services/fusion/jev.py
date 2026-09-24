@@ -24,7 +24,8 @@ from .budget import approx_tokens
 log = logging.getLogger(__name__)
 
 URL = "https://openrouter.ai/api/v1/systemone"
-USES = ("disposition", "relevance", "grounding", "identity", "chat_intent", "injection")
+USES = ("disposition", "relevance", "grounding", "identity", "chat_intent", "injection",
+        "chat_confidence")
 DEFAULTS = {"enabled": False, "model": "jev-latest", "min_confidence": 0.8,
             # Jev's own OpenRouter key. Empty = use the main key, which only works
             # while OpenRouter is the selected chat provider.
@@ -399,6 +400,75 @@ def chat_verdict(question, d, g, run_id=None):
     if float(ans.get("confidence") or 0) < min_confidence():
         return None
     return ans["choice"]
+
+
+# ---------------------------------------------------------------------------
+# Chat: "how likely is kobi malicious?" — Jev's estimate for the account or host
+# the question names, added under the model's answer. A number with its basis,
+# labelled as a second opinion; nothing about the case changes.
+# ---------------------------------------------------------------------------
+_RISK_WORDS = ("malicious", "compromis", "suspicious", "attacker", "bad actor", "threat actor",
+               "intruder", "hacker", "confiden", "likely", "risk", "guilty", "innocent",
+               "legit", "clean", "trust", "זדוני", "חשוד", "תוקף", "פרוץ", "נפרץ", "סיכון",
+               "בטוח", "לגיטימי")
+_SEV_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+
+def _entity_state(g, e, fs):
+    from .render import _finding_evidence
+    hosts = sorted({getattr(g.entities.get(a), "label", None) or a
+                    for f in fs for a in (f.asset_ids or [])})
+    return {"entity": e.label, "type": e.type, "hosts": hosts,
+            "findings": [{"title": f.title, "severity": f.severity,
+                          "detected_by": list(f.sources or []),
+                          "evidence": _finding_evidence(g, f)[:4]}
+                         for f in sorted(fs, key=lambda f: _SEV_RANK.get(f.severity, 4))[:15]]}
+
+
+def entity_estimates(question, d, g, run_id=None) -> str:
+    """Markdown to append to a chat answer, or "" (off, not a risk question,
+    nothing named, no findings, or Jev did not answer)."""
+    from .llm_sim import is_question
+    q = (question or "").lower()
+    if not enabled("chat_confidence") or not is_question(question) \
+            or not any(w in q for w in _RISK_WORDS):
+        return ""
+    try:
+        from .resolve import resolve
+        ents = [e for e in resolve(g, question).get("resolved") or []
+                if e.type in ("account", "asset")][:3]
+        pairs = []
+        for e in ents:
+            fs = [f for f in g.findings if e.id in (f.entity_ids or []) or e.id in (f.asset_ids or [])]
+            if fs:
+                pairs.append((e, fs))
+        if not pairs:
+            return ""
+        mask = mask_for(d, g)
+        kind = {"account": "account", "asset": "host"}
+        answers = ask_each(pairs, lambda p: masked(_entity_state(g, *p), mask), lambda k: {
+            "type": "noul",
+            "instructions": f"items.{k} is one account or host from a forensic case, with the "
+                            "findings that involve it. Is it involved in malicious activity?",
+            "criteria": {"true": "It took part in, or was used for, attacker activity.",
+                         "false": "Its activity is explained as normal, or it is only a bystander."}},
+            run_id=run_id)
+    except Exception as e:  # noqa: BLE001
+        log.warning("jev: entity estimate skipped: %s", e)
+        return ""
+    lines = []
+    for (e, fs), a in zip(pairs, answers):
+        p = (a or {}).get("noul") if isinstance(a, dict) else None
+        if not isinstance(p, (int, float)):
+            continue
+        nh = len({h for f in fs for h in (f.asset_ids or [])})
+        lines.append(f"- **{e.label}** ({kind.get(e.type, e.type)}): **{round(p * 100)}%** likely "
+                     f"involved in malicious activity — from {len(fs)} finding"
+                     f"{'s' if len(fs) != 1 else ''} on {nh} host{'s' if nh != 1 else ''}")
+    if not lines:
+        return ""
+    return ("\n\n---\n_Jev estimate — a fast second opinion from the findings, not a verdict:_\n"
+            + "\n".join(lines))
 
 
 # ---------------------------------------------------------------------------

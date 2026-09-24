@@ -5059,6 +5059,7 @@ def chat_case(case_id, question) -> str:
                            checklist=d.get("disposition_checklist") or None)
         log_case_event(case_id, "Chat · reply generated", "success", f"{len(ans or '')} chars")
         ans = (ans or "") + llm_sim._revert_mask(injection.note(injection.take_hits(case_id)), mask)
+        ans += jev.entity_estimates(question, d, g, run_id=case_id)
         # A detected verdict rides ALONG WITH the answer as an offer. Worst case
         # for a misread is one extra sentence the operator ignores — never a
         # blocked answer, never a silent mutation.
