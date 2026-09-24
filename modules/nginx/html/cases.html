@@ -1585,6 +1585,16 @@ function tlVisible(){
   if(f.order==='severity') rows.sort((a,b)=>(TL_SEV_RANK[b.severity]||0)-(TL_SEV_RANK[a.severity]||0));
   return rows;
 }
+// Jev's suggested verdict (Settings → Agentic → Fast decisions). A suggestion
+// only: the click is the same tlValidate() the verdict buttons use, so the
+// analyst still makes — and owns — the call. stopPropagation: the chip sits
+// inside the row's "open detail" click target.
+function _tlJev(r){
+  const j=r&&r.jev; if(!j) return '';
+  const lbl=(TL_STATES.find(([k])=>k===j.label)||[])[1]; if(!lbl) return '';
+  const pct=Math.round((+j.p||0)*100);
+  return `<span class="sg-hint" style="border-color:#58a6ff;color:#79c0ff;cursor:pointer" title="Jev's suggestion (${pct}% likely). Click to mark it ${esc(lbl)} — or pick any verdict yourself." onclick="event.stopPropagation();tlValidate('${esc(r.finding_id)}','${esc(j.label)}')">Jev: likely ${esc(lbl)} · ${pct}%</span>`;
+}
 function tlPaint(){
   const id=window._tlCase, rows=tlVisible();
   const supp=v=>v==='false_positive'||v==='known';
@@ -1596,7 +1606,7 @@ function tlPaint(){
       <code style="white-space:nowrap">${esc(r.ts||'—')}</code>
       <div class="tlmeta" style="cursor:pointer" title="Click for full event detail" onclick="openFindingDetail('${r.finding_id}')">
         <span><strong>${esc(r.host||'-')}</strong> ${r.phase?`<span style="color:var(--muted)">[${esc(r.phase)}]</span>`:''} ${esc(_tlTitle(r))} <span style="color:var(--muted);font-size:10px">▸ detail</span></span>
-        <span class="l2">${arts}${r.reopened?'<span class="sg-hint" style="border-color:#d29922;color:#e3b341" title="A new occurrence arrived after your last verdict — re-validate this one.">⟳ re-opened: new activity since you validated</span>':''}${r.manual?'<span class="sg-hint" style="border-style:solid">manual</span>':''}${r.notes?`<span style="color:var(--muted);font-size:11px">— ${esc(r.notes)}</span>`:''}</span>
+        <span class="l2">${arts}${r.reopened?'<span class="sg-hint" style="border-color:#d29922;color:#e3b341" title="A new occurrence arrived after your last verdict — re-validate this one.">⟳ re-opened: new activity since you validated</span>':''}${r.manual?'<span class="sg-hint" style="border-style:solid">manual</span>':''}${_tlJev(r)}${r.notes?`<span style="color:var(--muted);font-size:11px">— ${esc(r.notes)}</span>`:''}</span>
       </div>
       <span class="chip c-${r.severity}">${esc(r.severity)}</span>
       <span class="seg">${seg}</span>

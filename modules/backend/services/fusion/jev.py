@@ -154,3 +154,130 @@ def masked(text, mask):
         raise RuntimeError("jev: masking required but unavailable")
     from .llm_sim import _apply_mask
     return _apply_mask(text if isinstance(text, str) else json.dumps(text, default=str), mask)
+
+
+# ---------------------------------------------------------------------------
+# Suggested verdict per finding.
+#
+# The options are named after the Timeline's own verdict states (TL_STATES in
+# cases.html), so the chip's click is the existing tlValidate() call — the
+# analyst makes the decision; Jev only saves them reading the evidence cold.
+# ---------------------------------------------------------------------------
+VERDICTS = {
+    "true_positive": "Malicious or attacker activity that needs a response.",
+    "known": "Expected activity by IT, administrators or sanctioned tools.",
+    "false_positive": "A detection error: the rule fired on something harmless.",
+}
+
+
+def finding_state(g, f) -> dict:
+    """What Jev sees about one finding. The offline eval uses this same function,
+    so it measures exactly what production sends."""
+    from .render import _finding_evidence
+    hosts = [getattr(g.entities.get(a), "label", None) or a for a in (f.asset_ids or [])]
+    return {"title": f.title, "severity": f.severity, "summary": f.summary,
+            "detected_by": list(f.sources or []), "hosts": hosts,
+            "mitre": list(f.mitre or []), "evidence": _finding_evidence(g, f)}
+
+
+def _verdict_question(k):
+    return {"type": "choice", "criteria": VERDICTS,
+            "instructions": f"items.{k} is one finding from a digital-forensics case. "
+                            "Classify it from its detection, hosts and evidence."}
+
+
+def _answer_to_suggestion(ans):
+    if not isinstance(ans, dict) or ans.get("choice") not in VERDICTS:
+        return None
+    label = ans["choice"]
+    probs = ans.get("probabilities") or {}
+    return {"label": label, "p": float(probs.get(label, 0.0)),
+            "confidence": float(ans.get("confidence") or 0.0)}
+
+
+def suggest_dispositions(case_id, d, g) -> int:
+    """Ask about every unreviewed finding whose occurrences changed since the
+    last ask. Returns how many findings were asked about."""
+    have = d.get("jev_suggestions") or {}
+    validated = {v.get("finding_id") for v in (d.get("timeline_validations") or [])}
+    todo = [f for f in g.findings
+            if f.id not in validated and f.kind != "dispositioned"
+            and (have.get(f.id) or {}).get("wm") != f.watermark()]
+    if not todo:
+        return 0
+    mask = mask_for(d, g)
+    answers = ask_each(todo, lambda f: masked(finding_state(g, f), mask),
+                       _verdict_question, run_id=case_id)
+    new = dict(have)
+    for f, ans in zip(todo, answers):
+        s = _answer_to_suggestion(ans)
+        if s:
+            new[f.id] = {"wm": f.watermark(), **s}
+    live = {f.id for f in g.findings}
+    new = {k: v for k, v in new.items() if k in live}      # findings that vanished
+    if new != have:
+        from .store import _merge_case_details
+        _merge_case_details(case_id, {"jev_suggestions": new})
+    return len(todo)
+
+
+def suggestion_for(d_suggestions, fid, wm):
+    """The chip for one Timeline row, or None (stale, unsure, or absent)."""
+    s = (d_suggestions or {}).get(fid)
+    if not s or s.get("wm") != wm or s.get("confidence", 0) < min_confidence():
+        return None
+    return {"label": s["label"], "p": s["p"]}
+
+
+# ---------------------------------------------------------------------------
+# After every fuse, off the fuse lock, one worker per case.
+# ---------------------------------------------------------------------------
+import threading  # noqa: E402
+
+_workers_lock = threading.Lock()
+_running, _again = set(), set()
+
+
+def after_fuse(case_id) -> None:
+    """Called by store.fuse_case once the lock is released. Never raises."""
+    try:
+        cfg = _cfg()
+        if not any(enabled(u, cfg) for u in ("disposition", "identity")):
+            return
+        with _workers_lock:
+            if case_id in _running:
+                _again.add(case_id)          # re-run once the current pass ends
+                return
+            _running.add(case_id)
+        threading.Thread(target=_work, args=(case_id,), daemon=True,
+                         name=f"jev-{case_id}").start()
+    except Exception as e:  # noqa: BLE001
+        log.warning("jev: after_fuse(%s) not started: %s", case_id, e)
+
+
+def _work(case_id):
+    try:
+        while True:
+            try:
+                _one_pass(case_id)
+            except Exception as e:  # noqa: BLE001 — a suggestion is never worth an error
+                log.warning("jev: pass for %s failed: %s", case_id, e)
+            with _workers_lock:
+                if case_id not in _again:
+                    _running.discard(case_id)
+                    return
+                _again.discard(case_id)
+    except BaseException:
+        with _workers_lock:
+            _running.discard(case_id)
+        raise
+
+
+def _one_pass(case_id):
+    from .store import get_case, view_graph
+    d = get_case(case_id)
+    if not d:
+        return
+    g = view_graph(case_id, d, scoped=False)
+    if enabled("disposition"):
+        suggest_dispositions(case_id, d, g)

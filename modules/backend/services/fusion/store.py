@@ -1619,10 +1619,10 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True,
     trig = (trigger or _TRIGGER_UNKNOWN).strip()
     phase = {"at": "starting", "pct": 0}
     try:
-        return _fuse_case_locked(case_id, contributions_override=contributions_override,
-                                 log=log, _record=_record, force_report=force_report,
-                                 trigger=trigger, allow_llm=allow_llm,
-                                 refetch=refetch, _phase=phase)
+        g = _fuse_case_locked(case_id, contributions_override=contributions_override,
+                              log=log, _record=_record, force_report=force_report,
+                              trigger=trigger, allow_llm=allow_llm,
+                              refetch=refetch, _phase=phase)
     except Exception as e:
         # A fuse that dies used to leave the log ending mid-progress — the last row
         # was whatever phase it reached, with no indication anything went wrong, so
@@ -1636,6 +1636,11 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True,
         raise
     finally:
         lock.release()
+    # Jev suggestions ride on the fused graph but must never hold the fuse lock:
+    # they are network calls, and the next fuse must not wait on them.
+    from . import jev
+    jev.after_fuse(case_id)
+    return g
 
 
 def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record=True,
@@ -4864,6 +4869,8 @@ def get_timeline(case_id) -> list:
     # analyst "looks benign" suggestions (the old checklist) -> inline hint
     suggested = {it.get("finding_id") for it in (d.get("disposition_checklist") or [])
                  if it.get("suggestion") == "benign"}
+    from . import jev
+    jev_on, jev_s = jev.enabled("disposition"), d.get("jev_suggestions") or {}
     rows = render.timeline(g, window=view_window(d))
     for r in rows:
         fid = r.get("finding_id")
@@ -4882,6 +4889,10 @@ def get_timeline(case_id) -> list:
         else:
             r["validation"] = "pending"
         r["suggested_benign"] = fid in suggested
+        # Jev's suggested verdict: only on a finding nobody has judged yet, only
+        # for the occurrences it was asked about, only when it is sure enough.
+        r["jev"] = (jev.suggestion_for(jev_s, fid, fwm.get(fid, ""))
+                    if jev_on and not v else None)
         r["manual"] = False
     # manual events carry their own status on the record
     for e in (d.get("manual_timeline_events") or []):
