@@ -435,10 +435,20 @@ def entity_estimates(question, d, g, run_id=None) -> str:
         return ""
     try:
         from .resolve import resolve
-        ents = [e for e in resolve(g, question).get("resolved") or []
-                if e.type in ("account", "asset")][:3]
+        r = resolve(g, question)
+        # An ambiguous name ("kobi" -> kobia, adatumlab\kobia, kobitst) gets an
+        # estimate per candidate that has findings, side by side — the chat model
+        # answers about one of them anyway, and the analyst sees which.
+        seen, ents = set(), []
+        for e in (r.get("resolved") or []) + [c for a in r.get("ambiguous") or []
+                                             for c in a.get("candidates") or []]:
+            if e.type in ("account", "asset") and e.id not in seen:
+                seen.add(e.id)
+                ents.append(e)
         pairs = []
         for e in ents:
+            if len(pairs) >= 3:
+                break
             fs = [f for f in g.findings if e.id in (f.entity_ids or []) or e.id in (f.asset_ids or [])]
             if fs:
                 pairs.append((e, fs))

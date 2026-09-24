@@ -116,6 +116,21 @@ class EntityEstimate(unittest.TestCase):
         self.assertIn("from 1 finding on 1 host", out)
         self.assertIn("not a verdict", out)
 
+    def test_an_ambiguous_name_gets_each_candidate_with_findings(self):
+        from services.fusion.schema import Entity
+        g = self.graph()
+        other = Entity(id="acct:kobitst", type="account", label="kobitst")      # no findings
+        g.entities[other.id] = other
+        res = {"resolved": [], "ambiguous": [{"token": "kobi",
+                                              "candidates": [g.entities["acct:kobia"], other]}]}
+        with mock.patch.object(jev, "enabled", return_value=True), \
+             mock.patch("services.fusion.resolve.resolve", return_value=res), \
+             mock.patch.object(jev, "_entity_state", lambda g, e, fs: {"entity": e.label}), \
+             mock.patch.object(jev, "ask_each", return_value=[{"noul": 0.61}]) as ae:
+            out = jev.entity_estimates("is kobi malicious?", {}, g)
+        self.assertEqual(len(ae.call_args.args[0]), 1)                          # kobitst not asked
+        self.assertIn("**kobia** (account): **61%**", out)
+
     def test_silent_when_it_should_be(self):
         q = "How confident are you that kobi is malicious user?"
         self.assertEqual(self.estimate(q, enabled=False)[0], "")
