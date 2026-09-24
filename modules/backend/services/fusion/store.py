@@ -5024,7 +5024,8 @@ def chat_case(case_id, question) -> str:
         # anything else: the offer simply lapses, the question is answered normally
         _set_pending_disposition(case_id, None)
 
-    from . import jev
+    from . import injection, jev
+    injection.take_hits(case_id)            # this turn's injection note starts clean
     proposal = llm_sim.detect_disposition(g, question,
                                           verdict_hint=jev.chat_verdict(question, d, g, run_id=case_id))
     model, provider, _m = _configured_fusion_model()
@@ -5057,6 +5058,7 @@ def chat_case(case_id, question) -> str:
                            manual_events=d.get("manual_timeline_events") or None,
                            checklist=d.get("disposition_checklist") or None)
         log_case_event(case_id, "Chat · reply generated", "success", f"{len(ans or '')} chars")
+        ans = (ans or "") + llm_sim._revert_mask(injection.note(injection.take_hits(case_id)), mask)
         # A detected verdict rides ALONG WITH the answer as an offer. Worst case
         # for a misread is one extra sentence the operator ignores — never a
         # blocked answer, never a silent mutation.

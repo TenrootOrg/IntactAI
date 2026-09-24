@@ -881,6 +881,7 @@
                                 <label class="flex items-center gap-2"><input type="checkbox" x-model="$store.settings.config.agentic.jev.uses.chat_intent" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Understand chat verdicts</label>
                                 <label class="flex items-center gap-2"><input type="checkbox" x-model="$store.settings.config.agentic.jev.uses.grounding" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Check report claims against evidence</label>
                                 <label class="flex items-center gap-2"><input type="checkbox" x-model="$store.settings.config.agentic.jev.uses.relevance" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Score collected rows (on demand)</label>
+                                <label class="flex items-center gap-2" title="A built-in pattern check always runs with no network; Jev adds a check for paraphrased injections."><input type="checkbox" x-model="$store.settings.config.agentic.jev.uses.injection" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Detect injected instructions in evidence</label>
                                 <label class="flex items-center gap-2">Show suggestions from
                                     <input type="number" x-model.number="$store.settings.config.agentic.jev.min_confidence" min="0.5" max="0.99" step="0.05"
                                            class="w-16 bg-gray-900 text-white border border-gray-700 rounded px-1 py-0.5 text-xs"> confidence</label>

@@ -246,6 +246,15 @@ def _real_llm(system_prompt: str, user_message: str, *, run_id=None,
     agentic max_response_tokens for THIS call only — caps output cost per rescan."""
     from services.agentic.analyzers import call_llm
     from services.memory.pipeline import _llm_config_from_runtime
+    from . import injection
+    # Evidence is attacker-writable: tell the model so on EVERY call, and pull
+    # injection-looking strings out of what it reads (see injection.py).
+    system_prompt = injection.SYSTEM_NOTE + "\n\n" + (system_prompt or "")
+    user_message, _inj = injection.guard(user_message, run_id=run_id)
+    if _inj:
+        _case_event(run_id, "LLM input · prompt-injection text withheld", "warning",
+                    f"{len(_inj)} evidence string(s) addressed to an AI model were replaced "
+                    "by a marker before the call — see the note on the answer")
     cfg = _llm_config_from_runtime()
     if max_output_tokens:
         cfg = dict(cfg)
@@ -1741,6 +1750,10 @@ def generate_report(graph, *, window=None, min_severity="informational",
     # premium LLM narrative is produced ONLY on an explicit Rescan/Regenerate
     # (regenerate_report passes prefer_llm=True). Keeps tokens fully on-demand.
     if prefer_llm and (_use_real() or _llm_available()):
+        from . import injection as _inj_mod
+        # ponytail: hits are keyed by case, so a chat turn racing this report on the
+        # same case can move a hit to the other's note; per-call tokens if that matters.
+        _inj_mod.take_hits(run_id)          # start this report's list clean
         try:
             # ALTITUDE: broad scope -> a macro triage map (ranked candidate scenarios
             # + zoom targets); narrow -> one focused explicit theory. Macro also forces
@@ -1913,6 +1926,8 @@ def generate_report(graph, *, window=None, min_severity="informational",
                      "NOT present in the case evidence and may be model artifacts — verify "
                      "before acting: " + ", ".join(f"`{h[:16]}…`" for h in _bad_h) + "\n"
                      if _bad_h else "")
+            # Injection-looking evidence withheld from the model during this report.
+            gnote += _revert_mask(_inj_mod.note(_inj_mod.take_hits(run_id)), mask)
             # Jev (when enabled): statements the evidence does not support. Same rule
             # as the hashes — flag beside the report, never cut the prose.
             from . import jev as _jev

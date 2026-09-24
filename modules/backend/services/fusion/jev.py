@@ -24,7 +24,7 @@ from .budget import approx_tokens
 log = logging.getLogger(__name__)
 
 URL = "https://openrouter.ai/api/v1/systemone"
-USES = ("disposition", "relevance", "grounding", "identity", "chat_intent")
+USES = ("disposition", "relevance", "grounding", "identity", "chat_intent", "injection")
 DEFAULTS = {"enabled": False, "model": "jev-latest", "min_confidence": 0.8,
             # Jev's own OpenRouter key. Empty = use the main key, which only works
             # while OpenRouter is the selected chat provider.
