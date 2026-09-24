@@ -94,6 +94,17 @@ class Notice(unittest.TestCase):
         self.assertEqual(t.logged.call_args.kwargs["finding_ids"], ["b"])         # a was already known
         self.assertIn("T b", t.logged.call_args.args[3])
 
+    def test_built_even_when_no_finding_changed(self):
+        # Found live: a case suggested before the notice existed never got one,
+        # because an unchanged pass returned before building it.
+        t = SuggestDispositions()
+        a = _f("a")
+        d = {"jev_suggestions": {"a": {"wm": a.watermark(), "label": "true_positive", "confidence": 0.9}}}
+        n, asked, _ = t.run_pass(d, [a], {})
+        self.assertEqual((n, asked), (0, []))
+        self.assertEqual(t.merged["jev_notice"], [{"id": "a", "title": "T a"}])
+        t.logged.assert_not_called()                     # not new: no log line
+
     def test_reviewed_findings_drop_out_and_off_shows_nothing(self):
         d = {"jev_notice": [{"id": "a", "title": "A"}, {"id": "b", "title": "B"}],
              "timeline_validations": [{"finding_id": "a", "status": "known"}]}

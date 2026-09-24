@@ -211,16 +211,17 @@ def suggest_dispositions(case_id, d, g) -> int:
     todo = [f for f in g.findings
             if f.id not in validated and f.kind != "dispositioned"
             and (have.get(f.id) or {}).get("wm") != f.watermark()]
-    if not todo:
-        return 0
-    mask = mask_for(d, g)
-    answers = ask_each(todo, lambda f: masked(finding_state(g, f), mask),
-                       _verdict_question, run_id=case_id)
     new = dict(have)
-    for f, ans in zip(todo, answers):
-        s = _answer_to_suggestion(ans)
-        if s:
-            new[f.id] = {"wm": f.watermark(), **s}
+    if todo:
+        mask = mask_for(d, g)
+        answers = ask_each(todo, lambda f: masked(finding_state(g, f), mask),
+                           _verdict_question, run_id=case_id)
+        for f, ans in zip(todo, answers):
+            s = _answer_to_suggestion(ans)
+            if s:
+                new[f.id] = {"wm": f.watermark(), **s}
+    # No early return when nothing changed: the notice below must still be built
+    # (a case suggested before the notice existed, or a changed threshold).
     live = {f.id for f in g.findings}
     new = {k: v for k, v in new.items() if k in live}      # findings that vanished
     # The notice: findings Jev is sure are malicious and nobody has reviewed.
