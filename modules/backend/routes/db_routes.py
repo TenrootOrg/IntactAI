@@ -52,6 +52,9 @@ def _make_redacted_backup_copy(src_path: str) -> str:
                 if value.get('online_llm', {}).get('api_key'):
                     value['online_llm']['api_key'] = '[REDACTED]'
                     changed = True
+                if (value.get('jev') or {}).get('api_key'):      # Jev's own OpenRouter key
+                    value['jev']['api_key'] = '[REDACTED]'
+                    changed = True
             if changed:
                 conn.execute(
                     "UPDATE frontend_config SET value = ? WHERE key = ?",
