@@ -434,8 +434,13 @@
                     </div>
 
                     <!-- Agentic Tab -->
-                    <div x-show="settingsTab === 'agentic'" x-transition class="bg-gray-800 rounded-lg p-5 border border-gray-700">
-                        <h3 class="text-lg font-semibold text-white mb-4">Agentic LLM Configuration</h3>
+                    <div x-show="settingsTab === 'agentic'" x-transition class="space-y-4">
+                    <!-- Two sections, configured separately: the model that writes (chat,
+                         report, investigations) and Jev, which only suggests — its own
+                         OpenRouter key, whatever the model above is. -->
+                    <div class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+                        <h3 class="text-lg font-semibold text-white">AI model — chat, report &amp; investigations</h3>
+                        <p class="text-xs text-gray-500 mb-4">The model that writes the case chat, the report and investigations.</p>
 
                         <div class="mb-4">
                             <label class="block text-sm text-gray-400 mb-1">Mode</label>
@@ -855,44 +860,6 @@
                              consumer and its per-case "Output token cap" defaults to the
                              selected model's max output.) -->
 
-                        <!-- Fast decisions (Jev). Suggestions only — nothing is ever set
-                             on Jev's word. Uses the OpenRouter key above, so it is inert
-                             under any other provider. -->
-                        <div class="mt-4 pt-4 border-t border-gray-700">
-                            <label class="flex items-center gap-2 text-sm text-white">
-                                <input type="checkbox" x-model="$store.settings.config.agentic.jev.enabled"
-                                       class="w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-500">
-                                Fast decisions (Jev)
-                            </label>
-                            <p class="text-xs text-gray-500 mt-1">
-                                Quick suggestions with a confidence score — the analyst still decides.
-                                Runs through <b>OpenRouter</b>, whatever model the chat uses.
-                                Masked case data is sent to OpenRouter and TypeSafe.
-                            </p>
-                            <div x-show="$store.settings.config.agentic.jev.enabled" class="mt-2">
-                                <label class="block text-xs text-gray-400 mb-1">OpenRouter API key for Jev
-                                    <span class="text-gray-500">(leave empty to use the key above while OpenRouter is the provider)</span></label>
-                                <input type="password" autocomplete="off" x-model="$store.settings.config.agentic.jev.api_key" placeholder="sk-or-…"
-                                       class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
-                            </div>
-                            <p x-show="$store.settings.config.agentic.jev.enabled && ($store.settings.config.agentic.llm_mode !== 'online' || (!$store.settings.config.agentic.jev.api_key && $store.settings.config.agentic.online_llm.provider !== 'openrouter'))"
-                               class="text-xs text-yellow-400 mt-1">Inactive: needs Online mode, and an OpenRouter key here (or OpenRouter as the provider above).</p>
-                            <div x-show="$store.settings.config.agentic.jev.enabled" class="mt-2 grid grid-cols-2 gap-2 text-xs text-gray-300">
-                                <label class="flex items-center gap-2"><input type="checkbox" x-model="$store.settings.config.agentic.jev.uses.disposition" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Suggested verdict per finding</label>
-                                <label class="flex items-center gap-2"><input type="checkbox" x-model="$store.settings.config.agentic.jev.uses.identity" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Identity-match hints</label>
-                                <label class="flex items-center gap-2"><input type="checkbox" x-model="$store.settings.config.agentic.jev.uses.chat_intent" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Understand chat verdicts</label>
-                                <label class="flex items-center gap-2"><input type="checkbox" x-model="$store.settings.config.agentic.jev.uses.chat_confidence" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Estimate in chat how likely an account/host is malicious</label>
-                                <label class="flex items-center gap-2"><input type="checkbox" x-model="$store.settings.config.agentic.jev.uses.scopes" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Rate each scope card of a broad case</label>
-                                <label class="flex items-center gap-2"><input type="checkbox" x-model="$store.settings.config.agentic.jev.uses.compromise" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Estimate on each person how likely they are compromised</label>
-                                <label class="flex items-center gap-2"><input type="checkbox" x-model="$store.settings.config.agentic.jev.uses.grounding" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Check report claims against evidence</label>
-                                <label class="flex items-center gap-2"><input type="checkbox" x-model="$store.settings.config.agentic.jev.uses.relevance" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Score collected rows (on demand)</label>
-                                <label class="flex items-center gap-2" title="A built-in pattern check always runs with no network; Jev adds a check for paraphrased injections."><input type="checkbox" x-model="$store.settings.config.agentic.jev.uses.injection" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Detect injected instructions in evidence</label>
-                                <label class="flex items-center gap-2">Show suggestions from
-                                    <input type="number" x-model.number="$store.settings.config.agentic.jev.min_confidence" min="0.5" max="0.99" step="0.05"
-                                           class="w-16 bg-gray-900 text-white border border-gray-700 rounded px-1 py-0.5 text-xs"> confidence</label>
-                            </div>
-                        </div>
-
                         <!-- Save Button -->
                         <div class="mt-4 pt-4 border-t border-gray-700 flex justify-end">
                             <!-- Test connection: a real one-token round-trip through whatever
@@ -936,9 +903,58 @@
                                 <span x-text="$store.settings.updatingCatalog ? 'Updating…' : 'Update catalog'"></span>
                             </button>
                             <button @click="$store.settings.saveAgentic()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium">
-                                <span x-text="$store.settings.saving ? 'Saving...' : 'Save Agentic Settings'"></span>
+                                <span x-text="$store.settings.saving ? 'Saving...' : 'Save AI Model Settings'"></span>
                             </button>
                         </div>
+                    </div>
+
+                    <div class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+                        <h3 class="text-lg font-semibold text-white">Fast decisions (Jev)</h3>
+                        <p class="text-xs text-gray-500 mb-4">A separate model and key: quick suggestions with a confidence score, beside the analyst's own decisions. Works with any AI model above.</p>
+                        <!-- Fast decisions (Jev). Suggestions only — nothing is ever set
+                             on Jev's word. Uses the OpenRouter key above, so it is inert
+                             under any other provider. -->
+                        <div>
+                            <label class="flex items-center gap-2 text-sm text-white">
+                                <input type="checkbox" x-model="$store.settings.config.agentic.jev.enabled"
+                                       class="w-4 h-4 rounded bg-gray-700 border-gray-600 text-blue-500">
+                                Enable Jev
+                            </label>
+                            <p class="text-xs text-gray-500 mt-1">
+                                Quick suggestions with a confidence score — the analyst still decides.
+                                Runs through <b>OpenRouter</b>, whatever model the chat uses.
+                                Masked case data is sent to OpenRouter and TypeSafe.
+                            </p>
+                            <div x-show="$store.settings.config.agentic.jev.enabled" class="mt-2">
+                                <label class="block text-xs text-gray-400 mb-1">OpenRouter API key for Jev
+                                    <span class="text-gray-500">(leave empty to use the AI model's key while its provider is OpenRouter)</span></label>
+                                <input type="password" autocomplete="off" x-model="$store.settings.config.agentic.jev.api_key" placeholder="sk-or-…"
+                                       class="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm">
+                            </div>
+                            <p x-show="$store.settings.config.agentic.jev.enabled && ($store.settings.config.agentic.llm_mode !== 'online' || (!$store.settings.config.agentic.jev.api_key && $store.settings.config.agentic.online_llm.provider !== 'openrouter'))"
+                               class="text-xs text-yellow-400 mt-1">Inactive: needs Online mode, and an OpenRouter key here (or OpenRouter as the AI model's provider).</p>
+                            <div x-show="$store.settings.config.agentic.jev.enabled" class="mt-2 grid grid-cols-2 gap-2 text-xs text-gray-300">
+                                <label class="flex items-center gap-2"><input type="checkbox" x-model="$store.settings.config.agentic.jev.uses.disposition" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Suggested verdict per finding</label>
+                                <label class="flex items-center gap-2"><input type="checkbox" x-model="$store.settings.config.agentic.jev.uses.identity" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Identity-match hints</label>
+                                <label class="flex items-center gap-2"><input type="checkbox" x-model="$store.settings.config.agentic.jev.uses.chat_intent" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Understand chat verdicts</label>
+                                <label class="flex items-center gap-2"><input type="checkbox" x-model="$store.settings.config.agentic.jev.uses.chat_confidence" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Estimate in chat how likely an account/host is malicious</label>
+                                <label class="flex items-center gap-2"><input type="checkbox" x-model="$store.settings.config.agentic.jev.uses.scopes" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Rate each scope card of a broad case</label>
+                                <label class="flex items-center gap-2"><input type="checkbox" x-model="$store.settings.config.agentic.jev.uses.compromise" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Estimate on each person how likely they are compromised</label>
+                                <label class="flex items-center gap-2"><input type="checkbox" x-model="$store.settings.config.agentic.jev.uses.grounding" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Check report claims against evidence</label>
+                                <label class="flex items-center gap-2"><input type="checkbox" x-model="$store.settings.config.agentic.jev.uses.relevance" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Score collected rows (on demand)</label>
+                                <label class="flex items-center gap-2" title="A built-in pattern check always runs with no network; Jev adds a check for paraphrased injections."><input type="checkbox" x-model="$store.settings.config.agentic.jev.uses.injection" class="w-4 h-4 rounded bg-gray-700 border-gray-600">Detect injected instructions in evidence</label>
+                                <label class="flex items-center gap-2">Show suggestions from
+                                    <input type="number" x-model.number="$store.settings.config.agentic.jev.min_confidence" min="0.5" max="0.99" step="0.05"
+                                           class="w-16 bg-gray-900 text-white border border-gray-700 rounded px-1 py-0.5 text-xs"> confidence</label>
+                            </div>
+                        </div>
+
+                        <div class="mt-4 pt-4 border-t border-gray-700 flex justify-end">
+                            <button @click="$store.settings.saveAgentic()" :disabled="$store.settings.saving" class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded text-sm font-medium">
+                                <span x-text="$store.settings.saving ? 'Saving...' : 'Save Jev Settings'"></span>
+                            </button>
+                        </div>
+                    </div>
                     </div>
 
                     <!-- Timesketch Tab -->
