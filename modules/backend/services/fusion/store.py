@@ -5005,7 +5005,8 @@ def get_timeline(case_id) -> list:
 
     Each row: finding_id, ts, host, phase, title, severity, mitre, artifacts,
     source ('fusion'|'manual'), validation ('true_positive'|'false_positive'|'known'|
-    'pending'), suggested_benign (analyst hinted it looks expected), manual."""
+    'pending'), manual. (suggested_benign was removed: every checklist item defaulted
+    to "benign", so it was true on 107 rows — 6 of them critical — and nothing showed it.)"""
     from services.fusion.correlate import _wm_new_activity
     d = get_case(case_id)
     # view_graph, not a hand-rolled host filter: it applies the SCOPE too, so the
@@ -5014,9 +5015,6 @@ def get_timeline(case_id) -> list:
     g = view_graph(case_id, d)
     vrec = {v.get("finding_id"): v for v in (d.get("timeline_validations") or [])}
     fwm = {f.id: f.watermark() for f in g.findings}     # current occurrence watermark
-    # analyst "looks benign" suggestions (the old checklist) -> inline hint
-    suggested = {it.get("finding_id") for it in (d.get("disposition_checklist") or [])
-                 if it.get("suggestion") == "benign"}
     from . import jev
     jev_on, jev_s = jev.enabled("disposition"), d.get("jev_suggestions") or {}
     rows = render.timeline(g, window=view_window(d))
@@ -5039,7 +5037,6 @@ def get_timeline(case_id) -> list:
                 r["validation"] = st
         else:
             r["validation"] = "pending"
-        r["suggested_benign"] = fid in suggested
         # Jev's suggested verdict: only on a finding nobody has judged yet, only
         # for the occurrences it was asked about, only when it is sure enough.
         r["jev"] = (jev.suggestion_for(jev_s, fid, fwm.get(fid, ""))
@@ -5066,7 +5063,6 @@ def get_timeline(case_id) -> list:
         row["ts"] = render.fmt_ts(e.get("ts"))     # same display format as findings
         row["validation"] = e.get("status", "true_positive")
         row.setdefault("mitre", [])
-        row.setdefault("suggested_benign", False)
         rows.append(row)
     rows.sort(key=lambda r: (r.get("ts") or "9999"))
     return rows
