@@ -540,13 +540,16 @@ def compute_candidates(graph) -> list:
                     # shared host" is weak evidence for one PERSON, and a wrong identity
                     # merge is an attribution error in a forensic report. Surface it and
                     # let the analyst confirm (the decision persists either way).
+                    # Nor does it raise the score: a +0.3 for a shared workstation
+                    # turned a bare prefix match into 0.90 (jev_test), the same number
+                    # as an exact username. The evidence is still listed.
                     if ba and bb and ba == bb:
-                        corroborated, strong = False, False
+                        corroborated, strong, corr = False, False, 0.0
                     cands.append({
                         "kind": "same_identity", "a_id": ea.id, "a_label": ea.label,
                         "b_id": eb.id, "b_label": eb.label,
                         "a_ctx": _context(ea, graph), "b_ctx": _context(eb, graph),
-                        "buckets": sorted(ba | bb), "score": min(1.0, score + corr),
+                        "buckets": sorted(ba | bb), "score": round(min(1.0, score + corr), 2),
                         "match": reason,
                         "reason": (reason + ((" · " + "; ".join(ev)) if ev else "")),
                         "evidence": ev, "corroborated": bool(corroborated or strong), "strong": strong,

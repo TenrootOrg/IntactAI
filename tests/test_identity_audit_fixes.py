@@ -74,6 +74,18 @@ class Suggestions(unittest.TestCase):
         self.assertFalse([c for c in cands if c["kind"] == "same_identity" and "administrator" in
                           (identities._norm_user(c["a_label"]), identities._norm_user(c["b_label"]))])
 
+    def test_a_shared_host_in_one_infrastructure_adds_no_score(self):
+        # jev_test: a bare prefix match on one workstation scored 0.90 — the same
+        # as an exact username — because the shared host added +0.3.
+        g = _graph()
+        for eid, lbl in (("account:domain:corp\\giladt", "CORP\\giladt"), ("account:domain:corp\\gilad", "CORP\\gilad")):
+            g.upsert(schema.Entity(id=eid, type="account", label=lbl, attrs={"_assets": ["asset:WS1"]},
+                                   evidence=[schema.EvidenceRef("velociraptor", "r1", "Windows.System.Pslist/row=1")]))
+        c = [c for c in identities.compute_candidates(g) if c.get("match") == "username prefix"][0]
+        self.assertEqual(c["score"], 0.6)
+        self.assertIn("shares host WS1", c["reason"])          # still shown as evidence
+        self.assertFalse(c["auto"])
+
 
 if __name__ == "__main__":
     unittest.main()
