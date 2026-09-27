@@ -1969,8 +1969,8 @@ function idCard(cid,it,jev){
   const nAcc=(it.accounts||[]).filter(a=>!a.disabled).length;
   const so=it.seen_on||[];
   const row=`<div class="pgrid${jev?'':' nojev'}" onclick="idToggle('${jsa(it.key)}')">
-     <div class="pname" style="min-width:0"><span style="color:var(--muted);display:inline-block;width:14px">${open?'▾':'▸'}</span><b>${esc(it.name||it.key)}</b>${it.builtin?bdg('built-in','#d29922'):''}${it.account_kind?bdg(it.account_kind):''}${buckets}${confb}
-       <div class="psub" style="padding-left:14px">${nAcc} account${nAcc===1?'':'s'}${sugN?` · <span style="color:var(--acc)">${sugN} link suggestion${sugN===1?'':'s'}</span>`:''}</div></div>
+     <div class="pname" style="min-width:0"><span style="color:var(--muted);display:inline-block;width:14px">${open?'▾':'▸'}</span><b>${esc(it.name||it.key)}</b>${it.builtin?bdg('built-in','#d29922'):''}${it.local_group?`<span title="${nAcc} separate local accounts with this built-in name, one per host — grouped because a shared local password links them. A verdict applies to all of them." style="font-size:10px;border:1px solid var(--bd);color:var(--muted);border-radius:8px;padding:0 6px;margin-left:6px">local · ${so.length} hosts</span>`:''}${it.account_kind?bdg(it.account_kind):''}${buckets}${confb}
+       <div class="psub" style="padding-left:14px">${nAcc} account${nAcc===1?'':'s'}${sugN?` · <span style="color:var(--acc)">${sugN} link suggestion${sugN===1?'':'s'}</span>`:''}${it.detections?'':' · <span title="No detection involves these accounts: they come from account lists (e.g. the SAM), not from activity">no findings — seen in account data only</span>'}</div></div>
      <div>${it.worst?`<span class="chip c-${esc(it.worst)}">${esc(it.worst)}</span>`:'<span class="pcell">—</span>'}</div>
      <div class="pcell">${it.detections?`<b style="color:var(--tx)">${it.detections}</b> <span>(${it.finding_rows} row${it.finding_rows===1?'':'s'})</span>`:'—'}</div>
      <div class="pcell" title="${esc(so.join(', '))}">${so.length?esc(so.slice(0,3).join(', '))+(so.length>3?` +${so.length-3}`:''):'—'}</div>

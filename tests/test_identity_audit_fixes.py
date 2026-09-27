@@ -46,11 +46,24 @@ class Cards(unittest.TestCase):
     def _card(self, name):
         return [c for c in self.cards if c["name"] == name]
 
-    def test_builtin_administrator_has_a_card(self):
+    def test_builtin_administrator_has_a_card_and_the_domain_one_is_its_own(self):
+        # CORP\\administrator and the local (SAM) Administrator were one card
         adm = self._card("administrator")
-        self.assertEqual(len(adm), 1)
-        self.assertTrue(adm[0]["builtin"])
-        self.assertIn("DC1", adm[0]["seen_on"])
+        self.assertEqual(len(adm), 2)
+        self.assertTrue(all(c["builtin"] for c in adm))
+        self.assertTrue(all("DC1" in c["seen_on"] for c in adm))
+        self.assertEqual(sorted(len(c["accounts"]) for c in adm), [1, 1])
+
+    def test_a_builtins_local_copies_share_one_labelled_card(self):
+        g = _graph()
+        for h in ("WS1", "WS2"):
+            g.upsert(schema.Entity(id=f"account:asset:{h}:guest", type="account", label="guest",
+                                   attrs={"_assets": [f"asset:{h}"]},
+                                   evidence=[schema.EvidenceRef("velociraptor", "r1", "Windows.Forensics.SAM/row=1")]))
+        guest = [c for c in identities.resolve_identities(g) if c["name"] == "guest"]
+        self.assertEqual(len(guest), 1)
+        self.assertTrue(guest[0]["local_group"])
+        self.assertEqual(guest[0]["seen_on"], ["WS1", "WS2"])
 
     def test_every_host_is_listed(self):
         srv = self._card("srv")

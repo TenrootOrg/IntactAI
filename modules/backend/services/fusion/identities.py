@@ -387,6 +387,12 @@ def resolve_identities(graph, merges=None, splits=None, host_excludes=None) -> l
         n = _norm_user(e.label)
         if _local_host(e) and n not in BUILTIN_ACCOUNTS:
             locals_.append(e)
+        elif _local_host(e):
+            # A built-in's LOCAL copies (Guest / Administrator from each host's SAM)
+            # share one card of their own — a shared local password is a real path
+            # between hosts — but never the domain account's: CORP\Administrator and
+            # nine local Administrators were one card on jev_test.
+            bynorm["\0local:" + n].append(e)
         else:
             bynorm[n].append(e)
     for accs in bynorm.values():
@@ -454,6 +460,8 @@ def resolve_identities(graph, merges=None, splits=None, host_excludes=None) -> l
         return {"key": key, "name": dominant, "names": names, "buckets": sorted(buckets),
                 "accounts": acct_out, "hosts": hosts_out, "seen_on": seen_on,
                 "builtin": dominant in BUILTIN_ACCOUNTS, "account_kind": account_kind(dominant),
+                # separate local accounts, one per host, grouped by their built-in name
+                "local_group": len(accs) > 1 and all(_local_host(e) for e in accs),
                 "confidence": round(sum(confs) / len(confs), 2)}
 
     comps = defaultdict(list)
