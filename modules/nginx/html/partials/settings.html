@@ -802,7 +802,9 @@
                                 <div x-show="$store.settings.cli.installed && !$store.settings.cli.authenticated"
                                      x-transition class="bg-gray-900 border border-yellow-800 rounded p-3">
                                     <div class="text-xs text-yellow-300 mb-2">
-                                        Codex is installed, but nobody is signed in. Run this on the host:
+                                        <span x-text="$store.settings.cli.expired
+                                            ? 'Your codex sign-in has expired — the provider refused the last call. Sign in again on the host:'
+                                            : 'Codex is installed, but nobody is signed in. Run this on the host:'"></span>
                                     </div>
                                     <div class="flex items-start gap-2">
                                         <pre class="flex-1 bg-black/40 text-gray-300 rounded px-3 py-2 text-[11px]"

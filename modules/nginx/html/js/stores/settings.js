@@ -1614,7 +1614,7 @@ document.addEventListener('alpine:init', () => {
         // see it, whether somebody is signed in, and whether it actually works.
         // Everything below is a read.
         SUBSCRIPTION_PROVIDERS: ['codex-subscription'],
-        cli: { installed: false, authenticated: false, detail: '', label: '',
+        cli: { installed: false, authenticated: false, expired: false, detail: '', label: '',
                version: null, path: null, source: null },
         cliBusy: false,
         cliTesting: false,
@@ -1643,6 +1643,7 @@ document.addEventListener('alpine:init', () => {
 
         cliStatusText() {
             if (!this.cli.installed) return 'Not found on this system';
+            if (this.cli.expired) return 'Sign-in expired';
             if (this.cli.authenticated) return 'Ready' + (this.cli.version ? ' · ' + this.cli.version : '');
             return 'Found — not signed in';
         },
@@ -1681,7 +1682,8 @@ document.addEventListener('alpine:init', () => {
                     installed: !!d.installed, authenticated: !!d.authenticated,
                     detail: d.detail || '', label: d.label || '',
                     version: d.version || null, path: d.path || null,
-                    source: d.credential_source || null
+                    source: d.credential_source || null,
+                    expired: !!d.expired          // signed in, but the provider refused it
                 };
                 // Signed in since the last poll → the catalog can finally be
                 // listed (the CLI only knows the account's models once it is

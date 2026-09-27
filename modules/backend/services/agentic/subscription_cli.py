@@ -776,6 +776,12 @@ def detect(provider) -> dict:
             m = re.search(r"(ChatGPT|API key|apikey)", text, re.I)
             if m:
                 out["auth_mode"] = m.group(1)
+            if out["authenticated"] and _spent_login(provider):
+                # `login status` only reads the file; the provider has refused it.
+                out["authenticated"], out["expired"] = False, True
+                out["detail"] = (f"Signed in, but this login's refresh token was already "
+                                 f"used — the last model call was refused. Run "
+                                 f"`{spec['binary']} login` on the host, then press Re-check.")
         except subprocess.TimeoutExpired:
             out["detail"] = "login status check timed out"
         except Exception as e:  # noqa: BLE001
@@ -1049,11 +1055,31 @@ def _credential_note(provider, home) -> str:
             f"that host has no browser.")
 
 
+def _login_fp(provider):
+    """Which login is current: the stored one, else the host file's."""
+    spec = _spec(provider)
+    blob = get_secret(spec["secret_key"]) or _read_host_credential(provider)
+    return _host_fp(blob) if blob else None
+
+
+def _spent_login(provider) -> bool:
+    """A real call was refused because THIS login's refresh token is spent. The
+    Settings panel said "Signed in · Ready" all the while — its check only reads
+    the credential file. Cleared by a new sign-in (the fingerprint changes) or
+    by a call that works."""
+    fp = _login_fp(provider)
+    return bool(fp) and get_secret(_spec(provider)["secret_key"] + ":spent") == fp
+
+
 def _fail(provider, home, message, source_text):
     """Raise with the classified reason, plus the explanation when we have one."""
     reason = _classify(source_text)
     if reason == "cli_credential_expired":
         message += _credential_note(provider, home)
+        try:
+            set_secret(_spec(provider)["secret_key"] + ":spent", _login_fp(provider) or "")
+        except Exception:  # noqa: BLE001 — the status is a courtesy
+            pass
     raise SubscriptionCLIError(message, reason)
 
 
@@ -1111,6 +1137,11 @@ def run_prompt(provider, prompt, system_prompt=None, model=None, timeout=None) -
             _fail(provider, home,
                   f"{spec['label']} returned no content: {vendor or combined[-300:]}",
                   vendor or combined)
+        if _spent_login(provider):              # it works again: say so
+            try:
+                delete_secret(spec["secret_key"] + ":spent")
+            except Exception:  # noqa: BLE001
+                pass
         return {"text": text, "in_tokens": in_tok, "out_tokens": out_tok}
     except subprocess.TimeoutExpired:
         raise SubscriptionCLIError(

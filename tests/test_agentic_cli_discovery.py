@@ -437,6 +437,22 @@ class TestTheHostCredential(_Base):
         self.assertFalse(self.sub.has_credentials(self.P))
         self.assertIsNone(self.sub._host_refreshed(self.P, self.sub._read_host_credential(self.P)))
 
+    def test_a_refused_login_is_reported_expired_until_a_new_sign_in(self):
+        # Settings said "Signed in · Ready" while every real call was refused:
+        # `codex login status` only reads the file (2026-09-27).
+        self._host_auth()
+        store = {}
+        self.sub.get_secret = lambda k, *a, **kw: store.get(k)
+        self.sub.set_secret = lambda k, v: store.__setitem__(k, v)
+        self.sub.delete_secret = lambda k: store.pop(k, None)
+        self.assertFalse(self.sub._spent_login(self.P))
+        with self.assertRaises(self.sub.SubscriptionCLIError) as cm:
+            self.sub._fail(self.P, "/tmp/x", "codex:", "refresh token was already used")
+        self.assertEqual(cm.exception.reason, "cli_credential_expired")
+        self.assertTrue(self.sub._spent_login(self.P))
+        self._host_auth('{"tokens": {"x": "signed-in-again"}}')     # codex login on the host
+        self.assertFalse(self.sub._spent_login(self.P))
+
     def test_a_stored_credential_is_still_refreshed(self):
         # Boxes that signed in through the old in-app flow must keep working:
         # their token rotates on use, and dropping the write-back would expire
