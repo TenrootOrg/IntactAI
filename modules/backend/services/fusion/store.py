@@ -1636,11 +1636,89 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True,
         raise
     finally:
         lock.release()
+    try:
+        _track_rows(case_id, g)
+    except Exception as e:                                   # noqa: BLE001 — bookkeeping only
+        print(f"[FUSION] row tracking skipped for {case_id}: {e}", flush=True)
     # Jev suggestions ride on the fused graph but must never hold the fuse lock:
     # they are network calls, and the next fuse must not wait on them.
     from . import jev
     jev.after_fuse(case_id)
     return g
+
+
+# ---------------------------------------------------------------------------
+# "NEW since your review" on cross-host groups. Reviewed on jev_test: when a
+# group gains rows — a new host collected, the severity lowered, more artifacts
+# run, more hits on a row — the analyst has to be TOLD, not left to notice.
+#   row_seen  {finding_id: iso}           when each row first appeared (per fuse)
+#   row_ack   {finding_id: {at, wm}}      when an analyst last reviewed it, and
+#                                         how much activity it had then
+# A group's news = its rows that appeared after the group was last reviewed (or,
+# never reviewed, after it first appeared), plus reviewed rows whose activity grew.
+# ---------------------------------------------------------------------------
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _track_rows(case_id, g) -> None:
+    d = get_case(case_id) or {}
+    old = d.get("row_seen") or {}
+    now = _now_iso()
+    live = {f.id: f for f in g.findings}
+    seen = {k: v for k, v in old.items() if k in live}
+    fresh = [fid for fid in live if fid not in seen]
+    for fid in fresh:
+        seen[fid] = now
+    gained: dict = {}
+    for fid in fresh:
+        grp = live[fid].group or {}
+        if any(m != fid and m in old for m in grp.get("rows") or []):
+            host = ", ".join(render._host_label(g, a) for a in (live[fid].asset_ids or [])) or "?"
+            gained.setdefault(grp.get("name") or "?", []).append(host)
+    if seen != old:
+        _merge_case_details(case_id, {"row_seen": seen})
+    for name, hosts in gained.items():
+        log_case_event(case_id, "Timeline · group gained new rows", "warning",
+                       f"'{name}': +{len(hosts)} row(s) — {', '.join(hosts)}")
+
+
+def ack_rows(case_id, finding_ids, wms=None) -> dict:
+    """The analyst reviewed these rows (a verdict, or "Mark seen" on a group):
+    remember when, and how much activity each had, so later growth shows as new."""
+    ids = [str(x) for x in (finding_ids or []) if x]
+    if not ids:
+        return {"acked": 0}
+    if wms is None:
+        try:
+            wms = {f.id: f.watermark() for f in load_graph(case_id).findings if f.id in set(ids)}
+        except Exception:                                     # noqa: BLE001
+            wms = {}
+    now = _now_iso()
+
+    def _mutate(details):
+        ack = dict(details.get("row_ack") or {})
+        for i in ids:
+            ack[i] = {"at": now, "wm": (wms or {}).get(i)}
+        details["row_ack"] = ack
+    _ws().mutate_run_details(case_id, _mutate)
+    return {"acked": len(ids)}
+
+
+def _group_news(members, fmap, seen, ack) -> dict:
+    """What is new in one group since it was last reviewed (see above)."""
+    acked = [ack[m]["at"] for m in members if isinstance(ack.get(m), dict) and ack[m].get("at")]
+    firsts = [seen[m] for m in members if m in seen]
+    since = max(acked) if acked else (min(firsts) if firsts else None)
+    if not since:
+        return {}
+    new = [m for m in members if seen.get(m) and seen[m] > since]
+    grown = [m for m in members if m not in new and isinstance(ack.get(m), dict)
+             and ack[m].get("wm") and m in fmap and ack[m]["wm"] != fmap[m].watermark()]
+    if not new and not grown:
+        return {}
+    return {"since": since, "new": new, "grown": grown, "reviewed": bool(acked)}
 
 
 def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record=True,
@@ -4760,6 +4838,11 @@ def validate_timeline_many(case_id, finding_ids, status, notes="") -> dict:
         return kept
 
     _mutate_list_field(case_id, "timeline_validations", _mutate)
+    # A verdict is a review: whatever the group shows as NEW for these rows is seen.
+    try:
+        ack_rows(case_id, ids, wms)
+    except Exception as e:                                    # noqa: BLE001
+        print(f"[FUSION] review mark skipped for {case_id}: {e}", flush=True)
 
     # Suppression: false_positive / known add a benign disposition per row;
     # true_positive / pending remove any. Re-fuse once, only if something changed.
@@ -4955,6 +5038,21 @@ def get_timeline(case_id) -> list:
         r["jev"] = (jev.suggestion_for(jev_s, fid, fwm.get(fid, ""))
                     if jev_on and not v else None)
         r["manual"] = False
+    # NEW since the group's last review (see _group_news): on the group label and
+    # on each new / grown row.
+    seen, ack = d.get("row_seen") or {}, d.get("row_ack") or {}
+    news_by_group: dict = {}
+    for r in rows:
+        grp = r.get("group")
+        if isinstance(grp, dict) and grp.get("id") and grp["id"] not in news_by_group:
+            members = [m for m in grp.get("rows") or [] if m in fmap]
+            news_by_group[grp["id"]] = _group_news(members, fmap, seen, ack)
+    for r in rows:
+        grp = r.get("group")
+        if isinstance(grp, dict) and grp.get("id"):
+            news = news_by_group.get(grp["id"]) or {}
+            r["group"] = {**grp, "news": news}
+            r["is_new"] = r.get("finding_id") in set(news.get("new") or []) | set(news.get("grown") or [])
     # manual events carry their own status on the record
     for e in (d.get("manual_timeline_events") or []):
         row = dict(e)

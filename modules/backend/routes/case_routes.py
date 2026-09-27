@@ -1126,6 +1126,18 @@ def timeline_validate(case_id):
     return jsonify({"case_id": case_id, **res})
 
 
+@case_bp.route("/api/cases/<case_id>/timeline/seen", methods=["POST"])
+def timeline_seen(case_id):
+    """"Mark seen" on a group: its new rows / new activity are acknowledged."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    b = request.get_json(silent=True) or {}
+    ids = b.get("finding_ids")
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"error": "finding_ids required"}), 400
+    return jsonify({"case_id": case_id, **store.ack_rows(case_id, ids)})
+
+
 @case_bp.route("/api/cases/<case_id>/timeline/event", methods=["POST"])
 def timeline_add_event(case_id):
     """Add a manual timeline event (IT-known activity, an out-of-band fact, etc.)."""
