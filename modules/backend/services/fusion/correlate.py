@@ -589,7 +589,9 @@ def _host_intensity(aid, findings, n_hosts: int) -> float:
     +10% per further episode, at most +50%."""
     by_det: dict = {}
     for f in findings:
-        if aid in f.asset_ids:
+        # A finding the analyst cleared (False Positive / Known) is not risk — it
+        # added a detection and a repeat bonus while greyed out on the Timeline.
+        if aid in f.asset_ids and f.kind != "dispositioned":
             by_det.setdefault(_detection_name(f), []).append(f)
     total = 0.0
     for fs in by_det.values():

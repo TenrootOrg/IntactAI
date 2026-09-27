@@ -33,6 +33,21 @@ def _graph(findings):
     return g
 
 
+class Cleared(unittest.TestCase):
+    """A finding the analyst marked False Positive / Known stops counting.
+    Found by tests/live_case_integration.py: 35 detections stayed 35."""
+
+    def test_a_cleared_detection_is_not_counted_or_scored(self):
+        fs = [_f("a", "Mimikatz", "H1", "high"), _f("b", "Odd service", "H1", "high")]
+        before = render.risk_table(_graph(fs))[0]
+        fs[1].severity, fs[1].kind = "informational", "dispositioned"   # what a False Positive does
+        after = render.risk_table(_graph(fs))[0]
+        self.assertEqual((before["finding_count"], after["finding_count"]), (2, 1))
+        self.assertNotIn("Odd service", after["why"])
+        self.assertLess(correlate._host_intensity("asset:H1", [fs[0], fs[1]], 1),
+                        correlate._host_intensity("asset:H1", [fs[0], _f("c", "Odd service", "H1", "high")], 1))
+
+
 class Risk(unittest.TestCase):
     def test_breadth_beats_repetition(self):
         repeat = [_f(f"r{d}", "SIGMA: Suspicious Service Name", "REPEAT", day=d) for d in range(1, 9)]

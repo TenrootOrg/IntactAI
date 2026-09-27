@@ -2120,7 +2120,8 @@ def risk_table(graph, *, window=None, min_severity="informational") -> list:
     scored = score_assets_over(assets, findings, len(assets))
     rows = []
     for a in assets:
-        afind = [f for f in findings if a.id in f.asset_ids]
+        # cleared by the analyst (False Positive / Known): not counted, not a reason
+        afind = [f for f in findings if a.id in f.asset_ids and f.kind != "dispositioned"]
         sc = scored.get(a.id) or {}
         tally = {lv: 0 for lv in sev.LEVELS}
         for f in _distinct(afind):                 # distinct detections, not episode rows
