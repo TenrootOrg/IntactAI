@@ -470,14 +470,50 @@ _RISK_WORDS = ("malicious", "compromis", "suspicious", "attacker", "bad actor", 
 _SEV_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 
-def _entity_state(g, e, fs):
+def analyst_verdicts(d) -> dict:
+    """finding id -> the analyst's verdict ("true_positive" / "false_positive" /
+    "known"), from the Timeline and from chat dispositions. Every estimate below
+    sends it with each finding and keys its cache on it, so a verdict changes the
+    number: a finding the analyst ruled out must not keep pushing it up."""
+    out = {}
+    for x in (d or {}).get("dispositions") or []:
+        v = (x.get("verdict") or "").lower()
+        if x.get("target"):
+            out[x["target"]] = ("true_positive" if v == "malicious" else
+                                "known" if x.get("attribution") == "it_admin" else "false_positive")
+    for v in (d or {}).get("timeline_validations") or []:
+        if v.get("finding_id") and v.get("status") in ("true_positive", "false_positive", "known"):
+            out[v["finding_id"]] = v["status"]
+    return out
+
+
+def _verdict_of(f, verdicts):
+    for i in f.ids():
+        if i in verdicts:
+            return verdicts[i]
+    return None
+
+
+def _finding_brief(g, f, verdicts, n_ev):
     from .render import _finding_evidence
+    b = {"title": f.title, "severity": f.severity, "detected_by": list(f.sources or []),
+         "evidence": _finding_evidence(g, f)[:n_ev]}
+    v = _verdict_of(f, verdicts)
+    if v:
+        b["analyst_verdict"] = v
+    return b
+
+
+_VERDICT_NOTE = (" A finding's `analyst_verdict`, when present, is the analyst's own call: "
+                 "true_positive = confirmed malicious; false_positive or known = ruled out, "
+                 "do not count it as evidence.")
+
+
+def _entity_state(g, e, fs, verdicts=None):
     hosts = sorted({getattr(g.entities.get(a), "label", None) or a
                     for f in fs for a in (f.asset_ids or [])})
     return {"entity": e.label, "type": e.type, "hosts": hosts,
-            "findings": [{"title": f.title, "severity": f.severity,
-                          "detected_by": list(f.sources or []),
-                          "evidence": _finding_evidence(g, f)[:4]}
+            "findings": [_finding_brief(g, f, verdicts or {}, 4)
                          for f in sorted(fs, key=lambda f: _SEV_RANK.get(f.severity, 4))[:15]]}
 
 
@@ -512,10 +548,12 @@ def entity_estimates(question, d, g, run_id=None) -> str:
             return ""
         mask = mask_for(d, g)
         kind = {"account": "account", "asset": "host"}
-        answers = ask_each(pairs, lambda p: masked(_entity_state(g, *p), mask), lambda k: {
+        verdicts = analyst_verdicts(d)
+        answers = ask_each(pairs, lambda p: masked(_entity_state(g, *p, verdicts), mask), lambda k: {
             "type": "noul",
             "instructions": f"items.{k} is one account or host from a forensic case, with the "
-                            "findings that involve it. Is it involved in malicious activity?",
+                            "findings that involve it. Is it involved in malicious activity?"
+                            + _VERDICT_NOTE,
             "criteria": {"true": "It took part in, or was used for, attacker activity.",
                          "false": "Its activity is explained as normal, or it is only a bystander."}},
             run_id=run_id)
@@ -543,37 +581,37 @@ def entity_estimates(question, d, g, run_id=None) -> str:
 # findings (+ their occurrences), so the cards themselves load instantly and a
 # window whose findings changed shows no stale number.
 # ---------------------------------------------------------------------------
-def _scope_sig(z, by_id):
+def _scope_sig(z, by_id, verdicts=None):
     import hashlib
-    parts = sorted(f"{fid}:{by_id[fid].watermark()}" for fid in z.get("finding_ids") or []
-                   if fid in by_id)
+    verdicts = verdicts or {}
+    parts = sorted(f"{fid}:{by_id[fid].watermark()}:{_verdict_of(by_id[fid], verdicts) or ''}"
+                   for fid in z.get("finding_ids") or [] if fid in by_id)
     return hashlib.sha1("|".join(parts).encode()).hexdigest()[:16] if parts else None
 
 
-def _scope_state(z, by_id, g):
+def _scope_state(z, by_id, g, verdicts=None):
     fs = sorted((by_id[i] for i in z.get("finding_ids") or [] if i in by_id),
                 key=lambda f: _SEV_RANK.get(f.severity, 4))[:15]
-    from .render import _finding_evidence
     return {"window": z.get("window"), "hosts": z.get("host_labels") or [],
             "mitre": z.get("mitre") or [],
-            "findings": [{"title": f.title, "severity": f.severity,
-                          "detected_by": list(f.sources or []),
-                          "evidence": _finding_evidence(g, f)[:3]} for f in fs]}
+            "findings": [_finding_brief(g, f, verdicts or {}, 3) for f in fs]}
 
 
 def suggest_scopes(case_id, d) -> int:
     from .store import _merge_case_details, scope_cards
     altitude, _r, cards, g = scope_cards(case_id, d)
     by_id = {f.id: f for f in g.findings}
+    verdicts = analyst_verdicts(d)
     have = d.get("jev_scopes") or {}
     todo = [(z, sig) for z in cards if not z.get("rollup")
-            for sig in [_scope_sig(z, by_id)] if sig and sig not in have]
+            for sig in [_scope_sig(z, by_id, verdicts)] if sig and sig not in have]
     if todo:
         mask = mask_for(d, g)
-        answers = ask_each(todo, lambda t: masked(_scope_state(t[0], by_id, g), mask), lambda k: {
+        answers = ask_each(todo, lambda t: masked(_scope_state(t[0], by_id, g, verdicts), mask), lambda k: {
             "type": "noul",
             "instructions": f"items.{k} is one time window of a forensic case: its hosts, "
-                            "techniques and findings. Does it show real attacker activity?",
+                            "techniques and findings. Does it show real attacker activity?"
+                            + _VERDICT_NOTE,
             "criteria": {"true": "An intrusion or attacker actions happened in this window.",
                          "false": "Benign, administrative or detection noise."}}, run_id=case_id)
         new = dict(have)
@@ -582,7 +620,7 @@ def suggest_scopes(case_id, d) -> int:
                 new[sig] = round(float(a["noul"]), 3)
     else:
         new = dict(have)
-    live = {_scope_sig(z, by_id) for z in cards}
+    live = {_scope_sig(z, by_id, verdicts) for z in cards}
     new = {k: v for k, v in new.items() if k in live}        # windows that no longer exist
     if new != have:
         _merge_case_details(case_id, {"jev_scopes": new})
@@ -594,9 +632,10 @@ def attach_scope_estimates(cards, d, g):
     if not enabled("scopes"):
         return
     by_id = {f.id: f for f in g.findings}
+    verdicts = analyst_verdicts(d)
     est = d.get("jev_scopes") or {}
     for z in cards:
-        p = est.get(_scope_sig(z, by_id)) if not z.get("rollup") else None
+        p = est.get(_scope_sig(z, by_id, verdicts)) if not z.get("rollup") else None
         if p is not None:
             z["jev_p"] = p
 
@@ -607,11 +646,13 @@ def attach_scope_estimates(cards, d, g):
 # fuse, cached per exact accounts + findings (+ their occurrences), so the tab
 # loads instantly and a person whose evidence changed shows no stale number.
 # ---------------------------------------------------------------------------
-def compromise_sig(account_ids, fs):
+def compromise_sig(account_ids, fs, verdicts=None):
     import hashlib
     if not fs:
         return None
-    parts = sorted(account_ids or []) + sorted(f"{f.id}:{f.watermark()}" for f in fs)
+    verdicts = verdicts or {}
+    parts = sorted(account_ids or []) + sorted(f"{f.id}:{f.watermark()}:{_verdict_of(f, verdicts) or ''}"
+                                               for f in fs)
     return hashlib.sha1("|".join(parts).encode()).hexdigest()[:16]
 
 
@@ -620,18 +661,15 @@ def compromise_estimate(d, account_ids, fs):
     not asked yet, or the evidence changed since)."""
     if not enabled("compromise"):
         return None
-    return (d.get("jev_compromise") or {}).get(compromise_sig(account_ids, fs))
+    return (d.get("jev_compromise") or {}).get(compromise_sig(account_ids, fs, analyst_verdicts(d)))
 
 
-def _person_state(g, card, fs):
-    from .render import _finding_evidence
+def _person_state(g, card, fs, verdicts=None):
     return {"person": card.get("name"),
             "accounts": [a.get("label") for a in card.get("accounts") or [] if not a.get("disabled")],
             "hosts": card.get("seen_on") or [],
             "account_type": ("built-in" if card.get("builtin") else card.get("account_kind") or "user"),
-            "findings": [{"title": f.title, "severity": f.severity,
-                          "detected_by": list(f.sources or []),
-                          "evidence": _finding_evidence(g, f)[:3]}
+            "findings": [_finding_brief(g, f, verdicts or {}, 3)
                          for f in sorted(fs, key=lambda f: _SEV_RANK.get(f.severity, 4))[:15]]}
 
 
@@ -639,7 +677,7 @@ def _compromised_question(k):
     return {"type": "noul",
             "instructions": f"items.{k} is one person from a forensic case: their accounts, the "
                             "hosts they appear on, and the findings on those accounts and on "
-                            "what they ran. Is this identity compromised?",
+                            "what they ran. Is this identity compromised?" + _VERDICT_NOTE,
             "criteria": {"true": "An attacker used these accounts, or the person is the attacker.",
                          "false": "The activity is the person's normal or administrative work, "
                                   "or detection noise."}}
@@ -651,11 +689,12 @@ def suggest_compromise(case_id, d) -> int:
     cards = (identity_view(case_id) or {}).get("identities") or []
     g = view_graph(case_id, d)                        # the graph the tab reads
     have = d.get("jev_compromise") or {}
+    verdicts = analyst_verdicts(d)
     todo, live = [], set()
     for c in cards:
         ids = [a["id"] for a in c.get("accounts") or [] if not a.get("disabled")]
         fs = idf.person_findings(g, ids)
-        sig = compromise_sig(ids, fs)
+        sig = compromise_sig(ids, fs, verdicts)
         if sig:
             live.add(sig)
             if sig not in have:
@@ -663,7 +702,7 @@ def suggest_compromise(case_id, d) -> int:
     new = {k: v for k, v in have.items() if k in live}      # people whose evidence changed
     if todo:
         mask = mask_for(d, g)
-        answers = ask_each(todo, lambda t: masked(_person_state(g, t[0], t[1]), mask),
+        answers = ask_each(todo, lambda t: masked(_person_state(g, t[0], t[1], verdicts), mask),
                            _compromised_question, run_id=case_id)
         for (c, fs, sig), a in zip(todo, answers):
             if isinstance(a, dict) and isinstance(a.get("noul"), (int, float)):

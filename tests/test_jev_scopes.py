@@ -63,6 +63,15 @@ class Suggest(unittest.TestCase):
         asked, saved2 = self.run_pass({"jev_scopes": saved}, [a, b], _cards(["a"], ["b"]), {})
         self.assertEqual((asked, saved2), ([], None))              # cached, nothing written
 
+    def test_a_verdict_in_the_window_asks_again(self):
+        a = _f("a")
+        _, saved = self.run_pass({}, [a], _cards(["a"]), {("a",): {"noul": 0.9}})
+        asked, saved2 = self.run_pass({"jev_scopes": saved,
+                                       "timeline_validations": [{"finding_id": "a", "status": "known"}]},
+                                      [a], _cards(["a"]), {("a",): {"noul": 0.1}})
+        self.assertEqual(asked, [("a",)])
+        self.assertEqual(list(saved2.values()), [0.1])
+
     def test_a_changed_window_is_asked_again_and_the_old_answer_dropped(self):
         a = _f("a")
         _, saved = self.run_pass({}, [a], _cards(["a"]), {("a",): {"noul": 0.9}})

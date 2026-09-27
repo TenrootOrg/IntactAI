@@ -64,6 +64,33 @@ class Suggest(unittest.TestCase):
         self.assertEqual(asked, ["kobia"])
         self.assertEqual(list(saved2.values()), [0.4])
 
+    def test_your_verdicts_travel_with_the_findings_and_a_change_re_asks(self):
+        # Asked 2026-09-27: "the jev possibility is also showing accuracy relative
+        # to the true positive, false positive etc that we do manually?" — it did
+        # not: a finding you ruled out kept pushing the number up.
+        cards = [_card("kobia", "acc-a")]
+        fa = _f("a")
+        _, saved = self.run_pass({}, [fa], cards, {"kobia": {"noul": 0.9}})
+        d = {"jev_compromise": saved, "timeline_validations": [{"finding_id": "a", "status": "false_positive"}]}
+        asked, saved2 = self.run_pass(d, [fa], cards, {"kobia": {"noul": 0.2}})
+        self.assertEqual(asked, ["kobia"])                          # the verdict changed the key
+        self.assertEqual(list(saved2.values()), [0.2])
+        with mock.patch("services.fusion.render._finding_evidence", return_value=[]):
+            st = jev._person_state(types.SimpleNamespace(entities={}), cards[0], [fa], jev.analyst_verdicts(d))
+        self.assertEqual(st["findings"][0]["analyst_verdict"], "false_positive")
+        self.assertIn("analyst_verdict", jev._compromised_question("q0")["instructions"])
+        with mock.patch.object(jev, "enabled", return_value=True):
+            self.assertEqual(jev.compromise_estimate({**d, "jev_compromise": saved2}, ["acc-a"], [fa]), 0.2)
+            self.assertIsNone(jev.compromise_estimate({"jev_compromise": saved2}, ["acc-a"], [fa]))
+
+    def test_chat_dispositions_count_as_verdicts(self):
+        v = jev.analyst_verdicts({"dispositions": [{"target": "x", "verdict": "benign", "attribution": "it_admin"},
+                                                   {"target": "y", "verdict": "benign"},
+                                                   {"target": "z", "verdict": "malicious"}],
+                                  "timeline_validations": [{"finding_id": "y", "status": "true_positive"},
+                                                           {"finding_id": "w", "status": "pending"}]})
+        self.assertEqual(v, {"x": "known", "y": "true_positive", "z": "true_positive"})
+
     def test_estimate_read_only_while_enabled_and_current(self):
         fs = [_f("a")]
         sig = jev.compromise_sig(["acc-a"], fs)
