@@ -24,6 +24,13 @@ from . import severity as sev
 from . import keys
 
 
+# Which version of the fusion ENGINE built a graph. Bump it whenever a change alters
+# what findings are or how they are counted, so a report written by an earlier
+# engine says so on the Analysis tab (store: report_engine; case payload:
+# report_engine_behind) instead of reading as current.
+FUSION_ENGINE = "2026-09-27.episodes"
+
+
 def _fid(*parts) -> str:
     return "f_" + hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()[:12]
 

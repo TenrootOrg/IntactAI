@@ -950,6 +950,14 @@ function behindNote(info){
   if(!info) return '';
   if(info.refusion_needed)
     return `<div class="agnote">Some saved settings (time window, severity, hosts or modules) are not applied yet. Go to <b>Configuration</b> and click <b>Refusion</b> to apply them.</div>`;
+  // The report was written by an EARLIER version of the analysis: what counts as a
+  // finding changed since (e.g. one Timeline row per episode), so its numbers and
+  // names no longer match the case. Say so with the numbers, before the vaguer notes.
+  if(info.report_engine_behind && (window._md||'').trim()){
+    const then=info.report_findings_then, now=info.findings_now;
+    const nums=(then!=null&&now!=null&&then!==now)?` (${Number(then)} findings then; the case now has ${Number(now)})`:'';
+    return `<div class="agnote">This report was written by an earlier version of the analysis${nums}. Click <b>Regenerate report</b> to update it.</div>`;
+  }
   // New data landed and was folded into the graph by itself; the report was not
   // rewritten, because that spends a full model run. Say so where the operator
   // reads the report — this is the notice that replaces the automatic spend.

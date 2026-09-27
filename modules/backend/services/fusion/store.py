@@ -2356,16 +2356,22 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                                   "report_dirty": report_dirty}
     _report_keys = ("report_md", "report_config_id", "report_written_at",
                     "report_llm_calls", "report_run_ids", "report_dirty")
-    try:
-        _details["report_counts"] = _counts_from_graph(gr)   # what "behind" compares to
-    except Exception:                                         # noqa: BLE001
-        pass
+    # What the report was written FROM — recorded only when this fuse actually
+    # rewrote it. It used to be overwritten on EVERY fuse, so a report left frozen
+    # (126 findings on jev_test) carried the new graph's counts (281) and could
+    # never read as behind.
+    if not report_dirty:
+        try:
+            _details["report_counts"] = _counts_from_graph(gr)   # what "behind" compares to
+            _details["report_engine"] = correlate.FUSION_ENGINE
+        except Exception:                                         # noqa: BLE001
+            pass
     # File the report under the timeframe it was written FOR. The operator may have
     # switched while the model ran; landing on the live row would put it under
     # whichever timeframe is on screen now.
     if _active_scope_id(get_case(case_id) or {}) != _gen_scope:
         write_report_for_scope(case_id, _gen_scope,
-                               {k: _details.pop(k) for k in _report_keys + ("report_counts",)
+                               {k: _details.pop(k) for k in _report_keys + ("report_counts", "report_engine")
                                 if k in _details})
     ws.update_run_status(case_id, "completed", details=_details)
     # Checklist: fill ONLY when the case still has none, and do it under the run lock.
@@ -2927,7 +2933,7 @@ def _window_label(w) -> str:
 # the verdicts, the identities, the configuration, the log — is the case's.
 _SCOPE_FIELDS = ("report_md", "report_written_at", "report_config_id", "report_dirty",
                  "report_run_ids", "chat_messages", "token_ab", "report_llm_calls",
-                 "scope_counts", "report_counts")
+                 "scope_counts", "report_counts", "report_engine")
 
 
 def _live_scope_fields(d) -> dict:
@@ -3986,6 +3992,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
                         # not see that data landing OUTSIDE a scope's window changes
                         # nothing the report says — see report_behind_runs.
                         "report_counts": _counts_from_graph(gv),
+                        "report_engine": correlate.FUSION_ENGINE,
                         "report_config_id": report_cfg_id, "report_written_at": _now_iso(),
                         "report_phase": "checklist",
                         "report_phase_started_at": _now_iso(),

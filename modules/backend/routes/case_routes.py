@@ -462,6 +462,11 @@ def get_case(case_id):
                     # report_dirty: triage/disposition re-fuses changed the data but left
                     # the report frozen — so the report may not reflect recent changes.
                     "report_dirty": bool(d.get("report_dirty")),
+                    # Written by an earlier fusion engine: its findings and counts no
+                    # longer match the case (e.g. before the episode Timeline).
+                    "report_engine_behind": _report_engine_behind(d),
+                    "report_findings_then": (d.get("report_counts") or {}).get("findings"),
+                    "findings_now": (d.get("graph_counts") or {}).get("findings"),
                     # Jev (when on): findings it is sure are malicious that nobody
                     # has reviewed on the Timeline yet. A notice, never an action.
                     "jev_unreviewed": _jev_unreviewed(d),
@@ -776,6 +781,14 @@ def export_case(case_id):
     _bundle_thread(case_bundle.export_case_bundle, run_id, case_id, lock=_export_lock)
     return jsonify({"run_id": run_id, "case_id": case_id,
                     "estimate_bytes": plan["estimate_bytes"]}), 202
+
+
+def _report_engine_behind(d) -> bool:
+    try:
+        from services.fusion import correlate
+        return bool((d.get("report_md") or "").strip()) and d.get("report_engine") != correlate.FUSION_ENGINE
+    except Exception:                                     # noqa: BLE001
+        return False
 
 
 def _jev_unreviewed(d):
