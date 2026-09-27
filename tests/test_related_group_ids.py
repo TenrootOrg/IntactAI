@@ -61,5 +61,17 @@ class StableIds(unittest.TestCase):
         self.assertEqual(row.kind, "dispositioned")
 
 
+class LeadRule(unittest.TestCase):
+    def test_the_specific_rule_names_the_row(self):
+        g = _fuse(["Suspicious Powershell Commandlets", "Mimikatz Execution via PowerShell"])
+        self.assertTrue(_group(g).title.startswith("SIGMA: Mimikatz Execution via PowerShell (+1 related)"),
+                        _group(g).title)
+
+    def test_same_rules_same_name_whatever_the_order(self):
+        a = _fuse(["Suspicious Service Name", "Suspicious Service Path"])
+        b = _fuse(["Suspicious Service Path", "Suspicious Service Name"])
+        self.assertEqual(_group(a).title, _group(b).title)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1574,6 +1574,26 @@ def _first_ids(g: FusionGraph, f) -> set:
     return out
 
 
+# Words that make a rule name generic, and named tools that make it specific.
+_GENERIC_RULE_WORDS = ("suspicious", "potential", "possible", "generic", "unusual", "anomal",
+                       "commandlet", "malicious", "detected", "detection")
+_NAMED_TOOLS = ("mimikatz", "rubeus", "cobalt", "psexec", "netexec", "crackmapexec", "anydesk",
+                "bloodhound", "sharphound", "procdump", "adfind", "lazagne", "impacket", "wmiexec",
+                "nanodump", "comsvcs", "ntdsutil", "certutil", "bitsadmin", "rclone", "wsass",
+                "lsass", "kerberoast", "dcsync", "secretsdump")
+
+
+def _rule_specificity(f) -> int:
+    """How specific a detection's rule is: a named tool or a sub-technique beats a
+    generic "Suspicious …" rule. Deterministic; used to pick a group's lead."""
+    t = (f.title or "").lower()
+    score = 3 * any(k in t for k in _NAMED_TOOLS)
+    techs = list(f.mitre or []) + _techniques_for_title(f.title)
+    score += 2 * any("." in str(x) for x in techs) + (1 if techs else 0)
+    score -= sum(1 for w in _GENERIC_RULE_WORDS if w in t)
+    return score
+
+
 def _legacy_group_ids(asset_id, logged, fs, max_members=8) -> list:
     """Ids a "+N related" group had under the pre-stable scheme — one per possible
     earlier membership (any 2+ of its members, each keyed by that membership's first
@@ -1669,9 +1689,12 @@ def _group_simultaneous_detections(g: FusionGraph, grouping: dict) -> None:
         # that maps to a technique ("Remote Access Tool - AnyDesk ..."), then the
         # busiest. Severity and count alone picked "File Write to Suspicious
         # Folder" to name an AnyDesk drop.
-        top = max(fs, key=lambda f: (sev.rank(f.severity),
-                                     bool(f.mitre or _techniques_for_title(f.title)),
-                                     f.occ_count or 1))
+        # The MOST SPECIFIC rule names the row (then severity, then name for a stable
+        # tie-break). "Has a technique" then hit count hid "Mimikatz Execution via
+        # PowerShell" behind "Suspicious Powershell Commandlets (+1 related)", and the
+        # same pair of rules was titled two ways (26× vs 6×) — splitting one series.
+        top = max(fs, key=lambda f: (sev.rank(f.severity), _rule_specificity(f),
+                                     f.title.rsplit(" on ", 1)[0]))
         host = _host_label(g, asset_id) + (f" (logged as {logged})" if logged else "")
         rules = sorted({f.title.rsplit(" on ", 1)[0] for f in fs})
         mitre: list = []
