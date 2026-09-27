@@ -101,25 +101,24 @@ class Downstream(unittest.TestCase):
 
 
 class Card(unittest.TestCase):
-    def test_verdict_buttons(self):
+    def test_verdict_select(self):
         node = shutil.which("node")
         if not node:
             self.skipTest("no node on this host")
         js = r"""
 const fs=require("fs"); const src=fs.readFileSync(process.argv[1],"utf8");
-eval(src.match(/const ID_VERDICTS=\[.*?\];/s)[0].replace("const ","var ")); eval(src.match(/function idVerdictSeg\(cid,it\)\{[\s\S]*?\n\}/)[0]);
+eval(src.match(/const ID_VERDICTS=\[.*?\];/s)[0].replace("const ","var ")); eval(src.match(/function idVerdictSel\(cid,it\)\{[\s\S]*?\n\}/)[0]);
 const esc=s=>String(s), jsa=s=>String(s);
-console.log(JSON.stringify([idVerdictSeg("c1",{key:"k",verdict:"compromised"}), idVerdictSeg("c1",{key:"k"})]));"""
+console.log(JSON.stringify([idVerdictSel("c1",{key:"k",verdict:"compromised"}), idVerdictSel("c1",{key:"k"})]));"""
         out = subprocess.run([node, "-e", js, os.path.join(_ROOT, "modules/nginx/html/cases.html")],
                              capture_output=True, text=True, check=True).stdout
         import json
         on, off = json.loads(out)
-        self.assertIn('class="s-compromised on"', on)
-        self.assertIn("idVerdict('c1','k','')", on)                 # clicking the lit one clears
-        self.assertIn("idVerdict('c1','k','not_compromised')", on)
-        self.assertNotIn(" on\"", off)
-        self.assertIn("event.stopPropagation()", on)                # does not fold the card
-
+        self.assertIn('class="vsel v-compromised"', on)
+        self.assertIn('<option value="compromised" selected>Compromised</option>', on)
+        self.assertIn("idVerdict('c1','k',this.value)", on)
+        self.assertIn('<option value="" selected>Not reviewed</option>', off)
+        self.assertIn('v-none', off)
 
 if __name__ == "__main__":
     unittest.main()

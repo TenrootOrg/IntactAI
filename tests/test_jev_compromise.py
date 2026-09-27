@@ -132,12 +132,13 @@ console.log(JSON.stringify([_idJev({jev_compromise:0.834}), _idJev({jev_compromi
         hi, lo, none, null = json.loads(subprocess.run(
             [node, "-e", js, os.path.join(_ROOT, "modules/nginx/html/cases.html")],
             capture_output=True, text=True, check=True).stdout)
-        self.assertIn("Jev: 83% compromised", hi)
-        self.assertIn("#f85149", hi)
-        self.assertIn("Jev: 10% compromised", lo)
-        self.assertIn("#56d364", lo)
-        self.assertEqual((none, null), ("", ""))
-
+        self.assertIn(">83%</b>", hi)
+        self.assertIn("width:83%;background:var(--crit)", hi)
+        self.assertIn(">10%</b>", lo)
+        self.assertIn("var(--ok)", lo)
+        for x in (none, null):                                   # not asked: a dash, no number
+            self.assertIn(">—</span>", x)
+            self.assertNotIn("%", x)
 
 if __name__ == "__main__":
     unittest.main()

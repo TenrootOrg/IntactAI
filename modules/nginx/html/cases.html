@@ -210,7 +210,32 @@
   .seg button:first-child{border-left:none}
   .seg button.on.s-true_positive{background:var(--ok);color:#0d1117} .seg button.on.s-false_positive{background:var(--sev-high,#db6d28);color:#0d1117}
   .seg button.on.s-known{background:var(--info);color:#0d1117} .seg button.on.s-pending{background:var(--panel2);color:var(--tx)}
-  .seg button.on.s-compromised{background:#f85149;color:#0d1117} .seg button.on.s-not_compromised{background:var(--ok);color:#0d1117}
+  /* Hosts & People: one tab, two lists, the same table grammar */
+  .ent-top{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 8px}
+  .ent-switch{display:inline-flex;border:1px solid var(--bd);border-radius:8px;overflow:hidden}
+  .ent-switch button{background:transparent;border:none;border-left:1px solid var(--bd);padding:6px 14px;color:var(--muted);font-size:12px;cursor:pointer}
+  .ent-switch button:first-child{border-left:none}
+  .ent-switch button.on{background:var(--panel2);color:var(--tx);font-weight:600}
+  .ent-switch .n{margin-left:6px;font-size:11px;color:var(--muted);font-weight:400}
+  .ent-cap{color:var(--muted);font-size:12px;margin:0 0 8px}
+  .pgrid{display:grid;grid-template-columns:minmax(190px,1.6fr) 84px 104px minmax(140px,1.5fr) 140px 158px;align-items:center;gap:0 14px}
+  .pgrid.nojev{grid-template-columns:minmax(190px,1.6fr) 84px 104px minmax(140px,1.5fr) 158px}
+  .phead{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;padding:4px 13px 6px}
+  .prow{border:1px solid var(--bd);border-left:3px solid var(--bd);border-radius:8px;margin:0 0 6px;background:var(--bg)}
+  .prow.v-compromised{border-left-color:var(--crit)} .prow.v-not_compromised{border-left-color:var(--ok)}
+  .prow>.pgrid{padding:9px 12px 9px 10px;cursor:pointer}
+  .prow>.pgrid:hover{background:var(--panel)}
+  .pname b{font-size:13px} .psub{font-size:11px;color:var(--muted);margin-top:1px}
+  .pcell{font-size:12px;color:var(--muted);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pbody{border-top:1px solid var(--bd);padding:10px 12px 12px 26px}
+  .meter{display:inline-block;width:64px;height:6px;border-radius:3px;background:var(--bd);vertical-align:middle;overflow:hidden;margin-right:8px}
+  .meter>i{display:block;height:100%}
+  .vsel{width:100%;font-size:12px;padding:5px 8px;border-radius:6px;background:var(--panel);border:1px solid var(--bd);color:var(--tx);cursor:pointer}
+  .vsel.v-compromised{border-color:var(--crit);color:var(--crit);background:rgba(248,81,73,.10)}
+  .vsel.v-not_compromised{border-color:var(--ok);color:var(--ok);background:rgba(63,185,80,.10)}
+  .hppl{display:inline-block;margin:0 6px 2px 0;cursor:pointer;color:var(--tx)} .hppl:hover{text-decoration:underline}
+  .hppl.c{color:var(--crit);font-weight:600}
+  @media (max-width:760px){.pgrid,.pgrid.nojev{grid-template-columns:1fr 1fr}.phead{display:none}}
   .arti{font-size:10px;color:var(--info);background:rgba(88,166,255,.08);border:1px solid var(--bd);border-radius:4px;padding:1px 5px;font-family:var(--mono,monospace)}
   .zoomwrap{margin:0 0 16px;padding:12px 14px;border:1px solid var(--bd);border-radius:8px;background:rgba(88,166,255,.05)}
   .zoomhdr{font-size:12px;color:var(--muted);margin-bottom:9px}
@@ -610,8 +635,7 @@ function render(info,md,g){
         <div class="tab ${tab==='report'?'on':''}" data-tab="report" onclick="setTab('report')">Analysis</div>
         <div class="tab ${tab==='chat'?'on':''}" data-tab="chat" onclick="setTab('chat')">Chat</div>
         <div class="tab ${tab==='timeline'?'on':''}" data-tab="timeline" onclick="setTab('timeline')">Timeline</div>
-        <div class="tab ${tab==='identities'?'on':''}" data-tab="identities" onclick="setTab('identities')">Identities</div>
-        <div class="tab ${tab==='risk'?'on':''}" data-tab="risk" onclick="setTab('risk')">🎯 Risk</div>
+        <div class="tab ${tab==='identities'?'on':''}" data-tab="identities" onclick="setTab('identities')">Hosts &amp; People</div>
         <div class="tab ${tab==='config'?'on':''}" data-tab="config" onclick="setTab('config')">⚙ Configuration</div>
         <div class="tab ${tab==='log'?'on':''}" data-tab="log" onclick="setTab('log')">Log</div>
       </div>
@@ -671,6 +695,8 @@ function drawTab(md){
   const info=curInfo;
   if(skipConfigRedraw(tab, _cfgDirty, !!$('#cf-start'))) return;
   if(window._logTimer && tab!=='log'){clearInterval(window._logTimer);window._logTimer=null;} // stop following when leaving Log
+  // Risk became the Hosts view of Hosts & People; a remembered 'risk' lands there.
+  if(tab==='risk'){ tab='identities'; window._entView='hosts'; }
   const _t=tab;
   try{
     if(tab==='timeline') renderTimeline(info.case_id);
@@ -678,7 +704,6 @@ function drawTab(md){
     else if(tab==='identities') renderIdentities(info.case_id);
     else if(tab==='log') renderLog(info.case_id);
     else if(tab==='config') renderConfig(info);
-    else if(tab==='risk') renderRisk(info);
     else renderReport(info);
   }catch(e){
     // A renderer that threw used to leave the PREVIOUS tab's content sitting
@@ -715,38 +740,6 @@ function _riskWhy(r){
   }).join('; ');
 }
 
-function renderRisk(info){
-  // A refresh of the table already on screen keeps it until the new rows arrive.
-  if(!($('#tabc') && $('#tabc').dataset.tab==='risk' && /<table/i.test($('#tabc').innerHTML)))
-    $('#tabc').innerHTML='<div class="md">loading risk…</div>';
-  api('/api/cases/'+info.case_id+'/risk').then(d=>{
-    if(!tabIsStill('risk'))return;
-    const rows=d.rows||[];
-    if(!rows.length){$('#tabc').innerHTML='<div class="empty">No fused data yet — fuse the case first.</div>';return;}
-    const sc={critical:'#f85149',high:'#db6d28',medium:'#d29922',low:'#3fb950',informational:'#8b949e'};
-    const body=rows.map((r,i)=>{
-      const c=sc[r.severity]||'#8b949e', t=r.by_severity||{};
-      const cov=(r.modules||[]).join(', ')+(r.escalate?' 🔺':(r.deep?' ✓':''));
-      return `<tr style="border-bottom:1px solid var(--bd)">
-        <td style="text-align:right;color:var(--muted);padding:6px 8px">${i+1}</td>
-        <td style="padding:6px 8px"><b>${esc(r.host)}</b></td>
-        <td style="text-align:right;font-weight:700;padding:6px 8px">${r.risk_score}</td>
-        <td style="padding:6px 8px"><span style="color:${c};font-weight:600">${esc(r.severity)}</span></td>
-        <td style="text-align:center;padding:6px 8px;font-variant-numeric:tabular-nums">${t.critical||0}/${t.high||0}/${t.medium||0}</td>
-        <td style="padding:6px 8px;font-size:12px">${esc(_riskWhy(r))}</td>
-        <td style="padding:6px 8px;font-size:12px;color:var(--muted)">${esc(cov)}</td></tr>`;}).join('');
-    $('#tabc').innerHTML=`
-      ${d.is_stale?'<div class="agnote">New collections have landed that are not in this ranking yet — run <b>Refusion</b> to include them.</div>':''}
-      <div style="margin-bottom:8px;color:var(--muted);font-size:13px">Endpoints ranked by risk. The band is the host's worst detection (critical above high above medium); within a band each <b>distinct</b> detection counts once — repeats add a little, daily routines count one level lower, detections seen on several hosts weigh more. C/H/M counts distinct detections. Work top-down.</div>
-      <table style="width:100%;border-collapse:collapse;font-size:13px">
-        <thead><tr style="text-align:left;border-bottom:1px solid var(--bd);color:var(--muted)">
-          <th style="padding:6px 8px"></th><th style="padding:6px 8px">Host</th>
-          <th style="padding:6px 8px;text-align:right">Risk</th><th style="padding:6px 8px">Severity</th>
-          <th style="padding:6px 8px;text-align:center" title="critical / high / medium">C/H/M</th>
-          <th style="padding:6px 8px">Why (top findings)</th><th style="padding:6px 8px">Coverage</th>
-        </tr></thead><tbody>${body}</tbody></table>`;
-  }).catch(e=>{$('#tabc').innerHTML='<div class="empty">risk load failed: '+esc(e.message||e)+'</div>';});
-}
 // The token-cut and cost/report badges render HERE, under the model line,
 // rather than in the header strip beside hosts/entities/links. Those counts are
 // facts about the case; these two are facts about how it is PRICED and what the
@@ -1832,46 +1825,102 @@ function tlDelete(eid){
 }
 
 // ---- Identities tab: unified identity page (collapsible, searchable, per-account edit) ----
+// Hosts & People: the machines (ranked by risk) and the people (accounts resolved
+// into persons) on one tab. They were two tabs — Risk and Identities — that
+// answered the same question from two sides; the Hosts view now names the people
+// active on each machine, and a click on one opens that person.
 function renderIdentities(id){
   // Reloading the case already on screen (after Merge / Dismiss / Separate) keeps
   // the list and swaps it in place, instead of blanking the tab.
-  const reload = window._idCase===id && window._idData && $('#tabc') && /👤/.test($('#tabc').textContent);
+  const reload = window._idCase===id && window._idData && $('#tabc') && $('#tabc').querySelector('.ent-top');
   window._idCase=id;
   if(!window._idExpand) window._idExpand={};
-  if(!reload) $('#tabc').innerHTML='<i style="color:var(--muted)">resolving identities…</i>';
-  api('/api/cases/'+id+'/identities').then(d=>{
+  if(!window._entView) window._entView='people';
+  if(!reload) $('#tabc').innerHTML='<i style="color:var(--muted)">loading hosts and people…</i>';
+  Promise.all([api('/api/cases/'+id+'/identities'), api('/api/cases/'+id+'/risk').catch(_=>({rows:[]}))]).then(([d,r])=>{
     if(!tabIsStill('identities'))return;
-    window._idData=d;
-    if(d.error && !(d.identities)){ $('#tabc').innerHTML=`<p style="color:#f85149">could not load identities: ${esc(String(d.error))}</p>`; return; }
+    window._idData=d; window._riskData=r||{rows:[]};
+    if(d.error && !(d.identities)){ $('#tabc').innerHTML=`<p style="color:#f85149">could not load people: ${esc(String(d.error))}</p>`; return; }
     _idRender(id);
-  }).catch(_=>{$('#tabc').innerHTML='<p style="color:#f85149">could not load identities</p>';});
+  }).catch(_=>{ if(tabIsStill('identities')) $('#tabc').innerHTML='<p style="color:#f85149">could not load hosts and people</p>'; });
 }
+function entView(v){ window._entView=v; window._idFocus=false; _idRender(window._idCase); }
 function _idRender(id){
-  const d=window._idData||{}; const idents=d.identities||[];
+  const d=window._idData||{}, idents=d.identities||[], hosts=((window._riskData||{}).rows)||[];
+  const view=window._entView==='hosts'?'hosts':'people';
   const q=(window._idQuery||'').trim().toLowerCase();
   const hit=it=> !q || (it.name||'').toLowerCase().includes(q)
     || (it.accounts||[]).some(a=>(a.label||'').toLowerCase().includes(q))
     || (it.hosts||[]).some(h=>(h.label||'').toLowerCase().includes(q))
     || (it.seen_on||[]).some(h=>String(h).toLowerCase().includes(q));
-  const shown=idents.filter(hit);
-  const bset=(d.buckets||[]).join(', ')||'none';
-  let h=`<p style="color:var(--muted);font-size:12px;margin:0 0 6px">People in this case and their footprint across infrastructures (<b>${esc(bset)}</b>). Same-name accounts merge automatically; uncertain matches are <b>suggestions</b>. Click a person to expand; use ✕ to switch off an account that is not this person, and ↺ to switch it back on. ${d.sort==='jev'?'Sorted by your verdict (Compromised first), then Jev’s compromise estimate, then A–Z':'Sorted A–Z'}. Everything persists across re-fusion.</p>`;
-  if(d.stale) h+=`<p style="color:var(--med);font-size:12px;margin:0 0 6px">⚠ ${d.stale} run(s) not yet fused — new uploads appear after a <b>Refusion</b>.</p>`;
-  h+=`<div style="display:flex;gap:10px;align-items:center;margin:6px 0 10px">
-      <input id="id-search" placeholder="filter people / accounts / hosts…" value="${esc(window._idQuery||'')}" oninput="idSearch(this.value)" autocomplete="off" style="flex:1;max-width:360px;padding:6px 8px">
-      <span style="color:var(--muted);font-size:11px">${shown.length}${q?(' of '+idents.length):''} identit${shown.length===1?'y':'ies'} · ${(d.counts&&d.counts.suggestions)||0} suggestion${((d.counts&&d.counts.suggestions)||0)===1?"":"s"}</span>
-      <button class="ghost" style="font-size:11px" onclick="idExpandAll(true)">expand all</button>
-      <button class="ghost" style="font-size:11px" onclick="idExpandAll(false)">collapse all</button></div>`;
-  h+=shown.map(it=>idCard(id,it)).join('') || '<p style="color:var(--muted)">no match.</p>';
+  const ppl=_hostPeople(idents);
+  const hhit=r=> !q || String(r.host||'').toLowerCase().includes(q) || (ppl[r.host]||[]).some(it=>(it.name||'').toLowerCase().includes(q));
+  const shown = view==='people' ? idents.filter(hit) : hosts.filter(hhit);
+  const total = view==='people' ? idents.length : hosts.length;
+  const sug=(d.counts&&d.counts.suggestions)||0;
+  let h=`<div class="ent-top">
+      <span class="ent-switch"><button class="${view==='people'?'on':''}" onclick="entView('people')">People<span class="n">${idents.length}</span></button><button class="${view==='hosts'?'on':''}" onclick="entView('hosts')">Hosts<span class="n">${hosts.length}</span></button></span>
+      <input id="id-search" placeholder="${view==='people'?'filter people, accounts, hosts…':'filter hosts or people…'}" value="${esc(window._idQuery||'')}" oninput="idSearch(this.value)" autocomplete="off" style="flex:1;min-width:160px;max-width:340px;padding:6px 8px">
+      <span style="color:var(--muted);font-size:11px">${q?`${shown.length} of ${total}`:''}${view==='people'&&sug?`${q?' · ':''}${sug} link suggestion${sug===1?'':'s'}`:''}</span>
+      ${view==='people'?`<span style="margin-left:auto;display:flex;gap:6px"><button class="ghost" style="font-size:11px" onclick="idExpandAll(true)">expand all</button><button class="ghost" style="font-size:11px" onclick="idExpandAll(false)">collapse all</button></span>`:''}
+    </div>`;
+  if(d.stale) h+=`<div class="agnote">${d.stale} run(s) not yet fused — new uploads appear after a <b>Refusion</b>.</div>`;
+  if(view==='people'){
+    h+=`<p class="ent-cap">${d.sort==='jev'?'Your verdicts first (Compromised, then Not compromised), then Jev’s compromise estimate, then A–Z.':'A–Z.'} Click a person for accounts, hosts, findings and link suggestions. Verdicts and merges persist across re-fusion.</p>`;
+    const jev=d.sort==='jev';
+    h+=`<div class="pgrid phead${jev?'':' nojev'}"><span>Person</span><span>Severity</span><span>Detections</span><span>Seen on</span>${jev?'<span title="Jev’s estimate that the identity is compromised">Jev estimate</span>':''}<span>Your verdict</span></div>`;
+    h+=shown.map(it=>idCard(id,it,jev)).join('') || '<p style="color:var(--muted)">no match.</p>';
+  } else {
+    h+=_entHosts(shown, ppl, window._riskData||{});
+  }
   $('#tabc').innerHTML=h;
   const s=$('#id-search'); if(s && window._idFocus){ s.focus(); s.setSelectionRange(s.value.length,s.value.length); }
+}
+// host label -> the people whose accounts appear on it, marked-compromised first
+function _hostPeople(idents){
+  const m={};
+  for(const it of idents) for(const h of (it.seen_on||[])) (m[h]=m[h]||[]).push(it);
+  for(const k in m) m[k].sort((a,b)=>(a.verdict==='compromised'?0:1)-(b.verdict==='compromised'?0:1));
+  return m;
+}
+function entOpenPerson(key){
+  const it=(((window._idData||{}).identities)||[]).find(x=>x.key===key); if(!it) return;
+  window._entView='people'; window._idQuery=it.name||''; window._idExpand[key]=true; window._idFocus=false;
+  _idRender(window._idCase);
+}
+function _entHosts(rows, ppl, d){
+  if(!((d.rows||[]).length)) return '<div class="empty">No fused data yet — fuse the case first.</div>';
+  const sc={critical:'var(--crit)',high:'var(--high)',medium:'var(--med)',low:'var(--low)',informational:'var(--muted)'};
+  const td='padding:8px 10px;vertical-align:top';
+  const body=rows.map(r=>{
+    const c=sc[r.severity]||'var(--muted)', t=r.by_severity||{}, i=(d.rows||[]).indexOf(r);
+    const cov=(r.modules||[]).join(', ')+(r.escalate?' 🔺':(r.deep?' ✓':''));
+    const pp=(ppl[r.host]||[]), more=pp.length>5?` <span style="color:var(--muted)">+${pp.length-5}</span>`:'';
+    const people=pp.slice(0,5).map(it=>`<span class="hppl${it.verdict==='compromised'?' c':''}" title="${it.verdict==='compromised'?'Marked compromised — ':''}open this person" onclick="entOpenPerson('${jsa(it.key)}')">${it.verdict==='compromised'?'● ':''}${esc(it.name||it.key)}</span>`).join('')+more;
+    return `<tr style="border-bottom:1px solid var(--bd)">
+      <td style="${td};text-align:right;color:var(--muted)">${i+1}</td>
+      <td style="${td}"><b>${esc(r.host)}</b></td>
+      <td style="${td};text-align:right;font-weight:700">${r.risk_score}</td>
+      <td style="${td}"><span style="color:${c};font-weight:600">${esc(r.severity)}</span></td>
+      <td style="${td};text-align:center;font-variant-numeric:tabular-nums">${t.critical||0}/${t.high||0}/${t.medium||0}</td>
+      <td style="${td};font-size:12px">${esc(_riskWhy(r))}</td>
+      <td style="${td};font-size:12px">${people||'<span style="color:var(--muted)">—</span>'}</td>
+      <td style="${td};font-size:12px;color:var(--muted)">${esc(cov)}</td></tr>`;}).join('');
+  const th='padding:6px 10px;font-weight:500';
+  return `${d.is_stale?'<div class="agnote">New collections have landed that are not in this ranking yet — run <b>Refusion</b> to include them.</div>':''}
+    <p class="ent-cap">Hosts ranked by risk: the band is the worst detection; within it each <b>distinct</b> detection counts once (repeats add a little, daily routines one level lower, cross-host detections more). C/H/M counts distinct detections. People marked compromised show in red.</p>
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="text-align:left;border-bottom:1px solid var(--bd);color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em">
+        <th style="${th}"></th><th style="${th}">Host</th><th style="${th};text-align:right">Risk</th><th style="${th}">Severity</th>
+        <th style="${th};text-align:center" title="critical / high / medium">C/H/M</th><th style="${th}">Why (top findings)</th><th style="${th}">People</th><th style="${th}">Coverage</th>
+      </tr></thead><tbody>${body||'<tr><td colspan="8" style="padding:10px;color:var(--muted)">no match.</td></tr>'}</tbody></table>`;
 }
 function idSearch(v){ window._idQuery=v; window._idFocus=true; _idRender(window._idCase); }
 function idToggle(k){ window._idExpand[k]=!window._idExpand[k]; window._idFocus=false; _idRender(window._idCase); }
 function idExpandAll(on){ (((window._idData||{}).identities)||[]).forEach(it=>window._idExpand[it.key]=on); window._idFocus=false; _idRender(window._idCase); }
-function idCard(cid,it){
+function idCard(cid,it,jev){
   const open=!!window._idExpand[it.key];
-  const bdg=(t,col)=>`<span style="font-size:10px;border:1px solid ${col||'var(--bd)'};color:${col||'var(--muted)'};border-radius:8px;padding:0 6px;margin-left:4px">${esc(t)}</span>`;
+  const bdg=(t,col)=>`<span style="font-size:10px;border:1px solid ${col||'var(--bd)'};color:${col||'var(--muted)'};border-radius:8px;padding:0 6px;margin-left:6px;font-weight:400">${esc(t)}</span>`;
   // Infrastructure badges only when a person reaches beyond endpoints: "endpoint"
   // on every card of an endpoint-only case said nothing.
   const bl=it.buckets||[];
@@ -1879,15 +1928,20 @@ function idCard(cid,it){
   const cf=it.confidence; const confb = (typeof cf==='number' && cf<1)?bdg('~'+Math.round(cf*100)+'% match','#d29922'):'';
   const sugN=(it.suggestions||[]).length;
   const nAcc=(it.accounts||[]).filter(a=>!a.disabled).length;
-  const header=`<div onclick="idToggle('${jsa(it.key)}')" style="cursor:pointer;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-     <div><span style="color:var(--muted)">${open?'▾':'▸'}</span> 👤 <b style="font-size:13px">${esc(it.name||it.key)}</b>${it.builtin?' '+bdg('built-in','#d29922'):''}${it.account_kind?' '+bdg(it.account_kind+' account'):''}${buckets} ${confb}</div>
-     ${it.worst?`<span class="chip c-${esc(it.worst)}" title="Worst finding on this person's accounts">${esc(it.worst)}</span>`:''}
-     ${idVerdictSeg(cid,it)}${_idJev(it)}
-     <span style="color:var(--muted);font-size:11px">${it.detections?`<b style="color:var(--fg)">${it.detections}</b> detection${it.detections===1?'':'s'} (${it.finding_rows} row${it.finding_rows===1?'':'s'}) · `:''}${nAcc} ${nAcc===1?'account':'accounts'}${(it.seen_on||[]).length?` · on ${esc((it.seen_on||[]).slice(0,5).join(', '))}${(it.seen_on||[]).length>5?' +'+((it.seen_on||[]).length-5):''}`:''}${sugN?` · <span style="color:var(--acc)">${sugN} ${sugN===1?'suggestion':'suggestions'}</span>`:''}</span></div>`;
-  if(!open) return `<div style="border:1px solid var(--bd);border-radius:8px;padding:8px 12px;margin-bottom:6px;background:#0d1117">${header}</div>`;
+  const so=it.seen_on||[];
+  const row=`<div class="pgrid${jev?'':' nojev'}" onclick="idToggle('${jsa(it.key)}')">
+     <div class="pname" style="min-width:0"><span style="color:var(--muted);display:inline-block;width:14px">${open?'▾':'▸'}</span><b>${esc(it.name||it.key)}</b>${it.builtin?bdg('built-in','#d29922'):''}${it.account_kind?bdg(it.account_kind):''}${buckets}${confb}
+       <div class="psub" style="padding-left:14px">${nAcc} account${nAcc===1?'':'s'}${sugN?` · <span style="color:var(--acc)">${sugN} link suggestion${sugN===1?'':'s'}</span>`:''}</div></div>
+     <div>${it.worst?`<span class="chip c-${esc(it.worst)}">${esc(it.worst)}</span>`:'<span class="pcell">—</span>'}</div>
+     <div class="pcell">${it.detections?`<b style="color:var(--tx)">${it.detections}</b> <span>(${it.finding_rows} row${it.finding_rows===1?'':'s'})</span>`:'—'}</div>
+     <div class="pcell" title="${esc(so.join(', '))}">${so.length?esc(so.slice(0,3).join(', '))+(so.length>3?` +${so.length-3}`:''):'—'}</div>
+     ${jev?`<div>${_idJev(it)}</div>`:''}
+     <div onclick="event.stopPropagation()">${idVerdictSel(cid,it)}</div>
+   </div>`;
+  if(!open) return `<div class="prow v-${esc(it.verdict||'none')}">${row}</div>`;
   const xbtn=(fn)=>`<button class="ghost" title="Not this person — switch off" style="border:none;color:var(--med);padding:0 4px;font-size:12px" onclick="event.stopPropagation();${fn}">✕</button>`;
   const accts=(it.accounts||[]).map(a=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:1px 0${a.disabled?';opacity:.45':''}">
-      <span${a.disabled?' style="text-decoration:line-through"':''}>👤 ${esc(a.label)}<span style="color:var(--muted);font-size:11px">${a.ctx?(' · @'+esc(a.ctx)):(a.bucket?(' · '+esc(a.bucket)):'')}${(typeof a.conf==='number'&&a.conf<1)?(' · '+Math.round(a.conf*100)+'%'):''}</span></span>
+      <span${a.disabled?' style="text-decoration:line-through"':''}>${esc(a.label)}<span style="color:var(--muted);font-size:11px">${a.ctx?(' · @'+esc(a.ctx)):(a.bucket?(' · '+esc(a.bucket)):'')}${(typeof a.conf==='number'&&a.conf<1)?(' · '+Math.round(a.conf*100)+'%'):''}</span></span>
       ${a.disabled
         ? `<button class="ghost" title="Include in this person again" style="border:none;color:var(--ok);padding:0 4px;font-size:12px" onclick="event.stopPropagation();idInclude('${jsa(cid)}','${jsa(a.id)}')">↺</button>`
         : xbtn(`idSplit('${jsa(cid)}','${jsa(a.id)}')`)}</div>`).join('') || '<span style="color:var(--muted)">—</span>';
@@ -1895,30 +1949,31 @@ function idCard(cid,it){
       <span style="font-size:12px">possibly also <b>${esc(s.other)}</b> <span style="color:var(--muted);font-size:11px">· ${esc(s.reason||'')} · conf ${(typeof s.score==='number'?s.score.toFixed(2):s.score)}${s.ambiguous?' · <span style="color:var(--med)">ambiguous</span>':''}${typeof s.jev_p==='number'?` · <span style="color:#79c0ff" title="Jev's estimate that both accounts are the same person — a hint; Merge and Dismiss are still yours.">Jev: ${Math.round(s.jev_p*100)}% same</span>`:''}</span></span>
       <span style="white-space:nowrap"><button class="ghost" style="border-color:var(--ok)" onclick="idSug('${jsa(cid)}','${jsa(s.id)}','confirmed')">Merge</button> <button class="ghost" style="border-color:var(--med)" onclick="idSug('${jsa(cid)}','${jsa(s.id)}','declined')">Dismiss</button></span></div>`).join('');
   const mfrom=(it.merged_from||[]).map(m=>`<div style="display:flex;gap:10px;align-items:center;justify-content:space-between;padding:3px 0">
-      <span style="font-size:11px;color:var(--muted)">${m.auto?'⚙ auto-merged':'✓ merged'}: <b style="color:var(--fg)">${esc((m.names||[]).join(' + '))}</b> · ${esc(m.reason||'')}</span>
+      <span style="font-size:11px;color:var(--muted)">${m.auto?'⚙ auto-merged':'✓ merged'}: <b style="color:var(--tx)">${esc((m.names||[]).join(' + '))}</b> · ${esc(m.reason||'')}</span>
       <button class="ghost" style="border-color:var(--med);font-size:11px;padding:2px 8px" onclick="idSeparate('${jsa(cid)}','${jsa(it.key)}','${jsa((m.names||[]).join('|'))}')">Separate</button></div>`).join('');
-  const body=`<div style="display:flex;gap:24px;margin-top:8px;flex-wrap:wrap">
-       <div style="flex:1;min-width:240px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">Accounts</div>${accts}</div>
-       <div style="flex:1;min-width:200px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">Seen on hosts</div>${(it.seen_on||[]).map(h=>`<div>🖥 ${esc(h)}</div>`).join('')||'<span style="color:var(--muted)">—</span>'}</div>
-</div>
-     ${(it.findings||[]).length?`<div style="margin-top:8px;border-top:1px dashed var(--bd);padding-top:6px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">Findings on these accounts${it.finding_rows>it.findings.length?` (worst ${it.findings.length} of ${it.finding_rows})`:''} — click for detail</div>${it.findings.map(f=>`<div style="cursor:pointer;padding:1px 0" onclick="event.stopPropagation();window._tlCase='${jsa(cid)}';openFindingDetail('${jsa(f.id)}')"><span class="chip c-${esc(f.severity)}" style="font-size:10px">${esc(f.severity)}</span> ${esc(f.title)}</div>`).join('')}</div>`:''}
-     ${mfrom?`<div style="margin-top:8px;border-top:1px dashed var(--bd);padding-top:6px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">How this person was assembled (Separate to undo)</div>${mfrom}</div>`:''}
-     ${sugg?`<div style="margin-top:8px;border-top:1px dashed var(--bd);padding-top:6px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">Suggested links (Merge folds them into this person)</div>${sugg}</div>`:''}`;
-  return `<div style="border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin-bottom:8px;background:#0d1117">${header}${body}</div>`;
+  const sec=t=>`<div style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">${t}</div>`;
+  const body=`<div class="pbody"><div style="display:flex;gap:28px;flex-wrap:wrap">
+       <div style="flex:1;min-width:240px">${sec('Accounts')}${accts}</div>
+       <div style="flex:1;min-width:200px">${sec('Seen on hosts')}${so.map(h=>`<div>${esc(h)}</div>`).join('')||'<span style="color:var(--muted)">—</span>'}</div></div>
+     ${(it.findings||[]).length?`<div style="margin-top:10px">${sec(`Findings${it.finding_rows>it.findings.length?` — worst ${it.findings.length} of ${it.finding_rows}`:''} · click for detail`)}${it.findings.map(f=>`<div style="cursor:pointer;padding:2px 0" onclick="event.stopPropagation();window._tlCase='${jsa(cid)}';openFindingDetail('${jsa(f.id)}')"><span class="chip c-${esc(f.severity)}" style="font-size:10px">${esc(f.severity)}</span> ${esc(f.title)}</div>`).join('')}</div>`:''}
+     ${mfrom?`<div style="margin-top:10px">${sec('How this person was assembled — Separate to undo')}${mfrom}</div>`:''}
+     ${sugg?`<div style="margin-top:10px">${sec('Suggested links — Merge folds them into this person')}${sugg}</div>`:''}</div>`;
+  return `<div class="prow v-${esc(it.verdict||'none')}">${row}${body}</div>`;
 }
-// The analyst's call on a person: Compromised / Not compromised. Click the lit
-// button again to clear it. Instant: flip here, save behind, undo on failure.
-const ID_VERDICTS=[['compromised','Compromised'],['not_compromised','Not compromised']];
-function idVerdictSeg(cid,it){
+// The analyst's call on a person, as a status select at the end of the row:
+// Not reviewed / Compromised / Not compromised. Instant: saved behind, undone on
+// failure.
+const ID_VERDICTS=[['','Not reviewed'],['compromised','Compromised'],['not_compromised','Not compromised']];
+function idVerdictSel(cid,it){
   const v=it.verdict||'';
-  return `<span class="seg" onclick="event.stopPropagation()" title="Your verdict on this person — kept across re-fusion">${ID_VERDICTS.map(([k,l])=>`<button class="s-${k} ${v===k?'on':''}" onclick="idVerdict('${jsa(cid)}','${jsa(it.key)}','${v===k?'':k}')">${l}</button>`).join('')}</span>`;
+  return `<select class="vsel v-${v||'none'}" title="Your verdict on this person — kept across re-fusion, and given to the report and chat" onchange="idVerdict('${jsa(cid)}','${jsa(it.key)}',this.value)">${ID_VERDICTS.map(([k,l])=>`<option value="${k}"${v===k?' selected':''}>${l}</option>`).join('')}</select>`;
 }
-// Jev's estimate that this person is compromised — a number beside the analyst's
-// switch, never a verdict. Absent when Jev is off or the person has no findings.
+// Jev's estimate that this person is compromised — a meter beside the analyst's
+// verdict, never a verdict. "—" when this person has no findings (not asked).
 function _idJev(it){
-  const p=it&&it.jev_compromise; if(typeof p!=='number') return '';
-  const pct=Math.round(p*100), col=p>=0.7?'#f85149':p<=0.3?'#56d364':'#e3b341';
-  return `<span class="sg-hint" style="border-color:${col};color:${col}" title="Jev's estimate, from this person's findings, that the identity is compromised — a second opinion; the verdict is yours.">Jev: ${pct}% compromised</span>`;
+  const p=it&&it.jev_compromise; if(typeof p!=='number') return '<span class="pcell" title="No findings on this person, so Jev was not asked">—</span>';
+  const pct=Math.round(p*100), col=p>=0.7?'var(--crit)':p<=0.3?'var(--ok)':'var(--med)';
+  return `<span title="Jev's estimate, from this person's findings, that the identity is compromised — a second opinion; the verdict is yours." style="white-space:nowrap"><span class="meter"><i style="width:${pct}%;background:${col}"></i></span><b style="color:${col};font-size:12px">${pct}%</b></span>`;
 }
 function idVerdict(cid,key,verdict){
   const it=(((window._idData||{}).identities)||[]).find(x=>x.key===key); if(!it) return;

@@ -161,8 +161,8 @@ class TheContentAlwaysMatchesTheUnderline(unittest.TestCase):
 
     def test_every_deferred_write_checks_the_tab_is_still_its_own(self):
         import re
-        for fn, tab in (("renderTimeline", "timeline"), ("renderIdentities", "identities"),
-                        ("renderRisk", "risk")):
+        # (Risk is now the Hosts view inside renderIdentities — one fetch, one check.)
+        for fn, tab in (("renderTimeline", "timeline"), ("renderIdentities", "identities")):
             body = self.page[self.page.index(f"function {fn}("):][:1500]
             self.assertIn(f"tabIsStill('{tab}')", body,
                           f"{fn} writes #tabc after a fetch — it must not paint over "
