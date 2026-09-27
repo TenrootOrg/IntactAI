@@ -60,6 +60,37 @@ class Reach(unittest.TestCase):
         self.assertEqual(identities.person_reach(g, ["acc"]), {"acc", "ev1"})
 
 
+class Downstream(unittest.TestCase):
+    """A person marked compromised reaches the deterministic report and every model call."""
+
+    def _g(self):
+        g = schema.FusionGraph(case_id="c")
+        g.upsert(schema.Entity(id="acc1", type="account", label="CORP\\kobia"))
+        g.identity_verdicts = [{"accounts": ["acc1"], "name": "kobia", "verdict": "compromised"},
+                               {"accounts": ["gone"], "name": "old", "verdict": "compromised"}]
+        return g
+
+    def test_report_section_recommendation_and_model_context(self):
+        from services.fusion import llm_sim, render
+        g = self._g()
+        self.assertEqual(render.identity_verdict_lines(g), [("compromised", "kobia — CORP\\kobia")])
+        md = render._analyst_validations_md(g, None, None)
+        self.assertIn("**Identities marked compromised (1):**", md)
+        self.assertNotIn("old", md)                              # its accounts left the graph
+        recs = render._recommendations_md(g, [], [])
+        self.assertIn("Treat these identities as compromised", recs)
+        ctx = llm_sim.analyst_context(graph=g)
+        self.assertEqual(ctx["analyst_identity_verdicts"],
+                         [{"identity": "kobia — CORP\\kobia", "verdict": "compromised"}])
+        self.assertNotIn("analyst_identity_verdicts", llm_sim.analyst_context(graph=schema.FusionGraph(case_id="c")))
+
+    def test_view_graph_carries_them(self):
+        d = {"identity_verdicts": [{"accounts": ["a"], "verdict": "compromised"}]}
+        with mock.patch.object(store, "load_graph", return_value=schema.FusionGraph(case_id="c")):
+            g = store.view_graph("c", d)
+        self.assertEqual(g.identity_verdicts[0]["verdict"], "compromised")
+
+
 class Card(unittest.TestCase):
     def test_verdict_buttons(self):
         node = shutil.which("node")

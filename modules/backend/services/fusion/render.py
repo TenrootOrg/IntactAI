@@ -1979,7 +1979,8 @@ def _analyst_validations_md(graph, dispositions, validations) -> str:
         seen.add(tgt)
         buckets["known" if d.get("attribution") == "it_admin" else "false_positive"].append(
             title_of.get(tgt, str(tgt)))
-    if not any(buckets.values()):
+    people = identity_verdict_lines(graph)
+    if not any(buckets.values()) and not people:
         return ""
     out = ["## Analyst Validations\n",
            "_Operator triage from the Timeline. False-positive and known/expected "
@@ -1990,7 +1991,26 @@ def _analyst_validations_md(graph, dispositions, validations) -> str:
             out.append(f"**{_STATE_LABEL[st]} ({len(items)}):**")
             out += [f"- {t}" for t in items[:20]]
             out.append("")
+    for verdict, label in (("compromised", "Identities marked compromised"),
+                           ("not_compromised", "Identities marked not compromised")):
+        items = [ln for v, ln in people if v == verdict]
+        if items:
+            out.append(f"**{label} ({len(items)}):**")
+            out += [f"- {t}" for t in items[:20]]
+            out.append("")
     return "\n".join(out)
+
+
+def identity_verdict_lines(graph) -> list:
+    """[(verdict, "kobia — CORP\\kobia, kobia@corp")] from the analyst's Identities
+    verdicts (store.view_graph carries them on the graph). Accounts no longer in
+    the graph are skipped; a person with none left is not listed."""
+    out = []
+    for r in (getattr(graph, "identity_verdicts", None) or []):
+        labels = [graph.entities[a].label for a in (r.get("accounts") or []) if a in graph.entities]
+        if labels and r.get("verdict"):
+            out.append((r["verdict"], f"{r.get('name') or labels[0]} — {', '.join(labels[:6])}"))
+    return out
 
 
 def _recommendations_md(graph, findings, assets) -> str:
@@ -2015,6 +2035,11 @@ def _recommendations_md(graph, findings, assets) -> str:
     if pers:
         recs.append(("Eradication", "Remove the malicious persistence and confirm it does "
                      "not re-create: " + "; ".join(pers[:4]) + "."))
+    owned = [ln for v, ln in identity_verdict_lines(graph) if v == "compromised"]
+    if owned:
+        recs.append(("Credentials", "Treat these identities as compromised (analyst verdict): "
+                     "reset their passwords, revoke sessions and tokens, and review what they "
+                     "touched — " + "; ".join(owned[:6]) + "."))
     xacct = [e for e in graph.by_type("account") if "cross_host" in (e.flags or [])]
     if xacct:
         recs.append(("Credentials", "Reset and review the accounts used across multiple "

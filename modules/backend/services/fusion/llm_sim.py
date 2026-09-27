@@ -1469,6 +1469,10 @@ def analyst_context(dispositions=None, validations=None, manual_events=None, gra
              "answer": ("yes, expected / authorised" if x["status"] == "accepted"
                         else "no, not expected")}
             for x in answered]
+    people = render.identity_verdict_lines(graph) if graph is not None else []
+    if people:
+        out["analyst_identity_verdicts"] = [{"identity": ln, "verdict": v.replace("_", " ")}
+                                            for v, ln in people]
     if manual_events:
         out["analyst_timeline_events"] = [
             {k: e.get(k) for k in ("ts", "host", "title", "severity", "status", "notes") if e.get(k)}

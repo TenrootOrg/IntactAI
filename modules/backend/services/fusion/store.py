@@ -2642,6 +2642,7 @@ def view_graph(case_id, d=None, *, scoped=True) -> FusionGraph:
         g = _filter_graph_by_window(_filter_graph_by_hosts(g, active_scope_hidden_hosts(d)),
                                     active_scope_window(d))
     g.identity_decisions = _identity_decisions(d)   # people grouped as the Identities tab shows
+    g.identity_verdicts = list(d.get("identity_verdicts") or [])   # analyst: compromised or not
     return g
 
 
@@ -2681,6 +2682,7 @@ def _filter_graph_by_window(g, window) -> FusionGraph:
         return g
     gv = FusionGraph(case_id=g.case_id, run_ids=list(g.run_ids))
     gv.identity_decisions = getattr(g, "identity_decisions", None)
+    gv.identity_verdicts = getattr(g, "identity_verdicts", None)
     findings = [f for f in g.findings if finding_in_window(f, window)]
     cited = {eid for f in findings for eid in (f.entity_ids or [])}
 
@@ -4553,6 +4555,7 @@ def set_identity_verdict(case_id, account_ids, verdict, name="") -> dict:
         return kept
 
     _mutate_list_field(case_id, "identity_verdicts", _mutate)
+    _report_behind(case_id)                 # the report names people marked compromised
     log_case_event(case_id, f"Identity · {name or ids[0]} "
                    + (f"marked {IDENTITY_VERDICTS[verdict]}" if verdict else "verdict cleared"),
                    "warning" if verdict == "compromised" else "info")
