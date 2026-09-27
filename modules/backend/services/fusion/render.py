@@ -2039,26 +2039,38 @@ def risk_table(graph, *, window=None, min_severity="informational") -> list:
         for f in _distinct(afind):                 # distinct detections, not episode rows
             if f.severity in tally:
                 tally[f.severity] += 1
-        # Top reasons = highest-severity findings first, deduped by title, capped.
-        seen, reasons = set(), []
-        for f in sorted(afind, key=lambda f: (-sev.rank(f.severity), f.title or "")):
-            t = (f.title or "").strip()
-            if not t or t.lower() in seen:
-                continue
-            seen.add(t.lower())
-            reasons.append(t + (" (cross-host)" if f.kind == "cross_host" else ""))
-            if len(reasons) >= 4:
-                break
+        # WHY = what actually drives the score, strongest first. It was sorted by
+        # severity then title (alphabetical: "Account '…' used across…" always led)
+        # and deduped by exact title, so one detection appeared twice under
+        # "(+1 related)" / "(+2 related)". Now: one line per DISTINCT detection,
+        # ordered by its contribution (the same weight the score uses), with
+        # "×N episodes" / "(routine)" / "(earlier name)" said out loud; activity
+        # logged under an earlier machine name goes after current activity.
+        from .correlate import _RISK_W, _cross_host_factor, _risk_sev
+        by_det: dict = {}
+        for f in afind:
+            by_det.setdefault(_detection_name(f), []).append(f)
+        scored_reasons = []
+        for name, fs in by_det.items():
+            w = max(_RISK_W.get(_risk_sev(f), 0) * _cross_host_factor(f, len(assets)) for f in fs)
+            w *= 1 + min(0.5, 0.1 * (len(fs) - 1))
+            earlier = all(graph.before_current_name(f) for f in fs)
+            tags = []
+            if len(fs) > 1:
+                tags.append(f"×{len(fs)} episodes")
+            if any(f.kind == "cross_host" for f in fs):
+                tags.append("cross-host")
+            if any(getattr(f, "recurring", None) for f in fs):
+                tags.append("routine")
+            if earlier:
+                tags.append("earlier name")
+            last = max((f.occ_latest or f.ts or "" for f in fs), default="")
+            scored_reasons.append((earlier, -w, -len(fs), last,
+                                   name + (f" ({', '.join(tags)})" if tags else "")))
+        scored_reasons.sort(key=lambda r: (r[0], r[1], r[2], [-ord(c) for c in r[3]]))
+        reasons = [r[4] for r in scored_reasons[:4]]
         modules = a.attrs.get("modules") or []
-        escalate, deep = bool(a.attrs.get("escalate")), bool(a.attrs.get("deep"))
-        if escalate:
-            action = "Deep-dive now — run memory + Timesketch"
-        elif deep:
-            action = "Deep coverage done — review findings"
-        elif sev.at_least(sc.get("severity") or "informational", "medium"):
-            action = "Triage / monitor"
-        else:
-            action = "Low priority"
+        deep = bool(a.attrs.get("deep"))
         rows.append({
             "client_id": a.id,
             "host": a.label,
@@ -2066,7 +2078,7 @@ def risk_table(graph, *, window=None, min_severity="informational") -> list:
             "risk_score": int(sc.get("risk_score") or 0),
             "risk_intensity": float(sc.get("risk_intensity") or 0),
             "severity": sc.get("severity") or "informational",
-            "escalate": escalate,
+            "escalate": False,          # set below, from the scoped ranking
             "deep": deep,
             "modules": _collectors(modules),
             "finding_count": len(_distinct(afind)),     # distinct detections
@@ -2075,12 +2087,27 @@ def risk_table(graph, *, window=None, min_severity="informational") -> list:
             "cross_host": any(f.kind == "cross_host" for f in afind),
             "reasons": reasons,
             "why": "; ".join(reasons[:3]) or "no findings in window",
-            "next_action": action,
+            "next_action": "",
         })
     # risk_score encodes the tier band; raw intensity breaks display-integer ties
     # so 'who is #1 of the hosts showing 100' is always answered.
     rows.sort(key=lambda r: (-r["risk_score"], -r["risk_intensity"],
                              -sev.rank(r["severity"]), r["host"]))
+    # NEXT ACTION from the SCOPED ranking. It read the fusion-time "escalate" flag
+    # (high+ and no memory/Timesketch yet), which on a Velociraptor-only case was
+    # true for every host: all nine said "Deep-dive now". Now only the critical
+    # band — or, without one, the top 3 — is "Deep-dive now"; the rest triage next.
+    crit_band = [r for r in rows if r["severity"] == "critical"]
+    top = {id(r) for r in (crit_band or rows[:3])}
+    for r in rows:
+        if id(r) in top and sev.at_least(r["severity"], "high"):
+            r["next_action"] = ("Deep-dive now — run memory + Timesketch" if not r["deep"]
+                                else "Deep-dive now — coverage done, review findings")
+            r["escalate"] = not r["deep"]
+        elif sev.at_least(r["severity"], "medium"):
+            r["next_action"] = "Triage next"
+        else:
+            r["next_action"] = "Low priority"
     return rows
 
 
