@@ -1959,7 +1959,7 @@ def _recommendations_md(graph, findings, assets) -> str:
                      "credentials if a privileged/domain account is involved."))
     # Only recommend blocking VALIDATED / high-confidence indicators — never the
     # merely-observed hashes (don't send the SOC to block a benign binary).
-    kept_iocs = [i for i, _ in _high_confidence_iocs(graph)[0]]
+    kept_iocs = [i for i, r in _high_confidence_iocs(graph)[0] if r != SHARED_SOFTWARE]
     if kept_iocs:
         recs.append(("Network", "Block these indicators at the perimeter / EDR and hunt for "
                      "further callbacks: " + ", ".join(f"`{e.label}`" for e in kept_iocs[:8]) + "."))
@@ -2297,6 +2297,12 @@ def _ioc_source_label(graph, ioc):
     return None
 
 
+SHARED_SOFTWARE = "shared software"
+_IOC_REASON_TEXT = {"validated": "validated (true positive)", "detection": "cited by a finding",
+                    "high-anomaly": "high anomaly", "cross-host": "suspicious, on several hosts",
+                    SHARED_SOFTWARE: "shared software — review"}
+
+
 def _high_confidence_iocs(graph, validations=None):
     """Filter IOCs to those we can stand behind, so the IOC list is genuine indicators
     rather than an inventory of every benign hash on disk. KEEP an indicator only when:
@@ -2320,17 +2326,21 @@ def _high_confidence_iocs(graph, validations=None):
     for i in iocs:
         if i.id in validated:
             reason = "validated"
-        elif "cross_host" in (i.flags or []):
-            reason = "cross-host"
         elif i.id in cited:
             reason = "detection"
         elif sev.at_least(i.severity, "high"):
             reason = "high-anomaly"
+        elif "cross_host" in (i.flags or []):
+            # Being on several hosts is spread, not guilt: OneDrive, Everything and
+            # Advanced IP Scanner were "high-confidence IOCs" on jev_test, and the
+            # recommendations told the customer to block them. Suspicious AND spread
+            # is an indicator; merely spread is software to review.
+            reason = ("cross-host" if sev.at_least(i.severity, "medium") else SHARED_SOFTWARE)
         else:
             continue
         kept.append((i, reason))
-    # validated/detection/cross-host first, then by host spread
-    rank = {"validated": 0, "detection": 1, "cross-host": 2, "high-anomaly": 3}
+    # validated/detection/cross-host first, then by host spread; shared software last
+    rank = {"validated": 0, "detection": 1, "cross-host": 2, "high-anomaly": 3, SHARED_SOFTWARE: 9}
     kept.sort(key=lambda kr: (rank.get(kr[1], 9), -len(_assets_of(kr[0])), kr[0].label))
     return kept, len(iocs) - len(kept)
 
@@ -2544,6 +2554,8 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
 
     # ---- 4. Key Indicators (IOCs) — high-confidence / validated only --------
     kept_iocs, suppressed = _high_confidence_iocs(graph, validations)
+    shared = [(i, r) for i, r in kept_iocs if r == SHARED_SOFTWARE]
+    kept_iocs = [(i, r) for i, r in kept_iocs if r != SHARED_SOFTWARE]
     if kept_iocs:
         out.append("## Indicators of Compromise (IOCs)\n")
         out.append("_Only validated or high-confidence indicators are listed; "
@@ -2556,9 +2568,17 @@ def facts_md(graph, *, window=None, min_severity="informational", initial_access
             hosts = ", ".join(_host_label(graph, x) for x in _assets_of(i))
             src = _ioc_source_label(graph, i)
             label = f"`{i.label}` ({src})" if src else f"`{i.label}`"
-            out.append(f"| {label} | {i.attrs.get('ioc_kind', '?')} | {reason} | {hosts} | "
+            out.append(f"| {label} | {i.attrs.get('ioc_kind', '?')} | "
+                       f"{_IOC_REASON_TEXT.get(reason, reason)} | {hosts} | "
                        f"{'⚠ YES' if 'cross_host' in i.flags else 'no'} |")
         out.append("")
+    if shared:
+        out.append("### Shared across hosts — review, not confirmed malicious\n")
+        out.append("_These binaries are on several hosts but nothing flagged them as malicious. "
+                   "Confirm they are sanctioned software; they are NOT in the block list._\n")
+        out.append(", ".join(f"`{i.label}` ({_ioc_source_label(graph, i) or '?'}; "
+                             f"{len(_assets_of(i))} hosts)" for i, _ in shared[:15])
+                   + (f" … and {len(shared) - 15} more" if len(shared) > 15 else "") + "\n")
 
     # ---- 5. MITRE ATT&CK ----------------------------------------------
     techs: dict[str, list] = {}
