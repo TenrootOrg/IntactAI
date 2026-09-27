@@ -2828,10 +2828,25 @@ def _filter_graph_by_hosts(g, excluded_labels) -> FusionGraph:
             continue
         gv.entities[e.id] = e
         keep.add(e.id)
+    # A finding shared with an excluded host still named it in its own text —
+    # "executed on multiple assets (ALCA01, ALDC02, ALMECM01)" — and so sent it to
+    # the model (found by tests/live_case_integration.py). Such a finding is
+    # COPIED (the stored graph's objects are shared, never edited) without the
+    # host and with its name replaced.
+    import copy as _copy
+    ex_names = sorted({l for a in g.by_type("asset") if a.id in ex_assets
+                       for l in (a.label, a.attrs.get("hostname")) if l}, key=len, reverse=True)
+    ex_rx = re.compile("|".join(re.escape(n) for n in ex_names), re.I) if ex_names else None
     for f in g.findings:
         aid = set(f.asset_ids or [])
         if aid and aid <= ex_assets:           # finding only on excluded hosts
             continue
+        if aid & ex_assets:
+            f = _copy.copy(f)
+            f.asset_ids = [a for a in f.asset_ids if a not in ex_assets]
+            if ex_rx:
+                f.title = ex_rx.sub("[excluded host]", f.title or "")
+                f.summary = ex_rx.sub("[excluded host]", f.summary or "")
         gv.findings.append(f)
     for r in g.relationships:
         if r.src in keep and r.dst in keep:

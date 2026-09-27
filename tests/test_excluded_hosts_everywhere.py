@@ -44,5 +44,33 @@ class EveryViewReadsTheFilteredGraph(unittest.TestCase):
                              "_mask_for_case(d, store.load_graph(case_id)", ""))
 
 
+
+class SharedFindingText(unittest.TestCase):
+    """A finding shared with an excluded host named it in its text and so sent it
+    to the model (found by tests/live_case_integration.py)."""
+
+    def test_the_excluded_name_is_gone_and_the_stored_finding_untouched(self):
+        import os as _os, sys as _sys
+        _root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+        for _p in (_os.path.join(_root, "tests"), _os.path.join(_root, "modules/backend")):
+            if _p not in _sys.path:
+                _sys.path.insert(0, _p)
+        import _optional_deps  # noqa: F401
+        from services.fusion import schema, store
+        g = schema.FusionGraph(case_id="c")
+        for h in ("ALCA01", "ALMECM01"):
+            g.upsert(schema.Entity(id=f"asset:{h}", type="asset", label=h))
+        f = schema.Finding(id="x", title="Account 'srv' used across 2 hosts", severity="high", confidence="h",
+                           summary="executed on multiple assets (ALCA01, ALMECM01)",
+                           asset_ids=["asset:ALCA01", "asset:ALMECM01"])
+        g.findings = [f]
+        v = store._filter_graph_by_hosts(g, ["almecm01"])
+        self.assertEqual(len(v.findings), 1)
+        self.assertNotIn("ALMECM01", v.findings[0].summary)
+        self.assertIn("[excluded host]", v.findings[0].summary)
+        self.assertEqual(v.findings[0].asset_ids, ["asset:ALCA01"])
+        self.assertEqual(v.findings[0].id, "x")                     # verdicts still bind
+        self.assertIn("ALMECM01", f.summary)                        # the stored graph is untouched
+
 if __name__ == "__main__":
     unittest.main()
