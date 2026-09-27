@@ -8,7 +8,7 @@ is templating, not analysis. The LLM (real or simulated) only narrates over
 from __future__ import annotations
 
 from . import severity as sev, keys
-from .correlate import in_window, _assets_of, _host_label
+from .correlate import in_window, finding_in_window, _assets_of, _host_label
 
 
 def fmt_ts(v) -> str:
@@ -22,7 +22,7 @@ def fmt_ts(v) -> str:
 def scope(graph, *, window=None, min_severity="informational"):
     """Return (assets, findings) filtered to the time window + severity."""
     findings = [f for f in graph.findings
-                if sev.at_least(f.severity, min_severity) and in_window(f.ts, window)]
+                if sev.at_least(f.severity, min_severity) and finding_in_window(f, window)]
     assets = [e for e in graph.by_type("asset")]
     return assets, findings
 
@@ -57,12 +57,16 @@ def _artifacts_of(graph, f) -> list:
 def timeline(graph, *, window=None, initial_access=None):
     rows = []
     for f in graph.findings:
-        if not in_window(f.ts, window):
+        if not finding_in_window(f, window):
             continue
         rows.append({"finding_id": f.id,            # stable key for real/not-real validation
                      "ts": fmt_ts(f.ts), "host": ", ".join(_host_label(graph, a) for a in f.asset_ids) or "-",
                      "phase": _phase(f), "title": f.title, "severity": f.severity,
                      "mitre": f.mitre, "artifacts": _artifacts_of(graph, f),
+                     # the episode's last hit and hit count, so the row shows the
+                     # range it covers instead of only where it started
+                     "last": fmt_ts(f.occ_latest) if f.occ_latest else None,
+                     "hits": int(f.occ_count or 1),
                      "source": "fusion"})
     rows.sort(key=lambda r: (r["ts"] or "9999"))
     return rows
@@ -2329,7 +2333,7 @@ def timeline_md(graph, findings, *, window=None, eff_detail="summary",
                + " — high/critical events in chronological order (host in each entry)"))
                + "._\n")
     tl = sorted((f for f in findings
-                 if f.ts and in_window(f.ts, window)
+                 if f.ts and finding_in_window(f, window)
                  and f.kind != "cross_host"                         # in Cross-Host Correlation
                  # The burst row used to be excluded as a vacuous rollup ("Coordinated
                  # suspicious activity" named nothing). It now names the detections it

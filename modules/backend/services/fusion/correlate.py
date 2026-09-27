@@ -1280,28 +1280,36 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
         for a in _assets_of(e) or ["?"]:
             _sigma_groups.setdefault((a, e.attrs.get("title") or e.label,
                                       e.attrs.get("logged_host") or ""), []).append(e)
-    for (asset_id, title, logged), evs in _sigma_groups.items():
+    for (asset_id, title, logged), all_evs in _sigma_groups.items():
         host = _host_label(g, asset_id) + (f" (logged as {logged})" if logged else "")
-        top = max(evs, key=lambda x: x.anomaly)
         # baseline-subtraction: a rule that ALSO fires on the clean environment is
         # provisioning/automation noise, not signal — suppress it. Never suppress
         # >=critical (a real critical that happens to match baseline still surfaces).
-        if title in base_titles and not sev.at_least(top.severity, "critical"):
+        if title in base_titles and not sev.at_least(max(all_evs, key=lambda x: x.anomaly).severity,
+                                                     "critical"):
             continue
-        chans = sorted({x.attrs.get("channel") for x in evs if x.attrs.get("channel")})
-        _sid = _fid("sigma", f"{asset_id}:{title}" + (f":{logged}" if logged else ""))
-        _grouping[_sid] = (asset_id, logged)
-        g.add_finding(Finding(
-            id=_sid,
-            title=f"SIGMA: {title} on {host}",
-            severity=top.severity, confidence="medium",
-            summary=f"Hayabusa/SIGMA rule '{title}' matched {len(evs)}× on {host}"
-                    f"{(' (' + ', '.join(chans) + ')') if chans else ''}.",
-            entity_ids=[e.id for e in evs[:25]], asset_ids=[asset_id],
-            sources=top.sources, evidence=list(top.evidence), mitre=[],
-            ts=top.first_seen, kind="single",
-            occ_count=len(evs),
-            occ_latest=max((e.first_seen for e in evs if e.first_seen), default=top.first_seen)))
+        _key = f"{asset_id}:{title}" + (f":{logged}" if logged else "")
+        # ONE ROW PER EPISODE (keys.split_episodes): the mapper already split each
+        # collection's hits; entities from overlapping collections of the same
+        # activity are joined here. The first episode keeps the pre-episode id so an
+        # existing verdict stays on the activity it was given for.
+        for i, evs in enumerate(keys.split_episodes(all_evs, lambda e: e.first_seen,
+                                                    end_of=lambda e: e.last_seen or e.first_seen)):
+            top = max(evs, key=lambda x: x.anomaly)
+            first, latest = _ep_bounds(evs)
+            n = _ep_hits(evs)
+            chans = sorted({x.attrs.get("channel") for x in evs if x.attrs.get("channel")})
+            _sid = _fid("sigma", _key) if i == 0 else _fid("sigma", _key, str(first))
+            _grouping[_sid] = (asset_id, logged)
+            g.add_finding(Finding(
+                id=_sid,
+                title=f"SIGMA: {title} on {host}",
+                severity=top.severity, confidence="medium",
+                summary=f"Hayabusa/SIGMA rule '{title}' matched {n:,}× on {host}"
+                        f"{(' (' + ', '.join(chans) + ')') if chans else ''}.",
+                entity_ids=[e.id for e in evs[:25]], asset_ids=[asset_id],
+                sources=top.sources, evidence=list(top.evidence), mitre=[],
+                ts=first, kind="single", occ_count=n, occ_latest=latest))
 
     # Generic detection findings: every NON-SIGMA detection event (MFT, named-pipe,
     # binary-rename, web, …) grouped per host + detection name, so each detection
@@ -1368,19 +1376,25 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
             continue
         logged = extra
         host = _host_label(g, asset_id) + (f" (logged as {logged})" if logged else "")
-        _did = _fid("det", f"{asset_id}:{title}" + (f":{logged}" if logged else ""))
-        _grouping[_did] = (asset_id, logged)
-        g.add_finding(Finding(
-            id=_did,
-            title=f"{title} on {host}",
-            severity=top.severity, confidence="medium",
-            # The title already names the source ("SIGMA: …", "MFT: …"), so
-            # wrapping it in "Detection '…'" reads as a source inside a source.
-            summary=f"{title} fired {len(evs)}× on {host}.",
-            entity_ids=[e.id for e in evs[:25]], asset_ids=[asset_id],
-            sources=top.sources, evidence=list(top.evidence), mitre=[],
-            ts=top.first_seen, kind="single",
-            occ_count=len(evs), occ_latest=latest))
+        _key = f"{asset_id}:{title}" + (f":{logged}" if logged else "")
+        # One row per episode, as for SIGMA above (first episode keeps the old id).
+        for i, eps in enumerate(keys.split_episodes(evs, lambda e: e.first_seen,
+                                                    end_of=lambda e: e.last_seen or e.first_seen)):
+            top = max(eps, key=lambda x: x.anomaly)
+            first, latest = _ep_bounds(eps)
+            n = _ep_hits(eps)
+            _did = _fid("det", _key) if i == 0 else _fid("det", _key, str(first))
+            _grouping[_did] = (asset_id, logged)
+            g.add_finding(Finding(
+                id=_did,
+                title=f"{title} on {host}",
+                severity=top.severity, confidence="medium",
+                # The title already names the source ("SIGMA: …", "MFT: …"), so
+                # wrapping it in "Detection '…'" reads as a source inside a source.
+                summary=f"{title} fired {n:,}× on {host}.",
+                entity_ids=[e.id for e in eps[:25]], asset_ids=[asset_id],
+                sources=top.sources, evidence=list(top.evidence), mitre=[],
+                ts=first, kind="single", occ_count=n, occ_latest=latest))
 
     # cloud SIGMA detections (AWS/Azure) -> findings; cross-domain corroboration
     # (same account/IP also on an endpoint) is surfaced automatically via the
@@ -1422,8 +1436,13 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
                       or f.title.split(" on ")[0] not in base_finding_titles]
     # Grouping only tidies findings that already exist. If it fails, the case keeps
     # them ungrouped -- never loses them with the rest of this pass.
+    _grouped: list = []
     try:
-        _group_simultaneous_detections(g, _grouping)
+        _grouped = _group_simultaneous_detections(g, _grouping) or []
+    except Exception:                                         # noqa: BLE001
+        traceback.print_exc()
+    try:
+        _merge_detection_episodes(g, set(_grouping) | set(_grouped))
     except Exception:                                         # noqa: BLE001
         traceback.print_exc()
 
@@ -1436,6 +1455,23 @@ SAME_EVENT_MAX_SECONDS = 60
 def _event_type(e) -> tuple:
     a = e.attrs or {}
     return (str(a.get("channel") or "").lower(), str(a.get("eid_num") or ""))
+
+
+def _ep_bounds(evs):
+    """(first hit, last hit) of an episode's entities — the TRUE range. A folded
+    SIGMA entity holds many hits; its last one is last_seen, not first_seen, which
+    is why rows used to say "last seen" at their first hit and never re-opened."""
+    firsts = [e.first_seen for e in evs if e.first_seen]
+    lasts = [e.last_seen or e.first_seen for e in evs if e.last_seen or e.first_seen]
+    first = min(firsts, key=lambda t: keys.to_utc_dt(t) or t, default=None)
+    latest = max(lasts, key=lambda t: keys.to_utc_dt(t) or t, default=first)
+    return first, latest
+
+
+def _ep_hits(evs) -> int:
+    """How many raw hits an episode holds: a folded SIGMA entity carries its count
+    in attrs.occurrences, a per-row detection entity is one hit."""
+    return sum(int((e.attrs or {}).get("occurrences") or 1) for e in evs)
 
 
 def _first_events(g: FusionGraph, f) -> list:
@@ -1557,10 +1593,77 @@ def _group_simultaneous_detections(g: FusionGraph, grouping: dict) -> None:
             entity_ids=ents[:50], asset_ids=[asset_id],
             sources=sorted({s for f in fs for s in f.sources}),
             evidence=[x for f in fs for x in f.evidence[:1]], mitre=mitre,
-            ts=top.ts, kind="single",
+            # the row sits at its FIRST occurrence, like every other row — not at
+            # the loudest member's time, which mixed two meanings in one sort
+            ts=min((f.ts for f in fs), key=lambda t: keys.to_utc_dt(t) or t), kind="single",
             occ_count=sum(int(f.occ_count or 1) for f in fs),
             occ_latest=max((f.occ_latest or f.ts for f in fs), default=top.ts)))
         merged_ids.update(f.id for f in fs)
+    if new:
+        g.findings = [f for f in g.findings if f.id not in merged_ids] + new
+    return [f.id for f in new]
+
+
+_RELATED_SUFFIX = re.compile(r"\s*\(\+\d+ related\)$")
+
+
+def _detection_name(f) -> str:
+    """A detection row's name without its host part or "(+N related)" count."""
+    return _RELATED_SUFFIX.sub("", f.title.rsplit(" on ", 1)[0]).strip()
+
+
+def _merge_detection_episodes(g: FusionGraph, candidates: set) -> None:
+    """ONE DETECTION, ONE ROW PER EPISODE — across hosts.
+
+    The same rule firing on several hosts close together is one activity (lateral
+    movement, a pushed tool, a fleet-wide change), and was one row per host whose
+    time ranges overlapped: 61 overlapping same-rule pairs on one real case. Rows of
+    one detection that overlap or sit within keys.EPISODE_GAP_HOURS are joined, so
+    they can never overlap. The joined row keeps its EARLIEST member's id, so a
+    verdict already on that row stays with it.
+    """
+    by_name: dict = {}
+    for f in g.findings:
+        if f.id in candidates and f.ts:
+            by_name.setdefault(_detection_name(f), []).append(f)
+    merged_ids: set = set()
+    new: list = []
+    for name, fs in by_name.items():
+        if len(fs) < 2:
+            continue
+        for ep in keys.split_episodes(fs, lambda f: f.ts, end_of=lambda f: f.occ_latest or f.ts):
+            if len(ep) < 2:
+                continue
+            ep.sort(key=lambda f: keys.to_utc_dt(f.ts))
+            first = ep[0]
+            top = max(ep, key=lambda f: sev.rank(f.severity))
+            hosts: list = []
+            for f in ep:
+                for a in f.asset_ids or []:
+                    if a not in hosts:
+                        hosts.append(a)
+            labels = [_host_label(g, a) for a in hosts]
+            ents, mitre = [], []
+            for f in ep:
+                ents += [e for e in f.entity_ids if e not in ents]
+                mitre += [t for t in (f.mitre or []) if t not in mitre]
+            where = (labels[0] if len(labels) == 1 else f"{len(labels)} hosts")
+            latest = max((f.occ_latest or f.ts for f in ep), key=lambda t: keys.to_utc_dt(t) or t)
+            new.append(Finding(
+                id=first.id,
+                title=f"{name} on {where}",
+                severity=top.severity,
+                confidence="high" if any(f.confidence == "high" for f in ep) else first.confidence,
+                summary=(f"{name} fired on {', '.join(labels)} in one activity window "
+                         f"({first.ts} → {latest}): "
+                         + "; ".join(f"{_host_label(g, (f.asset_ids or ['?'])[0])} "
+                                     f"{int(f.occ_count or 1):,}×" for f in ep) + "."),
+                entity_ids=ents[:50], asset_ids=hosts,
+                sources=sorted({s for f in ep for s in f.sources}),
+                evidence=[x for f in ep for x in f.evidence[:1]], mitre=mitre,
+                ts=first.ts, kind="single",
+                occ_count=sum(int(f.occ_count or 1) for f in ep), occ_latest=latest))
+            merged_ids.update(f.id for f in ep)
     if new:
         g.findings = [f for f in g.findings if f.id not in merged_ids] + new
 
@@ -1727,6 +1830,23 @@ def _coordinated_activity(g: FusionGraph, *, window=None, baseline=None) -> None
 
 
 # ------------------------------------------------------------------ scope
+def finding_in_window(f, window) -> bool:
+    """A finding belongs to a window when it was ACTIVE in it at any point — from
+    its first hit (ts) to its last (occ_latest). Judging by first hit alone hid a
+    rule that started before a scope and kept firing inside it: 15 of 64 active
+    findings vanished from a real one-month scope."""
+    if in_window(f.ts, window):
+        return True
+    last = getattr(f, "occ_latest", None)
+    if not last or not window:
+        return False
+    t0, t1 = keys.to_utc_dt(f.ts), keys.to_utc_dt(last)
+    s_dt, e_dt = keys.to_utc_dt(window.get("start")), keys.to_utc_dt(window.get("end"))
+    if not t0 or not t1:
+        return in_window(last, window)
+    return (not e_dt or t0 <= e_dt) and (not s_dt or t1 >= s_dt)
+
+
 def in_window(ts, window) -> bool:
     if not window:
         return True

@@ -1630,6 +1630,13 @@ function tlVisible(){
 // only: the click is the same tlValidate() the verdict buttons use, so the
 // analyst still makes — and owns — the call. stopPropagation: the chip sits
 // inside the row's "open detail" click target.
+// A row covers one EPISODE: first hit to last hit. Show where it ends too, so a
+// row reads as the span it is, not as a single moment.
+function _tlUntil(r){
+  if(!r || !r.last || r.last===r.ts) return '';
+  const same=String(r.ts||'').slice(0,10)===String(r.last).slice(0,10);
+  return `<br><span style="color:var(--muted)">→ ${esc(same?String(r.last).slice(11):r.last)}</span>`;
+}
 function _tlJev(r){
   const j=r&&r.jev; if(!j) return '';
   const lbl=(TL_STATES.find(([k])=>k===j.label)||[])[1]; if(!lbl) return '';
@@ -1644,10 +1651,10 @@ function tlPaint(){
     const seg=TL_STATES.map(([k,lbl])=>`<button class="s-${k} ${v===k?'on':''}" onclick="tlValidate('${r.finding_id}','${k}')">${lbl}</button>`).join('');
     const arts=(r.artifacts||[]).map(a=>`<span class="arti">${esc(a)}</span>`).join(' ');
     return `<div class="tlrow ${supp(v)?'suppressed':''} ${r.manual?'manual':''}">
-      <code style="white-space:nowrap">${esc(r.ts||'—')}</code>
+      <code style="white-space:nowrap">${esc(r.ts||'—')}${_tlUntil(r)}</code>
       <div class="tlmeta" style="cursor:pointer" title="Click for full event detail" onclick="openFindingDetail('${r.finding_id}')">
         <span><strong>${esc(r.host||'-')}</strong> ${r.phase?`<span style="color:var(--muted)">[${esc(r.phase)}]</span>`:''} ${esc(_tlTitle(r))} <span style="color:var(--muted);font-size:10px">▸ detail</span></span>
-        <span class="l2">${arts}${r.reopened?'<span class="sg-hint" style="border-color:#d29922;color:#e3b341" title="A new occurrence arrived after your last verdict — re-validate this one.">⟳ re-opened: new activity since you validated</span>':''}${r.manual?'<span class="sg-hint" style="border-style:solid">manual</span>':''}${_tlJev(r)}${r.notes?`<span style="color:var(--muted);font-size:11px">— ${esc(r.notes)}</span>`:''}</span>
+        <span class="l2">${arts}${r.reopened?'<span class="sg-hint" style="border-color:#d29922;color:#e3b341" title="A new occurrence arrived after your last verdict — re-validate this one.">⟳ re-opened: new activity since you validated</span>':''}${r.manual?'<span class="sg-hint" style="border-style:solid">manual</span>':''}${(r.hits||1)>1?`<span class="sg-hint" style="border-style:solid;color:var(--muted)" title="Hits in this episode — the detection is one row until it goes quiet for 4 hours">${Number(r.hits).toLocaleString()} hits</span>`:''}${_tlJev(r)}${r.notes?`<span style="color:var(--muted);font-size:11px">— ${esc(r.notes)}</span>`:''}</span>
       </div>
       <span class="chip c-${r.severity}">${esc(r.severity)}</span>
       <span class="seg">${seg}</span>

@@ -246,6 +246,42 @@ def yarahit_id(asset: str, rule, pid="") -> str:
 
 
 
+# ONE TIMELINE ROW = ONE DETECTION UNTIL IT GOES QUIET. A rule's hits are split
+# into episodes wherever it stays silent longer than this; the next hit starts a
+# new row. Before this a rule's whole history was one row placed at its first hit:
+# on a real case, rows spanned up to 341 days, an attacker returning months later
+# was invisible on the Timeline, and same-rule rows on different hosts overlapped
+# (10:30-11:00 beside 10:35-10:45). Measured on a real 7-day engagement window,
+# 4 h gives about as many rows as before (26 vs 22) — each now at its own time.
+EPISODE_GAP_HOURS = 4
+
+
+def split_episodes(items, ts_of, gap_hours=EPISODE_GAP_HOURS, end_of=None):
+    """Split `items` into episodes: sorted by time, a new episode starts wherever
+    the quiet gap since everything before it exceeds `gap_hours`. With `end_of`,
+    items are time RANGES (start=ts_of, end=end_of) and the gap is measured from the
+    latest end so far, so overlapping ranges always share an episode — episodes
+    never overlap. Undated items join the first episode (they cannot start or end
+    one). Returns a list of lists, oldest episode first; [] for no items."""
+    dated, undated = [], []
+    for it in items:
+        t = to_utc_dt(ts_of(it))
+        (dated if t else undated).append((t, it))
+    dated.sort(key=lambda x: x[0])
+    eps, last = [], None
+    for t, it in dated:
+        if last is None or (t - last).total_seconds() > gap_hours * 3600:
+            eps.append([])
+        eps[-1].append(it)
+        end = (to_utc_dt(end_of(it)) if end_of else None) or t
+        last = end if last is None or end > last else last
+    if undated:
+        if not eps:
+            eps.append([])
+        eps[0].extend(it for _, it in undated)
+    return eps
+
+
 def event_key(asset: str, *parts) -> str:
     """Identity for an event whose distinguishing content — not its time — is what
     makes it unique: a file path, a DLL name, a service name.

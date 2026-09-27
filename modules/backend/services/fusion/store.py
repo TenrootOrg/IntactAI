@@ -2592,12 +2592,12 @@ def _filter_graph_by_window(g, window) -> FusionGraph:
     idempotent and makes the graph itself honest for the views that take no window
     at all — identities being the one that has no window parameter to take.
     """
-    from .correlate import in_window, _STRUCTURAL_TYPES
+    from .correlate import in_window, finding_in_window, _STRUCTURAL_TYPES
     if not window:
         return g
     gv = FusionGraph(case_id=g.case_id, run_ids=list(g.run_ids))
     gv.identity_decisions = getattr(g, "identity_decisions", None)
-    findings = [f for f in g.findings if in_window(f.ts, window)]
+    findings = [f for f in g.findings if finding_in_window(f, window)]
     cited = {eid for f in findings for eid in (f.entity_ids or [])}
 
     # 1. The window's own evidence: everything that is not a pivot and was active

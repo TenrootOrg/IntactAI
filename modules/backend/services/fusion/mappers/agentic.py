@@ -969,8 +969,16 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                         "n": 1, "first": ts, "last": ts, "anom": anom, "level": level,
                         "row": r, "loc": loc, "run_id": run_id, "artifact": artifact,
                         "wids": set(), "first_wids": set(_wids),
+                        # medium+ rules keep every hit so the fold below can split
+                        # them into episodes (keys.split_episodes); informational/
+                        # low stay one fold — they never reach a finding
+                        "hits": [] if anom >= _level_anomaly("medium") else None,
                     }
+                    if agg["hits"] is not None:
+                        agg["hits"].append((ts, anom, level, r, loc, _wids))
                 else:
+                    if agg["hits"] is not None:
+                        agg["hits"].append((ts, anom, level, r, loc, _wids))
                     agg["n"] += 1
                     if ts and (not agg["first"] or ts < agg["first"]):
                         agg["first"] = ts
@@ -1275,14 +1283,41 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                  anomaly=0 if is_exec else 10, ioc_kind="hash",
                                  first=ts, full_hash=h, **_hash_attrs(r), **_sa, artifact=artifact))
 
-    # ---- fold the sigma occurrences into one entity per (host, rule) ----
+    # ---- fold the sigma occurrences: one entity per (host, rule, EPISODE) ----
+    # A medium+ rule's hits are split where it goes quiet for longer than
+    # keys.EPISODE_GAP_HOURS, so a rule that fired in May and again in December is
+    # two rows at two times, not one row at May. The FIRST episode keeps the id the
+    # whole history used to have, so a verdict already given stays on the activity
+    # it was given for, and later episodes arrive open.
+    _episodes = []
     for (a_id, title, logged), agg in sigma_agg.items():
+        if not agg.get("hits"):
+            _episodes.append(((a_id, title, logged), agg, 0))
+            continue
+        for i, ep in enumerate(keys.split_episodes(agg["hits"], lambda h: h[0])):
+            dated = [h for h in ep if h[0]]
+            top = max(ep, key=lambda h: h[1])
+            first = min((h[0] for h in dated), default=None)
+            wids, first_wids = set(), set()
+            for h in ep:
+                if len(wids) < _WIDS_CAP:
+                    wids.update(h[5])
+                if h[0] == first:
+                    first_wids.update(h[5])
+            _episodes.append(((a_id, title, logged), {
+                "n": len(ep), "first": first,
+                "last": max((h[0] for h in dated), default=None),
+                "anom": top[1], "level": top[2], "row": top[3], "loc": top[4],
+                "run_id": agg["run_id"], "artifact": agg["artifact"],
+                "wids": wids, "first_wids": first_wids}, i))
+    for (a_id, title, logged), agg, _ep_i in _episodes:
         r = agg["row"]
         raw_details = str(F.get(r, "Details", "Message", default=""))
         pd = DET.parse_details(raw_details)      # parse ONCE, for the exemplar only
         _hh = DET.hashes(pd)
         _edom, _eusr = DET.user(pd)
-        eid = keys.event_key(a_id, f"sigma:{title}" + (f"@{logged}" if logged else ""))
+        eid = keys.event_key(a_id, f"sigma:{title}" + (f"@{logged}" if logged else "")
+                             + (f"#{agg['first']}" if _ep_i else ""))
         n = agg["n"]
         ev = _ent(eid, "event",
                   (f"SIGMA: {str(title)[:80]}" if n == 1
