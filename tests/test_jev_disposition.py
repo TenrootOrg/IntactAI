@@ -213,6 +213,7 @@ const out=[
   _tlJev({finding_id:'f1'}),
   _tlJev({finding_id:'f1', jev:{label:'nonsense', p:0.9}}),
   _jevNote({jev_unreviewed:[{id:'a',title:'Log Cleared on HOST1'},{id:'b',title:'Mimikatz on HOST1'}]}),
+  _jevNote({jev_unreviewed:[{id:'a',title:'Base64 on H1'},{id:'b',title:'Base64 on H2'},{id:'c',title:'Base64 (+1 related) on 3 hosts'},{id:'d',title:'Log Cleared on H1'}]}),
   _jevNote({jev_unreviewed:[]}),
   _jevNote(null),
 ];
@@ -224,8 +225,10 @@ console.log(JSON.stringify(out));""")
         finally:
             os.unlink(t.name)
         import json
-        chip, none, bad, notice, empty, nothing = json.loads(out)
-        self.assertIn("<b>2</b> findings look malicious", notice)
+        chip, none, bad, notice, grouped, empty, nothing = json.loads(out)
+        self.assertIn("<b>2</b> detections (4 rows)", grouped)
+        self.assertIn("Base64 ×3 · Log Cleared", grouped)
+        self.assertIn("<b>2</b> detections (2 rows) look malicious", notice)
         self.assertIn("Log Cleared · Mimikatz", notice)
         self.assertEqual((empty, nothing), ("", ""))
         self.assertIn("Jev: likely Known · 91%", chip)
