@@ -1836,8 +1836,12 @@ def _exec_summary(graph, assets, findings, *, initial_access=None, window=None) 
             fleet.setdefault(lab, set()).add(a.label)
     objectives = [lab for lab in order if lab in fleet]
     tl = timeline(graph, window=window)
-    first_ts = tl[0]["ts"] if tl else None
-    last_ts = tl[-1]["ts"] if tl else None
+    # Dated rows only, and a row's END counts: undated rows sort last with an empty
+    # ts, so a 757-day case read "activity runs around 2024-05-24".
+    _starts = sorted(r["ts"] for r in tl if r.get("ts"))
+    _ends = sorted((r.get("last") or r["ts"]) for r in tl if r.get("ts"))
+    first_ts = _starts[0] if _starts else None
+    last_ts = _ends[-1] if _ends else None
 
     bits = []
     sev_word = "critical" if crit else ("high" if high else "moderate")
