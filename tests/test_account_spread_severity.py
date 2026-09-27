@@ -54,6 +54,14 @@ class Rule(unittest.TestCase):
         g.entities["account:domain:corp\\x"].severity = "critical"
         self.assertEqual(list(self.sev(g).values()), ["critical"])
 
+    def test_local_sam_accounts_on_many_hosts_are_not_one_person(self):
+        g = _graph(["WS1", "WS2", "ALDC02"], [])
+        for h in ("WS1", "WS2", "ALDC02"):
+            g.upsert(schema.Entity(id=f"account:asset:{h}:guest", type="account", label="guest",
+                                   attrs={"_assets": [f"asset:{h}"]},
+                                   evidence=[schema.EvidenceRef("velociraptor", "r1", "Windows.Forensics.SAM/row=1")]))
+        self.assertEqual(self.sev(g), {})
+
 
 if __name__ == "__main__":
     unittest.main()

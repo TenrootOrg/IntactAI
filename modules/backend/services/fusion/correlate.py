@@ -1047,15 +1047,19 @@ def _identity_cross_host_findings(g: FusionGraph) -> None:
     no duplicate). Best-effort: identity resolution is optional and must never break a
     fuse."""
     try:
-        from .identities import resolve_identities
+        from .identities import resolve_identities, _local_host
         idents = resolve_identities(g) or []
     except Exception:                                   # noqa: BLE001
         return
     for ident in idents:
         try:
-            accts = ident.get("accounts") or []
+            # A host's OWN local account (from its SAM) is a principal of that host
+            # alone: Guest / Administrator from nine SAMs are nine accounts, not one
+            # person on nine hosts (jev_test, high once #21 stopped the floor hiding it).
+            accts = [a for a in (ident.get("accounts") or [])
+                     if a.get("id") in g.entities and _local_host(g.entities[a["id"]]) is None]
             hosts = sorted({a.get("ctx") for a in accts if a.get("ctx")})
-            ids = [a.get("id") for a in accts if a.get("id") in g.entities]
+            ids = [a.get("id") for a in accts]
             if len(accts) < 2 or len(hosts) < 2 or len(ids) < 2:
                 continue
             if any(len(_assets_of(g.entities[i])) >= 2 for i in ids):
