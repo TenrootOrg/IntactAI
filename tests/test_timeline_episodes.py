@@ -206,6 +206,21 @@ class FileRows(unittest.TestCase):
         self.assertEqual(rows[0].group["id"], rows[1].group["id"])
         self.assertTrue(rows[0].group["link"].startswith("same hash"))
 
+    def test_two_different_files_with_one_name_are_told_apart(self):
+        ents = [schema.Entity(id="asset:H", type="asset", label="ALClient06")]
+        for i, h in enumerate(("3fa1c2d0" + "0" * 56, "9b77e210" + "0" * 56)):
+            ents.append(schema.Entity(
+                id=f"ev:pv:{i}", type="event", label="peview.exe", severity="high",
+                first_seen="2026-01-26T11:51:42Z", flags=["detection", "masquerading"],
+                attrs={"_assets": ["asset:H"], "title": "Renamed binary: peview.exe",
+                       "original_name": "peview.exe", "name": "peview.exe", "full_hash": h},
+                evidence=[schema.EvidenceRef("velociraptor", "r1",
+                                             f"DetectRaptor.Windows.Detection.BinaryRename/row={i}")]))
+        g = correlate.assemble("c", [(ents, [])], ["r1"], min_severity="medium")
+        titles = sorted(f.title for f in g.findings if "peview" in f.title)
+        self.assertEqual(titles, ["Known tool on disk: peview.exe (sha256 3fa1c2d0…) on ALClient06",
+                                  "Known tool on disk: peview.exe (sha256 9b77e210…) on ALClient06"])
+
     def test_separate_drops_months_apart_are_separate_rows(self):
         rows = self._fuse(("ALClient01", "2025-05-27T11:17:01Z"), ("ALClient01", "2026-05-03T09:00:00Z"))
         self.assertEqual(len(rows), 2)

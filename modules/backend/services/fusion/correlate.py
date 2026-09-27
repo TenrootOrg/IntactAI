@@ -1454,6 +1454,7 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
         traceback.print_exc()
     try:
         _mark_detection_groups(g, set(_grouping) | set(_grouped) | set(_file_rows))
+        _tell_apart_file_rows(g, set(_file_rows))
     except Exception:                                         # noqa: BLE001
         traceback.print_exc()
 
@@ -1622,6 +1623,26 @@ _RELATED_SUFFIX = re.compile(r"\s*\(\+\d+ related\)$")
 def _detection_name(f) -> str:
     """A detection row's name without its host part or "(+N related)" count."""
     return _RELATED_SUFFIX.sub("", f.title.rsplit(" on ", 1)[0]).strip()
+
+
+def _tell_apart_file_rows(g: FusionGraph, file_rows: set) -> None:
+    """Two different files with one name on one host read as a duplicate row
+    ("Known tool on disk: peview.exe" twice, same second, on a real case — two
+    versions, two hashes). Where titles collide, add each file's hash prefix."""
+    by_title: dict = {}
+    for f in g.findings:
+        if f.id in file_rows:
+            by_title.setdefault(f.title, []).append(f)
+    for title, fs in by_title.items():
+        if len(fs) < 2:
+            continue
+        for f in fs:
+            h = next((str((g.entities[e].attrs or {}).get("full_hash") or "")
+                      for e in f.entity_ids if e in g.entities
+                      and (g.entities[e].attrs or {}).get("full_hash")), "")
+            if h:
+                name, _, host = title.rpartition(" on ")
+                f.title = f"{name} (sha256 {h[:8]}…) on {host}" if name else f"{title} ({h[:8]}…)"
 
 
 # Identifiers on a row's events that make a cross-host group EVIDENCE rather than
