@@ -146,6 +146,26 @@ class LoopMaskingContract(unittest.TestCase):
         # identity legend prepended when masked
         self.assertTrue(calls["sys"][0].startswith(llm_sim._MASK_IDENTITY_LEGEND))
 
+    def test_the_analysts_decisions_open_the_investigation_masked(self):
+        # the chat and report got the analyst's verdicts; the investigation began blind
+        d = {"id": "case_t", "timeline_validations": [{"finding_id": "f1", "status": "false_positive"}],
+             "manual_timeline_events": [{"ts": "t", "host": "ALDC02", "title": "IT pushed a GPO"}]}
+        calls = {"sent": []}
+
+        def fake_llm(system, user, **_kw):
+            calls["sent"].append(user)
+            return '{"final":"ok"}'
+        with _Patched(llm_sim, _real_llm=fake_llm), \
+             _Patched(investigate, _mask_for_case=lambda d, g, r: MASK), \
+             _Patched(investigate.store, get_case=lambda c: d,
+                      load_graph=lambda c: schema.FusionGraph(case_id=c)):
+            investigate.investigate("case_t", "q?")
+        first = calls["sent"][0]
+        self.assertIn("ANALYST CONTEXT", first)
+        self.assertIn("IT pushed a GPO", first)
+        self.assertIn("false_positive", first)
+        self.assertNotIn("ALDC02", first)                  # masked like everything else
+
     def test_no_mask_passes_through(self):
         res, calls = self._run([
             '{"tool":"search","args":{"query":"ALDC02"}}',

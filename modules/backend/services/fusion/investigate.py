@@ -340,7 +340,18 @@ def investigate(case_id, question, *, run_id=None, max_steps=6, log=None,
     def _m(t):
         return llm_sim._apply_mask(t, mask)
 
-    convo = [_m(f"CASE: {case_id}\nQUESTION: {question}\n\n"
+    # What the analyst already decided (verdicts, dispositions, manual events,
+    # people marked compromised) — the chat and report get it; the investigation
+    # started blind to it.
+    try:
+        _ctx = llm_sim.analyst_context(d.get("dispositions") or None, d.get("timeline_validations") or None,
+                                       d.get("manual_timeline_events") or None, store.view_graph(case_id, d),
+                                       d.get("disposition_checklist") or None)
+    except Exception:  # noqa: BLE001 — context is a help, never a blocker
+        _ctx = {}
+    _ctx_txt = ("ANALYST CONTEXT (the analyst's own decisions — take them as given):\n"
+                + json.dumps(_ctx, default=str)[:12000] + "\n\n") if _ctx else ""
+    convo = [_m(f"CASE: {case_id}\nQUESTION: {question}\n\n{_ctx_txt}"
                 "Begin. Pull what you need with tools, then answer with a single "
                 '{"final":"..."} object.')]
     steps = []
