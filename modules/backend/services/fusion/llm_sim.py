@@ -1288,8 +1288,11 @@ PHASE_SYSTEM_PROMPT = (
     "Return EXACTLY this markdown, nothing before or after. The two bullets come "
     "FIRST, on their own lines, because the report renders them as a labelled card:\n"
     "\n"
-    "**Name:** a 3-7 word label for what this phase IS (e.g. 'Credential theft on the "
-    "workstation fleet', 'Toolkit staged on ALClient01'). Not a date, not a count.\n"
+    "**Name:** a 3-7 word label for what this phase IS (e.g. 'Toolkit staged on "
+    "ALClient01', 'DC reconnaissance over RPC'). Not a date, not a count. The other "
+    "phases are named in separate passes and share the case's broad theme, so name "
+    "what sets THIS one apart — its host, tool or target — not the theme alone "
+    "(every phase of one case was once named 'Credential theft …').\n"
     "- **Severity:** Critical / High / Medium / Low — the worst thing actually "
     "evidenced in THIS phase. Write one of those four words exactly.\n"
     "- **Confidence:** High / Medium / Low — in your reading of this phase. A single "
@@ -1344,7 +1347,8 @@ SYNTHESIS_SYSTEM_PROMPT = (
     "\n"
     "## Where to start\n"
     "RANK EVERY PHASE you were given, best first, as a numbered list. For each: the "
-    "phase number and name in bold, one line of why it earns that rank, and the "
+    "phase number and its name in bold, EXACTLY as given (the reader matches it to "
+    "the phase headings), one line of why it earns that rank, and the "
     "single question that opening it would answer. Rank on what most changes the "
     "picture — active access, tier-zero reach, and unresolved questions outrank "
     "volume. It is correct and useful to rank a phase last and say it only "
@@ -1814,6 +1818,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
                                                  min_severity=min_severity)
                 payload = {"case_totals": payload.get("scope", {}),
                            "phases": [{"n": z["n"], "window": z["window"],
+                                       "name": (_phase_out.get(z["n"]) or {}).get("name") or None,
                                        "hosts": z.get("host_labels") or [],
                                        "findings": z["finding_count"],
                                        "critical": z.get("critical_count", 0),

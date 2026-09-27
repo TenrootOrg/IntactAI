@@ -49,6 +49,20 @@ class Names(unittest.TestCase):
         render.name_cards_from_report(cards, "")
         self.assertIsNone(cards[0]["name"])
 
+    def test_chat_clusters_are_the_cards_on_screen(self):
+        # chat called zoom_targets with its own arguments: its "cluster 3" could be
+        # another card, and it never saw the report's names
+        from unittest import mock
+        from services.fusion import investigate, store
+        cards = [{**_card(4, "2025-04-22T00:00:00Z", "2025-05-03T00:00:00Z"), "title": "t4",
+                  "host_labels": ["B"], "finding_count": 2, "severity": "high", "mitre": []}]
+        with mock.patch.object(store, "get_case", return_value={"report_md": REPORT}), \
+             mock.patch.object(store, "scope_cards", return_value=("macro", "", cards, None)), \
+             mock.patch.object(render, "zoom_targets") as zt:
+            out = investigate._tool("c1", "clusters", {})
+        zt.assert_not_called()
+        self.assertEqual([(c["n"], c["name"]) for c in out], [(4, "Credential theft and lateral movement")])
+
 
 class CriticalNotInRollup(unittest.TestCase):
     def test_windows_with_critical_detections_all_stay_cards(self):

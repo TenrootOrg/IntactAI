@@ -631,8 +631,9 @@ function render(info,md,g){
 // for a banner to announce and nothing for the operator to press.
 //
 // The server still computes data_stale / report_stale / is_stale on the case
-// payload -- they are the autofuse scheduler's own input, and cheap -- but no
-// screen reads them.
+// payload -- they are the autofuse scheduler's own input. Only quiet one-line
+// notes read them now, when the case is opened: behindNote (report_stale) and
+// the Risk tab (is_stale). Nothing polls.
 
 function setTab(t){
   tab=t;

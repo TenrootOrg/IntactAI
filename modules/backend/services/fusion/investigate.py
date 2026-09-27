@@ -191,11 +191,16 @@ def _tool(case_id, name, args):
         rows = [h for _, h in hits[:15]]
         return {"total_matches": total, "shown": len(rows), "events": rows}
     if name == "clusters":
-        g = store.view_graph(case_id)
+        # The SAME cards the page shows (scope_cards + the report's names), so
+        # "cluster 3" in chat is card 3 on screen. It called zoom_targets with its
+        # own arguments and could number and name them differently.
         d = store.get_case(case_id) or {}
-        cl = render.zoom_targets(g, window=d.get("time_window") or None,
-                                 min_severity=d.get("min_severity") or "informational")
-        return [{"title": c["title"],
+        _alt, _why, cl, g = store.scope_cards(case_id, d)
+        render.name_cards_from_report(cl, d.get("report_md") or "")
+        if not cl:                      # a focused case shows no cards; chat still gets hotspots
+            cl = render.zoom_targets(g, window=store.view_window(d),
+                                     min_severity=d.get("min_severity") or "informational")
+        return [{"n": c.get("n"), "name": c.get("name"), "title": c["title"],
                  "hosts": [_role_annot(lb) for lb in c["host_labels"]],
                  "window": c["window"], "finding_count": c["finding_count"],
                  "severity": c["severity"], "mitre": c["mitre"]} for c in cl]
