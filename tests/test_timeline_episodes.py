@@ -277,6 +277,39 @@ class Recurring(unittest.TestCase):
         self.assertEqual(self._days(range(1, 11))[0].id, first_day)
 
 
+class RecurringWeeklyAndBursts(unittest.TestCase):
+    """Found in the audit: a weekly routine (ALCA01, ~19:28 every week) stayed 7
+    rows, and a burst repeating daily at ~08:07 stayed 4 high rows."""
+
+    def test_a_weekly_routine_is_one_row(self):
+        rows, rec = [], 0
+        for w in range(6):
+            day = 1 + 7 * w
+            month, dd = (4, day) if day <= 30 else (5, day - 30)
+            for k in range(2):
+                rec += 1
+                rows.append(_row("HOSTA", f"2026-{month:02d}-{dd:02d}T19:{28 + k:02d}:00Z", rec=rec))
+        out = _rows_of(_fuse(rows))
+        self.assertEqual(len(out), 1, [r.title for r in out])
+        self.assertIn("(recurring weekly ~19:28", out[0].title)
+        self.assertEqual((out[0].recurring["period"], out[0].recurring["days"]), ("weekly", 6))
+        self.assertTrue(out[0].watermark().endswith("|weekly"))
+
+    def test_a_daily_burst_is_one_row(self):
+        from services.fusion.schema import Finding
+        g = types.SimpleNamespace(findings=[
+            Finding(id=f"b{d}", title="Burst of 3 detections in 15 min — A, B, C on ALCA01", severity="high",
+                    confidence="high", summary="", kind="derived", asset_ids=["asset:ALCA01"],
+                    ts=f"2026-05-{d:02d}T08:07:00Z", occ_count=3) for d in range(15, 19)])
+        correlate._collapse_recurring_bursts(g)
+        self.assertEqual(len(g.findings), 1)
+        self.assertIn("Burst — A, B, C (recurring daily ~08:07) on ALCA01", g.findings[0].title)
+        self.assertEqual(g.findings[0].kind, "derived")
+
+    def test_same_second_is_said_so(self):
+        self.assertEqual(correlate._span_label(0), "the same second")
+
+
 class Scope(unittest.TestCase):
     def test_a_row_active_inside_a_scope_is_in_it(self):
         g = _fuse([_row("HOSTA", f"2026-05-31T{h:02d}:00:00Z", rec=h) for h in range(20, 24)]

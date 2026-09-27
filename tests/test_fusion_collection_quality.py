@@ -441,10 +441,11 @@ class CoordinatedActivityIsOneBurst(unittest.TestCase):
         """Found on jev_test: a burst repeating daily at 08:07 was four rows sharing
         ONE id — one verdict for all of them, and every row opened the first."""
         titles = ["Suspicious PowerShell Invocation", "Security Eventlog Cleared", "LSASS Access"]
-        coord = self._fuse_window(self._rows("2026-09-01", titles) + self._rows("2026-09-02", titles)
-                                  + self._rows("2026-09-03", titles))
-        self.assertEqual(3, len(coord), [f.title for f in coord])
-        self.assertEqual(3, len({f.id for f in coord}))
+        # two days: below the routine threshold (3), so they stay separate rows —
+        # three or more at the same time fold into one recurring burst instead
+        coord = self._fuse_window(self._rows("2026-09-01", titles) + self._rows("2026-09-02", titles))
+        self.assertEqual(2, len(coord), [f.title for f in coord])
+        self.assertEqual(2, len({f.id for f in coord}))
         # the earliest keeps the id it always had, so a verdict on it stays
         only_first = self._fuse_window(self._rows("2026-09-01", titles))
         first = min(coord, key=lambda f: f.ts)

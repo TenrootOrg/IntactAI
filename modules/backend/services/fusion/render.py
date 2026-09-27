@@ -130,7 +130,7 @@ _KW_TACTIC = (
 def _phase(f) -> str:
     import re as _re
     from .correlate import _techniques_for_title
-    name = _re.sub(r"\s*\((sha256 [^)]*|\+\d+ related|recurring daily[^)]*|logged as [^)]*)\)", "",
+    name = _re.sub(r"\s*\((sha256 [^)]*|\+\d+ related|recurring (?:daily|weekly)[^)]*|logged as [^)]*)\)", "",
                    (f.title or "").rsplit(" on ", 1)[0]).lower()
     techs = list(f.mitre or []) + _techniques_for_title(f.title or "") \
         + _re.findall(r"\b(T\d{4})(?:\.\d{3})?\b", f.title or "", _re.I)

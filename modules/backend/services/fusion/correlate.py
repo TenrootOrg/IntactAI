@@ -277,6 +277,7 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     _guarded(_errs, "_identity_cross_host_findings", lambda: _identity_cross_host_findings(g))
     _guarded(_errs, "_derive_findings", lambda: _derive_findings(g, baseline=baseline, window=window))
     _guarded(_errs, "_coordinated_activity", lambda: _coordinated_activity(g, window=window, baseline=baseline))
+    _guarded(_errs, "_collapse_recurring_bursts", lambda: _collapse_recurring_bursts(g))
     _guarded(_errs, "_recover_mitre_from_text", lambda: _recover_mitre_from_text(g))               # after EVERY finding exists
     _guarded(_errs, "_mitre_from_rule_titles", lambda: _mitre_from_rule_titles(g))                 # titles with no id in them
     _guarded(_errs, "_corroboration", lambda: _corroboration(g))
@@ -1741,7 +1742,7 @@ def _group_simultaneous_detections(g: FusionGraph, grouping: dict) -> None:
     return [f.id for f in new]
 
 
-_RELATED_SUFFIX = re.compile(r"\s*\((\+\d+ related|recurring daily[^)]*)\)$")
+_RELATED_SUFFIX = re.compile(r"\s*\((\+\d+ related|recurring (daily|weekly)[^)]*)\)$")
 
 # A DAILY ROUTINE — a scheduled task or service firing at the same time each day —
 # is one thing, not one row per day. Found on jev_test: "Suspicious Service Path"
@@ -1763,35 +1764,46 @@ def _tod_close(a: int, b: int) -> bool:
     return min(d, 1440 - d) <= RECUR_TOD_MINUTES
 
 
-def _collapse_recurring(g: FusionGraph, grouping: dict) -> None:
-    by_key: dict = {}
-    for f in g.findings:
-        if f.id in grouping and f.ts and keys.to_utc_dt(f.ts):
-            by_key.setdefault((grouping[f.id], _detection_name(f)), []).append(f)
+# Periods a routine can have, as (label, min gap h, max gap h). Found in the audit:
+# ALCA01 ran "Suspicious Powershell Commandlets" every week at ~19:28 — seven rows.
+_RECUR_PERIODS = (("daily", 20, 28), ("weekly", 160, 176))
+_DOW = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def _fold_routines(groups: dict, name_of, host_of) -> tuple:
+    """Fold each group's rows into routine rows. `groups`: key -> [findings of ONE
+    detection on ONE host]. A series is consecutive rows one period apart (daily or
+    weekly) starting within RECUR_TOD_MINUTES of the series' first time of day, at
+    least RECUR_MIN_DAYS of them; a row that breaks it (another time, an extra run,
+    far more hits) stays its own row. Returns (new_findings, dropped_ids)."""
     drop: set = set()
     new: list = []
-    for (meta, name), eps in by_key.items():
+    for key, eps in groups.items():
         if len(eps) < RECUR_MIN_DAYS:
             continue
         eps.sort(key=lambda f: keys.to_utc_dt(f.ts))
-        series, cur = [], []
+        series, cur, period = [], [], None
         for f in eps:
             t = keys.to_utc_dt(f.ts)
             if not cur:
-                cur = [f]
+                cur, period = [f], None
                 continue
             gap = (t - keys.to_utc_dt(cur[-1].ts)).total_seconds() / 3600
             same_time = _tod_close(_tod_minutes(t), _tod_minutes(keys.to_utc_dt(cur[0].ts)))
-            if 20 <= gap <= 28 and same_time:
-                cur.append(f)                  # the next day, same time: routine
-            elif gap < 20:
-                continue                       # an extra run the same day: left out, stays a row
+            fits = [p for p in _RECUR_PERIODS if p[1] <= gap <= p[2]]
+            if same_time and fits and (period is None or fits[0][0] == period):
+                period = fits[0][0]
+                cur.append(f)                  # the next period, same time: routine
+            elif period and gap < {p[0]: p[1] for p in _RECUR_PERIODS}[period]:
+                continue                       # an extra run inside the period: stays a row
             else:
-                series.append(cur)
-                cur = [f]
+                series.append((cur, period))
+                cur, period = [f], None
         if cur:
-            series.append(cur)
-        for sr in series:
+            series.append((cur, period))
+        for sr, per in series:
+            if not per:
+                continue
             hits = sorted(int(f.occ_count or 1) for f in sr)
             med = hits[len(hits) // 2]
             routine = [f for f in sr if int(f.occ_count or 1) <= max(3 * med, med + 5)]
@@ -1800,29 +1812,43 @@ def _collapse_recurring(g: FusionGraph, grouping: dict) -> None:
             first = routine[0]
             t0 = keys.to_utc_dt(first.ts)
             tod = f"{t0.hour:02d}:{t0.minute:02d}"
-            per_day = max(int(f.occ_count or 1) for f in routine)
-            bucket = next(b for b in (2, 5, 10, 50, 10**9) if per_day <= b)
-            host = first.title.rsplit(" on ", 1)[1] if " on " in first.title else ""
+            when = f"{per} ~{tod}" + (f" {_DOW[t0.weekday()]}" if per == "weekly" else "")
+            per_run = max(int(f.occ_count or 1) for f in routine)
+            bucket = next(b for b in (2, 5, 10, 50, 10**9) if per_run <= b)
+            name, host = name_of(key, first), host_of(key, first)
             latest = max((f.occ_latest or f.ts for f in routine), key=lambda x: keys.to_utc_dt(x) or x)
             ents: list = []
             for f in routine:
                 ents += [e for e in f.entity_ids if e not in ents]
+            unit = "days" if per == "daily" else "weeks"
             new.append(Finding(
                 id=first.id,
-                title=f"{name} (recurring daily ~{tod}) on {host}" if host else f"{name} (recurring daily ~{tod})",
+                title=f"{name} (recurring {when}) on {host}" if host else f"{name} (recurring {when})",
                 severity=max(routine, key=lambda f: sev.rank(f.severity)).severity,
                 confidence=first.confidence,
-                summary=(f"{name} fired every day at about {tod} UTC for {len(routine)} days "
-                         f"({first.ts} → {latest}), up to {per_day} hit(s) a day — a routine, "
-                         f"such as a scheduled task or service. Days that broke the routine are "
-                         f"separate rows."),
+                summary=(f"{name} fired every {'day' if per == 'daily' else 'week'} at about "
+                         f"{tod} UTC for {len(routine)} {unit} ({first.ts} → {latest}), up to "
+                         f"{per_run} hit(s) each time — a routine, such as a scheduled task or "
+                         f"service. Runs that broke the routine are separate rows."),
                 entity_ids=ents[:50], asset_ids=list(first.asset_ids), sources=first.sources,
                 evidence=[x for f in routine[:3] for x in f.evidence[:1]], mitre=first.mitre,
-                ts=first.ts, kind="single",
+                ts=first.ts, kind=first.kind,
                 occ_count=sum(int(f.occ_count or 1) for f in routine), occ_latest=latest,
                 aliases=[x for f in routine for x in f.ids() if x != first.id],
-                recurring={"tod": tod, "days": len(routine), "per_day_max": bucket}))
+                recurring={"tod": tod, "days": len(routine), "per_day_max": bucket,
+                           "period": per}))
             drop.update(f.id for f in routine)
+    return new, drop
+
+
+def _collapse_recurring(g: FusionGraph, grouping: dict) -> None:
+    by_key: dict = {}
+    for f in g.findings:
+        if f.id in grouping and f.ts and keys.to_utc_dt(f.ts):
+            by_key.setdefault((grouping[f.id], _detection_name(f)), []).append(f)
+    new, drop = _fold_routines(
+        by_key, lambda k, f: k[1],
+        lambda k, f: f.title.rsplit(" on ", 1)[1] if " on " in f.title else "")
     if new:
         g.findings = [f for f in g.findings if f.id not in drop] + new
         for f in new:
@@ -1831,6 +1857,23 @@ def _collapse_recurring(g: FusionGraph, grouping: dict) -> None:
         for i in list(grouping):
             if i in drop and i not in {f.id for f in new}:
                 del grouping[i]
+
+
+def _collapse_recurring_bursts(g: FusionGraph) -> None:
+    """The same BURST repeating as a routine (ALCA01: "Burst of 3 detections in 15
+    min — Potentially Malicious PwSh…" every day at ~08:07) folds like any routine —
+    keyed by host and the set of rules in it, not the burst's length."""
+    by_key: dict = {}
+    for f in g.findings:
+        if f.kind == "derived" and f.title.startswith("Burst of") and " — " in f.title \
+                and f.ts and keys.to_utc_dt(f.ts):
+            comp = f.title.split(" — ", 1)[1].rsplit(" on ", 1)[0]
+            by_key.setdefault((tuple(sorted(f.asset_ids or [])), comp), []).append(f)
+    new, drop = _fold_routines(
+        by_key, lambda k, f: f"Burst — {k[1]}",
+        lambda k, f: f.title.rsplit(" on ", 1)[1] if " on " in f.title else "")
+    if new:
+        g.findings = [f for f in g.findings if f.id not in drop] + new
 
 
 def _detection_name(f) -> str:
@@ -1961,6 +2004,8 @@ def _short(text, cap=46) -> str:
 
 
 def _span_label(seconds: float) -> str:
+    if seconds < 2:
+        return "the same second"          # "in 0 sec" read as a bug
     if seconds < 90:
         return f"{int(seconds)} sec"
     if seconds < 5400:

@@ -233,7 +233,8 @@ class Finding:
         """Comparable signature of the occurrences this finding covers."""
         if self.recurring:
             r = self.recurring
-            return f"R|{r.get('tod')}|{r.get('per_day_max')}"
+            per = r.get("period")
+            return f"R|{r.get('tod')}|{r.get('per_day_max')}" + (f"|{per}" if per and per != "daily" else "")
         return f"{int(self.occ_count or 1)}|{self.occ_latest or self.ts or ''}"
 
     def to_dict(self) -> dict:

@@ -227,8 +227,10 @@ def finding_state(g, f) -> dict:
     # without it Jev rated one routine "92% likely true positive" once per day.
     r = getattr(f, "recurring", None)
     if r:
-        state["pattern"] = (f"recurring every day at about {r.get('tod')} UTC for "
-                            f"{r.get('days')} days, the same small number of hits each day")
+        weekly = r.get("period") == "weekly"
+        state["pattern"] = (f"recurring every {'week' if weekly else 'day'} at about {r.get('tod')} "
+                            f"UTC for {r.get('days')} {'weeks' if weekly else 'days'}, the same small "
+                            f"number of hits each time")
     return state
 
 
