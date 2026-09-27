@@ -66,6 +66,7 @@ These apply to every feature below and to any new one.
 | `injection` | Evidence text aimed at an AI model is withheld from the LLM and shown in a **"Prompt-injection guard"** note plus the case log. The pattern layer and the system-prompt warning always run, with no network; Jev adds paraphrase detection | `injection.py`, `llm_sim._real_llm` (every fusion LLM call) | Each LLM call |
 | `relevance` | **Timeline → "Score collected rows"** starts a Settings → Actions job. It scores every raw collected row (Velociraptor results, cached Timesketch events) and shows the 200 most relevant above the Timeline | `jev.score_relevance`, `POST/GET /api/cases/<id>/relevance` | On demand |
 | `scopes` | Each scope card of a broad case shows **"Jev: 82% likely attacker activity"** | `jev.suggest_scopes`, `store.scope_cards`, `GET /zoom_targets`, `cases.html _ztJev` | After every fuse, cached per exact set of findings |
+| `compromise` | Each Identities card with findings shows **"Jev: 83% compromised"** beside the analyst's own Compromised / Not compromised switch | `jev.suggest_compromise`, `jev.compromise_estimate`, `store.identity_view`, `cases.html _idJev` | After every fuse, cached per exact accounts + findings |
 
 Also on the branch:
 
@@ -105,6 +106,7 @@ These are all case `details` keys, all additive. They are ignored when Jev is of
 | `jev_notice` | `[{id, title}]`: confident true positives |
 | `jev_identity` | `{candidate_id: p}` |
 | `jev_scopes` | `{window_signature: p}` |
+| `jev_compromise` | `{person_signature: p}` |
 | `jev_relevance` | `{scored_at, rows_scored, rows_total, rows: [...]}` |
 
 ## Files touched (4c45ddea..jev-test)
@@ -127,7 +129,7 @@ Frontend:
 - Cache chain: `index.html`, `partial-loader.js`, `partials/case-analysis.html`, `partials/cases.html`.
 
 Tests:
-- `tests/test_jev_*.py` (client, config route, key not leaked, disposition, identity, chat intent, grounding, relevance, scopes)
+- `tests/test_jev_*.py` (client, config route, key not leaked, disposition, identity, chat intent, grounding, relevance, scopes, compromise)
 - `tests/test_injection_guard.py`
 
 Tool:

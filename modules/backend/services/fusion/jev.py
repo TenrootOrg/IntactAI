@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 
 URL = "https://openrouter.ai/api/v1/systemone"
 USES = ("disposition", "relevance", "grounding", "identity", "chat_intent", "injection",
-        "chat_confidence", "scopes")
+        "chat_confidence", "scopes", "compromise")
 DEFAULTS = {"enabled": False, "model": "jev-latest", "min_confidence": 0.8,
             # Jev's own OpenRouter key. Empty = use the main key, which only works
             # while OpenRouter is the selected chat provider.
@@ -602,6 +602,78 @@ def attach_scope_estimates(cards, d, g):
 
 
 # ---------------------------------------------------------------------------
+# Identities: "is this person compromised?" on each card that has findings,
+# beside the analyst's own Compromised / Not compromised switch. Asked after the
+# fuse, cached per exact accounts + findings (+ their occurrences), so the tab
+# loads instantly and a person whose evidence changed shows no stale number.
+# ---------------------------------------------------------------------------
+def compromise_sig(account_ids, fs):
+    import hashlib
+    if not fs:
+        return None
+    parts = sorted(account_ids or []) + sorted(f"{f.id}:{f.watermark()}" for f in fs)
+    return hashlib.sha1("|".join(parts).encode()).hexdigest()[:16]
+
+
+def compromise_estimate(d, account_ids, fs):
+    """Jev's probability that the person is compromised, or None (off, no findings,
+    not asked yet, or the evidence changed since)."""
+    if not enabled("compromise"):
+        return None
+    return (d.get("jev_compromise") or {}).get(compromise_sig(account_ids, fs))
+
+
+def _person_state(g, card, fs):
+    from .render import _finding_evidence
+    return {"person": card.get("name"),
+            "accounts": [a.get("label") for a in card.get("accounts") or [] if not a.get("disabled")],
+            "hosts": card.get("seen_on") or [],
+            "account_type": ("built-in" if card.get("builtin") else card.get("account_kind") or "user"),
+            "findings": [{"title": f.title, "severity": f.severity,
+                          "detected_by": list(f.sources or []),
+                          "evidence": _finding_evidence(g, f)[:3]}
+                         for f in sorted(fs, key=lambda f: _SEV_RANK.get(f.severity, 4))[:15]]}
+
+
+def _compromised_question(k):
+    return {"type": "noul",
+            "instructions": f"items.{k} is one person from a forensic case: their accounts, the "
+                            "hosts they appear on, and the findings on those accounts and on "
+                            "what they ran. Is this identity compromised?",
+            "criteria": {"true": "An attacker used these accounts, or the person is the attacker.",
+                         "false": "The activity is the person's normal or administrative work, "
+                                  "or detection noise."}}
+
+
+def suggest_compromise(case_id, d) -> int:
+    from . import identities as idf
+    from .store import _merge_case_details, identity_view, view_graph
+    cards = (identity_view(case_id) or {}).get("identities") or []
+    g = view_graph(case_id, d)                        # the graph the tab reads
+    have = d.get("jev_compromise") or {}
+    todo, live = [], set()
+    for c in cards:
+        ids = [a["id"] for a in c.get("accounts") or [] if not a.get("disabled")]
+        fs = idf.person_findings(g, ids)
+        sig = compromise_sig(ids, fs)
+        if sig:
+            live.add(sig)
+            if sig not in have:
+                todo.append((c, fs, sig))
+    new = {k: v for k, v in have.items() if k in live}      # people whose evidence changed
+    if todo:
+        mask = mask_for(d, g)
+        answers = ask_each(todo, lambda t: masked(_person_state(g, t[0], t[1]), mask),
+                           _compromised_question, run_id=case_id)
+        for (c, fs, sig), a in zip(todo, answers):
+            if isinstance(a, dict) and isinstance(a.get("noul"), (int, float)):
+                new[sig] = round(float(a["noul"]), 3)
+    if new != have:
+        _merge_case_details(case_id, {"jev_compromise": new})
+    return len(todo)
+
+
+# ---------------------------------------------------------------------------
 # After every fuse, off the fuse lock, one worker per case.
 # ---------------------------------------------------------------------------
 import threading  # noqa: E402
@@ -614,7 +686,7 @@ def after_fuse(case_id) -> None:
     """Called by store.fuse_case once the lock is released. Never raises."""
     try:
         cfg = _cfg()
-        if not any(enabled(u, cfg) for u in ("disposition", "identity", "scopes")):
+        if not any(enabled(u, cfg) for u in ("disposition", "identity", "scopes", "compromise")):
             return
         with _workers_lock:
             if case_id in _running:
@@ -657,6 +729,8 @@ def _one_pass(case_id):
         suggest_identities(case_id, d, g)
     if enabled("scopes"):
         suggest_scopes(case_id, get_case(case_id) or d)
+    if enabled("compromise"):
+        suggest_compromise(case_id, get_case(case_id) or d)
 
 
 # ---------------------------------------------------------------------------

@@ -88,6 +88,12 @@ def person_reach(graph, account_ids) -> set:
     return out
 
 
+def person_findings(graph, account_ids) -> list:
+    """Findings on a person: on their accounts or on anything those executed."""
+    reach = person_reach(graph, account_ids)
+    return [f for f in (getattr(graph, "findings", None) or []) if reach & set(f.entity_ids or [])]
+
+
 def _local_host(e):
     """The host whose OWN local account database (SAM) this account came from —
     a LOCAL principal, not the same account as a same-named one on another host.

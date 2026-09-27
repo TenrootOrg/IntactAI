@@ -1882,7 +1882,7 @@ function idCard(cid,it){
   const header=`<div onclick="idToggle('${jsa(it.key)}')" style="cursor:pointer;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
      <div><span style="color:var(--muted)">${open?'▾':'▸'}</span> 👤 <b style="font-size:13px">${esc(it.name||it.key)}</b>${it.builtin?' '+bdg('built-in','#d29922'):''}${it.account_kind?' '+bdg(it.account_kind+' account'):''}${buckets} ${confb}</div>
      ${it.worst?`<span class="chip c-${esc(it.worst)}" title="Worst finding on this person's accounts">${esc(it.worst)}</span>`:''}
-     ${idVerdictSeg(cid,it)}
+     ${idVerdictSeg(cid,it)}${_idJev(it)}
      <span style="color:var(--muted);font-size:11px">${it.detections?`<b style="color:var(--fg)">${it.detections}</b> detection${it.detections===1?'':'s'} (${it.finding_rows} row${it.finding_rows===1?'':'s'}) · `:''}${nAcc} ${nAcc===1?'account':'accounts'}${(it.seen_on||[]).length?` · on ${esc((it.seen_on||[]).slice(0,5).join(', '))}${(it.seen_on||[]).length>5?' +'+((it.seen_on||[]).length-5):''}`:''}${sugN?` · <span style="color:var(--acc)">${sugN} ${sugN===1?'suggestion':'suggestions'}</span>`:''}</span></div>`;
   if(!open) return `<div style="border:1px solid var(--bd);border-radius:8px;padding:8px 12px;margin-bottom:6px;background:#0d1117">${header}</div>`;
   const xbtn=(fn)=>`<button class="ghost" title="Not this person — switch off" style="border:none;color:var(--med);padding:0 4px;font-size:12px" onclick="event.stopPropagation();${fn}">✕</button>`;
@@ -1912,6 +1912,13 @@ const ID_VERDICTS=[['compromised','Compromised'],['not_compromised','Not comprom
 function idVerdictSeg(cid,it){
   const v=it.verdict||'';
   return `<span class="seg" onclick="event.stopPropagation()" title="Your verdict on this person — kept across re-fusion">${ID_VERDICTS.map(([k,l])=>`<button class="s-${k} ${v===k?'on':''}" onclick="idVerdict('${jsa(cid)}','${jsa(it.key)}','${v===k?'':k}')">${l}</button>`).join('')}</span>`;
+}
+// Jev's estimate that this person is compromised — a number beside the analyst's
+// switch, never a verdict. Absent when Jev is off or the person has no findings.
+function _idJev(it){
+  const p=it&&it.jev_compromise; if(typeof p!=='number') return '';
+  const pct=Math.round(p*100), col=p>=0.7?'#f85149':p<=0.3?'#56d364':'#e3b341';
+  return `<span class="sg-hint" style="border-color:${col};color:${col}" title="Jev's estimate, from this person's findings, that the identity is compromised — a second opinion; the verdict is yours.">Jev: ${pct}% compromised</span>`;
 }
 function idVerdict(cid,key,verdict){
   const it=(((window._idData||{}).identities)||[]).find(x=>x.key===key); if(!it) return;

@@ -148,7 +148,7 @@ class Page(unittest.TestCase):
         js = r"""
 const fs=require("fs"); const src=fs.readFileSync(process.argv[1],"utf8");
 eval(src.match(/function idCard\(cid,it\)\{[\s\S]*?\n\}/)[0]);
-eval(src.match(/const ID_VERDICTS=\[.*?\];/s)[0].replace("const ","var ")); eval(src.match(/function idVerdictSeg\(cid,it\)\{[\s\S]*?\n\}/)[0]);
+eval(src.match(/const ID_VERDICTS=\[.*?\];/s)[0].replace("const ","var ")); eval(src.match(/function idVerdictSeg\(cid,it\)\{[\s\S]*?\n\}/)[0]); eval(src.match(/function _idJev\(it\)\{[\s\S]*?\n\}/)[0]);
 const esc=s=>String(s).replace(/[<>&"]/g,""), jsa=s=>String(s); window={_idExpand:{k:true}};
 console.log(idCard("c1",{key:"k",name:"svc_backup",account_kind:"service",worst:"critical",detections:1,finding_rows:3,
   accounts:[{id:"a",label:"svc_backup"}],seen_on:["WS1"],findings:[{id:"f1",title:"Mimikatz on WS1",severity:"critical"}]}));"""

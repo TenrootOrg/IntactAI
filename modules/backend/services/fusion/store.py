@@ -4679,9 +4679,10 @@ def identity_view(case_id) -> dict:
     from .correlate import _detection_name
     from . import severity as _sev
     for it in idents:
-        ids = _idf.person_reach(g, [a["id"] for a in it["accounts"] if not a.get("disabled")])
-        fs = sorted((f for f in getattr(g, "findings", None) or [] if ids & set(f.entity_ids or [])),
-                    key=lambda f: (-_sev.rank(f.severity), f.ts or ""))
+        live = [a["id"] for a in it["accounts"] if not a.get("disabled")]
+        fs = sorted(_idf.person_findings(g, live), key=lambda f: (-_sev.rank(f.severity), f.ts or ""))
+        # Jev's "is this person compromised?" — computed after the fuse, only read here
+        it["jev_compromise"] = _jev.compromise_estimate(d, live, fs)
         v = _identity_verdict_for(d.get("identity_verdicts"), [a["id"] for a in it["accounts"]])
         it["verdict"] = v["verdict"] if v else None
         it["findings"] = [{"id": f.id, "title": f.title, "severity": f.severity} for f in fs[:12]]
