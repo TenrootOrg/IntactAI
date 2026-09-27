@@ -20,6 +20,10 @@ All of this lives on branch **`jev-test`**. `main` has none of it.
 
 These apply to every feature below and to any new one.
 
+0. **Fusion and every basic feature work with no LLM and no Jev.** Correlation,
+   findings, severity, the Timeline, Risk, Identities, reports (the
+   deterministic narrator) and scopes are complete on an air-gapped box. The
+   LLM and Jev are layers on top and never a dependency.
 1. **Deterministic and air-gapped by default.** Every feature is off until
    *Settings → Agentic → Fast decisions (Jev)* is enabled with an OpenRouter
    key and the box is in Online mode. If Jev is off, unreachable or returns an
@@ -169,6 +173,27 @@ nobody can say which one was right. So group A comes first.
 The same rules apply as for the built features: the deterministic value stays
 the stored value, Jev adds a secondary number, sort key or annotation, and it
 is ignored when Jev is off or offline.
+
+**Rule 0 applies to every proposal.** Fusion and the basic features must work
+with neither the LLM nor Jev. Each item's **no-AI behaviour** is today's
+behaviour, or a deterministic improvement. Never a regression:
+
+- **A1, A2, A4** are deterministic. Labels, timestamps and the case outcome
+  need no AI at all.
+- **A3** is only meaningful when Jev is on. With it off, Settings shows
+  nothing.
+- **B1–B7** keep the rule's value as the stored value. The Jev number sits
+  beside it. With no AI, sort orders, severities, tiers and grades stay
+  exactly as today.
+- **C1–C6** keep today's cut when Jev is off. Where a better deterministic rule
+  exists, it should ship with the proposal so air-gapped boxes gain too:
+  - C1: rescue held events by link count or recency instead of first come.
+  - C2: keep the first, last and highest-level occurrences, not only the
+    loudest one.
+  - C4: sort memory rows by more than one keyword signal.
+- **D1–D4.** D1's queue falls back to severity, then time. D2 and D3 work as
+  counts and verdict history without Jev. D4 falls back to the blueprint's
+  default artifacts.
 
 ## A. Measure first: labels and calibration
 
