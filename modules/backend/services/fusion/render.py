@@ -2656,12 +2656,17 @@ def _limitations_md(graph, assets, findings, *, window=None,
             prev = [h for h in ((a.attrs or {}).get("name_history") or []) if h.get("previous")]
             if not prev:
                 continue
-            n_before = sum(1 for f in findings if graph.before_current_name(f))
+            # THIS host's findings only. It counted every finding in the case, so two
+            # domain controllers with none were told "41 finding(s) predate its
+            # current name" — telling a reader to discount 41 findings on a DC.
+            n_before = len(_distinct([f for f in findings if a.id in (f.asset_ids or [])
+                                      and graph.before_current_name(f)]))
             names = ", ".join(f"{h['name']} (until {str(h.get('last'))[:10]})" for h in prev[:4])
             lines.append(f"- **{a.label}** was previously recorded as {names}. "
-                         f"**{n_before} finding(s) predate its current name** and are listed after "
-                         "current activity; they usually come from the image the machine was built "
-                         "from, not from this incident.")
+                         + (f"**{n_before} of its detection(s) predate its current name** and are "
+                            "listed after current activity; they usually come from the image the "
+                            "machine was built from, not from this incident."
+                            if n_before else "None of its findings predate its current name."))
         except Exception:                                     # noqa: BLE001
             continue
     undated = sum(1 for f in findings if not f.ts)
