@@ -74,23 +74,74 @@ def timeline(graph, *, window=None, initial_access=None):
     return rows
 
 
-_PHASES = ["Initial Access", "Execution / Injection", "Persistence",
-           "Command & Control", "Lateral Movement", "Exposure"]
+# The Timeline's phase tag: the ATT&CK TACTIC a row belongs to. It used to be a
+# 5-branch keyword cascade that ignored almost every technique id and fell back to
+# "Execution / Injection" — 200 of 281 rows on jev_test, including Defender
+# Disabled (T1562) and Eventlog Cleared (T1070) — and matched "c2" as a substring,
+# so ProcessHacker rows were Command & Control because their HASH contained "c2".
+_PHASES = ["Initial Access", "Execution", "Persistence", "Privilege Escalation",
+           "Defense Evasion", "Credential Access", "Discovery", "Lateral Movement",
+           "Command & Control", "Exfiltration", "Impact", "Exposure", "Unclassified"]
+
+# technique id (prefix) -> tactic. Techniques that span tactics are filed under the
+# one an analyst reading a timeline would expect.
+_TECH_TACTIC = {
+    **{t: "Initial Access" for t in ("T1566", "T1190", "T1133", "T1189", "T1195", "T1199")},
+    **{t: "Execution" for t in ("T1059", "T1204", "T1047", "T1106", "T1569", "T1203", "T1129")},
+    **{t: "Persistence" for t in ("T1543", "T1547", "T1546", "T1053", "T1136", "T1098", "T1505",
+                                  "T1574", "T1037", "T1197")},
+    **{t: "Privilege Escalation" for t in ("T1068", "T1548", "T1134", "T1484")},
+    **{t: "Defense Evasion" for t in ("T1562", "T1070", "T1036", "T1027", "T1112", "T1140", "T1218",
+                                      "T1564", "T1497", "T1202", "T1055", "T1620", "T1553", "T1222")},
+    **{t: "Credential Access" for t in ("T1003", "T1558", "T1110", "T1555", "T1552", "T1557",
+                                        "T1212", "T1528", "T1539", "T1556")},
+    **{t: "Discovery" for t in ("T1087", "T1018", "T1082", "T1016", "T1049", "T1057", "T1069",
+                                "T1482", "T1083", "T1135", "T1046", "T1033", "T1007", "T1012",
+                                "T1518", "T1615")},
+    **{t: "Lateral Movement" for t in ("T1021", "T1570", "T1210", "T1550", "T1563", "T1078")},
+    **{t: "Command & Control" for t in ("T1071", "T1105", "T1219", "T1572", "T1090", "T1095",
+                                        "T1102", "T1573", "T1571", "T1132")},
+    **{t: "Exfiltration" for t in ("T1041", "T1048", "T1567", "T1537", "T1020", "T1030")},
+    **{t: "Impact" for t in ("T1486", "T1490", "T1489", "T1485", "T1491", "T1529", "T1496")},
+}
+# Fallback keywords, matched as WHOLE words on the detection name only.
+_KW_TACTIC = (
+    ("Exposure", r"^vulnerability"),
+    ("Defense Evasion", r"\b(log(s)? cleared|eventlog clear|wevtutil|defender|antivirus|tamper|"
+                        r"disable[ds]?|renamed binary|masquerad|obfuscat|inject(ion|ed)?)\b"),
+    ("Credential Access", r"\b(mimikatz|lsass|credential|kerberos|rubeus|password|kerberoast|"
+                          r"dcsync|ntds|sam dump|hash dump|wsass|procdump)\b"),
+    ("Privilege Escalation", r"\b(system user|privilege|elevat\w*|uac bypass|token)\b"),
+    ("Lateral Movement", r"\b(rdp|psexec|lateral|remote (desktop|service|execution)|wmiexec|"
+                         r"netexec|crackmapexec|smb|winrm|epmap|rpc|used across \d+ hosts|"
+                         r"active on \d+ hosts)\b"),
+    ("Command & Control", r"\b(c2|beacon|cobalt strike|anydesk|remote access tool|tunnel|"
+                          r"reverse shell|callback|download\w*|file sharing)\b"),
+    ("Discovery", r"\b(discovery|recon(naissance)?|adfind|bloodhound|sharphound|whoami|"
+                  r"net (group|user|view)|scan(ner|ning)?|enumerat\w*)\b"),
+    ("Persistence", r"\b(service|autorun|scheduled task|persist\w*|run key|startup|"
+                    r"wmi (event|subscription)|new user|added to)\b"),
+    ("Exfiltration", r"\b(exfil\w*|upload|rclone|mega\.nz)\b"),
+    ("Execution", r"\b(powershell|script|command line|cmd|encoded|execution|executed|bits|"
+                  r"process|spawn\w*)\b"),
+)
 
 
 def _phase(f) -> str:
-    t, m = f.title.lower(), set(f.mitre)
-    if "inject" in t or "T1055" in m:
-        return "Execution / Injection"
-    if "account" in t or {"T1021", "T1078"} & m:
-        return "Lateral Movement"
-    if "indicator" in t or "T1071" in m or "c2" in t:
-        return "Command & Control"
-    if t.startswith("vulnerability"):
-        return "Exposure"
-    if "persist" in t or "service" in t or "autorun" in t or "scheduled" in t:
-        return "Persistence"
-    return "Execution / Injection"
+    import re as _re
+    from .correlate import _techniques_for_title
+    name = _re.sub(r"\s*\((sha256 [^)]*|\+\d+ related|recurring daily[^)]*|logged as [^)]*)\)", "",
+                   (f.title or "").rsplit(" on ", 1)[0]).lower()
+    techs = list(f.mitre or []) + _techniques_for_title(f.title or "") \
+        + _re.findall(r"\b(T\d{4})(?:\.\d{3})?\b", f.title or "", _re.I)
+    for t in techs:
+        tactic = _TECH_TACTIC.get(str(t).upper().split(".")[0])
+        if tactic:
+            return tactic
+    for tactic, pat in _KW_TACTIC:
+        if _re.search(pat, name):
+            return tactic
+    return "Unclassified"
 
 
 # ---- report_detail: per-case explicitness control --------------------------
