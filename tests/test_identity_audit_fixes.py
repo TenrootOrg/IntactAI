@@ -148,15 +148,16 @@ class Page(unittest.TestCase):
         js = r"""
 const fs=require("fs"); const src=fs.readFileSync(process.argv[1],"utf8");
 eval(src.match(/function idCard\(cid,it,jev\)\{[\s\S]*?\n\}/)[0]);
-eval(src.match(/const ID_VERDICTS=\[.*?\];/s)[0].replace("const ","var ")); eval(src.match(/function idVerdictSel\(cid,it\)\{[\s\S]*?\n\}/)[0]); eval(src.match(/function _idJev\(it\)\{[\s\S]*?\n\}/)[0]);
-const esc=s=>String(s).replace(/[<>&"]/g,""), jsa=s=>String(s); window={_idExpand:{k:true}};
+eval(src.match(/const ID_VERDICTS=\[.*?\];/s)[0].replace("const ","var ")); eval(src.match(/function idVerdictSel\(cid,it\)\{[\s\S]*?\n\}/)[0]); eval(src.match(/function _idJev\(it\)\{[\s\S]*?\n\}/)[0]); eval(src.match(/function _hostRow\(label\)\{[^\n]*\}/)[0]);
+const esc=s=>String(s).replace(/[<>&"]/g,""), jsa=s=>String(s); window={_idExpand:{k:true},_riskData:{rows:[{host:"WS1",severity:"high",risk_score:70}]}};
 console.log(idCard("c1",{key:"k",jev_compromise:0.9,verdict:"compromised",name:"svc_backup",account_kind:"service",worst:"critical",detections:1,finding_rows:3,
   accounts:[{id:"a",label:"svc_backup"}],seen_on:["WS1"],findings:[{id:"f1",title:"Mimikatz on WS1",severity:"critical"}]},true));"""
         html = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "modules/nginx/html/cases.html")
         out = subprocess.run([node, "-e", js, html], capture_output=True, text=True, check=True).stdout
         for want in (">service</span>", 'class="chip c-critical"', "openFindingDetail('f1')",
                      ">1</b> <span>(3 rows)</span>", "worst 1 of 3", 'class="prow v-compromised"',
-                     "90%</b>", '<option value="compromised" selected>'):
+                     "90%</b>", '<option value="compromised" selected>',
+                     "entOpenHost('WS1')", "risk 70"):                      # person -> host
             self.assertIn(want, out)
 
 

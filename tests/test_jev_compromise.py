@@ -133,8 +133,10 @@ console.log(JSON.stringify([_idJev({jev_compromise:0.834}), _idJev({jev_compromi
             [node, "-e", js, os.path.join(_ROOT, "modules/nginx/html/cases.html")],
             capture_output=True, text=True, check=True).stdout)
         self.assertIn(">83%</b>", hi)
+        self.assertIn("· Likely", hi)                              # a word, not only a number
         self.assertIn("width:83%;background:var(--crit)", hi)
         self.assertIn(">10%</b>", lo)
+        self.assertIn("· Unlikely", lo)
         self.assertIn("var(--ok)", lo)
         for x in (none, null):                                   # not asked: a dash, no number
             self.assertIn(">—</span>", x)
