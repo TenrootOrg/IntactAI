@@ -1956,7 +1956,10 @@ def _coordinated_activity(g: FusionGraph, *, window=None, baseline=None) -> None
         elif len(titles) < COORD_MIN_TITLES_NO_TECHNIQUE:
             continue
         ts_all = sorted(t for t in (e.first_seen for e in evs) if t)
-        _lo, _hi = keys.to_utc_dt(ts_all[0]), keys.to_utc_dt(ts_all[-1]) if ts_all else (None, None)
+        # Parenthesised: without them this parsed as `a, (b if ts_all else (None, None))`
+        # and indexed ts_all[0] even when it was empty.
+        _lo, _hi = ((keys.to_utc_dt(ts_all[0]), keys.to_utc_dt(ts_all[-1])) if ts_all
+                    else (None, None))
         span = _span_label((_hi - _lo).total_seconds()) if (_lo and _hi) else "one moment"
         # THE ROW HAS TO SAY WHAT IT IS. "Coordinated suspicious activity" told the
         # reader nothing — what fired, how long it ran, or why it is one row (QA
