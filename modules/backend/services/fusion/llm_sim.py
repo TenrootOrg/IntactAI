@@ -603,6 +603,27 @@ CHAT_SYSTEM_PROMPT = (
     "so a mis-resolved name is caught, then answer scoped to it."
 )
 
+# Appended only when the chat can run tools (a case is attached). The analyst's
+# question reaches the model exactly as typed; the MODEL decides whether the case
+# overview is enough or it needs the explicit data behind it.
+CHAT_TOOLS_PROMPT = (
+    "\n\nFETCHING MORE: the attached graph is a SUMMARY of the case. If it is enough, "
+    "answer straight away. If the question needs the explicit data behind it — the raw "
+    "rows of a finding, every event for an account or host, findings the summary left "
+    "out — fetch it first: reply with ONLY one JSON object and nothing else,\n"
+    "  {\"tool\":\"<name>\",\"args\":{...}}\n"
+    "and you will get the result, then may fetch again or answer. Tools:\n"
+    "  search({\"query\":\"...\"}) -> findings matching the words, ranked.\n"
+    "  list_findings({\"limit\":N}) -> the case's findings, worst first.\n"
+    "  evidence({\"finding_id\":\"...\"}) -> the RAW rows behind one finding (ground truth; "
+    "take the finding_id from search / list_findings).\n"
+    "  pivot({\"value\":\"<account|host|process|ip>\"}) -> raw events mentioning that value.\n"
+    "  clusters({}) -> the case's phases (host-cluster, time-window hotspots).\n"
+    "Fetch only what the question needs — at most {n} fetches. When you answer, write it "
+    "for the analyst in markdown (not JSON), and never mention the tools or ids."
+)
+MAX_CHAT_FETCHES = 4
+
 # The grounded analyst pass. Anti-hallucination discipline mirrors the agentic HARD
 # RULES (FACT vs INFERENCE, cite only what's in the graph). The deterministic findings
 # are authoritative; this pass is ADVISORY.
@@ -2405,10 +2426,63 @@ def _classify_llm_error(exc) -> str:
     return "llm_error"
 
 
+def _chat_tool_call(ans):
+    """{"tool": name, "args": {...}} when the whole reply is a fetch request, else None."""
+    t = (ans or "").strip()
+    if t.startswith("```"):
+        t = t.strip("`").split("\n", 1)[-1] if "\n" in t else t.strip("`")
+        t = t.rsplit("```", 1)[0].strip()
+    if not (t.startswith("{") and t.endswith("}")):
+        return None
+    try:
+        o = json.loads(t)
+    except Exception:
+        return None
+    if isinstance(o, dict) and isinstance(o.get("tool"), str):
+        return {"tool": o["tool"], "args": o.get("args") if isinstance(o.get("args"), dict) else {}}
+    return None
+
+
+_FETCH_LABEL = {"search": "search", "list_findings": "findings list", "evidence": "raw evidence",
+                "pivot": "pivot", "clusters": "phases"}
+
+
+def _chat_fetch_loop(case_id, system, user, ans, *, mask=None, run_id=None, max_output_tokens=None):
+    """The model asked for explicit data: run the tool (args back to real values,
+    the result masked like everything else sent), hand it the result, repeat — at
+    most MAX_CHAT_FETCHES — then insist on an answer. Returns (answer, fetched)."""
+    from . import investigate as _inv
+    convo, fetched = user, []
+    for _ in range(MAX_CHAT_FETCHES):
+        call = _chat_tool_call(ans)
+        if not call:
+            return ans, fetched
+        args = _inv._revert_obj(call["args"], mask)
+        res = _inv._safe_tool(case_id, call["tool"], args)
+        _inv._enrich_mask_from_result(mask, res)
+        res_txt = json.dumps(res, default=str)[:_inv._MAX_TOOL_RESULT_CHARS * 2]
+        if mask:
+            res_txt = _apply_mask(res_txt, mask)
+        fetched.append(_FETCH_LABEL.get(call["tool"], call["tool"]))
+        _case_event(run_id, f"Chat · fetched {fetched[-1]}", "info", json.dumps(args, default=str)[:200])
+        convo += (f"\n\nassistant: {ans.strip()}\n\nRESULT of {call['tool']}: {res_txt}\n\n"
+                  "Fetch again if you still need something, or answer the question now.")
+        ans = _real_llm(system, convo, run_id=run_id, max_output_tokens=max_output_tokens)
+    if _chat_tool_call(ans):                  # still fetching after the budget: answer now
+        ans = _real_llm(system, convo + "\n\nNo more fetches are available — answer the "
+                        "question now, in markdown, from what you have.",
+                        run_id=run_id, max_output_tokens=max_output_tokens)
+        if _chat_tool_call(ans):
+            ans = ("I looked up " + ", ".join(fetched) + " but could not finish an answer — "
+                   "please ask again, more narrowly.")
+    return ans, fetched
+
+
 def chat(graph, question: str, history=None, *, window=None, min_severity="informational",
          run_id=None, dispositions=None, validations=None, full_context=None,
          max_output_tokens=None, require_llm=False, mask=None, max_identities=None,
-         excluded_hosts=None, master_prompt=None, manual_events=None, checklist=None) -> str:
+         excluded_hosts=None, master_prompt=None, manual_events=None, checklist=None,
+         tool_case=None) -> str:
     """Grounded Q&A. Real path narrates the distilled graph; simulated = deterministic
     retrieval. Surfaces operator dispositions (what's been triaged as benign/IT).
     `mask` (optional DataAnonymizer) anonymizes the LLM payload the same way
@@ -2514,12 +2588,21 @@ def chat(graph, question: str, history=None, *, window=None, min_severity="infor
                 # as two different tools.
                 system = ("## OPERATOR CONTEXT (from interactive validation) — treat as "
                           f"ground truth:\n{master_prompt.strip()}\n\n---\n\n") + system
+            if tool_case:
+                system = system + CHAT_TOOLS_PROMPT.replace("{n}", str(MAX_CHAT_FETCHES))
             if mask:                                  # anonymize the LLM input too
                 _build_mask_mapping(graph, mask)
                 _log_mask_audit(run_id, mask, user)
                 user = _apply_mask(user, mask)
                 system = _MASK_IDENTITY_LEGEND + system
             ans = _real_llm(system, user, run_id=run_id, max_output_tokens=max_output_tokens)
+            if tool_case:
+                ans, fetched = _chat_fetch_loop(tool_case, system, user, ans, mask=mask, run_id=run_id,
+                                                max_output_tokens=max_output_tokens)
+                ans = _revert_mask(ans, mask)
+                if fetched:
+                    ans += "\n\n---\n_Looked up: " + " → ".join(fetched) + "_"
+                return ans
             return _revert_mask(ans, mask)
         except Exception as e:  # noqa: BLE001
             if require_llm:

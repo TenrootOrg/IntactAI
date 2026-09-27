@@ -5324,7 +5324,8 @@ def chat_case(case_id, question) -> str:
                            excluded_hosts=d.get("excluded_hosts") or None,
                            master_prompt=d.get("master_prompt") or None,
                            manual_events=d.get("manual_timeline_events") or None,
-                           checklist=d.get("disposition_checklist") or None)
+                           checklist=d.get("disposition_checklist") or None,
+                           tool_case=case_id)      # the model may fetch explicit data itself
         log_case_event(case_id, "Chat · reply generated", "success", f"{len(ans or '')} chars")
         ans = (ans or "") + llm_sim._revert_mask(injection.note(injection.take_hits(case_id)), mask)
         ans += jev.entity_estimates(question, d, g, run_id=case_id)
