@@ -77,15 +77,15 @@ def account_kind(stem):
 
 
 def person_reach(graph, account_ids) -> set:
-    """The accounts plus every event / process they EXECUTED. Findings are built on
-    events, so matching on the account alone found 6 of 273 findings on jev_test
-    and every card read "1 detection"."""
+    """The accounts, every event / process they EXECUTED, and the detection events
+    ABOUT those processes. Findings are built on events: matching the account
+    alone found 6 of 273 findings on jev_test ("1 detection" on every card), and
+    stopping at the process missed the detections raised on it (srv: 10 -> 14)."""
     ids = set(account_ids or [])
-    out = set(ids)
-    for r in (getattr(graph, "relationships", None) or []):
-        if r.kind == "executed" and r.src in ids:
-            out.add(r.dst)
-    return out
+    rels = getattr(graph, "relationships", None) or []
+    ran = {r.dst for r in rels if r.kind == "executed" and r.src in ids}
+    about = {r.dst for r in rels if r.kind == "event_about" and r.src in ran}
+    return ids | ran | about
 
 
 def person_findings(graph, account_ids) -> list:

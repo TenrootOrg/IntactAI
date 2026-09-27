@@ -56,8 +56,11 @@ class Reach(unittest.TestCase):
     def test_findings_on_what_the_account_executed_count(self):
         g = schema.FusionGraph(case_id="c")
         g.relate(schema.Relationship("acc", "ev1", "executed"))
+        g.relate(schema.Relationship("acc", "proc", "executed"))
+        g.relate(schema.Relationship("proc", "det", "event_about"))       # a detection raised on its process
         g.relate(schema.Relationship("other", "ev2", "executed"))
-        self.assertEqual(identities.person_reach(g, ["acc"]), {"acc", "ev1"})
+        g.relate(schema.Relationship("proc2", "det2", "event_about"))     # someone else's process
+        self.assertEqual(identities.person_reach(g, ["acc"]), {"acc", "ev1", "proc", "det"})
 
 
 class Downstream(unittest.TestCase):
