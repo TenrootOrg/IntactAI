@@ -2564,6 +2564,14 @@ def timeline_md(graph, findings, *, window=None, eff_detail="summary",
                 for ev in _finding_evidence(graph, f,
                                             cap_chars=REPORT_EVIDENCE_CHARS):
                     out.append(f"    - `{ev}`")
+    # Rows with no timestamp cannot be placed, but must not vanish: three web rows on
+    # jev_test were on the Timeline tab and nowhere in the report.
+    undated = [f for f in findings if not f.ts and f.kind != "cross_host"
+               and sev.at_least(f.severity, "high")]
+    if undated:
+        names = "; ".join(f.title for f in undated[:8]) + (" …" if len(undated) > 8 else "")
+        out.append(f"\n_Undated: {len(undated)} high/critical finding(s) carry no timestamp "
+                   f"and are not placed above — {names}._\n")
     return "\n".join(out)
 
 

@@ -1746,7 +1746,11 @@ function tlToggleGroup(gid){ window._tlOpen=window._tlOpen||{}; window._tlOpen[g
 function tlPaint(){
   const rows=tlVisible(), opened=window._tlOpen||{}, emitted=new Set();
   const out=[];
+  let undated=((window._tlf||{}).order==='severity');   // interleaved there: no divider
   for(const r of rows){
+    // Undated rows sort last; say why they sit there instead of letting them read
+    // as the newest events.
+    if(!r.ts && !undated){ undated=true; out.push(`<div class="tlundated" style="color:var(--muted);font-size:11px;margin:10px 0 4px;border-top:1px dashed var(--bd);padding-top:6px"><b>Undated</b> — no timestamp in the evidence, so these cannot be placed in time</div>`); }
     const grp=r.group;
     if(!grp || !grp.id){ out.push(_tlRow(r,false)); continue; }
     if(emitted.has(grp.id)) continue;

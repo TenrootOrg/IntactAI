@@ -175,16 +175,18 @@ class Header(unittest.TestCase):
 const G={id:'g1',name:'Encoded PowerShell',hosts:2,link:'time only',news:{new:['b'],grown:[],since:'2026-09-27T08:00:00Z',reviewed:true}};
 const rows=[{finding_id:'a',ts:'10:30',host:'H1',title:'x',severity:'high',group:G},
             {finding_id:'p',ts:'10:32',host:'H3',title:'y',severity:'high'},
-            {finding_id:'b',ts:'10:35',host:'H2',title:'x',severity:'high',group:G,validation:'known',is_new:true}];
+            {finding_id:'b',ts:'10:35',host:'H2',title:'x',severity:'high',group:G,validation:'known',is_new:true},
+            {finding_id:'u',ts:null,host:'H3',title:'web',severity:'high'}];
 window={_tlData:rows}; const tlVisible=()=>rows;
 tlPaint(); const shut=OUT; window._tlOpen={g1:true}; tlPaint(); const open=OUT;
-console.log(JSON.stringify([open, shut]));""")
+window._tlf={order:'severity'}; tlPaint(); const bysev=OUT;
+console.log(JSON.stringify([open, shut, bysev]));""")
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as t:
             t.write(js)
         try:
             r = subprocess.run([node, t.name], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr[-800:])
-            open_, shut = json.loads(r.stdout)
+            open_, shut, bysev = json.loads(r.stdout)
         finally:
             os.unlink(t.name)
         self.assertEqual(open_.count("tlgroup"), 1)
@@ -198,6 +200,11 @@ console.log(JSON.stringify([open, shut]));""")
         # the group's rows sit together under its header; the ungrouped row after
         self.assertLess(open_.index("tlValidate('b'"), open_.index("tlValidate('p'"))
         self.assertIn("tlgroup", shut)
+        # undated rows sort last under a divider that says why (time order only)
+        self.assertEqual(open_.count("<b>Undated</b>"), 1)
+        self.assertLess(open_.index("tlValidate('p'"), open_.index("<b>Undated</b>"))
+        self.assertLess(open_.index("<b>Undated</b>"), open_.index("tlValidate('u'"))
+        self.assertNotIn("<b>Undated</b>", bysev)
         self.assertIn('class="tlgrp hasnew"', shut)                  # the block turns amber
         self.assertIn("NEW since your review: +1 new row (H2)", shut)  # visible even collapsed
         self.assertIn("tlMarkSeen(", shut)
