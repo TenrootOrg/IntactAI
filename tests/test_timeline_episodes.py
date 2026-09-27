@@ -226,6 +226,57 @@ class FileRows(unittest.TestCase):
         self.assertEqual(len(rows), 2)
 
 
+class Recurring(unittest.TestCase):
+    """Found live: a scheduled service firing twice at ~10:52 every day became one
+    row per day (dozens), each "Jev: likely True Positive 92%"."""
+
+    def _days(self, days, hour=10, minute=52, hits=2, host="HOSTA", extra=()):
+        rows, rec = [], 0
+        for d in days:
+            for k in range(hits):
+                rec += 1
+                rows.append(_row(host, f"2026-04-{d:02d}T{hour:02d}:{minute + k * 5:02d}:00Z", rec=rec))
+        for ts, n in extra:
+            for k in range(n):
+                rec += 1
+                rows.append(_row(host, ts.replace("MM", f"{k % 60:02d}"), rec=rec))
+        return _rows_of(_fuse(rows))
+
+    def test_a_daily_routine_is_one_row(self):
+        rows = self._days(range(1, 11))
+        self.assertEqual(len(rows), 1)
+        r = rows[0]
+        self.assertIn("(recurring daily ~10:52)", r.title)
+        self.assertEqual((r.recurring["days"], r.occ_count, len(r.aliases)), (10, 20, 9))
+
+    def test_a_break_from_the_routine_stays_its_own_row(self):
+        # days 1-7 and 9-10 routine; day 8 fires 40 times at the routine time (inside
+        # the run, so only the hit-count rule can take it out); an extra 03:00 run on day 4
+        rows = self._days([1, 2, 3, 4, 5, 6, 7, 9, 10],
+                          extra=[("2026-04-04T03:MM:00Z", 1), ("2026-04-08T10:MM:00Z", 40)])
+        recurring = [r for r in rows if r.recurring]
+        other = [r for r in rows if not r.recurring]
+        self.assertEqual(len(recurring), 1)
+        self.assertEqual(recurring[0].recurring["days"], 9)                 # the heavy day is not in it
+        self.assertEqual(sorted(r.occ_count for r in other), [1, 40])
+
+    def test_too_few_days_is_not_a_routine(self):
+        self.assertTrue(all(not r.recurring for r in self._days([1, 2])))
+
+    def test_the_next_routine_day_keeps_a_verdict_a_changed_routine_reopens_it(self):
+        wm10 = self._days(range(1, 11))[0].watermark()
+        wm11 = self._days(range(1, 12))[0].watermark()
+        self.assertTrue(wm10.startswith("R|10:52|"))
+        self.assertFalse(correlate._wm_new_activity(wm10, wm11))            # one more normal day
+        heavier = self._days(range(1, 11), hits=9)[0].watermark()
+        self.assertTrue(correlate._wm_new_activity(wm10, heavier))          # routine changed
+        self.assertTrue(correlate._wm_new_activity("2|2026-04-01T10:57:00Z", wm10))  # pre-routine verdict
+
+    def test_the_first_days_id_is_kept_so_its_verdict_stays(self):
+        first_day = _rows_of(_fuse([_row("HOSTA", "2026-04-01T10:52:00Z", rec=1)]))[0].id
+        self.assertEqual(self._days(range(1, 11))[0].id, first_day)
+
+
 class Scope(unittest.TestCase):
     def test_a_row_active_inside_a_scope_is_in_it(self):
         g = _fuse([_row("HOSTA", f"2026-05-31T{h:02d}:00:00Z", rec=h) for h in range(20, 24)]

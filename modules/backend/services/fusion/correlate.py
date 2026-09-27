@@ -389,6 +389,11 @@ def _wm_new_activity(stored, current) -> bool:
     suppressed. Removal / re-narrowing (fewer, not-later) does NOT count as stale."""
     if not stored:
         return False
+    # A recurring row's watermark is its routine ("R|10:52|2"): the next routine
+    # day is NOT new activity, a changed time or a jump in hits per day is. A
+    # verdict given before the row was recognised as recurring re-opens once.
+    if str(stored).startswith("R|") or str(current).startswith("R|"):
+        return str(stored) != str(current)
     try:
         sc, sl = str(stored).split("|", 1)
         cc, cl = str(current).split("|", 1)
@@ -1447,6 +1452,10 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
                       or f.title.split(" on ")[0] not in base_finding_titles]
     # Grouping only tidies findings that already exist. If it fails, the case keeps
     # them ungrouped -- never loses them with the rest of this pass.
+    try:
+        _collapse_recurring(g, _grouping)
+    except Exception:                                         # noqa: BLE001
+        traceback.print_exc()
     _grouped: list = []
     try:
         _grouped = _group_simultaneous_detections(g, _grouping) or []
@@ -1617,7 +1626,96 @@ def _group_simultaneous_detections(g: FusionGraph, grouping: dict) -> None:
     return [f.id for f in new]
 
 
-_RELATED_SUFFIX = re.compile(r"\s*\(\+\d+ related\)$")
+_RELATED_SUFFIX = re.compile(r"\s*\((\+\d+ related|recurring daily[^)]*)\)$")
+
+# A DAILY ROUTINE — a scheduled task or service firing at the same time each day —
+# is one thing, not one row per day. Found on jev_test: "Suspicious Service Path"
+# on one host was ~45 rows, 2 hits each, every day at ~10:52 (4-hour episodes cut
+# a daily routine into days). Consecutive days' episodes starting within
+# RECUR_TOD_MINUTES of the series' first time of day, at least RECUR_MIN_DAYS of
+# them, fold into one row. A day that breaks the routine — another time, or far
+# more hits — stays its own row: that deviation is what an analyst should see.
+RECUR_MIN_DAYS = 3
+RECUR_TOD_MINUTES = 60
+
+
+def _tod_minutes(dt) -> int:
+    return dt.hour * 60 + dt.minute
+
+
+def _tod_close(a: int, b: int) -> bool:
+    d = abs(a - b) % 1440
+    return min(d, 1440 - d) <= RECUR_TOD_MINUTES
+
+
+def _collapse_recurring(g: FusionGraph, grouping: dict) -> None:
+    by_key: dict = {}
+    for f in g.findings:
+        if f.id in grouping and f.ts and keys.to_utc_dt(f.ts):
+            by_key.setdefault((grouping[f.id], _detection_name(f)), []).append(f)
+    drop: set = set()
+    new: list = []
+    for (meta, name), eps in by_key.items():
+        if len(eps) < RECUR_MIN_DAYS:
+            continue
+        eps.sort(key=lambda f: keys.to_utc_dt(f.ts))
+        series, cur = [], []
+        for f in eps:
+            t = keys.to_utc_dt(f.ts)
+            if not cur:
+                cur = [f]
+                continue
+            gap = (t - keys.to_utc_dt(cur[-1].ts)).total_seconds() / 3600
+            same_time = _tod_close(_tod_minutes(t), _tod_minutes(keys.to_utc_dt(cur[0].ts)))
+            if 20 <= gap <= 28 and same_time:
+                cur.append(f)                  # the next day, same time: routine
+            elif gap < 20:
+                continue                       # an extra run the same day: left out, stays a row
+            else:
+                series.append(cur)
+                cur = [f]
+        if cur:
+            series.append(cur)
+        for sr in series:
+            hits = sorted(int(f.occ_count or 1) for f in sr)
+            med = hits[len(hits) // 2]
+            routine = [f for f in sr if int(f.occ_count or 1) <= max(3 * med, med + 5)]
+            if len(routine) < RECUR_MIN_DAYS:
+                continue
+            first = routine[0]
+            t0 = keys.to_utc_dt(first.ts)
+            tod = f"{t0.hour:02d}:{t0.minute:02d}"
+            per_day = max(int(f.occ_count or 1) for f in routine)
+            bucket = next(b for b in (2, 5, 10, 50, 10**9) if per_day <= b)
+            host = first.title.rsplit(" on ", 1)[1] if " on " in first.title else ""
+            latest = max((f.occ_latest or f.ts for f in routine), key=lambda x: keys.to_utc_dt(x) or x)
+            ents: list = []
+            for f in routine:
+                ents += [e for e in f.entity_ids if e not in ents]
+            new.append(Finding(
+                id=first.id,
+                title=f"{name} (recurring daily ~{tod}) on {host}" if host else f"{name} (recurring daily ~{tod})",
+                severity=max(routine, key=lambda f: sev.rank(f.severity)).severity,
+                confidence=first.confidence,
+                summary=(f"{name} fired every day at about {tod} UTC for {len(routine)} days "
+                         f"({first.ts} → {latest}), up to {per_day} hit(s) a day — a routine, "
+                         f"such as a scheduled task or service. Days that broke the routine are "
+                         f"separate rows."),
+                entity_ids=ents[:50], asset_ids=list(first.asset_ids), sources=first.sources,
+                evidence=[x for f in routine[:3] for x in f.evidence[:1]], mitre=first.mitre,
+                ts=first.ts, kind="single",
+                occ_count=sum(int(f.occ_count or 1) for f in routine), occ_latest=latest,
+                aliases=[x for f in routine for x in f.ids() if x != first.id],
+                recurring={"tod": tod, "days": len(routine), "per_day_max": bucket}))
+            drop.update(f.id for f in routine)
+    if new:
+        g.findings = [f for f in g.findings if f.id not in drop] + new
+        for f in new:
+            grouping[f.id] = grouping.get(f.id) or next(
+                (grouping[a] for a in f.aliases if a in grouping), None)
+        for i in list(grouping):
+            if i in drop and i not in {f.id for f in new}:
+                del grouping[i]
 
 
 def _detection_name(f) -> str:

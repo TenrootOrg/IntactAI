@@ -220,9 +220,16 @@ def finding_state(g, f) -> dict:
     so it measures exactly what production sends."""
     from .render import _finding_evidence
     hosts = [getattr(g.entities.get(a), "label", None) or a for a in (f.asset_ids or [])]
-    return {"title": f.title, "severity": f.severity, "summary": f.summary,
-            "detected_by": list(f.sources or []), "hosts": hosts,
-            "mitre": list(f.mitre or []), "evidence": _finding_evidence(g, f)}
+    state = {"title": f.title, "severity": f.severity, "summary": f.summary,
+             "detected_by": list(f.sources or []), "hosts": hosts,
+             "mitre": list(f.mitre or []), "evidence": _finding_evidence(g, f)}
+    # A daily routine is the strongest sign of scheduled, expected activity —
+    # without it Jev rated one routine "92% likely true positive" once per day.
+    r = getattr(f, "recurring", None)
+    if r:
+        state["pattern"] = (f"recurring every day at about {r.get('tod')} UTC for "
+                            f"{r.get('days')} days, the same small number of hits each day")
+    return state
 
 
 def _verdict_question(k):

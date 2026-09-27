@@ -220,6 +220,10 @@ class Finding:
     # end, link}; None when the detection did not spread (see
     # correlate._mark_detection_groups).
     group: Optional[dict] = None
+    # A daily routine folded into one row (correlate._collapse_recurring):
+    # {tod "HH:MM", days, per_day_max}. Its watermark is the PATTERN, so the next
+    # routine day keeps a verdict and only a change in the routine re-opens it.
+    recurring: Optional[dict] = None
 
     def ids(self) -> list:
         """This row's id first, then every id it absorbed."""
@@ -227,6 +231,9 @@ class Finding:
 
     def watermark(self) -> str:
         """Comparable signature of the occurrences this finding covers."""
+        if self.recurring:
+            r = self.recurring
+            return f"R|{r.get('tod')}|{r.get('per_day_max')}"
         return f"{int(self.occ_count or 1)}|{self.occ_latest or self.ts or ''}"
 
     def to_dict(self) -> dict:
@@ -251,6 +258,7 @@ class Finding:
             occ_latest=_ts_or_none(d.get("occ_latest")),
             aliases=_str_list(d.get("aliases")),
             group=d.get("group") if isinstance(d.get("group"), dict) else None,
+            recurring=d.get("recurring") if isinstance(d.get("recurring"), dict) else None,
         )
 
 
