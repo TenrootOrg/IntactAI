@@ -64,6 +64,7 @@ class DeleteTakesEverything(unittest.TestCase):
             {"run_id": CASE, "case_id": None, "automation_type": "case"},   # the case row
             {"run_id": "r_tagged", "case_id": CASE, "automation_type": "agentic"},
             {"run_id": "r_legacy", "case_id": None, "automation_type": "agentic"},
+            {"run_id": "r_foreign", "case_id": "case_other", "automation_type": "agentic"},
             {"run_id": "r_export", "case_id": "case_system", "automation_type": "case_export",
              "details": {"case_id": CASE, "bundle_path": "/data/x.zip"}},
             {"run_id": "r_other", "case_id": "case_other", "automation_type": "case_export",
@@ -75,7 +76,7 @@ class DeleteTakesEverything(unittest.TestCase):
         patches = [
             mock.patch.object(store, "_ws", return_value=self.ws),
             mock.patch.object(store, "get_case", return_value={
-                "name": "QA", "member_run_ids": ["r_tagged", "r_legacy"]}),
+                "name": "QA", "member_run_ids": ["r_tagged", "r_legacy", "r_foreign"]}),
             mock.patch.object(store, "_FUSION_GRAPH_DIR", self.tmp),
             mock.patch.object(case_bundle, "EXPORT_DIR", self.exports),
             mock.patch.object(kb, "delete_case_entities"),
@@ -94,6 +95,14 @@ class DeleteTakesEverything(unittest.TestCase):
         self.assertIn("r_legacy", self.deleted, "a run the fuse reads must be a run "
                                                 "the delete reaches")
         self.assertIn(CASE, self.deleted, "and the case row itself")
+
+    def test_another_cases_run_listed_as_a_member_survives(self):
+        # POST /api/cases takes member_run_ids without attach's ownership check:
+        # a case listing another case's run deleted that case's evidence with it
+        res = store.delete_case(CASE)
+        self.assertNotIn("r_foreign", self.deleted)
+        self.assertNotIn("r_foreign", self.reports)
+        self.assertEqual(res["runs_kept_other_case"], ["r_foreign"])
 
     def test_the_export_and_import_rows_go_with_it(self):
         store.delete_case(CASE)

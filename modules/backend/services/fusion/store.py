@@ -898,6 +898,17 @@ def delete_case(case_id) -> dict:
     tagged = {r.get("run_id"): r for r in ws.get_automation_runs_by_case(case_id)}
     run_ids = list(dict.fromkeys([r for r in tagged if r]
                                  + [r for r in (d.get("member_run_ids") or []) if r]))
+    # A legacy member run that ANOTHER case owns (its case_id tag) is that case's
+    # evidence, not ours: POST /api/cases accepts member_run_ids without the
+    # ownership check attach_runs does, so deleting such a case deleted the other
+    # case's run with it. Kept, and said so.
+    kept_foreign = []
+    for rid in list(run_ids):
+        run = tagged.get(rid) or ws.get_automation_run(rid) or {}
+        owner = run.get("case_id")
+        if owner and owner != case_id:
+            kept_foreign.append(rid)
+            run_ids.remove(rid)
     for rid in run_ids:
         _delete_run_payloads(rid, (tagged.get(rid) or ws.get_automation_run(rid) or {}))
         delete_workflow(rid)
@@ -954,7 +965,8 @@ def delete_case(case_id) -> dict:
         pass
     return {"deleted": True, "runs_deleted": len(run_ids),
             "baselines_deleted": removed_baselines,
-            "export_bundles_deleted": removed_bundles}
+            "export_bundles_deleted": removed_bundles,
+            "runs_kept_other_case": kept_foreign}
 
 
 def _delete_run_payloads(rid, det=None) -> None:
