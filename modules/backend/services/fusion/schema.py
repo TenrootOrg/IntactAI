@@ -210,6 +210,15 @@ class Finding:
     # + store.get_timeline). occ_latest defaults to ts; occ_count defaults to 1.
     occ_count: int = 1
     occ_latest: Optional[str] = None
+    # Ids of rows this one ABSORBED (same-event grouping, a detection joined across
+    # hosts). A verdict or disposition given on any of them still applies here —
+    # without this, joining two hosts' rows under the earlier one's id silently
+    # dropped the analyst's verdict on the other (found live on jev_test).
+    aliases: list[str] = field(default_factory=list)
+
+    def ids(self) -> list:
+        """This row's id first, then every id it absorbed."""
+        return [self.id] + [a for a in (self.aliases or []) if a != self.id]
 
     def watermark(self) -> str:
         """Comparable signature of the occurrences this finding covers."""
@@ -235,6 +244,7 @@ class Finding:
             kind=_as_str(d.get("kind") or "single"),
             occ_count=_int_or(d.get("occ_count") or 1, 1),
             occ_latest=_ts_or_none(d.get("occ_latest")),
+            aliases=_str_list(d.get("aliases")),
         )
 
 

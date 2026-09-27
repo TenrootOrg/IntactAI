@@ -209,7 +209,7 @@ def suggest_dispositions(case_id, d, g) -> int:
     have = d.get("jev_suggestions") or {}
     validated = {v.get("finding_id") for v in (d.get("timeline_validations") or [])}
     todo = [f for f in g.findings
-            if f.id not in validated and f.kind != "dispositioned"
+            if not (set(f.ids()) & validated) and f.kind != "dispositioned"
             and (have.get(f.id) or {}).get("wm") != f.watermark()]
     new = dict(have)
     if todo:
@@ -228,7 +228,8 @@ def suggest_dispositions(case_id, d, g) -> int:
     # Stored with titles so the case payload can show it without the graph.
     floor = min_confidence()
     title = {f.id: f.title for f in g.findings}
-    notice = [{"id": k, "title": title[k]} for k, v in new.items()
+    alias = {f.id: [a for a in f.ids() if a != f.id] for f in g.findings}
+    notice = [{"id": k, "title": title[k], "aliases": alias.get(k) or []} for k, v in new.items()
               if v.get("label") == "true_positive" and v.get("confidence", 0) >= floor]
     fresh = [n for n in notice if n["id"] in {f.id for f in todo}]
     if new != have or notice != (d.get("jev_notice") or []):
@@ -248,7 +249,8 @@ def unreviewed_notice(d):
     if not enabled("disposition"):
         return []
     done = {v.get("finding_id") for v in (d.get("timeline_validations") or [])}
-    return [n for n in (d.get("jev_notice") or []) if n.get("id") not in done]
+    return [n for n in (d.get("jev_notice") or [])
+            if not ({n.get("id"), *(n.get("aliases") or [])} & done)]
 
 
 def suggestion_for(d_suggestions, fid, wm):

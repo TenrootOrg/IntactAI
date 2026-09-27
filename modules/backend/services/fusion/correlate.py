@@ -426,7 +426,7 @@ def _apply_dispositions(g: FusionGraph, dispositions) -> None:
         wm = d.get("watermark")
         note = f" [operator: {attr}" + (f" — {reason}" if reason else "") + "]"
         for f in g.findings:
-            if f.id != target and target not in (f.entity_ids or []):
+            if target not in f.ids() and target not in (f.entity_ids or []):
                 continue
             if verdict == "benign" and wm and _wm_new_activity(wm, f.watermark()):
                 # Stale verdict: new activity since it was made → re-open, don't suppress.
@@ -1317,6 +1317,7 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
     # only SIGMA. Keyed by the 'detection' flag the mapper stamps; medium+ only
     # (anything lower was already dropped at ingest). SIGMA has its own loop above.
     _det_groups: dict = {}
+    _file_rows: list = []          # renamed / known-tool rows: joined across hosts, never "same event"
     for e in g.by_type("event"):
         if "detection" not in e.flags or "sigma" in e.flags or "context" in e.flags:
             continue
@@ -1337,42 +1338,52 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
         first = min((e.first_seen for e in evs if e.first_seen), default=top.first_seen)
         if title == "renamed":
             host = _host_label(g, asset_id)
-            names = sorted({str(e.attrs.get("name") or e.label) for e in evs})
-            orig = next((e.attrs.get("original_name") for e in evs if e.attrs.get("original_name")), None)
-            shown = ", ".join(names[:6]) + ("…" if len(names) > 6 else "")
-            # NOT EVERY ROW HERE IS A RENAME. The artifact also flags a binary by
-            # its known tool name (AdFind, ProcessHacker, procdump), where the file
-            # still carries its own original name — 14 of 18 on a real case, each
-            # titled "Renamed binary: AdFind.exe copied as AdFind.exe", which reads
-            # as nonsense and buries the four that WERE renamed. Compared without
-            # the extension, because "procdump" shipping as "procdump.exe" is the
-            # same file naming itself the same way, not a disguise.
-            def _stem(x):
-                x = str(x or "").strip().lower()
-                return x[:-4] if x.endswith(".exe") else x
-            renamed = bool(orig) and any(_stem(orig) != _stem(n) for n in names)
-            if renamed:
-                rtitle = f"Renamed binary: {orig} copied as {shown}"
-            elif len(names) == 1:
-                rtitle = f"Known tool on disk: {names[0]}"
-            else:
-                rtitle = f"Known tool on disk: {shown}"
-            paths = sorted({str(e.attrs.get("path")) for e in evs if e.attrs.get("path")})
-            g.add_finding(Finding(
-                id=_fid("det", f"{asset_id}:renamed:{extra}"),
-                title=f"{rtitle} on {host}",
-                severity=top.severity, confidence="high" if len(names) > 1 else "medium",
-                summary=(((f"One file (SHA256 {extra[:16]}…"
-                           + (f", originally {orig}" if orig else "")
-                           + f") exists under {len(names)} name(s) on {host}: ")
-                          if renamed else
-                          (f"A binary the detection set names as an attacker tool "
-                           f"(SHA256 {extra[:16]}…), under its own name on {host}: "))
-                         + "; ".join(paths[:6]) + ("…" if len(paths) > 6 else "") + "."),
-                entity_ids=[e.id for e in evs[:25]], asset_ids=[asset_id],
-                sources=sorted({s for e in evs for s in e.sources}),
-                evidence=[x for e in evs[:6] for x in e.evidence[:1]], mitre=["T1036.003"],
-                ts=first, kind="single", occ_count=len(evs), occ_latest=latest))
+            # A tool copied to disk at different times is separate drops: one row
+            # per episode of its file times (first episode keeps the old id), and
+            # the same tool on several hosts is joined by _merge_detection_episodes.
+            _all = evs
+            for _ep_i, evs in enumerate(keys.split_episodes(
+                    _all, lambda e: e.first_seen, end_of=lambda e: e.last_seen or e.first_seen)):
+                top = max(evs, key=lambda x: x.anomaly)
+                first, latest = _ep_bounds(evs)
+                names = sorted({str(e.attrs.get("name") or e.label) for e in evs})
+                orig = next((e.attrs.get("original_name") for e in evs if e.attrs.get("original_name")), None)
+                shown = ", ".join(names[:6]) + ("…" if len(names) > 6 else "")
+                # NOT EVERY ROW HERE IS A RENAME. The artifact also flags a binary by
+                # its known tool name (AdFind, ProcessHacker, procdump), where the file
+                # still carries its own original name — 14 of 18 on a real case, each
+                # titled "Renamed binary: AdFind.exe copied as AdFind.exe", which reads
+                # as nonsense and buries the four that WERE renamed. Compared without
+                # the extension, because "procdump" shipping as "procdump.exe" is the
+                # same file naming itself the same way, not a disguise.
+                def _stem(x):
+                    x = str(x or "").strip().lower()
+                    return x[:-4] if x.endswith(".exe") else x
+                renamed = bool(orig) and any(_stem(orig) != _stem(n) for n in names)
+                if renamed:
+                    rtitle = f"Renamed binary: {orig} copied as {shown}"
+                elif len(names) == 1:
+                    rtitle = f"Known tool on disk: {names[0]}"
+                else:
+                    rtitle = f"Known tool on disk: {shown}"
+                paths = sorted({str(e.attrs.get("path")) for e in evs if e.attrs.get("path")})
+                g.add_finding(Finding(
+                    id=(_fid("det", f"{asset_id}:renamed:{extra}") if _ep_i == 0
+                        else _fid("det", f"{asset_id}:renamed:{extra}", str(first))),
+                    title=f"{rtitle} on {host}",
+                    severity=top.severity, confidence="high" if len(names) > 1 else "medium",
+                    summary=(((f"One file (SHA256 {extra[:16]}…"
+                               + (f", originally {orig}" if orig else "")
+                               + f") exists under {len(names)} name(s) on {host}: ")
+                              if renamed else
+                              (f"A binary the detection set names as an attacker tool "
+                               f"(SHA256 {extra[:16]}…), under its own name on {host}: "))
+                             + "; ".join(paths[:6]) + ("…" if len(paths) > 6 else "") + "."),
+                    entity_ids=[e.id for e in evs[:25]], asset_ids=[asset_id],
+                    sources=sorted({s for e in evs for s in e.sources}),
+                    evidence=[x for e in evs[:6] for x in e.evidence[:1]], mitre=["T1036.003"],
+                    ts=first, kind="single", occ_count=len(evs), occ_latest=latest))
+                _file_rows.append(g.findings[-1].id)
             continue
         logged = extra
         host = _host_label(g, asset_id) + (f" (logged as {logged})" if logged else "")
@@ -1442,7 +1453,7 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
     except Exception:                                         # noqa: BLE001
         traceback.print_exc()
     try:
-        _merge_detection_episodes(g, set(_grouping) | set(_grouped))
+        _merge_detection_episodes(g, set(_grouping) | set(_grouped) | set(_file_rows))
     except Exception:                                         # noqa: BLE001
         traceback.print_exc()
 
@@ -1597,7 +1608,8 @@ def _group_simultaneous_detections(g: FusionGraph, grouping: dict) -> None:
             # the loudest member's time, which mixed two meanings in one sort
             ts=min((f.ts for f in fs), key=lambda t: keys.to_utc_dt(t) or t), kind="single",
             occ_count=sum(int(f.occ_count or 1) for f in fs),
-            occ_latest=max((f.occ_latest or f.ts for f in fs), default=top.ts)))
+            occ_latest=max((f.occ_latest or f.ts for f in fs), default=top.ts),
+            aliases=[x for f in fs for x in f.ids()]))
         merged_ids.update(f.id for f in fs)
     if new:
         g.findings = [f for f in g.findings if f.id not in merged_ids] + new
@@ -1662,7 +1674,8 @@ def _merge_detection_episodes(g: FusionGraph, candidates: set) -> None:
                 sources=sorted({s for f in ep for s in f.sources}),
                 evidence=[x for f in ep for x in f.evidence[:1]], mitre=mitre,
                 ts=first.ts, kind="single",
-                occ_count=sum(int(f.occ_count or 1) for f in ep), occ_latest=latest))
+                occ_count=sum(int(f.occ_count or 1) for f in ep), occ_latest=latest,
+                aliases=[x for f in ep for x in f.ids() if x != first.id]))
             merged_ids.update(f.id for f in ep)
     if new:
         g.findings = [f for f in g.findings if f.id not in merged_ids] + new

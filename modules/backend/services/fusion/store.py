@@ -4896,9 +4896,12 @@ def get_timeline(case_id) -> list:
     from . import jev
     jev_on, jev_s = jev.enabled("disposition"), d.get("jev_suggestions") or {}
     rows = render.timeline(g, window=view_window(d))
+    fmap = {f.id: f for f in g.findings}
     for r in rows:
         fid = r.get("finding_id")
-        v = vrec.get(fid)
+        # A verdict given on a row this one absorbed (see Finding.aliases) still
+        # counts; the row's own id is looked up first.
+        v = next((vrec[i] for i in (fmap[fid].ids() if fid in fmap else [fid]) if i in vrec), None)
         r["reopened"] = False
         if v:
             st = v.get("status", "pending")

@@ -102,8 +102,14 @@ class Notice(unittest.TestCase):
         d = {"jev_suggestions": {"a": {"wm": a.watermark(), "label": "true_positive", "confidence": 0.9}}}
         n, asked, _ = t.run_pass(d, [a], {})
         self.assertEqual((n, asked), (0, []))
-        self.assertEqual(t.merged["jev_notice"], [{"id": "a", "title": "T a"}])
+        self.assertEqual(t.merged["jev_notice"], [{"id": "a", "title": "T a", "aliases": []}])
         t.logged.assert_not_called()                     # not new: no log line
+
+    def test_a_verdict_on_an_absorbed_row_also_clears_it(self):
+        d = {"jev_notice": [{"id": "a", "title": "A", "aliases": ["old-b"]}],
+             "timeline_validations": [{"finding_id": "old-b", "status": "true_positive"}]}
+        with mock.patch.object(jev, "enabled", return_value=True):
+            self.assertEqual(jev.unreviewed_notice(d), [])
 
     def test_reviewed_findings_drop_out_and_off_shows_nothing(self):
         d = {"jev_notice": [{"id": "a", "title": "A"}, {"id": "b", "title": "B"}],

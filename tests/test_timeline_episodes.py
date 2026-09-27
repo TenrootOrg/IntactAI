@@ -21,7 +21,7 @@ for _p in (os.path.dirname(os.path.abspath(__file__)),
         sys.path.insert(0, _p)
 
 import _optional_deps  # noqa: F401,E402
-from services.fusion import correlate, keys, render  # noqa: E402
+from services.fusion import correlate, keys, render, schema  # noqa: E402
 from services.fusion.mappers.agentic import map_agentic  # noqa: E402
 
 
@@ -121,6 +121,70 @@ class AcrossHosts(unittest.TestCase):
         spans = sorted(span(r) for r in rows)
         for (a0, a1), (b0, b1) in zip(spans, spans[1:]):
             self.assertLess(a1, b0, "two rows of the same detection overlap in time")
+
+
+class VerdictsSurviveJoining(unittest.TestCase):
+    """Found live: joining two hosts' rows under the earlier one's id dropped the
+    analyst's False-positive verdict on the other."""
+
+    def _two_hosts(self, dispositions=None):
+        runs = ([_row("HOSTA", "2026-06-01T10:30:00Z", rec=1)],
+                [_row("HOSTB", "2026-06-01T10:40:00Z", rec=2)])
+        contribs, rids = [], []
+        for i, rows in enumerate(runs):
+            ents, rels = map_agentic({"Windows.Hayabusa.Rules": rows}, run_id=f"r{i}")
+            contribs.append((ents, rels))
+            rids.append(f"r{i}")
+        return correlate.assemble("c", contribs, rids, dispositions=dispositions)
+
+    def test_the_joined_row_carries_the_absorbed_ids(self):
+        row = _rows_of(self._two_hosts())[0]
+        b_id = correlate._fid("sigma", "asset:endpoint:C.HOSTB:Suspicious Encoded PowerShell Command Line")
+        self.assertNotEqual(row.id, b_id)
+        self.assertIn(b_id, row.ids())
+
+    def test_a_disposition_on_the_absorbed_row_still_applies(self):
+        b_id = correlate._fid("sigma", "asset:endpoint:C.HOSTB:Suspicious Encoded PowerShell Command Line")
+        g = self._two_hosts(dispositions=[{"target": b_id, "verdict": "benign",
+                                           "attribution": "operator"}])
+        row = [f for f in g.findings if "Encoded PowerShell" in f.title][0]
+        self.assertIn("[operator: operator", row.summary)
+
+    def test_aliases_survive_save_and_load(self):
+        from services.fusion.schema import Finding
+        row = _rows_of(self._two_hosts())[0]
+        self.assertEqual(Finding.from_dict(row.to_dict()).ids(), row.ids())
+
+
+class FileRows(unittest.TestCase):
+    """Found live: "Known tool on disk: AdFind.exe" was one row per host with
+    overlapping ranges, and one host's row spanned 341 days of separate drops."""
+
+    def _fuse(self, *drops):
+        ents = []
+        for i, (host, ts) in enumerate(drops):
+            a = f"asset:{host}"
+            if a not in {e.id for e in ents}:
+                ents.append(schema.Entity(id=a, type="asset", label=host))
+            ents.append(schema.Entity(
+                id=f"ev:adfind:{i}", type="event", label="AdFind.exe", severity="high",
+                first_seen=ts, flags=["detection", "masquerading"],
+                attrs={"_assets": [a], "title": "Renamed binary: AdFind.exe",
+                       "original_name": "AdFind.exe", "name": "AdFind.exe",
+                       "path": rf"C:\Tools\{i}\AdFind.exe", "full_hash": "a" * 64},
+                evidence=[schema.EvidenceRef("velociraptor", "r1",
+                                             f"DetectRaptor.Windows.Detection.BinaryRename/row={i}")]))
+        g = correlate.assemble("c", [(ents, [])], ["r1"], min_severity="medium")
+        return sorted((f for f in g.findings if "AdFind" in f.title), key=lambda f: f.ts)
+
+    def test_same_tool_on_two_hosts_close_together_is_one_row(self):
+        rows = self._fuse(("ALClient01", "2025-05-27T11:17:01Z"), ("ALClient09", "2025-05-27T12:00:00Z"))
+        self.assertEqual(len(rows), 1)
+        self.assertIn("on 2 hosts", rows[0].title)
+
+    def test_separate_drops_months_apart_are_separate_rows(self):
+        rows = self._fuse(("ALClient01", "2025-05-27T11:17:01Z"), ("ALClient01", "2026-05-03T09:00:00Z"))
+        self.assertEqual(len(rows), 2)
 
 
 class Scope(unittest.TestCase):
