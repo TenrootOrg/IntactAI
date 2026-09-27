@@ -86,11 +86,16 @@ def ask(state, questions, *, run_id=None, cfg=None):
         r = requests.post(URL, timeout=15,
                           headers={"Authorization": f"Bearer {key}"},
                           json={"model": model, "state": state, "questions": questions})
+        _last["too_big"] = False
         if r.status_code != 200:
+            # Jev's own token count is the only exact one; ours is chars/4. A
+            # request it calls too large is split and retried by _ask_chunk.
+            _last["too_big"] = r.status_code in (400, 413) and "max_tokens" in r.text
             log.warning("jev: HTTP %s: %s", r.status_code, r.text[:200])
             return None
         body = r.json()
     except Exception as e:  # noqa: BLE001 — every failure means "no suggestion"
+        _last["too_big"] = False
         log.warning("jev: call failed: %s", e)
         return None
     if run_id:
@@ -105,11 +110,15 @@ def ask(state, questions, *, run_id=None, cfg=None):
     return body.get("answers") or None
 
 
-def pack(items, render, max_tokens=MAX_TOKENS, max_items=50):
-    """Greedy chunks of `items` whose rendered size stays under max_tokens."""
+_last = {"too_big": False}     # did the last ask() fail because the request was too large?
+
+
+def pack(items, render, max_tokens=MAX_TOKENS, max_items=50, per_item=0):
+    """Greedy chunks of `items` whose rendered size — plus `per_item` tokens for
+    the question each item brings — stays under max_tokens."""
     chunk, size = [], 0
     for it in items:
-        t = approx_tokens(render(it))
+        t = approx_tokens(render(it)) + per_item
         if chunk and (size + t > max_tokens or len(chunk) >= max_items):
             yield chunk
             chunk, size = [], 0
@@ -127,16 +136,44 @@ def ask_each(items, render, question, *, context=None, run_id=None, cfg=None):
     Stops at the first failed call — the rest come back None.
     """
     out, base = [], approx_tokens(context) if context is not None else 0
-    for chunk in pack(items, render, max_tokens=MAX_TOKENS - base):
-        keys = [f"q{i}" for i in range(len(chunk))]
-        state = {"items": {k: render(it) for k, it in zip(keys, chunk)}}
-        if context is not None:
-            state["context"] = context
-        ans = ask(state, {k: question(k) for k in keys}, run_id=run_id, cfg=cfg)
+    for chunk in pack(items, render, max_tokens=MAX_TOKENS - base,
+                      per_item=_question_tokens(question)):
+        ans = _ask_chunk(chunk, render, question, context, run_id=run_id, cfg=cfg)
         if ans is None:
             return out + [None] * (len(items) - len(out))
-        out += [ans.get(k) for k in keys]
+        out += ans
     return out
+
+
+def _question_tokens(question) -> int:
+    """What one item's question adds to a request (instructions + criteria)."""
+    return approx_tokens(json.dumps(question("q000"))) + 8
+
+
+def _ask_chunk(chunk, render, question, context=None, *, run_id=None, cfg=None):
+    """One answer (or None) per item of `chunk`, or None if the call failed.
+
+    Found live: batches our chars/4 estimate thought fit were refused by Jev as
+    max_tokens_exceeded, and every row after them went unanswered (108 of 323).
+    A request Jev calls too large is split in half and retried, down to single
+    items. Any other failure (outage, auth) is NOT retried — it returns None at
+    once, so a dead provider costs one call, not a dozen.
+    """
+    keys = [f"q{i}" for i in range(len(chunk))]
+    state = {"items": {k: render(it) for k, it in zip(keys, chunk)}}
+    if context is not None:
+        state["context"] = context
+    ans = ask(state, {k: question(k) for k in keys}, run_id=run_id, cfg=cfg)
+    if ans is not None:
+        return [ans.get(k) for k in keys]
+    if not _last["too_big"] or len(chunk) < 2:
+        return None
+    mid = len(chunk) // 2
+    left = _ask_chunk(chunk[:mid], render, question, context, run_id=run_id, cfg=cfg)
+    if left is None:
+        return None
+    right = _ask_chunk(chunk[mid:], render, question, context, run_id=run_id, cfg=cfg)
+    return None if right is None else left + right
 
 
 def mask_for(details, graph):
@@ -705,20 +742,18 @@ def score_relevance(case_id, *, run_id, cancel):
         return best
 
     for chunk in pack(items, lambda it: it[4],
-                      max_tokens=MAX_TOKENS - approx_tokens(context)):
+                      max_tokens=MAX_TOKENS - approx_tokens(context),
+                      per_item=_question_tokens(_relevant_question)):
         if cancel.is_set():
             save()
             raise RuntimeError("stopped")
-        keys = [f"q{i}" for i in range(len(chunk))]
-        ans = ask({"context": context,
-                   "items": {k: it[4] for k, it in zip(keys, chunk)}},
-                  {k: _relevant_question(k) for k in keys}, run_id=run_id)
+        ans = _ask_chunk(chunk, lambda it: it[4], _relevant_question, context, run_id=run_id)
         if ans is None:
             save()
             raise RuntimeError(f"Jev stopped answering after {done:,} of {len(items):,} "
                                "rows — the rows scored so far are kept")
-        for k, (rid, artifact, i, text, _m) in zip(keys, chunk):
-            p = (ans.get(k) or {}).get("noul")
+        for a, (rid, artifact, i, text, _m) in zip(ans, chunk):
+            p = (a or {}).get("noul")
             if isinstance(p, (int, float)):
                 scored.append({"run_id": rid, "artifact": artifact, "row": i,
                                "text": text, "p": round(float(p), 3)})

@@ -77,7 +77,7 @@ class Job(unittest.TestCase):
             return answer_for_call(len(calls), list(questions))
         ps = _patches(members=members) + [
             mock.patch.object(jev, "ask", side_effect=fake_ask),
-            mock.patch.object(jev, "pack", lambda items, r, max_tokens: iter(
+            mock.patch.object(jev, "pack", lambda items, r, max_tokens, **kw: iter(
                 [items[i:i + 2] for i in range(0, len(items), 2)])),
             mock.patch.object(store, "_merge_case_details",
                               side_effect=lambda cid, p: saved.append(p["jev_relevance"])),

@@ -124,10 +124,57 @@ class Pack(unittest.TestCase):
         def fake_ask(state, questions, **kw):
             self.assertEqual(set(state["items"]), set(questions))
             return next(replies)
-        with mock.patch.object(jev, "pack", lambda items, r, max_tokens: iter([items[:2], items[2:]])), \
+        with mock.patch.object(jev, "pack", lambda items, r, max_tokens, **kw: iter([items[:2], items[2:]])), \
              mock.patch.object(jev, "ask", fake_ask):
             out = jev.ask_each(["i", "j", "k"], str, lambda k: {"type": "noul"})
         self.assertEqual(out, ["a", "b", None])
+
+
+class TooBig(unittest.TestCase):
+    """Found live: Jev refused batches our estimate thought fit
+    (max_tokens_exceeded) and 108 of 323 rows went unanswered."""
+
+    def test_a_too_big_batch_is_split_and_retried(self):
+        calls = []
+
+        def fake_ask(state, questions, **kw):
+            calls.append(len(questions))
+            if len(questions) > 2:                          # Jev: too large
+                jev._last["too_big"] = True
+                return None
+            jev._last["too_big"] = False
+            return {k: {"noul": 0.5} for k in questions}
+        with mock.patch.object(jev, "ask", fake_ask):
+            out = jev.ask_each(list("abcdefgh"), str, lambda k: {"type": "noul"})
+        self.assertEqual(out, [{"noul": 0.5}] * 8)
+        self.assertEqual(calls[0], 8)
+        self.assertTrue(all(n <= 8 for n in calls))
+
+    def test_an_outage_is_not_retried(self):
+        calls = []
+
+        def fake_ask(state, questions, **kw):
+            calls.append(len(questions))
+            jev._last["too_big"] = False
+            return None
+        with mock.patch.object(jev, "ask", fake_ask):
+            out = jev.ask_each(list("abcdefgh"), str, lambda k: {"type": "noul"})
+        self.assertEqual(out, [None] * 8)
+        self.assertEqual(calls, [8])                        # one call, not a dozen
+
+    def test_ask_records_why_it_failed(self):
+        body = '{"error":{"message":"HTTP 400: {\\"detail\\":{\\"error_type\\":\\"max_tokens_exceeded\\"}}"}}'
+        r = _Resp(400); r.text = body
+        with mock.patch.object(jev.requests, "post", return_value=r):
+            self.assertIsNone(jev.ask({}, {"q0": {}}, cfg=ON))
+        self.assertTrue(jev._last["too_big"])
+        with mock.patch.object(jev.requests, "post", return_value=_Resp(429)):
+            jev.ask({}, {"q0": {}}, cfg=ON)
+        self.assertFalse(jev._last["too_big"])
+
+    def test_questions_count_toward_the_batch_size(self):
+        chunks = list(jev.pack(range(50), lambda i: "x" * 40, max_tokens=1000, per_item=100))
+        self.assertTrue(all(len(c) <= 10 for c in chunks))
 
 
 class Masking(unittest.TestCase):
