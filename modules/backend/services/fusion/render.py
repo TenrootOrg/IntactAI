@@ -1980,7 +1980,10 @@ def _analyst_validations_md(graph, dispositions, validations) -> str:
         buckets["known" if d.get("attribution") == "it_admin" else "false_positive"].append(
             title_of.get(tgt, str(tgt)))
     people = identity_verdict_lines(graph)
-    if not any(buckets.values()) and not people:
+    # Events the analyst added by hand ("IT pushed a GPO at 14:05"). They reached
+    # every model call but not this report — the one an air-gapped box writes.
+    manual = sorted(getattr(graph, "manual_events", None) or [], key=lambda e: e.get("ts") or "")
+    if not any(buckets.values()) and not people and not manual:
         return ""
     out = ["## Analyst Validations\n",
            "_Operator triage from the Timeline. False-positive and known/expected "
@@ -1998,6 +2001,13 @@ def _analyst_validations_md(graph, dispositions, validations) -> str:
             out.append(f"**{label} ({len(items)}):**")
             out += [f"- {t}" for t in items[:20]]
             out.append("")
+    if manual:
+        out.append(f"**Events added by the analyst ({len(manual)}):**")
+        for e in manual[:30]:
+            sevs = f" [{e['severity']}]" if e.get("severity") else ""
+            note = f" — {e['notes']}" if e.get("notes") else ""
+            out.append(f"- `{e.get('ts') or 'no time'}` · {e.get('host') or '-'} · {e.get('title')}{sevs}{note}")
+        out.append("")
     return "\n".join(out)
 
 

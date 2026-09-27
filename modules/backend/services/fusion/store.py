@@ -2043,6 +2043,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     # The analyst's Compromised verdicts (Identities). The report written here did
     # not get them: only view_graph set them, and this path does not use it.
     g.identity_verdicts = list(d.get("identity_verdicts") or [])
+    g.manual_events = _visible_manual_events(d)
     try:
         gv = _filter_graph_by_hosts(g, d.get("excluded_hosts"))
     except Exception as _e:                                   # noqa: BLE001
@@ -2658,7 +2659,15 @@ def view_graph(case_id, d=None, *, scoped=True) -> FusionGraph:
                                     active_scope_window(d))
     g.identity_decisions = _identity_decisions(d)   # people grouped as the Identities tab shows
     g.identity_verdicts = list(d.get("identity_verdicts") or [])   # analyst: compromised or not
+    g.manual_events = _visible_manual_events(d)                       # analyst-added Timeline events
     return g
+
+
+def _visible_manual_events(d) -> list:
+    """The analyst's manual Timeline events, minus those on an excluded host."""
+    ex = {keys.norm_host(h) for h in (d.get("excluded_hosts") or []) if h}
+    return [e for e in (d.get("manual_timeline_events") or [])
+            if keys.norm_host(e.get("host") or "") not in ex]
 
 
 # C:\Users\<name>\ — the account a Windows path belongs to.
@@ -2698,6 +2707,7 @@ def _filter_graph_by_window(g, window) -> FusionGraph:
     gv = FusionGraph(case_id=g.case_id, run_ids=list(g.run_ids))
     gv.identity_decisions = getattr(g, "identity_decisions", None)
     gv.identity_verdicts = getattr(g, "identity_verdicts", None)
+    gv.manual_events = getattr(g, "manual_events", None)
     findings = [f for f in g.findings if finding_in_window(f, window)]
     cited = {eid for f in findings for eid in (f.entity_ids or [])}
 
@@ -2808,6 +2818,7 @@ def _filter_graph_by_hosts(g, excluded_labels) -> FusionGraph:
     gv = FusionGraph(case_id=g.case_id, run_ids=list(g.run_ids))
     gv.identity_decisions = getattr(g, "identity_decisions", None)
     gv.identity_verdicts = getattr(g, "identity_verdicts", None)
+    gv.manual_events = getattr(g, "manual_events", None)
     keep = set()
     for e in g.entities.values():
         if e.id in ex_assets:

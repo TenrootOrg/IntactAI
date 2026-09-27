@@ -103,6 +103,19 @@ class Downstream(unittest.TestCase):
         w = {"start": "2026-01-01T00:00:00Z", "end": "2026-02-01T00:00:00Z"}
         self.assertEqual(store._filter_graph_by_window(g, w).identity_verdicts, g.identity_verdicts)
 
+    def test_manual_events_reach_the_no_llm_report(self):
+        from services.fusion import render
+        g = schema.FusionGraph(case_id="c")
+        g.manual_events = [{"ts": "2026-01-02T10:00:00Z", "host": "H1", "title": "IT pushed a GPO",
+                            "severity": "low", "notes": "change ticket 42"}]
+        md = render._analyst_validations_md(g, None, None)
+        self.assertIn("**Events added by the analyst (1):**", md)
+        self.assertIn("`2026-01-02T10:00:00Z` · H1 · IT pushed a GPO [low] — change ticket 42", md)
+        # an event on an excluded host is not carried
+        d = {"manual_timeline_events": [{"host": "H1", "title": "a"}, {"host": "H2", "title": "b"}],
+             "excluded_hosts": ["h2"]}
+        self.assertEqual([e["title"] for e in store._visible_manual_events(d)], ["a"])
+
 
 class Card(unittest.TestCase):
     def test_verdict_select(self):
