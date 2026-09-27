@@ -395,7 +395,7 @@ class ActivityBeforeTheCurrentName(unittest.TestCase):
         assets = [e for e in g.entities.values() if e.type == "asset"]
         md = render._limitations_md(g, assets, g.findings)
         self.assertIn(f"was previously recorded as {OLD}", md)
-        self.assertIn("1 finding(s) predate its current name", md)
+        self.assertIn("1 of its detection(s) predate its current name", md)
 
     def test_a_failure_in_the_pass_costs_nothing_else(self):
         """Hostile attrs on one entity must not stop the fuse or lose findings."""
