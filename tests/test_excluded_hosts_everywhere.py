@@ -27,12 +27,14 @@ class EveryViewReadsTheFilteredGraph(unittest.TestCase):
         routes = _src("modules/backend/routes/case_routes.py")
         for fn in ("def get_case_risk(", "def get_zoom_targets("):
             body = _body(routes, fn)
-            self.assertIn("store.view_graph(", body, fn)
+            # get_zoom_targets delegates to store.scope_cards (shared with Jev's
+            # scope estimate); that function is held to the same rule below.
+            self.assertTrue("store.view_graph(" in body or "store.scope_cards(" in body, fn)
             self.assertNotIn("store.load_graph(", body, fn)
 
     def test_store_views(self):
         store = _src("modules/backend/services/fusion/store.py")
-        for fn in ("def identity_view(", "def chat_case(", "def get_timeline("):
+        for fn in ("def identity_view(", "def chat_case(", "def get_timeline(", "def scope_cards("):
             body = _body(store, fn)
             self.assertTrue("view_graph(" in body or "_filter_graph_by_hosts(" in body, fn)
 
