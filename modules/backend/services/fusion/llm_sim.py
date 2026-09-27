@@ -1980,41 +1980,30 @@ def generate_report(graph, *, window=None, min_severity="informational",
                 # what Phase 3 was.
                 _names = {z["n"]: (_phase_out.get(z["n"]) or {}).get("name") or ""
                           for z in render.analysable(_zt)}
-                parts = [banner, "", narrative.strip(), "",
-                         render.phases_at_a_glance_md(_zt, _names)]
+                parts = [banner, "", narrative.strip(), "", ""]   # [4]: the glance table, below
                 for z in render.analysable(_zt):
                     got = _phase_out.get(z["n"]) or {}
-                    nm = got.get("name") or z.get("title") or f"Phase {z['n']}"
-                    parts.append(f"### Phase {z['n']} — {nm}\n")
-                    # Deterministic facts as BULLETS immediately under the heading:
-                    # that shape is what the PDF renderer turns into a bordered card,
-                    # and it is where the model's own Severity/Confidence lines land.
-                    hs = ", ".join((z.get("host_labels") or [])[:6])
-                    parts.append(
-                        f"- **Window:** `{z['window']['start']}` → `{z['window']['end']}`\n"
-                        f"- **Hosts:** {hs or '—'}\n"
-                        f"- **Findings:** {z['finding_count']} "
-                        f"({z.get('critical_count', 0)} critical)")
+                    # A phase the model could not write gets the deterministic brief
+                    # (render.phase_brief_md) under the warning, not an empty section.
                     if got.get("error"):
-                        parts.append(f"> ⚠️ This phase was not analysed by the AI model: "
-                                     f"{got['error']} Its evidence is below and in the "
-                                     f"case timeline — the rest of the report is "
-                                     f"unaffected.\n")
+                        _pf = render.phase_findings(graph, z, min_severity=min_severity)
+                        body = (f"> ⚠️ This phase was not analysed by the AI model: {got['error']} "
+                                "The evidence-only brief is below — the rest of the report is "
+                                "unaffected.\n\n"
+                                + render.phase_brief_md(graph, z, _pf, verdicts=render.analyst_verdict_map(
+                                    dispositions, validations)))
                     else:
-                        parts.append(got.get("body", "") + "\n")
-                    # THIS PHASE'S timeline, not the whole case's -- the operator's
-                    # "the timeline of events should be separate to each timeframe".
-                    _, _pf = render.scope(graph, window=z["window"],
-                                          min_severity=min_severity)
-                    parts.append(render.timeline_md(
-                        graph, _pf, window=z["window"], eff_detail=eff_detail,
-                        # No divisor. Dividing the cap by phase count traded value
-                        # for length -- "I don't wanna lose value because of static
-                        # length". Each phase gets the same budget; the collapse
-                        # already states repeats once, so a quiet phase costs little.
-                        max_groups=render.TIMELINE_MAX_GROUPS,
-                        heading="**Timeline — this phase**",
-                        note=f"{len(_pf)} finding(s) in this phase, in order"))
+                        body = got.get("body", "")
+                    # Same writer as the deterministic report: heading, the facts as
+                    # bullets (the PDF's bordered card), the body, THIS phase's timeline.
+                    nm = got.get("name") or render.phase_name(
+                        render.phase_findings(graph, z, min_severity=min_severity))
+                    _names[z["n"]] = nm
+                    parts.append(render.phase_section_md(graph, z, body, name=nm,
+                                                         min_severity=min_severity,
+                                                         eff_detail=eff_detail))
+                # after the loop: the table names each phase exactly as its heading does
+                parts[4] = render.phases_at_a_glance_md(_zt, _names)
                 # The old "Suspicious Timeframes & Clusters" table is NOT appended:
                 # it is the same rows, windows and counts as "Phases at a glance",
                 # which now carries its ATT&CK column too. Printing both was the same
@@ -2042,7 +2031,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
             md = render.report(graph, window=window, min_severity=min_severity,
                                initial_access=initial_access, case_name=case_name,
                                dispositions=dispositions, validations=validations,
-                               detail=detail)
+                               detail=detail, altitude_mode=altitude_mode)
             # Say WHICH problem: "no route to the provider", "the key was
             # rejected" and "the account is out of credit" need completely
             # different actions. Reuses chat's classifier + messages so the same
@@ -2055,7 +2044,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
     md = render.report(graph, window=window, min_severity=min_severity,
                        initial_access=initial_access, case_name=case_name,
                        dispositions=dispositions, validations=validations,
-                       detail=detail) + _sim_tag()
+                       detail=detail, altitude_mode=altitude_mode) + _sim_tag()
     return md
 
 

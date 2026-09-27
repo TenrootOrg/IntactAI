@@ -475,16 +475,8 @@ def analyst_verdicts(d) -> dict:
     "known"), from the Timeline and from chat dispositions. Every estimate below
     sends it with each finding and keys its cache on it, so a verdict changes the
     number: a finding the analyst ruled out must not keep pushing it up."""
-    out = {}
-    for x in (d or {}).get("dispositions") or []:
-        v = (x.get("verdict") or "").lower()
-        if x.get("target"):
-            out[x["target"]] = ("true_positive" if v == "malicious" else
-                                "known" if x.get("attribution") == "it_admin" else "false_positive")
-    for v in (d or {}).get("timeline_validations") or []:
-        if v.get("finding_id") and v.get("status") in ("true_positive", "false_positive", "known"):
-            out[v["finding_id"]] = v["status"]
-    return out
+    from .render import analyst_verdict_map
+    return analyst_verdict_map((d or {}).get("dispositions"), (d or {}).get("timeline_validations"))
 
 
 def _verdict_of(f, verdicts):

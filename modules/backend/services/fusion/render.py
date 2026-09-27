@@ -615,6 +615,145 @@ def report_mode_banner(altitude, zt, *, mode="time", total_findings=None,
             f"timeline; open one to go deeper.{extra}_")
 
 
+def analyst_verdict_map(dispositions=None, validations=None) -> dict:
+    """finding id -> the analyst's verdict ("true_positive" / "false_positive" /
+    "known"), from chat dispositions and Timeline validations (the latter win)."""
+    out = {}
+    for x in dispositions or []:
+        v = (x.get("verdict") or "").lower()
+        if x.get("target"):
+            out[x["target"]] = ("true_positive" if v == "malicious" else
+                                "known" if x.get("attribution") == "it_admin" else "false_positive")
+    for v in validations or []:
+        if v.get("finding_id") and v.get("status") in ("true_positive", "false_positive", "known"):
+            out[v["finding_id"]] = v["status"]
+    return out
+
+
+def phase_name(pf) -> str:
+    """A deterministic name for a phase: its leading ATT&CK stages and its reach —
+    "Credential Access & Execution across 3 hosts". The model's name replaces it
+    when there is one; without a model the phase still says what it is."""
+    from collections import Counter
+    weight = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+    c = Counter()
+    for f in pf:
+        t = _phase(f)
+        if t not in ("Unclassified", "Exposure"):
+            c[t] += weight.get(f.severity, 0) or 1
+    stages = " & ".join(t for t, _ in c.most_common(2)) or "Suspicious activity"
+    hosts = sorted({a for f in pf for a in (f.asset_ids or [])})
+    return stages + (f" across {len(hosts)} hosts" if len(hosts) > 1 else "")
+
+
+def phase_brief_md(graph, z, pf, *, verdicts=None, people=None) -> str:
+    """What a phase shows, from the evidence alone — the body of a phase section
+    when no model wrote one. `people`: [(name, finding_ids, compromised)]."""
+    from collections import Counter, defaultdict
+    from .correlate import _detection_name
+    verdicts = verdicts or {}
+    out = ["_From the evidence — no AI narrative._", ""]
+    by_det = defaultdict(list)
+    for f in pf:
+        by_det[_detection_name(f)].append(f)
+    rank = lambda fs: -max(sev.rank(f.severity) for f in fs)  # noqa: E731
+    dets = sorted(by_det.items(), key=lambda kv: (rank(kv[1]), -len(kv[1]), kv[0]))
+    if dets:
+        lines = []
+        for name, fs in dets[:8]:
+            top = max(fs, key=lambda f: sev.rank(f.severity))
+            hs = sorted({_host_label(graph, a) for f in fs for a in (f.asset_ids or [])})
+            lines.append(f"  - **[{top.severity}]** {name}"
+                         + (f" ×{len(fs)}" if len(fs) > 1 else "")
+                         + (f" — {', '.join(hs[:3])}{'…' if len(hs) > 3 else ''}" if hs else ""))
+        more = f"  - _… and {len(dets) - 8} more rule(s)_" if len(dets) > 8 else ""
+        # By RULE across hosts (one line per rule) — a different count from the
+        # "N distinct detections" above, which counts a rule once per host.
+        out.append(f"- **Rules fired ({len(dets)}):**")
+        out += lines + ([more] if more else [])
+    stages = Counter(_phase(f) for f in pf if _phase(f) not in ("Unclassified",))
+    if stages:
+        out.append("- **Stages (ATT&CK):** " + " · ".join(f"{t} ({n})" for t, n in stages.most_common(5)))
+    ids = {i for f in pf for i in f.ids()}
+    ppl = [(n, c) for n, fids, c in (people or []) if fids & ids]
+    if ppl:
+        ppl.sort(key=lambda p: (not p[1], p[0]))
+        out.append("- **People:** " + ", ".join(f"**{n}** (marked compromised)" if c else n for n, c in ppl[:8])
+                   + (f" +{len(ppl) - 8}" if len(ppl) > 8 else ""))
+    tri = Counter(v for f in pf for v in [next((verdicts[i] for i in f.ids() if i in verdicts), None)])
+    labels = {"true_positive": "True Positive", "false_positive": "False Positive", "known": "Known", None: "not reviewed"}
+    out.append("- **Your triage here:** " + " · ".join(f"{tri[k]} {labels[k]}" for k in
+                                                       ("true_positive", "false_positive", "known", None) if tri[k]))
+    crit = [f for f in pf if f.severity == "critical"] or [f for f in pf if f.severity == "high"]
+    if crit:
+        hc = Counter(a for f in crit for a in (f.asset_ids or []))
+        h, n = hc.most_common(1)[0]
+        lead = max((f for f in crit if h in (f.asset_ids or [])), key=lambda f: sev.rank(f.severity))
+        out.append(f"- **Start here:** {_host_label(graph, h)} — {n} {crit[0].severity} "
+                   f"finding(s), led by \"{_detection_name(lead)}\"")
+    return "\n".join(out) + "\n"
+
+
+def phase_findings(graph, z, *, min_severity="informational"):
+    """The phase's OWN findings — the ones its card was built from. Reading the
+    whole window instead pulled in other hosts' findings from the same days, so
+    one section said 15, 17 and 23."""
+    ids = set(z.get("finding_ids") or [])
+    if not ids:
+        return scope(graph, window=z["window"], min_severity=min_severity)[1]
+    return sorted((f for f in graph.findings if f.id in ids), key=lambda f: f.ts or "")
+
+
+def phase_section_md(graph, z, body, *, name, min_severity="informational", eff_detail="summary") -> str:
+    """One phase in the report: heading, the facts, the body (the model's narrative,
+    or phase_brief_md without one) and THIS phase's own timeline."""
+    hs = ", ".join((z.get("host_labels") or [])[:6])
+    pf = phase_findings(graph, z, min_severity=min_severity)
+    rows = z.get("row_count") or len(pf)
+    return "\n".join([
+        f"### Phase {z['n']} — {name}\n",
+        f"- **Window:** `{z['window']['start']}` → `{z['window']['end']}`\n"
+        f"- **Hosts:** {hs or '—'}\n"
+        f"- **Detections:** {z['finding_count']} distinct in {rows} timeline rows "
+        f"({z.get('critical_count', 0)} critical)\n",       # blank line: the body is not a bullet
+        (body or "").rstrip() + "\n",
+        timeline_md(graph, pf, window=z["window"], eff_detail=eff_detail,
+                    max_groups=TIMELINE_MAX_GROUPS, heading="**Timeline — this phase**",
+                    note=f"{len(pf)} finding(s) in this phase, in order")])
+
+
+def phases_md(graph, zt, *, min_severity="informational", eff_detail="summary",
+              dispositions=None, validations=None, names=None, bodies=None) -> str:
+    """Every analysed phase, written into the report: the glance table, then one
+    section each. Without a model (the air-gapped default) each phase gets a
+    deterministic name and brief; with one, `names` / `bodies` carry the model's."""
+    rows = analysable(zt)
+    if not rows:
+        return ""
+    names, bodies = dict(names or {}), dict(bodies or {})
+    verdicts = analyst_verdict_map(dispositions, validations)
+    people = []
+    try:
+        from .identities import resolve_identities, person_findings
+        owned = {a for r in (getattr(graph, "identity_verdicts", None) or [])
+                 if r.get("verdict") == "compromised" for a in (r.get("accounts") or [])}
+        for it in resolve_identities(graph):
+            acc = [a["id"] for a in it["accounts"]]
+            fids = {i for f in person_findings(graph, acc) for i in f.ids()}
+            if fids:
+                people.append((it["name"], fids, bool(owned & set(acc))))
+    except Exception:  # noqa: BLE001 — people are a detail, never a failure
+        people = []
+    parts, glance_names = [], {}
+    for z in rows:
+        pf = phase_findings(graph, z, min_severity=min_severity)
+        nm = names.get(z["n"]) or phase_name(pf)
+        glance_names[z["n"]] = nm
+        body = bodies.get(z["n"]) or phase_brief_md(graph, z, pf, verdicts=verdicts, people=people)
+        parts.append(phase_section_md(graph, z, body, name=nm, min_severity=min_severity, eff_detail=eff_detail))
+    return phases_at_a_glance_md(zt, glance_names) + "\n" + "\n".join(parts)
+
+
 def outside_phases(graph, zt, *, window=None, min_severity="informational"):
     """The in-scope findings that NO analysed phase covers.
 
@@ -2841,15 +2980,36 @@ def _limitations_md(graph, assets, findings, *, window=None,
 
 
 def report(graph, *, window=None, min_severity="informational", initial_access=None,
-           case_name="Case", dispositions=None, validations=None, detail="auto") -> str:
+           case_name="Case", dispositions=None, validations=None, detail="auto",
+           altitude_mode="auto") -> str:
     """Full deterministic report = narrative prose + deterministic fact tables.
     The real-LLM path (llm_sim) swaps ONLY ``narrative_md`` for an LLM call over
-    ``distilled()`` and re-appends ``facts_md`` verbatim."""
-    return (narrative_md(graph, window=window, min_severity=min_severity,
-                         initial_access=initial_access, case_name=case_name)
-            + "\n" + facts_md(graph, window=window, min_severity=min_severity,
-                              dispositions=dispositions, validations=validations,
-                              initial_access=initial_access, detail=detail))
+    ``distilled()`` and re-appends ``facts_md`` verbatim.
+
+    A BROAD case is written phase by phase here too. Without a model the report
+    was one flat timeline while the Analysis tab showed its phase cards — the
+    air-gapped default never explained its own phases."""
+    head = narrative_md(graph, window=window, min_severity=min_severity,
+                        initial_access=initial_access, case_name=case_name)
+    phases, tl_kw = "", {}
+    try:
+        altitude, _r = _resolve_altitude(graph, window=window, min_severity=min_severity, mode=altitude_mode)
+        if altitude == "macro":
+            zt = zoom_targets(graph, window=window, min_severity=min_severity,
+                              force_phases=((altitude_mode or "auto") == "macro"))
+            phases = phases_md(graph, zt, min_severity=min_severity, eff_detail="summary",
+                               dispositions=dispositions, validations=validations)
+            if phases:
+                rest = outside_phases(graph, zt, window=window, min_severity=min_severity)
+                tl_kw = {"timeline_findings": rest,
+                         "timeline_heading": "## Activity outside the analysed phases",
+                         "timeline_note": f"{len(rest)} finding(s) that fall outside every phase above, in order"}
+    except Exception:  # noqa: BLE001 — the flat report is always a correct fallback
+        phases, tl_kw = "", {}
+    return (head + "\n" + (phases + "\n" if phases else "")
+            + facts_md(graph, window=window, min_severity=min_severity,
+                       dispositions=dispositions, validations=validations,
+                       initial_access=initial_access, detail=detail, **tl_kw))
 
 
 _MITRE_NAMES = {
