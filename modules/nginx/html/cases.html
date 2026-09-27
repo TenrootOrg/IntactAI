@@ -734,7 +734,8 @@ function renderRisk(info){
         <td style="padding:6px 8px;font-size:12px">${esc(_riskWhy(r))}</td>
         <td style="padding:6px 8px;font-size:12px;color:var(--muted)">${esc(cov)}</td></tr>`;}).join('');
     $('#tabc').innerHTML=`
-      <div style="margin-bottom:8px;color:var(--muted);font-size:13px">Endpoints ranked by risk (Σ finding severity; cross-host findings ×2). Work top-down — these are the clients to focus on first. <span style="color:var(--muted)">Always reflects the latest data.</span></div>
+      ${d.is_stale?'<div class="agnote">New collections have landed that are not in this ranking yet — run <b>Refusion</b> to include them.</div>':''}
+      <div style="margin-bottom:8px;color:var(--muted);font-size:13px">Endpoints ranked by risk. The band is the host's worst detection (critical above high above medium); within a band each <b>distinct</b> detection counts once — repeats add a little, daily routines count one level lower, detections seen on several hosts weigh more. C/H/M counts distinct detections. Work top-down.</div>
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead><tr style="text-align:left;border-bottom:1px solid var(--bd);color:var(--muted)">
           <th style="padding:6px 8px"></th><th style="padding:6px 8px">Host</th>
