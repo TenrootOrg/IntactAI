@@ -155,8 +155,11 @@ def main():
         for r in rows:
             if r.get("source") == "fusion" and h1 in [h.strip() for h in (r.get("host") or "").split(",")]:
                 by_det.setdefault(det_name(r["title"]), []).append(r)
+        # …and not critical: a benign verdict never down-ranks a critical finding
+        # (deliberate — see tests/test_disposition_suppression.py), so a critical
+        # False Positive stays counted, annotated "surfaced anyway for review".
         singles = [v[0] for v in by_det.values() if len(v) == 1 and not v[0].get("group")
-                   and v[0].get("host") == h1]
+                   and v[0].get("host") == h1 and v[0].get("severity") != "critical"]
         singles.sort(key=lambda r: ["critical", "high", "medium", "low", "informational"].index(r.get("severity", "low")))
         fa, fb = singles[0], singles[1]
         grp_ids = {}
@@ -277,7 +280,11 @@ def main():
         md3 = report_md(cid)
         check("the report drops it", f"| {hx} " not in md3 and f"**{hx}**" not in md3)
         sent3, _ = captured_model_input(cid)
-        check("the model is not sent it", hx not in sent3)
+        # Only the host AS A HOST: another machine's evidence may still mention it
+        # (a BITS download from http://ALMECM01.corp…) — that is the other host's data.
+        import re as _re
+        as_host = _re.findall(r"(?<![/\\.\w])" + _re.escape(hx) + r"(?![.\w])", sent3)
+        check("the model is not sent it as a host", not as_host, f"{len(as_host)} mention(s)")
         check("verdicts survive the re-fusion", pp["name"] in md3 and fb["title"] in md3)
 
         if LLM:
