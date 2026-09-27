@@ -4692,11 +4692,18 @@ def identity_view(case_id) -> dict:
         it["finding_rows"] = len(fs)
         it["detections"] = len({_detection_name(f) for f in fs})
         it["worst"] = fs[0].severity if fs else None
-    # people marked compromised first, then people (service / test accounts
-    # after), then worst finding, then how many detections; suggestions break ties
-    idents.sort(key=lambda it: (it.get("verdict") != "compromised", bool(it.get("account_kind")),
-                                -(_sev.rank(it["worst"]) + 1) if it["worst"] else 0, -it["detections"], -len(it.get("suggestions") or []),
-                                -len(it["buckets"]), -len(it["accounts"]), it["key"]))
+    # With Jev on: the analyst's verdicts first (compromised, then not), then
+    # Jev's compromise estimate (highest first), then A–Z. With Jev off: A–Z only.
+    by_jev = _jev.enabled("compromise")
+    _vr = {"compromised": 0, "not_compromised": 1}
+
+    def _order(it):
+        az = str(it.get("name") or it["key"]).lower()
+        if not by_jev:
+            return (az,)
+        p = it.get("jev_compromise")
+        return (_vr.get(it.get("verdict"), 2), -p if isinstance(p, (int, float)) else 1, az)
+    idents.sort(key=_order)
     # one pair shows on BOTH cards; count it once (it read "2 suggestions" for 1)
     total_sug = len(pairs)
     # staleness: FUSEABLE member runs not yet folded into the graph this tab reads.
@@ -4708,7 +4715,8 @@ def identity_view(case_id) -> dict:
         stale = 0
     return {"case_id": case_id, "buckets": buckets, "multi_infra": len(buckets) >= 2,
             "identities": idents, "stale": stale,
-            "counts": {"identities": len(idents), "suggestions": total_sug}}
+            "counts": {"identities": len(idents), "suggestions": total_sug},
+            "sort": "jev" if by_jev else "alpha"}
 
 
 def decide_identity_link(case_id, link_id, decision, *, a_id=None, b_id=None,

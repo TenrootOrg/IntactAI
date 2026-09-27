@@ -105,7 +105,7 @@ class Suggestions(unittest.TestCase):
 class Page(unittest.TestCase):
     """Cards ranked by risk with their findings; one pair counted once."""
 
-    def test_ranked_by_worst_finding_service_accounts_last(self):
+    def test_cards_carry_findings_kinds_and_one_count_per_pair(self):
         from unittest import mock
         from services.fusion import store
         g = _graph()
@@ -121,6 +121,7 @@ class Page(unittest.TestCase):
         ws.get_automation_runs_by_case.return_value = []
         with mock.patch.object(store, "get_case", return_value={"x": 1}), \
              mock.patch.object(store, "view_graph", return_value=g), \
+             mock.patch("services.fusion.jev.enabled", return_value=False), \
              mock.patch.object(store, "_ws", return_value=ws):
             v = store.identity_view("c1")
         cards = v["identities"]
@@ -130,12 +131,11 @@ class Page(unittest.TestCase):
         self.assertEqual([identities.account_kind(n) for n in ("contest", "tester", "jdoe.test")], [None, None, "test"])
         self.assertEqual((by["svc_backup"]["worst"], by["svc_backup"]["detections"]), ("critical", 1))
         self.assertEqual(by["svc_backup"]["findings"][0]["id"], "f1")
-        # people first; among people the one with a finding leads
-        self.assertEqual(cards[0]["name"], "kobia")
         self.assertEqual(by["srv"]["account_kind"], "service")
-        self.assertIsNone(cards[0]["account_kind"])
-        kinds = [bool(c["account_kind"]) for c in cards]
-        self.assertEqual(kinds, sorted(kinds))
+        # Jev off: A–Z only (the Jev order is in test_jev_compromise)
+        self.assertEqual(v["sort"], "alpha")
+        names = [c["name"] for c in cards]
+        self.assertEqual(names, sorted(names, key=str.lower))
         # kobia / kobitst is one suggested pair, shown on both cards, counted once
         self.assertEqual(sum(len(c["suggestions"]) for c in cards), 2 * v["counts"]["suggestions"])
 

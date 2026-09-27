@@ -1855,7 +1855,7 @@ function _idRender(id){
     || (it.seen_on||[]).some(h=>String(h).toLowerCase().includes(q));
   const shown=idents.filter(hit);
   const bset=(d.buckets||[]).join(', ')||'none';
-  let h=`<p style="color:var(--muted);font-size:12px;margin:0 0 6px">People in this case and their footprint across infrastructures (<b>${esc(bset)}</b>). Same-name accounts merge automatically; uncertain matches are <b>suggestions</b>. Click a person to expand; use ✕ to switch off an account that is not this person, and ↺ to switch it back on. Sorted by worst finding; service and test accounts come after people. Everything persists across re-fusion.</p>`;
+  let h=`<p style="color:var(--muted);font-size:12px;margin:0 0 6px">People in this case and their footprint across infrastructures (<b>${esc(bset)}</b>). Same-name accounts merge automatically; uncertain matches are <b>suggestions</b>. Click a person to expand; use ✕ to switch off an account that is not this person, and ↺ to switch it back on. ${d.sort==='jev'?'Sorted by your verdict (Compromised first), then Jev’s compromise estimate, then A–Z':'Sorted A–Z'}. Everything persists across re-fusion.</p>`;
   if(d.stale) h+=`<p style="color:var(--med);font-size:12px;margin:0 0 6px">⚠ ${d.stale} run(s) not yet fused — new uploads appear after a <b>Refusion</b>.</p>`;
   h+=`<div style="display:flex;gap:10px;align-items:center;margin:6px 0 10px">
       <input id="id-search" placeholder="filter people / accounts / hosts…" value="${esc(window._idQuery||'')}" oninput="idSearch(this.value)" autocomplete="off" style="flex:1;max-width:360px;padding:6px 8px">

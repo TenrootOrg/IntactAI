@@ -87,6 +87,38 @@ class Suggest(unittest.TestCase):
         self.assertIn("compromise", jev.DEFAULTS["uses"])
 
 
+class Order(unittest.TestCase):
+    """Jev on: your verdict first (compromised, then not), then Jev's estimate
+    highest first, then A–Z. Jev off: A–Z only."""
+
+    def order(self, on):
+        cards = [{"key": n, "name": n, "buckets": [], "accounts": [{"id": "a-" + n, "label": n}]}
+                 for n in ("zed", "amy", "bob", "cat", "dan", "eve")]
+        verdicts = [{"accounts": ["a-dan"], "verdict": "not_compromised"},
+                    {"accounts": ["a-zed"], "verdict": "compromised"}]
+        est = {"bob": 0.4, "cat": 0.9, "zed": 0.1}
+        ws = mock.Mock()
+        ws.get_automation_runs_by_case.return_value = []
+        with mock.patch.object(store, "get_case", return_value={"identity_verdicts": verdicts}), \
+             mock.patch.object(store, "view_graph", return_value=types.SimpleNamespace(findings=[], relationships=[], entities={})), \
+             mock.patch.object(store, "_identity_decisions", return_value={}), \
+             mock.patch.object(store, "_ws", return_value=ws), \
+             mock.patch.object(identities, "case_buckets", return_value=["endpoint"]), \
+             mock.patch.object(identities, "compute_candidates", return_value=[]), \
+             mock.patch.object(identities, "analyst_inputs", return_value={"fuzzy": [], "merges": [], "splits": set(), "host_excludes": {}}), \
+             mock.patch.object(identities, "resolve_identities", return_value=cards), \
+             mock.patch.object(jev, "compromise_estimate", side_effect=lambda d, ids, fs: est.get(ids[0][2:]) if on else None), \
+             mock.patch.object(jev, "enabled", return_value=on):
+            v = store.identity_view("c1")
+        return v["sort"], [c["name"] for c in v["identities"]]
+
+    def test_with_jev(self):
+        self.assertEqual(self.order(True), ("jev", ["zed", "dan", "cat", "bob", "amy", "eve"]))
+
+    def test_without_jev_alphabet_only(self):
+        self.assertEqual(self.order(False), ("alpha", ["amy", "bob", "cat", "dan", "eve", "zed"]))
+
+
 class Pill(unittest.TestCase):
     def test_markup(self):
         node = shutil.which("node")
