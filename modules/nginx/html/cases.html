@@ -2235,11 +2235,17 @@ function ask(id){
   // truth rather than trusting a locally reconstructed list. Only on success:
   // a failed turn is deliberately NOT persisted, so re-syncing would erase the
   // error message the operator needs to read.
+  // …and only if the server actually saved THIS turn. A turn the model could not
+  // answer (expired sign-in, no route) and the chat's own replies ("Marked … as
+  // benign") come back HTTP 200 but are not persisted — adopting the server's
+  // list then erased the question and its answer and put the PREVIOUS saved
+  // exchange on screen, which read as the chat rewriting the question.
   const doneSynced=(content)=>{
     done(content);
     api('/api/cases/'+id+'/chat').then(d=>{
-      if(d && d.messages && d.messages.length){
-        chatHist=d.messages.map(m=>({role:m.role,content:m.content}));
+      const ms=(d&&d.messages)||[], lastQ=[...ms].reverse().find(m=>m.role==='user');
+      if(lastQ && lastQ.content===q){
+        chatHist=ms.map(m=>({role:m.role,content:m.content}));
         drawMsgs();
       }
     }).catch(()=>{});

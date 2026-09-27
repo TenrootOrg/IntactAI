@@ -77,6 +77,22 @@ const shape = () => chatHist.map(m => m.role + ':' + (m.pending ? 'PENDING' : m.
   check('the in-flight flag is cleared', _asking, false);
   check('the in-flight question is cleared', _pendingQ, null);
 
+  // Reported live 2026-09-27: "I asked who's the most dangerous user and it
+  // changed it to 'how confident are you that kobi is malicious'". The model was
+  // unreachable (expired sign-in): the server answered 200 with the reason but
+  // saved nothing, and the page then adopted the server's history — the
+  // PREVIOUS saved exchange — erasing the question and the reason.
+  const OLD_Q = 'How confident are you that kobi is malicious';
+  serverHistory = [{role:'user', content: OLD_Q}, {role:'assistant', content:'old answer'}];
+  chatHist = serverHistory.map(m => ({role: m.role, content: m.content}));
+  global.fetch = () => Promise.resolve({ok: true, status: 200,
+    text: async () => JSON.stringify({answer: 'The AI sign-in expired — run codex login'})});
+  ask('case_1');
+  await new Promise(r => setTimeout(r, 20));
+  check('an unsaved turn stays on screen with its reason — not replaced by the last saved one',
+        shape(), ['user:' + OLD_Q, 'assistant:old answer',
+                  'user:' + QUESTION, 'assistant:The AI sign-in expired — run codex login']);
+
   if (fail) { console.log(`\n${fail} check(s) failed`); process.exit(1); }
   process.exit(0);
 })();
