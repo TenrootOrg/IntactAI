@@ -25,7 +25,7 @@ const { JSDOM, VirtualConsole } = require('jsdom');
 
 const PAGE = process.argv[2], CID = process.argv[3];
 const DIR = path.dirname(PAGE), CONTAINER = process.env.INTACT_BACKEND || 'intact_backend';
-const TABS = ['report', 'chat', 'timeline', 'identities', 'config', 'log'];   // Risk is inside identities now
+const TABS = ['report', 'chat', 'timeline', 'identities', 'risk', 'config', 'log'];
 
 // Install the relay rather than assume it: the container's /tmp is wiped by every
 // `docker compose up --force-recreate`, so a harness that expects a relay to be
@@ -130,7 +130,7 @@ function inspect(win) {
 
   // ---- B: a slow tab must not paint over the next one ---------------------
   console.log('B. slow tab, then switch away');
-  for (const [first, slow] of [['identities', /\/identities$/], ['identities', /\/risk$/],
+  for (const [first, slow] of [['identities', /\/identities$/], ['risk', /\/risk$/],
                                ['timeline', /\/timeline$/]]) {
     const { win, errors } = boot({ slow });
     await new Promise(r => win.addEventListener('load', r));

@@ -212,11 +212,6 @@
   .seg button.on.s-known{background:var(--info);color:#0d1117} .seg button.on.s-pending{background:var(--panel2);color:var(--tx)}
   /* Hosts & People: one tab, two lists, the same table grammar */
   .ent-top{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 8px}
-  .ent-switch{display:inline-flex;border:1px solid var(--bd);border-radius:8px;overflow:hidden}
-  .ent-switch button{background:transparent;border:none;border-left:1px solid var(--bd);padding:6px 14px;color:var(--muted);font-size:12px;cursor:pointer}
-  .ent-switch button:first-child{border-left:none}
-  .ent-switch button.on{background:var(--panel2);color:var(--tx);font-weight:600}
-  .ent-switch .n{margin-left:6px;font-size:11px;color:var(--muted);font-weight:400}
   .ent-cap{color:var(--muted);font-size:12px;margin:0 0 8px}
   .pgrid{display:grid;grid-template-columns:minmax(190px,1.6fr) 84px 104px minmax(140px,1.5fr) 140px 158px;align-items:center;gap:0 14px}
   .pgrid.nojev{grid-template-columns:minmax(190px,1.6fr) 84px 104px minmax(140px,1.5fr) 158px}
@@ -639,7 +634,8 @@ function render(info,md,g){
         <div class="tab ${tab==='report'?'on':''}" data-tab="report" onclick="setTab('report')">Analysis</div>
         <div class="tab ${tab==='chat'?'on':''}" data-tab="chat" onclick="setTab('chat')">Chat</div>
         <div class="tab ${tab==='timeline'?'on':''}" data-tab="timeline" onclick="setTab('timeline')">Timeline</div>
-        <div class="tab ${tab==='identities'?'on':''}" data-tab="identities" onclick="setTab('identities')">Hosts &amp; People</div>
+        <div class="tab ${tab==='identities'?'on':''}" data-tab="identities" onclick="setTab('identities')">Identities</div>
+        <div class="tab ${tab==='risk'?'on':''}" data-tab="risk" onclick="setTab('risk')">🎯 Risk</div>
         <div class="tab ${tab==='config'?'on':''}" data-tab="config" onclick="setTab('config')">⚙ Configuration</div>
         <div class="tab ${tab==='log'?'on':''}" data-tab="log" onclick="setTab('log')">Log</div>
       </div>
@@ -699,13 +695,12 @@ function drawTab(md){
   const info=curInfo;
   if(skipConfigRedraw(tab, _cfgDirty, !!$('#cf-start'))) return;
   if(window._logTimer && tab!=='log'){clearInterval(window._logTimer);window._logTimer=null;} // stop following when leaving Log
-  // Risk became the Hosts view of Hosts & People; a remembered 'risk' lands there.
-  if(tab==='risk'){ tab='identities'; window._entView='hosts'; }
   const _t=tab;
   try{
     if(tab==='timeline') renderTimeline(info.case_id);
     else if(tab==='chat') renderChat(info.case_id);
     else if(tab==='identities') renderIdentities(info.case_id);
+    else if(tab==='risk') renderRisk(info);
     else if(tab==='log') renderLog(info.case_id);
     else if(tab==='config') renderConfig(info);
     else renderReport(info);
@@ -1829,30 +1824,39 @@ function tlDelete(eid){
 }
 
 // ---- Identities tab: unified identity page (collapsible, searchable, per-account edit) ----
-// Hosts & People: the machines (ranked by risk) and the people (accounts resolved
-// into persons) on one tab. They were two tabs — Risk and Identities — that
-// answered the same question from two sides; the Hosts view now names the people
-// active on each machine, and a click on one opens that person.
-function renderIdentities(id){
-  // Reloading the case already on screen (after Merge / Dismiss / Separate) keeps
-  // the list and swaps it in place, instead of blanking the tab.
-  const reload = window._idCase===id && window._idData && $('#tabc') && $('#tabc').querySelector('.ent-top');
-  window._idCase=id;
-  if(!window._idExpand) window._idExpand={};
-  if(!window._entView) window._entView='people';
-  if(!reload) $('#tabc').innerHTML='<i style="color:var(--muted)">loading hosts and people…</i>';
-  Promise.all([api('/api/cases/'+id+'/identities'), api('/api/cases/'+id+'/risk').catch(_=>({rows:[]}))]).then(([d,r])=>{
-    if(!tabIsStill('identities'))return;
-    window._idData=d; window._riskData=r||{rows:[]};
-    if(d.error && !(d.identities)){ $('#tabc').innerHTML=`<p style="color:#f85149">could not load people: ${esc(String(d.error))}</p>`; return; }
-    _idRender(id);
-  }).catch(_=>{ if(tabIsStill('identities')) $('#tabc').innerHTML='<p style="color:#f85149">could not load hosts and people</p>'; });
+// Identities (people) and Risk (hosts) are two tabs in one row design, linked
+// both ways: a host lists the people active on it, a person the hosts they were
+// on, and a click on either opens the other tab at that row. Both tabs need both
+// lists, so they share one fetch and its cache (a tab switch paints at once).
+function _entFetch(id){
+  return Promise.all([api('/api/cases/'+id+'/identities'), api('/api/cases/'+id+'/risk').catch(_=>({rows:[]}))])
+    .then(([d,r])=>{ window._idCase=id; window._idData=d; window._riskData=r||{rows:[]}; return d; });
 }
-function entView(v){ window._entView=v; window._idFocus=false; _idRender(window._idCase); }
+function _entCached(id){ return window._idCase===id && window._idData && window._riskData; }
+function renderIdentities(id){
+  if(!window._idExpand) window._idExpand={};
+  if(_entCached(id)) _idRender(id);
+  else $('#tabc').innerHTML='<i style="color:var(--muted)">resolving identities…</i>';
+  _entFetch(id).then(d=>{
+    if(!tabIsStill('identities'))return;
+    if(d.error && !(d.identities)){ $('#tabc').innerHTML=`<p style="color:#f85149">could not load identities: ${esc(String(d.error))}</p>`; return; }
+    _idRender(id);
+  }).catch(_=>{ if(tabIsStill('identities')) $('#tabc').innerHTML='<p style="color:#f85149">could not load identities</p>'; });
+}
+function renderRisk(info){
+  const id=info.case_id;
+  if(_entCached(id)) _idRender(id);
+  else $('#tabc').innerHTML='<div class="md">loading risk…</div>';
+  _entFetch(id).then(d=>{
+    if(!tabIsStill('risk'))return;
+    if(!(((window._riskData||{}).rows)||[]).length){ $('#tabc').innerHTML='<div class="empty">No fused data yet — fuse the case first.</div>'; return; }
+    _idRender(id);
+  }).catch(e=>{ if(tabIsStill('risk')) $('#tabc').innerHTML='<div class="empty">risk load failed: '+esc(e.message||e)+'</div>'; });
+}
 function _idRender(id){
   const d=window._idData||{}, idents=d.identities||[], hosts=((window._riskData||{}).rows)||[];
-  const view=window._entView==='hosts'?'hosts':'people';
-  const q=(window._idQuery||'').trim().toLowerCase();
+  const view=tab==='risk'?'hosts':'people';
+  const q=((view==='people'?window._idQuery:window._hostQuery)||'').trim().toLowerCase();
   const hit=it=> !q || (it.name||'').toLowerCase().includes(q)
     || (it.accounts||[]).some(a=>(a.label||'').toLowerCase().includes(q))
     || (it.hosts||[]).some(h=>(h.label||'').toLowerCase().includes(q))
@@ -1863,12 +1867,11 @@ function _idRender(id){
   const total = view==='people' ? idents.length : hosts.length;
   const sug=(d.counts&&d.counts.suggestions)||0;
   let h=`<div class="ent-top">
-      <span class="ent-switch"><button class="${view==='people'?'on':''}" onclick="entView('people')">People<span class="n">${idents.length}</span></button><button class="${view==='hosts'?'on':''}" onclick="entView('hosts')">Hosts<span class="n">${hosts.length}</span></button></span>
-      <input id="id-search" placeholder="${view==='people'?'filter people, accounts, hosts…':'filter hosts or people…'}" value="${esc(window._idQuery||'')}" oninput="idSearch(this.value)" autocomplete="off" style="flex:1;min-width:160px;max-width:340px;padding:6px 8px">
-      <span style="color:var(--muted);font-size:11px">${q?`${shown.length} of ${total}`:''}${view==='people'&&sug?`${q?' · ':''}${sug} link suggestion${sug===1?'':'s'}`:''}</span>
+      <input id="id-search" placeholder="${view==='people'?'filter people, accounts, hosts…':'filter hosts or people…'}" value="${esc((view==='people'?window._idQuery:window._hostQuery)||'')}" oninput="idSearch(this.value)" autocomplete="off" style="flex:1;min-width:160px;max-width:340px;padding:6px 8px">
+      <span style="color:var(--muted);font-size:11px">${q?`${shown.length} of `:''}${total} ${view==='people'?(total===1?'identity':'identities'):(total===1?'host':'hosts')}${view==='people'&&sug?` · ${sug} link suggestion${sug===1?'':'s'}`:''}</span>
       ${view==='people'?`<span style="margin-left:auto;display:flex;gap:6px"><button class="ghost" style="font-size:11px" onclick="idExpandAll(true)">expand all</button><button class="ghost" style="font-size:11px" onclick="idExpandAll(false)">collapse all</button></span>`:''}
     </div>`;
-  if(d.stale) h+=`<div class="agnote">${d.stale} run(s) not yet fused — new uploads appear after a <b>Refusion</b>.</div>`;
+  if(d.stale && view==='people') h+=`<div class="agnote">${d.stale} run(s) not yet fused — new uploads appear after a <b>Refusion</b>.</div>`;
   if(view==='people'){
     const jev=d.sort==='jev';
     h+=`<p class="ent-cap">${jev?'<b>Compromise likelihood</b> is Jev’s estimate, from each person’s findings, of how likely the account is in an attacker’s hands (Likely ≥ 70%, Unlikely ≤ 30%) — a second opinion; your verdict decides. Sorted by your verdict, then likelihood, then A–Z.':'Sorted A–Z.'} Click a person for accounts, hosts, findings and link suggestions.</p>`;
@@ -1889,13 +1892,13 @@ function _hostPeople(idents){
 }
 function entOpenPerson(key){
   const it=(((window._idData||{}).identities)||[]).find(x=>x.key===key); if(!it) return;
-  window._entView='people'; window._idQuery=it.name||''; window._idExpand[key]=true; window._idFocus=false;
-  _idRender(window._idCase);
+  window._idQuery=it.name||''; (window._idExpand=window._idExpand||{})[key]=true; window._idFocus=false;
+  setTab('identities');
 }
 function _hostRow(label){ return (((window._riskData||{}).rows)||[]).find(r=>r.host===label); }
 function entOpenHost(label){
-  window._entView='hosts'; window._idQuery=label; (window._hostExpand=window._hostExpand||{})[label]=true; window._idFocus=false;
-  _idRender(window._idCase);
+  window._hostQuery=label; (window._hostExpand=window._hostExpand||{})[label]=true; window._idFocus=false;
+  setTab('risk');
 }
 function hostToggle(h){ (window._hostExpand=window._hostExpand||{})[h]=!window._hostExpand[h]; window._idFocus=false; _idRender(window._idCase); }
 // Hosts in the same row grammar as People: the row says how bad and who was there;
@@ -1930,10 +1933,10 @@ function _entHosts(rows, ppl, d){
     return `<div class="prow${comp.length?' v-compromised':''}">${row}${bodyH}</div>`;
   }).join('');
   return `${d.is_stale?'<div class="agnote">New collections have landed that are not in this ranking yet — run <b>Refusion</b> to include them.</div>':''}
-    <p class="ent-cap">Hosts ranked by risk: the band is the worst detection; within it each <b>distinct</b> detection counts once (repeats add a little, daily routines one level lower, cross-host detections more). A red edge means someone you marked compromised was active there. Click a host for why, what next, and who.</p>
+    <p class="ent-cap">Endpoints ranked by risk: the band is the worst detection; within it each <b>distinct</b> detection counts once (repeats add a little, daily routines one level lower, cross-host detections more). A red edge means someone you marked compromised was active there. Click a host for why, what next, and who.</p>
     ${head}${body||'<p style="color:var(--muted)">no match.</p>'}`;
 }
-function idSearch(v){ window._idQuery=v; window._idFocus=true; _idRender(window._idCase); }
+function idSearch(v){ if(tab==='risk') window._hostQuery=v; else window._idQuery=v; window._idFocus=true; _idRender(window._idCase); }
 function idToggle(k){ window._idExpand[k]=!window._idExpand[k]; window._idFocus=false; _idRender(window._idCase); }
 function idExpandAll(on){ (((window._idData||{}).identities)||[]).forEach(it=>window._idExpand[it.key]=on); window._idFocus=false; _idRender(window._idCase); }
 function idCard(cid,it,jev){
