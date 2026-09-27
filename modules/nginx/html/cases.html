@@ -1561,7 +1561,17 @@ function _tlTitle(r){
   const t = r.title || '', h = (r.host || '').trim();
   if(!t || !h || h.includes(',')) return t;
   const suffix = ' on ' + h;
-  return t.endsWith(suffix) ? t.slice(0, -suffix.length) : t;
+  if(t.endsWith(suffix)) return t.slice(0, -suffix.length);
+  // "… on HOST (logged as OTHER)": the host is already first on the row, and the
+  // logged-as name is shown as its own tag (_tlLoggedAs). 39 rows on jev_test named
+  // the same machine twice because only the plain suffix was trimmed.
+  const la = suffix + ' (logged as ';
+  const i = t.lastIndexOf(la);
+  return (i > 0 && t.endsWith(')')) ? t.slice(0, i) : t;
+}
+function _tlLoggedAs(r){
+  const m = /\(logged as ([^)]+)\)$/.exec(r.title || '');
+  return m ? `<span class="sg-hint" style="border-style:solid;color:var(--muted)" title="These events were written to the log under this computer name — usually an earlier name of the same machine, or the image it was built from.">logged as ${esc(m[1])}</span>` : '';
 }
 
 function renderTimeline(id){
@@ -1676,7 +1686,7 @@ function _tlRow(r, inGroup){
       <code style="white-space:nowrap">${esc(r.ts||'—')}${_tlUntil(r)}</code>
       <div class="tlmeta" style="cursor:pointer" title="Click for full event detail" onclick="openFindingDetail('${r.finding_id}')">
         <span>${r.is_new?'<span class="tlnew" title="Joined or grew since this group was last reviewed">NEW</span> ':''}<strong>${esc(r.host||'-')}</strong> ${r.phase?`<span style="color:var(--muted)">[${esc(r.phase)}]</span>`:''} ${esc(_tlTitle(r))} <span style="color:var(--muted);font-size:10px">▸ detail</span></span>
-        <span class="l2">${arts}${r.reopened?'<span class="sg-hint" style="border-color:#d29922;color:#e3b341" title="A new occurrence arrived after your last verdict — re-validate this one.">⟳ re-opened: new activity since you validated</span>':''}${r.manual?'<span class="sg-hint" style="border-style:solid">manual</span>':''}${(r.hits||1)>1?`<span class="sg-hint" style="border-style:solid;color:var(--muted)" title="Hits in this episode — the detection is one row until it goes quiet for 4 hours">${Number(r.hits).toLocaleString()} hits</span>`:''}${_tlJev(r)}${r.notes?`<span style="color:var(--muted);font-size:11px">— ${esc(r.notes)}</span>`:''}</span>
+        <span class="l2">${arts}${_tlLoggedAs(r)}${r.reopened?'<span class="sg-hint" style="border-color:#d29922;color:#e3b341" title="A new occurrence arrived after your last verdict — re-validate this one.">⟳ re-opened: new activity since you validated</span>':''}${r.manual?'<span class="sg-hint" style="border-style:solid">manual</span>':''}${(r.hits||1)>1?`<span class="sg-hint" style="border-style:solid;color:var(--muted)" title="Hits in this episode — the detection is one row until it goes quiet for 4 hours">${Number(r.hits).toLocaleString()} hits</span>`:''}${_tlJev(r)}${r.notes?`<span style="color:var(--muted);font-size:11px">— ${esc(r.notes)}</span>`:''}</span>
       </div>
       <span class="chip c-${r.severity}">${esc(r.severity)}</span>
       <span class="seg">${seg}</span>

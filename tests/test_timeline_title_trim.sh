@@ -52,6 +52,12 @@ check('ALClient022', 'SIGMA: Antivirus Password Dumper Detection on ALClient022'
 check('ALClient09', 'Renamed binary: pythonw.exe on ALClient09',
       'Renamed binary: pythonw.exe', 'trims after a filename');
 
+// "(logged as X)": the host is trimmed, the logged-as name is shown as its own tag
+check('ALClient022', 'SIGMA: Defender Alert (Severe) on ALClient022 (logged as ALClient02.AdatumLab.local)',
+      'SIGMA: Defender Alert (Severe)', 'trims the host before a logged-as suffix');
+check('ALClient022', 'SIGMA: x on ALClient0222 (logged as Y)',
+      'SIGMA: x on ALClient0222 (logged as Y)', 'logged-as: does not trim a longer host name');
+
 // cross-host findings, which really do end in "hosts"
 check('ALClient04, ALClient06', 'Shared binary seen on 2 hosts',
       'Shared binary seen on 2 hosts', 'leaves a multi-host row alone');
