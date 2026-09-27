@@ -219,6 +219,18 @@ def _initials(n):
     return None
 
 
+# Role affixes one person's accounts carry (almogs / almognoadmin, kobia / kobitst,
+# adm_jdoe / jdoe). Longest first, so "noadmin" is not read as "no" + "admin".
+_ROLE_AFFIX = re.compile(r"^(?:adm|admin|svc|tst|test)[._-]"
+                         r"|[._-]?(?:noadmin|admin|adm|std|tst|test|svc)$")
+
+
+def _role_stem(n):
+    """The name without a role prefix/suffix, or None if it has none (or too little left)."""
+    t = _ROLE_AFFIX.sub("", n or "", count=1)
+    return t if t != n and len(t) >= 3 else None
+
+
 def _match(a_label, b_label):
     """Return (score, reason, auto_eligible) for two usernames, or None if no match.
     auto_eligible = strong enough to auto-confirm IF the match is also unique."""
@@ -238,6 +250,12 @@ def _match(a_label, b_label):
     ia, ib = _initials(na), _initials(nb)
     if (ia and ia == nb) or (ib and ib == na) or (ia and ib and ia == ib):
         return (0.65, "first.last / flast form", False)
+    # One person's admin / test / standard accounts. A suggestion only: they are
+    # separate principals, and compute_candidates never auto-merges this reason.
+    sa, sb = _role_stem(na) or na, _role_stem(nb) or nb
+    if (sa, sb) != (na, nb) and (sa == sb or ((sb.startswith(sa) or sa.startswith(sb))
+                                              and abs(len(sa) - len(sb)) <= 2)):
+        return (0.7, "role variant", False)
     # prefix / containment at a token boundary (alon vs alonm)
     if (nb.startswith(na) or na.startswith(nb)) and abs(len(na) - len(nb)) <= 4:
         return (0.6, "username prefix", False)
@@ -599,7 +617,8 @@ def compute_candidates(graph) -> list:
             # (email/SID), or a name match backed by a shared host/IP. A bare PREFIX/FUZZY
             # name match with NO corroboration is only a SUGGESTION, never automatic — that
             # is where big-org name collisions (AlonM/AlonN/AlonT) live.
-            c["auto"] = bool(c.get("corroborated") or c.get("match") == "exact username")
+            c["auto"] = bool((c.get("corroborated") or c.get("match") == "exact username")
+                             and c.get("match") != "role variant")
         else:                                          # operates: auto when the user is seen on the host
             c["ambiguous"] = False
             c["auto"] = bool(c.get("auto_eligible"))

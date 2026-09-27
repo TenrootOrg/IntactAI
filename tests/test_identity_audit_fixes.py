@@ -86,6 +86,21 @@ class Suggestions(unittest.TestCase):
         self.assertIn("shares host WS1", c["reason"])          # still shown as evidence
         self.assertFalse(c["auto"])
 
+    def test_role_variants_are_suggested_never_merged(self):
+        # jev_test: almogs / almognoadmin and kobia / kobitst were never offered.
+        for a, b in (("almogs", "almognoadmin"), ("kobia", "kobitst"), ("adm_jdoe", "CORP\\jdoe"), ("jdoe", "jdoe.adm")):
+            self.assertEqual(identities._match(a, b), (0.7, "role variant", False), (a, b))
+        self.assertIsNone(identities._match("nofl", "giladt"))
+        # a shared host across infrastructures would normally auto-merge; not a role variant
+        g = _graph()
+        g.upsert(schema.Entity(id="account:aws:kobia", type="account", label="kobia",
+                               attrs={"_assets": ["cloud_account:aws:1", "asset:WS1"]}))
+        g.upsert(schema.Entity(id="account:asset:WS1:kobitst", type="account", label="kobitst",
+                               attrs={"_assets": ["asset:WS1"]}))
+        c = [c for c in identities.compute_candidates(g) if c.get("match") == "role variant"]
+        self.assertEqual(len(c), 1)
+        self.assertFalse(c[0]["auto"])
+
 
 if __name__ == "__main__":
     unittest.main()
