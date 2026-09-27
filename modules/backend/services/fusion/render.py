@@ -1946,11 +1946,19 @@ def _recommendations_md(graph, findings, assets) -> str:
     """Actionable, deterministic next steps derived from the findings (containment →
     eradication → credentials → network → patching → deeper collection → evidence)."""
     recs: list[tuple] = []
-    hot = sorted((a for a in assets if sev.at_least(a.severity, "high")),
-                 key=lambda a: -sev.rank(a.severity))
+    # The SAME order as the Risk tab (score_assets_over on these findings): it used to
+    # sort by tier alone and cut at 6 in graph order, so it named ALClient04 (#7)
+    # and left out ALCA01 (#5). Every critical host is always named.
+    from .correlate import score_assets_over
+    sc = score_assets_over(assets, findings, len(assets))
+    ranked = sorted(assets, key=lambda a: (-(sc.get(a.id) or {}).get("risk_score", 0),
+                                           -(sc.get(a.id) or {}).get("risk_intensity", 0)))
+    hot = [a for a in ranked if sev.at_least((sc.get(a.id) or {}).get("severity") or "informational", "high")]
+    crit = [a for a in hot if (sc.get(a.id) or {}).get("severity") == "critical"]
+    hot = crit + [a for a in hot if a not in crit][:max(0, 6 - len(crit))]
     if hot:
         recs.append(("Containment", "Isolate the most-affected host(s) from the network "
-                     "pending eradication: " + ", ".join(a.label for a in hot[:6]) + "."))
+                     "pending eradication: " + ", ".join(a.label for a in hot) + "."))
     pers = list(dict.fromkeys(f.title for f in findings
                 if any(k in f.title.lower() for k in ("service", "persist", "task", "autorun"))))
     if pers:
