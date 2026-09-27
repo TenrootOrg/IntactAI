@@ -102,7 +102,7 @@ class Notice(unittest.TestCase):
         d = {"jev_suggestions": {"a": {"wm": a.watermark(), "label": "true_positive", "confidence": 0.9}}}
         n, asked, _ = t.run_pass(d, [a], {})
         self.assertEqual((n, asked), (0, []))
-        self.assertEqual(t.merged["jev_notice"], [{"id": "a", "title": "T a", "aliases": []}])
+        self.assertEqual(t.merged["jev_notice"], [{"id": "a", "title": "T a", "detection": "T a", "aliases": []}])
         t.logged.assert_not_called()                     # not new: no log line
 
     def test_a_verdict_on_an_absorbed_row_also_clears_it(self):
@@ -124,7 +124,8 @@ class SuggestionFor(unittest.TestCase):
     def test_stale_unsure_or_absent_gives_no_chip(self):
         s = {"f": {"wm": "2|t", "label": "known", "p": 0.93, "confidence": 0.9}}
         with mock.patch.object(jev, "min_confidence", return_value=0.8):
-            self.assertEqual(jev.suggestion_for(s, "f", "2|t"), {"label": "known", "p": 0.93})
+            # the chip shows the number it is gated on (confidence), not p
+            self.assertEqual(jev.suggestion_for(s, "f", "2|t"), {"label": "known", "p": 0.9})
             self.assertIsNone(jev.suggestion_for(s, "f", "3|t"))
             self.assertIsNone(jev.suggestion_for(s, "x", "2|t"))
         with mock.patch.object(jev, "min_confidence", return_value=0.95):
@@ -203,11 +204,13 @@ class Chip(unittest.TestCase):
             src = fh.read()
         fn = re.search(r"function _tlJev\(r\)\{.*?\n\}", src, re.S)
         note = re.search(r"function _jevNote\(info\)\{.*?\n\}", src, re.S)
+        gj = re.search(r"function _tlGroupJev\(members\)\{.*?\n\}", src, re.S)
+        self.assertTrue(gj, "_tlGroupJev missing from cases.html")
         self.assertTrue(note, "_jevNote missing from cases.html")
         states = re.search(r"const TL_STATES=\[.*?\];", src)
         self.assertTrue(fn and states, "_tlJev / TL_STATES missing from cases.html")
         js = (states.group(0) + "\nconst esc=s=>String(s).replace(/[<>&'\"]/g,'');\n"
-              + fn.group(0) + "\n" + note.group(0) + """
+              + fn.group(0) + "\n" + note.group(0) + "\n" + gj.group(0) + """
 const out=[
   _tlJev({finding_id:'f1', jev:{label:'known', p:0.914}}),
   _tlJev({finding_id:'f1'}),
@@ -216,6 +219,9 @@ const out=[
   _jevNote({jev_unreviewed:[{id:'a',title:'Base64 on H1'},{id:'b',title:'Base64 on H2'},{id:'c',title:'Base64 (+1 related) on 3 hosts'},{id:'d',title:'Log Cleared on H1'}]}),
   _jevNote({jev_unreviewed:[]}),
   _jevNote(null),
+  _jevNote({jev_unreviewed:[{id:'a',title:'Shared binary: x.exe on 3 hosts',detection:'Shared binary: x.exe'},{id:'b',title:'Shared binary: x.exe on 2 hosts',detection:'Shared binary: x.exe'}]}),
+  _tlGroupJev([{jev:{label:'known',p:0.9}},{jev:{label:'known',p:0.9}},{jev:{label:'true_positive',p:0.9}},{}]),
+  _tlGroupJev([{},{}]),
 ];
 console.log(JSON.stringify(out));""")
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as t:
@@ -225,7 +231,10 @@ console.log(JSON.stringify(out));""")
         finally:
             os.unlink(t.name)
         import json
-        chip, none, bad, notice, grouped, empty, nothing = json.loads(out)
+        chip, none, bad, notice, grouped, empty, nothing, shared, gchip, gnone = json.loads(out)
+        self.assertIn("<b>1</b> detection (2 rows)", shared)      # keyed on detection, not " on "
+        self.assertIn("2 likely Known · 1 likely True Positive", gchip)
+        self.assertEqual(gnone, "")
         self.assertIn("<b>2</b> detections (4 rows)", grouped)
         self.assertIn("Base64 ×3 · Log Cleared", grouped)
         self.assertIn("<b>2</b> detections (2 rows) look malicious", notice)

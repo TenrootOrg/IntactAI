@@ -275,7 +275,12 @@ def suggest_dispositions(case_id, d, g) -> int:
     floor = min_confidence()
     title = {f.id: f.title for f in g.findings}
     alias = {f.id: [a for a in f.ids() if a != f.id] for f in g.findings}
-    notice = [{"id": k, "title": title[k], "aliases": alias.get(k) or []} for k, v in new.items()
+    # The detection name, so the page groups rows by what fired rather than by
+    # re-parsing titles (which split "Shared binary: x on 3 hosts" wrongly).
+    from .correlate import _detection_name
+    det = {f.id: _detection_name(f) for f in g.findings}
+    notice = [{"id": k, "title": title[k], "detection": det[k], "aliases": alias.get(k) or []}
+              for k, v in new.items()
               if v.get("label") == "true_positive" and v.get("confidence", 0) >= floor]
     fresh = [n for n in notice if n["id"] in {f.id for f in todo}]
     if new != have or notice != (d.get("jev_notice") or []):
@@ -304,7 +309,9 @@ def suggestion_for(d_suggestions, fid, wm):
     s = (d_suggestions or {}).get(fid)
     if not s or s.get("wm") != wm or s.get("confidence", 0) < min_confidence():
         return None
-    return {"label": s["label"], "p": s["p"]}
+    # Show the number the chip is gated on. It showed the label's probability
+    # while gating on Jev's confidence, so a "74%" chip appeared under an 80% floor.
+    return {"label": s["label"], "p": s.get("confidence", 0)}
 
 
 # ---------------------------------------------------------------------------

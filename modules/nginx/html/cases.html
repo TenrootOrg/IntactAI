@@ -938,7 +938,7 @@ function _jevNote(info){
   // One detection now has a row per episode, so count DETECTIONS and say how
   // many rows each has — "72 findings" read as 72 different threats.
   const by={};
-  for(const x of n){ const k=String(x.title||'').split(' on ')[0].replace(/\s*\(\+\d+ related\)$/,''); by[k]=(by[k]||0)+1; }
+  for(const x of n){ const k=x.detection||String(x.title||'').split(' on ')[0].replace(/\s*\(\+\d+ related\)$/,''); by[k]=(by[k]||0)+1; }
   const names=Object.entries(by).sort((a,b)=>b[1]-a[1]);
   const shown=names.slice(0,4).map(([k,c])=>esc(k)+(c>1?` ×${c}`:'')).join(' · ');
   const d=names.length;
@@ -1711,11 +1711,17 @@ function _tlGroupHead(grp, members, open){
   return `<div class="tlrow tlgroup" title="${open?'Hide':'Show'} the ${ids.length} host rows" onclick="tlToggleGroup('${esc(grp.id)}')">
       <code style="white-space:nowrap">${esc(members[0].ts||'—')}${_tlUntil({ts:members[0].ts,last})}</code>
       <div class="tlmeta"><span><span class="tlgtag">GROUP</span><strong>${open?'▾':'▸'} ${esc(grp.name)}</strong> — ${esc(hosts.join(', '))}</span>
-        <span class="l2"><span class="sg-hint" style="border-style:solid;color:var(--muted)">${hosts.length} hosts · ${ids.length} rows · ${hits.toLocaleString()} hits</span><span class="sg-hint" style="border-style:solid;${weak?'':'border-color:#3fb950;color:#56d364'}" title="${weak?'Same detection close together on several hosts — a correlation, not proof they are related.':'The hosts share this identifier in their evidence.'}">${weak?'linked by time only':esc(grp.link)}</span><span style="color:var(--muted);font-size:11px">${done} of ${ids.length} reviewed</span>${_tlGroupNews(grp, members)}</span>
+        <span class="l2"><span class="sg-hint" style="border-style:solid;color:var(--muted)">${hosts.length} hosts · ${ids.length} rows · ${hits.toLocaleString()} hits</span><span class="sg-hint" style="border-style:solid;${weak?'':'border-color:#3fb950;color:#56d364'}" title="${weak?'Same detection close together on several hosts — a correlation, not proof they are related.':'The hosts share this identifier in their evidence.'}">${weak?'linked by time only':esc(grp.link)}</span><span style="color:var(--muted);font-size:11px">${done} of ${ids.length} reviewed</span>${_tlGroupJev(members)}${_tlGroupNews(grp, members)}</span>
       </div>
       ${sev?`<span class="chip c-${esc(sev)}">${esc(sev)}</span>`:''}
       <span class="seg">${btn('true_positive','True Positive')}${btn('false_positive','False Positive')}${btn('known','Known')}</span>
     </div>`;
+}
+// A closed group hid its rows' Jev chips; say how many rows carry one, by verdict.
+function _tlGroupJev(members){
+  const by={}; for(const m of members){ const l=m.jev&&(TL_STATES.find(([k])=>k===m.jev.label)||[])[1]; if(l) by[l]=(by[l]||0)+1; }
+  const t=Object.entries(by).map(([l,c])=>`${c} likely ${esc(l)}`).join(' · ');
+  return t?`<span class="sg-hint" style="border-color:#58a6ff;color:#79c0ff" title="Jev's suggestions on the rows in this group — open it to act on each">Jev: ${t}</span>`:'';
 }
 // What joined or grew in this group since it was last reviewed (a verdict, or
 // Mark seen) — new host collected, severity lowered, more artifacts, more hits.
