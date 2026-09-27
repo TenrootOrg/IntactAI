@@ -8,7 +8,7 @@ is templating, not analysis. The LLM (real or simulated) only narrates over
 from __future__ import annotations
 
 from . import severity as sev, keys
-from .correlate import in_window, finding_in_window, _assets_of, _host_label
+from .correlate import in_window, finding_in_window, _assets_of, _host_label, _detection_name
 
 
 def fmt_ts(v) -> str:
@@ -364,12 +364,15 @@ def zoom_targets(graph, *, window=None, min_severity="informational",
                 seen_t.add(t); titles.append(t)
             if len(titles) >= 10:
                 break
+        dets = _distinct(fs)                      # detections, not episode repeats
+        crit_dets = sum(1 for f in dets if f.severity == "critical")
         title = (f"{lo.strftime('%Y-%m-%d')} — {len(labels)} host"
-                 f"{'' if len(labels) == 1 else 's'}, {len(fs)} finding"
-                 f"{'' if len(fs) == 1 else 's'}"
+                 f"{'' if len(labels) == 1 else 's'}, {len(dets)} detection"
+                 f"{'' if len(dets) == 1 else 's'}"
                  + (f", {top_sev}" if top_sev not in ("informational",) else ""))
         out.append({
-            "title": title, "severity": top_sev, "finding_count": len(fs),
+            "title": title, "severity": top_sev, "finding_count": len(dets),
+            "row_count": len(fs),
             "cross_host": cross, "mitre": mitre,
             "hosts": sorted(hosts.keys()), "host_labels": labels,
             "window": {"start": start, "end": end}, "span_hours": span_h,
@@ -378,13 +381,12 @@ def zoom_targets(graph, *, window=None, min_severity="informational",
             # scope estimate). Not part of the model payload (timeframes_for_payload
             # picks its own keys).
             "finding_ids": [f.id for f in fs],
-            "critical_count": sum(1 for f in fs if f.severity == "critical"),
+            "critical_count": crit_dets,
             # Rank on what DISCRIMINATES. `severity` is the max in the group, so on a
             # real case every group reads "critical" off a handful of criticals and
             # the column sorts nothing -- measured: all six windows identical. The
             # count of criticals, the cross-host links and the host spread do vary.
-            "_risk": (sum(1 for f in fs if f.severity == "critical") * 1000
-                      + cross * 100 + len(labels) * 25 + len(fs)),
+            "_risk": (crit_dets * 1000 + cross * 100 + len(labels) * 25 + len(dets)),
         })
     out.sort(key=lambda z: -z["_risk"])
     for z in out:
@@ -402,7 +404,7 @@ def zoom_targets(graph, *, window=None, min_severity="informational",
         rest.sort(key=lambda z: z["window"]["start"])
         lo = min(z["window"]["start"] for z in rest)
         hi = max(z["window"]["end"] for z in rest)
-        out.append({"title": f"{len(rest)} further window(s) — {rf} finding(s)",
+        out.append({"title": f"{len(rest)} further window(s) — {rf} detection(s)",
                     "severity": max((z["severity"] for z in rest),
                                     key=lambda x: sev.rank(x)),
                     "finding_count": rf, "critical_count": rc, "cross_host": 0,
@@ -1737,6 +1739,21 @@ def chat_subgraph(graph, question, *, window=None, min_severity="informational",
 # ------------------------------------------------------------------ report
 
 
+def _distinct(findings) -> list:
+    """One representative per DISTINCT detection on a host set (its worst row).
+
+    The Timeline shows one row per episode, so a rule that came back on eight days
+    is eight rows. Every headline number — header, summary, Risk tally, scope-card
+    ranking — counts DETECTIONS, not repeats (19 critical rows on jev_test were 5
+    distinct critical detections), with rows as the secondary figure."""
+    best: dict = {}
+    for f in findings:
+        k = (tuple(sorted(f.asset_ids or [])), _detection_name(f))
+        if k not in best or sev.rank(f.severity) > sev.rank(best[k].severity):
+            best[k] = f
+    return list(best.values())
+
+
 def _sev_tally(findings):
     t = {lv: 0 for lv in sev.LEVELS}
     for f in findings:
@@ -1766,9 +1783,10 @@ def _exec_summary(graph, assets, findings, *, initial_access=None, window=None) 
     # Assessment) so "most affected" is consistent everywhere in the report.
     hosts = sorted(assets, key=lambda a: (-(a.attrs.get("risk_score") or 0),
                                           -sev.rank(a.severity)))
-    crit = [f for f in findings if sev.at_least(f.severity, "critical")]
-    high = [f for f in findings if f.severity == "high"]
-    xh = [f for f in findings if f.kind == "cross_host"]
+    dets = _distinct(findings)
+    crit = [f for f in dets if sev.at_least(f.severity, "critical")]
+    high = [f for f in dets if f.severity == "high"]
+    xh = [f for f in dets if f.kind == "cross_host"]
     affected = [a for a in assets if any(a.id in f.asset_ids for f in findings)]
     order = [lab for lab, _ in _ASSESS_TACTICS]
     fleet: dict = {}
@@ -1785,7 +1803,8 @@ def _exec_summary(graph, assets, findings, *, initial_access=None, window=None) 
     bits.append(
         f"This investigation correlated suspicious activity across "
         f"**{len(affected) or len(assets)} of {len(assets)} host(s)** and surfaced "
-        f"**{len(findings)} finding(s)** ({len(crit)} critical, {len(high)} high), "
+        f"**{len(dets)} distinct detection(s)** ({len(crit)} critical, {len(high)} high"
+        f"{', across ' + str(len(findings)) + ' Timeline rows' if len(findings) != len(dets) else ''}), "
         f"placing the overall severity of this incident at **{sev_word}**.")
     if first_ts:
         span = (f"between `{first_ts}` and `{last_ts}`" if last_ts and last_ts != first_ts
@@ -1802,10 +1821,10 @@ def _exec_summary(graph, assets, findings, *, initial_access=None, window=None) 
     if hosts:
         w = hosts[0]
         wt = [lab for lab in order if lab in _host_tactics(findings, w.id)]
-        nf = sum(1 for f in findings if w.id in f.asset_ids)
+        nf = sum(1 for f in dets if w.id in f.asset_ids)
         focus = (" — the focal point, where activity spanned "
                  + _join_nat([_TACTIC_SHORT.get(l, l.lower()) for l in wt[:5]])) if wt else ""
-        bits.append(f"**{w.label}** ({w.severity}, {nf} finding(s)) is the most affected "
+        bits.append(f"**{w.label}** ({w.severity}, {nf} distinct detection(s)) is the most affected "
                     f"system{focus}.")
     if xh:
         bits.append(f"Critically, **{len(xh)} finding(s)** correlate across multiple hosts — "
@@ -1964,7 +1983,7 @@ def risk_table(graph, *, window=None, min_severity="informational") -> list:
         afind = [f for f in findings if a.id in f.asset_ids]
         sc = scored.get(a.id) or {}
         tally = {lv: 0 for lv in sev.LEVELS}
-        for f in afind:
+        for f in _distinct(afind):                 # distinct detections, not episode rows
             if f.severity in tally:
                 tally[f.severity] += 1
         # Top reasons = highest-severity findings first, deduped by title, capped.
@@ -1997,7 +2016,8 @@ def risk_table(graph, *, window=None, min_severity="informational") -> list:
             "escalate": escalate,
             "deep": deep,
             "modules": _collectors(modules),
-            "finding_count": len(afind),
+            "finding_count": len(_distinct(afind)),     # distinct detections
+            "row_count": len(afind),                    # Timeline rows (episodes)
             "by_severity": tally,
             "cross_host": any(f.kind == "cross_host" for f in afind),
             "reasons": reasons,
@@ -2152,7 +2172,7 @@ def _attack_assessment(graph, assets, findings, *, window=None, initial_access=N
         prof.append({"host": a.label, "sev": a.severity,
                      "risk": int(a.attrs.get("risk_score") or 0),
                      "tactics": [l for l in order if l in tac], "tac_map": tac,
-                     "first": ts_list[0] if ts_list else None, "n": len(af)})
+                     "first": ts_list[0] if ts_list else None, "n": len(_distinct(af))})
     if not prof:
         return ""
     chrono = sorted(prof, key=lambda p: (p["first"] or "9999", -p["risk"]))
@@ -2194,7 +2214,7 @@ def _attack_assessment(graph, assets, findings, *, window=None, initial_access=N
 
     # 3. the focal point — most-compromised host gets the spotlight
     if worst['tactics']:
-        out.append(f"\n**{worst['host']}** ({worst['sev']}, {worst['n']} finding(s)) is the "
+        out.append(f"\n**{worst['host']}** ({worst['sev']}, {worst['n']} distinct detection(s)) is the "
                    f"focal point of the compromise, where activity reached "
                    f"{_join_nat([_TACTIC_SHORT.get(l, l.lower()) for l in worst['tactics'][:5]])}.")
 
@@ -2288,7 +2308,8 @@ def report_header(graph, *, window=None, min_severity="informational") -> str:
     """
     from datetime import datetime, timezone
     assets, findings = scope(graph, window=window, min_severity=min_severity)
-    sev = _sev_tally(findings)
+    dets = _distinct(findings)
+    sev = _sev_tally(dets)
     ts = [f.ts for f in findings if f.ts]
     span = f"{min(ts)} → {max(ts)}" if ts else "no time-anchored activity"
     # Analysis window and severity floor are deliberately NOT here: they restate
@@ -2302,9 +2323,9 @@ def report_header(graph, *, window=None, min_severity="informational") -> str:
         f"|---|---|",
         f"| **Report generated** | {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')} |",
         f"| **Hosts in scope** | {len(assets)} |",
-        f"| **Findings** | {len(findings)} "
+        f"| **Detections** | {len(dets)} distinct "
         f"({sev.get('critical',0)} critical, {sev.get('high',0)} high, "
-        f"{sev.get('medium',0)} medium) |",
+        f"{sev.get('medium',0)} medium), across {len(findings)} Timeline rows |",
         f"| **Evidence span** | {span} |",
         f"| **Entities correlated** | {len(graph.entities):,} across {len(graph.relationships):,} links |",
     ]

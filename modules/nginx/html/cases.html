@@ -1099,7 +1099,7 @@ function loadZoomTargets(id){
       <div class="zoomrow">`+ _zoomTargets.map((t,i)=>`
         <div class="zoomcard sev-${esc(t.severity||'')}">
           <div class="zt-title">${t.name ? esc('Phase '+t.n+' — '+t.name) : esc(t.title)}</div>
-          <div class="zt-meta">${(t.host_labels||[]).length} host(s) · ${t.finding_count} finding(s)${t.cross_host?` · ${t.cross_host} cross-host`:''}${(t.mitre&&t.mitre.length)?` · ${esc(t.mitre.slice(0,3).join(', '))}`:''}</div>
+          <div class="zt-meta">${(t.host_labels||[]).length} host(s) · ${t.finding_count} detection(s)${t.row_count&&t.row_count!==t.finding_count?` (${t.row_count} rows)`:''}${t.cross_host?` · ${t.cross_host} cross-host`:''}${(t.mitre&&t.mitre.length)?` · ${esc(t.mitre.slice(0,3).join(', '))}`:''}</div>
           <div class="zt-win">${esc((t.window||{}).start||'')} → ${esc((t.window||{}).end||'')}</div>
           ${_ztJev(t)}
           ${t.rollup ? '<div class="zt-meta" style="margin-top:6px">Accounting row — the windows not analysed individually. Not a scope.</div>' : `<button class="dlbtn zt-go" onclick="applyZoom('${esc(id)}',${i})">Analyze this scope →</button>`}

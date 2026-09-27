@@ -561,6 +561,41 @@ def _cross_host_factor(f, n_hosts: int) -> float:
     return 1.0 + min(1.0, k / max(n_hosts, 1))        # prevalence-scaled, in (1, 2]
 
 
+def _risk_sev(f) -> str:
+    """The severity a finding contributes to HOST risk. A daily routine (recurring
+    row) counts one level lower: its own severity stays on the row, but a scheduled
+    job must not set or lift a host's tier by itself."""
+    if getattr(f, "recurring", None) and f.severity in sev.LEVELS:
+        i = sev.LEVELS.index(f.severity)
+        return sev.LEVELS[max(i - 1, 0)]
+    return f.severity
+
+
+def _host_intensity(aid, findings, n_hosts: int) -> float:
+    """Risk intensity of one host: each DISTINCT detection counts once.
+
+    Since the Timeline split detections into episodes, one rule firing on eight
+    separate days is eight rows; summing rows measured repetition, not breadth
+    (ALCA01: 35 rows, 8 distinct detections, lifted above hosts with 20). A
+    detection weighs its worst row, plus a small capped bonus for coming back —
+    +10% per further episode, at most +50%."""
+    by_det: dict = {}
+    for f in findings:
+        if aid in f.asset_ids:
+            by_det.setdefault(_detection_name(f), []).append(f)
+    total = 0.0
+    for fs in by_det.values():
+        w = max(_RISK_W.get(_risk_sev(f), 0) * _cross_host_factor(f, n_hosts) for f in fs)
+        total += w * (1 + min(0.5, 0.1 * (len(fs) - 1)))
+    return total
+
+
+def distinct_detections(findings, aid=None) -> int:
+    """How many distinct detections (not episode rows) a finding set holds."""
+    return len({(tuple(sorted(f.asset_ids or [])) if aid is None else aid, _detection_name(f))
+                for f in findings if aid is None or aid in (f.asset_ids or [])})
+
+
 def score_assets_over(assets, findings, n_hosts: int) -> dict:
     """Band-score a set of assets against a GIVEN finding set.
 
@@ -578,13 +613,13 @@ def score_assets_over(assets, findings, n_hosts: int) -> dict:
     by_tier: dict[str, list] = {}
     for a in assets:
         afind = [f for f in findings if a.id in f.asset_ids]
-        intensity = sum(_RISK_W.get(f.severity, 0) * _cross_host_factor(f, n_hosts)
-                        for f in afind)
+        intensity = _host_intensity(a.id, afind, n_hosts)
         # Tier is the worst finding IN SCOPE -- not the entity's all-time severity.
         tier = "informational"
         for f in afind:
-            if f.severity in _BAND_BASE and sev.rank(f.severity) > sev.rank(tier):
-                tier = f.severity
+            rs = _risk_sev(f)
+            if rs in _BAND_BASE and sev.rank(rs) > sev.rank(tier):
+                tier = rs
         per_asset[a.id] = {"severity": tier, "risk_intensity": round(intensity, 2)}
         by_tier.setdefault(tier, []).append(intensity)
     ref = {t: max(REF_FLOOR, _percentile(v, 0.95)) for t, v in by_tier.items()}
@@ -609,10 +644,7 @@ def _score_assets(g: FusionGraph) -> None:
     # Pass 1 — raw intensity per host + the per-tier intensity distribution.
     by_tier: dict[str, list] = {}
     for a in assets:
-        intensity = 0.0
-        for f in g.findings:
-            if a.id in f.asset_ids:
-                intensity += _RISK_W.get(f.severity, 0) * _cross_host_factor(f, n_hosts)
+        intensity = _host_intensity(a.id, g.findings, n_hosts)
         a.attrs["risk_intensity"] = round(intensity, 2)   # exact within-band sort tiebreaker
         tier = a.severity if a.severity in _BAND_BASE else "informational"
         by_tier.setdefault(tier, []).append(intensity)
@@ -640,7 +672,7 @@ def _rollup_asset_severity(g: FusionGraph) -> None:
         best = a.severity
         for f in g.findings:
             if a.id in f.asset_ids:
-                best = sev.max_level(best, f.severity)
+                best = sev.max_level(best, _risk_sev(f))   # a routine counts one level lower
         a.severity = best
 
 
