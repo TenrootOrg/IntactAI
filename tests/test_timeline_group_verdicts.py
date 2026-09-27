@@ -178,15 +178,16 @@ const rows=[{finding_id:'a',ts:'10:30',host:'H1',title:'x',severity:'high',group
             {finding_id:'b',ts:'10:35',host:'H2',title:'x',severity:'high',group:G,validation:'known',is_new:true},
             {finding_id:'u',ts:null,host:'H3',title:'web',severity:'high'}];
 window={_tlData:rows}; const tlVisible=()=>rows;
+const agree=_tlGroupHead(G,[{finding_id:'a',validation:'known'},{finding_id:'b',validation:'known'}],false);
 tlPaint(); const shut=OUT; window._tlOpen={g1:true}; tlPaint(); const open=OUT;
 window._tlf={order:'severity'}; tlPaint(); const bysev=OUT;
-console.log(JSON.stringify([open, shut, bysev]));""")
+console.log(JSON.stringify([open, shut, bysev, agree]));""")
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as t:
             t.write(js)
         try:
             r = subprocess.run([node, t.name], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr[-800:])
-            open_, shut, bysev = json.loads(r.stdout)
+            open_, shut, bysev, agree = json.loads(r.stdout)
         finally:
             os.unlink(t.name)
         self.assertEqual(open_.count("tlgroup"), 1)
@@ -197,6 +198,11 @@ console.log(JSON.stringify([open, shut, bysev]));""")
         self.assertIn("linked by time only", open_)
         self.assertIn("1 of 2 reviewed", open_)
         self.assertIn("tlValidateMany([&quot;a&quot;,&quot;b&quot;],'false_positive')", open_)
+        # the group can be set back to Pending; a mixed group lights no button
+        self.assertIn("tlValidateMany([&quot;a&quot;,&quot;b&quot;],'pending')", open_)
+        head = open_[open_.index("tlgroup"):open_.index("tlgkids")]
+        self.assertNotIn(" on\"", head)
+        self.assertIn('class="s-known on"', agree)                # every row Known -> Known lit
         # the group's rows sit together under its header; the ungrouped row after
         self.assertLess(open_.index("tlValidate('b'"), open_.index("tlValidate('p'"))
         self.assertIn("tlgroup", shut)

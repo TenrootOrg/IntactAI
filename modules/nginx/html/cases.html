@@ -1701,14 +1701,17 @@ function _tlGroupHead(grp, members, open){
   const sevs=['informational','low','medium','high','critical'];
   const sev=members.map(m=>m.severity).sort((x,y)=>sevs.indexOf(y)-sevs.indexOf(x))[0]||'';
   const last=members.map(m=>m.last||m.ts).sort().slice(-1)[0];
-  const btn=(k,l)=>`<button class="s-${k}" onclick="event.stopPropagation();tlValidateMany(${idsJs},'${k}')" title="Set ${l} on all ${ids.length} rows in this group — each host row keeps its own verdict">${l}</button>`;
+  // Lit when EVERY row in the group has that verdict (Pending when none has one);
+  // mixed groups light nothing — "N of M reviewed" says how far along it is.
+  const vs=[...new Set(members.map(m=>m.validation||'pending'))], same=vs.length===1?vs[0]:null;
+  const btn=(k,l)=>`<button class="s-${k}${same===k?' on':''}" onclick="event.stopPropagation();tlValidateMany(${idsJs},'${k}')" title="${k==='pending'?`Clear the verdict on all ${ids.length} rows in this group`:`Set ${l} on all ${ids.length} rows in this group — each host row keeps its own verdict`}">${l}</button>`;
   return `<div class="tlrow tlgroup" title="${open?'Hide':'Show'} the ${ids.length} host rows" onclick="tlToggleGroup('${esc(grp.id)}')">
       <code style="white-space:nowrap">${esc(members[0].ts||'—')}${_tlUntil({ts:members[0].ts,last})}</code>
       <div class="tlmeta"><span><span class="tlgtag">GROUP</span><strong>${open?'▾':'▸'} ${esc(grp.name)}</strong> — ${esc(hosts.join(', '))}</span>
         <span class="l2"><span class="sg-hint" style="border-style:solid;color:var(--muted)">${hosts.length} hosts · ${ids.length} rows · ${hits.toLocaleString()} hits</span><span class="sg-hint" style="border-style:solid;${weak?'':'border-color:#3fb950;color:#56d364'}" title="${weak?'Same detection close together on several hosts — a correlation, not proof they are related.':'The hosts share this identifier in their evidence.'}">${weak?'linked by time only':esc(grp.link)}</span><span style="color:var(--muted);font-size:11px">${done} of ${ids.length} reviewed</span>${_tlGroupJev(members)}${_tlGroupNews(grp, members)}</span>
       </div>
       ${sev?`<span class="chip c-${esc(sev)}">${esc(sev)}</span>`:''}
-      <span class="seg">${btn('true_positive','True Positive')}${btn('false_positive','False Positive')}${btn('known','Known')}</span>
+      <span class="seg">${btn('pending','Pending')}${btn('true_positive','True Positive')}${btn('false_positive','False Positive')}${btn('known','Known')}</span>
     </div>`;
 }
 // A closed group hid its rows' Jev chips; say how many rows carry one, by verdict.
