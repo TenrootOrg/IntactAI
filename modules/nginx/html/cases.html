@@ -228,7 +228,8 @@
   .vsel{width:100%;font-size:12px;padding:5px 8px;border-radius:6px;background:var(--panel);border:1px solid var(--bd);color:var(--tx);cursor:pointer}
   .vsel.v-compromised{border-color:var(--crit);color:var(--crit);background:rgba(248,81,73,.10)}
   .vsel.v-not_compromised{border-color:var(--ok);color:var(--ok);background:rgba(63,185,80,.10)}
-  .hgrid{display:grid;grid-template-columns:22px minmax(150px,210px) 84px 128px 118px minmax(0,1fr) minmax(150px,230px);align-items:center;gap:0 16px}
+  .hgrid{display:grid;grid-template-columns:22px minmax(150px,210px) 84px 118px 188px minmax(0,1fr) minmax(150px,230px);align-items:center;gap:0 16px}
+  .pcell.hcnt{overflow:visible;text-overflow:clip}   /* the counts never ellipsize: "2 m…" hid the medium count */
   .hcnt b{font-weight:600} .hcnt .c{color:var(--crit)} .hcnt .h{color:var(--high)} .hcnt .m{color:var(--med)}
   .hpanel{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) minmax(0,1fr);gap:24px}
   .hsec{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
