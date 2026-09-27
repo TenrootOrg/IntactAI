@@ -125,7 +125,7 @@ console.log(JSON.stringify([idVerdictSel("c1",{key:"k",verdict:"compromised"}), 
             self.skipTest("no node on this host")
         js = r"""
 const fs=require("fs"); const src=fs.readFileSync(process.argv[1],"utf8");
-for (const n of ["_entHosts","_hostPeople","_idJev","_riskWhy"]) eval(src.match(new RegExp("function "+n+"\\([^)]*\\)\\{[\\s\\S]*?\\n\\}"))[0]);
+for (const n of ["_entHosts","_hostPeople","_idJev","_riskWhy","_vchip"]) eval(src.match(new RegExp("function "+n+"\\([^)]*\\)\\{[\\s\\S]*?\\n\\}"))[0]);
 const esc=s=>String(s), jsa=s=>String(s);
 const people=[{key:"k1",name:"kobia",verdict:"compromised",seen_on:["WS1"],jev_compromise:0.9,worst:"high"},
               {key:"k2",name:"amy",seen_on:["WS1","WS2"]}];
@@ -142,9 +142,12 @@ console.log(_entHosts(rows,_hostPeople(people),{rows}));"""
         self.assertIn("Mimikatz", out)
         self.assertIn("Odd service", out)                            # expanded: every top finding
         self.assertIn("Deep-dive now", out)
-        self.assertIn("marked compromised", out)
+        self.assertIn('<span class="vchip c">compromised</span>', out)
+        self.assertIn("Also seen:", out)                              # people without findings on one line
+        self.assertIn("Why it ranks #1", out)
         self.assertIn("· Likely", out)
-        self.assertIn("▲ escalate", out)
+        self.assertIn(">escalate<", out)
+        self.assertIn("<b>1</b> crit", out)
 
 
 if __name__ == "__main__":

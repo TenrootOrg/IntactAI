@@ -157,7 +157,7 @@ console.log(idCard("c1",{key:"k",jev_compromise:0.9,verdict:"compromised",name:"
         for want in (">service</span>", 'class="chip c-critical"', "openFindingDetail('f1')",
                      ">1</b> <span>(3 rows)</span>", "worst 1 of 3", 'class="prow v-compromised"',
                      "90%</b>", '<option value="compromised" selected>',
-                     "entOpenHost('WS1')", "risk 70"):                      # person -> host
+                     "entOpenHost('WS1')", "ranked #1 of 1 hosts"):        # person -> host, risk in words
             self.assertIn(want, out)
 
 

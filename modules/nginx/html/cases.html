@@ -228,7 +228,14 @@
   .vsel{width:100%;font-size:12px;padding:5px 8px;border-radius:6px;background:var(--panel);border:1px solid var(--bd);color:var(--tx);cursor:pointer}
   .vsel.v-compromised{border-color:var(--crit);color:var(--crit);background:rgba(248,81,73,.10)}
   .vsel.v-not_compromised{border-color:var(--ok);color:var(--ok);background:rgba(63,185,80,.10)}
-  .hgrid{display:grid;grid-template-columns:26px minmax(150px,1.1fr) 84px 52px 92px minmax(180px,1.9fr) minmax(150px,1.2fr);align-items:center;gap:0 14px}
+  .hgrid{display:grid;grid-template-columns:22px minmax(150px,210px) 84px 128px 118px minmax(0,1fr) minmax(150px,230px);align-items:center;gap:0 16px}
+  .hcnt b{font-weight:600} .hcnt .c{color:var(--crit)} .hcnt .h{color:var(--high)} .hcnt .m{color:var(--med)}
+  .hpanel{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) minmax(0,1fr);gap:24px}
+  .hsec{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
+  .hwhy{font-size:12px;padding:2px 0 2px 10px;border-left:2px solid var(--bd);margin-bottom:3px}
+  .hnext{font-size:12px;padding:8px 10px;border-left:3px solid var(--acc);background:var(--panel);border-radius:0 6px 6px 0}
+  .vchip{font-size:10px;border-radius:8px;padding:0 6px;border:1px solid} .vchip.c{color:var(--crit);border-color:var(--crit)} .vchip.n{color:var(--ok);border-color:var(--ok)}
+  @media (max-width:900px){.hpanel{grid-template-columns:1fr}}
   .prow>.hgrid{padding:9px 12px 9px 6px;cursor:pointer} .prow>.hgrid:hover{background:var(--panel)}
   .elink{cursor:pointer;color:var(--tx)} .elink:hover{text-decoration:underline}
   .erow{display:flex;align-items:center;gap:10px;padding:3px 0;font-size:12px}
@@ -1904,39 +1911,46 @@ function entOpenHost(label){
   setTab('risk');
 }
 function hostToggle(h){ (window._hostExpand=window._hostExpand||{})[h]=!window._hostExpand[h]; window._idFocus=false; _idRender(window._idCase); }
-// Hosts in the same row grammar as People: the row says how bad and who was there;
-// a click opens why (every top finding), what to do next, and the people with
-// their verdict and likelihood — each a link to that person.
+// Hosts in the People row grammar. The row: how bad (severity, a risk meter,
+// distinct critical/high/medium), the lead finding, and who was there. Opened:
+// why it ranks here, the next step, and the people — those with findings in
+// full (severity, likelihood, your verdict), the rest on one line.
+function _vchip(v){ return v==='compromised'?'<span class="vchip c">compromised</span>':v==='not_compromised'?'<span class="vchip n">not compromised</span>':''; }
 function _entHosts(rows, ppl, d){
   if(!((d.rows||[]).length)) return '<div class="empty">No fused data yet — fuse the case first.</div>';
-  const jev=(window._idData||{}).sort==='jev', open=window._hostExpand||{};
-  const head=`<div class="hgrid phead"><span>#</span><span>Host</span><span>Severity</span><span style="text-align:right">Risk</span><span title="Distinct detections: critical / high / medium">C / H / M</span><span>Top finding</span><span>People</span></div>`;
+  const jev=(window._idData||{}).sort==='jev', open=window._hostExpand||{}, all=d.rows||[];
+  const sevc={critical:'var(--crit)',high:'var(--high)',medium:'var(--med)',low:'var(--low)'};
+  const head=`<div class="hgrid phead"><span>#</span><span>Host</span><span>Severity</span><span title="0–100, relative to the other hosts in this case">Risk</span><span title="Distinct detections by severity">Detections</span><span>Lead finding</span><span>People</span></div>`;
   const body=rows.map(r=>{
-    const t=r.by_severity||{}, i=(d.rows||[]).indexOf(r), why=_riskWhy(r).split('; ').filter(Boolean);
+    const t=r.by_severity||{}, i=all.indexOf(r), why=_riskWhy(r).split('; ').filter(Boolean);
     const pp=(ppl[r.host]||[]), comp=pp.filter(it=>it.verdict==='compromised');
+    const col=sevc[r.severity]||'var(--muted)';
+    const cnt=[[t.critical,'c','crit'],[t.high,'h','high'],[t.medium,'m','med']].filter(([n])=>n).map(([n,k,l])=>`<span class="${k}"><b>${n}</b> ${l}</span>`).join(' · ')||'—';
     const pcell=pp.length?pp.slice(0,3).map(it=>`<span class="hppl${it.verdict==='compromised'?' c':''}" onclick="event.stopPropagation();entOpenPerson('${jsa(it.key)}')" title="Open this person">${it.verdict==='compromised'?'● ':''}${esc(it.name||it.key)}</span>`).join('')+(pp.length>3?`<span style="color:var(--muted)">+${pp.length-3}</span>`:''):'—';
     const row=`<div class="hgrid" onclick="hostToggle('${jsa(r.host)}')">
        <span style="color:var(--muted);text-align:right;font-size:12px">${i+1}</span>
-       <div class="pname" style="min-width:0"><span style="color:var(--muted);display:inline-block;width:14px">${open[r.host]?'▾':'▸'}</span><b>${esc(r.host)}</b>${r.escalate?'<span title="Escalate: deep-dive this host" style="margin-left:6px;color:var(--crit);font-size:11px">▲ escalate</span>':''}
-         <div class="psub" style="padding-left:14px">${r.finding_count} detection${r.finding_count===1?'':'s'} · ${r.row_count} rows</div></div>
+       <div class="pname" style="min-width:0"><span style="color:var(--muted);display:inline-block;width:14px">${open[r.host]?'▾':'▸'}</span><b>${esc(r.host)}</b>
+         <div class="psub" style="padding-left:14px">${r.row_count} timeline rows${r.escalate?' · <span style="color:var(--crit)">escalate</span>':''}</div></div>
        <div><span class="chip c-${esc(r.severity)}">${esc(r.severity)}</span></div>
-       <div style="text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${r.risk_score}</div>
-       <div class="pcell" style="font-variant-numeric:tabular-nums">${t.critical||0} / ${t.high||0} / ${t.medium||0}</div>
-       <div class="pcell" title="${esc(why.join('; '))}">${esc(why[0]||'—')}${why.length>1?` <span>+${why.length-1}</span>`:''}</div>
+       <div style="white-space:nowrap" title="Risk ${r.risk_score} of 100"><span class="meter"><i style="width:${Math.max(0,Math.min(100,r.risk_score))}%;background:${col}"></i></span><b style="font-variant-numeric:tabular-nums">${r.risk_score}</b></div>
+       <div class="pcell hcnt">${cnt}</div>
+       <div class="pcell" title="${esc(why.join('\n'))}" style="color:var(--tx)">${esc(why[0]||'—')}${why.length>1?` <span style="color:var(--muted)">+${why.length-1}</span>`:''}</div>
        <div class="pcell">${pcell}</div>
      </div>`;
     if(!open[r.host]) return `<div class="prow${comp.length?' v-compromised':''}">${row}</div>`;
-    const sec=x=>`<div style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">${x}</div>`;
-    const people=pp.map(it=>`<div class="erow"><span class="elink${it.verdict==='compromised'?' hppl c':''}" onclick="event.stopPropagation();entOpenPerson('${jsa(it.key)}')">${it.verdict==='compromised'?'● ':''}${esc(it.name||it.key)}</span>${it.worst?`<span class="chip c-${esc(it.worst)}" style="font-size:10px">${esc(it.worst)}</span>`:''}${jev?_idJev(it):''}<span style="color:var(--muted)">${it.verdict==='compromised'?'marked compromised':it.verdict==='not_compromised'?'marked not compromised':'not reviewed'}</span></div>`).join('')||'<span style="color:var(--muted)">—</span>';
-    const bodyH=`<div class="pbody"><div style="display:flex;gap:28px;flex-wrap:wrap">
-        <div style="flex:1.4;min-width:260px">${sec('Why — top findings')}${why.map(w=>`<div style="font-size:12px;padding:1px 0">${esc(w)}</div>`).join('')||'—'}
-          ${r.next_action?`<div style="margin-top:8px;font-size:12px"><span style="color:var(--muted)">Next:</span> ${esc(r.next_action)}</div>`:''}
-          <div style="margin-top:4px;font-size:12px;color:var(--muted)">Coverage: ${esc((r.modules||[]).join(', ')||'—')}${r.deep?' · deep collection done':''}</div></div>
-        <div style="flex:1;min-width:220px">${sec('People on this host')}${people}</div></div></div>`;
+    const withF=pp.filter(it=>it.worst||it.verdict), rest=pp.filter(it=>!(it.worst||it.verdict));
+    const people=withF.map(it=>`<div class="erow"><span class="elink${it.verdict==='compromised'?' hppl c':''}" style="min-width:90px" onclick="event.stopPropagation();entOpenPerson('${jsa(it.key)}')">${esc(it.name||it.key)}</span>${it.worst?`<span class="chip c-${esc(it.worst)}" style="font-size:10px">${esc(it.worst)}</span>`:''}${jev&&typeof it.jev_compromise==='number'?_idJev(it):''}${_vchip(it.verdict)}</div>`).join('');
+    const also=rest.length?`<div style="font-size:12px;color:var(--muted);margin-top:4px">Also seen: ${rest.map(it=>`<span class="elink" style="color:var(--muted)" onclick="event.stopPropagation();entOpenPerson('${jsa(it.key)}')">${esc(it.name||it.key)}</span>`).join(', ')}</div>`:'';
+    const bodyH=`<div class="pbody"><div class="hpanel">
+        <div><div class="hsec">Why it ranks #${i+1}</div>${why.map(w=>`<div class="hwhy">${esc(w)}</div>`).join('')||'—'}</div>
+        <div><div class="hsec">Next step</div>${r.next_action?`<div class="hnext">${esc(r.next_action)}</div>`:'<span style="color:var(--muted)">—</span>'}
+          <div style="margin-top:8px;font-size:12px;color:var(--muted)">${r.finding_count} distinct detections in ${r.row_count} timeline rows · collected by ${esc((r.modules||[]).join(', ')||'—')}${r.deep?' · deep collection done':''}</div></div>
+        <div><div class="hsec">People on this host</div>${people||(rest.length?'':'<span style="color:var(--muted)">—</span>')}${also}</div>
+      </div></div>`;
     return `<div class="prow${comp.length?' v-compromised':''}">${row}${bodyH}</div>`;
   }).join('');
   return `${d.is_stale?'<div class="agnote">New collections have landed that are not in this ranking yet — run <b>Refusion</b> to include them.</div>':''}
-    <p class="ent-cap">Endpoints ranked by risk: the band is the worst detection; within it each <b>distinct</b> detection counts once (repeats add a little, daily routines one level lower, cross-host detections more). A red edge means someone you marked compromised was active there. Click a host for why, what next, and who.</p>
+    <p class="ent-cap">Endpoints ranked by risk — work top-down. Severity is the host’s worst detection; risk orders hosts within it (each distinct detection counts once, cross-host ones weigh more). A red edge: someone you marked compromised was active there. Click a host for why, the next step, and who.</p>
     ${head}${body||'<p style="color:var(--muted)">no match.</p>'}`;
 }
 function idSearch(v){ if(tab==='risk') window._hostQuery=v; else window._idQuery=v; window._idFocus=true; _idRender(window._idCase); }
@@ -1964,7 +1978,7 @@ function idCard(cid,it,jev){
    </div>`;
   if(!open) return `<div class="prow v-${esc(it.verdict||'none')}">${row}</div>`;
   const xbtn=(fn)=>`<button class="ghost" title="Not this person — switch off" style="border:none;color:var(--med);padding:0 4px;font-size:12px" onclick="event.stopPropagation();${fn}">✕</button>`;
-  const accts=(it.accounts||[]).map(a=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:1px 0${a.disabled?';opacity:.45':''}">
+  const accts=(it.accounts||[]).map(a=>`<div style="display:flex;gap:8px;align-items:center;padding:1px 0${a.disabled?';opacity:.45':''}">
       <span${a.disabled?' style="text-decoration:line-through"':''}>${esc(a.label)}<span style="color:var(--muted);font-size:11px">${a.ctx?(' · @'+esc(a.ctx)):(a.bucket?(' · '+esc(a.bucket)):'')}${(typeof a.conf==='number'&&a.conf<1)?(' · '+Math.round(a.conf*100)+'%'):''}</span></span>
       ${a.disabled
         ? `<button class="ghost" title="Include in this person again" style="border:none;color:var(--ok);padding:0 4px;font-size:12px" onclick="event.stopPropagation();idInclude('${jsa(cid)}','${jsa(a.id)}')">↺</button>`
@@ -1976,13 +1990,15 @@ function idCard(cid,it,jev){
       <span style="font-size:11px;color:var(--muted)">${m.auto?'⚙ auto-merged':'✓ merged'}: <b style="color:var(--tx)">${esc((m.names||[]).join(' + '))}</b> · ${esc(m.reason||'')}</span>
       <button class="ghost" style="border-color:var(--med);font-size:11px;padding:2px 8px" onclick="idSeparate('${jsa(cid)}','${jsa(it.key)}','${jsa((m.names||[]).join('|'))}')">Separate</button></div>`).join('');
   const sec=t=>`<div style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">${t}</div>`;
+  const fl=(it.findings||[]).slice(0,5);        // supporting detail: last, small, the worst five
   const body=`<div class="pbody"><div style="display:flex;gap:28px;flex-wrap:wrap">
        <div style="flex:1;min-width:240px">${sec('Accounts')}${accts}</div>
        <div style="flex:1;min-width:200px">${sec('Seen on hosts')}${so.map(h=>{ const r=_hostRow(h);
-          return `<div class="erow"><span class="elink" onclick="event.stopPropagation();entOpenHost('${jsa(h)}')" title="Open this host">${esc(h)}</span>${r?`<span class="chip c-${esc(r.severity)}" style="font-size:10px">${esc(r.severity)}</span><span style="color:var(--muted)">risk ${r.risk_score}</span>`:''}</div>`;}).join('')||'<span style="color:var(--muted)">—</span>'}</div></div>
-     ${(it.findings||[]).length?`<div style="margin-top:10px">${sec(`Findings${it.finding_rows>it.findings.length?` — worst ${it.findings.length} of ${it.finding_rows}`:''} · click for detail`)}${it.findings.map(f=>`<div style="cursor:pointer;padding:2px 0" onclick="event.stopPropagation();window._tlCase='${jsa(cid)}';openFindingDetail('${jsa(f.id)}')"><span class="chip c-${esc(f.severity)}" style="font-size:10px">${esc(f.severity)}</span> ${esc(f.title)}</div>`).join('')}</div>`:''}
+          const all=((window._riskData||{}).rows)||[], rank=r?all.indexOf(r)+1:0;
+          return `<div class="erow"><span class="elink" onclick="event.stopPropagation();entOpenHost('${jsa(h)}')" title="Open this host on the Risk tab">${esc(h)}</span>${r?`<span class="chip c-${esc(r.severity)}" style="font-size:10px">${esc(r.severity)}</span><span style="color:var(--muted)" title="Risk ${r.risk_score} of 100">ranked #${rank} of ${all.length} hosts</span>`:''}</div>`;}).join('')||'<span style="color:var(--muted)">—</span>'}</div></div>
      ${mfrom?`<div style="margin-top:10px">${sec('How this person was assembled — Separate to undo')}${mfrom}</div>`:''}
-     ${sugg?`<div style="margin-top:10px">${sec('Suggested links — Merge folds them into this person')}${sugg}</div>`:''}</div>`;
+     ${sugg?`<div style="margin-top:10px">${sec('Suggested links — Merge folds them into this person')}${sugg}</div>`:''}
+     ${fl.length?`<div style="margin-top:10px">${sec(`Findings on these accounts — ${fl.length<it.finding_rows?`worst ${fl.length} of ${it.finding_rows}`:it.finding_rows} · click for detail`)}${fl.map(f=>`<div style="cursor:pointer;padding:1px 0;font-size:12px;color:var(--muted)" onclick="event.stopPropagation();window._tlCase='${jsa(cid)}';openFindingDetail('${jsa(f.id)}')"><span class="chip c-${esc(f.severity)}" style="font-size:10px">${esc(f.severity)}</span> ${esc(f.title)}</div>`).join('')}</div>`:''}</div>`;
   return `<div class="prow v-${esc(it.verdict||'none')}">${row}${body}</div>`;
 }
 // The analyst's call on a person, as a status select at the end of the row:
