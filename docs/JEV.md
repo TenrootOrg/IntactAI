@@ -70,6 +70,14 @@ These apply to every feature below and to any new one.
 Also on the branch:
 
 - **Chat grounding fix** (`llm_sim.detect_disposition`). A verdict now attaches to the finding it names, not to the host every title ends with.
+- **Timeline grouping fix, deterministic and not Jev** (5ce1215d, 9f675bc6).
+  - One Timeline row is one detection until it goes quiet for 4 hours
+    (`keys.EPISODE_GAP_HOURS`), across hosts, so rows of one detection never
+    overlap.
+  - Counts and "last seen" are the real ones, so verdicts re-open again.
+  - Scopes include rows that were active in them.
+  - File rows ("Known tool", "Renamed binary") are split into separate drops.
+  - A joined row keeps every absorbed row's verdict (`Finding.aliases`).
 - **Offline eval** (`scripts/dev/jev_eval.py`). It scores Jev's suggested verdicts against the analysts' Timeline verdicts and prints accuracy, Brier score and a reliability table. It needs labelled findings, and today's box has none.
 
 ## Case data Jev writes
