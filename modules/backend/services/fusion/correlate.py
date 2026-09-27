@@ -274,6 +274,7 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     _guarded(_errs, "_mitre_from_rule_titles", lambda: _mitre_from_rule_titles(g))                 # titles with no id in them
     _guarded(_errs, "_corroboration", lambda: _corroboration(g))
     _guarded(_errs, "_stamp_finding_watermarks", lambda: _stamp_finding_watermarks(g))              # occurrence watermark — before dispositions
+    _guarded(_errs, "_findings_floor", lambda: _findings_floor(g, min_severity, dispositions, _below))  # BEFORE dispositions demote to informational
     _guarded(_errs, "_apply_dispositions", lambda: _apply_dispositions(g, dispositions))      # operator triage — before severity rollup
     _guarded(_errs, "_rollup_asset_severity", lambda: _rollup_asset_severity(g))
     _guarded(_errs, "_score_assets", lambda: _score_assets(g))
@@ -380,6 +381,29 @@ def _stamp_finding_watermarks(g: FusionGraph) -> None:
             f.occ_latest = latest
         if not f.occ_count or f.occ_count < 1:
             f.occ_count = max(1, len(f.entity_ids or []))
+
+
+def _findings_floor(g: FusionGraph, min_severity, dispositions, below: dict) -> None:
+    """The case's severity floor applies to FINDINGS too, not only to events.
+
+    The ingest floor holds back timestamped events, but findings built from
+    STRUCTURAL entities (accounts are never floored — they anchor the graph) kept
+    their own severity: "Identity 'admin01' active on 2 hosts…" showed as
+    informational on a case set to medium. Runs BEFORE dispositions, which demote
+    an analyst's benign verdict to informational — that row must stay, greyed and
+    reversible — and never drops a row an analyst has triaged."""
+    if not min_severity or sev.rank(min_severity) <= sev.rank("informational"):
+        return
+    judged = {d.get("target") for d in (dispositions or []) if d.get("target")}
+    keep, dropped = [], 0
+    for f in g.findings:
+        if sev.at_least(f.severity, min_severity) or set(f.ids()) & judged:
+            keep.append(f)
+        else:
+            dropped += 1
+    if dropped:
+        g.findings = keep
+        below["findings (derived from accounts / identities)"] = dropped
 
 
 def _wm_new_activity(stored, current) -> bool:
