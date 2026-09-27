@@ -76,6 +76,18 @@ def account_kind(stem):
     return "service" if _SERVICE_NAME.search(stem or "") else "test" if _TEST_NAME.search(stem or "") else None
 
 
+def person_reach(graph, account_ids) -> set:
+    """The accounts plus every event / process they EXECUTED. Findings are built on
+    events, so matching on the account alone found 6 of 273 findings on jev_test
+    and every card read "1 detection"."""
+    ids = set(account_ids or [])
+    out = set(ids)
+    for r in (getattr(graph, "relationships", None) or []):
+        if r.kind == "executed" and r.src in ids:
+            out.add(r.dst)
+    return out
+
+
 def _local_host(e):
     """The host whose OWN local account database (SAM) this account came from —
     a LOCAL principal, not the same account as a same-named one on another host.

@@ -1074,6 +1074,18 @@ def decide_identity_grp(case_id):
     return (jsonify(res), 404) if res.get("error") else jsonify({"case_id": case_id, **res})
 
 
+@case_bp.route("/api/cases/<case_id>/identities/verdict", methods=["POST"])
+def identity_verdict(case_id):
+    """Mark a person compromised / not compromised ("" clears).
+    Body: {account_ids:[...], verdict, name?}."""
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    b = request.get_json(silent=True) or {}
+    res = store.set_identity_verdict(case_id, b.get("account_ids"), b.get("verdict") or "",
+                                     name=b.get("name") or "")
+    return (jsonify(res), 400) if res.get("error") else jsonify({"case_id": case_id, **res})
+
+
 @case_bp.route("/api/cases/<case_id>/identities/account/split", methods=["POST"])
 def split_identity_account(case_id):
     """Remove an account from its resolved person ('not this person')."""

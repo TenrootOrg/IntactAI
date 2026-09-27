@@ -4522,6 +4522,43 @@ def split_account(case_id, account_id) -> dict:
     return {"id": lid}
 
 
+IDENTITY_VERDICTS = {"compromised": "compromised", "not_compromised": "not compromised"}
+
+
+def _identity_verdict_for(records, account_ids):
+    """The latest analyst verdict on a person, matched by ACCOUNT, not by card key:
+    the key is a union-find root that can change when accounts are merged."""
+    ids = set(account_ids or [])
+    hit = [r for r in (records or []) if ids & set(r.get("accounts") or [])]
+    return hit[-1] if hit else None
+
+
+def set_identity_verdict(case_id, account_ids, verdict, name="") -> dict:
+    """The analyst says whether a person is compromised. Stored against the card's
+    accounts, so it survives re-fusion and merges; "" clears it. Changes nothing
+    else in the case -- a label the analyst sets, not an action."""
+    if not get_case(case_id):
+        return {"error": "not found"}
+    ids = sorted({a for a in (account_ids or []) if a})
+    if not ids:
+        return {"error": "account_ids required"}
+    if verdict and verdict not in IDENTITY_VERDICTS:
+        return {"error": f"verdict must be one of {sorted(IDENTITY_VERDICTS)} or empty"}
+
+    def _mutate(recs):
+        kept = [r for r in recs if not (set(ids) & set(r.get("accounts") or []))]
+        if verdict:
+            kept.append({"accounts": ids, "name": name or ids[0], "verdict": verdict,
+                         "ts": _now_iso()})
+        return kept
+
+    _mutate_list_field(case_id, "identity_verdicts", _mutate)
+    log_case_event(case_id, f"Identity · {name or ids[0]} "
+                   + (f"marked {IDENTITY_VERDICTS[verdict]}" if verdict else "verdict cleared"),
+                   "warning" if verdict == "compromised" else "info")
+    return {"verdict": verdict or None}
+
+
 def exclude_host(case_id, name, host_id) -> dict:
     """Analyst removes a host from a person's operated-hosts (wrong name match). Persisted."""
     d = get_case(case_id)
@@ -4642,16 +4679,18 @@ def identity_view(case_id) -> dict:
     from .correlate import _detection_name
     from . import severity as _sev
     for it in idents:
-        ids = {a["id"] for a in it["accounts"] if not a.get("disabled")}
+        ids = _idf.person_reach(g, [a["id"] for a in it["accounts"] if not a.get("disabled")])
         fs = sorted((f for f in getattr(g, "findings", None) or [] if ids & set(f.entity_ids or [])),
                     key=lambda f: (-_sev.rank(f.severity), f.ts or ""))
+        v = _identity_verdict_for(d.get("identity_verdicts"), [a["id"] for a in it["accounts"]])
+        it["verdict"] = v["verdict"] if v else None
         it["findings"] = [{"id": f.id, "title": f.title, "severity": f.severity} for f in fs[:12]]
         it["finding_rows"] = len(fs)
         it["detections"] = len({_detection_name(f) for f in fs})
         it["worst"] = fs[0].severity if fs else None
-    # people first (service / test accounts after), then worst finding, then how
-    # many detections; suggestions only break ties
-    idents.sort(key=lambda it: (bool(it.get("account_kind")),
+    # people marked compromised first, then people (service / test accounts
+    # after), then worst finding, then how many detections; suggestions break ties
+    idents.sort(key=lambda it: (it.get("verdict") != "compromised", bool(it.get("account_kind")),
                                 -(_sev.rank(it["worst"]) + 1) if it["worst"] else 0, -it["detections"], -len(it.get("suggestions") or []),
                                 -len(it["buckets"]), -len(it["accounts"]), it["key"]))
     # one pair shows on BOTH cards; count it once (it read "2 suggestions" for 1)

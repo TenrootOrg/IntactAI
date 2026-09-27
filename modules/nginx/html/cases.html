@@ -210,6 +210,7 @@
   .seg button:first-child{border-left:none}
   .seg button.on.s-true_positive{background:var(--ok);color:#0d1117} .seg button.on.s-false_positive{background:var(--sev-high,#db6d28);color:#0d1117}
   .seg button.on.s-known{background:var(--info);color:#0d1117} .seg button.on.s-pending{background:var(--panel2);color:var(--tx)}
+  .seg button.on.s-compromised{background:#f85149;color:#0d1117} .seg button.on.s-not_compromised{background:var(--ok);color:#0d1117}
   .arti{font-size:10px;color:var(--info);background:rgba(88,166,255,.08);border:1px solid var(--bd);border-radius:4px;padding:1px 5px;font-family:var(--mono,monospace)}
   .zoomwrap{margin:0 0 16px;padding:12px 14px;border:1px solid var(--bd);border-radius:8px;background:rgba(88,166,255,.05)}
   .zoomhdr{font-size:12px;color:var(--muted);margin-bottom:9px}
@@ -1881,6 +1882,7 @@ function idCard(cid,it){
   const header=`<div onclick="idToggle('${jsa(it.key)}')" style="cursor:pointer;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
      <div><span style="color:var(--muted)">${open?'▾':'▸'}</span> 👤 <b style="font-size:13px">${esc(it.name||it.key)}</b>${it.builtin?' '+bdg('built-in','#d29922'):''}${it.account_kind?' '+bdg(it.account_kind+' account'):''}${buckets} ${confb}</div>
      ${it.worst?`<span class="chip c-${esc(it.worst)}" title="Worst finding on this person's accounts">${esc(it.worst)}</span>`:''}
+     ${idVerdictSeg(cid,it)}
      <span style="color:var(--muted);font-size:11px">${it.detections?`<b style="color:var(--fg)">${it.detections}</b> detection${it.detections===1?'':'s'} (${it.finding_rows} row${it.finding_rows===1?'':'s'}) · `:''}${nAcc} ${nAcc===1?'account':'accounts'}${(it.seen_on||[]).length?` · on ${esc((it.seen_on||[]).slice(0,5).join(', '))}${(it.seen_on||[]).length>5?' +'+((it.seen_on||[]).length-5):''}`:''}${sugN?` · <span style="color:var(--acc)">${sugN} ${sugN===1?'suggestion':'suggestions'}</span>`:''}</span></div>`;
   if(!open) return `<div style="border:1px solid var(--bd);border-radius:8px;padding:8px 12px;margin-bottom:6px;background:#0d1117">${header}</div>`;
   const xbtn=(fn)=>`<button class="ghost" title="Not this person — switch off" style="border:none;color:var(--med);padding:0 4px;font-size:12px" onclick="event.stopPropagation();${fn}">✕</button>`;
@@ -1903,6 +1905,21 @@ function idCard(cid,it){
      ${mfrom?`<div style="margin-top:8px;border-top:1px dashed var(--bd);padding-top:6px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">How this person was assembled (Separate to undo)</div>${mfrom}</div>`:''}
      ${sugg?`<div style="margin-top:8px;border-top:1px dashed var(--bd);padding-top:6px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">Suggested links (Merge folds them into this person)</div>${sugg}</div>`:''}`;
   return `<div style="border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin-bottom:8px;background:#0d1117">${header}${body}</div>`;
+}
+// The analyst's call on a person: Compromised / Not compromised. Click the lit
+// button again to clear it. Instant: flip here, save behind, undo on failure.
+const ID_VERDICTS=[['compromised','Compromised'],['not_compromised','Not compromised']];
+function idVerdictSeg(cid,it){
+  const v=it.verdict||'';
+  return `<span class="seg" onclick="event.stopPropagation()" title="Your verdict on this person — kept across re-fusion">${ID_VERDICTS.map(([k,l])=>`<button class="s-${k} ${v===k?'on':''}" onclick="idVerdict('${jsa(cid)}','${jsa(it.key)}','${v===k?'':k}')">${l}</button>`).join('')}</span>`;
+}
+function idVerdict(cid,key,verdict){
+  const it=(((window._idData||{}).identities)||[]).find(x=>x.key===key); if(!it) return;
+  const was=it.verdict; it.verdict=verdict||null; _idRender(cid);
+  api('/api/cases/'+cid+'/identities/verdict',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({account_ids:(it.accounts||[]).map(a=>a.id),verdict:verdict,name:it.name||''})})
+    .then(r=>{ if(!r||r.error) throw new Error(); })
+    .catch(_=>{ it.verdict=was; _idRender(cid); toast('The verdict could not be saved. Please try again.'); });
 }
 function idSug(cid,sid,decision){
   let members=null;
