@@ -78,6 +78,21 @@ Also on the branch:
   - Scopes include rows that were active in them.
   - File rows ("Known tool", "Renamed binary") are split into separate drops.
   - A joined row keeps every absorbed row's verdict (`Finding.aliases`).
+- **Per-host verdict rows and cross-host groups** (4dd865f4).
+  - A verdict belongs to one host's row.
+  - The same detection on several hosts within 4 hours of the group's first
+    row shares a collapsible `group` label on the Timeline. The label says
+    "linked by time only", or names a shared account, hash or address.
+  - There is no chaining, and adding a host never moves a verdict.
+  - Setting a verdict on the group header is one request with one re-fuse.
+- **Recurring daily rows** (9b49e781).
+  - A detection firing at about the same time every day for 3 or more days
+    becomes one "(recurring daily ~HH:MM)" row, and days that break the
+    routine stay separate rows.
+  - The row's watermark is the routine itself, so the next normal day keeps a
+    verdict.
+  - Jev is told the pattern. On jev_test, 4 of the 5 recurring rows went from
+    "likely True Positive" to "Known".
 - **Offline eval** (`scripts/dev/jev_eval.py`). It scores Jev's suggested verdicts against the analysts' Timeline verdicts and prints accuracy, Brier score and a reliability table. It needs labelled findings, and today's box has none.
 
 ## Case data Jev writes
