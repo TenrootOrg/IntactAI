@@ -90,6 +90,15 @@ class Downstream(unittest.TestCase):
             g = store.view_graph("c", d)
         self.assertEqual(g.identity_verdicts[0]["verdict"], "compromised")
 
+    def test_host_and_window_filters_keep_them(self):
+        # the report written during a Refusion filters the graph itself (no
+        # view_graph); the host filter dropped the verdicts on the way
+        g = self._g()
+        g.upsert(schema.Entity(id="asset:H", type="asset", label="H"))
+        self.assertEqual(store._filter_graph_by_hosts(g, ["H"]).identity_verdicts, g.identity_verdicts)
+        w = {"start": "2026-01-01T00:00:00Z", "end": "2026-02-01T00:00:00Z"}
+        self.assertEqual(store._filter_graph_by_window(g, w).identity_verdicts, g.identity_verdicts)
+
 
 class Card(unittest.TestCase):
     def test_verdict_buttons(self):

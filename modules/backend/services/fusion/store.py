@@ -2028,6 +2028,9 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         _plog(f"Refusion · {step} failed, continuing without it", "warning",
               f"{type(exc).__name__}: {str(exc)[:300]}")
 
+    # The analyst's Compromised verdicts (Identities). The report written here did
+    # not get them: only view_graph set them, and this path does not use it.
+    g.identity_verdicts = list(d.get("identity_verdicts") or [])
     try:
         gv = _filter_graph_by_hosts(g, d.get("excluded_hosts"))
     except Exception as _e:                                   # noqa: BLE001
@@ -2792,6 +2795,7 @@ def _filter_graph_by_hosts(g, excluded_labels) -> FusionGraph:
         return g
     gv = FusionGraph(case_id=g.case_id, run_ids=list(g.run_ids))
     gv.identity_decisions = getattr(g, "identity_decisions", None)
+    gv.identity_verdicts = getattr(g, "identity_verdicts", None)
     keep = set()
     for e in g.entities.values():
         if e.id in ex_assets:
