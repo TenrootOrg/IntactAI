@@ -69,7 +69,8 @@ class Downstream(unittest.TestCase):
     def _g(self):
         g = schema.FusionGraph(case_id="c")
         g.upsert(schema.Entity(id="acc1", type="account", label="CORP\\kobia"))
-        g.identity_verdicts = [{"accounts": ["acc1"], "name": "kobia", "verdict": "compromised"},
+        g.upsert(schema.Entity(id="acc1b", type="account", label="CORP\\kobia"))   # same label, other host
+        g.identity_verdicts = [{"accounts": ["acc1", "acc1b"], "name": "kobia", "verdict": "compromised"},
                                {"accounts": ["gone"], "name": "old", "verdict": "compromised"}]
         return g
 

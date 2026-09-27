@@ -2007,7 +2007,8 @@ def identity_verdict_lines(graph) -> list:
     the graph are skipped; a person with none left is not listed."""
     out = []
     for r in (getattr(graph, "identity_verdicts", None) or []):
-        labels = [graph.entities[a].label for a in (r.get("accounts") or []) if a in graph.entities]
+        labels = list(dict.fromkeys(graph.entities[a].label for a in (r.get("accounts") or [])
+                                    if a in graph.entities))   # "adim_std, adim_std, …" once
         if labels and r.get("verdict"):
             out.append((r["verdict"], f"{r.get('name') or labels[0]} — {', '.join(labels[:6])}"))
     return out
