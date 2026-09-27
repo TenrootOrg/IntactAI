@@ -13,6 +13,7 @@ These drive the REAL mapper and the REAL fusion pass on raw Hayabusa rows.
 """
 import os
 import sys
+import types
 import unittest
 
 for _p in (os.path.dirname(os.path.abspath(__file__)),
@@ -87,21 +88,52 @@ class OneHost(unittest.TestCase):
 
 
 class AcrossHosts(unittest.TestCase):
-    def test_same_rule_close_together_on_two_hosts_is_one_row(self):
+    """The same detection on several hosts close together is GROUPED, never merged:
+    each host keeps its own row (and its own verdict), and the rows share a label."""
+
+    def test_same_rule_close_together_on_two_hosts_is_one_group_of_two_rows(self):
         g = _fuse([_row("HOSTA", "2026-06-01T10:30:00Z", rec=1), _row("HOSTA", "2026-06-01T11:00:00Z", rec=2)],
                   [_row("HOSTB", "2026-06-01T10:35:00Z", rec=3), _row("HOSTB", "2026-06-01T10:45:00Z", rec=4)])
         rows = _rows_of(g)
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(len(rows[0].asset_ids), 2)
-        self.assertEqual(rows[0].occ_count, 4)
-        self.assertIn("on 2 hosts", rows[0].title)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({len(r.asset_ids) for r in rows}, {1})
+        self.assertEqual(rows[0].group["id"], rows[1].group["id"])
+        self.assertEqual((rows[0].group["hosts"], rows[0].group["link"]), (2, "time only"))
+        self.assertEqual(sorted(r.occ_count for r in rows), [2, 2])
 
-    def test_far_apart_on_two_hosts_stays_two_rows(self):
+    def test_far_apart_on_two_hosts_is_not_a_group(self):
         g = _fuse([_row("HOSTA", "2026-06-01T10:00:00Z", rec=1)],
                   [_row("HOSTB", "2026-06-03T10:00:00Z", rec=2)])
-        self.assertEqual(len(_rows_of(g)), 2)
+        self.assertEqual([r.group for r in _rows_of(g)], [None, None])
 
-    def test_rows_of_one_detection_never_overlap(self):
+    def test_no_chaining_through_a_host_in_between(self):
+        # 10:00, 13:30, 17:00 — each within 4 h of the previous, but 17:00 is 7 h
+        # after the first: two groups, not one bridged by the middle host
+        g = _fuse([_row("HOSTA", "2026-06-01T10:00:00Z", rec=1)],
+                  [_row("HOSTB", "2026-06-01T13:30:00Z", rec=2)],
+                  [_row("HOSTC", "2026-06-01T17:00:00Z", rec=3)])
+        rows = _rows_of(g)
+        self.assertEqual(rows[0].group["id"], rows[1].group["id"])
+        self.assertIsNone(rows[2].group)
+
+    def test_adding_a_host_changes_no_existing_row(self):
+        a = [_row("HOSTA", "2026-06-01T10:30:00Z", rec=1)]
+        b = [_row("HOSTB", "2026-06-01T10:40:00Z", rec=2)]
+        c = [_row("HOSTC", "2026-06-01T10:20:00Z", rec=3)]          # earlier than both
+        before = {(r.asset_ids[0], r.id, r.occ_count, r.watermark()) for r in _rows_of(_fuse(a, b))}
+        after = _rows_of(_fuse(a, b, c))
+        self.assertTrue(before <= {(r.asset_ids[0], r.id, r.occ_count, r.watermark()) for r in after})
+        self.assertEqual(len(after), 3)
+
+    def test_a_shared_account_is_named_as_the_link(self):
+        ra = _row("HOSTA", "2026-06-01T10:30:00Z", rec=1)
+        rb = _row("HOSTB", "2026-06-01T10:40:00Z", rec=2)
+        for r in (ra, rb):
+            r["Details"] = "User: CORP\\kobia ¦ Cmdline: powershell -enc AAAA"
+        link = _rows_of(_fuse([ra], [rb]))[0].group["link"]
+        self.assertTrue(link.startswith("same account"), link)
+
+    def test_one_hosts_rows_of_a_detection_never_overlap(self):
         import random
         rnd = random.Random(7)
         runs = []
@@ -110,7 +142,6 @@ class AcrossHosts(unittest.TestCase):
                                  f"{rnd.randint(0, 59):02d}:00Z", rec=rnd.randint(1, 10**6))
                          for _ in range(40)])
         g = _fuse(*runs)
-        rows = _rows_of(g)
         # The range comes from the rows' EVENTS (their real last hits), not from
         # occ_latest: the old code set occ_latest to the first hit, which made every
         # row look like a single moment and hid its own overlaps from this check.
@@ -118,42 +149,34 @@ class AcrossHosts(unittest.TestCase):
             evs = [g.entities[i] for i in r.entity_ids if i in g.entities]
             return (min(keys.to_utc_dt(e.first_seen) for e in evs),
                     max(keys.to_utc_dt(e.last_seen or e.first_seen) for e in evs))
-        spans = sorted(span(r) for r in rows)
-        for (a0, a1), (b0, b1) in zip(spans, spans[1:]):
-            self.assertLess(a1, b0, "two rows of the same detection overlap in time")
+        by_host: dict = {}
+        for r in _rows_of(g):
+            by_host.setdefault(r.asset_ids[0], []).append(span(r))
+        for spans in by_host.values():
+            spans.sort()
+            for (a0, a1), (b0, b1) in zip(spans, spans[1:]):
+                self.assertLess(a1, b0, "two rows of one detection on one host overlap")
 
 
-class VerdictsSurviveJoining(unittest.TestCase):
-    """Found live: joining two hosts' rows under the earlier one's id dropped the
-    analyst's False-positive verdict on the other."""
-
-    def _two_hosts(self, dispositions=None):
-        runs = ([_row("HOSTA", "2026-06-01T10:30:00Z", rec=1)],
-                [_row("HOSTB", "2026-06-01T10:40:00Z", rec=2)])
-        contribs, rids = [], []
-        for i, rows in enumerate(runs):
-            ents, rels = map_agentic({"Windows.Hayabusa.Rules": rows}, run_id=f"r{i}")
-            contribs.append((ents, rels))
-            rids.append(f"r{i}")
-        return correlate.assemble("c", contribs, rids, dispositions=dispositions)
-
-    def test_the_joined_row_carries_the_absorbed_ids(self):
-        row = _rows_of(self._two_hosts())[0]
-        b_id = correlate._fid("sigma", "asset:endpoint:C.HOSTB:Suspicious Encoded PowerShell Command Line")
-        self.assertNotEqual(row.id, b_id)
-        self.assertIn(b_id, row.ids())
-
-    def test_a_disposition_on_the_absorbed_row_still_applies(self):
-        b_id = correlate._fid("sigma", "asset:endpoint:C.HOSTB:Suspicious Encoded PowerShell Command Line")
-        g = self._two_hosts(dispositions=[{"target": b_id, "verdict": "benign",
-                                           "attribution": "operator"}])
-        row = [f for f in g.findings if "Encoded PowerShell" in f.title][0]
-        self.assertIn("[operator: operator", row.summary)
+class VerdictsAndAliases(unittest.TestCase):
+    """"+N related" (one Windows event, several rules) still folds rows into one,
+    and a verdict given on an absorbed row still applies to the folded row."""
 
     def test_aliases_survive_save_and_load(self):
         from services.fusion.schema import Finding
-        row = _rows_of(self._two_hosts())[0]
-        self.assertEqual(Finding.from_dict(row.to_dict()).ids(), row.ids())
+        f = Finding(id="new", title="t", severity="high", confidence="high", summary="",
+                    aliases=["old-a", "old-b"], group={"id": "g1", "hosts": 2})
+        back = Finding.from_dict(f.to_dict())
+        self.assertEqual((back.ids(), back.group), (["new", "old-a", "old-b"], {"id": "g1", "hosts": 2}))
+
+    def test_a_disposition_on_an_alias_applies(self):
+        from services.fusion.schema import Finding
+        g = types.SimpleNamespace(findings=[Finding(id="new", title="t on H", severity="high",
+                                                    confidence="high", summary="s",
+                                                    aliases=["old-b"])])
+        correlate._apply_dispositions(g, [{"target": "old-b", "verdict": "benign",
+                                           "attribution": "operator"}])
+        self.assertEqual(g.findings[0].kind, "dispositioned")
 
 
 class FileRows(unittest.TestCase):
@@ -177,10 +200,11 @@ class FileRows(unittest.TestCase):
         g = correlate.assemble("c", [(ents, [])], ["r1"], min_severity="medium")
         return sorted((f for f in g.findings if "AdFind" in f.title), key=lambda f: f.ts)
 
-    def test_same_tool_on_two_hosts_close_together_is_one_row(self):
+    def test_same_tool_on_two_hosts_close_together_is_one_group(self):
         rows = self._fuse(("ALClient01", "2025-05-27T11:17:01Z"), ("ALClient09", "2025-05-27T12:00:00Z"))
-        self.assertEqual(len(rows), 1)
-        self.assertIn("on 2 hosts", rows[0].title)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0].group["id"], rows[1].group["id"])
+        self.assertTrue(rows[0].group["link"].startswith("same hash"))
 
     def test_separate_drops_months_apart_are_separate_rows(self):
         rows = self._fuse(("ALClient01", "2025-05-27T11:17:01Z"), ("ALClient01", "2026-05-03T09:00:00Z"))

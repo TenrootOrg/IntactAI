@@ -1340,7 +1340,7 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
             host = _host_label(g, asset_id)
             # A tool copied to disk at different times is separate drops: one row
             # per episode of its file times (first episode keeps the old id), and
-            # the same tool on several hosts is joined by _merge_detection_episodes.
+            # the same tool on several hosts is grouped by _mark_detection_groups.
             _all = evs
             for _ep_i, evs in enumerate(keys.split_episodes(
                     _all, lambda e: e.first_seen, end_of=lambda e: e.last_seen or e.first_seen)):
@@ -1453,7 +1453,7 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
     except Exception:                                         # noqa: BLE001
         traceback.print_exc()
     try:
-        _merge_detection_episodes(g, set(_grouping) | set(_grouped) | set(_file_rows))
+        _mark_detection_groups(g, set(_grouping) | set(_grouped) | set(_file_rows))
     except Exception:                                         # noqa: BLE001
         traceback.print_exc()
 
@@ -1624,61 +1624,70 @@ def _detection_name(f) -> str:
     return _RELATED_SUFFIX.sub("", f.title.rsplit(" on ", 1)[0]).strip()
 
 
-def _merge_detection_episodes(g: FusionGraph, candidates: set) -> None:
-    """ONE DETECTION, ONE ROW PER EPISODE — across hosts.
+# Identifiers on a row's events that make a cross-host group EVIDENCE rather than
+# coincidence: the same account, file hash or target address on two hosts.
+_LINK_ATTRS = (("ev_user", "account"), ("full_hash", "hash"), ("ev_sha256", "hash"),
+               ("ev_md5", "hash"), ("ev_tgtip", "target address"))
 
-    The same rule firing on several hosts close together is one activity (lateral
-    movement, a pushed tool, a fleet-wide change), and was one row per host whose
-    time ranges overlapped: 61 overlapping same-rule pairs on one real case. Rows of
-    one detection that overlap or sit within keys.EPISODE_GAP_HOURS are joined, so
-    they can never overlap. The joined row keeps its EARLIEST member's id, so a
-    verdict already on that row stays with it.
+
+def _link_between(g, rows) -> str:
+    """How the rows of a cross-host group are tied: the first identifier seen on
+    two different hosts, or "time only" (same detection close together)."""
+    seen: dict = {}
+    for f in rows:
+        host = (f.asset_ids or ["?"])[0]
+        for eid in f.entity_ids or []:
+            a = (g.entities[eid].attrs or {}) if eid in g.entities else {}
+            for attr, label in _LINK_ATTRS:
+                v = str(a.get(attr) or "").strip().lower()
+                if not v:
+                    continue
+                hosts = seen.setdefault((label, v), set())
+                hosts.add(host)
+                if len(hosts) > 1:
+                    return f"same {label} {v[:40]}"
+    return "time only"
+
+
+def _mark_detection_groups(g: FusionGraph, candidates: set) -> None:
+    """LABEL rows of one detection that spread across hosts — never merge them.
+
+    A verdict belongs to ONE host's row: joining hosts into a single row let a
+    True-positive verdict silently cover a host nobody looked at, and let a new
+    host reshape existing rows (found in review). So each host's episode stays
+    its own finding, with its own stable id, and rows of the same detection that
+    START within keys.EPISODE_GAP_HOURS of the group's FIRST row share a `group`
+    label. Measured from the first row, not the previous one: a host firing in
+    between can never chain two separate bursts into one group. The label says
+    how the hosts are tied — a shared account / hash / address, or time only.
     """
     by_name: dict = {}
     for f in g.findings:
-        if f.id in candidates and f.ts:
+        if f.id in candidates and f.ts and keys.to_utc_dt(f.ts):
             by_name.setdefault(_detection_name(f), []).append(f)
-    merged_ids: set = set()
-    new: list = []
+    span = keys.EPISODE_GAP_HOURS * 3600
     for name, fs in by_name.items():
-        if len(fs) < 2:
-            continue
-        for ep in keys.split_episodes(fs, lambda f: f.ts, end_of=lambda f: f.occ_latest or f.ts):
-            if len(ep) < 2:
-                continue
-            ep.sort(key=lambda f: keys.to_utc_dt(f.ts))
-            first = ep[0]
-            top = max(ep, key=lambda f: sev.rank(f.severity))
-            hosts: list = []
-            for f in ep:
+        fs.sort(key=lambda f: keys.to_utc_dt(f.ts))
+        i = 0
+        while i < len(fs):
+            anchor, t0 = fs[i], keys.to_utc_dt(fs[i].ts)
+            j = i + 1
+            while j < len(fs) and (keys.to_utc_dt(fs[j].ts) - t0).total_seconds() <= span:
+                j += 1
+            rows = fs[i:j]
+            hosts = []
+            for f in rows:
                 for a in f.asset_ids or []:
                     if a not in hosts:
                         hosts.append(a)
-            labels = [_host_label(g, a) for a in hosts]
-            ents, mitre = [], []
-            for f in ep:
-                ents += [e for e in f.entity_ids if e not in ents]
-                mitre += [t for t in (f.mitre or []) if t not in mitre]
-            where = (labels[0] if len(labels) == 1 else f"{len(labels)} hosts")
-            latest = max((f.occ_latest or f.ts for f in ep), key=lambda t: keys.to_utc_dt(t) or t)
-            new.append(Finding(
-                id=first.id,
-                title=f"{name} on {where}",
-                severity=top.severity,
-                confidence="high" if any(f.confidence == "high" for f in ep) else first.confidence,
-                summary=(f"{name} fired on {', '.join(labels)} in one activity window "
-                         f"({first.ts} → {latest}): "
-                         + "; ".join(f"{_host_label(g, (f.asset_ids or ['?'])[0])} "
-                                     f"{int(f.occ_count or 1):,}×" for f in ep) + "."),
-                entity_ids=ents[:50], asset_ids=hosts,
-                sources=sorted({s for f in ep for s in f.sources}),
-                evidence=[x for f in ep for x in f.evidence[:1]], mitre=mitre,
-                ts=first.ts, kind="single",
-                occ_count=sum(int(f.occ_count or 1) for f in ep), occ_latest=latest,
-                aliases=[x for f in ep for x in f.ids() if x != first.id]))
-            merged_ids.update(f.id for f in ep)
-    if new:
-        g.findings = [f for f in g.findings if f.id not in merged_ids] + new
+            if len(hosts) > 1:
+                end = max((f.occ_latest or f.ts for f in rows), key=lambda t: keys.to_utc_dt(t) or t)
+                grp = {"id": _fid("spread", name, anchor.id), "name": name,
+                       "hosts": len(hosts), "rows": [f.id for f in rows],
+                       "start": anchor.ts, "end": end, "link": _link_between(g, rows)}
+                for f in rows:
+                    f.group = grp
+            i = j
 
 
 # ---------------------------------------------------- coordinated activity

@@ -1112,6 +1112,13 @@ def timeline_validate(case_id):
     if not store.get_case(case_id):
         return jsonify({"error": "case not found"}), 404
     b = request.get_json(silent=True) or {}
+    # A cross-host group header sends every row it holds; each still gets its
+    # own verdict record (store.validate_timeline_many).
+    many = b.get("finding_ids")
+    if isinstance(many, list) and many:
+        res = store.validate_timeline_many(case_id, many, b.get("status", "true_positive"),
+                                           b.get("notes", ""))
+        return jsonify({"case_id": case_id, **res})
     fid = (b.get("finding_id") or "").strip()
     if not fid:
         return jsonify({"error": "finding_id required"}), 400

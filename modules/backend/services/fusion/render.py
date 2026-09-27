@@ -67,6 +67,8 @@ def timeline(graph, *, window=None, initial_access=None):
                      # range it covers instead of only where it started
                      "last": fmt_ts(f.occ_latest) if f.occ_latest else None,
                      "hits": int(f.occ_count or 1),
+                     # cross-host group LABEL (the verdict stays on this row)
+                     "group": f.group or None,
                      "source": "fusion"})
     rows.sort(key=lambda r: (r["ts"] or "9999"))
     return rows

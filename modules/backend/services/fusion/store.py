@@ -4718,44 +4718,78 @@ def validate_timeline(case_id, finding_id, status, notes="") -> dict:
     record — they have no graph finding to suppress."""
     status = _TL_LEGACY.get(status, status)
     status = status if status in _TL_STATES else "pending"
+    if str(finding_id).startswith("manual:"):
+        _report_behind(case_id)
+        log_case_event(case_id, "Timeline · validation", "info",
+                       f"{finding_id} marked {status}" + (f" — {notes}" if notes else ""))
+        return _set_manual_event_status(case_id, finding_id, status, notes)
+    validate_timeline_many(case_id, [finding_id], status, notes)
+    return {"finding_id": finding_id, "status": status}
+
+
+def validate_timeline_many(case_id, finding_ids, status, notes="") -> dict:
+    """One verdict on several rows at once — a cross-host group's header. Each row
+    still gets its OWN record with its OWN watermark (a verdict belongs to one
+    host's activity), but the change is one write and at most ONE re-fuse: the
+    single-row path re-fused per click (~30 s each), which a 9-host group would
+    have turned into minutes."""
+    status = _TL_LEGACY.get(status, status)
+    status = status if status in _TL_STATES else "pending"
+    ids = [str(x) for x in dict.fromkeys(finding_ids or []) if x and not str(x).startswith("manual:")]
+    if not ids:
+        return {"finding_ids": [], "status": status}
     _report_behind(case_id)
     log_case_event(case_id, "Timeline · validation", "info",
-                   f"{finding_id} marked {status}" + (f" — {notes}" if notes else ""))
-
-    if str(finding_id).startswith("manual:"):
-        return _set_manual_event_status(case_id, finding_id, status, notes)
-
-    # Snapshot the finding's CURRENT occurrence watermark — the verdict covers exactly
-    # this much activity; new activity later re-opens it (see correlate._wm_new_activity).
-    wm = None
+                   f"{', '.join(ids[:5])}{' …' if len(ids) > 5 else ''} marked {status}"
+                   + (f" ({len(ids)} rows)" if len(ids) > 1 else "")
+                   + (f" — {notes}" if notes else ""))
+    # Snapshot each finding's CURRENT occurrence watermark — the verdict covers
+    # exactly this much activity; new activity later re-opens it
+    # (see correlate._wm_new_activity).
+    wms = {}
     try:
-        f = next((x for x in load_graph(case_id).findings if x.id == finding_id), None)
-        if f is not None:
-            wm = f.watermark()
+        wms = {f.id: f.watermark() for f in load_graph(case_id).findings if f.id in set(ids)}
     except Exception:
-        wm = None
+        wms = {}
 
     def _mutate(vals):
-        kept = [v for v in vals if v.get("finding_id") != finding_id]
+        kept = [v for v in vals if v.get("finding_id") not in set(ids)]
         if status != "pending":
-            kept.append({"finding_id": finding_id, "status": status, "notes": notes,
-                        "watermark": wm})
+            kept += [{"finding_id": i, "status": status, "notes": notes,
+                      "watermark": wms.get(i)} for i in ids]
         return kept
 
     _mutate_list_field(case_id, "timeline_validations", _mutate)
 
-    if status == "false_positive":
-        set_disposition(case_id, finding_id, verdict="benign", attribution="operator",
-                        reason=f"timeline: marked not real{(' — ' + notes) if notes else ''}",
-                        scope="case", watermark=wm)
-    elif status == "known":
-        set_disposition(case_id, finding_id, verdict="benign", attribution="it_admin",
-                        reason=f"timeline: IT confirms expected{(' — ' + notes) if notes else ''}",
-                        scope="case", watermark=wm)
-    else:
-        # real or pending — un-suppress (no-op if there was no disposition).
-        clear_disposition(case_id, finding_id)
-    return {"finding_id": finding_id, "status": status}
+    # Suppression: false_positive / known add a benign disposition per row;
+    # true_positive / pending remove any. Re-fuse once, only if something changed.
+    reasons = {"false_positive": ("operator", "timeline: marked not real"),
+               "known": ("it_admin", "timeline: IT confirms expected")}
+    before = [x for x in ((get_case(case_id) or {}).get("dispositions") or [])
+              if x.get("target") in set(ids)]
+    if status not in reasons and not before:
+        return {"finding_ids": ids, "status": status}
+
+    def _disp(details):
+        rest = [x for x in (details.get("dispositions") or []) if x.get("target") not in set(ids)]
+        if status in reasons:
+            attr, why = reasons[status]
+            for i in ids:
+                d = {"target": i, "verdict": "benign", "attribution": attr,
+                     "reason": why + (f" — {notes}" if notes else ""), "scope": "case",
+                     "by": "operator"}
+                if wms.get(i):
+                    d["watermark"] = wms[i]
+                rest.append(d)
+        details["dispositions"] = rest
+
+    ws = _ws()
+    ws.mutate_run_details(case_id, _disp)
+    ws.update_run_status(case_id, "pending")
+    log_case_event(case_id, "Risk · disposition " + ("applied" if status in reasons else "cleared"),
+                   "info", f"{len(ids)} row(s) → {status}; re-fusing")
+    fuse_case(case_id, trigger=TRIGGER_DISPOSITION if status in reasons else TRIGGER_DISPOSITION_CLEARED)
+    return {"finding_ids": ids, "status": status}
 
 
 def add_manual_timeline_event(case_id, event) -> dict:

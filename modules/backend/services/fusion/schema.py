@@ -215,6 +215,11 @@ class Finding:
     # without this, joining two hosts' rows under the earlier one's id silently
     # dropped the analyst's verdict on the other (found live on jev_test).
     aliases: list[str] = field(default_factory=list)
+    # The cross-host group this row belongs to — a LABEL for the Timeline, never a
+    # merge: the verdict stays on this host's row. {id, name, hosts, rows, start,
+    # end, link}; None when the detection did not spread (see
+    # correlate._mark_detection_groups).
+    group: Optional[dict] = None
 
     def ids(self) -> list:
         """This row's id first, then every id it absorbed."""
@@ -245,6 +250,7 @@ class Finding:
             occ_count=_int_or(d.get("occ_count") or 1, 1),
             occ_latest=_ts_or_none(d.get("occ_latest")),
             aliases=_str_list(d.get("aliases")),
+            group=d.get("group") if isinstance(d.get("group"), dict) else None,
         )
 
 
