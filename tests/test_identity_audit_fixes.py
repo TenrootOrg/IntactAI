@@ -102,5 +102,61 @@ class Suggestions(unittest.TestCase):
         self.assertFalse(c[0]["auto"])
 
 
+class Page(unittest.TestCase):
+    """Cards ranked by risk with their findings; one pair counted once."""
+
+    def test_ranked_by_worst_finding_service_accounts_last(self):
+        from unittest import mock
+        from services.fusion import store
+        g = _graph()
+        for eid, lbl in (("account:domain:corp\\svc_backup", "CORP\\svc_backup"),
+                         ("account:domain:corp\\kobia", "CORP\\kobia"), ("account:domain:corp\\kobitst", "CORP\\kobitst")):
+            g.upsert(schema.Entity(id=eid, type="account", label=lbl, attrs={"_assets": ["asset:WS1"]},
+                                   evidence=[schema.EvidenceRef("velociraptor", "r1", "Windows.System.Pslist/row=1")]))
+        g.findings = [schema.Finding(id="f1", title="Mimikatz on WS1", severity="critical", confidence="high",
+                                     summary="", entity_ids=["account:domain:corp\\svc_backup"]),
+                      schema.Finding(id="f2", title="Odd logon on WS1", severity="medium", confidence="high",
+                                     summary="", entity_ids=["account:domain:corp\\kobia"])]
+        ws = mock.Mock()
+        ws.get_automation_runs_by_case.return_value = []
+        with mock.patch.object(store, "get_case", return_value={"x": 1}), \
+             mock.patch.object(store, "view_graph", return_value=g), \
+             mock.patch.object(store, "_ws", return_value=ws):
+            v = store.identity_view("c1")
+        cards = v["identities"]
+        by = {c["name"]: c for c in cards}
+        self.assertEqual(by["svc_backup"]["account_kind"], "service")
+        self.assertEqual(by["kobitst"]["account_kind"], "test")
+        self.assertEqual([identities.account_kind(n) for n in ("contest", "tester", "jdoe.test")], [None, None, "test"])
+        self.assertEqual((by["svc_backup"]["worst"], by["svc_backup"]["detections"]), ("critical", 1))
+        self.assertEqual(by["svc_backup"]["findings"][0]["id"], "f1")
+        # people first; among people the one with a finding leads
+        self.assertEqual(cards[0]["name"], "kobia")
+        self.assertEqual(by["srv"]["account_kind"], "service")
+        self.assertIsNone(cards[0]["account_kind"])
+        kinds = [bool(c["account_kind"]) for c in cards]
+        self.assertEqual(kinds, sorted(kinds))
+        # kobia / kobitst is one suggested pair, shown on both cards, counted once
+        self.assertEqual(sum(len(c["suggestions"]) for c in cards), 2 * v["counts"]["suggestions"])
+
+    def test_card_markup(self):
+        """The real idCard from cases.html, run in node (skips where node is absent)."""
+        import shutil, subprocess
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("no node on this host")
+        js = r"""
+const fs=require("fs"); const src=fs.readFileSync(process.argv[1],"utf8");
+eval(src.match(/function idCard\(cid,it\)\{[\s\S]*?\n\}/)[0]);
+const esc=s=>String(s).replace(/[<>&"]/g,""), jsa=s=>String(s); window={_idExpand:{k:true}};
+console.log(idCard("c1",{key:"k",name:"svc_backup",account_kind:"service",worst:"critical",detections:1,finding_rows:3,
+  accounts:[{id:"a",label:"svc_backup"}],seen_on:["WS1"],findings:[{id:"f1",title:"Mimikatz on WS1",severity:"critical"}]}));"""
+        html = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "modules/nginx/html/cases.html")
+        out = subprocess.run([node, "-e", js, html], capture_output=True, text=True, check=True).stdout
+        for want in ("service account", 'class="chip c-critical"', "openFindingDetail('f1')",
+                     "1</b> detection (3 rows)", "worst 1 of 3"):
+            self.assertIn(want, out)
+
+
 if __name__ == "__main__":
     unittest.main()

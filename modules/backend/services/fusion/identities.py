@@ -65,6 +65,17 @@ _DOMAIN_SUFFIX_SKIP = {"onmicrosoft", "com", "net", "org", "io", "local", "inter
 BUILTIN_ACCOUNTS = frozenset({"administrator", "guest", "user"})
 
 
+# Non-person accounts by naming convention (svc_backup, sqlsvc, kobitst). A HINT
+# for a badge and for sorting after people — they are still identities.
+_SERVICE_NAME = re.compile(r"^(?:svc|srv|sql|sccm|service)|(?:svc|srv|sql|sccm|service)$")
+_TEST_NAME = re.compile(r"^(?:tst|test)(?:[._-]|\d|$)|(?:[._-]test|tst)\d*$")   # not "contest"
+
+
+def account_kind(stem):
+    """"service" / "test" / None, from the username stem."""
+    return "service" if _SERVICE_NAME.search(stem or "") else "test" if _TEST_NAME.search(stem or "") else None
+
+
 def _local_host(e):
     """The host whose OWN local account database (SAM) this account came from —
     a LOCAL principal, not the same account as a same-named one on another host.
@@ -424,7 +435,7 @@ def resolve_identities(graph, merges=None, splits=None, host_excludes=None) -> l
                           if a in graph.entities and graph.entities[a].label})
         return {"key": key, "name": dominant, "names": names, "buckets": sorted(buckets),
                 "accounts": acct_out, "hosts": hosts_out, "seen_on": seen_on,
-                "builtin": dominant in BUILTIN_ACCOUNTS,
+                "builtin": dominant in BUILTIN_ACCOUNTS, "account_kind": account_kind(dominant),
                 "confidence": round(sum(confs) / len(confs), 2)}
 
     comps = defaultdict(list)

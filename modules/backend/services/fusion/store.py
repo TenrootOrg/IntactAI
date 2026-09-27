@@ -4637,10 +4637,25 @@ def identity_view(case_id) -> dict:
                 "id": e["members"][0]["id"], "other": dst["name"], "reason": e["reason"],
                 "score": e["score"], "ambiguous": e["ambiguous"], "members": e["members"],
                 "jev_p": max(ps) if ps else None})
-    # people with a suggestion / more infrastructures / accounts first
-    idents.sort(key=lambda it: (-len(it.get("suggestions") or []), -len(it["buckets"]),
-                                -len(it["accounts"]), it["key"]))
-    total_sug = sum(len(it["suggestions"]) for it in idents)
+    # Each person's findings (rows touching any of their accounts), so the page can
+    # rank by risk and open them. It was sorted by suggestion count and showed none.
+    from .correlate import _detection_name
+    from . import severity as _sev
+    for it in idents:
+        ids = {a["id"] for a in it["accounts"] if not a.get("disabled")}
+        fs = sorted((f for f in getattr(g, "findings", None) or [] if ids & set(f.entity_ids or [])),
+                    key=lambda f: (-_sev.rank(f.severity), f.ts or ""))
+        it["findings"] = [{"id": f.id, "title": f.title, "severity": f.severity} for f in fs[:12]]
+        it["finding_rows"] = len(fs)
+        it["detections"] = len({_detection_name(f) for f in fs})
+        it["worst"] = fs[0].severity if fs else None
+    # people first (service / test accounts after), then worst finding, then how
+    # many detections; suggestions only break ties
+    idents.sort(key=lambda it: (bool(it.get("account_kind")),
+                                -(_sev.rank(it["worst"]) + 1) if it["worst"] else 0, -it["detections"], -len(it.get("suggestions") or []),
+                                -len(it["buckets"]), -len(it["accounts"]), it["key"]))
+    # one pair shows on BOTH cards; count it once (it read "2 suggestions" for 1)
+    total_sug = len(pairs)
     # staleness: FUSEABLE member runs not yet folded into the graph this tab reads.
     try:
         fused = set(d.get("fused_run_ids") or [])
