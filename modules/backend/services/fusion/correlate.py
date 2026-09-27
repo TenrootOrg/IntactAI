@@ -1535,6 +1535,22 @@ def _first_ids(g: FusionGraph, f) -> set:
     return out
 
 
+def _legacy_group_ids(asset_id, logged, fs, max_members=8) -> list:
+    """Ids a "+N related" group had under the pre-stable scheme — one per possible
+    earlier membership (any 2+ of its members, each keyed by that membership's first
+    second). Lets a verdict given before the id became stable find its row again."""
+    from itertools import combinations
+    if len(fs) > max_members:
+        return []
+    out = []
+    for n in range(2, len(fs) + 1):
+        for sub in combinations(fs, n):
+            first = min(sub, key=lambda f: keys.to_utc_dt(f.ts) or f.ts)
+            out.append(_fid("grp", asset_id, str(first.ts)[:19], logged,
+                            *sorted(f.id for f in sub)))
+    return out
+
+
 def _group_simultaneous_detections(g: FusionGraph, grouping: dict) -> None:
     """Detections of ONE event on one host are one thing that happened.
 
@@ -1629,8 +1645,15 @@ def _group_simultaneous_detections(g: FusionGraph, grouping: dict) -> None:
             for eid in f.entity_ids:
                 if eid not in ents:
                     ents.append(eid)
+        # STABLE id: the host, its recorded name and the group's FIRST member. It
+        # used to hash every member id, so a group that gained a member got a new id
+        # and the analyst's verdict silently matched nothing (a False-positive on
+        # "Malicious PowerShell Commandlets (+1 related)" vanished when it became
+        # "+2 related"). The ids it could have had under the old scheme — any
+        # earlier membership — are kept as aliases, so those verdicts come back.
+        _legacy = _legacy_group_ids(asset_id, logged, fs)
         new.append(Finding(
-            id=_fid("grp", asset_id, second, logged, *sorted(f.id for f in fs)),
+            id=_fid("grp", asset_id, logged, _k),
             title=f"{top.title.rsplit(' on ', 1)[0]} (+{len(fs) - 1} related) on {host}",
             severity=top.severity, confidence="high",
             summary=f"{len(fs)} detections fired on the same event at {second}Z on {host}: "
@@ -1643,7 +1666,7 @@ def _group_simultaneous_detections(g: FusionGraph, grouping: dict) -> None:
             ts=min((f.ts for f in fs), key=lambda t: keys.to_utc_dt(t) or t), kind="single",
             occ_count=sum(int(f.occ_count or 1) for f in fs),
             occ_latest=max((f.occ_latest or f.ts for f in fs), default=top.ts),
-            aliases=[x for f in fs for x in f.ids()]))
+            aliases=[x for f in fs for x in f.ids()] + _legacy))
         merged_ids.update(f.id for f in fs)
     if new:
         g.findings = [f for f in g.findings if f.id not in merged_ids] + new
