@@ -31,7 +31,7 @@ except Exception:                                     # pragma: no cover - defen
 # Windows built-in / service accounts that are NOT people — they'd otherwise show up as
 # "identities" and pollute the page (network service, defaultaccount, dwm-1, ...).
 _NON_PERSON = frozenset({
-    "defaultaccount", "wdagutilityaccount", "guest", "administrator", "system",
+    "defaultaccount", "wdagutilityaccount", "system",
     "localsystem", "networkservice", "localservice", "network service", "local service",
     "anonymous", "anonymous logon", "nt authority", "nt service", "dwm", "umfd",
     "font driver host", "window manager", "iusr", "healthmailbox",
@@ -57,13 +57,38 @@ _DOMAIN_SUFFIX_SKIP = {"onmicrosoft", "com", "net", "org", "io", "local", "inter
 
 
 
+# Built-in accounts a person LOGS IN AS. They were filtered out as "not a person",
+# which hid the built-in Administrator — the account attackers abuse most — even
+# when used by hand on two domain controllers (jev_test), and a real local account
+# named "user". They get a card of their own with a "built-in" badge, and are never
+# offered as a fuzzy name match to other accounts.
+BUILTIN_ACCOUNTS = frozenset({"administrator", "guest", "user"})
+
+
+def _local_host(e):
+    """The host whose OWN local account database (SAM) this account came from —
+    a LOCAL principal, not the same account as a same-named one on another host.
+    None for domain / cloud accounts and for names seen only in other artifacts."""
+    if not str(getattr(e, "id", "")).startswith("account:asset:"):
+        return None
+    for ev in (getattr(e, "evidence", None) or []):
+        loc = getattr(ev, "locator", None) if not isinstance(ev, dict) else ev.get("locator")
+        if "Forensics.SAM" in str(loc or ""):
+            hs = list(e.assets() or [])
+            return hs[0] if hs else None
+    return None
+
+
 def _is_person(label) -> bool:
     """A real user identity worth clustering — excludes machine accounts (HOST$),
-    generic words, and Windows built-in / service accounts (SYSTEM, DWM-1, …)."""
+    generic words, and Windows service / session accounts (SYSTEM, DWM-1, …).
+    Built-in LOGON accounts (Administrator, Guest) count: people use them."""
     s = (label or "").strip()
     if not s or s.endswith("$"):
         return False
     n = _norm_user(s)
+    if n in BUILTIN_ACCOUNTS:
+        return True
     if not n or len(n) < 3 or n in _STOP or n in _NON_PERSON:
         return False
     up = s.upper()
@@ -303,12 +328,31 @@ def resolve_identities(graph, merges=None, splits=None, host_excludes=None) -> l
     # a username is one human; the RARE cross-org collision of an identical username is
     # handled by the analyst's Split action (never a silent, unfixable merge). DIFFERENT
     # names (alonm/alonn) stay separate and only link via corroborated suggestions below.
+    # EXCEPT a LOCAL account read from a host's own SAM: `admin01` on ALClient022 and
+    # `admin01` on ALClient01 are two separate local principals, and merging them made
+    # "Identity 'admin01' active on 2 hosts" — lateral movement between two unrelated
+    # accounts. A local account joins only accounts seen on its OWN host; the same
+    # local name elsewhere is offered as a suggestion (compute_candidates). Built-in
+    # names (Administrator…) keep one card per name, flagged built-in.
     bynorm = defaultdict(list)
+    locals_ = []
     for e in accounts:
-        bynorm[_norm_user(e.label)].append(e)
+        n = _norm_user(e.label)
+        if _local_host(e) and n not in BUILTIN_ACCOUNTS:
+            locals_.append(e)
+        else:
+            bynorm[n].append(e)
     for accs in bynorm.values():
         for e in accs[1:]:
             _union(e.id, accs[0].id)
+    for e in locals_:
+        h, n = _local_host(e), _norm_user(e.label)
+        for o in bynorm.get(n, []) + locals_:
+            if o is e or _norm_user(o.label) != n:
+                continue
+            oh = _local_host(o)
+            if oh == h or (oh is None and h in (o.assets() or [])):
+                _union(e.id, o.id)
 
     # cross-name corroborated / confirmed merges — SPECIFIC account pairs (a_id, b_id, score)
     for m in (merges or []):
@@ -355,9 +399,15 @@ def resolve_identities(graph, merges=None, splits=None, host_excludes=None) -> l
                     hosts_out.append({"id": h.id, "label": h.label, "strong": h.id in seen_host_ids,
                                       "name": nm})
         confs = [a["conf"] for a in acct_out] or [1.0]
-        return {"key": key, "name": (accs[0].label if len(accs) == 1 else dominant),
-                "names": names, "buckets": sorted(buckets), "accounts": acct_out,
-                "hosts": hosts_out, "confidence": round(sum(confs) / len(confs), 2)}
+        # EVERY host the person's accounts appear on. The card listed only hosts whose
+        # NAME contains the username (empty for every card on jev_test), so srv and
+        # giladt lost ALDC02 and searching "ALDC02" matched nobody.
+        seen_on = sorted({graph.entities[a].label for a in seen_host_ids
+                          if a in graph.entities and graph.entities[a].label})
+        return {"key": key, "name": dominant, "names": names, "buckets": sorted(buckets),
+                "accounts": acct_out, "hosts": hosts_out, "seen_on": seen_on,
+                "builtin": dominant in BUILTIN_ACCOUNTS,
+                "confidence": round(sum(confs) / len(confs), 2)}
 
     comps = defaultdict(list)
     for e in accounts:
@@ -450,6 +500,23 @@ def compute_candidates(graph) -> list:
                     # with DIFFERENT names is exactly what keys CANNOT do (jdoe vs
                     # john.doe are different keys and different names), so it must still
                     # be offered — as a SUGGESTION, never an auto-merge.
+                    # Built-in accounts are never fuzzy-matched to people.
+                    if _na in BUILTIN_ACCOUNTS or _nb in BUILTIN_ACCOUNTS:
+                        continue
+                    # The same LOCAL account name on two different hosts: two local
+                    # principals that may be one person — a suggestion, never a merge.
+                    la, lb = _local_host(ea), _local_host(eb)
+                    if _na == _nb and (la or lb) and la != lb \
+                            and not (la and lb is None and la in (eb.assets() or [])) \
+                            and not (lb and la is None and lb in (ea.assets() or [])):
+                        cands.append({
+                            "kind": "same_identity", "a_id": ea.id, "a_label": ea.label,
+                            "b_id": eb.id, "b_label": eb.label,
+                            "a_ctx": _context(ea, graph), "b_ctx": _context(eb, graph),
+                            "buckets": sorted(ba | bb), "score": 0.6, "match": "same local name",
+                            "reason": "same local account name on different hosts",
+                            "evidence": [], "corroborated": False, "strong": False})
+                        continue
                     if ba and bb and ba == bb and _na == _nb:
                         continue
                     m = _match(ea.label, eb.label)

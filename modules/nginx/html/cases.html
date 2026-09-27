@@ -1829,7 +1829,8 @@ function _idRender(id){
   const q=(window._idQuery||'').trim().toLowerCase();
   const hit=it=> !q || (it.name||'').toLowerCase().includes(q)
     || (it.accounts||[]).some(a=>(a.label||'').toLowerCase().includes(q))
-    || (it.hosts||[]).some(h=>(h.label||'').toLowerCase().includes(q));
+    || (it.hosts||[]).some(h=>(h.label||'').toLowerCase().includes(q))
+    || (it.seen_on||[]).some(h=>String(h).toLowerCase().includes(q));
   const shown=idents.filter(hit);
   const bset=(d.buckets||[]).join(', ')||'none';
   let h=`<p style="color:var(--muted);font-size:12px;margin:0 0 6px">People in this case and their footprint across infrastructures (<b>${esc(bset)}</b>). Same-name accounts merge automatically; uncertain matches are <b>suggestions</b>. Click a person to expand; use ✕ to switch off an account that is not this person, and ↺ to switch it back on. Everything persists across re-fusion.</p>`;
@@ -1857,8 +1858,8 @@ function idCard(cid,it){
   const sugN=(it.suggestions||[]).length;
   const nAcc=(it.accounts||[]).filter(a=>!a.disabled).length;
   const header=`<div onclick="idToggle('${jsa(it.key)}')" style="cursor:pointer;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-     <div><span style="color:var(--muted)">${open?'▾':'▸'}</span> 👤 <b style="font-size:13px">${esc(it.name||it.key)}</b>${buckets} ${confb}</div>
-     <span style="color:var(--muted);font-size:11px">${nAcc} ${nAcc===1?'account':'accounts'}${sugN?` · <span style="color:var(--acc)">${sugN} ${sugN===1?'suggestion':'suggestions'}</span>`:''}</span></div>`;
+     <div><span style="color:var(--muted)">${open?'▾':'▸'}</span> 👤 <b style="font-size:13px">${esc(it.name||it.key)}</b>${it.builtin?' '+bdg('built-in','#d29922'):''}${buckets} ${confb}</div>
+     <span style="color:var(--muted);font-size:11px">${nAcc} ${nAcc===1?'account':'accounts'}${(it.seen_on||[]).length?` · on ${esc((it.seen_on||[]).slice(0,5).join(', '))}${(it.seen_on||[]).length>5?' +'+((it.seen_on||[]).length-5):''}`:''}${sugN?` · <span style="color:var(--acc)">${sugN} ${sugN===1?'suggestion':'suggestions'}</span>`:''}</span></div>`;
   if(!open) return `<div style="border:1px solid var(--bd);border-radius:8px;padding:8px 12px;margin-bottom:6px;background:#0d1117">${header}</div>`;
   const xbtn=(fn)=>`<button class="ghost" title="Not this person — switch off" style="border:none;color:var(--med);padding:0 4px;font-size:12px" onclick="event.stopPropagation();${fn}">✕</button>`;
   const accts=(it.accounts||[]).map(a=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:1px 0${a.disabled?';opacity:.45':''}">
@@ -1874,6 +1875,7 @@ function idCard(cid,it){
       <button class="ghost" style="border-color:var(--med);font-size:11px;padding:2px 8px" onclick="idSeparate('${jsa(cid)}','${jsa(it.key)}','${jsa((m.names||[]).join('|'))}')">Separate</button></div>`).join('');
   const body=`<div style="display:flex;gap:24px;margin-top:8px;flex-wrap:wrap">
        <div style="flex:1;min-width:240px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">Accounts</div>${accts}</div>
+       <div style="flex:1;min-width:200px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">Seen on hosts</div>${(it.seen_on||[]).map(h=>`<div>🖥 ${esc(h)}</div>`).join('')||'<span style="color:var(--muted)">—</span>'}</div>
 </div>
      ${mfrom?`<div style="margin-top:8px;border-top:1px dashed var(--bd);padding-top:6px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">How this person was assembled (Separate to undo)</div>${mfrom}</div>`:''}
      ${sugg?`<div style="margin-top:8px;border-top:1px dashed var(--bd);padding-top:6px"><div style="color:var(--muted);font-size:11px;margin-bottom:2px">Suggested links (Merge folds them into this person)</div>${sugg}</div>`:''}`;
