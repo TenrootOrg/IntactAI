@@ -1945,6 +1945,7 @@ def _coordinated_activity(g: FusionGraph, *, window=None, baseline=None) -> None
             # Per recorded name too: a machine's image build and a later attack on it
             # are not one coordinated burst.
             per_asset.setdefault((a, e.attrs.get("logged_host") or ""), []).append(e)
+    _coord_ids: set = set()
     for (asset_id, logged), burst_src in per_asset.items():
       for evs in _bursts(burst_src):
         titles = {e.attrs.get("title") or e.label for e in evs}
@@ -1973,8 +1974,17 @@ def _coordinated_activity(g: FusionGraph, *, window=None, baseline=None) -> None
         # watermark re-open check only catches MORE/LATER occurrences, not a
         # differently-composed burst with an equal-or-lower count).
         composition_fp = hashlib.sha1(("|".join(sorted(titles)) + (f"@{logged}" if logged else "")).encode()).hexdigest()[:8]
+        # The SAME burst on another day is another row. The id had no time in it,
+        # so a burst repeating daily at 08:07 was four rows sharing ONE id — one
+        # verdict for all, and every row's detail opened the first. Bursts arrive in
+        # time order (_bursts), so the earliest keeps the old id (its verdict stays);
+        # later repeats carry their start time.
+        _cid = _fid("coord", asset_id, composition_fp)
+        if _cid in _coord_ids:
+            _cid = _fid("coord", asset_id, composition_fp, ts_all[0] if ts_all else len(_coord_ids))
+        _coord_ids.add(_cid)
         g.add_finding(Finding(
-            id=_fid("coord", asset_id, composition_fp),
+            id=_cid,
             title=f"Burst of {len(titles)} detections in {span} — {_lead}{_more} on {host}",
             severity="high", confidence="high",
             summary=f"{len(titles)} distinct non-baseline detections"

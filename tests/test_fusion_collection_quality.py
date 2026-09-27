@@ -437,6 +437,19 @@ class CoordinatedActivityIsOneBurst(unittest.TestCase):
         self.assertIn("too low-severity to reach the timeline on its own", coord[0].summary)
         self.assertIn("T1003", coord[0].mitre, "the techniques it spans, for filters")
 
+    def test_the_same_burst_on_another_day_is_another_row(self):
+        """Found on jev_test: a burst repeating daily at 08:07 was four rows sharing
+        ONE id — one verdict for all of them, and every row opened the first."""
+        titles = ["Suspicious PowerShell Invocation", "Security Eventlog Cleared", "LSASS Access"]
+        coord = self._fuse_window(self._rows("2026-09-01", titles) + self._rows("2026-09-02", titles)
+                                  + self._rows("2026-09-03", titles))
+        self.assertEqual(3, len(coord), [f.title for f in coord])
+        self.assertEqual(3, len({f.id for f in coord}))
+        # the earliest keeps the id it always had, so a verdict on it stays
+        only_first = self._fuse_window(self._rows("2026-09-01", titles))
+        first = min(coord, key=lambda f: f.ts)
+        self.assertEqual(first.id, only_first[0].id)
+
     def test_hours_of_quiet_end_a_burst(self):
         """At a WEEK, one row covered six days and 32 detections on a live case."""
         coord = self._fuse_window(
