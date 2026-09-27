@@ -395,8 +395,13 @@ def zoom_targets(graph, *, window=None, min_severity="informational",
     # shown, so 11 windows of evidence appeared in no window, no table and no
     # section -- invisible rather than deprioritised. Report the remainder as one
     # explicit rollup so every finding is accounted for somewhere.
-    rest = out[n:]
-    out = out[:n]
+    # A CRITICAL detection never sits only in the rollup: after episode rows split
+    # the timeline into more windows, 5 critical rows landed in the unclickable
+    # "further windows" line on jev_test. Windows holding one are kept as cards
+    # beyond `n` (at most MAX_EXTRA_CRITICAL_WINDOWS more, to bound report cost).
+    extra = [z for z in out[n:] if z.get("critical_count")][:MAX_EXTRA_CRITICAL_WINDOWS]
+    rest = [z for z in out[n:] if z not in extra]
+    out = out[:n] + extra
     if rest:
         rf = sum(z["finding_count"] for z in rest)
         rc = sum(z.get("critical_count", 0) for z in rest)
@@ -643,6 +648,42 @@ import re as _tf_re
 # generated before the rename still yields its names instead of blank cards.
 _TF_HEADING = _tf_re.compile(
     r"^###\s*(?:Phase|Timeframe)\s+(\d+)\s*[—–\-:]\s*(.+?)\s*$", _tf_re.M)
+
+
+MAX_EXTRA_CRITICAL_WINDOWS = 4
+
+_PHASE_WINDOW = __import__("re").compile(
+    r"(?m)^### (?:Phase|Timeframe) (\d+)\s*[—–-]\s*([^\n]+)\n(?:[^\n]*\n){0,3}?"
+    r"- \*\*Window:\*\* `([^`]+)` → `([^`]+)`")
+
+
+def name_cards_from_report(cards, md) -> None:
+    """Give each scope card the report's name for ITS window — matched by time, not
+    by number. Matching by number put every name on the wrong card once a re-fuse
+    reordered the windows (all six on jev_test: card 1, 2025-04-21, read "Phase 1 —
+    …", a name the report gave to 2026-04-07). A card is named only when its window
+    overlaps a report phase's window by at least half of the shorter of the two;
+    otherwise it keeps its date title."""
+    phases = []
+    for n, name, a, b in _PHASE_WINDOW.findall(md or ""):
+        t0, t1 = keys.to_utc_dt(a), keys.to_utc_dt(b)
+        if t0 and t1:
+            phases.append((name.strip().strip("*").strip(), t0, t1))
+    for z in cards:
+        z["name"] = None
+        w = z.get("window") or {}
+        c0, c1 = keys.to_utc_dt(w.get("start")), keys.to_utc_dt(w.get("end"))
+        if z.get("rollup") or not (c0 and c1) or not phases:
+            continue
+        best, best_frac = None, 0.0
+        for name, p0, p1 in phases:
+            ov = (min(c1, p1) - max(c0, p0)).total_seconds()
+            shorter = max(min((c1 - c0).total_seconds(), (p1 - p0).total_seconds()), 1.0)
+            frac = ov / shorter
+            if frac > best_frac:
+                best, best_frac = name, frac
+        if best_frac >= 0.5:
+            z["name"] = best
 
 
 def timeframe_names_from_report(md) -> dict:

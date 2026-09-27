@@ -552,9 +552,7 @@ def get_zoom_targets(case_id):
         # prep & C2"); carry that onto the card so it says what the window IS, not
         # only when it was. Absent (deterministic report, or not yet narrated) the
         # card keeps its date/count title.
-        names = render.timeframe_names_from_report(d.get("report_md") or "")
-        for z in targets:
-            z["name"] = names.get(z.get("n"))
+        render.name_cards_from_report(targets, d.get("report_md") or "")
     return jsonify({"case_id": case_id, "altitude": altitude, "reason": reason,
                     "targets": targets})
 
