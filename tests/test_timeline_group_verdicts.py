@@ -76,6 +76,33 @@ class Many(unittest.TestCase):
         many.assert_called_once_with("c1", ["a"], "known", "")
 
 
+class NewHostIsNeverAutoJudged(unittest.TestCase):
+    """Asked in review: "if I add new hosts in the same timeframe, will they be
+    True Positive automatically?" — No: the group verdict covered only the rows
+    that existed; the new host's row arrives Pending."""
+
+    def test_group_marked_true_positive_then_a_new_host_arrives_pending(self):
+        import test_timeline_episodes as T
+        from services.fusion import jev
+        a = [T._row("HOSTA", "2026-06-01T10:30:00Z", rec=1)]
+        b = [T._row("HOSTB", "2026-06-01T10:40:00Z", rec=2)]
+        c = [T._row("HOSTC", "2026-06-01T10:50:00Z", rec=3)]
+        g1 = T._fuse(a, b)
+        vals = [{"finding_id": f.id, "status": "true_positive", "watermark": f.watermark()}
+                for f in g1.findings if "Encoded PowerShell" in f.title]
+        g2 = T._fuse(a, b, c)
+        case = {"timeline_validations": vals}
+        with mock.patch.object(store, "get_case", return_value=case), \
+             mock.patch.object(store, "view_graph", return_value=g2), \
+             mock.patch.object(store, "view_window", return_value=None), \
+             mock.patch.object(jev, "enabled", return_value=False):
+            rows = [r for r in store.get_timeline("c1") if "Encoded PowerShell" in r["title"]]
+        status = {r["host"]: r["validation"] for r in rows}
+        self.assertEqual(status, {"HOSTA": "true_positive", "HOSTB": "true_positive",
+                                  "HOSTC": "pending"})
+        self.assertEqual(len({r["group"]["id"] for r in rows}), 1)      # all three in one group
+
+
 class Header(unittest.TestCase):
     """The real _tlGroupHead / tlPaint from cases.html, run in node."""
 
@@ -86,9 +113,9 @@ class Header(unittest.TestCase):
         with open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
             src = fh.read()
         fns = [re.search(rf"function {n}\(.*?\n\}}", src, re.S).group(0)
-               for n in ("_tlRow", "_tlGroupHead", "tlPaint")]
+               for n in ("_tlRow", "_tlGroupHead", "tlPaint", "_tlUntil")]
         js = ("const esc=s=>String(s);const TL_STATES=[['pending','Pending'],['true_positive','TP'],"
-              "['false_positive','FP'],['known','Known']];const _tlUntil=()=>'';const _tlJev=()=>'';"
+              "['false_positive','FP'],['known','Known']];const _tlJev=()=>'';"
               "const _tlTitle=r=>r.title;let OUT='';const $=()=>({set innerHTML(v){OUT=v}});\n"
               + "\n".join(fns) + """
 const G={id:'g1',name:'Encoded PowerShell',hosts:2,link:'time only'};
@@ -96,7 +123,7 @@ const rows=[{finding_id:'a',ts:'10:30',host:'H1',title:'x',severity:'high',group
             {finding_id:'p',ts:'10:32',host:'H3',title:'y',severity:'high'},
             {finding_id:'b',ts:'10:35',host:'H2',title:'x',severity:'high',group:G,validation:'known'}];
 window={_tlData:rows}; const tlVisible=()=>rows;
-tlPaint(); const open=OUT; window._tlClosed={g1:true}; tlPaint(); const shut=OUT;
+tlPaint(); const shut=OUT; window._tlOpen={g1:true}; tlPaint(); const open=OUT;
 console.log(JSON.stringify([open, shut]));""")
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as t:
             t.write(js)
@@ -107,13 +134,16 @@ console.log(JSON.stringify([open, shut]));""")
         finally:
             os.unlink(t.name)
         self.assertEqual(open_.count("tlgroup"), 1)
-        self.assertIn("2 hosts, 2 rows", open_)
+        self.assertIn("H1, H2", open_)                     # the header names the hosts
+        self.assertIn("2 hosts · 2 hits", open_)
         self.assertIn("linked by time only", open_)
         self.assertIn("1 of 2 reviewed", open_)
         self.assertIn("tlValidateMany([&quot;a&quot;,&quot;b&quot;],'false_positive')", open_)
         # the group's rows sit together under its header; the ungrouped row after
         self.assertLess(open_.index("tlValidate('b'"), open_.index("tlValidate('p'"))
-        self.assertNotIn("tlValidate('a'", shut)            # collapsed: host rows hidden
+        self.assertIn("tlgroup", shut)
+        self.assertNotIn("tlValidate('a'", shut)            # collapsed BY DEFAULT: host rows hidden
+        self.assertIn("tlValidate('a'", open_)
         self.assertIn("tlValidate('p'", shut)               # ungrouped row still shown
 
 

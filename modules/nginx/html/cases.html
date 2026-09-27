@@ -1674,18 +1674,26 @@ function _tlGroupHead(grp, members, open){
   const done=members.filter(m=>(m.validation||'pending')!=='pending').length;
   const weak=String(grp.link||'time only')==='time only';
   const idsJs=JSON.stringify(ids).replace(/"/g,"&quot;");
-  const btn=(k,l)=>`<button class="s-${k}" onclick="event.stopPropagation();tlValidateMany(${idsJs},'${k}')" title="Set ${l} on all ${ids.length} rows below">${l}</button>`;
-  return `<div class="tlrow tlgroup" style="background:rgba(88,166,255,.06);cursor:pointer" onclick="tlToggleGroup('${esc(grp.id)}')">
-      <code style="white-space:nowrap">${esc(members[0].ts||'—')}</code>
-      <div class="tlmeta"><span><strong>${open?'▾':'▸'} ${esc(grp.name)}</strong> — ${Number(grp.hosts)} hosts, ${ids.length} rows</span>
-        <span class="l2"><span class="sg-hint" style="border-style:solid;${weak?'':'border-color:#3fb950;color:#56d364'}" title="${weak?'Same detection close together on several hosts — a correlation, not proof they are related.':'The hosts share this identifier in their evidence.'}">${weak?'linked by time only':esc(grp.link)}</span><span style="color:var(--muted);font-size:11px">${done} of ${ids.length} reviewed</span></span>
+  const hosts=[...new Set(members.flatMap(m=>String(m.host||'').split(',').map(x=>x.trim()).filter(Boolean)))];
+  const hits=members.reduce((n,m)=>n+(+m.hits||1),0);
+  const sevs=['informational','low','medium','high','critical'];
+  const sev=members.map(m=>m.severity).sort((x,y)=>sevs.indexOf(y)-sevs.indexOf(x))[0]||'';
+  const last=members.map(m=>m.last||m.ts).sort().slice(-1)[0];
+  const btn=(k,l)=>`<button class="s-${k}" onclick="event.stopPropagation();tlValidateMany(${idsJs},'${k}')" title="Set ${l} on all ${ids.length} rows in this group — each host row keeps its own verdict">${l}</button>`;
+  return `<div class="tlrow tlgroup" style="background:rgba(88,166,255,.06);cursor:pointer" title="${open?'Hide':'Show'} the ${ids.length} host rows" onclick="tlToggleGroup('${esc(grp.id)}')">
+      <code style="white-space:nowrap">${esc(members[0].ts||'—')}${_tlUntil({ts:members[0].ts,last})}</code>
+      <div class="tlmeta"><span><strong>${open?'▾':'▸'} ${esc(grp.name)}</strong> — ${esc(hosts.join(', '))}</span>
+        <span class="l2"><span class="sg-hint" style="border-style:solid;color:var(--muted)">${hosts.length} hosts · ${hits.toLocaleString()} hits</span><span class="sg-hint" style="border-style:solid;${weak?'':'border-color:#3fb950;color:#56d364'}" title="${weak?'Same detection close together on several hosts — a correlation, not proof they are related.':'The hosts share this identifier in their evidence.'}">${weak?'linked by time only':esc(grp.link)}</span><span style="color:var(--muted);font-size:11px">${done} of ${ids.length} reviewed</span></span>
       </div>
+      ${sev?`<span class="chip c-${esc(sev)}">${esc(sev)}</span>`:''}
       <span class="seg">${btn('true_positive','True Positive')}${btn('false_positive','False Positive')}${btn('known','Known')}</span>
     </div>`;
 }
-function tlToggleGroup(gid){ window._tlClosed=window._tlClosed||{}; window._tlClosed[gid]=!window._tlClosed[gid]; tlPaint(); }
+// Groups start COLLAPSED — the header says everything a row would; expanding is
+// the analyst's choice (remembered while the page is open).
+function tlToggleGroup(gid){ window._tlOpen=window._tlOpen||{}; window._tlOpen[gid]=!window._tlOpen[gid]; tlPaint(); }
 function tlPaint(){
-  const rows=tlVisible(), closed=window._tlClosed||{}, emitted=new Set();
+  const rows=tlVisible(), opened=window._tlOpen||{}, emitted=new Set();
   const out=[];
   for(const r of rows){
     const grp=r.group;
@@ -1694,7 +1702,7 @@ function tlPaint(){
     emitted.add(grp.id);
     const members=rows.filter(x=>x.group && x.group.id===grp.id);
     if(members.length<2){ out.push(_tlRow(r,false)); continue; }   // filters left one: a plain row
-    const open=!closed[grp.id];
+    const open=!!opened[grp.id];
     out.push(_tlGroupHead(grp, members, open));
     if(open) for(const m of members) out.push(_tlRow(m,true));
   }
