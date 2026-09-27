@@ -1766,7 +1766,7 @@ function openFindingDetail(fid){
     const occHtml=occ.length? occ.map(o=>{
       const kv=Object.entries(o.attrs||{}).map(([k,v])=>`<div class="kv"><b>${esc(k)}</b><span>${esc(String(v))}</span></div>`).join('');
       return `<div class="fdocc">
-        <div style="color:var(--muted);font-size:11px;margin-bottom:3px">⏱ ${esc(o.ts||'—')} · anomaly ${o.anomaly||0}${(o.artifacts||[]).map(a=>` · <span class="arti">${esc(a)}</span>`).join('')}</div>
+        <div style="color:var(--muted);font-size:11px;margin-bottom:3px">⏱ ${esc(o.ts||'—')}${o.last?` → ${esc(o.last)}`:''}${(o.hits||1)>1?` · <b>${Number(o.hits).toLocaleString()} hits</b>`:''} · anomaly ${o.anomaly||0}${(o.artifacts||[]).map(a=>` · <span class="arti">${esc(a)}</span>`).join('')}</div>
         ${(o.locators||[]).length?`<div style="color:var(--muted);font-size:10.5px;margin-bottom:3px">${(o.locators||[]).map(l=>esc(l)).join(' · ')}${o.evidence_rows>(o.locators||[]).length?` · +${o.evidence_rows-(o.locators||[]).length} more row(s)`:''}</div>`:''}
         ${kv||'<i style="color:var(--muted)">no fields</i>'}</div>`;}).join('')
       : '<i style="color:var(--muted)">no per-occurrence detail available</i>';

@@ -5121,7 +5121,11 @@ def get_finding_detail(case_id, finding_id) -> dict | None:
         _arts = {l.split("/row=")[0].split("/")[0] for l in _locs}
         _arts |= {str(o.get("value")) for o in ((e.attrs or {}).get("artifact_observations") or [])
                   if isinstance(o, dict) and o.get("value")}
-        occ.append({"ts": e.first_seen, "label": e.label, "type": e.type,
+        # A folded SIGMA entity holds many hits between first_seen and last_seen: a
+        # 60-day row with 1,512 hits showed as "1 occurrence". Say both.
+        occ.append({"ts": e.first_seen, "last": e.last_seen if e.last_seen != e.first_seen else None,
+                    "hits": int((e.attrs or {}).get("occurrences") or 1),
+                    "label": e.label, "type": e.type,
                     "severity": e.severity, "anomaly": e.anomaly,
                     "attrs": _attrs(e),
                     "locator": (_locs[0] if _locs else None),
