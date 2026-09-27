@@ -978,7 +978,13 @@ def _cross_host_findings(g: FusionGraph) -> None:
                 # finding title stays short (no long hash repeated everywhere).
                 if e.anomaly < 1:
                     continue
-                title = f"Shared binary seen on {len(assets)} hosts"
+                # Name the FILE: five rows on jev_test all read "Shared binary seen on 2
+                # hosts" and could only be told apart by opening each one.
+                _fname = (e.attrs.get("source_name") or e.attrs.get("name")
+                          or e.attrs.get("original_name") or "")
+                title = (f"Shared binary: {_fname} (sha256 {str(e.label)[:8]}…) seen on "
+                         f"{len(assets)} hosts" if _fname else
+                         f"Shared binary (sha256 {str(e.label)[:8]}…) seen on {len(assets)} hosts")
                 summ = (f"A suspicious binary (sha256 {e.label}) is present on multiple "
                         f"assets ({hosts}) — shared tooling / lateral tool transfer.")
                 mitre = ["T1570"]
