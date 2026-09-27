@@ -52,7 +52,7 @@ class TheFailureIsRecognised(unittest.TestCase):
     def test_it_is_not_confused_with_never_having_signed_in(self):
         self.assertEqual("cli_not_authenticated", self.sub._classify("not logged in"))
 
-    def test_a_read_only_host_credential_says_so_and_how_to_fix_it(self):
+    def test_a_spent_host_credential_says_why_and_how_to_fix_it(self):
         P = "codex-subscription"
         home = "/tmp/intact-cli-home-test"
         self.sub._HOME_SOURCE[home] = "host"
@@ -60,7 +60,9 @@ class TheFailureIsRecognised(unittest.TestCase):
             note = self.sub._credential_note(P, home)
         finally:
             self.sub._HOME_SOURCE.pop(home, None)
-        self.assertIn("READ-ONLY", note)
+        # read-only is no longer the cause: each refresh is now kept (2026-09-27)
+        self.assertIn("already been used", note)
+        self.assertIn("will not expire again on its own", note)
         self.assertIn("codex login", note)
         self.assertIn("--device-auth", note)
         self.assertIn("HOST", note)

@@ -2217,13 +2217,14 @@ _LLM_ERR_MESSAGES = {
                               "Sign in from Settings ▸ Agentic (needs internet), then try again."),
     # NOT the same as "not signed in", and the difference is the whole point: the
     # sign-in was valid and worked for days. Single-use refresh tokens are what
-    # ended it -- the CLI spent the stored one, and the replacement it was handed
-    # could not be saved (the appliance reads ~/.codex read-only). Saying "not
+    # ended it -- the stored one was spent (by an appliance that could not yet keep
+    # refreshes, or another program sharing the login). Saying "not
     # signed in" sends the operator looking for a setting they never changed, and
     # the vendor's own "log out and sign in again" points at a screen that does
     # not exist here: signing in happens on the HOST, in a shell.
     "cli_credential_expired": (
-        "The subscription sign-in expired: its refreshed token could not be saved, so the old one is spent.",
+        "The subscription sign-in expired: its refresh token was already used (the appliance keeps every "
+        "refresh from the next sign-in on).",
         "On the appliance HOST run `codex login` (or `codex login --device-auth` without a browser), then try again."),
     # Covers both a subscription plan that does not include the model and a model
     # id the provider does not have at all — the operator's action is the same.

@@ -522,7 +522,9 @@ def _materialize_home(provider):
     blob = get_secret(spec["secret_key"])
     _HOME_SOURCE[home] = "store" if blob else "host"
     if not blob:
-        blob = _read_host_credential(provider)
+        host = _read_host_credential(provider)
+        # The newest refresh of THIS host login, if we have one (see _release_home).
+        blob = _host_refreshed(provider, host) or host
     if blob:
         auth = os.path.join(home, spec["auth_file"])
         with open(auth, "w") as f:
@@ -531,19 +533,38 @@ def _materialize_home(provider):
     return home
 
 
+def _host_fp(blob) -> str:
+    return hashlib.sha256((blob or "").encode()).hexdigest()
+
+
+def _host_refreshed(provider, host_blob):
+    """The refreshed copy of the host login, ONLY while the host file is the one
+    it was refreshed from. A changed host file (signed in again, or as someone
+    else) or a missing one (signed out) makes it worthless — the host stays the
+    source of truth."""
+    if not host_blob:
+        return None
+    try:
+        rec = json.loads(get_secret(_spec(provider)["secret_key"] + ":host_refreshed") or "{}")
+    except Exception:  # noqa: BLE001
+        return None
+    return rec.get("blob") if rec.get("fp") == _host_fp(host_blob) else None
+
+
 def _release_home(provider, home, persist=True):
     """Persist a refreshed token back to the DB, then remove the scratch dir.
 
     The CLI rotates its access token in place, so skipping the write-back would
     silently expire a login held in our own store after a few hours.
 
-    IT MUST NOT WRITE BACK A CREDENTIAL THAT CAME FROM THE HOST. Doing so copies
-    the operator's login into our database, where has_credentials then prefers it
-    forever — so the appliance quietly forks off its own snapshot of their
-    identity. If they later sign out, or sign in as somebody else, the box keeps
-    using the old one and nothing on any screen says why. The host copy is theirs
-    and stays the source of truth; ours is only written back when it was ours to
-    begin with.
+    A CREDENTIAL THAT CAME FROM THE HOST NEVER BECOMES OURS. Stored as our
+    credential, has_credentials would prefer it forever — the appliance would
+    fork its own snapshot of their identity and keep using it after they sign out
+    or sign in as somebody else. So its refresh is kept apart (":host_refreshed"),
+    bound to the host file's fingerprint and used only while that file is
+    unchanged (_host_refreshed); the host copy stays the source of truth. Dropping
+    the refresh instead killed the login at every token refresh (the operator
+    chose this on 2026-09-27).
     """
     spec = _spec(provider)
     source = _HOME_SOURCE.pop(home, "store")
@@ -555,6 +576,21 @@ def _release_home(provider, home, persist=True):
                     blob = f.read()
                 if blob.strip() and blob != (get_secret(spec["secret_key"]) or ""):
                     set_secret(spec["secret_key"], blob)
+        elif persist and source == "host":
+            # The host login is read-only, so a refreshed token had nowhere to go
+            # and the spent one was presented next time: "refresh token was already
+            # used", days after every sign-in. Keep the refresh — but in a slot of
+            # its own, BOUND to the host file it came from (its fingerprint), so it
+            # is used only while that file is unchanged: never a fork of the
+            # operator's identity that outlives their sign-out or a new sign-in.
+            auth = os.path.join(home, spec["auth_file"])
+            host = _read_host_credential(provider)
+            if host and os.path.isfile(auth):
+                with open(auth) as f:
+                    blob = f.read()
+                if blob.strip() and blob != (_host_refreshed(provider, host) or host):
+                    set_secret(spec["secret_key"] + ":host_refreshed",
+                               json.dumps({"fp": _host_fp(host), "blob": blob}))
     except Exception as e:  # noqa: BLE001 — never fail a request over this
         print(f"[SUB-CLI] token write-back failed: {e}", flush=True)
     finally:
@@ -1001,13 +1037,13 @@ def _credential_note(provider, home) -> str:
     """
     spec = _spec(provider)
     if _HOME_SOURCE.get(home) == "host":
-        return (f" This login is read from the host's ~/.{spec['binary']}/{spec['auth_file']} "
-                f"through a READ-ONLY mount, so when the CLI refreshed the token the new "
-                f"one could not be saved and the old one is now spent. Fix: on the "
-                f"appliance HOST run `{spec['binary']} login` — or "
-                f"`{spec['binary']} login --device-auth` if that host has no browser. "
-                f"It will come back at the next token refresh until that credential "
-                f"is writable.")
+        return (f" This login is read from the host's ~/.{spec['binary']}/{spec['auth_file']}, "
+                f"and its refresh token has already been used — by an older appliance "
+                f"version that could not keep refreshed tokens, or by another program "
+                f"signed in with the same login. Fix: on the appliance HOST run "
+                f"`{spec['binary']} login` — or `{spec['binary']} login --device-auth` "
+                f"if that host has no browser. The appliance now keeps each refresh, "
+                f"so it will not expire again on its own.")
     return (f" The stored login could not be refreshed. Fix: on the appliance HOST run "
             f"`{spec['binary']} login` — or `{spec['binary']} login --device-auth` if "
             f"that host has no browser.")

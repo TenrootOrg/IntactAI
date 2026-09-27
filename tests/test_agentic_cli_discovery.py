@@ -401,23 +401,41 @@ class TestTheHostCredential(_Base):
         self._host_auth(blob="   \n")
         self.assertFalse(self.sub.has_credentials(self.P))
 
-    def test_a_host_credential_is_never_written_into_our_database(self):
-        """THE PRIVACY/DRIFT RULE.
+    def test_a_host_login_is_never_forked_into_our_own_credential(self):
+        """THE PRIVACY/DRIFT RULE, as the operator decided it on 2026-09-27.
 
-        Writing their token back into our secret store would make has_credentials
-        prefer our copy forever — so the appliance quietly forks its own snapshot
-        of their identity, and keeps using it after they sign out or sign in as
-        somebody else, with nothing on any screen saying why.
-        """
+        Their login stays theirs: it is never stored as OUR credential (which
+        has_credentials would prefer forever, and keep using after they sign out or
+        sign in as somebody else). But a refreshed token must not be thrown away
+        either — the host copy is read-only, so the spent token was presented next
+        time and the login died at every refresh ("refresh token was already
+        used"). The refresh is kept in a slot of its own, BOUND to the host file
+        it came from, and used only while that file is unchanged."""
         self._host_auth()
-        written = []
-        self.sub.set_secret = lambda k, v: written.append((k, v))
+        store = {}
+        self.sub.get_secret = lambda k, *a, **kw: store.get(k)
+        self.sub.set_secret = lambda k, v: store.__setitem__(k, v)
         home = self.sub._materialize_home(self.P)
-        # the CLI rotates the token in place; simulate that
-        with open(os.path.join(home, "auth.json"), "w") as fh:
+        with open(os.path.join(home, "auth.json"), "w") as fh:     # the CLI rotates in place
             fh.write('{"tokens": {"x": 2}}')
         self.sub._release_home(self.P, home)
-        self.assertEqual(written, [], "a host credential was copied into our DB")
+        self.assertNotIn("codex_cli_auth", store, "the host login became OUR credential")
+        self.assertEqual(list(store), ["codex_cli_auth:host_refreshed"])
+        # next call presents the REFRESHED token, not the spent one
+        home = self.sub._materialize_home(self.P)
+        with open(os.path.join(home, "auth.json")) as fh:
+            self.assertEqual(fh.read(), '{"tokens": {"x": 2}}')
+        self.sub._release_home(self.P, home)
+        # they sign in again (or as someone else): the saved refresh is ignored
+        self._host_auth('{"tokens": {"x": "new-login"}}')
+        home = self.sub._materialize_home(self.P)
+        with open(os.path.join(home, "auth.json")) as fh:
+            self.assertEqual(fh.read(), '{"tokens": {"x": "new-login"}}')
+        self.sub._release_home(self.P, home, persist=False)
+        # they sign out: nothing is used
+        os.remove(os.path.join(self.sub._HOST_CODEX_HOME, "auth.json"))
+        self.assertFalse(self.sub.has_credentials(self.P))
+        self.assertIsNone(self.sub._host_refreshed(self.P, self.sub._read_host_credential(self.P)))
 
     def test_a_stored_credential_is_still_refreshed(self):
         # Boxes that signed in through the old in-app flow must keep working:
