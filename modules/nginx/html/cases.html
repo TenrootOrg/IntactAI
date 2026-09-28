@@ -83,8 +83,8 @@
   .md li.ev.clip.open::after{content:'⌃ less';position:static;padding-left:8px;background:none}
   .md strong{color:#fff}
   .chip{display:inline-block;font-size:11px;padding:1px 7px;border-radius:9px;margin-right:5px}
-  /* A bundled row's severity is not one detection's: dashed, and says which it is */
-  .chip.agg{border:1px dashed currentColor} .chip.agg small{font-size:9px;opacity:.8;margin-left:3px}
+  /* A bundled row's severity is its highest part's (or a burst's own): dashed, hover says which */
+  .chip.agg{border:1px dashed currentColor}
   .c-critical{background:rgba(248,81,73,.18);color:var(--crit)} .c-high{background:rgba(219,109,40,.18);color:var(--high)}
   .c-medium{background:rgba(210,153,34,.18);color:var(--med)} .c-low{background:rgba(63,185,80,.16);color:var(--low)}
   .c-informational{background:rgba(88,166,255,.15);color:var(--info)}
@@ -1721,7 +1721,7 @@ function _tlSevChip(sev, members){
   const tip=word==='max'
     ?`The highest severity among its ${members.length} parts — open it to see each one`
     :`Rated as a whole: its ${members.length} parts are each lower, together they are ${sev}`;
-  return `<span class="chip agg c-${esc(sev)}" title="${esc(tip)}">${esc(sev)}<small>${word}</small></span>`;
+  return `<span class="chip agg c-${esc(sev)}" title="${esc(tip)}">${esc(sev)}</span>`;
 }
 function _tlRowHtml(r, supp, seg){
   const arts=(r.artifacts||[]).map(a=>`<span class="arti">${esc(a)}</span>`).join(' ');

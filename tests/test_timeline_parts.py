@@ -232,8 +232,9 @@ console.log(JSON.stringify([closed, open, files, burst, single]));""")
         self.assertIn("2 files · 0 of 2 reviewed", files)                                   # files found on disk
         # a bundled row's severity says what it is: its worst part, or rated as a whole
         self.assertIn('class="chip agg c-high"', closed)
-        self.assertIn("high<small>max</small>", closed)
-        self.assertIn("high<small>combined</small>", burst)
+        self.assertIn("The highest severity among its 2 parts", closed)
+        self.assertIn(">high</span>", closed)                                                 # just the severity, no extra word
+        self.assertIn("Rated as a whole", burst)
         self.assertIn('<span class="chip c-high">high</span>', single)
 
 
