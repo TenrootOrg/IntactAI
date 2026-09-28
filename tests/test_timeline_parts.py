@@ -190,8 +190,9 @@ class RowDisplay(unittest.TestCase):
         with open(os.path.join(root, "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
             src = fh.read()
         fns = []
+        fns.append(re.search(r"const _TL_SEVS=\[.*?\];", src).group(0))
         for name in ("_tlUntil", "_tlJev", "_tlParts", "_tlPartsToggle", "_tlRow", "_tlRowHtml",
-                     "_tlTitle", "_tlLoggedAs"):
+                     "_tlTitle", "_tlLoggedAs", "_tlSevChip"):
             m = re.search(r"function %s\(.*?\n\}" % re.escape(name), src, re.S)
             self.assertTrue(m, name + " missing from cases.html")
             fns.append(m.group(0))
@@ -205,11 +206,14 @@ window._tlOpen={'p:grp1':true};
 const open=_tlRow(row,false);
 const files=_tlRow({finding_id:'f', title:'MFT: Erasing Tools (2 files: a.exe, b.exe) on H', host:'H', ts:'t', severity:'medium',
   parts:[{finding_id:'e1', title:'C:/a.exe', kind:'file'}, {finding_id:'e2', title:'C:/b.exe', kind:'file'}]}, false);
-console.log(JSON.stringify([closed, open, files]));""")
+const burst=_tlRow({finding_id:'b', title:'Burst of 2 detections in 5 min — A, B on H', host:'H', ts:'t', severity:'high',
+  parts:[{finding_id:'e1', title:'A', severity:'medium'}, {finding_id:'e2', title:'B', severity:'medium'}]}, false);
+const single=_tlRow({finding_id:'s', title:'SIGMA: X on H', host:'H', ts:'t', severity:'high'}, false);
+console.log(JSON.stringify([closed, open, files, burst, single]));""")
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as t:
             t.write(js)
         try:
-            closed, opened, files = json.loads(subprocess.run([node, t.name], capture_output=True, text=True,
+            closed, opened, files, burst, single = json.loads(subprocess.run([node, t.name], capture_output=True, text=True,
                                                        check=True).stdout)
         finally:
             os.unlink(t.name)
@@ -220,6 +224,11 @@ console.log(JSON.stringify([closed, open, files]));""")
         self.assertIn("tlValidate('p2','true_positive')", opened)                             # each part on its own
         self.assertIn("openFindingDetail('p1')", opened)
         self.assertIn("2 files · 0 of 2 reviewed", files)                                   # files found on disk
+        # a bundled row's severity says what it is: its worst part, or rated as a whole
+        self.assertIn('class="chip agg c-high"', closed)
+        self.assertIn("high<small>max</small>", closed)
+        self.assertIn("high<small>combined</small>", burst)
+        self.assertIn('<span class="chip c-high">high</span>', single)
 
 
 if __name__ == "__main__":

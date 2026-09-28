@@ -166,8 +166,8 @@ class Header(unittest.TestCase):
             self.skipTest("no node on this host")
         with open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
             src = fh.read()
-        fns = [re.search(rf"function {n}\(.*?\n\}}", src, re.S).group(0)
-               for n in ("_tlRow", "_tlRowHtml", "_tlParts", "_tlPartsToggle", "_tlGroupHead", "tlPaint", "_tlUntil", "_tlGroupNews", "_tlLoggedAs", "_tlGroupJev")]
+        fns = [re.search(r"const _TL_SEVS=\[.*?\];", src).group(0)] + [re.search(rf"function {n}\(.*?\n\}}", src, re.S).group(0)
+               for n in ("_tlRow", "_tlRowHtml", "_tlParts", "_tlPartsToggle", "_tlSevChip", "_tlGroupHead", "tlPaint", "_tlUntil", "_tlGroupNews", "_tlLoggedAs", "_tlGroupJev")]
         js = ("const esc=s=>String(s);const TL_STATES=[['pending','Pending'],['true_positive','TP'],"
               "['false_positive','FP'],['known','Known']];const _tlJev=()=>'';"
               "const _tlTitle=r=>r.title;let OUT='';const $=()=>({set innerHTML(v){OUT=v}});\n"

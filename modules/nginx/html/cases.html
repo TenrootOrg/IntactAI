@@ -83,6 +83,8 @@
   .md li.ev.clip.open::after{content:'⌃ less';position:static;padding-left:8px;background:none}
   .md strong{color:#fff}
   .chip{display:inline-block;font-size:11px;padding:1px 7px;border-radius:9px;margin-right:5px}
+  /* A bundled row's severity is not one detection's: dashed, and says which it is */
+  .chip.agg{border:1px dashed currentColor} .chip.agg small{font-size:9px;opacity:.8;margin-left:3px}
   .c-critical{background:rgba(248,81,73,.18);color:var(--crit)} .c-high{background:rgba(219,109,40,.18);color:var(--high)}
   .c-medium{background:rgba(210,153,34,.18);color:var(--med)} .c-low{background:rgba(63,185,80,.16);color:var(--low)}
   .c-informational{background:rgba(88,166,255,.15);color:var(--info)}
@@ -1705,6 +1707,22 @@ function _tlRow(r, inGroup){
   const row=_tlRowHtml(r, supp, seg);
   return kids?`<div class="tlgrp">${row}${kids}</div>`:row;
 }
+// The severity chip of a row that bundles parts (or of a cross-host group) is not
+// one detection's. QA: a group read as one high event when only one of its rules
+// was high. "max" = its worst part; "combined" = rated as a whole above every part
+// (a burst of medium detections is high together).
+const _TL_SEVS=['informational','low','medium','high','critical'];
+function _tlSevChip(sev, members){
+  if(!sev) return '';
+  if(!members || members.length<2) return `<span class="chip c-${esc(sev)}">${esc(sev)}</span>`;
+  const top=Math.max(...members.map(m=>_TL_SEVS.indexOf(m.severity)));
+  const mine=_TL_SEVS.indexOf(sev);
+  const word=mine>top?'combined':'max';
+  const tip=word==='max'
+    ?`The highest severity among its ${members.length} parts — open it to see each one`
+    :`Rated as a whole: its ${members.length} parts are each lower, together they are ${sev}`;
+  return `<span class="chip agg c-${esc(sev)}" title="${esc(tip)}">${esc(sev)}<small>${word}</small></span>`;
+}
 function _tlRowHtml(r, supp, seg){
   const arts=(r.artifacts||[]).map(a=>`<span class="arti">${esc(a)}</span>`).join(' ');
   return `<div class="tlrow ${supp?'suppressed':''} ${r.manual?'manual':''}">
@@ -1713,7 +1731,7 @@ function _tlRowHtml(r, supp, seg){
         <span>${r.is_new?'<span class="tlnew" title="Joined or grew since this group was last reviewed">NEW</span> ':''}<strong>${esc(r.host||'-')}</strong> ${r.phase?`<span style="color:var(--muted)">[${esc(r.phase)}]</span>`:''} ${esc(_tlTitle(r))} <span style="color:var(--muted);font-size:10px">▸ detail</span></span>
         <span class="l2">${arts}${_tlLoggedAs(r)}${_tlPartsToggle(r)}${r.reopened?'<span class="sg-hint" style="border-color:#d29922;color:#e3b341" title="A new occurrence arrived after your last verdict — re-validate this one.">⟳ re-opened: new activity since you validated</span>':''}${r.manual?'<span class="sg-hint" style="border-style:solid">manual</span>':''}${(r.hits||1)>1?`<span class="sg-hint" style="border-style:solid;color:var(--muted)" title="Hits in this episode — the detection is one row until it goes quiet for 4 hours">${Number(r.hits).toLocaleString()} hits</span>`:''}${_tlJev(r)}${r.notes?`<span style="color:var(--muted);font-size:11px">— ${esc(r.notes)}</span>`:''}</span>
       </div>
-      <span class="chip c-${r.severity}">${esc(r.severity)}</span>
+      ${_tlSevChip(r.severity, _tlParts(r))}
       <span class="seg">${seg}</span>
       ${r.manual?`<span class="xdel" title="delete event" onclick="tlDelete('${r.finding_id}')">✕</span>`:''}
     </div>`;
@@ -1741,7 +1759,7 @@ function _tlGroupHead(grp, members, open){
       <div class="tlmeta"><span><span class="tlgtag">GROUP</span><strong>${open?'▾':'▸'} ${esc(grp.name)}</strong> — ${esc(hosts.join(', '))}</span>
         <span class="l2"><span class="sg-hint" style="border-style:solid;color:var(--muted)">${hosts.length} hosts · ${ids.length} rows · ${hits.toLocaleString()} hits</span><span class="sg-hint" style="border-style:solid;${weak?'':'border-color:#3fb950;color:#56d364'}" title="${weak?'Same detection close together on several hosts — a correlation, not proof they are related.':'The hosts share this identifier in their evidence.'}">${weak?'linked by time only':esc(grp.link)}</span><span style="color:var(--muted);font-size:11px">${done} of ${ids.length} reviewed</span>${_tlGroupJev(members)}${_tlGroupNews(grp, members)}</span>
       </div>
-      ${sev?`<span class="chip c-${esc(sev)}">${esc(sev)}</span>`:''}
+      ${_tlSevChip(sev, members)}
       <span class="seg">${btn('pending','Pending')}${btn('true_positive','True Positive')}${btn('false_positive','False Positive')}${btn('known','Known')}</span>
     </div>`;
 }
