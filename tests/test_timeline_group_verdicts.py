@@ -206,6 +206,8 @@ console.log(JSON.stringify([open, shut, bysev, agree]));""")
         # the group's rows sit together under its header; the ungrouped row after
         self.assertLess(open_.index("tlValidate('b'"), open_.index("tlValidate('p'"))
         self.assertIn("tlgroup", shut)
+        # the table says how a grouped row's severity is set
+        self.assertIn("rated by their highest-severity part", shut)
         # undated rows sort last under a divider that says why (time order only)
         self.assertEqual(open_.count("<b>Undated</b>"), 1)
         self.assertLess(open_.index("tlValidate('p'"), open_.index("<b>Undated</b>"))

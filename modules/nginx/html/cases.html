@@ -1816,7 +1816,7 @@ function tlPaint(){
              +(open?`<div class="tlgkids">${members.map(m=>_tlRow(m,true)).join('')}</div>`:'')+'</div>');
   }
   const html = out.length ? out.join('') : '<i style="color:var(--muted)">nothing matches the current filters</i>';
-  $('#tlrows').innerHTML=`<div style="color:var(--muted);font-size:11px;margin:4px 0">${rows.length} of ${(window._tlData||[]).length} events</div>`+html;
+  $('#tlrows').innerHTML=`<div style="color:var(--muted);font-size:11px;margin:4px 0">${rows.length} of ${(window._tlData||[]).length} events · Grouped rows (<span class="chip agg" style="margin:0;padding:0 5px">dashed</span> severity) are rated by their highest-severity part</div>`+html;
 }
 // On-demand per-occurrence detail (side drawer) — keeps the timeline table lean.
 function openFindingDetail(fid){
