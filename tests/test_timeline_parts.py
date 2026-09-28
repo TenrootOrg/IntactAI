@@ -203,11 +203,13 @@ const row={finding_id:'grp1', title:'SIGMA: A (+1 related) on H', host:'H', ts:'
 const closed=_tlRow(row,false);
 window._tlOpen={'p:grp1':true};
 const open=_tlRow(row,false);
-console.log(JSON.stringify([closed, open]));""")
+const files=_tlRow({finding_id:'f', title:'MFT: Erasing Tools (2 files: a.exe, b.exe) on H', host:'H', ts:'t', severity:'medium',
+  parts:[{finding_id:'e1', title:'C:/a.exe', kind:'file'}, {finding_id:'e2', title:'C:/b.exe', kind:'file'}]}, false);
+console.log(JSON.stringify([closed, open, files]));""")
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as t:
             t.write(js)
         try:
-            closed, opened = json.loads(subprocess.run([node, t.name], capture_output=True, text=True,
+            closed, opened, files = json.loads(subprocess.run([node, t.name], capture_output=True, text=True,
                                                        check=True).stdout)
         finally:
             os.unlink(t.name)
@@ -217,6 +219,7 @@ console.log(JSON.stringify([closed, open]));""")
         self.assertNotIn("tlgkids", closed)
         self.assertIn("tlValidate('p2','true_positive')", opened)                             # each part on its own
         self.assertIn("openFindingDetail('p1')", opened)
+        self.assertIn("2 files · 0 of 2 reviewed", files)                                   # files found on disk
 
 
 if __name__ == "__main__":

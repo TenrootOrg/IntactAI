@@ -5158,7 +5158,7 @@ def _part_rows(r, f, row_v, vrec, row_wm, stale) -> list:
                     "hits": int(p.get("hits") or 1), "host": r.get("host"), "phase": r.get("phase"),
                     "severity": p.get("severity") or r.get("severity"),
                     "artifacts": r.get("artifacts"), "validation": st, "reopened": reopened,
-                    "source": "fusion"})
+                    "kind": p.get("kind"), "source": "fusion"})
     return out
 
 

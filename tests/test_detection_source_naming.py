@@ -120,7 +120,7 @@ class TestTheMapperAndTheFindingAgree(unittest.TestCase):
         a source inside a source."""
         src = _read("modules/backend/services/fusion/correlate.py")
         self.assertNotIn("summary=f\"Detection '{title}' fired", src)
-        self.assertIn('summary=f"{title} fired', src)
+        self.assertIn('f"{title} matched {n:,}× on {host}."', src)   # TASK-12666: not "fired"
 
     def test_hayabusas_own_prefix_is_unchanged(self):
         """Both paths must land on the same word, or the fix moves the

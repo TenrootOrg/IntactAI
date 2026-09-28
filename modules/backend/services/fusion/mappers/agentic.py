@@ -1017,7 +1017,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                  first=ise_ts, artifact=artifact,
                                  flags=["detection"] if _rule_anomaly(dname) >= 60 else None,
                                  detection=str(dname), path=str(ipath)[:200],
-                                 title=f"ISE autosave: {str(dname)[:60]}"))
+                                 title=f"ISE autosave: {str(dname)[:60]}", on_disk=True))
 
             elif "mft" in an and ("detection" in an or "erasing" in an) \
                     and "hijacklib" not in an:
@@ -1056,7 +1056,10 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                           # are the deliberate exception (see note above).
                           flags=["detection"] if erasing else ["mft_detection"],
                           title=f"MFT: {str(dname)[:60]}", detection=str(dname),
-                          criticality=str(crit).lower(), path=str(path)[:200])
+                          criticality=str(crit).lower(), path=str(path)[:200],
+                          # a file FOUND on disk, not a record of it running
+                          # (correlate words the row that way — TASK-12666)
+                          on_disk=True)
                 ev.severity = from_string(str(crit))
                 ents.append(ev)
 

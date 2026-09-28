@@ -28,7 +28,7 @@ from . import keys
 # what findings are or how they are counted, so a report written by an earlier
 # engine says so on the Analysis tab (store: report_engine; case payload:
 # report_engine_behind) instead of reading as current.
-FUSION_ENGINE = "2026-09-27.account-spread"   # one severity rule for accounts on several hosts
+FUSION_ENGINE = "2026-09-28.parts-on-disk"    # bundled rows judged per part; files found on disk say so
 
 
 def _fid(*parts) -> str:
@@ -1531,16 +1531,21 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
             n = _ep_hits(eps)
             _did = _fid("det", _key) if i == 0 else _fid("det", _key, str(first))
             _grouping[_did] = (asset_id, logged)
+            # The title already names the source ("SIGMA: …", "MFT: …"), so
+            # wrapping it in "Detection '…'" reads as a source inside a source.
+            # "matched", not "fired": for a file found on disk "fired 4×" read as
+            # "ran 4 times" (TASK-12666).
+            rtitle, summary, parts = f"{title} on {host}", f"{title} matched {n:,}× on {host}.", []
+            if all((e.attrs or {}).get("on_disk") for e in eps):
+                rtitle, summary, parts = _on_disk_row(g, asset_id, title, host, eps)
             g.add_finding(Finding(
                 id=_did,
-                title=f"{title} on {host}",
+                title=rtitle,
                 severity=top.severity, confidence="medium",
-                # The title already names the source ("SIGMA: …", "MFT: …"), so
-                # wrapping it in "Detection '…'" reads as a source inside a source.
-                summary=f"{title} fired {n:,}× on {host}.",
+                summary=summary,
                 entity_ids=[e.id for e in eps[:25]], asset_ids=[asset_id],
                 sources=top.sources, evidence=list(top.evidence), mitre=[],
-                ts=first, kind="single", occ_count=n, occ_latest=latest))
+                ts=first, kind="single", occ_count=n, occ_latest=latest, parts=parts))
 
     # cloud SIGMA detections (AWS/Azure) -> findings; cross-domain corroboration
     # (same account/IP also on an endpoint) is surfaced automatically via the
@@ -1677,10 +1682,72 @@ def _legacy_group_ids(asset_id, logged, fs, max_members=8) -> list:
     return out
 
 
-def _part(pid, title, ts, last, hits, wm, entity_ids, severity, ids=None) -> dict:
-    return {"id": pid, "ids": list(ids or [pid]), "title": title, "ts": ts,
-            "last": last if last and last != ts else None, "hits": int(hits or 1),
-            "wm": wm, "entity_ids": list(entity_ids or [])[:25], "severity": severity}
+def _part(pid, title, ts, last, hits, wm, entity_ids, severity, ids=None, kind=None) -> dict:
+    p = {"id": pid, "ids": list(ids or [pid]), "title": title, "ts": ts,
+         "last": last if last and last != ts else None, "hits": int(hits or 1),
+         "wm": wm, "entity_ids": list(entity_ids or [])[:25], "severity": severity}
+    if kind:
+        p["kind"] = kind
+    return p
+
+
+def _event_part(e, title, kind=None) -> dict:
+    occ = int((e.attrs or {}).get("occurrences") or 1)
+    return _part(e.id, title, e.first_seen, e.last_seen, occ,
+                 f"{occ}|{e.last_seen or e.first_seen or ''}", [e.id], e.severity, kind=kind)
+
+
+_EXEC_ARTIFACTS = ("amcache", "prefetch", "userassist", "shimcache", "appcompat", "srum", "bam")
+
+
+def _file_name(p) -> str:
+    return str(p or "").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+
+
+def _execution_records(g: FusionGraph, asset_id, names: set) -> dict:
+    """file name (lower) -> the collected record that shows it RAN on this host:
+    an execution artifact (Prefetch, Amcache, …) or a process. Empty when none
+    was collected — which is not proof it never ran, only that nothing here says so."""
+    out: dict = {}
+    for e in g.entities.values():
+        if e.type == "process":
+            n, src = e.label.rsplit(" (", 1)[0], "process"
+        elif e.type == "event":
+            art = str((e.attrs or {}).get("artifact") or "")
+            if not any(k in art.lower() for k in _EXEC_ARTIFACTS):
+                continue
+            n, src = _file_name((e.attrs or {}).get("path")), art.rsplit(".", 1)[-1]
+        else:
+            continue
+        if n.lower() in names and asset_id in (_assets_of(e) or []):
+            out.setdefault(n.lower(), src)
+    return out
+
+
+def _on_disk_row(g: FusionGraph, asset_id, title, host, eps) -> tuple:
+    """(title, summary, parts) for a detection that FOUND FILES on disk (MFT,
+    ISE autosave). QA (TASK-12666): the row read as if the tools ran — "fired 4×",
+    no file named, 4 files merged with no way to judge one. Now it names its files,
+    says the time is the file's own, says whether anything collected shows them
+    running, and each file is a part with its own verdict."""
+    paths = sorted({str(e.attrs.get("path")) for e in eps if e.attrs.get("path")})
+    names = [_file_name(p) for p in paths]
+    k = len(paths) or len(eps)
+    shown = ", ".join(names[:3]) + (f" +{len(names) - 3} more" if len(names) > 3 else "")
+    rtitle = f"{title} ({k} file{'' if k == 1 else 's'}{': ' + shown if shown else ''}) on {host}"
+    ran = _execution_records(g, asset_id, {n.lower() for n in names})
+    summary = (f"{title}: {k} file{'' if k == 1 else 's'} found on disk on {host}"
+               + (": " + "; ".join(paths[:6]) + ("…" if len(paths) > 6 else "") if paths else "")
+               + ". The time is the file's own timestamp on disk — when it was written there. "
+               + ("Collected records show it ran: "
+                  + ", ".join(f"{n} ({src})" for n, src in sorted(ran.items())) + "."
+                  if ran else
+                  "A file on disk shows it was present, not that it ran; no execution record "
+                  "(Prefetch, Amcache, UserAssist, BAM, process) for it was collected in this case."))
+    parts = ([_event_part(e, str(e.attrs.get("path") or e.label), kind="file")
+              for e in sorted(eps[:25], key=lambda e: (str(e.attrs.get("path") or ""), e.id))]
+             if len(eps) > 1 else [])
+    return rtitle, summary, parts
 
 
 def _part_ids(f) -> list:
@@ -1818,7 +1885,7 @@ def _group_simultaneous_detections(g: FusionGraph, grouping: dict) -> None:
     return [f.id for f in new]
 
 
-_RELATED_SUFFIX = re.compile(r"\s*\((\+\d+ related|recurring (daily|weekly)[^)]*)\)$")
+_RELATED_SUFFIX = re.compile(r"\s*\((\+\d+ related|recurring (daily|weekly)[^)]*|\d+ files?\b.*)\)$")
 
 # A DAILY ROUTINE — a scheduled task or service firing at the same time each day —
 # is one thing, not one row per day. Found on jev_test: "Suspicious Service Path"
@@ -2219,10 +2286,7 @@ def _coordinated_activity(g: FusionGraph, *, window=None, baseline=None) -> None
             occ_count=len(evs),
             occ_latest=max((e.first_seen for e in evs if e.first_seen), default=None),
             # each detection of the burst is judged on its own (see Finding.parts)
-            parts=[_part(e.id, str(e.attrs.get("title") or e.label), e.first_seen, e.last_seen,
-                         (e.attrs or {}).get("occurrences") or 1,
-                         f"{int((e.attrs or {}).get('occurrences') or 1)}|{e.last_seen or e.first_seen or ''}",
-                         [e.id], e.severity)
+            parts=[_event_part(e, str(e.attrs.get("title") or e.label))
                    for e in sorted(evs[:25], key=lambda e: (e.first_seen or "", e.id))]))
 
 

@@ -1690,7 +1690,7 @@ function _tlPartsToggle(r){
   const ps=_tlParts(r); if(!ps) return '';
   const open=!!(window._tlOpen||{})['p:'+r.finding_id];
   const done=ps.filter(p=>(p.validation||'pending')!=='pending').length;
-  const noun=/^Burst of /.test(r.title||'')?'detections':'rules';
+  const noun=ps[0].kind==='file'?'files':/^Burst of /.test(r.title||'')?'detections':'rules';
   return `<span class="sg-hint" style="border-color:#58a6ff;color:#79c0ff;cursor:pointer" title="${open?'Hide':'Show'} the ${ps.length} ${noun} — each takes its own verdict" onclick="event.stopPropagation();tlToggleParts('${esc(r.finding_id)}')">${open?'▾':'▸'} ${ps.length} ${noun} · ${done} of ${ps.length} reviewed</span>`;
 }
 function tlToggleParts(fid){ window._tlOpen=window._tlOpen||{}; window._tlOpen['p:'+fid]=!window._tlOpen['p:'+fid]; tlPaint(); }
