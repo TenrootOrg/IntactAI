@@ -480,10 +480,8 @@ def analyst_verdicts(d) -> dict:
 
 
 def _verdict_of(f, verdicts):
-    for i in f.ids():
-        if i in verdicts:
-            return verdicts[i]
-    return None
+    from .render import row_verdict
+    return row_verdict(f, verdicts)
 
 
 def _finding_brief(g, f, verdicts, n_ev):

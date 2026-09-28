@@ -52,7 +52,7 @@ def _load(names):
     return ns
 
 
-NS = _load(("_wm_new_activity", "_apply_dispositions"))
+NS = _load(("_wm_new_activity", "_part_ids", "_apply_part_dispositions", "_apply_dispositions"))
 apply_dispositions = NS["_apply_dispositions"]
 wm_new_activity = NS["_wm_new_activity"]
 

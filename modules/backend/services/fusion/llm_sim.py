@@ -1462,11 +1462,13 @@ def analyst_context(dispositions=None, validations=None, manual_events=None, gra
     not by internal id: given ids and watermarks, the model answered with
     "f_b69307719720 ... status: real, watermark 1|2024-05-24T17:49:46Z"."""
     by_id = {f.id: f for f in (graph.findings if graph is not None else [])}
+    parts = render.part_titles(graph) if graph is not None else {}
 
     def _about(fid):
         f = by_id.get(fid)
         if f is None:
-            return {}
+            # one rule / detection of a bundling row, judged on its own
+            return {"finding": parts[fid]} if fid in parts else {}
         return {"finding": f.title, "time": f.ts,
                 "hosts": [render._host_label(graph, a) for a in (f.asset_ids or [])]}
 

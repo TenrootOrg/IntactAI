@@ -4947,14 +4947,40 @@ def validate_timeline_many(case_id, finding_ids, status, notes="") -> dict:
     # Snapshot each finding's CURRENT occurrence watermark — the verdict covers
     # exactly this much activity; new activity later re-opens it
     # (see correlate._wm_new_activity).
-    wms = {}
+    wms, parents = {}, []
     try:
-        wms = {f.id: f.watermark() for f in load_graph(case_id).findings if f.id in set(ids)}
+        for f in load_graph(case_id).findings:
+            if f.id in set(ids):
+                wms[f.id] = f.watermark()
+            for p in f.parts or []:
+                if p["id"] in set(ids):
+                    wms[p["id"]] = p.get("wm")        # a part's verdict covers the part
+                    if f not in parents:
+                        parents.append(f)
     except Exception:
-        wms = {}
+        wms, parents = {}, []
+    # A verdict given on the WHOLE row before its parts were judged one by one moves
+    # down to the parts nobody judged yet, then goes: left in place, a row-level
+    # False-positive kept suppressing the row after one rule was marked True positive.
+    _cur = get_case(case_id) or {}
+    push_v, push_d, drop = [], [], set()
+    for f in parents:
+        own = set(f.ids())
+        rv = next((v for v in (_cur.get("timeline_validations") or []) if v.get("finding_id") in own), None)
+        rd = [x for x in (_cur.get("dispositions") or []) if x.get("target") in own]
+        if not rv and not rd:
+            continue
+        drop |= own
+        judged = {v.get("finding_id") for v in (_cur.get("timeline_validations") or [])}
+        for pt in f.parts:
+            if pt["id"] in set(ids) or pt["id"] in judged:
+                continue
+            if rv:
+                push_v.append({**rv, "finding_id": pt["id"], "watermark": pt.get("wm")})
+            push_d += [{**x, "target": pt["id"], "watermark": pt.get("wm")} for x in rd]
 
     def _mutate(vals):
-        kept = [v for v in vals if v.get("finding_id") not in set(ids)]
+        kept = [v for v in vals if v.get("finding_id") not in set(ids) | drop] + push_v
         if status != "pending":
             kept += [{"finding_id": i, "status": status, "notes": notes,
                       "watermark": wms.get(i)} for i in ids]
@@ -4972,12 +4998,13 @@ def validate_timeline_many(case_id, finding_ids, status, notes="") -> dict:
     reasons = {"false_positive": ("operator", "timeline: marked not real"),
                "known": ("it_admin", "timeline: IT confirms expected")}
     before = [x for x in ((get_case(case_id) or {}).get("dispositions") or [])
-              if x.get("target") in set(ids)]
+              if x.get("target") in set(ids) | drop]
     if status not in reasons and not before:
         return {"finding_ids": ids, "status": status}
 
     def _disp(details):
-        rest = [x for x in (details.get("dispositions") or []) if x.get("target") not in set(ids)]
+        rest = [x for x in (details.get("dispositions") or [])
+                if x.get("target") not in set(ids) | drop] + push_d
         if status in reasons:
             attr, why = reasons[status]
             for i in ids:
@@ -5114,6 +5141,27 @@ def scope_cards(case_id, d=None):
     return altitude, reason, render.analysable(zt) + [z for z in zt if z.get("rollup")], g
 
 
+def _part_rows(r, f, row_v, vrec, row_wm, stale) -> list:
+    """The parts of a bundling row (Finding.parts) as Timeline rows of their own,
+    each with its own verdict. A verdict given on the whole row covers the parts
+    nobody judged one by one."""
+    out = []
+    for p in f.parts:
+        pv = next((vrec[i] for i in (p.get("ids") or [p["id"]]) if i in vrec), None)
+        v, wm = (pv, p.get("wm") or "") if pv else (row_v, row_wm)
+        st, reopened = (v.get("status", "pending") if v else "pending"), False
+        if st in ("known", "false_positive") and stale(v.get("watermark"), wm):
+            st, reopened = "pending", True
+        out.append({"finding_id": p["id"], "part_of": f.id, "title": p.get("title"),
+                    "ts": render.fmt_ts(p.get("ts")),
+                    "last": render.fmt_ts(p["last"]) if p.get("last") else None,
+                    "hits": int(p.get("hits") or 1), "host": r.get("host"), "phase": r.get("phase"),
+                    "severity": p.get("severity") or r.get("severity"),
+                    "artifacts": r.get("artifacts"), "validation": st, "reopened": reopened,
+                    "source": "fusion"})
+    return out
+
+
 def get_timeline(case_id) -> list:
     """Unified case timeline: every finding (with its source artifact + 4-state
     validation) PLUS operator-added manual events, sorted by time. Honors
@@ -5153,6 +5201,13 @@ def get_timeline(case_id) -> list:
                 r["validation"] = st
         else:
             r["validation"] = "pending"
+        f = fmap.get(fid)
+        if f is not None and f.parts:
+            r["parts"] = _part_rows(r, f, v, vrec, fwm.get(fid, ""), _wm_new_activity)
+            if not v:                  # no verdict on the whole row: it reads as its parts
+                vs = {x["validation"] for x in r["parts"]}
+                r["validation"] = vs.pop() if len(vs) == 1 else "pending"
+                v = next((x for x in r["parts"] if x["validation"] != "pending"), None)
         # Jev's suggested verdict: only on a finding nobody has judged yet, only
         # for the occurrences it was asked about, only when it is sure enough.
         r["jev"] = (jev.suggestion_for(jev_s, fid, fwm.get(fid, ""))
@@ -5207,6 +5262,14 @@ def get_finding_detail(case_id, finding_id) -> dict | None:
                 "occurrences": []}
     g = load_graph(case_id)
     f = next((x for x in g.findings if x.id == finding_id), None)
+    part = None
+    if not f:
+        # one part of a bundling row: its row's detail, narrowed to that part
+        for x in g.findings:
+            part = next((p for p in (x.parts or []) if finding_id in (p.get("ids") or [p["id"]])), None)
+            if part:
+                f = x
+                break
     if not f:
         return {"error": "not found"}
 
@@ -5221,7 +5284,7 @@ def get_finding_detail(case_id, finding_id) -> dict | None:
         return out
 
     occ = []
-    for eid in (f.entity_ids or []):
+    for eid in ((part.get("entity_ids") or []) if part else (f.entity_ids or [])):
         e = g.entities.get(eid)
         if not e:
             continue
@@ -5246,6 +5309,15 @@ def get_finding_detail(case_id, finding_id) -> dict | None:
                     "artifacts": sorted(a for a in _arts if a and a != "asset")})
     occ.sort(key=lambda o: o.get("ts") or "")
     hosts = [(g.entities.get(a).label if g.entities.get(a) else a) for a in (f.asset_ids or [])]
+    if part:
+        return {"finding": {"id": part["id"], "title": part.get("title"), "part_of": f.title,
+                            "severity": part.get("severity") or f.severity,
+                            "confidence": f.confidence,
+                            "summary": f"One part of \"{f.title}\" — judged on its own.",
+                            "occ_count": part.get("hits") or 1, "occ_latest": part.get("last"),
+                            "shown_occurrences": len(occ), "mitre": f.mitre,
+                            "sources": f.sources, "hosts": hosts},
+                "occurrences": occ}
     return {"finding": {"id": f.id, "title": f.title, "severity": f.severity,
                         "confidence": f.confidence, "summary": f.summary,
                         "occ_count": f.occ_count, "occ_latest": f.occ_latest,

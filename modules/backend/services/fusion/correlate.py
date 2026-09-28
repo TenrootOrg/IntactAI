@@ -405,7 +405,7 @@ def _findings_floor(g: FusionGraph, min_severity, dispositions, below: dict) -> 
     judged = {d.get("target") for d in (dispositions or []) if d.get("target")}
     keep, dropped = [], 0
     for f in g.findings:
-        if sev.at_least(f.severity, min_severity) or set(f.ids()) & judged:
+        if sev.at_least(f.severity, min_severity) or set(f.ids() + _part_ids(f)) & judged:
             keep.append(f)
         else:
             dropped += 1
@@ -465,6 +465,8 @@ def _apply_dispositions(g: FusionGraph, dispositions) -> None:
         for f in g.findings:
             if target not in f.ids() and target not in (f.entity_ids or []):
                 continue
+            if target in _part_ids(f):
+                continue                  # a part's verdict — judged with its siblings below
             if verdict == "benign" and wm and _wm_new_activity(wm, f.watermark()):
                 # Stale verdict: new activity since it was made → re-open, don't suppress.
                 f.summary += " [re-opened: new activity since the prior verdict]"
@@ -480,6 +482,45 @@ def _apply_dispositions(g: FusionGraph, dispositions) -> None:
             elif verdict == "malicious":
                 f.confidence = "high"
                 f.summary += f" [operator-confirmed malicious{(' — ' + reason) if reason else ''}]"
+    _apply_part_dispositions(g, dispositions)
+
+
+def _apply_part_dispositions(g: FusionGraph, dispositions) -> None:
+    """A row that bundles parts (Finding.parts) leaves risk only when EVERY part
+    is judged benign — one noisy rule must not take a real one out with it — and
+    any part confirmed malicious confirms the row. A benign part verdict covers
+    that part's own watermark; new activity on the part re-opens it."""
+    ds = [d for d in (dispositions or []) if isinstance(d, dict) and d.get("target")]
+    if not ds:
+        return
+    for f in g.findings:
+        if not f.parts or f.kind == "dispositioned":
+            continue
+        benign, malicious = [], []
+        for p in f.parts:
+            pids = set(p.get("ids") or [p["id"]])
+            d = next((d for d in reversed(ds) if d["target"] in pids), None)
+            if d is None:
+                continue
+            v = (d.get("verdict") or "benign").lower()
+            if v == "malicious":
+                malicious.append(p)
+            elif v == "benign" and not (d.get("watermark") and _wm_new_activity(d["watermark"], p.get("wm") or "")):
+                benign.append((p, d))
+        if malicious:
+            f.confidence = "high"
+            f.summary += (" [operator-confirmed malicious: "
+                          + ", ".join(str(p.get("title")) for p in malicious[:5]) + "]")
+        elif benign and len(benign) == len(f.parts):
+            attrs = sorted({d.get("attribution") or "operator" for _, d in benign})
+            note = f" [operator: {', '.join(attrs)} — every part ({len(benign)}) judged benign]"
+            if sev.at_least(f.severity, "critical"):
+                f.summary += note + " (≥critical — surfaced anyway for review)"
+            else:
+                f.severity, f.confidence, f.kind = "informational", "low", "dispositioned"
+                f.summary += note
+        elif benign:
+            f.summary += f" [{len(benign)} of {len(f.parts)} parts judged benign by the operator]"
 
 
 def _baseline_sigma_titles(baseline) -> set:
@@ -1636,6 +1677,16 @@ def _legacy_group_ids(asset_id, logged, fs, max_members=8) -> list:
     return out
 
 
+def _part(pid, title, ts, last, hits, wm, entity_ids, severity, ids=None) -> dict:
+    return {"id": pid, "ids": list(ids or [pid]), "title": title, "ts": ts,
+            "last": last if last and last != ts else None, "hits": int(hits or 1),
+            "wm": wm, "entity_ids": list(entity_ids or [])[:25], "severity": severity}
+
+
+def _part_ids(f) -> list:
+    return [i for p in (f.parts or []) for i in (p.get("ids") or [p["id"]])]
+
+
 def _group_simultaneous_detections(g: FusionGraph, grouping: dict) -> None:
     """Detections of ONE event on one host are one thing that happened.
 
@@ -1754,7 +1805,13 @@ def _group_simultaneous_detections(g: FusionGraph, grouping: dict) -> None:
             ts=min((f.ts for f in fs), key=lambda t: keys.to_utc_dt(t) or t), kind="single",
             occ_count=sum(int(f.occ_count or 1) for f in fs),
             occ_latest=max((f.occ_latest or f.ts for f in fs), default=top.ts),
-            aliases=[x for f in fs for x in f.ids()] + _legacy))
+            # A member's id is a PART, not an alias: a verdict on one rule is that
+            # rule's (QA: "what if only some of them was confirmed"). Aliasing the
+            # members made a False-positive on one rule suppress the other.
+            aliases=_legacy,
+            parts=[_part(f.id, f.title.rsplit(" on ", 1)[0], f.ts, f.occ_latest, f.occ_count,
+                         f.watermark(), f.entity_ids, f.severity, ids=f.ids())
+                   for f in sorted(fs, key=lambda f: (f.ts or "", f.title))]))
         merged_ids.update(f.id for f in fs)
     if new:
         g.findings = [f for f in g.findings if f.id not in merged_ids] + new
@@ -1853,7 +1910,8 @@ def _fold_routines(groups: dict, name_of, host_of) -> tuple:
                 evidence=[x for f in routine[:3] for x in f.evidence[:1]], mitre=first.mitre,
                 ts=first.ts, kind=first.kind,
                 occ_count=sum(int(f.occ_count or 1) for f in routine), occ_latest=latest,
-                aliases=[x for f in routine for x in f.ids() if x != first.id],
+                # parts too: a routine is judged as one row, as before parts existed
+                aliases=[x for f in routine for x in f.ids() + _part_ids(f) if x != first.id],
                 recurring={"tod": tod, "days": len(routine), "per_day_max": bucket,
                            "period": per}))
             drop.update(f.id for f in routine)
@@ -2159,7 +2217,13 @@ def _coordinated_activity(g: FusionGraph, *, window=None, baseline=None) -> None
             mitre=sorted(techs), ts=ts_all[0] if ts_all else None,
             kind="derived",
             occ_count=len(evs),
-            occ_latest=max((e.first_seen for e in evs if e.first_seen), default=None)))
+            occ_latest=max((e.first_seen for e in evs if e.first_seen), default=None),
+            # each detection of the burst is judged on its own (see Finding.parts)
+            parts=[_part(e.id, str(e.attrs.get("title") or e.label), e.first_seen, e.last_seen,
+                         (e.attrs or {}).get("occurrences") or 1,
+                         f"{int((e.attrs or {}).get('occurrences') or 1)}|{e.last_seen or e.first_seen or ''}",
+                         [e.id], e.severity)
+                   for e in sorted(evs[:25], key=lambda e: (e.first_seen or "", e.id))]))
 
 
 # ------------------------------------------------------------------ scope

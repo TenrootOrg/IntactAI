@@ -630,6 +630,29 @@ def analyst_verdict_map(dispositions=None, validations=None) -> dict:
     return out
 
 
+def row_verdict(f, verdicts):
+    """One row's analyst verdict: its own, else what its parts add up to
+    (Finding.parts) — any part True positive makes the row real; it is benign
+    only once every part is."""
+    for i in f.ids():
+        if i in verdicts:
+            return verdicts[i]
+    pv = [next((verdicts[i] for i in (p.get("ids") or [p["id"]]) if i in verdicts), None)
+          for p in (getattr(f, "parts", None) or [])]
+    if "true_positive" in pv:
+        return "true_positive"
+    if pv and None not in pv:
+        return "known" if set(pv) == {"known"} else "false_positive"
+    return None
+
+
+def part_titles(graph) -> dict:
+    """part id -> how the analyst sees it: "<rule> (part of <row>)"."""
+    return {i: f"{p.get('title')} (part of {f.title})"
+            for f in graph.findings for p in (getattr(f, "parts", None) or [])
+            for i in (p.get("ids") or [p["id"]])}
+
+
 def phase_name(pf) -> str:
     """A deterministic name for a phase: its leading ATT&CK stages and its reach —
     "Credential Access & Execution across 3 hosts". The model's name replaces it
@@ -680,7 +703,7 @@ def phase_brief_md(graph, z, pf, *, verdicts=None, people=None) -> str:
         ppl.sort(key=lambda p: (not p[1], p[0]))
         out.append("- **People:** " + ", ".join(f"**{n}** (marked compromised)" if c else n for n, c in ppl[:8])
                    + (f" +{len(ppl) - 8}" if len(ppl) > 8 else ""))
-    tri = Counter(v for f in pf for v in [next((verdicts[i] for i in f.ids() if i in verdicts), None)])
+    tri = Counter(row_verdict(f, verdicts) for f in pf)
     labels = {"true_positive": "True Positive", "false_positive": "False Positive", "known": "Known", None: "not reviewed"}
     out.append("- **Your triage here:** " + " · ".join(f"{tri[k]} {labels[k]}" for k in
                                                        ("true_positive", "false_positive", "known", None) if tri[k]))
@@ -2103,7 +2126,7 @@ def _analyst_validations_md(graph, dispositions, validations) -> str:
     """What the analyst decided in the Timeline — so the report reflects the triage
     (confirmed real, dismissed as FP, or IT-acknowledged). Integration point with
     the Timeline tab."""
-    title_of = {f.id: f.title for f in graph.findings}
+    title_of = {**part_titles(graph), **{f.id: f.title for f in graph.findings}}
     buckets = {"true_positive": [], "false_positive": [], "known": []}
     seen = set()
     for v in (validations or []):

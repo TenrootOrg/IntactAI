@@ -209,8 +209,9 @@ class Chip(unittest.TestCase):
         self.assertTrue(note, "_jevNote missing from cases.html")
         states = re.search(r"const TL_STATES=\[.*?\];", src)
         self.assertTrue(fn and states, "_tlJev / TL_STATES missing from cases.html")
+        parts = re.search(r"function _tlParts\(r\)\{.*?\}", src)
         js = (states.group(0) + "\nconst esc=s=>String(s).replace(/[<>&'\"]/g,'');\n"
-              + fn.group(0) + "\n" + note.group(0) + "\n" + gj.group(0) + """
+              + parts.group(0) + "\n" + fn.group(0) + "\n" + note.group(0) + "\n" + gj.group(0) + """
 const out=[
   _tlJev({finding_id:'f1', jev:{label:'known', p:0.914}}),
   _tlJev({finding_id:'f1'}),

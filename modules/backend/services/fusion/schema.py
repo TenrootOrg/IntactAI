@@ -224,6 +224,12 @@ class Finding:
     # {tod "HH:MM", days, per_day_max}. Its watermark is the PATTERN, so the next
     # routine day keeps a verdict and only a change in the routine re-opens it.
     recurring: Optional[dict] = None
+    # What this ONE row bundles, each judged on its own: the rules of a "+N related"
+    # row, the detections of a burst. [{id, ids, title, ts, last, hits, wm,
+    # entity_ids}]. A verdict on a part is that part's; the row is suppressed only
+    # when EVERY part is (correlate._apply_dispositions) — one rule of two can be
+    # a real attack while the other is noise.
+    parts: list = field(default_factory=list)
 
     def ids(self) -> list:
         """This row's id first, then every id it absorbed."""
@@ -260,6 +266,7 @@ class Finding:
             aliases=_str_list(d.get("aliases")),
             group=d.get("group") if isinstance(d.get("group"), dict) else None,
             recurring=d.get("recurring") if isinstance(d.get("recurring"), dict) else None,
+            parts=[p for p in (d.get("parts") or []) if isinstance(p, dict) and p.get("id")],
         )
 
 
