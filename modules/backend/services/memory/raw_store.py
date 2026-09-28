@@ -183,7 +183,7 @@ def listing(dumps_dir: str = DUMPS_DIR) -> list:
     idx = _load(dumps_dir)
     for name in os.listdir(d):
         p = os.path.join(d, name)
-        if name in (_INDEX, _INDEX + ".tmp") or not os.path.isfile(p):
+        if name in (_INDEX, _INDEX + ".tmp", "removed.log") or not os.path.isfile(p):
             continue
         try:
             st = os.stat(p)
@@ -201,9 +201,9 @@ def listing(dumps_dir: str = DUMPS_DIR) -> list:
     return out
 
 
-def remove(name, dumps_dir: str = DUMPS_DIR) -> dict:
-    """Delete one kept image by its name in raw_memory/."""
-    if not name or os.path.basename(name) != name or name in (_INDEX, _INDEX + ".tmp"):
+def remove(name, dumps_dir: str = DUMPS_DIR, by=None) -> dict:
+    """Delete one kept image by its name in raw_memory/, recorded in removed.log."""
+    if not name or os.path.basename(name) != name or name in (_INDEX, _INDEX + ".tmp", "removed.log"):
         return {"error": "not a kept image"}
     p = os.path.join(raw_dir(dumps_dir), name)
     if not os.path.isfile(p):
@@ -212,8 +212,14 @@ def remove(name, dumps_dir: str = DUMPS_DIR) -> dict:
     with _lock:
         os.remove(p)
         idx = _load(dumps_dir)
-        idx.pop(name, None)
+        rec = idx.pop(name, None) or {}
         _save(dumps_dir, idx)
+        # Removing evidence leaves a trace: MemoryDump_Lab6.raw vanished on the
+        # first day of this folder and nothing said by whom or when.
+        with open(os.path.join(raw_dir(dumps_dir), "removed.log"), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+                                 "name": name, "size": size, "by": by or "unknown",
+                                 "origin": rec.get("origin") or {}}) + "\n")
     return {"removed": name, "freed_bytes": size}
 
 

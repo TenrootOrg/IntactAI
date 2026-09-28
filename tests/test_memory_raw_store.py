@@ -81,9 +81,15 @@ class Store(unittest.TestCase):
         name = os.path.basename(p)
         for bad in ("../x.raw", "index.json", "", "nope.raw"):
             self.assertIn("error", raw_store.remove(bad, self.d), bad)
-        self.assertEqual(raw_store.remove(name, self.d)["removed"], name)
+        self.assertEqual(raw_store.remove(name, self.d, by="analyst1")["removed"], name)
         self.assertFalse(os.path.exists(p))
         self.assertEqual(raw_store.listing(self.d), [])
+        # removing evidence leaves a trace (Lab6 vanished with none, 2026-09-28)
+        import json
+        with open(os.path.join(self.d, "raw_memory", "removed.log")) as fh:
+            rec = json.loads(fh.read().splitlines()[-1])
+        self.assertEqual((rec["name"], rec["by"]), (name, "analyst1"))
+        self.assertIn("error", raw_store.remove("removed.log", self.d))
 
     def test_migration_moves_the_old_places_skips_busy_and_small_files(self):
         self.img("_uploads/c06/MemoryDump_Lab6.raw")

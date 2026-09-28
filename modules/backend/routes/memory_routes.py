@@ -824,9 +824,14 @@ def remove_memory_dump(name):
     if any(p and os.path.realpath(p) == target for p in map(_run_image, _memory_runs_in_flight())):
         return jsonify({"error": "A memory run is using this image — wait for it to finish, "
                                  "or stop it, then remove the image."}), 409
-    res = raw_store.remove(name, _DUMPS_DIR)
+    from flask import session
+    _u = session.get("user")
+    who = ((_u.get("username") or _u.get("name")) if isinstance(_u, dict) else _u) \
+        or request.headers.get("X-Forwarded-For") or request.remote_addr
+    res = raw_store.remove(name, _DUMPS_DIR, by=who)
     if res.get("error"):
         return jsonify(res), 404
+    print(f"[MEMORY] kept image removed: {name} ({res.get('freed_bytes')} bytes) by {who}", flush=True)
     return jsonify(res)
 
 
