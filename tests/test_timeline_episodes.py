@@ -346,7 +346,9 @@ console.log(JSON.stringify([
   _tlUntil({ts:'2026-06-01T10:30:00Z', last:'2026-06-01T11:00:00Z'}),
   _tlUntil({ts:'2026-06-01T10:30:00Z', last:'2026-06-03T09:00:00Z'}),
   _tlUntil({ts:'2026-06-01T10:30:00Z', last:'2026-06-01T10:30:00Z'}),
-  _tlUntil({ts:'2026-06-01T10:30:00Z'})]));""")
+  _tlUntil({ts:'2026-06-01T10:30:00Z'}),
+  _tlUntil({ts:'2026-06-01T10:30:00Z', last:'2026-06-01T10:30:00Z', hits:2}),
+  _tlUntil({ts:'2026-06-01T10:30:00Z', hits:5})]));""")
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as t:
             t.write(js)
         try:
@@ -356,7 +358,9 @@ console.log(JSON.stringify([
             os.unlink(t.name)
         self.assertIn("→ 11:00:00Z", out[0])                 # same day: time only
         self.assertIn("→ 2026-06-03T09:00:00Z", out[1])      # another day: full date
-        self.assertEqual(out[2:], ["", ""])                  # a single moment: nothing
+        self.assertEqual(out[2:4], ["", ""])                 # one hit, one moment: nothing
+        self.assertIn("→ same second", out[4])               # several hits, one second: said,
+        self.assertIn("→ same second", out[5])               # never a blank that reads as missing
 
 
 if __name__ == "__main__":

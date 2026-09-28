@@ -1667,9 +1667,12 @@ function tlVisible(){
 // analyst still makes — and owns — the call. stopPropagation: the chip sits
 // inside the row's "open detail" click target.
 // A row covers one EPISODE: first hit to last hit. Show where it ends too, so a
-// row reads as the span it is, not as a single moment.
+// row reads as the span it is, not as a single moment. Several hits in ONE second
+// (two rules on one log clear) say so: a blank end read as a missing timeframe.
 function _tlUntil(r){
-  if(!r || !r.last || r.last===r.ts) return '';
+  if(!r) return '';
+  if(!r.last || r.last===r.ts)
+    return (+r.hits||1)>1 ? '<br><span style="color:var(--muted)">→ same second</span>' : '';
   const same=String(r.ts||'').slice(0,10)===String(r.last).slice(0,10);
   return `<br><span style="color:var(--muted)">→ ${esc(same?String(r.last).slice(11):r.last)}</span>`;
 }
@@ -1714,7 +1717,7 @@ function _tlGroupHead(grp, members, open){
   const vs=[...new Set(members.map(m=>m.validation||'pending'))], same=vs.length===1?vs[0]:null;
   const btn=(k,l)=>`<button class="s-${k}${same===k?' on':''}" onclick="event.stopPropagation();tlValidateMany(${idsJs},'${k}')" title="${k==='pending'?`Clear the verdict on all ${ids.length} rows in this group`:`Set ${l} on all ${ids.length} rows in this group — each host row keeps its own verdict`}">${l}</button>`;
   return `<div class="tlrow tlgroup" title="${open?'Hide':'Show'} the ${ids.length} host rows" onclick="tlToggleGroup('${esc(grp.id)}')">
-      <code style="white-space:nowrap">${esc(members[0].ts||'—')}${_tlUntil({ts:members[0].ts,last})}</code>
+      <code style="white-space:nowrap">${esc(members[0].ts||'—')}${_tlUntil({ts:members[0].ts,last,hits})}</code>
       <div class="tlmeta"><span><span class="tlgtag">GROUP</span><strong>${open?'▾':'▸'} ${esc(grp.name)}</strong> — ${esc(hosts.join(', '))}</span>
         <span class="l2"><span class="sg-hint" style="border-style:solid;color:var(--muted)">${hosts.length} hosts · ${ids.length} rows · ${hits.toLocaleString()} hits</span><span class="sg-hint" style="border-style:solid;${weak?'':'border-color:#3fb950;color:#56d364'}" title="${weak?'Same detection close together on several hosts — a correlation, not proof they are related.':'The hosts share this identifier in their evidence.'}">${weak?'linked by time only':esc(grp.link)}</span><span style="color:var(--muted);font-size:11px">${done} of ${ids.length} reviewed</span>${_tlGroupJev(members)}${_tlGroupNews(grp, members)}</span>
       </div>
