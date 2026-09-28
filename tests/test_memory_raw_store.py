@@ -207,5 +207,21 @@ class OnePathForBothArrivals(unittest.TestCase):
         self.assertEqual([e["source"] for e in raw_store.listing(d)], ["upload"])
 
 
+class Levels(unittest.TestCase):
+    def test_keeping_the_image_you_asked_to_keep_is_not_a_warning(self):
+        # memory_1790583141323 showed "2 warnings"; one was this confirmation.
+        from services.memory import cleanup
+        said = []
+        cleanup.cleanup_after_run(client_id=None, flow_id=None, host_path="/nonexistent.raw", evidence_id=None,
+                                  evidence_filename=None, volweb_client=None, preserve_dump="operator",
+                                  logger=lambda m, level="info": said.append((level, m)))
+        self.assertEqual([lv for lv, m in said if "PRESERVING" in m], ["info"])
+        said.clear()
+        cleanup.cleanup_after_run(client_id=None, flow_id=None, host_path="/nonexistent.raw", evidence_id=None,
+                                  evidence_filename=None, volweb_client=None, preserve_dump="no_results",
+                                  logger=lambda m, level="info": said.append((level, m)))
+        self.assertEqual([lv for lv, m in said if "PRESERVING" in m], ["warning"])   # automatic keep: still a warning
+
+
 if __name__ == "__main__":
     unittest.main()

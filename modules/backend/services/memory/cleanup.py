@@ -198,7 +198,9 @@ def cleanup_after_run(
             f"staging/{evidence_filename or '(none)'} — one copy, not two)."
             f"{_flow_note} Re-run against it from Memory → Use a kept image, or "
             "reclaim it in Settings → Purge.",
-            "warning",
+            # info, not warning: it is what the operator asked for. A clean run
+            # showed "2 warnings", one of which was this confirmation.
+            "info",
         )
     elif preserve_dump:
         # Say it once, up front, naming all three places — an operator reading
