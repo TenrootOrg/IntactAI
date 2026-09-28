@@ -44,6 +44,9 @@
   .md h2{font-size:16px;color:var(--tx);text-transform:none;letter-spacing:0;margin-top:22px}
   .md h3{font-size:14px;color:var(--acc)}
   .md code{background:#000;padding:1px 5px;border-radius:4px;color:#79c0ff;font-size:12px}
+  /* A fenced block (a command line the model quotes): one box, wrapped, never cut */
+  .md pre{background:#000;border-radius:6px;padding:8px 10px;margin:6px 0;white-space:pre-wrap;overflow-wrap:anywhere}
+  .md pre code{background:none;padding:0}
   .md table{border-collapse:collapse;margin:8px 0;font-size:13px}
   .md th,.md td{border:1px solid var(--bd);padding:5px 9px;text-align:left}
   .md th{background:var(--panel2)}
@@ -2341,10 +2344,15 @@ document.addEventListener('click',e=>{
 function escape(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function inline(s){return escape(s).replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>').replace(/_([^_]+)_/g,'<em>$1</em>');}
 function mdToHtml(md){
-  const out=[]; let inUL=false,inTbl=false;
+  const out=[]; let inUL=false,inTbl=false,pre=null;
   const closeUL=()=>{if(inUL){out.push('</ul>');inUL=false;}};
   const closeTbl=()=>{if(inTbl){out.push('</table>');inTbl=false;}};
+  const closePre=()=>{if(pre){out.push('<pre><code>'+escape(pre.join('\n'))+'</code></pre>');pre=null;}};
   (md||'').split('\n').forEach(line=>{
+    // Fenced code (```text … ```): the model quotes command lines this way, and
+    // the fences printed as literal ``` around a plain paragraph (QA screenshot).
+    if(/^\s*```/.test(line)){ if(pre) closePre(); else {closeUL();closeTbl();pre=[];} return; }
+    if(pre){pre.push(line);return;}
     if(/^\|(.+)\|\s*$/.test(line)){
       if(/^\|[\s:|-]+\|\s*$/.test(line))return; // separator
       const cells=line.split('|').slice(1,-1).map(c=>c.trim());
@@ -2376,7 +2384,7 @@ function mdToHtml(md){
     else if(/^\s*$/.test(line)){closeUL();out.push('<br/>');}
     else {closeUL();out.push('<p>'+inline(line)+'</p>');}
   });
-  closeUL();closeTbl();return out.join('\n');
+  closePre();closeUL();closeTbl();return out.join('\n');
 }
 
 // The name example carries TODAY's date. A hardcoded one ("GOOGLE IR
