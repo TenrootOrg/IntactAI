@@ -132,7 +132,7 @@ class OnePathForBothArrivals(unittest.TestCase):
     branch had its own copy and registered the old top-level name after the
     image had moved — memory_1790581789967 failed on it (2026-09-28)."""
 
-    def run_pipeline(self, *, upload):
+    def run_pipeline(self, *, upload, client_name="DESKTOP-3LRFS8Q"):
         from services.memory import pipeline as pm
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
@@ -178,7 +178,7 @@ class OnePathForBothArrivals(unittest.TestCase):
         for k, v in fakes.items():
             setattr(pm, k, v)
         try:
-            pm.run_memory_pipeline(run_id="r1", client_id="C.1", client_name="DESKTOP-3LRFS8Q",
+            pm.run_memory_pipeline(run_id="r1", client_id="C.1", client_name=client_name,
                                    mode="plugin", dumps_dir=d, from_upload_path=up, case_name="c")
         finally:
             for k, v in saved.items():
@@ -190,6 +190,16 @@ class OnePathForBothArrivals(unittest.TestCase):
         self.assertEqual(len(registered), 1, "the run never reached VolWeb")
         self.assertRegex(registered[0], r"^raw_memory/\d{4}-\d\d-\d\d_\d{6}__DESKTOP-3LRFS8Q-F\.DAT1O9TNB5BD2\.raw$")
         self.assertEqual([e["origin"]["client_name"] for e in raw_store.listing(d)], ["DESKTOP-3LRFS8Q"])
+
+    def test_a_run_started_without_the_hostname_is_named_after_the_host(self):
+        # "Memory (plugin) — C.002c28886e7feff2" (2026-09-28): the page's client
+        # lookup came back empty; Velociraptor reports the hostname anyway.
+        from services import workflow_service
+        renamed = []
+        with mock.patch.object(workflow_service, "rename_run", lambda rid, n: renamed.append(n)):
+            d, registered = self.run_pipeline(upload=False, client_name=None)
+        self.assertEqual(renamed, ["Memory (plugin) — DESKTOP-3LRFS8Q"])
+        self.assertRegex(registered[0], r"__DESKTOP-3LRFS8Q-F\.DAT1O9TNB5BD2\.raw$")
 
     def test_an_upload_takes_the_same_path(self):
         d, registered = self.run_pipeline(upload=True)

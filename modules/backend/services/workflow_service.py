@@ -652,6 +652,17 @@ def mutate_run_details(run_id, mutator):
         return save_workflow(workflow)
 
 
+def rename_run(run_id, name):
+    """Change a run's display name (e.g. once the endpoint's hostname is known)."""
+    with _get_run_log_lock(run_id):
+        workflow = file_get_workflow(run_id)
+        if not workflow or not name:
+            return False
+        workflow["name"] = name
+        workflow["updated_at"] = datetime.now().isoformat()
+        return save_workflow(workflow)
+
+
 def record_phase_timing(run_id, phase, seconds):
     """Append a per-phase elapsed time (seconds, float) to the workflow row.
 

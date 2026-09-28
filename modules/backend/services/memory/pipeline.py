@@ -945,8 +945,17 @@ def run_memory_pipeline(
             )
             flow_id = acq["flow_id"]
             image_path, source = acq["host_path"], "velociraptor"
-            # The host the operator picked in Velociraptor names the image.
-            client_name = client_name or acq.get("hostname")
+            # The host the operator picked in Velociraptor names the image —
+            # and the run: started without a hostname (the page's client lookup
+            # can come back empty), it read "Memory (plugin) — C.002c28886e7feff2".
+            if not client_name and acq.get("hostname"):
+                client_name = acq["hostname"]
+                try:
+                    from services.workflow_service import rename_run
+                    mutate_run_details(run_id, lambda d, _h=client_name: d.__setitem__("client_name", _h))
+                    rename_run(run_id, f"Memory ({mode}) — {client_name}")
+                except Exception as _e:                 # noqa: BLE001 — a label, never a failure
+                    log(f"pipeline: could not name the run after the host ({_e})", "warning")
             original_name = f"{client_name or 'host'}-{flow_id}.raw"
             _persist_cleanup_state(run_id, flow_id=flow_id, host_path=image_path)
             cumulative += _PHASE_WEIGHTS["acquire"]

@@ -256,9 +256,12 @@ document.addEventListener('alpine:init', () => {
             this.lastStatus = '';
             try {
                 const c = (memoryClientManager && memoryClientManager.getClient(this.selectedClient)) || {};
+                // The selected row carries its hostname too — the lookup above came
+                // back empty once and the run was named after the client id.
+                const row = document.querySelector('#memory-client-list input:checked');
                 const body = {
                     client_id: this.selectedClient,
-                    client_name: c.hostname || null,
+                    client_name: c.hostname || (row && row.dataset.hostname !== 'Unknown' ? row.dataset.hostname : null) || null,
                     blueprint_id: this.blueprintId || undefined,
                     mode: this.derivedMode(),
                     case_name: this.caseName || ('Volatile Memory ' + new Date().toISOString().split('T')[0]),
