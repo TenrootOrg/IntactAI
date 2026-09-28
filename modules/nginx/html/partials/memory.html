@@ -252,13 +252,14 @@
                             <div>
                                 <label class="block text-sm font-medium text-gray-300">Kept memory images</label>
                                 <p class="text-xs text-gray-500 mt-1">
-                                    Images kept by an earlier run — including runs in other cases. Re-analysing one
-                                    needs no endpoint and no acquisition, and the image is kept again afterwards.
+                                    Every kept image, in one folder (raw_memory), named by the date it arrived. The
+                                    same image uploaded twice is stored once. Re-analysing one needs no endpoint and no
+                                    acquisition, and the image is kept again afterwards.
                                 </p>
                             </div>
                             <button type="button" @click="$store.memory.loadDumps()"
                                     class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded whitespace-nowrap"
-                                    title="Rescan /data/memory_dumps">↻ Refresh</button>
+                                    title="Rescan the kept images">↻ Refresh</button>
                         </div>
 
                         <div class="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-56 overflow-y-auto space-y-2">
@@ -273,11 +274,14 @@
                                        :class="$store.memory.selectedDump === d.path ? 'bg-gray-800 ring-1 ring-purple-500' : ''">
                                     <input type="radio" name="memory-dump" class="mt-1 w-4 h-4 text-purple-600 bg-gray-900 border-gray-600"
                                            :value="d.path" x-model="$store.memory.selectedDump">
-                                    <div class="min-w-0">
+                                    <div class="min-w-0 flex-1">
                                         <div class="text-sm text-gray-200 font-mono truncate" x-text="d.name"></div>
                                         <div class="text-xs text-gray-500"
                                              x-text="$store.memory.dumpLabel(d)"></div>
                                     </div>
+                                    <button type="button" @click.prevent.stop="$store.memory.removeDump(d)"
+                                            class="text-xs text-red-400 hover:text-red-300 border border-red-900 hover:border-red-700 rounded px-2 py-1 whitespace-nowrap"
+                                            title="Delete this image from the appliance">Remove</button>
                                 </label>
                             </template>
                         </div>

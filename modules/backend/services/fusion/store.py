@@ -1012,10 +1012,18 @@ def _delete_run_payloads(rid, det=None) -> None:
         if not p or not str(p).startswith(("/data/memory_dumps", "/app/data/memory_dumps")):
             continue                       # only ever inside the dump directory
         try:
+            from services.memory import raw_store as _raw
+            if _raw.is_shared(p):
+                continue                   # the same image arrived with another run too
+        except Exception:                  # noqa: BLE001
+            _raw = None
+        try:
             if os.path.isdir(p):
                 _shutil.rmtree(p, ignore_errors=True)
             else:
                 os.remove(p)
+                if _raw:
+                    _raw.forget(p)
         except Exception:                  # noqa: BLE001
             pass
     # Cloud findings held in RAM by the route modules, keyed by run id and never

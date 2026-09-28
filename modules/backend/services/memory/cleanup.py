@@ -39,6 +39,11 @@ def _remove_host_dump(host_path: str, log: Callable[[str, str], None]) -> None:
         if p.is_file():
             p.unlink()
             log(f"cleanup: removed host dump {host_path}", "info")
+            try:
+                from . import raw_store
+                raw_store.forget(host_path)
+            except Exception:  # noqa: BLE001
+                pass
         # An operator upload lands in its own `_uploads/<id>/` directory.
         # Unlinking the file leaves that directory behind, one empty directory
         # per upload, for ever. Only ever removes a now-empty per-upload dir:
@@ -165,6 +170,14 @@ def cleanup_after_run(
     if os.environ.get("NO_CLEANUP") == "1":
         log("cleanup: skipped (NO_CLEANUP=1)", "info")
         return
+    try:
+        from . import raw_store
+        if not preserve_dump and host_path and raw_store.is_shared(host_path):
+            # Another run arrived with this exact image and is using it too.
+            log(f"cleanup: keeping {host_path} — another run uses the same image", "info")
+            preserve_dump = "operator"
+    except Exception:  # noqa: BLE001
+        pass
 
     # An operator-requested keep holds ONE copy; an automatic keep holds the
     # untouched server-side original as well. See the docstring.

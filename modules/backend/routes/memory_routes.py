@@ -748,39 +748,86 @@ def _dump_origins() -> dict:
     return origins
 
 
+def _memory_runs_in_flight() -> list:
+    """Memory runs still going — their images must not move or disappear."""
+    try:
+        from services.storage.workflow_store import load_workflows
+        return [w for w in (load_workflows() or []) if w.get("automation_type") == "memory"
+                and w.get("status") in ("running", "pending", "queued")]
+    except Exception:                        # noqa: BLE001
+        return []
+
+
+def _run_image(w) -> str | None:
+    det = w.get("details") or {}
+    return det.get("host_path") or (det.get("_cleanup_state") or {}).get("host_path")
+
+
+def _migrate_legacy_images(origins: dict) -> None:
+    """Images from before raw_memory/ (a copy per upload id, acquisitions at the
+    top level) move into it once, dated, duplicates dropped — and the runs that
+    point at the old path are pointed at the new one, so the case purge and the
+    origin labels still find them."""
+    from services.memory import raw_store
+    from services import workflow_service as ws
+    busy = [_run_image(w) for w in _memory_runs_in_flight()]
+    moved = raw_store.migrate(origins, in_use=busy, dumps_dir=_DUMPS_DIR)
+    if not moved:
+        return
+    remap = {old: new for old, new, _dup in moved}
+    try:
+        from services.storage.workflow_store import load_workflows
+        for w in load_workflows() or []:
+            if w.get("automation_type") != "memory" or _run_image(w) not in remap:
+                continue
+            new = remap[_run_image(w)]
+
+            def _fix(det, new=new):
+                if det.get("host_path") in remap:
+                    det["host_path"] = new
+                cs = det.get("_cleanup_state") or {}
+                if cs.get("host_path") in remap:
+                    cs["host_path"] = new
+                    det["_cleanup_state"] = cs
+            ws.mutate_run_details(w["run_id"], _fix)
+    except Exception as e:                   # noqa: BLE001 — the files moved; labels are a nicety
+        print(f"[MEMORY] run paths not updated after the image move: {e}", flush=True)
+
+
 @memory_bp.route("/api/memory/dumps", methods=["GET"])
 def list_memory_dumps():
-    """Memory images currently on the appliance, newest first."""
+    """Memory images kept on the appliance (raw_memory/), newest first."""
     if not _is_module_enabled():
         return jsonify({"error": "Memory module is not enabled."}), 400
-
-    import os
+    from services.memory import raw_store
     origins = _dump_origins()
-    out = []
-    # One level of recursion: uploads land in _uploads/<id>/<file>, everything
-    # else sits at the top. Deeper than that is not ours.
-    for root, _dirs, files in os.walk(_DUMPS_DIR):
-        depth = root[len(_DUMPS_DIR):].strip(os.sep).count(os.sep)
-        if depth > 1:
-            continue
-        for fn in files:
-            p = os.path.join(root, fn)
-            try:
-                st = os.stat(p)
-            except OSError:
-                continue
-            if not os.path.isfile(p) or st.st_size < _MIN_DUMP_BYTES:
-                continue
-            out.append({
-                "path": p,
-                "name": os.path.relpath(p, _DUMPS_DIR),
-                "size_bytes": st.st_size,
-                "mtime": st.st_mtime,
-                "origin": origins.get(p),
-            })
-    out.sort(key=lambda d: d["mtime"], reverse=True)
+    try:
+        _migrate_legacy_images(origins)
+        origins = _dump_origins()
+    except Exception as e:                   # noqa: BLE001 — never hide the list over it
+        print(f"[MEMORY] legacy image move failed: {e}", flush=True)
+    out = raw_store.listing(_DUMPS_DIR)
+    for d in out:
+        d["origin"] = d.get("origin") or origins.get(d["path"])
     total = sum(d["size_bytes"] for d in out)
     return jsonify({"dumps": out, "count": len(out), "total_bytes": total})
+
+
+@memory_bp.route("/api/memory/dumps/<name>", methods=["DELETE"])
+def remove_memory_dump(name):
+    """Delete one kept image. Refused while a memory run is using it."""
+    if not _is_module_enabled():
+        return jsonify({"error": "Memory module is not enabled."}), 400
+    import os
+    from services.memory import raw_store
+    target = os.path.realpath(os.path.join(raw_store.raw_dir(_DUMPS_DIR), os.path.basename(name or "")))
+    if any(p and os.path.realpath(p) == target for p in map(_run_image, _memory_runs_in_flight())):
+        return jsonify({"error": "A memory run is using this image — wait for it to finish, "
+                                 "or stop it, then remove the image."}), 409
+    res = raw_store.remove(name, _DUMPS_DIR)
+    if res.get("error"):
+        return jsonify(res), 404
+    return jsonify(res)
 
 
 # ---------------------------------------------------------------------------

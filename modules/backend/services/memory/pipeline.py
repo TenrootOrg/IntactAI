@@ -905,7 +905,18 @@ def run_memory_pipeline(
             if not os.path.isfile(from_upload_path):
                 raise RuntimeError(f"upload file missing: {from_upload_path}")
             size_b = os.path.getsize(from_upload_path)
-            host_path = from_upload_path
+            # Into the one image folder, dated; an identical kept image is used
+            # instead of storing a second copy (raw_store).
+            from . import raw_store
+            host_path, _dup = raw_store.adopt(
+                from_upload_path, source="upload",
+                original_name=os.path.basename(from_upload_path),
+                origin={"client_name": client_name, "client_id": client_id, "run_id": run_id},
+                dumps_dir=dumps_dir, log=log)
+            if _dup and not dump_preserved:
+                # someone else's kept image now — never deleted by this run
+                dump_preserved = "operator"
+                _persist_cleanup_state(run_id, preserve_dump="operator")
             flow_id = None   # no Velociraptor flow when uploaded offline
             _persist_cleanup_state(run_id, host_path=host_path)
             log(
@@ -994,6 +1005,17 @@ def run_memory_pipeline(
             host_path = acq["host_path"]
             client_name = client_name or acq.get("hostname")
             _persist_cleanup_state(run_id, flow_id=flow_id, host_path=host_path)
+            from . import raw_store
+            import os as _os
+            host_path, _dup = raw_store.adopt(
+                host_path, source="velociraptor", original_name=_os.path.basename(host_path),
+                origin={"client_name": client_name, "client_id": client_id,
+                        "run_id": run_id, "flow_id": flow_id},
+                dumps_dir=dumps_dir, log=log)
+            if _dup and not dump_preserved:
+                dump_preserved = "operator"
+                _persist_cleanup_state(run_id, preserve_dump="operator")
+            _persist_cleanup_state(run_id, host_path=host_path)
             cumulative += _PHASE_WEIGHTS["acquire"]
             _bump(
                 run_id, cumulative,

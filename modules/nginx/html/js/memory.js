@@ -161,10 +161,25 @@ document.addEventListener('alpine:init', () => {
             const gb = (d.size_bytes / (1024 * 1024 * 1024));
             const size = gb >= 1 ? gb.toFixed(1) + ' GB'
                                  : Math.round(d.size_bytes / (1024 * 1024)) + ' MB';
-            const when = d.mtime ? new Date(d.mtime * 1000).toLocaleString() : '';
+            // added_at is the date the image arrived (also in its file name)
+            const when = d.added_at ? d.added_at.replace('_', ' ').replace(/(\d\d)(\d\d)(\d\d)$/, '$1:$2:$3') + ' UTC'
+                       : (d.mtime ? new Date(d.mtime * 1000).toLocaleString() : '');
+            const how = { upload: 'uploaded', velociraptor: 'acquired', migrated: 'kept from before' }[d.source] || '';
             const o = d.origin;
-            const from = o ? `from ${o.client_name || o.run_id}` : 'origin unknown';
-            return [size, when, from].filter(Boolean).join(' · ');
+            const from = o && (o.client_name || o.run_id) ? `from ${o.client_name || o.run_id}` : 'origin unknown';
+            const dup = d.also_arrived ? `uploaded ${d.also_arrived + 1}× — stored once` : '';
+            return [size, [how, when].filter(Boolean).join(' '), from, dup].filter(Boolean).join(' · ');
+        },
+
+        async removeDump(d) {
+            if (!confirm(`Delete ${d.name} (${this.dumpLabel(d)})?\n\nThe image is removed from the appliance. `
+                         + 'Analyses already done keep their results.')) return;
+            try {
+                const r = await fetch('/api/memory/dumps/' + encodeURIComponent(d.name), { method: 'DELETE' });
+                const j = await r.json().catch(() => ({}));
+                if (!r.ok) { alert(j.error || ('Could not delete the image (HTTP ' + r.status + ').')); return; }
+            } catch (e) { alert('Could not reach the appliance: ' + (e && e.message || e)); return; }
+            await this.loadDumps();
         },
 
         async startReuse() {
