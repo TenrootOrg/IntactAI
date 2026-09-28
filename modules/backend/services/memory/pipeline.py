@@ -895,84 +895,26 @@ def run_memory_pipeline(
         # ----------------------------------------------------------------
         # Phase 1 — Preflight
         # ----------------------------------------------------------------
+        # ----------------------------------------------------------------
+        # How the image ARRIVES is the only thing that differs: an upload is
+        # already on the volume; an acquisition fetches it from the endpoint.
+        # Everything after — into raw_memory/, registered with VolWeb where it
+        # actually is, extracted — is ONE path for both. It used to be two
+        # copies of it, and the acquisition's copy still registered the old
+        # top-level name after the image had moved: every acquisition failed.
+        # ----------------------------------------------------------------
         if from_upload_path:
-            # Offline-upload path: the operator already has a dump
-            # (Velociraptor "Prepare Download" export, an offline
-            # collector's PhysicalMemory.raw, or any raw memory image).
-            # We skip the preflight + acquire phases and feed the file
-            # directly into Phase 3.
-            import os
             if not os.path.isfile(from_upload_path):
                 raise RuntimeError(f"upload file missing: {from_upload_path}")
-            size_b = os.path.getsize(from_upload_path)
-            # Into the one image folder, dated; an identical kept image is used
-            # instead of storing a second copy (raw_store).
-            from . import raw_store
-            host_path, _dup = raw_store.adopt(
-                from_upload_path, source="upload",
-                original_name=os.path.basename(from_upload_path),
-                origin={"client_name": client_name, "client_id": client_id, "run_id": run_id},
-                dumps_dir=dumps_dir, log=log)
-            if _dup and not dump_preserved:
-                # someone else's kept image now — never deleted by this run
-                dump_preserved = "operator"
-                _persist_cleanup_state(run_id, preserve_dump="operator")
+            image_path, source = from_upload_path, "upload"
+            original_name = os.path.basename(from_upload_path)
             flow_id = None   # no Velociraptor flow when uploaded offline
-            _persist_cleanup_state(run_id, host_path=host_path)
-            log(
-                f"pipeline: offline-upload — using {host_path} ({size_b // 1024 // 1024} MB)",
-                "info",
-            )
+            log(f"pipeline: offline-upload — using {image_path} "
+                f"({os.path.getsize(image_path) // 1024 // 1024} MB)", "info")
             cumulative += _PHASE_WEIGHTS["preflight"] + _PHASE_WEIGHTS["acquire"]
             _bump(run_id, cumulative, "offline-upload: bypassed acquire")
             if cancel():
                 raise RuntimeError("cancelled before upload")
-
-            # ------------------------------------------------------------
-            # Phase 3 (still runs) — Upload to VolWeb
-            # ------------------------------------------------------------
-            case_id = client.ensure_case(case_name)
-            # /data/memory_dumps IS VolWeb's media/staging — one shared volume
-            # under two names. A file already sitting there needs a DB row, not
-            # a multi-GB HTTP round-trip that lands a SECOND copy in
-            # volweb_media. The acquire path has always done this; the offline
-            # path uploaded, so every browser upload and every re-analysis paid
-            # for a duplicate of the image. Same trick, same guard rails
-            # (register_existing_file verifies the file and fixes ownership).
-            _staging_rel = _staging_relative_path(host_path, dumps_dir)
-            if _staging_rel:
-                log("pipeline: register — the image is already on VolWeb's volume "
-                    "(no upload, no second copy)", "info")
-                evidence_id = client.register_existing_file(
-                    _staging_rel, case_id=case_id, os_name="windows",
-                )
-                evidence_filename = _staging_rel
-            else:
-                log(f"pipeline: upload — chunked to VolWeb case={case_name!r}", "info")
-                evidence_id = client.upload_evidence(
-                    host_path,
-                    case_id=case_id,
-                    os_name="windows",
-                    cancel_check=cancel,
-                    progress_cb=lambda sent, total, mbps: add_log_to_run(
-                        run_id,
-                        f"upload: {sent//1024//1024}/{total//1024//1024} MB  ({mbps:.1f} MB/s)",
-                        "info",
-                    ),
-                )
-                evidence_filename = client.get_evidence(evidence_id).get("name")
-            _persist_cleanup_state(run_id, evidence_id=evidence_id, evidence_filename=evidence_filename)
-            cumulative += _PHASE_WEIGHTS["upload"]
-            _bump(run_id, cumulative, f"upload: evidence_id={evidence_id}")
-            if cancel():
-                raise RuntimeError("cancelled after upload")
-
-            # ------------------------------------------------------------
-            # Phase 4 (offline-upload branch) — Extract + yarascan
-            # ------------------------------------------------------------
-            cumulative, hit_count, yarascan_incomplete = _extract_phase(
-                evidence_id, host_path, cumulative,
-            )
         else:
             cumulative += _PHASE_WEIGHTS["preflight"]
             _bump(run_id, cumulative, "preflight: disk + client checks")
@@ -1002,74 +944,67 @@ def run_memory_pipeline(
                 **overrides,
             )
             flow_id = acq["flow_id"]
-            host_path = acq["host_path"]
+            image_path, source = acq["host_path"], "velociraptor"
+            # The host the operator picked in Velociraptor names the image.
             client_name = client_name or acq.get("hostname")
-            _persist_cleanup_state(run_id, flow_id=flow_id, host_path=host_path)
-            from . import raw_store
-            import os as _os
-            host_path, _dup = raw_store.adopt(
-                host_path, source="velociraptor", original_name=_os.path.basename(host_path),
-                origin={"client_name": client_name, "client_id": client_id,
-                        "run_id": run_id, "flow_id": flow_id},
-                dumps_dir=dumps_dir, log=log)
-            if _dup and not dump_preserved:
-                dump_preserved = "operator"
-                _persist_cleanup_state(run_id, preserve_dump="operator")
-            _persist_cleanup_state(run_id, host_path=host_path)
+            original_name = f"{client_name or 'host'}-{flow_id}.raw"
+            _persist_cleanup_state(run_id, flow_id=flow_id, host_path=image_path)
             cumulative += _PHASE_WEIGHTS["acquire"]
-            _bump(
-                run_id, cumulative,
-                f"acquire: complete — {acq['size_bytes'] // 1024 // 1024} MB at {host_path}",
-            )
+            _bump(run_id, cumulative,
+                  f"acquire: complete — {acq['size_bytes'] // 1024 // 1024} MB from {client_name or client_id}")
             if cancel():
                 raise RuntimeError("cancelled after acquire")
 
-            # ------------------------------------------------------------
-            # Phase 3 — Register / Upload to VolWeb
-            #
-            # If acquire used the shared-volume fast-path (in-tree
-            # Velociraptor + in-tree VolWeb), the .raw is already
-            # visible to VolWeb at /home/app/web/media/staging/<name>.
-            # We just move it to evidences/ + insert the DB row.
-            # Otherwise (PoC VolWeb, no shared volume) fall back to
-            # the original chunked HTTP upload.
-            # ------------------------------------------------------------
-            case_id = client.ensure_case(case_name)
-            if acq.get("shared_volume"):
-                log("pipeline: register — using shared volume (no HTTP upload)", "info")
-                evidence_id = client.register_existing_file(
-                    acq["shared_basename"],
-                    case_id=case_id,
-                    os_name="windows",
-                )
-                evidence_filename = acq["shared_basename"]
-                _persist_cleanup_state(run_id, evidence_id=evidence_id, evidence_filename=evidence_filename)
-            else:
-                log(f"pipeline: upload — chunked to VolWeb case={case_name!r}", "info")
-                evidence_id = client.upload_evidence(
-                    host_path,
-                    case_id=case_id,
-                    os_name="windows",
-                    cancel_check=cancel,
-                    progress_cb=lambda sent, total, mbps: add_log_to_run(
-                        run_id,
-                        f"upload: {sent//1024//1024}/{total//1024//1024} MB  ({mbps:.1f} MB/s)",
-                        "info",
-                    ),
-                )
-                evidence_filename = client.get_evidence(evidence_id).get("name")
-                _persist_cleanup_state(run_id, evidence_id=evidence_id, evidence_filename=evidence_filename)
-            cumulative += _PHASE_WEIGHTS["upload"]
-            _bump(run_id, cumulative, f"upload: evidence_id={evidence_id}")
-            if cancel():
-                raise RuntimeError("cancelled after upload")
+        # ---- one path from here, whichever way the image arrived --------
+        from . import raw_store
+        host_path, _dup = raw_store.adopt(
+            image_path, source=source, original_name=original_name,
+            origin={"client_name": client_name, "client_id": client_id,
+                    "run_id": run_id, "flow_id": flow_id},
+            dumps_dir=dumps_dir, log=log)
+        if _dup and not dump_preserved:
+            # someone else's kept image now — never deleted by this run
+            dump_preserved = "operator"
+            _persist_cleanup_state(run_id, preserve_dump="operator")
+        _persist_cleanup_state(run_id, host_path=host_path)
 
-            # ------------------------------------------------------------
-            # Phase 4 — Extraction (plugins + yarascan)
-            # ------------------------------------------------------------
-            cumulative, hit_count, yarascan_incomplete = _extract_phase(
-                evidence_id, host_path, cumulative,
+        # Phase 3 — Register with VolWeb. /data/memory_dumps IS VolWeb's
+        # media/staging (one volume, two names): a file on it needs a DB row,
+        # not a multi-GB HTTP round-trip landing a second copy. Only an image
+        # off the volume (no shared volume configured) is uploaded.
+        case_id = client.ensure_case(case_name)
+        _staging_rel = _staging_relative_path(host_path, dumps_dir)
+        if _staging_rel:
+            log("pipeline: register — the image is already on VolWeb's volume "
+                "(no upload, no second copy)", "info")
+            evidence_id = client.register_existing_file(
+                _staging_rel, case_id=case_id, os_name="windows",
             )
+            evidence_filename = _staging_rel
+        else:
+            log(f"pipeline: upload — chunked to VolWeb case={case_name!r}", "info")
+            evidence_id = client.upload_evidence(
+                host_path,
+                case_id=case_id,
+                os_name="windows",
+                cancel_check=cancel,
+                progress_cb=lambda sent, total, mbps: add_log_to_run(
+                    run_id,
+                    f"upload: {sent//1024//1024}/{total//1024//1024} MB  ({mbps:.1f} MB/s)",
+                    "info",
+                ),
+            )
+            evidence_filename = client.get_evidence(evidence_id).get("name")
+        _persist_cleanup_state(run_id, evidence_id=evidence_id, evidence_filename=evidence_filename)
+        cumulative += _PHASE_WEIGHTS["upload"]
+        _bump(run_id, cumulative, f"upload: evidence_id={evidence_id}")
+        if cancel():
+            raise RuntimeError("cancelled after upload")
+
+        # Phase 4 — Extraction (plugins + yarascan)
+        cumulative, hit_count, yarascan_incomplete = _extract_phase(
+            evidence_id, host_path, cumulative,
+        )
 
         # ----------------------------------------------------------------
         # Keep whatever symbols this image taught us. Vol3 writes downloaded

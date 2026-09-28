@@ -120,5 +120,76 @@ class Cleanup(unittest.TestCase):
         self.assertTrue(os.path.exists(kept))
 
 
+class OnePathForBothArrivals(unittest.TestCase):
+    """An acquired image and an uploaded one take the SAME path after arrival:
+    into raw_memory/, registered with VolWeb where it actually is. The acquire
+    branch had its own copy and registered the old top-level name after the
+    image had moved — memory_1790581789967 failed on it (2026-09-28)."""
+
+    def run_pipeline(self, *, upload):
+        from services.memory import pipeline as pm
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        registered = []
+
+        class Client:
+            def __init__(self, **_kw): pass
+            def ensure_case(self, _n): return 1
+            def register_existing_file(self, rel, **_kw):
+                assert os.path.isfile(os.path.join(d, rel)), f"VolWeb told to read a missing file: {rel}"
+                registered.append(rel)
+                return 7
+            def upload_evidence(self, *_a, **_k): raise AssertionError("an image on the volume is never uploaded")
+            def get_evidence(self, _i): return {"name": "x"}
+            def stage_media_dir(self, _i): return None
+            def yarascan_history(self, _i): return []
+            def list_plugins(self, _i): return []
+            def fetch_plugin(self, *_a, **_k): return None
+            def trigger_extraction(self, *_a): return "T"
+            def wait_for_plugin_results(self, *_a, **_k): return ({}, True)
+            def harvest_symbols(self): return 0
+
+        def fake_acquire(client_id, dumps_dir, **_kw):
+            p = os.path.join(dumps_dir, "DESKTOP-3LRFS8Q-F.DAT1O9TNB5BD2.raw")
+            with open(p, "wb") as fh:
+                fh.write(b"M" * 2 * MB)
+            return {"flow_id": "F.DAT1O9TNB5BD2", "host_path": p, "hostname": "DESKTOP-3LRFS8Q",
+                    "size_bytes": 2 * MB, "shared_volume": True,
+                    "shared_basename": "DESKTOP-3LRFS8Q-F.DAT1O9TNB5BD2.raw"}
+        up = None
+        if upload:
+            up = os.path.join(d, "_uploads", "abc", "MemoryDump_Lab6.raw")
+            os.makedirs(os.path.dirname(up))
+            with open(up, "wb") as fh:
+                fh.write(b"U" * 2 * MB)
+        fakes = {"add_log_to_run": lambda *a, **k: None, "update_run_status": lambda *a, **k: None,
+                 "mutate_run_details": lambda *a, **k: None, "register_cleanup": lambda *a, **k: None,
+                 "unregister_cancel": lambda *a, **k: None, "cleanup_after_run": lambda **k: None,
+                 "register_cancel_event": lambda _r: type("E", (), {"is_set": staticmethod(lambda: False)})(),
+                 "acquire_memory_dump": fake_acquire, "_estimate_client_memory_bytes": lambda _c: 0,
+                 "_disk_preflight": lambda *a, **k: None, "VolWebClient": Client}
+        saved = {k: getattr(pm, k) for k in fakes}
+        for k, v in fakes.items():
+            setattr(pm, k, v)
+        try:
+            pm.run_memory_pipeline(run_id="r1", client_id="C.1", client_name="DESKTOP-3LRFS8Q",
+                                   mode="plugin", dumps_dir=d, from_upload_path=up, case_name="c")
+        finally:
+            for k, v in saved.items():
+                setattr(pm, k, v)
+        return d, registered
+
+    def test_an_acquisition_is_registered_where_the_image_is_now(self):
+        d, registered = self.run_pipeline(upload=False)
+        self.assertEqual(len(registered), 1, "the run never reached VolWeb")
+        self.assertRegex(registered[0], r"^raw_memory/\d{4}-\d\d-\d\d_\d{6}__DESKTOP-3LRFS8Q-F\.DAT1O9TNB5BD2\.raw$")
+        self.assertEqual([e["origin"]["client_name"] for e in raw_store.listing(d)], ["DESKTOP-3LRFS8Q"])
+
+    def test_an_upload_takes_the_same_path(self):
+        d, registered = self.run_pipeline(upload=True)
+        self.assertRegex(registered[0], r"^raw_memory/.*__MemoryDump_Lab6\.raw$")
+        self.assertEqual([e["source"] for e in raw_store.listing(d)], ["upload"])
+
+
 if __name__ == "__main__":
     unittest.main()
