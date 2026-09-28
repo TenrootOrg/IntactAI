@@ -1587,11 +1587,59 @@ TRIGGER_TIMELINE = "a timeline validation"
 TRIGGER_IDENTITY = "an identity decision"
 TRIGGER_AUTOMATIC_RUN_LANDED = "AUTOMATIC — a member run finished"
 TRIGGER_AUTOMATIC_FIRST_VIEW = "AUTOMATIC — first view of a case with no graph yet"
+TRIGGER_CATCH_UP = "AUTOMATIC — changes made while the case was fusing"
 _TRIGGER_UNKNOWN = "an unlabelled caller"
 
 
 _FUSE_LOCKS: dict = {}
 _FUSE_LOCKS_GUARD = threading.Lock()
+
+
+_FUSE_OWED: set = set()      # cases whose saved changes a busy fuse turned away
+
+
+def _run_owed_fuse(case_id) -> None:
+    """The fuse just finished; if a change was turned away while it ran, fuse
+    again — on a thread, graph only (no model call), so the caller is not held."""
+    with _FUSE_LOCKS_GUARD:
+        if case_id not in _FUSE_OWED:
+            return
+
+    def _go():
+        with _FUSE_LOCKS_GUARD:
+            if case_id not in _FUSE_OWED:
+                return                            # another fuse already caught up
+        log_case_event(case_id, "Refusion · catching up", "info",
+                       "applying changes saved while the case was fusing")
+        try:
+            fuse_case(case_id, trigger=TRIGGER_CATCH_UP, allow_llm=False)
+            _report_behind(case_id)
+        except FusionBusy:
+            pass                                  # still owed: that fuse runs it next
+        except Exception as e:                    # noqa: BLE001
+            log_case_event(case_id, "Refusion failed", "error",
+                           f"catching up after a busy fuse — {type(e).__name__}: {e}")
+    threading.Thread(target=_go, daemon=True, name=f"fuse-owed-{case_id}").start()
+
+
+def _wait_for_fuses(case_id, timeout=900) -> bool:
+    """Block until no fuse is running or owed for this case, so what reads the
+    stored graph next (a report) reads the one with every saved change in it.
+    A caller already inside this case's fuse returns at once — waiting there
+    would wait on itself."""
+    import time as _t
+    lk = _fuse_lock(case_id)
+    if lk._is_owned():
+        return True
+    deadline = _t.time() + timeout
+    while _t.time() < deadline:
+        with _FUSE_LOCKS_GUARD:
+            owed = case_id in _FUSE_OWED
+        if not owed and lk.acquire(timeout=1):
+            lk.release()
+            return True
+        _t.sleep(0.5)
+    return False
 
 
 def _fuse_lock(case_id):
@@ -1632,10 +1680,20 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True,
     lock = _fuse_lock(case_id)
     if not lock.acquire(blocking=False):
         # NOT logged as a fuse failure — nothing was attempted. The route's
-        # FusionBusy handler records it as "deferred" instead.
+        # FusionBusy handler records it as "deferred" instead. The change that
+        # asked for this fuse is already SAVED, so the case is owed one: the fuse
+        # in flight runs it when it finishes. Nothing did before, and a Refusion
+        # writing a report for minutes swallowed ~20 Timeline verdicts in a row
+        # (QA: "risk does not go down", "the report does not follow").
+        if _record:
+            with _FUSE_LOCKS_GUARD:
+                _FUSE_OWED.add(case_id)
         raise FusionBusy(
             "a fuse is already running for this case — wait for it to finish "
             "(the report can take minutes while the model writes the narrative)")
+    if _record:
+        with _FUSE_LOCKS_GUARD:
+            _FUSE_OWED.discard(case_id)          # this fuse reads the state as it is now
     trig = (trigger or _TRIGGER_UNKNOWN).strip()
     phase = {"at": "starting", "pct": 0}
     try:
@@ -1656,6 +1714,7 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True,
         raise
     finally:
         lock.release()
+        _run_owed_fuse(case_id)
     try:
         _track_rows(case_id, g)
     except Exception as e:                                   # noqa: BLE001 — bookkeeping only
@@ -3915,6 +3974,11 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
     """
     if audience:
         set_branding(case_id, audience=audience)
+    # Written from the STORED graph — so never from one a running or owed fuse is
+    # about to replace (QA: verdicts made during a Refusion never reached the report).
+    if not _wait_for_fuses(case_id):
+        log_case_event(case_id, "Report · written from an older graph", "warning",
+                       "the case was still fusing after 15 minutes — writing from the graph it has")
     d = get_case(case_id)
     g = load_graph(case_id)
     # The SELECTED scope's window: this report describes that slice of the case,
@@ -5000,6 +5064,11 @@ def validate_timeline_many(case_id, finding_ids, status, notes="") -> dict:
     before = [x for x in ((get_case(case_id) or {}).get("dispositions") or [])
               if x.get("target") in set(ids) | drop]
     if status not in reasons and not before:
+        # Nothing to suppress or clear, so no re-fuse — but the verdict is part of
+        # what Jev's compromise estimate is keyed on, so ask it again, or the
+        # person's likelihood blanks until some later fuse.
+        from . import jev
+        jev.after_fuse(case_id)
         return {"finding_ids": ids, "status": status}
 
     def _disp(details):

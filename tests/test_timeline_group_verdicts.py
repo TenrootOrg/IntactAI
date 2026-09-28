@@ -60,9 +60,12 @@ class Many(unittest.TestCase):
         self.assertEqual(sorted(d["target"] for d in state["dispositions"]), ["a", "b", "c"])
 
     def test_true_positive_with_nothing_to_clear_does_not_refuse(self):
-        state, fuses = self.run_it(["a", "b"], "true_positive")
+        from services.fusion import jev
+        with mock.patch.object(jev, "after_fuse") as ask_jev:
+            state, fuses = self.run_it(["a", "b"], "true_positive")
         self.assertEqual(fuses, 0)
         self.assertEqual(len(state["timeline_validations"]), 2)
+        ask_jev.assert_called_once_with("c1")     # its compromise estimate is keyed on verdicts
 
     def test_true_positive_clears_suppression_with_one_refuse(self):
         state, fuses = self.run_it(["a", "b"], "true_positive",
