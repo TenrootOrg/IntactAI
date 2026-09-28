@@ -1743,7 +1743,8 @@ def _on_disk_row(g: FusionGraph, asset_id, title, host, eps) -> tuple:
                   + ", ".join(f"{n} ({src})" for n, src in sorted(ran.items())) + "."
                   if ran else
                   "A file on disk shows it was present, not that it ran; no execution record "
-                  "(Prefetch, Amcache, UserAssist, BAM, process) for it was collected in this case."))
+                  f"(Prefetch, Amcache, UserAssist, BAM, process) for {'it' if k == 1 else 'any of them'} "
+                  "was collected in this case."))
     parts = ([_event_part(e, str(e.attrs.get("path") or e.label), kind="file")
               for e in sorted(eps[:25], key=lambda e: (str(e.attrs.get("path") or ""), e.id))]
              if len(eps) > 1 else [])

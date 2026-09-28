@@ -43,6 +43,7 @@ class OnDisk(unittest.TestCase):
         self.assertIn("3 files found on disk", f.summary)
         self.assertIn("the file's own timestamp", f.summary)
         self.assertIn("not that it ran", f.summary)
+        self.assertIn("for any of them was collected", f.summary)
         self.assertNotIn("fired", f.summary)
 
     def test_each_file_is_a_part(self):
