@@ -223,6 +223,12 @@ console.log(JSON.stringify([closed, open, files, burst, single]));""")
         self.assertNotIn("tlgkids", closed)
         self.assertIn("tlValidate('p2','true_positive')", opened)                             # each part on its own
         self.assertIn("openFindingDetail('p1')", opened)
+        # the row itself opens / closes its parts; its "detail" link opens the detail
+        self.assertIn('class="tlmeta" style="cursor:pointer" title="Click to show its 2 parts', closed)
+        self.assertIn('onclick="tlToggleParts(\'grp1\')"', closed)
+        self.assertIn("event.stopPropagation();openFindingDetail('grp1')", closed)
+        self.assertIn("title=\"Click to hide its 2 parts", opened)
+        self.assertIn('onclick="openFindingDetail(\'s\')"', single)                       # a plain row: as before
         self.assertIn("2 files · 0 of 2 reviewed", files)                                   # files found on disk
         # a bundled row's severity says what it is: its worst part, or rated as a whole
         self.assertIn('class="chip agg c-high"', closed)

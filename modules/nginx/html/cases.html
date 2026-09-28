@@ -1725,10 +1725,17 @@ function _tlSevChip(sev, members){
 }
 function _tlRowHtml(r, supp, seg){
   const arts=(r.artifacts||[]).map(a=>`<span class="arti">${esc(a)}</span>`).join(' ');
+  // A row with parts opens and closes like a group header when clicked (QA: the
+  // click opened the same detail again instead of the rows); "detail" still opens it.
+  const ps=_tlParts(r);
+  const act=ps?`tlToggleParts('${esc(r.finding_id)}')`:`openFindingDetail('${r.finding_id}')`;
+  const tip=ps?`Click to ${(window._tlOpen||{})['p:'+r.finding_id]?'hide':'show'} its ${ps.length} parts — "detail" opens the full event`:'Click for full event detail';
+  const det=ps?`<span style="color:var(--muted);font-size:10px;text-decoration:underline" onclick="event.stopPropagation();openFindingDetail('${r.finding_id}')">▸ detail</span>`
+              :`<span style="color:var(--muted);font-size:10px">▸ detail</span>`;
   return `<div class="tlrow ${supp?'suppressed':''} ${r.manual?'manual':''}">
       <code style="white-space:nowrap">${esc(r.ts||'—')}${_tlUntil(r)}</code>
-      <div class="tlmeta" style="cursor:pointer" title="Click for full event detail" onclick="openFindingDetail('${r.finding_id}')">
-        <span>${r.is_new?'<span class="tlnew" title="Joined or grew since this group was last reviewed">NEW</span> ':''}<strong>${esc(r.host||'-')}</strong> ${r.phase?`<span style="color:var(--muted)">[${esc(r.phase)}]</span>`:''} ${esc(_tlTitle(r))} <span style="color:var(--muted);font-size:10px">▸ detail</span></span>
+      <div class="tlmeta" style="cursor:pointer" title="${esc(tip)}" onclick="${act}">
+        <span>${r.is_new?'<span class="tlnew" title="Joined or grew since this group was last reviewed">NEW</span> ':''}<strong>${esc(r.host||'-')}</strong> ${r.phase?`<span style="color:var(--muted)">[${esc(r.phase)}]</span>`:''} ${esc(_tlTitle(r))} ${det}</span>
         <span class="l2">${arts}${_tlLoggedAs(r)}${_tlPartsToggle(r)}${r.reopened?'<span class="sg-hint" style="border-color:#d29922;color:#e3b341" title="A new occurrence arrived after your last verdict — re-validate this one.">⟳ re-opened: new activity since you validated</span>':''}${r.manual?'<span class="sg-hint" style="border-style:solid">manual</span>':''}${(r.hits||1)>1?`<span class="sg-hint" style="border-style:solid;color:var(--muted)" title="Hits in this episode — the detection is one row until it goes quiet for 4 hours">${Number(r.hits).toLocaleString()} hits</span>`:''}${_tlJev(r)}${r.notes?`<span style="color:var(--muted);font-size:11px">— ${esc(r.notes)}</span>`:''}</span>
       </div>
       ${_tlSevChip(r.severity, _tlParts(r))}
