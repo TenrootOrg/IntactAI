@@ -86,6 +86,22 @@ def add(local_path: str, filename: str, dumps_dir: str = DUMPS_DIR) -> dict:
         kind = "zip"
     else:
         return {"error": "Upload a .pdb from Microsoft, a .json.xz / .json symbol table, or a .zip symbol pack."}
+    if kind == "zip":
+        # Volatility reads every pack in the library on every run: a corrupt or
+        # unrelated zip there would break symbol loading for all memory runs.
+        import zipfile
+        try:
+            with zipfile.ZipFile(local_path) as z:
+                ok = any(n.startswith("windows/") and n.endswith((".json.xz", ".json"))
+                         for n in z.namelist())
+                bad = z.testzip() if ok else None
+        except (zipfile.BadZipFile, OSError) as e:
+            return {"error": f"not a readable .zip ({e})"}
+        if not ok:
+            return {"error": "this .zip holds no Windows symbol tables (windows/…json.xz) — "
+                             "not a Volatility symbol pack"}
+        if bad:
+            return {"error": f"the .zip is damaged ({bad} fails its checksum) — download it again"}
     incoming = os.path.join(dumps_dir, INCOMING)
     os.makedirs(incoming, exist_ok=True)
     tag = uuid.uuid4().hex[:12]

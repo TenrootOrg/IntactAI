@@ -89,12 +89,28 @@ class Add(unittest.TestCase):
         self.assertIn(" pdb ", ex.call_args.args[0])                     # converted, not copied
         self.assertEqual(os.listdir(os.path.join(self.d, symbols.INCOMING)), [])
 
+    def zipfile_with(self, names):
+        import zipfile
+        p = os.path.join(self.d, "pack.zip")
+        with zipfile.ZipFile(p, "w") as z:
+            for n in names:
+                z.writestr(n, b"x")
+        return p
+
     def test_a_pack_goes_in_whole(self):
         ok = subprocess.CompletedProcess([], 0, stdout="", stderr="")
         with mock.patch.object(symbols, "_exec", return_value=ok) as ex:
-            res = symbols.add(self.upload("z"), "windows.zip", dumps_dir=self.d)
+            res = symbols.add(self.zipfile_with(["windows/ntkrnlmp.pdb/X-1.json.xz"]), "windows.zip", dumps_dir=self.d)
         self.assertTrue(res["pack"])
         self.assertIn("cp ", ex.call_args.args[0])
+
+    def test_a_zip_that_is_not_a_symbol_pack_never_reaches_the_library(self):
+        # Volatility reads every pack in the library on every run
+        with mock.patch.object(symbols, "_exec") as ex:
+            self.assertIn("error", symbols.add(self.upload("junk"), "windows.zip", dumps_dir=self.d))
+            self.assertIn("no Windows symbol tables",
+                          symbols.add(self.zipfile_with(["photos/cat.jpg"]), "photos.zip", dumps_dir=self.d)["error"])
+        ex.assert_not_called()
 
 
 if __name__ == "__main__":
