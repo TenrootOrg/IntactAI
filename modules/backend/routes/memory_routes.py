@@ -813,6 +813,66 @@ def list_memory_dumps():
     return jsonify({"dumps": out, "count": len(out), "total_bytes": total})
 
 
+# ---------------------------------------------------------------------------
+# Symbol tables (Volatility ISF) — add one by hand, for air-gapped boxes
+# ---------------------------------------------------------------------------
+
+
+@memory_bp.route("/api/memory/symbols", methods=["GET"])
+def list_memory_symbols():
+    """The symbol tables VolWeb's Volatility can use."""
+    if not _is_module_enabled():
+        return jsonify({"error": "Memory module is not enabled."}), 400
+    from services.memory import symbols
+    try:
+        return jsonify({"symbols": symbols.library()})
+    except Exception as e:                   # noqa: BLE001
+        return jsonify({"symbols": [], "error": f"could not read the library: {e}"}), 200
+
+
+@memory_bp.route("/api/memory/symbols/required", methods=["POST"])
+def required_memory_symbols():
+    """Which symbol tables a kept image needs — read from the image itself."""
+    if not _is_module_enabled():
+        return jsonify({"error": "Memory module is not enabled."}), 400
+    import os
+    from services.memory import raw_store, symbols
+    name = os.path.basename((request.get_json(silent=True) or {}).get("name") or "")
+    path = os.path.join(raw_store.raw_dir(_DUMPS_DIR), name)
+    if not name or not os.path.isfile(path):
+        return jsonify({"error": "no such kept image"}), 404
+    try:
+        return jsonify({"name": name, "required": symbols.required(path)})
+    except Exception as e:                   # noqa: BLE001
+        return jsonify({"error": f"could not read the image: {e}"}), 500
+
+
+@memory_bp.route("/api/memory/symbols/upload", methods=["POST"])
+def upload_memory_symbol():
+    """Add a symbol file the analyst brought: a Microsoft .pdb (converted here),
+    a .json.xz / .json symbol table, or a .zip symbol pack."""
+    if not _is_module_enabled():
+        return jsonify({"error": "Memory module is not enabled."}), 400
+    import os
+    import tempfile
+    from services.memory import symbols
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"error": "choose a file"}), 400
+    fd, tmp = tempfile.mkstemp(prefix="sym-", dir="/tmp")
+    os.close(fd)
+    try:
+        f.save(tmp)
+        res = symbols.add(tmp, f.filename, _DUMPS_DIR)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    if res.get("error"):
+        return jsonify(res), 400
+    print(f"[MEMORY] symbol table added: {res.get('file')}", flush=True)
+    return jsonify(res)
+
+
 @memory_bp.route("/api/memory/dumps/<name>", methods=["DELETE"])
 def remove_memory_dump(name):
     """Delete one kept image. Refused while a memory run is using it."""

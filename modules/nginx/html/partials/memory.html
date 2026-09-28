@@ -84,13 +84,18 @@
                             class="px-4 py-2 text-sm font-medium -mb-px whitespace-nowrap">
                             Pull from another case
                         </button>
+                        <button @click="memoryTab = 'symbols'; $store.memory.loadSymbols(); $store.memory.loadDumps()"
+                            :class="memoryTab === 'symbols' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-gray-400 hover:text-gray-300'"
+                            class="px-4 py-2 text-sm font-medium -mb-px whitespace-nowrap">
+                            Symbol tables
+                        </button>
                     </div>
 
                     <!-- Card 1 — Blueprint + YARA toggle + Investigation name.
                          Shared by the three tabs that actually run an analysis;
                          "Pull from another case" copies finished findings and runs
                          nothing, so none of it applies there. -->
-                    <div x-show="memoryTab !== 'adopt'"
+                    <div x-show="memoryTab !== 'adopt' && memoryTab !== 'symbols'"
                          class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
                         <label class="block text-sm font-medium text-gray-300 mb-2">Blueprint</label>
                         <select x-model="$store.memory.blueprintId"
@@ -294,6 +299,113 @@
                                     class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-6 py-2 rounded-lg text-sm font-medium text-white">
                                 Analyze this image
                             </button>
+                        </div>
+                    </div>
+
+                    <!-- ==================== SYMBOL TABLES TAB ====================
+                         Volatility needs the symbol table of the image's EXACT Windows
+                         build. An air-gapped box cannot fetch it, so the analyst
+                         carries it in: find which file, download it elsewhere, upload
+                         it here. See services/memory/symbols.py. -->
+                    <div x-show="memoryTab === 'symbols'" class="space-y-4 mb-4">
+                        <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
+                            <label class="block text-sm font-medium text-gray-300">Symbol tables (air-gapped analysis)</label>
+                            <p class="text-xs text-gray-400 mt-1">
+                                Volatility can only read a Windows memory image with the symbol table of that <b>exact</b>
+                                Windows build. A connected appliance downloads it from Microsoft by itself; an air-gapped one
+                                cannot — the analysis then finishes with no plugin results (YARA still works). Every Windows
+                                update is a new build, so this comes up. One file per build fixes it:
+                            </p>
+                            <ol class="text-xs text-gray-300 mt-3 space-y-2 list-decimal pl-5">
+                                <li><b>Find which file the image needs</b> — pick a kept image below and press <i>Check</i>.
+                                    The appliance reads it from the image itself; no internet needed.</li>
+                                <li><b>Download it on any computer with internet</b> — open the Microsoft link shown for the
+                                    missing file. You get one <code class="text-indigo-300">.pdb</code> file (the kernel's is
+                                    ~10–30 MB). Nothing to install, nothing to convert.</li>
+                                <li><b>Carry it to this network</b> (USB, file transfer — whatever your air gap allows) and
+                                    <b>upload it here</b>. The appliance converts it and adds it to its library — kept for good,
+                                    so every image from that Windows build works from now on.</li>
+                                <li><b>Re-analyse</b> the image from <i>Use a kept image</i>.</li>
+                            </ol>
+                            <p class="text-[11px] text-gray-500 mt-3">
+                                Also accepted: a ready symbol table (<code>.json.xz</code> / <code>.json</code>, e.g. made with
+                                Volatility's <code>pdbconv</code>) or a whole symbol pack (<code>.zip</code>).
+                            </p>
+                        </div>
+
+                        <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
+                            <label class="block text-sm font-medium text-gray-300 mb-2">1. What does an image need?</label>
+                            <div class="flex gap-2 items-center flex-wrap">
+                                <select x-model="$store.memory.symImage"
+                                        class="flex-1 min-w-[240px] bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200">
+                                    <option value="">— pick a kept image —</option>
+                                    <template x-for="d in $store.memory.dumps" :key="d.name">
+                                        <option :value="d.name" x-text="d.name"></option>
+                                    </template>
+                                </select>
+                                <button type="button" @click="$store.memory.checkSymbols()"
+                                        :disabled="!$store.memory.symImage || $store.memory.symChecking"
+                                        class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 px-4 py-2 rounded text-sm font-medium text-white">
+                                    <span x-text="$store.memory.symChecking ? 'Reading the image…' : 'Check'"></span>
+                                </button>
+                            </div>
+                            <p x-show="$store.memory.symCheckError" class="text-xs text-red-400 mt-2" x-text="$store.memory.symCheckError"></p>
+                            <div x-show="$store.memory.symRequired" class="mt-3 space-y-2">
+                                <p x-show="$store.memory.symRequired && !$store.memory.symRequired.length" class="text-xs text-yellow-400">
+                                    No Windows kernel debug record was found in this image — it may not be a Windows memory image.
+                                </p>
+                                <template x-for="r in ($store.memory.symRequired || [])" :key="r.file">
+                                    <div class="bg-gray-900 border rounded p-3 text-xs"
+                                         :class="r.have ? 'border-green-800' : 'border-yellow-700'">
+                                        <div class="flex justify-between gap-3 flex-wrap">
+                                            <span class="text-gray-200 font-mono" x-text="r.pdb + '  ' + r.guid + '-' + r.age"></span>
+                                            <span :class="r.have ? 'text-green-400' : 'text-yellow-400'"
+                                                  x-text="r.have ? '✓ in the library' : (r.pdb === 'tcpip.pdb' ? 'missing — network plugins will be empty' : 'missing — needed for any plugin output')"></span>
+                                        </div>
+                                        <div x-show="!r.have" class="mt-2 flex gap-2 items-center">
+                                            <code class="flex-1 bg-black/40 text-gray-300 rounded px-2 py-1 break-all" x-text="r.url"></code>
+                                            <button type="button" @click="$store.memory.copyText(r.url)"
+                                                    class="bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded whitespace-nowrap">Copy link</button>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+
+                        <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
+                            <label class="block text-sm font-medium text-gray-300 mb-2">2. Upload a symbol file</label>
+                            <div class="flex gap-2 items-center flex-wrap">
+                                <input type="file" accept=".pdb,.xz,.json,.zip" x-ref="symFile"
+                                       class="flex-1 text-sm text-gray-300 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:bg-gray-700 file:text-gray-200">
+                                <button type="button" @click="$store.memory.uploadSymbol($refs.symFile)"
+                                        :disabled="$store.memory.symUploading"
+                                        class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 px-4 py-2 rounded text-sm font-medium text-white">
+                                    <span x-text="$store.memory.symUploading ? 'Converting…' : 'Upload'"></span>
+                                </button>
+                            </div>
+                            <p x-show="$store.memory.symMsg" class="text-xs mt-2"
+                               :class="$store.memory.symMsgOk ? 'text-green-400' : 'text-red-400'" x-text="$store.memory.symMsg"></p>
+                        </div>
+
+                        <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
+                            <div class="flex justify-between items-center mb-2">
+                                <label class="text-sm font-medium text-gray-300">Symbol library on this appliance
+                                    <span class="text-gray-500 font-normal" x-text="'(' + $store.memory.symbols.length + ')'"></span></label>
+                                <button type="button" @click="$store.memory.loadSymbols()"
+                                        class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">↻ Refresh</button>
+                            </div>
+                            <p class="text-xs text-gray-500 mb-2">Every table here was downloaded by a connected run or uploaded by
+                                hand, and survives restarts and upgrades.</p>
+                            <div class="bg-gray-900 border border-gray-700 rounded-lg p-3 max-h-56 overflow-y-auto text-xs font-mono space-y-1">
+                                <p x-show="!$store.memory.symbols.length" class="text-gray-500 font-sans">No symbol tables yet.</p>
+                                <template x-for="e in $store.memory.symbols" :key="e.file">
+                                    <div class="flex justify-between gap-3 text-gray-300">
+                                        <span class="truncate" x-text="e.file"></span>
+                                        <span class="text-gray-500 whitespace-nowrap"
+                                              x-text="Math.round(e.size / 1024) + ' KB · ' + new Date(e.mtime * 1000).toLocaleDateString()"></span>
+                                    </div>
+                                </template>
+                            </div>
                         </div>
                     </div>
 

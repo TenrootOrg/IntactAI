@@ -147,3 +147,22 @@ The same directory serves them (`media/symbols/linux/`, `media/symbols/mac/`),
 and the same `data/volweb-symbols/` staging applies. There is no symbol server
 for those: an ISF must be built from the target kernel's debug package with
 `dwarf2json`. Out of scope here — this appliance acquires Windows memory.
+
+## Adding a symbol table from the UI (air-gapped boxes)
+
+Volatile Memory → **Symbol tables**:
+
+1. Pick a kept image and press **Check**. The appliance reads the kernel's (and
+   tcpip's) debug record from the image itself — the record Volatility looks
+   up — and shows each table the image needs, whether the library has it, and
+   its Microsoft download link
+   (`https://msdl.microsoft.com/download/symbols/<pdb>/<GUID><age in hex>/<pdb>`).
+2. On any computer with internet, open the link: one `.pdb` file.
+3. Carry it over and **Upload** it. The appliance converts it with the
+   Volatility inside VolWeb (`pdbconv -f`) and stores it in the library under
+   the name taken from the table's own metadata. A ready `.json.xz` / `.json`
+   table or a `.zip` symbol pack is accepted too.
+4. Re-analyse the image from **Use a kept image**.
+
+Missing `ntkrnlmp.pdb` → no plugin output at all; missing `tcpip.pdb` → the
+network plugins (NetScan, NetStat) come back empty.

@@ -31,7 +31,9 @@ document.addEventListener('alpine:init', () => {
         // at submit time, so the backend keeps its current 3-way schema.
         // Blank = pipeline uses CURATED_PLUGINS fallback.
         blueprintId: 'memory_layered_default',
-        includeYara: true,        // independent of blueprint — adds yarascan layer
+        includeYara: true,
+        symbols: [], symImage: '', symRequired: null, symChecking: false, symCheckError: '',
+        symUploading: false, symMsg: '', symMsgOk: false,        // independent of blueprint — adds yarascan layer
         // Keep the .raw after the run so a re-run costs nothing. Off by
         // default — on is a standing ~9 GB/host disk cost, and TabReset puts
         // it back to off on tab re-entry, which is the behaviour we want.
@@ -169,6 +171,53 @@ document.addEventListener('alpine:init', () => {
             const from = o && (o.client_name || o.run_id) ? `from ${o.client_name || o.run_id}` : 'origin unknown';
             const dup = d.also_arrived ? `uploaded ${d.also_arrived + 1}× — stored once` : '';
             return [size, [how, when].filter(Boolean).join(' '), from, dup].filter(Boolean).join(' · ');
+        },
+
+        // ---- Symbol tables (air-gapped analysis) ----------------------
+        async loadSymbols() {
+            try {
+                const r = await fetch('/api/memory/symbols');
+                const j = await r.json();
+                this.symbols = (j && j.symbols) || [];
+            } catch (_) { this.symbols = []; }
+        },
+
+        async checkSymbols() {
+            if (!this.symImage) return;
+            this.symChecking = true; this.symCheckError = ''; this.symRequired = null;
+            try {
+                const r = await fetch('/api/memory/symbols/required', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: this.symImage }) });
+                const j = await r.json().catch(() => ({}));
+                if (!r.ok) { this.symCheckError = j.error || ('HTTP ' + r.status); return; }
+                this.symRequired = j.required || [];
+            } catch (e) { this.symCheckError = 'Could not reach the appliance: ' + (e && e.message || e); }
+            finally { this.symChecking = false; }
+        },
+
+        async uploadSymbol(input) {
+            const f = input && input.files && input.files[0];
+            if (!f) { this.symMsgOk = false; this.symMsg = 'Choose a file first.'; return; }
+            this.symUploading = true; this.symMsg = '';
+            try {
+                const fd = new FormData(); fd.append('file', f);
+                const r = await fetch('/api/memory/symbols/upload', { method: 'POST', body: fd });
+                const j = await r.json().catch(() => ({}));
+                if (!r.ok || j.error) { this.symMsgOk = false; this.symMsg = j.error || ('HTTP ' + r.status); return; }
+                this.symMsgOk = true;
+                this.symMsg = j.pack ? `Symbol pack added (${j.file}).`
+                    : (j.already_had ? `The library already had ${j.file} — nothing changed.`
+                                     : `Added ${j.file}. Images from that Windows build can be analysed now.`);
+                input.value = '';
+                await this.loadSymbols();
+                if (this.symImage && this.symRequired) await this.checkSymbols();
+            } catch (e) { this.symMsgOk = false; this.symMsg = 'Could not reach the appliance: ' + (e && e.message || e); }
+            finally { this.symUploading = false; }
+        },
+
+        copyText(t) {
+            try { navigator.clipboard.writeText(t); } catch (_) {}
         },
 
         async removeDump(d) {
