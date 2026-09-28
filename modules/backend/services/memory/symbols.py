@@ -55,13 +55,24 @@ def _guid(raw16: bytes) -> str:
     return f"{d1:08X}{d2:04X}{d3:04X}{raw16[8:].hex().upper()}"
 
 
-def required(image_path: str, max_hits: int = 20000) -> list:
-    """The symbol tables this image needs, read from its RSDS debug records.
-    [{pdb, guid, age, have, file, url}], kernel first."""
+_FOUND_CACHE: dict = {}      # (path, size, mtime) -> records; an image never changes
+
+
+def _records(image_path: str, max_hits: int = 20000) -> dict:
+    """Kernel/tcpip RSDS records in the image. Stops once a kernel and tcpip
+    are both found: reading all of a 5 GB image took 20–30 s per Check and the
+    button looked stuck (2026-09-28); the records normally sit early."""
+    st = os.stat(image_path)
+    key = (image_path, st.st_size, st.st_mtime)
+    if key in _FOUND_CACHE:
+        return _FOUND_CACHE[key]
     found = {}
     with open(image_path, "rb") as fh, mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as mm:
         pos, hits = 0, 0
         while hits < max_hits:
+            if any(b == "tcpip.pdb" for b, _g, _a in found) and \
+                    any(b != "tcpip.pdb" for b, _g, _a in found):
+                break
             i = mm.find(b"RSDS", pos)
             if i < 0:
                 break
@@ -77,6 +88,14 @@ def required(image_path: str, max_hits: int = 20000) -> list:
             guid, age = _guid(rec[:16]), struct.unpack("<I", rec[16:20])[0]
             if 0 < age < 1000:
                 found[(base, guid, age)] = True
+    _FOUND_CACHE[key] = found
+    return found
+
+
+def required(image_path: str) -> list:
+    """The symbol tables this image needs, read from its RSDS debug records.
+    [{pdb, guid, age, have, file, url}], kernel first."""
+    found = _records(image_path)
     have = set(library_ids())
     out = []
     for base, guid, age in found:
@@ -85,7 +104,18 @@ def required(image_path: str, max_hits: int = 20000) -> list:
                     "have": f"{base}/{guid}-{age}" in have,
                     # Microsoft's symbol server: GUID then age in HEX, no separator
                     "url": f"{MSDL}/{base}/{guid}{age:X}/{base}"})
-    out.sort(key=lambda r: (r["pdb"] == "tcpip.pdb", r["pdb"], r["guid"]))
+    # Memory holds debug records of more than one kernel variant (ntoskrnl.pdb
+    # copies beside the running ntkrnlmp.pdb). Only ONE kernel table is needed:
+    # once the library has one, the others are noise — shown as "missing,
+    # needed for any plugin output" they sent the analyst after files that do
+    # nothing (DESKTOP-3LRFS8Q, 2026-09-28, whose 9 plugins ran fine).
+    kernels = [r for r in out if r["pdb"] != "tcpip.pdb"]
+    if any(r["have"] for r in kernels):
+        out = [r for r in out if r["pdb"] == "tcpip.pdb" or r["have"]]
+    else:
+        for r in kernels:
+            r["alternative"] = len(kernels) > 1      # "one of these" — ntkrnlmp first
+    out.sort(key=lambda r: (r["pdb"] == "tcpip.pdb", r["pdb"] != "ntkrnlmp.pdb", r["pdb"], r["guid"]))
     return out
 
 
