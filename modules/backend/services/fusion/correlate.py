@@ -2246,9 +2246,13 @@ def _coordinated_activity(g: FusionGraph, *, window=None, baseline=None) -> None
         evs = [e for e, shown in seg if not shown]
         if not evs:
             continue
+        # Named only inside the span the row SHOWS (first to last burst detection):
+        # a row just after it still kept the burst open, but "during" would be false.
+        _t = sorted(keys.to_utc_dt(e.first_seen) for e in evs if keys.to_utc_dt(e.first_seen))
         during = []
         for e, shown in seg:
-            if shown:
+            _et = keys.to_utc_dt(e.first_seen)
+            if shown and _t and _et and _t[0] <= _et <= _t[-1]:
                 name = row_of.get(e.id) or next((row_of[w] for w in (e.attrs or {}).get("win_ids") or []
                                                  if w in row_of), None)
                 if name and name not in during:

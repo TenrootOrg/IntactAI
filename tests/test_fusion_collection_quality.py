@@ -453,6 +453,10 @@ class CoordinatedActivityIsOneBurst(unittest.TestCase):
         self.assertIn("During this burst, with rows of their own: SIGMA: Mimikatz Execution via PowerShell",
                       coord[0].summary)
         self.assertNotIn("Mimikatz", coord[0].title)                         # never counted in the burst
+        after = _sigma("Credential Dumping Tools Accessing LSASS Memory", ts="2026-09-01T11:30:00Z",
+                       level="high", record=31)
+        coord = self._fuse_window(early + [mimikatz] + late + [after])
+        self.assertNotIn("Credential Dumping", coord[0].summary)            # after the row's end: not "during"
 
     def test_the_same_burst_on_another_day_is_another_row(self):
         """Found on jev_test: a burst repeating daily at 08:07 was four rows sharing
