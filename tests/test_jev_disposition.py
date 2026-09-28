@@ -240,7 +240,7 @@ console.log(JSON.stringify(out));""")
         self.assertIn("<b>2</b> detections (2 rows) look malicious", notice)
         self.assertIn("Log Cleared · Mimikatz", notice)
         self.assertEqual((empty, nothing), ("", ""))
-        self.assertIn("Jev: likely Known · 91%", chip)
+        self.assertIn("likely Known · 91% (Jev)", chip)
         self.assertIn("event.stopPropagation();tlValidate('f1','known')", chip)
         self.assertEqual((none, bad), ("", ""))
 

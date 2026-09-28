@@ -1099,7 +1099,7 @@ let _zoomHtml={id:null, html:''};
 function _ztJev(t){
   if(!t || typeof t.jev_p!=='number') return '';
   const p=Math.round(t.jev_p*100);
-  return `<div class="zt-meta" style="color:#79c0ff" title="Jev's estimate from this window's findings — a second opinion to help pick where to zoom, not a verdict.">Jev: ${p}% likely attacker activity</div>`;
+  return `<div class="zt-meta" style="color:#79c0ff" title="Jev's estimate from this window's findings — a second opinion to help pick where to zoom, not a verdict.">${p}% likely attacker activity (Jev)</div>`;
 }
 function loadZoomTargets(id){
   api('/api/cases/'+id+'/zoom_targets').then(d=>{
@@ -1599,7 +1599,7 @@ function tlRelLoad(){
 }
 function _tlRelHtml(d){
   const rows=(d&&d.rows)||[]; if(!d||!d.scored_at) return '';
-  const items=rows.map(r=>`<div style="display:flex;gap:8px;padding:2px 0;font-size:11px"><span style="color:#79c0ff;min-width:34px;text-align:right">${Math.round((+r.p||0)*100)}%</span><span class="arti">${esc(r.artifact)}</span><code style="white-space:pre-wrap;word-break:break-all">${esc(r.text)}</code></div>`).join('');
+  const items=rows.map(r=>`<div style="display:flex;gap:8px;padding:2px 0;font-size:11px"><span style="color:#79c0ff;min-width:34px;text-align:right" title="Jev's relevance score">${Math.round((+r.p||0)*100)}% (Jev)</span><span class="arti">${esc(r.artifact)}</span><code style="white-space:pre-wrap;word-break:break-all">${esc(r.text)}</code></div>`).join('');
   const partial=d.rows_scored<d.rows_total?` (stopped at ${d.rows_scored} of ${d.rows_total})`:'';
   return `<details style="margin:6px 0"><summary style="cursor:pointer;color:var(--muted);font-size:12px">Jev: ${rows.length} most relevant collected rows · ${esc(d.rows_scored)} scored${esc(partial)} · ${esc(d.scored_at)}</summary>${items||'<i style="color:var(--muted);font-size:11px">none scored as relevant</i>'}</details>`;
 }
@@ -1677,7 +1677,7 @@ function _tlJev(r){
   const j=r&&r.jev; if(!j) return '';
   const lbl=(TL_STATES.find(([k])=>k===j.label)||[])[1]; if(!lbl) return '';
   const pct=Math.round((+j.p||0)*100);
-  return `<span class="sg-hint" style="border-color:#58a6ff;color:#79c0ff;cursor:pointer" title="Jev's suggestion (${pct}% likely). Click to mark it ${esc(lbl)} — or pick any verdict yourself." onclick="event.stopPropagation();tlValidate('${esc(r.finding_id)}','${esc(j.label)}')">Jev: likely ${esc(lbl)} · ${pct}%</span>`;
+  return `<span class="sg-hint" style="border-color:#58a6ff;color:#79c0ff;cursor:pointer" title="Jev's suggestion (${pct}% likely). Click to mark it ${esc(lbl)} — or pick any verdict yourself." onclick="event.stopPropagation();tlValidate('${esc(r.finding_id)}','${esc(j.label)}')">likely ${esc(lbl)} · ${pct}% (Jev)</span>`;
 }
 function _tlRow(r, inGroup){
   const v=r.validation||'pending';
@@ -1964,7 +1964,7 @@ function idCard(cid,it,jev){
   // on every card of an endpoint-only case said nothing.
   const bl=it.buckets||[];
   const buckets=bl.some(b=>b!=='endpoint') ? bl.map(b=>bdg(b,b==='aws'?'#d29922':b==='azure'?'#3b9eff':'var(--muted)')).join('') : '';
-  const cf=it.confidence; const confb = (typeof cf==='number' && cf<1)?bdg('~'+Math.round(cf*100)+'% match','#d29922'):'';
+  const cf=it.confidence; const confb = (typeof cf==='number' && cf<1)?bdg('~'+Math.round(cf*100)+'% name match','#d29922'):'';
   const sugN=(it.suggestions||[]).length;
   const nAcc=(it.accounts||[]).filter(a=>!a.disabled).length;
   const so=it.seen_on||[];
@@ -1980,12 +1980,12 @@ function idCard(cid,it,jev){
   if(!open) return `<div class="prow v-${esc(it.verdict||'none')}">${row}</div>`;
   const xbtn=(fn)=>`<button class="ghost" title="Not this person — switch off" style="border:none;color:var(--med);padding:0 4px;font-size:12px" onclick="event.stopPropagation();${fn}">✕</button>`;
   const accts=(it.accounts||[]).map(a=>`<div style="display:flex;gap:8px;align-items:center;padding:1px 0${a.disabled?';opacity:.45':''}">
-      <span${a.disabled?' style="text-decoration:line-through"':''}>${esc(a.label)}<span style="color:var(--muted);font-size:11px">${a.ctx?(' · @'+esc(a.ctx)):(a.bucket?(' · '+esc(a.bucket)):'')}${(typeof a.conf==='number'&&a.conf<1)?(' · '+Math.round(a.conf*100)+'%'):''}</span></span>
+      <span${a.disabled?' style="text-decoration:line-through"':''}>${esc(a.label)}<span style="color:var(--muted);font-size:11px">${a.ctx?(' · @'+esc(a.ctx)):(a.bucket?(' · '+esc(a.bucket)):'')}${(typeof a.conf==='number'&&a.conf<1)?(' · '+Math.round(a.conf*100)+'% name match'):''}</span></span>
       ${a.disabled
         ? `<button class="ghost" title="Include in this person again" style="border:none;color:var(--ok);padding:0 4px;font-size:12px" onclick="event.stopPropagation();idInclude('${jsa(cid)}','${jsa(a.id)}')">↺</button>`
         : xbtn(`idSplit('${jsa(cid)}','${jsa(a.id)}')`)}</div>`).join('') || '<span style="color:var(--muted)">—</span>';
   const sugg=(it.suggestions||[]).map(s=>`<div style="display:flex;gap:10px;align-items:center;justify-content:space-between;padding:4px 0">
-      <span style="font-size:12px">possibly also <b>${esc(s.other)}</b> <span style="color:var(--muted);font-size:11px">· ${esc(s.reason||'')} · conf ${(typeof s.score==='number'?s.score.toFixed(2):s.score)}${s.ambiguous?' · <span style="color:var(--med)">ambiguous</span>':''}${typeof s.jev_p==='number'?` · <span style="color:#79c0ff" title="Jev's estimate that both accounts are the same person — a hint; Merge and Dismiss are still yours.">Jev: ${Math.round(s.jev_p*100)}% same</span>`:''}</span></span>
+      <span style="font-size:12px">possibly also <b>${esc(s.other)}</b> <span style="color:var(--muted);font-size:11px">· ${esc(s.reason||'')} · ${(typeof s.score==='number'?Math.round(s.score*100)+'% name match':s.score)}${s.ambiguous?' · <span style="color:var(--med)">ambiguous</span>':''}${typeof s.jev_p==='number'?` · <span style="color:#79c0ff" title="Jev's estimate that both accounts are the same person — a hint; Merge and Dismiss are still yours.">${Math.round(s.jev_p*100)}% same (Jev)</span>`:''}</span></span>
       <span style="white-space:nowrap"><button class="ghost" style="border-color:var(--ok)" onclick="idSug('${jsa(cid)}','${jsa(s.id)}','confirmed')">Merge</button> <button class="ghost" style="border-color:var(--med)" onclick="idSug('${jsa(cid)}','${jsa(s.id)}','declined')">Dismiss</button></span></div>`).join('');
   const mfrom=(it.merged_from||[]).map(m=>`<div style="display:flex;gap:10px;align-items:center;justify-content:space-between;padding:3px 0">
       <span style="font-size:11px;color:var(--muted)">${m.auto?'⚙ auto-merged':'✓ merged'}: <b style="color:var(--tx)">${esc((m.names||[]).join(' + '))}</b> · ${esc(m.reason||'')}</span>
@@ -2016,7 +2016,7 @@ function _idJev(it){
   const p=it&&it.jev_compromise; if(typeof p!=='number') return '<span class="pcell" title="No findings on this person, so Jev was not asked">—</span>';
   const pct=Math.round(p*100), col=p>=0.7?'var(--crit)':p<=0.3?'var(--ok)':'var(--med)';
   const word=p>=0.7?'Likely':p<=0.3?'Unlikely':'Possible';
-  return `<span title="Jev's estimate, from this person's findings, that the account is in an attacker's hands: ${pct}%. A second opinion — your verdict decides." style="white-space:nowrap"><span class="meter"><i style="width:${pct}%;background:${col}"></i></span><b style="color:${col};font-size:12px">${pct}%</b> <span style="color:${col};font-size:11px">· ${word}</span></span>`;
+  return `<span title="Jev's estimate, from this person's findings, that the account is in an attacker's hands: ${pct}%. A second opinion — your verdict decides." style="white-space:nowrap"><span class="meter"><i style="width:${pct}%;background:${col}"></i></span><b style="color:${col};font-size:12px">${pct}%</b> <span style="color:${col};font-size:11px">· ${word} (Jev)</span></span>`;
 }
 function idVerdict(cid,key,verdict){
   const it=(((window._idData||{}).identities)||[]).find(x=>x.key===key); if(!it) return;

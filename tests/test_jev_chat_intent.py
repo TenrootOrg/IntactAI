@@ -112,7 +112,7 @@ class EntityEstimate(unittest.TestCase):
 
     def test_names_the_account_its_basis_and_that_it_is_not_a_verdict(self):
         out, _ = self.estimate("How confident are you that kobi is malicious user?")
-        self.assertIn("**kobia** (account): **34%** likely involved in malicious activity", out)
+        self.assertIn("**kobia** (account): **34% (Jev)** likely involved in malicious activity", out)
         self.assertIn("from 1 finding on 1 host", out)
         self.assertIn("not a verdict", out)
 
@@ -129,7 +129,7 @@ class EntityEstimate(unittest.TestCase):
              mock.patch.object(jev, "ask_each", return_value=[{"noul": 0.61}]) as ae:
             out = jev.entity_estimates("is kobi malicious?", {}, g)
         self.assertEqual(len(ae.call_args.args[0]), 1)                          # kobitst not asked
-        self.assertIn("**kobia** (account): **61%**", out)
+        self.assertIn("**kobia** (account): **61% (Jev)**", out)
 
     def test_silent_when_it_should_be(self):
         q = "How confident are you that kobi is malicious user?"

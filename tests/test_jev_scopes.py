@@ -115,7 +115,7 @@ class Card(unittest.TestCase):
         finally:
             os.unlink(t.name)
         line, none1, none2 = json.loads(out)
-        self.assertIn("Jev: 82% likely attacker activity", line)
+        self.assertIn("82% likely attacker activity (Jev)", line)
         self.assertEqual((none1, none2), ("", ""))
 
 

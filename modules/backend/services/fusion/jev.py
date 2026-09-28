@@ -558,7 +558,7 @@ def entity_estimates(question, d, g, run_id=None) -> str:
         if not isinstance(p, (int, float)):
             continue
         nh = len({h for f in fs for h in (f.asset_ids or [])})
-        lines.append(f"- **{e.label}** ({kind.get(e.type, e.type)}): **{round(p * 100)}%** likely "
+        lines.append(f"- **{e.label}** ({kind.get(e.type, e.type)}): **{round(p * 100)}% (Jev)** likely "
                      f"involved in malicious activity — from {len(fs)} finding"
                      f"{'s' if len(fs) != 1 else ''} on {nh} host{'s' if nh != 1 else ''}")
     if not lines:
