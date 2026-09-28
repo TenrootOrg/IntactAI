@@ -150,19 +150,17 @@ for those: an ISF must be built from the target kernel's debug package with
 
 ## Adding a symbol table from the UI (air-gapped boxes)
 
-Volatile Memory → **Symbol tables**:
+Volatile Memory → **Symbol tables** → **Upload**. Accepted:
 
-1. Pick a kept image and press **Check**. The appliance reads the kernel's (and
-   tcpip's) debug record from the image itself — the record Volatility looks
-   up — and shows each table the image needs, whether the library has it, and
-   its Microsoft download link
-   (`https://msdl.microsoft.com/download/symbols/<pdb>/<GUID><age in hex>/<pdb>`).
-2. On any computer with internet, open the link: one `.pdb` file.
-3. Carry it over and **Upload** it. The appliance converts it with the
-   Volatility inside VolWeb (`pdbconv -f`) and stores it in the library under
-   the name taken from the table's own metadata. A ready `.json.xz` / `.json`
-   table or a `.zip` symbol pack is accepted too.
-4. Re-analyse the image from **Use a kept image**.
+- **Volatility's full Windows pack** — `windows.zip` from
+  `https://downloads.volatilityfoundation.org/volatility3/symbols/windows.zip`
+  (840 MB, checked 2026-09-28; its Last-Modified is **16 Oct 2019**, so it covers
+  Windows builds up to 2019 — Windows 7 to early Windows 10). Upload it as is;
+  Volatility reads packs in place. nginx lets this one route take bodies over
+  the 500M `/api/` cap (`location = /api/memory/symbols/upload`).
+- **One build's table** — its `.pdb` from Microsoft's symbol server (converted
+  on the box with `pdbconv -f`, named from the table's own metadata) or a ready
+  `.json.xz` / `.json`. Current Windows 10/11 builds are only covered this way.
 
-Missing `ntkrnlmp.pdb` → no plugin output at all; missing `tcpip.pdb` → the
-network plugins (NetScan, NetStat) come back empty.
+Missing `ntkrnlmp.pdb` → no plugin output at all; missing `tcpip.pdb` → NetStat
+fails and NetScan comes back empty.

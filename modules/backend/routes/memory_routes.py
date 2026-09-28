@@ -818,35 +818,6 @@ def list_memory_dumps():
 # ---------------------------------------------------------------------------
 
 
-@memory_bp.route("/api/memory/symbols", methods=["GET"])
-def list_memory_symbols():
-    """The symbol tables VolWeb's Volatility can use."""
-    if not _is_module_enabled():
-        return jsonify({"error": "Memory module is not enabled."}), 400
-    from services.memory import symbols
-    try:
-        return jsonify({"symbols": symbols.library()})
-    except Exception as e:                   # noqa: BLE001
-        return jsonify({"symbols": [], "error": f"could not read the library: {e}"}), 200
-
-
-@memory_bp.route("/api/memory/symbols/required", methods=["POST"])
-def required_memory_symbols():
-    """Which symbol tables a kept image needs — read from the image itself."""
-    if not _is_module_enabled():
-        return jsonify({"error": "Memory module is not enabled."}), 400
-    import os
-    from services.memory import raw_store, symbols
-    name = os.path.basename((request.get_json(silent=True) or {}).get("name") or "")
-    path = os.path.join(raw_store.raw_dir(_DUMPS_DIR), name)
-    if not name or not os.path.isfile(path):
-        return jsonify({"error": "no such kept image"}), 404
-    try:
-        return jsonify({"name": name, "required": symbols.required(path)})
-    except Exception as e:                   # noqa: BLE001
-        return jsonify({"error": f"could not read the image: {e}"}), 500
-
-
 @memory_bp.route("/api/memory/symbols/upload", methods=["POST"])
 def upload_memory_symbol():
     """Add a symbol file the analyst brought: a Microsoft .pdb (converted here),

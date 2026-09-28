@@ -1,12 +1,10 @@
-"""Symbol tables by hand, for air-gapped boxes: find which one an image needs,
-upload it, and it lands where VolWeb's Volatility looks — named by its own
-metadata, never by the uploaded file name.
+"""Symbol tables by hand, for air-gapped boxes: an uploaded table lands where
+VolWeb's Volatility looks — named by its own metadata, never by the file name.
 """
 import json
 import lzma
 import os
 import shutil
-import struct
 import subprocess
 import sys
 import tempfile
@@ -20,69 +18,6 @@ for _p in (os.path.dirname(os.path.abspath(__file__)),
 
 import _optional_deps  # noqa: F401,E402
 from services.memory import symbols  # noqa: E402
-
-# GUID {3844DBB9-2017-4967-BE7A-A4A2C20430FA}, age 2 — as it sits in an RSDS record
-_GUID_RAW = struct.pack("<IHH", 0x3844DBB9, 0x2017, 0x4967) + bytes.fromhex("BE7AA4A2C20430FA")
-
-
-def _rsds(name, age=2, raw=_GUID_RAW):
-    return b"RSDS" + raw + struct.pack("<I", age) + name + b"\x00"
-
-
-class Required(unittest.TestCase):
-    def setUp(self):
-        symbols._FOUND_CACHE.clear()
-
-    def test_the_image_says_which_kernel_table_it_needs(self):
-        with tempfile.NamedTemporaryFile(delete=False) as fh:
-            fh.write(os.urandom(4096) + _rsds(b"ntkrnlmp.pdb") + os.urandom(4096)
-                     + _rsds(b"tcpip.pdb", age=1) + b"RSDS" + os.urandom(40) + _rsds(b"other.pdb"))
-        self.addCleanup(os.unlink, fh.name)
-        with mock.patch.object(symbols, "library_ids", return_value=["tcpip.pdb/3844DBB920174967BE7AA4A2C20430FA-1"]):
-            req = symbols.required(fh.name)
-        k = req[0]
-        self.assertEqual((k["pdb"], k["guid"], k["age"], k["have"]),
-                         ("ntkrnlmp.pdb", "3844DBB920174967BE7AA4A2C20430FA", 2, False))
-        self.assertEqual(k["file"], "windows/ntkrnlmp.pdb/3844DBB920174967BE7AA4A2C20430FA-2.json.xz")
-        # Microsoft's server: GUID then age in HEX, no separator
-        self.assertEqual(k["url"], "https://msdl.microsoft.com/download/symbols/ntkrnlmp.pdb/"
-                                   "3844DBB920174967BE7AA4A2C20430FA2/ntkrnlmp.pdb")
-        self.assertEqual([(r["pdb"], r["have"]) for r in req], [("ntkrnlmp.pdb", False), ("tcpip.pdb", True)])
-
-    def test_other_kernel_variants_are_not_asked_for_once_one_is_present(self):
-        # DESKTOP-3LRFS8Q: ntkrnlmp present (9 plugins ran), two ntoskrnl copies
-        # in memory were shown as "missing — needed for any plugin output"
-        other = struct.pack("<IHH", 0x6F84D35E, 0x575B, 0x43B9) + bytes.fromhex("BFD71AFAB89033C3")
-        with tempfile.NamedTemporaryFile(delete=False) as fh:
-            fh.write(_rsds(b"ntkrnlmp.pdb") + _rsds(b"ntoskrnl.pdb", 1, other) + _rsds(b"tcpip.pdb", 1))
-        self.addCleanup(os.unlink, fh.name)
-        with mock.patch.object(symbols, "library_ids", return_value=["ntkrnlmp.pdb/3844DBB920174967BE7AA4A2C20430FA-2"]):
-            req = symbols.required(fh.name)
-        self.assertEqual([(r["pdb"], r["have"]) for r in req], [("ntkrnlmp.pdb", True), ("tcpip.pdb", False)])
-        with mock.patch.object(symbols, "library_ids", return_value=[]):
-            req = symbols.required(fh.name)
-        self.assertEqual([r["pdb"] for r in req][:2], ["ntkrnlmp.pdb", "ntoskrnl.pdb"])   # ntkrnlmp first
-        self.assertTrue(all(r.get("alternative") for r in req if r["pdb"] != "tcpip.pdb"))
-
-    def test_it_stops_reading_once_it_has_what_it_needs_and_remembers(self):
-        # a Check read all 5 GB (20–30 s) and the button looked stuck
-        with tempfile.NamedTemporaryFile(delete=False) as fh:
-            fh.write(_rsds(b"ntkrnlmp.pdb") + _rsds(b"tcpip.pdb", 1) + b"\x00" * 64 + _rsds(b"ntoskrnl.pdb", 1))
-        self.addCleanup(os.unlink, fh.name)
-        symbols._FOUND_CACHE.clear()
-        recs = symbols._records(fh.name)
-        self.assertEqual(sorted(b for b, _g, _a in recs), ["ntkrnlmp.pdb", "tcpip.pdb"])   # stopped early
-        with mock.patch.object(symbols.mmap, "mmap", side_effect=AssertionError("read again")):
-            self.assertIs(symbols._records(fh.name), recs)                              # remembered
-
-    def test_age_above_nine_is_hex_in_the_link_and_decimal_in_the_file(self):
-        with tempfile.NamedTemporaryFile(delete=False) as fh:
-            fh.write(_rsds(b"ntkrnlmp.pdb", age=12))
-        self.addCleanup(os.unlink, fh.name)
-        with mock.patch.object(symbols, "library_ids", return_value=[]):
-            k = symbols.required(fh.name)[0]
-        self.assertTrue(k["url"].endswith("30FAC/ntkrnlmp.pdb"))
-        self.assertTrue(k["file"].endswith("-12.json.xz"))
 
 
 class Place(unittest.TestCase):
