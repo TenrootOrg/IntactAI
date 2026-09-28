@@ -437,6 +437,23 @@ class CoordinatedActivityIsOneBurst(unittest.TestCase):
         self.assertIn("too low-severity to reach the timeline on its own", coord[0].summary)
         self.assertIn("T1003", coord[0].mitre, "the techniques it spans, for filters")
 
+    def test_any_detection_keeps_the_burst_open(self):
+        """QA: a burst is open until 2 hours pass with NO detection — measured from
+        the previous one. A high detection with its own row (Mimikatz mid-burst) was
+        invisible to the gap check, so the mediums around it split into two bursts."""
+        titles = ["Suspicious PowerShell Invocation", "Security Eventlog Cleared", "LSASS Access"]
+        early = [_sigma(t, ts=f"2026-09-01T07:1{i}:00Z", level="medium", record=10 + i) for i, t in enumerate(titles)]
+        # other rules: one rule's hits fold into ONE event dated at its first hit
+        late = [_sigma(f"Odd Registry Value {i}", ts=f"2026-09-01T10:1{i}:00Z", level="medium", record=20 + i)
+                for i in range(5)]
+        self.assertEqual(2, len(self._fuse_window(early + late)))            # 3 hours of quiet between them
+        mimikatz = _sigma("Mimikatz Execution via PowerShell", ts="2026-09-01T08:40:00Z", level="high", record=30)
+        coord = self._fuse_window(early + [mimikatz] + late)
+        self.assertEqual(1, len(coord), [f.title for f in coord])            # it bridges the gap
+        self.assertIn("During this burst, with rows of their own: SIGMA: Mimikatz Execution via PowerShell",
+                      coord[0].summary)
+        self.assertNotIn("Mimikatz", coord[0].title)                         # never counted in the burst
+
     def test_the_same_burst_on_another_day_is_another_row(self):
         """Found on jev_test: a burst repeating daily at 08:07 was four rows sharing
         ONE id — one verdict for all of them, and every row opened the first."""

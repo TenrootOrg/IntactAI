@@ -28,7 +28,7 @@ from . import keys
 # what findings are or how they are counted, so a report written by an earlier
 # engine says so on the Analysis tab (store: report_engine; case payload:
 # report_engine_behind) instead of reading as current.
-FUSION_ENGINE = "2026-09-28.parts-on-disk"    # bundled rows judged per part; files found on disk say so
+FUSION_ENGINE = "2026-09-28.burst-any-detection"   # any detection keeps a burst open; rows during it named
 
 
 def _fid(*parts) -> str:
@@ -2160,12 +2160,13 @@ def _span_label(seconds: float) -> str:
     return f"{round(seconds / 86400, 1):g} days"
 
 
-def _bursts(evs: list) -> list:
+def _bursts(evs: list, when=lambda e: e.first_seen) -> list:
     """Split one host's detections into bursts separated by COORD_MAX_GAP_HOURS of
-    quiet. Undated events form their own group. Never raises: on a surprise the
-    detections stay together, exactly as before this split existed."""
+    quiet — measured from the PREVIOUS detection, so each one keeps the burst open
+    another 2 hours. Undated events form their own group. Never raises: on a
+    surprise the detections stay together, exactly as before this split existed."""
     try:
-        dated = sorted(((keys.to_utc_dt(e.first_seen), e) for e in evs), key=lambda x: (x[0] is None, x[0] or 0))
+        dated = sorted(((keys.to_utc_dt(when(e)), e) for e in evs), key=lambda x: (x[0] is None, x[0] or 0))
         undated = [e for t, e in dated if t is None]
         out, cur, last = [], [], None
         for t, e in dated:
@@ -2202,33 +2203,56 @@ def _coordinated_activity(g: FusionGraph, *, window=None, baseline=None) -> None
     # script block sat in the burst while DetectRaptor's match of that same block
     # was its own row, and the reader saw the PowerShell twice.
     shown_ents, shown_ids = set(), set()
+    row_of: dict = {}                               # entity / Windows id -> the row showing it
     for f in g.findings:
         if f.kind == "derived":
             continue
+        name = f.title.rsplit(" on ", 1)[0]
         for i in f.entity_ids or []:
             shown_ents.add(i)
+            row_of.setdefault(i, name)
             e = g.entities.get(i)
             if e is not None:
-                shown_ids.update((e.attrs or {}).get("win_ids") or [])
+                for w in (e.attrs or {}).get("win_ids") or []:
+                    shown_ids.add(w)
+                    row_of.setdefault(w, name)
+    # EVERY detection keeps a burst open, not only the ones inside it (QA: "2 hours
+    # when there is NO detection"). A high detection with its own row — Mimikatz
+    # mid-burst — used to be invisible here, so the mediums around it split into
+    # two bursts. It now bridges the gap and is named as happening DURING the
+    # burst; it is still never counted in it (one event, one row).
     per_asset: dict = {}
     for e in g.by_type("event"):
-        if "sigma" not in e.flags or not sev.at_least(e.severity, "medium"):
+        fl = e.flags or []
+        if not ("sigma" in fl or "detection" in fl) or "context" in fl \
+                or not sev.at_least(e.severity, "medium"):
             continue
         title = e.attrs.get("title") or e.label
         if title in base_titles:                    # baseline noise — not signal
             continue
-        _w = set((e.attrs or {}).get("win_ids") or [])
-        if e.id in shown_ents or (_w and _w <= shown_ids):
-            continue
         if not in_window(e.first_seen, window):
+            continue
+        _w = set((e.attrs or {}).get("win_ids") or [])
+        shown = e.id in shown_ents or bool(_w and _w <= shown_ids)
+        if not shown and "sigma" not in fl:
             continue
         for a in _assets_of(e) or ["?"]:
             # Per recorded name too: a machine's image build and a later attack on it
             # are not one coordinated burst.
-            per_asset.setdefault((a, e.attrs.get("logged_host") or ""), []).append(e)
+            per_asset.setdefault((a, e.attrs.get("logged_host") or ""), []).append((e, shown))
     _coord_ids: set = set()
-    for (asset_id, logged), burst_src in per_asset.items():
-      for evs in _bursts(burst_src):
+    for (asset_id, logged), items in per_asset.items():
+      for seg in _bursts(items, when=lambda it: it[0].first_seen):
+        evs = [e for e, shown in seg if not shown]
+        if not evs:
+            continue
+        during = []
+        for e, shown in seg:
+            if shown:
+                name = row_of.get(e.id) or next((row_of[w] for w in (e.attrs or {}).get("win_ids") or []
+                                                 if w in row_of), None)
+                if name and name not in during:
+                    during.append(name)
         titles = {e.attrs.get("title") or e.label for e in evs}
         techs = set().union(*[_event_techniques(e) for e in evs]) if evs else set()
         if techs:
@@ -2278,7 +2302,9 @@ def _coordinated_activity(g: FusionGraph, *, window=None, baseline=None) -> None
                       f"({span}) — a coordinated-activity pattern, not isolated noise. Each of "
                       f"them is too low-severity to reach the timeline on its own; together "
                       f"they are the finding. Detections: {', '.join(sorted(titles)[:8])}"
-                    + ("…" if len(titles) > 8 else "") + ".",
+                    + ("…" if len(titles) > 8 else "") + "."
+                    + (f" During this burst, with rows of their own: {'; '.join(during[:6])}"
+                       + ("…" if len(during) > 6 else "") + "." if during else ""),
             entity_ids=[e.id for e in evs[:25]], asset_ids=[asset_id],
             sources=sorted({s for e in evs for s in (e.sources or [])}) or ["agentic"],
             evidence=list(evs[0].evidence),
