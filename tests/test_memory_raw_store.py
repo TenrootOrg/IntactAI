@@ -91,12 +91,17 @@ class Store(unittest.TestCase):
         self.assertEqual((rec["name"], rec["by"]), (name, "analyst1"))
         self.assertIn("error", raw_store.remove("removed.log", self.d))
 
+    def old(self, p, days=2):
+        t = __import__("time").time() - days * 86400
+        os.utime(p, (t, t))
+        return p
+
     def test_migration_moves_the_old_places_skips_busy_and_small_files(self):
-        self.img("_uploads/c06/MemoryDump_Lab6.raw")
-        self.img("_uploads/6bd/MemoryDump_Lab6.raw")                  # the same dump again
-        self.img("DESKTOP-566AT85-F.DAPQED.raw", b"D", 3 * MB)
-        busy = self.img("_uploads/zzz/in-use.raw", b"Z")
-        self.img("tiny.txt", b"t", 10)
+        self.old(self.img("_uploads/c06/MemoryDump_Lab6.raw"))
+        self.old(self.img("_uploads/6bd/MemoryDump_Lab6.raw"))        # the same dump again
+        self.old(self.img("DESKTOP-566AT85-F.DAPQED.raw", b"D", 3 * MB))
+        busy = self.old(self.img("_uploads/zzz/in-use.raw", b"Z"))
+        self.old(self.img("tiny.txt", b"t", 10))
         moved = raw_store.migrate({}, in_use=[busy], dumps_dir=self.d)
         self.assertEqual(len(moved), 3)
         self.assertEqual(sum(1 for *_x, dup in moved if dup), 1)
@@ -104,6 +109,28 @@ class Store(unittest.TestCase):
                          ["DESKTOP-566AT85-F.DAPQED.raw", "MemoryDump_Lab6.raw"])
         self.assertTrue(os.path.exists(busy))                          # a running run's image is left alone
         self.assertEqual(raw_store.migrate({}, in_use=[busy], dumps_dir=self.d), [])   # once only
+
+    def test_migration_never_touches_a_file_still_being_written(self):
+        # an upload still arriving, or an acquisition Velociraptor is writing:
+        # neither is a run with a path yet, so only its age can protect it
+        arriving = self.img("_uploads/tus1/MemoryDump_Lab6.raw")
+        writing = self.img("DESKTOP-X-F.ABC.raw", b"W")
+        self.assertEqual(raw_store.migrate({}, dumps_dir=self.d), [])
+        self.assertTrue(os.path.exists(arriving) and os.path.exists(writing))
+
+    def test_once_it_has_run_it_never_runs_again(self):
+        raw_store.migrate({}, dumps_dir=self.d)
+        late = self.old(self.img("_uploads/late/x.raw"))
+        self.assertEqual(raw_store.migrate({}, dumps_dir=self.d), [])
+        self.assertTrue(os.path.exists(late))
+        self.assertEqual(raw_store.listing(self.d), [])                # the marker is not an image
+
+    def test_same_size_different_machine_is_not_fully_hashed(self):
+        # memory images are exactly RAM size: two 16 GB hosts always match on size
+        raw_store.adopt(self.img("_uploads/a/m.raw", b"A"), source="upload", dumps_dir=self.d)
+        with mock.patch.object(raw_store, "_sha256", side_effect=AssertionError("full hash read")):
+            _, dup = raw_store.adopt(self.img("_uploads/b/m.raw", b"B"), source="upload", dumps_dir=self.d)
+        self.assertFalse(dup)
 
 
 class Cleanup(unittest.TestCase):

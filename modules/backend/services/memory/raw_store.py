@@ -60,6 +60,20 @@ def _sha256(path, chunk=8 * 1024 * 1024) -> str:
     return h.hexdigest()
 
 
+def _sample(path, chunk=8 * 1024 * 1024) -> str:
+    """Hash of three 8 MB slices (start, middle, end). Memory images are exactly
+    the machine's RAM size, so two hosts with the same RAM always match on size;
+    their contents differ within the first megabytes. The full hash is only
+    read when the samples agree."""
+    size = os.path.getsize(path)
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for off in (0, max(0, size // 2 - chunk // 2), max(0, size - chunk)):
+            fh.seek(off)
+            h.update(fh.read(chunk))
+    return h.hexdigest()
+
+
 def _safe(name) -> str:
     name = os.path.basename(str(name or "memory.raw")).replace("\x00", "")
     return re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._") or "memory.raw"
@@ -122,6 +136,8 @@ def adopt(path, *, source, original_name=None, when=None, origin=None,
             kept = os.path.join(raw_dir(dumps_dir), name)
             if rec.get("size") != size or not os.path.isfile(kept):
                 continue
+            if _sample(path) != (rec.get("sample") or _sample(kept)):
+                continue                       # same RAM size, different machine
             new_hash = new_hash or _sha256(path)
             if not rec.get("sha256"):
                 rec["sha256"] = _sha256(kept)
@@ -146,7 +162,7 @@ def adopt(path, *, source, original_name=None, when=None, origin=None,
         except OSError:
             shutil.move(path, dest)
         _prune_empty_upload_dir(path, dumps_dir)
-        idx[name] = {"size": size, "source": source, "added_at": _stamp(when),
+        idx[name] = {"size": size, "source": source, "added_at": _stamp(when), "sample": _sample(dest),
                      "original_name": original_name or os.path.basename(path),
                      "origin": {k: v for k, v in (origin or {}).items() if v}}
         if new_hash:
@@ -183,7 +199,7 @@ def listing(dumps_dir: str = DUMPS_DIR) -> list:
     idx = _load(dumps_dir)
     for name in os.listdir(d):
         p = os.path.join(d, name)
-        if name in (_INDEX, _INDEX + ".tmp", "removed.log") or not os.path.isfile(p):
+        if name.startswith(".") or name in (_INDEX, _INDEX + ".tmp", "removed.log") or not os.path.isfile(p):
             continue
         try:
             st = os.stat(p)
@@ -232,7 +248,17 @@ def migrate(origins=None, in_use=(), dumps_dir: str = DUMPS_DIR, log=None) -> li
     moved = []
     if not os.path.isdir(dumps_dir):
         return moved
+    # ONCE. It ran on every list load, and a list load can land while an upload
+    # is still arriving in _uploads/<id>/ or Velociraptor is still writing an
+    # acquisition at the top of the volume — neither is a run with a path yet,
+    # so `in_use` cannot protect them, and moving a half-written file breaks
+    # it. New images are adopted by the pipeline; this is for the old ones.
+    marker = os.path.join(raw_dir(dumps_dir), ".migrated")
+    if os.path.exists(marker):
+        return moved
     busy = {os.path.realpath(p) for p in in_use if p}
+    import time as _time
+    recent = _time.time() - 600               # and never a file touched in the last 10 minutes
     for root, dirs, files in os.walk(dumps_dir):
         rel = os.path.relpath(root, dumps_dir)
         if rel == RAW_DIR_NAME or rel.startswith(RAW_DIR_NAME + os.sep):
@@ -244,7 +270,8 @@ def migrate(origins=None, in_use=(), dumps_dir: str = DUMPS_DIR, log=None) -> li
         for fn in files:
             p = os.path.join(root, fn)
             try:
-                if os.path.getsize(p) < _MIN_BYTES or os.path.realpath(p) in busy:
+                if os.path.getsize(p) < _MIN_BYTES or os.path.realpath(p) in busy \
+                        or os.path.getmtime(p) > recent:
                     continue
             except OSError:
                 continue
@@ -253,4 +280,7 @@ def migrate(origins=None, in_use=(), dumps_dir: str = DUMPS_DIR, log=None) -> li
                              when=o.get("created_at") or os.path.getmtime(p),
                              origin=o, dumps_dir=dumps_dir, log=log)
             moved.append((p, new, dup))
+    os.makedirs(raw_dir(dumps_dir), exist_ok=True)
+    with open(marker, "w") as fh:
+        fh.write(_stamp(None) + "\n")
     return moved
