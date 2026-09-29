@@ -787,7 +787,8 @@ function caseEditForm(c){
   const st=val('cdf-status', CASE_STATUS_LABEL[String(i.case_status||'').toLowerCase()]?String(i.case_status).toLowerCase():'open');
   const sv=val('cdf-sev', String(i.case_severity||'').toLowerCase());
   return `<div class="cdform" onclick="event.stopPropagation()" oninput="cdDraft()" onchange="cdDraft()" style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--bd)">
-      <label>Name</label><input id="cdf-name" value="${esc(val('cdf-name', i.name||''))}" maxlength="100" ${builtin?'disabled title="The built-in cases cannot be renamed"':''}/>
+      <label>Name</label><input id="cdf-name" value="${esc(val('cdf-name', i.name||''))}" maxlength="100" ${builtin?'disabled style="opacity:.5;cursor:not-allowed" title="The built-in cases cannot be renamed"':''}/>
+      ${builtin?`<div style="color:var(--muted);font-size:11px;margin-top:2px">The built-in ${esc(i.name||'Default')} case keeps its name.</div>`:''}
       <label>Status</label><select id="cdf-status">${o('open','Open',st)}${o('contained','Contained',st)}${o('closed','Closed',st)}</select>
       <label>Severity</label><select id="cdf-sev">${o('','— not set —',sv)}${['low','medium','high','critical'].map(x=>o(x,x[0].toUpperCase()+x.slice(1),sv)).join('')}</select>
       <label>Owner</label><input id="cdf-owner" value="${esc(val('cdf-owner', typeof i.case_owner==='string'?i.case_owner:''))}" maxlength="100" placeholder="who leads this case"/>

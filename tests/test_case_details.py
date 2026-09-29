@@ -110,7 +110,9 @@ console.log(JSON.stringify([
         self.assertIn(">Open<", out[2])                          # damaged: defaults, no crash
         self.assertNotIn("huge", out[2])
         self.assertIn(">Open<", out[3])
-        self.assertIn('id="cdf-name" value="Default" maxlength="100" disabled', out[4])
+        self.assertIn('id="cdf-name" value="Default" maxlength="100" disabled style="opacity:.5', out[4])
+        self.assertIn("The built-in Default case keeps its name.", out[4])
+        self.assertNotIn("keeps its name", out[5])
         self.assertNotIn("disabled", out[5].split('id="cdf-name"')[1].split(">")[0])
         self.assertIn('onclick="event.stopPropagation()"', out[5])    # a click in the form never switches case
         self.assertIn('<option value="open" selected>', out[5])         # damaged status: Open
