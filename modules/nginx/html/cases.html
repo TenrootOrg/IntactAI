@@ -1058,9 +1058,9 @@ function _evSrc(k){ return (EV_SOURCES.find(([x])=>x===k)||[,'Other'])[1]; }
 function _evFields(pre, v, withFile, linked){
   const o=(k,l,cur)=>`<option value="${k}" ${cur===k?'selected':''}>${l}</option>`;
   return `${withFile?`<label>File</label><input type="file" id="${pre}-file"/>`:''}
-    <label>Name <span style="color:var(--crit)">*</span> <span style="color:var(--muted);font-weight:400">— what it is; the report and the AI use it</span></label>
-    <input id="${pre}-name" maxlength="200" value="${esc(v.name||'')}" placeholder="e.g. AnyDesk silent-install prompt on the desktop"/>
-    <label>Description <span style="color:var(--crit)">*</span></label>
+    <label>Name ${linked&&withFile?'<span style="color:var(--muted);font-weight:400">— optional; made from the event if empty</span>':'<span style="color:var(--crit)">*</span> <span style="color:var(--muted);font-weight:400">— what it is; the report and the AI use it</span>'}</label>
+    <input id="${pre}-name" maxlength="200" value="${esc(v.name||'')}" placeholder="${linked&&withFile?'e.g. “Mimikatz Execution via PowerShell — screenshot”':'e.g. AnyDesk silent-install prompt on the desktop'}"/>
+    <label>Description ${linked?'<span style="color:var(--muted);font-weight:400">— optional</span>':'<span style="color:var(--crit)">*</span>'}</label>
     <textarea id="${pre}-desc" maxlength="1000" style="min-height:44px" placeholder="what it shows and why it matters">${esc(v.description||'')}</textarea>
     ${linked?`<div class="cfghint">Linked to the Timeline event — host and time come from it.</div>`:`
     <label>Host</label><input id="${pre}-host" list="ev-hosts" value="${esc(v.host||'')}" placeholder="pick one of the case's hosts, or type"/>
@@ -1128,7 +1128,7 @@ function evSubmit(pre, findingId){
   const fe=document.getElementById(pre+'-file'), file=fe&&fe.files&&fe.files[0];
   if(!file){ toast('Choose a file.'); return; }
   if(file.size>100*1024*1024){ toast('The file is larger than 100 MB.'); return; }
-  if(!v('name').trim()||!v('desc').trim()){ toast('Give the evidence a name and a description.'); return; }
+  if(!findingId && (!v('name').trim()||!v('desc').trim())){ toast('Give the evidence a name and a description.'); return; }
   const fd=new FormData(); fd.append('file',file); fd.append('name',v('name')); fd.append('description',v('desc'));
   if(findingId) fd.append('finding_id',findingId); else { fd.append('host',v('host')); fd.append('time',v('time')); fd.append('source',v('src')); }
   toast('Uploading '+file.name+'…');
@@ -1147,7 +1147,7 @@ function evSaveEdit(id){
   const body={name:v('name'),description:v('desc')};
   if(v('host')!==undefined){ body.host=v('host'); body.time=v('time'); body.source=v('src'); }
   const un=document.getElementById('eve-unlink'); if(un&&un.checked) body.finding_id='';
-  if(!String(body.name||'').trim()||!String(body.description||'').trim()){ toast('The name and the description cannot be empty.'); return; }
+  if(!String(body.name||'').trim()){ toast('The name cannot be empty.'); return; }
   evPatch(id, body).then(it=>{ if(it){ window._evEdit=null; renderEvidence(curInfo); toast('Saved.'); } });
 }
 function evDel(id){

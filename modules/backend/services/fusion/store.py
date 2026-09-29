@@ -2406,6 +2406,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
           f"{len(pruned.get('entities') or {}):,} entities → sidecar", pct=95)
     if not _write_graph_sidecar(case_id, pruned):
         _plog("Refusion · graph write", "error", "sidecar write failed (see backend log)")
+    report = _with_evidence(case_id, report, d)
     _details = {"fusion_graph": {},
                                   "graph_counts": _counts_from_graph_dict(pruned),
                                   "report_md": report,
@@ -2735,6 +2736,17 @@ def view_graph(case_id, d=None, *, scoped=True) -> FusionGraph:
     g.manual_events = _visible_manual_events(d)                       # analyst-added Timeline events
     g.case_files = _ai_case_files(case_id, d)                         # files marked "Include in AI"
     return g
+
+
+def _with_evidence(case_id, report, d) -> str:
+    """The report with its "Evidence attached to this case" section (built
+    deterministically — see case_files.with_evidence)."""
+    try:
+        from . import case_files
+        return case_files.with_evidence(report, get_case(case_id) or d)
+    except Exception as e:                                   # noqa: BLE001 — never lose a report over it
+        print(f"[FUSION] evidence section not added for {case_id}: {e}", flush=True)
+        return report
 
 
 def _ai_case_files(case_id, d) -> list:
@@ -4235,6 +4247,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
     # "now generating the advisory" reads as the advisory's elapsed and is wrong
     # by however long the narrative took -- measured on a live case: the banner
     # said the advisory was 13 minutes in when it had been running for two.
+    report = _with_evidence(case_id, report, d)
     _narrative_patch = {"report_md": report, "report_dirty": False,
                         # What this report was written FROM, for its own scope. The
                         # run-based "new data is not in this report" check could

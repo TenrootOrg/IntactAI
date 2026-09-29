@@ -51,6 +51,8 @@ class Evidence(unittest.TestCase):
             p = mock.patch.object(t, a, v)
             p.start()
             self.addCleanup(p.stop)
+        self.behind = mock.patch.object(store, "_report_behind").start()
+        self.addCleanup(mock.patch.stopall)
 
     def add(self, file_name, data, **kw):
         kw.setdefault("name", "AnyDesk prompt")
@@ -61,6 +63,29 @@ class Evidence(unittest.TestCase):
         for kw in ({"name": ""}, {"description": "  "}):
             self.assertIn("name and a description", self.add("a.png", b"x", **kw)["error"])
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "c1")) and os.listdir(os.path.join(self.tmp, "c1")))
+
+    def test_from_the_timeline_only_the_file_is_needed(self):
+        it = case_files.add("c1", io.BytesIO(b"img"), "IMG_9.png", name="", description="", finding_id="f_row")
+        self.assertEqual(it["name"], "SIGMA: AnyDesk Silent Installation (+1 related) — screenshot")   # made from the event
+        self.assertEqual(it["description"], "")
+        log = case_files.add("c1", io.BytesIO(b"x"), "fw.log", name="", description="", finding_id="f_row")
+        self.assertTrue(log["name"].endswith("— log"))
+        self.behind.assert_called()                                    # the report is now behind
+
+    def test_the_report_lists_the_evidence_once_before_its_footer(self):
+        self.add("popup.png", b"img", finding_id="f_row", name="", description="")
+        self.add("fw.csv", b"a", name="Kibana export", description="firewall rules", host="ALDC02", source="kibana")
+        md = "# Report\n\n## Findings\n- x\n\n---\n_Deterministic report — no model_\n"
+        once = case_files.with_evidence(md, self.d)
+        self.assertEqual(case_files.with_evidence(once, self.d), once)          # rebuilt, never repeated
+        self.assertEqual(once.count("## Evidence attached to this case"), 1)
+        self.assertLess(once.index("## Evidence attached"), once.index("---\n_Deterministic report"))
+        self.assertIn("supports: SIGMA: AnyDesk Silent Installation", once)
+        self.assertIn("**Kibana export** — ALDC02 · from kibana", once)
+        self.assertIn("SHA-256 `" + hashlib.sha256(b"img").hexdigest() + "`", once)
+        self.assertLess(once.index("screenshot"), once.index("Kibana export"))  # linked items first
+        self.assertEqual(case_files.with_evidence(md, {"name": "none"}), md)    # no evidence: unchanged
+        self.assertNotIn("Evidence attached", case_files.with_evidence(once, {"name": "none"}))   # all deleted: section goes
 
     def test_a_manual_item_keeps_what_was_typed(self):
         it = self.add("ts-export.csv", b"a,b", host="ALDC02", time="2026-09-01T08:00:00Z", source="timesketch")
@@ -82,7 +107,7 @@ class Evidence(unittest.TestCase):
         it = self.add("popup.png", b"img", finding_id="f_row")
         up = case_files.update("c1", it["id"], {"name": "Renamed", "ai": True, "finding_id": ""})
         self.assertEqual((up["name"], up["ai"], up["finding_id"], up["finding_title"]), ("Renamed", True, "", ""))
-        self.assertIn("cannot be empty", case_files.update("c1", it["id"], {"description": ""})["error"])
+        self.assertIn("cannot be empty", case_files.update("c1", it["id"], {"name": " "})["error"])
         self.assertIn("source", case_files.update("c1", it["id"], {"source": "email"})["error"])
         p = case_files.path_of("c1", it["id"])
         self.assertEqual(case_files.delete("c1", it["id"]), {"deleted": it["id"]})

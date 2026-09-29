@@ -101,14 +101,19 @@ def add(case_id, stream, file_name, *, name, description, host="", time="", sour
     if not st.get_case(case_id):
         return {"error": "case not found"}
     name, description = _s(name, 200), _s(description, 1000)
-    if not name or not description:
-        return {"error": "give the evidence a name and a description"}
     link = {}
     if _s(finding_id, 100):
         link = _event(case_id, _s(finding_id, 100))
         if not link:
             return {"error": "that Timeline event is not in the case any more — refresh and try again"}
     fname = _clean_file_name(file_name)
+    if link and not name:
+        # From a Timeline event the event says what it is about: the name is made
+        # from it (no model involved) and the description is optional.
+        word = {"image": "screenshot", "text": "log"}.get(_kind(fname), "file")
+        name = f"{link['finding_title'].rsplit(' on ', 1)[0]} — {word}"[:200]
+    if not name or (not description and not link):
+        return {"error": "give the evidence a name and a description"}
     fid = uuid.uuid4().hex[:12]
     os.makedirs(_dir(case_id), exist_ok=True)
     dest, tmp = os.path.join(_dir(case_id), fid), os.path.join(_dir(case_id), fid + ".part")
@@ -137,6 +142,7 @@ def add(case_id, stream, file_name, *, name, description, host="", time="", sour
             "finding_id": link.get("finding_id", ""), "finding_title": link.get("finding_title", ""),
             "added_at": st._now_iso()}
     st._mutate_list_field(case_id, "case_files", lambda v: (v if isinstance(v, list) else []) + [item])
+    st._report_behind(case_id)
     st.log_case_event(case_id, "Evidence added", "info",
                       f"{name} — {fname} ({size:,} bytes) · SHA-256 {item['sha256']}"
                       + (f" · linked to {item['finding_title']}" if link else ""))
@@ -150,9 +156,8 @@ def update(case_id, file_id, fields) -> dict:
     if not st.get_case(case_id):
         return {"error": "case not found"}
     fields = fields if isinstance(fields, dict) else {}
-    for k in ("name", "description"):
-        if k in fields and not _s(fields.get(k), 1000):
-            return {"error": f"the {k} cannot be empty"}
+    if "name" in fields and not _s(fields.get("name"), 200):
+        return {"error": "the name cannot be empty"}
     if "source" in fields and fields.get("source") not in SOURCES:
         return {"error": f"source must be one of: {', '.join(SOURCES)}"}
     found, old = {}, {}
@@ -180,6 +185,8 @@ def update(case_id, file_id, fields) -> dict:
     changed = [k for k in ("name", "description", "host", "time", "source", "ai", "finding_id")
                if k in fields and old.get(k) != found.get(k)]
     if changed:
+        if [k for k in changed if k != "ai"]:
+            st._report_behind(case_id)
         st.log_case_event(case_id, "Evidence edited", "info", f"{found.get('name')}: {', '.join(changed)}")
     return next(x for x in listing({"case_files": [found]}))
 
@@ -202,6 +209,7 @@ def delete(case_id, file_id) -> dict:
     p = path_of(case_id, file_id)
     if p:
         _unlink(p)
+    st._report_behind(case_id)
     st.log_case_event(case_id, "Evidence deleted", "info",
                       f"{gone.get('name')} — {gone.get('file_name') or gone.get('name')} · SHA-256 {gone.get('sha256')}")
     return {"deleted": file_id}
@@ -210,6 +218,46 @@ def delete(case_id, file_id) -> dict:
 def delete_case_files(case_id) -> None:
     """The case itself was deleted: its evidence goes with it."""
     shutil.rmtree(_dir(case_id), ignore_errors=True)
+
+
+_SECTION = "## Evidence attached to this case"
+_FOOTER = re.compile(r"\n\n---\n_(?:Deterministic report|Narrative by live LLM)[\s\S]*$")
+
+
+def with_evidence(md, d) -> str:
+    """The report with its evidence section — built here, not by the model, so the
+    AI report, the offline template report and the PDF all carry it. Every item is
+    listed (the report stays on the appliance; Include in AI only governs what the
+    MODEL is given). Idempotent: an existing section is replaced, never repeated;
+    placed before the report's closing footer."""
+    md = str(md or "")
+    i = md.find("\n" + _SECTION)
+    if i < 0 and md.startswith(_SECTION):
+        i = 0
+    if i >= 0:
+        j = md.find("\n## ", i + len(_SECTION) + 1)
+        f = _FOOTER.search(md, i)
+        end = min(x for x in (j, f.start() if f else -1, len(md)) if x >= 0)
+        md = md[:i] + md[end:]
+    items = listing(d)
+    if not items or not md.strip():
+        return md
+    items.sort(key=lambda x: (not x["finding_id"], x["host"], x["time"], x["name"]))
+    out = [_SECTION, "", f"_{len(items)} item(s); the SHA-256 of each file was recorded when it was added._", ""]
+    for x in items:
+        where = " · ".join(v for v in (x["host"], x["time"]) if v)
+        head = f"- **{x['name']}**" + (f" — {where}" if where else "")
+        if x["finding_title"]:
+            head += f" · supports: {x['finding_title']}"
+        elif x["source"] != "other":
+            head += f" · from {x['source']}"
+        out.append(head)
+        out.append(f"    - {x['file_name']} · SHA-256 `{x['sha256']}`" + (f" · {x['description']}" if x["description"] else ""))
+    block = "\n".join(out) + "\n"
+    f = _FOOTER.search(md)
+    if f:
+        return md[:f.start()].rstrip() + "\n\n" + block + md[f.start():]
+    return md.rstrip() + "\n\n" + block
 
 
 def per_finding(d) -> dict:
