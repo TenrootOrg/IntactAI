@@ -1719,6 +1719,11 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True,
         _track_rows(case_id, g)
     except Exception as e:                                   # noqa: BLE001 — bookkeeping only
         print(f"[FUSION] row tracking skipped for {case_id}: {e}", flush=True)
+    if _record:
+        try:
+            sync_next_steps(case_id, (get_case(case_id) or {}).get("report_md"))
+        except Exception as e:                               # noqa: BLE001 — a to-do list, never a failure
+            print(f"[FUSION] next steps not synced for {case_id}: {e}", flush=True)
     # Jev suggestions ride on the fused graph but must never hold the fuse lock:
     # they are network calls, and the next fuse must not wait on them.
     from . import jev
@@ -3478,6 +3483,141 @@ def update_case_info(case_id, fields) -> dict:
     return {"case_id": case_id, **case_info({**d, **patch}), "name": patch.get("name", d.get("name"))}
 
 
+# ---- Next steps (plan step 5): the investigation's to-do list -----------------
+# Items: {id, text, done, source: "report" | "analyst", added_at}. A report adds
+# its "Recommended Next Steps" as new items; it never removes one, never unticks
+# one, never adds one twice, and never brings back one the analyst deleted.
+_NS_HEAD = re.compile(r"^#{1,4}\s*(recommended next steps|next steps|recommendations)\s*:?\s*$", re.I)
+
+
+def _as_list(v) -> list:
+    return v if isinstance(v, list) else []       # a damaged field is treated as empty
+
+
+def _ns_key(text) -> str:
+    return re.sub(r"\W+", " ", str(text or "").lower()).strip()
+
+
+def next_steps(d) -> list:
+    """The case's next steps. Cases from older versions have none; a damaged
+    entry is skipped, never raised."""
+    raw = (d or {}).get("next_steps") if isinstance(d, dict) else None
+    out = []
+    for x in raw if isinstance(raw, list) else []:
+        if isinstance(x, dict) and x.get("id") and isinstance(x.get("text"), str) and x["text"].strip():
+            out.append({"id": str(x["id"]), "text": x["text"], "done": bool(x.get("done")),
+                        "source": x.get("source") if x.get("source") in ("report", "analyst") else "analyst",
+                        "added_at": x.get("added_at")})
+    return out
+
+
+def report_next_steps(md) -> list:
+    """The items of a report's "Recommended Next Steps" (or "Recommendations")
+    section: its top-level bullets or numbered lines, Markdown stripped."""
+    items, on = [], False
+    for line in str(md or "").splitlines():
+        if re.match(r"^#{1,4}\s", line):
+            on = bool(_NS_HEAD.match(line.strip()))
+            continue
+        if not on:
+            continue
+        m = re.match(r"^\s{0,3}(?:[-*+]|\d+[.)])\s+(.*)", line)
+        if m:
+            t = re.sub(r"[*_`]", "", m.group(1)).strip()
+            if t and _ns_key(t) not in {_ns_key(i) for i in items}:
+                items.append(t[:300])
+    return items[:20]
+
+
+def sync_next_steps(case_id, report_md) -> int:
+    """Add the report's next steps that are new. Returns how many were added."""
+    import uuid as _uuid
+    new = report_next_steps(report_md)
+    if not new:
+        return 0
+    d = get_case(case_id) or {}
+    gone = {k for k in _as_list(d.get("next_steps_dismissed")) if isinstance(k, str)}
+    added = []
+
+    def _mutate(vals):
+        vals = _as_list(vals)
+        have = {_ns_key(v.get("text")) for v in vals if isinstance(v, dict)} | gone
+        for t in new:
+            if _ns_key(t) not in have:
+                have.add(_ns_key(t))
+                added.append(t)
+                vals.append({"id": _uuid.uuid4().hex[:12], "text": t, "done": False,
+                             "source": "report", "added_at": _now_iso()})
+        return vals
+
+    _mutate_list_field(case_id, "next_steps", _mutate)
+    if added:
+        log_case_event(case_id, "Next steps", "info", f"{len(added)} added from the report")
+    return len(added)
+
+
+def add_next_step(case_id, text) -> dict:
+    import uuid as _uuid
+    text = str(text or "").strip()[:300]
+    if not text:
+        return {"error": "write the step first"}
+    if not get_case(case_id):
+        return {"error": "case not found"}
+    item = {"id": _uuid.uuid4().hex[:12], "text": text, "done": False, "source": "analyst",
+            "added_at": _now_iso()}
+    _mutate_list_field(case_id, "next_steps", lambda vals: _as_list(vals) + [item])
+    return item
+
+
+def update_next_step(case_id, step_id, *, done=None, text=None) -> dict:
+    if not get_case(case_id):
+        return {"error": "case not found"}
+    found = {}
+    if text is not None:
+        text = str(text).strip()[:300]
+        if not text:
+            return {"error": "a step cannot be empty"}
+
+    def _mutate(vals):
+        vals = _as_list(vals)
+        for v in vals:
+            if isinstance(v, dict) and str(v.get("id")) == str(step_id):
+                if done is not None:
+                    v["done"] = bool(done)
+                if text is not None:
+                    v["text"] = text
+                found.update(v)
+        return vals
+
+    _mutate_list_field(case_id, "next_steps", _mutate)
+    return found or {"error": "no such step"}
+
+
+def delete_next_step(case_id, step_id) -> dict:
+    d = get_case(case_id)
+    if not d:
+        return {"error": "case not found"}
+    gone = {}
+
+    def _mutate(vals):
+        keep = []
+        for v in _as_list(vals):
+            if isinstance(v, dict) and str(v.get("id")) == str(step_id):
+                gone.update(v)
+            else:
+                keep.append(v)
+        return keep
+
+    _mutate_list_field(case_id, "next_steps", _mutate)
+    if not gone:
+        return {"error": "no such step"}
+    if gone.get("source") == "report":
+        # remembered, so the next report does not bring it back
+        _mutate_list_field(case_id, "next_steps_dismissed",
+                           lambda vals: _as_list(vals) + [_ns_key(gone.get("text"))])
+    return {"deleted": str(step_id)}
+
+
 HOST_STATUSES = ("compromised", "isolated", "reimaged", "clean")
 
 
@@ -4251,6 +4391,10 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
                 "discarded": True}
     try:
         _on_screen = write_report_for_scope(case_id, _gen_scope, _narrative_patch)
+        try:
+            sync_next_steps(case_id, report)
+        except Exception as e:                               # noqa: BLE001 — a to-do list, never a failure
+            print(f"[FUSION] next steps not synced for {case_id}: {e}", flush=True)
         log_case_event(case_id, "Report saved", "success",
                        f"narrative written to the database ({len(report or ''):,} chars)"
                        + ("" if _on_screen else
