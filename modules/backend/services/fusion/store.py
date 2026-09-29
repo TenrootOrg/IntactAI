@@ -890,6 +890,11 @@ def delete_case(case_id) -> dict:
         autofuse.cancel(case_id)
     except Exception:
         pass
+    try:                                   # the analyst's attached files go with it
+        from . import case_files
+        case_files.delete_case_files(case_id)
+    except Exception:
+        pass
     # Tagged runs UNION the legacy member list. get_automation_runs_by_case reads
     # the case_id COLUMN only, while the fuse reads `tagged ∪ member_run_ids` — so a
     # run from before the workspace model (or one whose tag write failed) was fused
@@ -2111,6 +2116,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     # not get them: only view_graph set them, and this path does not use it.
     g.identity_verdicts = list(d.get("identity_verdicts") or [])
     g.manual_events = _visible_manual_events(d)
+    g.case_files = _ai_case_files(case_id, d)
     try:
         gv = _filter_graph_by_hosts(g, d.get("excluded_hosts"))
     except Exception as _e:                                   # noqa: BLE001
@@ -2727,7 +2733,18 @@ def view_graph(case_id, d=None, *, scoped=True) -> FusionGraph:
     g.identity_decisions = _identity_decisions(d)   # people grouped as the Identities tab shows
     g.identity_verdicts = list(d.get("identity_verdicts") or [])   # analyst: compromised or not
     g.manual_events = _visible_manual_events(d)                       # analyst-added Timeline events
+    g.case_files = _ai_case_files(case_id, d)                         # files marked "Include in AI"
     return g
+
+
+def _ai_case_files(case_id, d) -> list:
+    """Attached files the analyst marked "Include in AI" — for the report and chat."""
+    try:
+        from . import case_files
+        return case_files.for_model(case_id, d)
+    except Exception as e:                                   # noqa: BLE001 — never block a fuse
+        print(f"[FUSION] case files not attached for {case_id}: {e}", flush=True)
+        return []
 
 
 def _visible_manual_events(d) -> list:
@@ -2775,6 +2792,7 @@ def _filter_graph_by_window(g, window) -> FusionGraph:
     gv.identity_decisions = getattr(g, "identity_decisions", None)
     gv.identity_verdicts = getattr(g, "identity_verdicts", None)
     gv.manual_events = getattr(g, "manual_events", None)
+    gv.case_files = getattr(g, "case_files", None)
     findings = [f for f in g.findings if finding_in_window(f, window)]
     cited = {eid for f in findings for eid in (f.entity_ids or [])}
 
@@ -2886,6 +2904,7 @@ def _filter_graph_by_hosts(g, excluded_labels) -> FusionGraph:
     gv.identity_decisions = getattr(g, "identity_decisions", None)
     gv.identity_verdicts = getattr(g, "identity_verdicts", None)
     gv.manual_events = getattr(g, "manual_events", None)
+    gv.case_files = getattr(g, "case_files", None)
     keep = set()
     for e in g.entities.values():
         if e.id in ex_assets:

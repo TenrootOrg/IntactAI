@@ -1496,6 +1496,11 @@ def analyst_context(dispositions=None, validations=None, manual_events=None, gra
     if people:
         out["analyst_identity_verdicts"] = [{"identity": ln, "verdict": v.replace("_", " ")}
                                             for v, ln in people]
+    files = getattr(graph, "case_files", None) if graph is not None else None
+    if files:
+        # Files the analyst attached AND marked "Include in AI": a picture by its
+        # name + description (never the image), a text file by its text (capped).
+        out["analyst_attached_files"] = list(files)
     if manual_events:
         out["analyst_timeline_events"] = [
             {k: e.get(k) for k in ("ts", "host", "title", "severity", "status", "notes") if e.get(k)}

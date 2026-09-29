@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import re
 
-from flask import Blueprint, jsonify, request, Response
+from flask import Blueprint, jsonify, request, Response, send_file
 
 from services.fusion import store, render
+from services.fusion import case_files as _case_files
 from services.fusion.schema import FusionGraph
 
 case_bp = Blueprint("case", __name__)
@@ -400,6 +401,7 @@ def get_case(case_id):
                     "is_system": bool(d.get("is_system")
                                       or d.get("name") == store.SYSTEM_CASE_NAME),
                     **store.case_info(d),
+                    "case_files": _case_files.listing(d),
                     "masking": d.get("masking") or {"enabled": False, "patterns": []},
                     "included_run_ids": d.get("included_run_ids"),
                     # null-guarded for cases created before these existed
@@ -542,6 +544,43 @@ def get_case_risk(case_id):
         r["vr_isolated"] = bool(m and m.group(0) in isolated)
     return jsonify({"case_id": case_id, "rows": rows, "total": len(rows),
                     "is_stale": bool(store.stale_member_runs(case_id, d))})
+
+
+def _cf_reply(res):
+    if res.get("error") == "case not found":
+        return jsonify(res), 404
+    return jsonify(res), (400 if res.get("error") else 200)
+
+
+@case_bp.route("/api/cases/<case_id>/files", methods=["POST"])
+def upload_case_file(case_id):
+    """multipart: file (+ optional description). Up to 100 MB; SHA-256 recorded."""
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"error": "no file"}), 400
+    return _cf_reply(_case_files.add(case_id, f.stream, f.filename, request.form.get("description", "")))
+
+
+@case_bp.route("/api/cases/<case_id>/files/<file_id>", methods=["GET"])
+def download_case_file(case_id, file_id):
+    item = next((x for x in _case_files.listing(store.get_case(case_id) or {}) if x["id"] == file_id), None)
+    p = _case_files.path_of(case_id, file_id)
+    if not item or not p:
+        return jsonify({"error": "no such file"}), 404
+    return send_file(p, as_attachment=True, download_name=item["name"])
+
+
+@case_bp.route("/api/cases/<case_id>/files/<file_id>", methods=["PATCH"])
+def update_case_file(case_id, file_id):
+    """{name?, description?, ai?}"""
+    b = request.get_json(silent=True) or {}
+    return _cf_reply(_case_files.update(case_id, file_id, name=b.get("name"),
+                                        description=b.get("description"), ai=b.get("ai")))
+
+
+@case_bp.route("/api/cases/<case_id>/files/<file_id>", methods=["DELETE"])
+def delete_case_file(case_id, file_id):
+    return _cf_reply(_case_files.delete(case_id, file_id))
 
 
 @case_bp.route("/api/cases/<case_id>/hosts/status", methods=["POST"])
