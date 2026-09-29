@@ -105,7 +105,8 @@ class NarrativeSurvivesEnrichmentFailure(unittest.TestCase):
         saved = [w for w in writes if "report_md" in w]
         self.assertEqual(len(saved), 1, f"narrative not persisted; writes={writes}")
         # the narrative, marked with its report stage (plan step 9)
-        self.assertEqual(saved[0]["report_md"], "_Report stage: **Interim** — investigation ongoing._\n\nNARRATIVE")
+        self.assertTrue(saved[0]["report_md"].startswith("_Report stage: **Interim** — investigation ongoing._"))
+        self.assertTrue(saved[0]["report_md"].endswith("NARRATIVE"))
         self.assertEqual(saved[0]["report_run_ids"], ["run-1"])
         self.assertFalse(saved[0]["report_dirty"])
         self.assertTrue(out["report_md"].endswith("NARRATIVE"))

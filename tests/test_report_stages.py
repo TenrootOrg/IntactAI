@@ -40,19 +40,30 @@ class Stage(unittest.TestCase):
     def test_each_stage_tells_the_model_what_to_write(self):
         self.assertIn("## Next Update", rs.directive("flash"))
         self.assertIn("Do NOT write the per-finding catalogue", rs.directive("flash"))
-        self.assertIn("## Status", rs.directive("interim"))
-        self.assertIn("analyst_host_status", rs.directive("interim"))
+        self.assertIn("## Open Questions", rs.directive("interim"))           # the Status block is the system's
         self.assertIn("## Lessons Learned", rs.directive("final"))
         self.assertEqual(rs.directive("bogus"), "")
         with open(os.path.join(_ROOT, "modules/backend/services/fusion/llm_sim.py"), encoding="utf-8") as fh:
             self.assertIn("system = system + \"\\n\\n\" + _d", fh.read())      # appended like the audience directive
 
-    def test_the_banner_sits_under_the_title_and_is_never_repeated(self):
-        once = rs.apply(AI, "interim")
-        self.assertIn("# Incident Case Report — qa\n\n_Report stage: **Interim** — investigation ongoing._", once)
-        again = rs.apply(once, "final")
+    def test_the_title_and_banner_say_the_stage_and_are_never_repeated(self):
+        once = rs.apply(AI, "final")
+        self.assertIn("# Final Report — qa\n\n_Report stage: **Final** — case closed._", once)
+        again = rs.apply(once, "flash")
         self.assertEqual(again.count("_Report stage:"), 1)
-        self.assertIn("**Final** — case closed", again)
+        self.assertIn("# Flash Report — qa\n", again)                       # re-titled, not "Flash Report — Final Report"
+        self.assertNotIn("Final Report", again)
+
+    def test_an_interim_opens_with_the_status_of_each_host(self):
+        rep = rs.apply(AI, "interim", {"DESKTOP-16OJFO6": "isolated", "ALDC02": "clean"}, "contained")
+        top = rep[:rep.index("## Executive Summary")]
+        self.assertIn("## Status", top)                                      # at the top, before the summary
+        self.assertIn("case status: Contained", top)
+        self.assertIn("| ALDC02 | Clean |\n| DESKTOP-16OJFO6 | Quarantined |", top)
+        self.assertEqual(rs.apply(rep, "interim", {}, "open").count("## Status"), 1)   # rebuilt, never doubled
+        self.assertIn("No host has a status yet", rs.apply(AI, "interim"))
+        self.assertNotIn("## Status", rs.apply(rep, "final"))                # only an Interim carries it
+        self.assertIn("do NOT write your own Status section", rs.directive("interim"))
 
     def test_a_template_flash_keeps_only_its_short_sections(self):
         flash = rs.apply(TEMPLATE, "flash")
@@ -60,7 +71,17 @@ class Stage(unittest.TestCase):
             self.assertIn(keep, flash)
         for drop in ("## Timeline of Events", "## MITRE ATT&CK Mapping"):
             self.assertNotIn(drop, flash)
-        self.assertIn("## Timeline of Events", rs.apply(AI, "flash"))         # the model wrote its own Flash
+        ai = rs.apply(AI.replace("## Recommendations", "## Immediate Containment"), "flash")
+        for drop in ("## Timeline of Events", "## MITRE ATT&CK Mapping", "## Host Risk"):
+            self.assertNotIn(drop, ai)                                          # the appended tables go
+        for keep in ("## Executive Summary", "## Immediate Containment", "_Narrative by live LLM"):
+            self.assertIn(keep, ai)                                             # what the model wrote stays
+
+    def test_the_pdf_cover_names_the_stage(self):
+        with open(os.path.join(_ROOT, "modules/backend/services/engagement/pdf.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn("meta.get('stage_title') or 'Engagement Report'", src)
+        self.assertIn('_Report stage: \\*\\*(Flash|Interim|Final)\\*\\*', src)
 
     def test_host_statuses_reach_the_model(self):
         g = FusionGraph(case_id="c")

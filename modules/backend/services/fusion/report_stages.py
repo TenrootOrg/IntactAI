@@ -27,7 +27,16 @@ _BANNER = re.compile(r"^_Report stage: \*\*[A-Za-z]+\*\* — [^\n]*_\n?", re.M)
 _TEMPLATE_FOOTER = "_Deterministic report"
 # A Flash from the offline template keeps only these sections.
 FLASH_KEEP = ("Executive Summary", "Attack Assessment", "Host Risk", "Recommendations",
-              "Analyst Validations", "Evidence attached")
+              "Evidence attached")
+# A Flash written by the model loses the long fact tables the system appends to
+# every AI report — only those; nothing the model wrote is removed.
+FLASH_DROP = ("Timeline of Events", "MITRE ATT&CK Mapping", "Indicators of Compromise",
+              "Limitations & Assumptions", "Cross-Host Correlation", "Suspicious Timeframes",
+              "Timeframes", "Phases at a glance", "Shared across hosts", "Activity outside",
+              "Host Risk", "Analyst Validations")
+_TITLE = re.compile(r"^# (?:(?:Flash|Interim|Final) Report|Incident Case Report|Incident Report)\s+—\s+(.*)$")
+STATUS_LABEL = {"compromised": "Compromised", "isolated": "Quarantined", "quarantined": "Quarantined",
+                "reimaged": "Reimaged", "clean": "Clean"}
 
 _DIRECTIVE = {
     "flash": (
@@ -42,11 +51,11 @@ _DIRECTIVE = {
         "IOC tables — they belong in the Interim and Final reports."),
     "interim": (
         "REPORT STAGE: INTERIM — the investigation is ongoing.\n"
-        "Keep the full report structure, and add right after the Executive Summary:\n"
-        "## Status — containment per host (use analyst_host_status when given: "
-        "compromised / quarantined / reimaged / clean), what is confirmed so far, and "
-        "the open questions still being investigated.\n"
-        "Mark conclusions as provisional wherever the evidence is not complete yet."),
+        "Keep the full report structure. A Status block (containment per host) is added "
+        "at the top by the system — do NOT write your own Status section. Mark "
+        "conclusions as provisional wherever the evidence is not complete yet, and end "
+        "the narrative with:\n"
+        "## Open Questions — what is not known yet and is still being investigated."),
     "final": (
         "REPORT STAGE: FINAL — the case is closed.\n"
         "Keep the full report structure; state conclusions definitively where the "
@@ -76,21 +85,61 @@ def directive(stage) -> str:
     return _DIRECTIVE.get(stage, "")
 
 
-def apply(md, stage) -> str:
-    """A freshly written report, marked with its stage: a banner under the title,
-    and — for the offline template only — a Flash cut to its short sections."""
+def apply(md, stage, host_status=None, case_status=None) -> str:
+    """A freshly written report, marked with its stage:
+      - the title says it: "# Flash Report — <case>" (also the PDF / HTML cover);
+      - a banner under the title;
+      - Flash: short — the template keeps only its short sections; a model-written
+        Flash loses the long fact tables the system appends;
+      - Interim: a Status block at the top, built by the system from the Risk
+        tab's host statuses ({host name: status}) and the case status."""
     md = _BANNER.sub("", str(md or ""))
+    md = _STATUS_BLOCK.sub("", md)
     if stage not in STAGES or not md.strip():
         return md
-    if stage == "flash" and _TEMPLATE_FOOTER in md:
-        md = _keep_sections(md, FLASH_KEEP)
-    banner = f"_Report stage: **{LABEL[stage]}** — {MEANING[stage]}._\n"
+    if stage == "flash":
+        md = (_keep_sections(md, FLASH_KEEP) if _TEMPLATE_FOOTER in md
+              else _drop_sections(md, FLASH_DROP))
+    banner = f"_Report stage: **{LABEL[stage]}** — {MEANING[stage]}._"
+    extra = ("\n\n" + _status_block(host_status, case_status)) if stage == "interim" else ""
     lines = md.split("\n")
     for i, ln in enumerate(lines):
         if ln.startswith("# "):
-            lines.insert(i + 1, "\n" + banner.rstrip("\n"))
+            m = _TITLE.match(ln)
+            name = m.group(1) if m else ln[2:].strip()
+            lines[i] = f"# {LABEL[stage]} Report — {name}"
+            lines.insert(i + 1, "\n" + banner + extra)
             return "\n".join(lines)
-    return banner + "\n" + md
+    return banner + extra + "\n\n" + md
+
+
+_STATUS_BLOCK = re.compile(r"(?ms)^## Status\n\n_Containment as set on the Risk tab[^\n]*_\n.*?(?=^## |\Z)")
+
+
+def _status_block(host_status, case_status) -> str:
+    rows = sorted((host_status or {}).items())
+    out = ["## Status", "",
+           f"_Containment as set on the Risk tab · case status: {str(case_status or 'open').capitalize()}_", ""]
+    if rows:
+        out += ["| Host | Status |", "|---|---|"]
+        out += [f"| {h} | {STATUS_LABEL.get(st, str(st).capitalize())} |" for h, st in rows]
+    else:
+        out.append("No host has a status yet — set them on the Risk tab (Compromised, Quarantined, "
+                   "Reimaged, Clean).")
+    return "\n".join(out) + "\n"
+
+
+def _drop_sections(md, drop) -> str:
+    """Remove every "## " section whose title starts with one of `drop`."""
+    parts = re.split(r"(?m)^(?=## )", md)
+    head, secs = parts[0], parts[1:]
+    footer = ""
+    if secs:
+        m = re.search(r"\n\n---\n_(?:Deterministic report|Narrative by live LLM)[\s\S]*$", secs[-1])
+        if m:
+            footer, secs[-1] = secs[-1][m.start():], secs[-1][:m.start()]
+    kept = [s for s in secs if not any(s[3:].startswith(k) for k in drop)]
+    return head + "".join(kept) + footer
 
 
 def _keep_sections(md, keep) -> str:

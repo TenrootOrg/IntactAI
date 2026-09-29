@@ -2417,7 +2417,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         _plog("Refusion · graph write", "error", "sidecar write failed (see backend log)")
     _stage = _rs.stage_of(d)
     if _report_is_new:
-        report = _rs.apply(report, _stage)
+        report = _rs.apply(report, _stage, _host_status_labels(g, d), case_info(d)["case_status"])
     report = _with_evidence(case_id, report, d)
     if _report_is_new:
         try:
@@ -4284,7 +4284,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
     # by however long the narrative took -- measured on a live case: the banner
     # said the advisory was 13 minutes in when it had been running for two.
     _stage = _rs.stage_of(d)
-    report = _rs.apply(report, _stage)
+    report = _rs.apply(report, _stage, _host_status_labels(g, d), case_info(d)["case_status"])
     report = _with_evidence(case_id, report, d)
     _narrative_patch = {"report_md": report, "report_dirty": False,
                         # What this report was written FROM, for its own scope. The
