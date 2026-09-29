@@ -533,8 +533,25 @@ def get_case_risk(case_id):
     g = store.view_graph(case_id, d)        # excluded hosts are out of every view
     rows = render.risk_table(g, window=store.view_window(d),
                              min_severity=d.get("min_severity") or "informational")
+    # The analyst's host status, and Velociraptor's own quarantine (read-only).
+    import re as _re
+    statuses, isolated = store.host_statuses(d), store.velociraptor_isolated()
+    for r in rows:
+        r["host_status"] = statuses.get(r.get("client_id") or "", "")
+        m = _re.search(r"C\.[0-9a-fA-F]{16}", str(r.get("client_id") or ""))
+        r["vr_isolated"] = bool(m and m.group(0) in isolated)
     return jsonify({"case_id": case_id, "rows": rows, "total": len(rows),
                     "is_stale": bool(store.stale_member_runs(case_id, d))})
+
+
+@case_bp.route("/api/cases/<case_id>/hosts/status", methods=["POST"])
+def set_host_status(case_id):
+    """{asset_id, status}: the analyst's host status; "" clears it. A label only."""
+    b = request.get_json(silent=True) or {}
+    res = store.set_host_status(case_id, b.get("asset_id"), b.get("status"))
+    if res.get("error") == "case not found":
+        return jsonify(res), 404
+    return jsonify(res), (400 if res.get("error") else 200)
 
 
 @case_bp.route("/api/cases/<case_id>/zoom_targets", methods=["GET"])

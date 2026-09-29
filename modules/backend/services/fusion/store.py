@@ -3478,6 +3478,63 @@ def update_case_info(case_id, fields) -> dict:
     return {"case_id": case_id, **case_info({**d, **patch}), "name": patch.get("name", d.get("name"))}
 
 
+HOST_STATUSES = ("compromised", "isolated", "reimaged", "clean")
+
+
+def host_statuses(d) -> dict:
+    """{asset_id: status} the analyst set on the Risk tab (plan step 4). A case
+    from an older version has none; a damaged entry is skipped, never raised."""
+    raw = (d or {}).get("host_status") if isinstance(d, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): v for k, v in raw.items() if isinstance(v, str) and v in HOST_STATUSES}
+
+
+def set_host_status(case_id, asset_id, status) -> dict:
+    """The analyst's status for one host: compromised / isolated / reimaged /
+    clean, or "" to clear. A label only — no re-fuse, risk unchanged, and
+    nothing is done to the machine."""
+    d = get_case(case_id)
+    if not d:
+        return {"error": "case not found"}
+    asset_id, status = str(asset_id or "").strip(), str(status or "").strip().lower()
+    if not asset_id.startswith("asset:"):
+        return {"error": "not a host id"}
+    if status and status not in HOST_STATUSES:
+        return {"error": f"status must be one of: {', '.join(HOST_STATUSES)} (or empty to clear)"}
+    cur = host_statuses(d)
+    if status:
+        cur[asset_id] = status
+    else:
+        cur.pop(asset_id, None)
+    _merge_case_details(case_id, {"host_status": cur})
+    log_case_event(case_id, "Host status", "info", f"{asset_id}: {status or 'cleared'}")
+    return {"asset_id": asset_id, "status": status}
+
+
+_VR_ISOLATED = {"at": 0.0, "ids": set()}
+
+
+def velociraptor_isolated() -> set:
+    """Velociraptor client ids that carry the "Quarantine" label — what its
+    console's Quarantine button sets (and removes on release). READ-ONLY: we
+    never isolate or release from here. Cached a minute so the Risk tab stays
+    fast; Velociraptor down or absent gives an empty set, never an error."""
+    import time as _t
+    if _t.time() - _VR_ISOLATED["at"] < 60:
+        return _VR_ISOLATED["ids"]
+    ids = set()
+    try:
+        from services import velociraptor_service as vr
+        for c in vr.get_clients_from_snapshot(include_offline=True) or []:
+            if any(str(l).strip().lower() in ("quarantine", "label:quarantine") for l in (c.get("labels") or [])):
+                ids.add(str(c.get("client_id")))
+    except Exception as e:                                   # noqa: BLE001 — a badge, never a failure
+        print(f"[FUSION] Velociraptor isolation check skipped: {e}", flush=True)
+    _VR_ISOLATED.update(at=_t.time(), ids=ids)
+    return ids
+
+
 def _merge_case_details(case_id, patch) -> None:
     """Merge a patch into the case details without disturbing its status.
 

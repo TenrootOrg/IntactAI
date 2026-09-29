@@ -2023,6 +2023,32 @@ function hostToggle(h){ (window._hostExpand=window._hostExpand||{})[h]=!window._
 // why it ranks here, the next step, and the people — those with findings in
 // full (severity, likelihood, your verdict), the rest on one line.
 function _vchip(v){ return v==='compromised'?'<span class="vchip c">compromised</span>':v==='not_compromised'?'<span class="vchip n">not compromised</span>':''; }
+// Host status (plan step 4): the analyst's label for a machine, and — read-only —
+// whether Velociraptor has it quarantined. Nothing here isolates or releases it.
+const HOST_STATUS_LABEL={compromised:'Compromised',isolated:'Isolated',reimaged:'Reimaged',clean:'Clean'};
+function _hostStatusTags(r){
+  const st=HOST_STATUS_LABEL[(r&&r.host_status)||''];
+  const col={compromised:'var(--crit)',isolated:'#d29922',reimaged:'#58a6ff',clean:'#3fb950'}[(r&&r.host_status)||''];
+  return (st?` · <span style="color:${col}">${st}</span>`:'')
+    +((r&&r.vr_isolated)?` · <span style="color:#d29922" title="Velociraptor has this machine quarantined (its Quarantine label). Read from Velociraptor — release it there.">⛔ isolated in Velociraptor</span>`:'');
+}
+function _hostStatusSelect(r){
+  const cur=HOST_STATUS_LABEL[(r&&r.host_status)||'']?r.host_status:'';
+  const o=(v,l)=>`<option value="${v}" ${cur===v?'selected':''}>${l}</option>`;
+  return `<select onclick="event.stopPropagation()" onchange="event.stopPropagation();hostSetStatus('${jsa(r.client_id||'')}',this.value)" style="font-size:12px">${o('','Not set')}${Object.entries(HOST_STATUS_LABEL).map(([k,l])=>o(k,l)).join('')}</select>`
+    +((r&&r.vr_isolated)?'<div style="font-size:11px;color:#d29922;margin-top:3px">⛔ isolated in Velociraptor</div>':'');
+}
+function hostSetStatus(assetId, status){
+  if(!assetId) return;
+  const cid=window._idCase;
+  fetch('/api/cases/'+encodeURIComponent(cid)+'/hosts/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({asset_id:assetId,status})})
+   .then(r=>r.json().catch(()=>({error:'the server did not answer (HTTP '+r.status+')'})))
+   .then(d=>{
+     if(!d||d.error){ toast('Not saved: '+((d&&d.error)||'unknown error')); return; }
+     const row=(((window._riskData||{}).rows)||[]).find(x=>x.client_id===assetId); if(row) row.host_status=d.status||'';
+     _idRender(cid); toast(status?'Host marked '+(HOST_STATUS_LABEL[status]||status)+'.':'Host status cleared.');
+   }).catch(e=>toast('Not saved: '+e));
+}
 function _entHosts(rows, ppl, d){
   if(!((d.rows||[]).length)) return '<div class="empty">No fused data yet — fuse the case first.</div>';
   const jev=(window._idData||{}).sort==='jev', open=window._hostExpand||{}, all=d.rows||[];
@@ -2037,7 +2063,7 @@ function _entHosts(rows, ppl, d){
     const row=`<div class="hgrid" onclick="hostToggle('${jsa(r.host)}')">
        <span style="color:var(--muted);text-align:right;font-size:12px">${i+1}</span>
        <div class="pname" style="min-width:0"><span style="color:var(--muted);display:inline-block;width:14px">${open[r.host]?'▾':'▸'}</span><b>${esc(r.host)}</b>
-         <div class="psub" style="padding-left:14px">${r.row_count} timeline rows${r.escalate?' · <span style="color:var(--crit)">escalate</span>':''}</div></div>
+         <div class="psub" style="padding-left:14px">${r.row_count} timeline rows${r.escalate?' · <span style="color:var(--crit)">escalate</span>':''}${_hostStatusTags(r)}</div></div>
        <div><span class="chip c-${esc(r.severity)}">${esc(r.severity)}</span></div>
        <div style="white-space:nowrap" title="Risk ${r.risk_score} of 100"><span class="meter"><i style="width:${Math.max(0,Math.min(100,r.risk_score))}%;background:${col}"></i></span><b style="font-variant-numeric:tabular-nums">${r.risk_score}</b></div>
        <div class="pcell hcnt">${cnt}</div>
@@ -2050,7 +2076,8 @@ function _entHosts(rows, ppl, d){
     const also=rest.length?`<div style="font-size:12px;color:var(--muted);margin-top:4px">Also seen: ${rest.map(it=>`<span class="elink" style="color:var(--muted)" onclick="event.stopPropagation();entOpenPerson('${jsa(it.key)}')">${esc(it.name||it.key)}</span>`).join(', ')}</div>`:'';
     const bodyH=`<div class="pbody"><div class="hpanel">
         <div><div class="hsec">Why it ranks #${i+1}</div>${why.map(w=>`<div class="hwhy">${esc(w)}</div>`).join('')||'—'}</div>
-        <div><div class="hsec">Next step</div>${r.next_action?`<div class="hnext">${esc(r.next_action)}</div>`:'<span style="color:var(--muted)">—</span>'}
+        <div><div class="hsec">Host status</div>${_hostStatusSelect(r)}
+          <div class="hsec" style="margin-top:10px">Next step</div>${r.next_action?`<div class="hnext">${esc(r.next_action)}</div>`:'<span style="color:var(--muted)">—</span>'}
           <div style="margin-top:8px;font-size:12px;color:var(--muted)">${r.finding_count} distinct detections in ${r.row_count} timeline rows · collected by ${esc((r.modules||[]).join(', ')||'—')}${r.deep?' · deep collection done':''}</div></div>
         <div><div class="hsec">People on this host</div>${people||(rest.length?'':'<span style="color:var(--muted)">—</span>')}${also}</div>
       </div></div>`;
