@@ -39,6 +39,10 @@ _TEMPLATE_FOOTER = "_Deterministic report"
 _BANNER = re.compile(r"^_Report (?:for|stage): \*\*[^*\n]+\*\* — [^\n]*_\n?", re.M)
 _TITLE = re.compile(r"^# (?:(?:Flash|Interim|Final|Technical|Technical Customer|Directors) Report"
                     r"|Incident Case Report|Incident Report)\s+—\s+(.*)$")
+_INTERNAL_LINES = re.compile(r"(?m)^(?:_Report detail: \*\*[^\n]*_|_\*\*(?:Focused|Segmented) report\*\* — [^\n]*_"
+                             r"|\| \*\*Entities correlated\*\* \|[^\n]*)\n?")
+_STATS_BLOCK = re.compile(r"(?m)^(?:> \*\*All timestamps are UTC\.\*\*\n\n\| \| \|\n\|---\|---\|\n(?:\| \*\*[^\n]*\n?)*"
+                          r"|_Scope: [^\n]*_\n?)")
 _STATUS_BLOCK = re.compile(r"(?ms)^## (?:Status|Containment Status)\n\n_Containment as set on the Risk tab[^\n]*_\n.*?(?=^## |\Z)")
 STATUS_LABEL = {"compromised": "Compromised", "isolated": "Quarantined", "quarantined": "Quarantined",
                 "reimaged": "Reimaged", "clean": "Clean"}
@@ -136,17 +140,29 @@ def apply(md, rtype, host_status=None, case_status=None) -> str:
     if rtype in _DROP:
         md = (_keep_sections(md, _TEMPLATE_KEEP[rtype]) if _TEMPLATE_FOOTER in md
               else _drop_sections(md, _DROP[rtype]))
+        # How WE built it (detail level, focused/segmented, entity counts) means
+        # nothing to an outside reader; directors also lose the statistics block.
+        md = _INTERNAL_LINES.sub("", md)
+        if rtype == "directors":
+            md = _STATS_BLOCK.sub("", md)
+        md = re.sub(r"\n{3,}", "\n\n", md)
+    if rtype == "customer":
+        # Before the first section, AFTER the statistics block: _STATUS_BLOCK removes
+        # up to the next "## ", so placed above the statistics it took them with it
+        # the next time the report was shaped.
+        block = _status_block(host_status, case_status) + "\n"
+        m = re.search(r"(?m)^## ", md)
+        md = md[:m.start()] + block + md[m.start():] if m else md.rstrip() + "\n\n" + block
     banner = f"_Report for: **{LABEL[rtype]}** — {READER[rtype]}._"
-    extra = ("\n\n" + _status_block(host_status, case_status)) if rtype == "customer" else ""
     lines = md.split("\n")
     for i, ln in enumerate(lines):
         if ln.startswith("# "):
             m = _TITLE.match(ln)
             name = m.group(1) if m else ln[2:].strip()
             lines[i] = f"# {TITLE[rtype]} — {name}"
-            lines.insert(i + 1, "\n" + banner + extra)
+            lines.insert(i + 1, "\n" + banner)
             return "\n".join(lines)
-    return banner + extra + "\n\n" + md
+    return banner + "\n\n" + md
 
 
 def wants_evidence(d) -> bool:

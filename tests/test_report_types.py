@@ -95,6 +95,27 @@ class Types(unittest.TestCase):
     def test_technical_keeps_everything(self):
         self.assertEqual(heads(rt.apply(AI, "technical")), heads(AI))
 
+    def test_outside_readers_do_not_see_how_we_built_it(self):
+        head = ("# Incident Case Report — qa\n\n> **All timestamps are UTC.**\n\n| | |\n|---|---|\n"
+                "| **Hosts in scope** | 1 |\n| **Entities correlated** | 468 across 112 links |\n\n\n"
+                "_**Focused report** — one scope, analysed in depth. Every finding below is inside this window._\n\n"
+                "## Summary\nx\n\n_Report detail: **explicit** (set for this case)._\n\n"
+                "---\n_Narrative by live LLM; fact tables deterministic._\n")
+        c, d, t = (rt.apply(head, x) for x in ("customer", "directors", "technical"))
+        for gone in ("Focused report", "Report detail", "Entities correlated"):
+            self.assertNotIn(gone, c)
+            self.assertNotIn(gone, d)
+            self.assertIn(gone, t)
+        self.assertIn("| **Hosts in scope** | 1 |", c)
+        self.assertNotIn("Hosts in scope", d)
+        self.assertNotIn("timestamps are UTC", d)
+        self.assertIn("_Narrative by live LLM", d)             # the footer tells an AI report from a template
+        again = rt.apply(c, "customer", {"h1": "isolated"})
+        self.assertIn("| **Hosts in scope** | 1 |", again)       # re-shaping keeps the statistics
+        self.assertEqual(again.count("## Containment Status"), 1)
+        self.assertLess(again.index("Hosts in scope"), again.index("## Containment Status"))
+        self.assertNotIn("\n\n\n", again)
+
     def test_the_pdf_cover_names_the_reader(self):
         src = open(os.path.join(_ROOT, "modules/backend/services/engagement/pdf.py"), encoding="utf-8").read()
         self.assertIn(r"_Report for: \*\*(Technical customers|Directors|Technical)\*\*", src)
