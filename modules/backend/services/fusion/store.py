@@ -5385,12 +5385,19 @@ def get_timeline(case_id) -> list:
     jev_on, jev_s = jev.enabled("disposition"), d.get("jev_suggestions") or {}
     rows = render.timeline(g, window=view_window(d))
     fmap = {f.id: f for f in g.findings}
+    try:
+        from . import case_files as _cf
+        _ev = _cf.per_finding(d)
+    except Exception:                                        # noqa: BLE001 — a count, never a failure
+        _ev = {}
     for r in rows:
         fid = r.get("finding_id")
         # A verdict given on a row this one absorbed (see Finding.aliases) still
         # counts; the row's own id is looked up first.
         v = next((vrec[i] for i in (fmap[fid].ids() if fid in fmap else [fid]) if i in vrec), None)
         r["reopened"] = False
+        if _ev.get(fid):
+            r["evidence"] = _ev[fid]
         if v:
             st = v.get("status", "pending")
             # A benign verdict (Known/False-positive) RE-OPENS to Pending when new

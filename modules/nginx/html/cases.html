@@ -651,6 +651,7 @@ function render(info,md,g){
         <div class="tab ${tab==='timeline'?'on':''}" data-tab="timeline" onclick="setTab('timeline')">Timeline</div>
         <div class="tab ${tab==='identities'?'on':''}" data-tab="identities" onclick="setTab('identities')">Identities</div>
         <div class="tab ${tab==='risk'?'on':''}" data-tab="risk" onclick="setTab('risk')">Risk</div>
+        <div class="tab ${tab==='evidence'?'on':''}" data-tab="evidence" onclick="setTab('evidence')">Evidence</div>
         <div class="tab ${tab==='config'?'on':''}" data-tab="config" onclick="setTab('config')">⚙ Configuration</div>
         <div class="tab ${tab==='log'?'on':''}" data-tab="log" onclick="setTab('log')">Log</div>
       </div>
@@ -716,6 +717,7 @@ function drawTab(md){
     else if(tab==='chat') renderChat(info.case_id);
     else if(tab==='identities') renderIdentities(info.case_id);
     else if(tab==='risk') renderRisk(info);
+    else if(tab==='evidence') renderEvidence(info);
     else if(tab==='log') renderLog(info.case_id);
     else if(tab==='config') renderConfig(info);
     else renderReport(info);
@@ -1043,59 +1045,121 @@ function patchReportStatus(info){
   if(st) st.innerHTML=reportStatusHtml(info);
   if(bt) bt.innerHTML=regenButtonHtml(info);
 }
-// Case files (plan step 6): screenshots, e-mails, logs attached to the case, each
-// with its SHA-256. "Include in AI" is off by default: a picture then reaches the
-// model by its NAME and description only, a text file by its text (capped).
-const _CF_GENERIC=/^(img|image|screenshot|screen[ _-]?shot|capture|photo|pic|picture|untitled|download|snip|clip)?[\s_\-.()]*\d*[\s_\-.()\d]*\.(png|jpe?g|gif|bmp|webp|tiff?)$/i;
-function _cfSize(n){ n=+n||0; return n>=1048576?(n/1048576).toFixed(1)+' MB':n>=1024?Math.round(n/1024)+' KB':n+' B'; }
-function caseFilesHtml(info){
-  const cid=esc((info&&info.case_id)||'');
-  const L=Array.isArray(info&&info.case_files)?info.case_files.filter(x=>x&&x.id&&x.name):[];
-  const open=window._cfOpen!==false;
-  const rows=L.map(x=>{
-    const img=x.kind==='image', generic=img&&_CF_GENERIC.test(String(x.name));
-    return `<div class="erow" style="align-items:flex-start;gap:8px;flex-wrap:wrap">
-      <a href="/api/cases/${cid}/files/${esc(x.id)}" style="font-weight:600">${esc(x.name)}</a>
-      <span title="Rename" style="cursor:pointer;color:var(--muted);font-size:11px" onclick="cfRename('${cid}','${esc(x.id)}')">✎</span>
-      ${generic?'<span class="sg-hint" style="border-color:#d29922;color:#e3b341;cursor:pointer" title="The report and the AI refer to files by name — click to rename" onclick="cfRename(\''+cid+'\',\''+esc(x.id)+'\')">⚠ give it a descriptive name</span>':''}
-      <span style="color:var(--muted);font-size:11px">${img?'picture':x.kind==='text'?'text':'file'} · ${_cfSize(x.size)} · <span title="SHA-256 ${esc(x.sha256||'')}">SHA-256 ${esc(String(x.sha256||'').slice(0,12))}…</span></span>
-      <span style="flex:1;min-width:120px;color:${x.description?'var(--tx)':'var(--muted)'};font-size:12px;cursor:pointer" title="Click to edit the description" onclick="cfDescribe('${cid}','${esc(x.id)}')">${x.description?esc(x.description):'+ description'}</span>
-      <label style="font-size:11px;white-space:nowrap" title="${img?'The AI gets this picture\'s name and description (not the image itself)':'The AI gets this file\'s text (first 20,000 characters, masked)'}"><input type="checkbox" style="width:auto" ${x.ai?'checked':''} onchange="cfPatch('${cid}','${esc(x.id)}',{ai:this.checked})"/> Include in AI</label>
-      <span style="color:var(--muted);cursor:pointer;font-size:11px" title="Delete this file" onclick="cfDel('${cid}','${esc(x.id)}')">✕</span></div>`;}).join('');
-  return `<details ${open?'open':''} ontoggle="window._cfOpen=this.open" style="margin:0 0 10px;border:1px solid var(--bd);border-radius:8px;padding:6px 10px">
-    <summary style="cursor:pointer;font-size:13px"><b>Case files</b> <span style="color:var(--muted)">· ${L.length||'none yet'}</span></summary>
-    <div style="margin-top:6px">${rows}
-      <div class="row" style="gap:8px;margin-top:6px;align-items:center">
-        <label class="dlbtn" style="cursor:pointer">⬆ Upload<input type="file" multiple style="display:none" onchange="cfUpload('${cid}',this.files);this.value=''"/></label>
-        <span style="color:var(--muted);font-size:11px">Give pictures a descriptive name (e.g. anydesk-silent-install.png) — the report and the AI refer to files by name. Up to 100 MB each. Nothing is sent to the AI unless you tick <b>Include in AI</b>.</span>
-      </div></div></details>`;
+// Evidence (plan step 6): files attached to the case — each with a NAME and a
+// DESCRIPTION (required), its SHA-256, host / time / source, and the Timeline event
+// it belongs to when attached from there (event detail → 📎 Attach evidence, host
+// and time then come from the event). Added there or here (+ Add evidence), edited
+// and removed here. "Include in AI" is off by default: the model then gets the
+// name, description and linked event — a text file's text too; never the pixels.
+const EV_SOURCES=[['timeline','Timeline'],['timesketch','TimeSketch'],['kibana','Kibana'],['iris','IRIS'],['velociraptor','Velociraptor'],['other','Other']];
+function _evSize(n){ n=+n||0; return n>=1048576?(n/1048576).toFixed(1)+' MB':n>=1024?Math.round(n/1024)+' KB':n+' B'; }
+function _evList(){ return Array.isArray(curInfo&&curInfo.case_files)?curInfo.case_files.filter(x=>x&&x.id&&x.name):[]; }
+function _evSrc(k){ return (EV_SOURCES.find(([x])=>x===k)||[,'Other'])[1]; }
+function _evFields(pre, v, withFile, linked){
+  const o=(k,l,cur)=>`<option value="${k}" ${cur===k?'selected':''}>${l}</option>`;
+  return `${withFile?`<label>File</label><input type="file" id="${pre}-file"/>`:''}
+    <label>Name <span style="color:var(--crit)">*</span> <span style="color:var(--muted);font-weight:400">— what it is; the report and the AI use it</span></label>
+    <input id="${pre}-name" maxlength="200" value="${esc(v.name||'')}" placeholder="e.g. AnyDesk silent-install prompt on the desktop"/>
+    <label>Description <span style="color:var(--crit)">*</span></label>
+    <textarea id="${pre}-desc" maxlength="1000" style="min-height:44px" placeholder="what it shows and why it matters">${esc(v.description||'')}</textarea>
+    ${linked?`<div class="cfghint">Linked to the Timeline event — host and time come from it.</div>`:`
+    <label>Host</label><input id="${pre}-host" list="ev-hosts" value="${esc(v.host||'')}" placeholder="pick one of the case's hosts, or type"/>
+    <label>Time</label><input id="${pre}-time" value="${esc(v.time||'')}" placeholder="e.g. 2026-09-01T07:20:51Z"/>
+    <label>Source</label><select id="${pre}-src">${EV_SOURCES.filter(([k])=>k!=='timeline'||v.source==='timeline').map(([k,l])=>o(k,l,v.source||'other')).join('')}</select>`}`;
 }
-function _cfRedraw(cid, fn){
-  if(curInfo && curInfo.case_id===cid){ curInfo.case_files=fn(Array.isArray(curInfo.case_files)?curInfo.case_files:[]); const b=$('#casefiles'); if(b) b.innerHTML=caseFilesHtml(curInfo); }
+function _evHostList(cid){
+  if(window._evHostCase===cid) return;
+  window._evHostCase=cid; window._evHosts=[];
+  api('/api/cases/'+cid+'/risk').then(r=>{ window._evHosts=((r&&r.rows)||[]).map(x=>x.host).filter(Boolean);
+    const dl=$('#ev-hosts'); if(dl) dl.innerHTML=window._evHosts.map(h=>`<option value="${esc(h)}">`).join(''); }).catch(()=>{});
 }
-function _cfJson(r){ return r.json().catch(()=>({error:'the server did not answer (HTTP '+r.status+')'})).then(d=>{ if(!d||d.error) throw new Error((d&&d.error)||'unknown error'); return d; }); }
-function cfUpload(cid, files){
-  [...(files||[])].forEach(f=>{
-    if(f.size>100*1024*1024){ toast(f.name+': larger than 100 MB'); return; }
-    const fd=new FormData(); fd.append('file', f);
-    toast('Uploading '+f.name+'…');
-    fetch('/api/cases/'+encodeURIComponent(cid)+'/files',{method:'POST',body:fd}).then(_cfJson)
-      .then(item=>{ _cfRedraw(cid, L=>L.concat([item])); toast('Uploaded '+item.name+'.'); })
-      .catch(e=>toast(f.name+' not uploaded: '+e.message));
-  });
+function _evItem(x){
+  const edit=window._evEdit===x.id, lab=x.finding_title||'';
+  return `<div style="border:1px solid var(--bd);border-radius:8px;padding:8px 10px;margin:6px 0">
+    <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
+      <b>${esc(x.name)}</b>
+      <span style="color:var(--muted);font-size:11px">${esc(_evSrc(x.source))}${x.time?' · '+esc(x.time):''}</span>
+      ${x.finding_id?`<span class="elink" style="font-size:11px" title="Open this event on the Timeline" onclick="evGoEvent('${esc(x.finding_id)}')">→ ${esc(lab.length>70?lab.slice(0,70)+'…':lab)}</span>`:''}
+      <span style="margin-left:auto;display:flex;gap:10px;align-items:center;font-size:11px">
+        <label style="white-space:nowrap" title="${x.kind==='image'?'The AI gets its name, description and linked event — not the picture itself':'The AI gets its name, description, linked event and text (first 20,000 characters, masked)'}"><input type="checkbox" style="width:auto" ${x.ai?'checked':''} onchange="evPatch('${esc(x.id)}',{ai:this.checked})"/> Include in AI</label>
+        <span class="elink" onclick="evEditToggle('${esc(x.id)}')">${edit?'close':'edit'}</span>
+        <span style="color:var(--muted);cursor:pointer" title="Delete" onclick="evDel('${esc(x.id)}')">✕</span></span>
+    </div>
+    <div style="font-size:12.5px;margin:3px 0">${esc(x.description||'')||'<span style="color:var(--muted)">no description</span>'}</div>
+    <div style="font-size:11px;color:var(--muted)"><a href="/api/cases/${esc(curInfo.case_id)}/files/${esc(x.id)}">${esc(x.file_name||x.name)}</a> · ${x.kind==='image'?'picture':x.kind==='text'?'text':'file'} · ${_evSize(x.size)} · <span title="SHA-256 ${esc(x.sha256||'')}">SHA-256 ${esc(String(x.sha256||'').slice(0,16))}…</span></div>
+    ${edit?`<div class="cfgcol" style="margin-top:6px">${_evFields('eve',x,false,!!x.finding_id)}
+      ${x.finding_id?`<label style="margin-top:6px"><input type="checkbox" id="eve-unlink" style="width:auto"/> Unlink from the Timeline event</label>`:''}
+      <div class="row" style="gap:6px;margin-top:6px"><button onclick="evSaveEdit('${esc(x.id)}')">Save</button><button class="ghost" onclick="evEditToggle('${esc(x.id)}')">Cancel</button></div></div>`:''}
+  </div>`;
 }
-function cfPatch(cid, fid, body){
-  return fetch('/api/cases/'+encodeURIComponent(cid)+'/files/'+encodeURIComponent(fid),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-    .then(_cfJson).then(item=>_cfRedraw(cid, L=>L.map(x=>x.id===fid?item:x)))
-    .catch(e=>{ toast('Not saved: '+e.message); _cfRedraw(cid, L=>L); });
+function renderEvidence(info){
+  const cid=info.case_id, all=_evList(), f=window._evFilter||'';
+  _evHostList(cid);
+  const L=f?all.filter(x=>x.finding_id===f):all;
+  const groups={};
+  L.forEach(x=>{ const h=(x.host||'').trim()||'\u0000'; (groups[h]=groups[h]||[]).push(x); });
+  const keys=Object.keys(groups).sort((a,b)=>a==='\u0000'?1:b==='\u0000'?-1:a.localeCompare(b));
+  const body=keys.map(h=>`<h4 style="margin:14px 0 2px;text-transform:none">${h==='\u0000'?'<span style="color:var(--muted)">Not linked to a host</span>':esc(h)} <span style="color:var(--muted);font-weight:400">· ${groups[h].length}</span></h4>`
+      +groups[h].sort((a,b)=>String(a.time||'').localeCompare(String(b.time||''))).map(_evItem).join('')).join('');
+  const fl=f?(all.find(x=>x.finding_id===f)||{}).finding_title||'this event':'';
+  $('#tabc').innerHTML=`<datalist id="ev-hosts">${(window._evHosts||[]).map(h=>`<option value="${esc(h)}">`).join('')}</datalist>
+    <p class="ent-cap">Evidence for this case — screenshots, e-mails, logs, exports from TimeSketch, Kibana or IRIS. Attach from a Timeline event (open it → <b>📎 Attach evidence</b>) and it is linked to that event and its host; or add it here. Nothing reaches the AI unless you tick <b>Include in AI</b>.</p>
+    ${f?`<div class="agnote">Evidence for: <b>${esc(fl)}</b> · <span class="elink" onclick="window._evFilter='';renderEvidence(curInfo)">show all</span></div>`:''}
+    <div class="row" style="gap:8px;margin:6px 0"><button onclick="window._evAdd=!window._evAdd;renderEvidence(curInfo)">${window._evAdd?'Close':'+ Add evidence'}</button>
+      <span style="color:var(--muted);font-size:12px">${all.length} item(s) · up to 100 MB each</span></div>
+    ${window._evAdd?`<div class="cfgcol" style="border:1px solid var(--bd);border-radius:8px;padding:8px 10px;max-width:640px">${_evFields('evn',{},true,false)}
+      <div class="row" style="margin-top:6px"><button onclick="evSubmit('evn','')">Add</button></div></div>`:''}
+    ${body||'<div class="empty">No evidence yet.</div>'}`;
 }
-function _cfItem(fid){ return ((curInfo&&curInfo.case_files)||[]).find(x=>x.id===fid)||{}; }
-function cfRename(cid, fid){ const n=prompt('File name (keep the extension):', _cfItem(fid).name||''); if(n!==null && n.trim()) cfPatch(cid, fid, {name:n.trim()}); }
-function cfDescribe(cid, fid){ const d=prompt('Description — what this file shows:', _cfItem(fid).description||''); if(d!==null) cfPatch(cid, fid, {description:d}); }
-function cfDel(cid, fid){
-  if(!confirm('Delete '+(_cfItem(fid).name||'this file')+'? It is removed from the appliance.')) return;
-  fetch('/api/cases/'+encodeURIComponent(cid)+'/files/'+encodeURIComponent(fid),{method:'DELETE'}).then(_cfJson)
-    .then(()=>_cfRedraw(cid, L=>L.filter(x=>x.id!==fid))).catch(e=>toast('Not deleted: '+e.message));
+function evShowFor(fid){ window._evFilter=fid; setTab('evidence'); }
+function evGoEvent(fid){ setTab('timeline'); setTimeout(()=>openFindingDetail(fid), 600); }
+function evEditToggle(id){ window._evEdit=(window._evEdit===id)?null:id; renderEvidence(curInfo); }
+function _evJson(r){ return r.json().catch(()=>({error:'the server did not answer (HTTP '+r.status+')'})).then(d=>{ if(!d||d.error) throw new Error((d&&d.error)||'unknown error'); return d; }); }
+function _evRefresh(fn){
+  if(!curInfo) return;
+  curInfo.case_files=fn(Array.isArray(curInfo.case_files)?curInfo.case_files:[]);
+  // the Timeline's 📎 counts follow
+  const n={}; curInfo.case_files.forEach(x=>{ if(x.finding_id) n[x.finding_id]=(n[x.finding_id]||0)+1; });
+  (window._tlData||[]).forEach(r=>{ r.evidence=n[r.finding_id]||0; });
+  if(tab==='evidence') renderEvidence(curInfo); else if(tab==='timeline' && typeof tlPaint==='function') tlPaint();
+}
+function evSubmit(pre, findingId){
+  const v=k=>(document.getElementById(pre+'-'+k)||{}).value||'';
+  const fe=document.getElementById(pre+'-file'), file=fe&&fe.files&&fe.files[0];
+  if(!file){ toast('Choose a file.'); return; }
+  if(file.size>100*1024*1024){ toast('The file is larger than 100 MB.'); return; }
+  if(!v('name').trim()||!v('desc').trim()){ toast('Give the evidence a name and a description.'); return; }
+  const fd=new FormData(); fd.append('file',file); fd.append('name',v('name')); fd.append('description',v('desc'));
+  if(findingId) fd.append('finding_id',findingId); else { fd.append('host',v('host')); fd.append('time',v('time')); fd.append('source',v('src')); }
+  toast('Uploading '+file.name+'…');
+  fetch('/api/cases/'+encodeURIComponent(curInfo.case_id)+'/files',{method:'POST',body:fd}).then(_evJson)
+    .then(item=>{ window._evAdd=false; const box=$('#ev-attach'); if(box) box.innerHTML='<div class="agnote">Attached: <b>'+esc(item.name)+'</b></div>';
+      _evRefresh(L=>L.concat([item])); toast('Evidence added.'); })
+    .catch(e=>toast('Not added: '+e.message));
+}
+function evPatch(id, body){
+  return fetch('/api/cases/'+encodeURIComponent(curInfo.case_id)+'/files/'+encodeURIComponent(id),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(_evJson).then(item=>{ _evRefresh(L=>L.map(x=>x.id===id?item:x)); return item; })
+    .catch(e=>{ toast('Not saved: '+e.message); _evRefresh(L=>L); });
+}
+function evSaveEdit(id){
+  const v=k=>{ const el=document.getElementById('eve-'+k); return el?el.value:undefined; };
+  const body={name:v('name'),description:v('desc')};
+  if(v('host')!==undefined){ body.host=v('host'); body.time=v('time'); body.source=v('src'); }
+  const un=document.getElementById('eve-unlink'); if(un&&un.checked) body.finding_id='';
+  if(!String(body.name||'').trim()||!String(body.description||'').trim()){ toast('The name and the description cannot be empty.'); return; }
+  evPatch(id, body).then(it=>{ if(it){ window._evEdit=null; renderEvidence(curInfo); toast('Saved.'); } });
+}
+function evDel(id){
+  const x=_evList().find(y=>y.id===id)||{};
+  if(!confirm('Delete "'+(x.name||'this evidence')+'"? The file is removed from the appliance.')) return;
+  fetch('/api/cases/'+encodeURIComponent(curInfo.case_id)+'/files/'+encodeURIComponent(id),{method:'DELETE'}).then(_evJson)
+    .then(()=>_evRefresh(L=>L.filter(y=>y.id!==id))).catch(e=>toast('Not deleted: '+e.message));
+}
+function evAttachForm(fid){
+  const box=$('#ev-attach'); if(!box) return;
+  box.innerHTML=`<div class="cfgcol" style="border:1px solid var(--bd);border-radius:8px;padding:8px 10px;margin-top:8px">${_evFields('eva',{},true,true)}
+    <div class="row" style="gap:6px;margin-top:6px"><button onclick="evSubmit('eva','${esc(fid)}')">Attach</button><button class="ghost" onclick="$('#ev-attach').innerHTML=''">Cancel</button></div></div>`;
 }
 function renderReport(info){
   const id=info.case_id;
@@ -1110,7 +1174,7 @@ function renderReport(info){
     <span id="regenslot">${regenButtonHtml(info)}</span>
     ${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}
     <span style="color:var(--muted);font-size:11px;margin-left:auto">auto-generated on first scan · regenerate to apply Timeline changes</span>
-  </div><div id="casefiles">${caseFilesHtml(info)}</div><div id="zoomcards">${_zoomHtml.id===id?_zoomHtml.html:''}</div><div class="md">${mdToHtml(mdBody)}</div>`;
+  </div><div id="zoomcards">${_zoomHtml.id===id?_zoomHtml.html:''}</div><div class="md">${mdToHtml(mdBody)}</div>`;
   clampEvidence($('#tabc'));
   loadZoomTargets(id);   // macro report -> clickable "Analyze this scope" presets
   // A page reload (or a tab switch back to Analysis) while a generation is
@@ -1847,7 +1911,7 @@ function _tlRowHtml(r, supp, seg){
       <code style="white-space:nowrap">${esc(r.ts||'—')}${_tlUntil(r)}</code>
       <div class="tlmeta" style="cursor:pointer" title="${esc(tip)}" onclick="${act}">
         <span>${r.is_new?'<span class="tlnew" title="Joined or grew since this group was last reviewed">NEW</span> ':''}<strong>${esc(r.host||'-')}</strong> ${r.phase?`<span style="color:var(--muted)">[${esc(r.phase)}]</span>`:''} ${esc(_tlTitle(r))} ${det}</span>
-        <span class="l2">${arts}${_tlLoggedAs(r)}${_tlPartsToggle(r)}${r.reopened?'<span class="sg-hint" style="border-color:#d29922;color:#e3b341" title="A new occurrence arrived after your last verdict — re-validate this one.">⟳ re-opened: new activity since you validated</span>':''}${r.manual?'<span class="sg-hint" style="border-style:solid">manual</span>':''}${(r.hits||1)>1?`<span class="sg-hint" style="border-style:solid;color:var(--muted)" title="Hits in this episode — the detection is one row until it goes quiet for 4 hours">${Number(r.hits).toLocaleString()} hits</span>`:''}${_tlJev(r)}${r.notes?`<span style="color:var(--muted);font-size:11px">— ${esc(r.notes)}</span>`:''}</span>
+        <span class="l2">${arts}${_tlLoggedAs(r)}${_tlPartsToggle(r)}${r.reopened?'<span class="sg-hint" style="border-color:#d29922;color:#e3b341" title="A new occurrence arrived after your last verdict — re-validate this one.">⟳ re-opened: new activity since you validated</span>':''}${r.manual?'<span class="sg-hint" style="border-style:solid">manual</span>':''}${(r.hits||1)>1?`<span class="sg-hint" style="border-style:solid;color:var(--muted)" title="Hits in this episode — the detection is one row until it goes quiet for 4 hours">${Number(r.hits).toLocaleString()} hits</span>`:''}${_tlJev(r)}${r.evidence?`<span class="sg-hint" style="border-style:solid;cursor:pointer" title="Evidence attached to this event — click to see it" onclick="event.stopPropagation();evShowFor('${esc(r.finding_id)}')">📎 ${r.evidence}</span>`:''}${r.notes?`<span style="color:var(--muted);font-size:11px">— ${esc(r.notes)}</span>`:''}</span>
       </div>
       ${_tlSevChip(r.severity, _tlParts(r))}
       <span class="seg">${seg}</span>
@@ -1956,6 +2020,7 @@ function openFindingDetail(fid){
       ${f.summary?`<p style="font-size:13px;margin:6px 0">${esc(f.summary)}</p>`:''}
       ${(f.mitre&&f.mitre.length)?`<div style="font-size:11px;color:var(--muted)">MITRE: ${f.mitre.map(esc).join(', ')}</div>`:''}
       ${(f.sources&&f.sources.length)?`<div style="font-size:11px;color:var(--muted)">source: ${f.sources.map(esc).join(', ')}</div>`:''}
+      <div style="margin-top:10px"><button class="ghost" style="font-size:12px" onclick="evAttachForm('${esc(f.id||fid)}')" title="Attach a screenshot, e-mail or log to this event — it is linked to it and its host">📎 Attach evidence</button><div id="ev-attach"></div></div>
       <h4 style="margin:14px 0 4px;text-transform:none">Occurrences${more}</h4>
       ${occHtml}`;
   }).catch(_=>{dr.innerHTML='<div style="color:#f85149">could not load detail</div>';});

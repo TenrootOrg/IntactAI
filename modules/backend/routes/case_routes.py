@@ -554,11 +554,17 @@ def _cf_reply(res):
 
 @case_bp.route("/api/cases/<case_id>/files", methods=["POST"])
 def upload_case_file(case_id):
-    """multipart: file (+ optional description). Up to 100 MB; SHA-256 recorded."""
+    """multipart: file, name, description (both required), host, time, source,
+    finding_id (a Timeline row: host / time / title are then taken from the case).
+    Up to 100 MB; SHA-256 recorded."""
     f = request.files.get("file")
     if not f or not f.filename:
         return jsonify({"error": "no file"}), 400
-    return _cf_reply(_case_files.add(case_id, f.stream, f.filename, request.form.get("description", "")))
+    fm = request.form
+    return _cf_reply(_case_files.add(case_id, f.stream, f.filename, name=fm.get("name", ""),
+                                     description=fm.get("description", ""), host=fm.get("host", ""),
+                                     time=fm.get("time", ""), source=fm.get("source", ""),
+                                     finding_id=fm.get("finding_id", "")))
 
 
 @case_bp.route("/api/cases/<case_id>/files/<file_id>", methods=["GET"])
@@ -567,15 +573,13 @@ def download_case_file(case_id, file_id):
     p = _case_files.path_of(case_id, file_id)
     if not item or not p:
         return jsonify({"error": "no such file"}), 404
-    return send_file(p, as_attachment=True, download_name=item["name"])
+    return send_file(p, as_attachment=True, download_name=item["file_name"])
 
 
 @case_bp.route("/api/cases/<case_id>/files/<file_id>", methods=["PATCH"])
 def update_case_file(case_id, file_id):
-    """{name?, description?, ai?}"""
-    b = request.get_json(silent=True) or {}
-    return _cf_reply(_case_files.update(case_id, file_id, name=b.get("name"),
-                                        description=b.get("description"), ai=b.get("ai")))
+    """{name?, description?, host?, time?, source?, ai?, finding_id: "" to unlink}"""
+    return _cf_reply(_case_files.update(case_id, file_id, request.get_json(silent=True) or {}))
 
 
 @case_bp.route("/api/cases/<case_id>/files/<file_id>", methods=["DELETE"])
