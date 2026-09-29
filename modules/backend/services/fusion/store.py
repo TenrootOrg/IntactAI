@@ -15,7 +15,7 @@ import os
 import re
 import threading
 
-from . import report_stages as _rs
+from . import report_types as _rs
 import traceback
 
 from .schema import FusionGraph
@@ -2262,7 +2262,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                              kwargs={"write_off": False}, daemon=True).start()
         try:
             report = llm_sim.generate_report(
-                gr, stage=_rs.stage_of(d), window=_rwindow, min_severity=min_sev,
+                gr, report_type=_rs.type_of(d), window=_rwindow, min_severity=min_sev,
                 initial_access=d.get("initial_access_estimate"),
                 case_name=d.get("name", "Case"), run_id=case_id,
                 audience=d.get("audience", "both"), language=d.get("language", "en"),
@@ -2415,13 +2415,13 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
           f"{len(pruned.get('entities') or {}):,} entities → sidecar", pct=95)
     if not _write_graph_sidecar(case_id, pruned):
         _plog("Refusion · graph write", "error", "sidecar write failed (see backend log)")
-    _stage = _rs.stage_of(d)
+    _rtype = _rs.type_of(d)
     if _report_is_new:
-        report = _rs.apply(report, _stage, _host_status_labels(g, d), case_info(d)["case_status"])
+        report = _rs.apply(report, _rtype, _host_status_labels(g, d), case_info(d)["case_status"])
     report = _with_evidence(case_id, report, d)
     if _report_is_new:
         try:
-            _rs.archive(case_id, report, _stage)
+            _rs.archive(case_id, report, _rtype)
         except Exception as e:                               # noqa: BLE001 — history, never a failed fuse
             print(f"[FUSION] report not kept in history for {case_id}: {e}", flush=True)
     _details = {"fusion_graph": {},
@@ -4214,7 +4214,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
                        "no LLM tokens spent")
     try:
         report = llm_sim.generate_report(
-            gv, stage=_rs.stage_of(d), window=window, min_severity=min_sev,
+            gv, report_type=_rs.type_of(d), window=window, min_severity=min_sev,
             initial_access=d.get("initial_access_estimate"), case_name=d.get("name", "Case"),
             run_id=case_id, audience=d.get("audience", "both"), language=d.get("language", "en"),
             altitude_mode=d.get("report_altitude") or "auto",
@@ -4283,8 +4283,8 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
     # "now generating the advisory" reads as the advisory's elapsed and is wrong
     # by however long the narrative took -- measured on a live case: the banner
     # said the advisory was 13 minutes in when it had been running for two.
-    _stage = _rs.stage_of(d)
-    report = _rs.apply(report, _stage, _host_status_labels(g, d), case_info(d)["case_status"])
+    _rtype = _rs.type_of(d)
+    report = _rs.apply(report, _rtype, _host_status_labels(g, d), case_info(d)["case_status"])
     report = _with_evidence(case_id, report, d)
     _narrative_patch = {"report_md": report, "report_dirty": False,
                         # What this report was written FROM, for its own scope. The
@@ -4322,7 +4322,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
     try:
         _on_screen = write_report_for_scope(case_id, _gen_scope, _narrative_patch)
         try:
-            _rs.archive(case_id, report, _stage)
+            _rs.archive(case_id, report, _rtype)
         except Exception as e:                               # noqa: BLE001 — history, never a failed save
             print(f"[FUSION] report not kept in history for {case_id}: {e}", flush=True)
         log_case_event(case_id, "Report saved", "success",

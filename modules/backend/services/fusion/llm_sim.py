@@ -1770,7 +1770,7 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
 
 def generate_report(graph, *, window=None, min_severity="informational",
                     initial_access=None, case_name="Case", run_id=None,
-                    audience="both", language="en", master_prompt=None, mask=None, stage=None,
+                    audience="both", language="en", master_prompt=None, mask=None, report_type=None,
                     altitude_mode="auto",
                     dispositions=None, validations=None, prefer_llm=True,
                     max_entities=None, budget_chars=None, max_output_tokens=None,
@@ -1880,15 +1880,19 @@ def generate_report(graph, *, window=None, min_severity="informational",
                            "model could not analyse them. Say plainly which phases were not "
                            "analysed and why, and do not describe what happened in them "
                            "beyond their window, hosts and finding counts.")
+            # A report TYPE (who the report is for) replaces the older audience tone
+            # setting; the language setting still applies.
+            if report_type:
+                audience = "both"
             if (audience and audience != "both") or (language and language != "en"):
                 try:                              # reuse engagement audience/language tailoring
                     from services.engagement.templates import audience_language_directive
                     system = system + "\n\n" + audience_language_directive(audience, language)
                 except Exception:
                     pass
-            if stage:                             # Flash / Interim / Final (plan step 9)
-                from . import report_stages as _rs
-                _d = _rs.directive(stage)
+            if report_type:                       # Technical / Technical customers / Directors
+                from . import report_types as _rt
+                _d = _rt.directive(report_type)
                 if _d:
                     system = system + "\n\n" + _d
             if master_prompt:

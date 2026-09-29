@@ -94,12 +94,19 @@ DFIR engagements usually produce reports at stages (NIST SP 800-61, SANS):
 | **Lessons learned** | after closure | what worked, gaps, improvements to tooling and process |
 | Specialised | when required | regulatory / breach notification (e.g. GDPR 72 h), forensic examination report for legal use (chain of custody) |
 
-Suggestion: a **report stage** choice — Flash / Interim / Final (Lessons learned
-later) — next to the existing audience choice (Executive / Technical / Both).
-Each stage is a different section list and length; the case status (item 2)
-proposes the default (Open → Interim, Closed → Final). Each generated report is
-kept with its stage and date, so an Interim does not overwrite the Final.
-**Built 2026-09-29:** Flash / Interim / Final with a report history (view, PDF / HTML / MD, delete). History does not travel in case export/import yet.
+Chosen (2026-09-29): stages were dropped for **report types — who reads it**:
+
+| Type | Reader | What it is |
+|---|---|---|
+| **Technical** | us | the full internal report, every fact table (unchanged) |
+| **Technical customers** | the customer's IT / security team | what happened, affected assets, IOCs to block, remediation, detection; our internal tables (Analyst Validations, Host Risk, timeframes) removed; a Containment Status table |
+| **Directors** | executives | about one page, plain language, no tables: bottom line, business impact, what we did, decisions needed, next steps; no evidence section |
+
+Each type is its own instruction to the model and works without one (the template
+keeps only that reader's sections). Each generated report is kept with its type and
+date in a report history (view, PDF / HTML / MD, delete); reports from the stage
+version keep their Flash / Interim / Final label. History does not travel in case
+export/import yet.
 
 ---
 
@@ -114,4 +121,5 @@ kept with its stage and date, so an Interim does not overwrite the Final.
 | 7. Who-did-what on every action, a log that cannot be cleared | Multi-user does not exist yet; leave it until it does. |
 | 8. Search across cases | Cases are deliberately separate; hunts and workflows from another case can be pulled in when needed. |
 | 9 (as proposed). DOCX export | Left for now; replaced by report types (above). |
+| 9. Flash / Interim / Final stages | Built, then replaced — the reports did not differ enough; the reader matters more than the stage. |
 | 10. Multiple users with roles | Not in this version — too large for now; a later version. |

@@ -1180,19 +1180,19 @@ function evAttachFiles(fid, files){
 // Report history (plan step 9): every report written is kept with its stage and
 // date; view one in place of the current report, download it (MD / PDF / HTML) or
 // delete it. The current report is always the newest.
-const RP_STAGE={flash:'Flash',interim:'Interim',final:'Final'};
+const RP_LABEL={technical:'Technical',customer:'Technical customers',directors:'Directors',flash:'Flash',interim:'Interim',final:'Final'};
 function reportHistoryHtml(info, viewing){
   const H=Array.isArray(info&&info.report_history)?info.report_history.filter(x=>x&&x.id):[];
   const cid=esc(info.case_id), open=!!window._rpHistOpen;
   const dl=(x,f,l)=>`<a class="elink" href="/api/cases/${cid}/reports/${esc(x.id)}/download?fmt=${f}" target="_blank">${l}</a>`;
   const rows=H.map((x,i)=>`<div class="erow" style="gap:10px;align-items:center;font-size:12px">
-      <span class="sg-hint" style="border-style:solid">${esc(RP_STAGE[x.stage]||'Report')}</span>
+      <span class="sg-hint" style="border-style:solid">${esc(x.label||RP_LABEL[x.type]||'Report')}</span>
       <span>${esc(String(x.at||'').replace('T',' ').slice(0,16))} UTC</span>
       <span style="color:var(--muted)">${x.kind==='ai'?'AI report':'template report'}${i===0?' · current':''}</span>
       <span style="margin-left:auto;display:flex;gap:10px">${viewing&&viewing.id===x.id?'<b>viewing</b>':`<span class="elink" onclick="rpView('${cid}','${esc(x.id)}')">view</span>`}
         ${dl(x,'pdf','PDF')}${dl(x,'html','HTML')}${dl(x,'md','MD')}
         <span style="color:var(--muted);cursor:pointer" title="Delete this kept report" onclick="rpDelete('${cid}','${esc(x.id)}')">✕</span></span></div>`).join('');
-  const banner=viewing?`<div class="agnote">Viewing the <b>${esc(RP_STAGE[viewing.stage]||'')}</b> report of ${esc(String(viewing.at||'').replace('T',' ').slice(0,16))} UTC — not the current one. <span class="elink" onclick="rpBack()">Back to the current report</span></div>`:'';
+  const banner=viewing?`<div class="agnote">Viewing the <b>${esc(viewing.label||'')}</b> report of ${esc(String(viewing.at||'').replace('T',' ').slice(0,16))} UTC — not the current one. <span class="elink" onclick="rpBack()">Back to the current report</span></div>`:'';
   return `${banner}<details ${open||viewing?'open':''} ontoggle="window._rpHistOpen=this.open" style="margin:0 0 10px;border:1px solid var(--bd);border-radius:8px;padding:6px 10px">
     <summary style="cursor:pointer;font-size:13px"><b>Report history</b> <span style="color:var(--muted)">· ${H.length?H.length+' kept':'none yet — every report written from now on is kept here'}</span></summary>
     <div style="margin-top:4px">${rows||''}</div></details>`;
@@ -1200,7 +1200,7 @@ function reportHistoryHtml(info, viewing){
 function rpView(cid, rid){
   api('/api/cases/'+encodeURIComponent(cid)+'/reports/'+encodeURIComponent(rid)).then(d=>{
     if(!d||d.error){ toast('Could not open it: '+((d&&d.error)||'unknown error')); return; }
-    window._rpView={case_id:cid, id:rid, stage:d.stage, at:d.at, report_md:d.report_md||''};
+    window._rpView={case_id:cid, id:rid, label:d.label, at:d.at, report_md:d.report_md||''};
     if(tab==='report' && curInfo) renderReport(curInfo);
   }).catch(e=>toast('Could not open it: '+e));
 }
@@ -1227,10 +1227,10 @@ function renderReport(info){
   const mdBody = md.replace(/\n\n---\n_(?:Deterministic report — [\s\S]*?|Narrative by live LLM[\s\S]*?)_\n\s*$/, '')
     // evidence pictures: shown from the appliance (the PDF / HTML embed them)
     .replace(/!\[([^\]]*)\]\(evidence:([0-9a-f]{12})\)/g, (m,a,f)=>`![${a}](/api/cases/${id}/files/${f}?inline=1)`);
-  const stg=['flash','interim','final'].includes(info.report_stage)?info.report_stage:'interim';
-  const so=(k,l)=>`<option value="${k}" ${stg===k?'selected':''}>${l}</option>`;
+  const rtp=['technical','customer','directors'].includes(info.report_type)?info.report_type:'technical';
+  const so=(k,l)=>`<option value="${k}" ${rtp===k?'selected':''}>${l}</option>`;
   $('#tabc').innerHTML=`<div id="reportstatus">${reportStatusHtml(info)}</div><div class="row" style="gap:8px;margin-bottom:10px;align-items:center">
-    <select id="rp-stage" style="font-size:12px;width:auto" title="Report stage — Flash: the first short notification · Interim: while the case is open (adds a Status section with containment per host) · Final: at closure (adds Lessons learned). Each report written is kept in the history below.">${so('flash','Flash')}${so('interim','Interim')}${so('final','Final')}</select>
+    <label style="font-size:12px;white-space:nowrap">Report for <select id="rp-type" style="font-size:12px;width:auto" title="Technical — us, the investigating team: the full report · Technical customers — the customer's IT / security team: what happened, affected assets, indicators to block, remediation · Directors — executives: about one page, business impact and decisions needed, nothing technical. Each report written is kept in the history below.">${so('technical','Technical (us)')}${so('customer','Technical customers')}${so('directors','Directors')}</select></label>
     <span id="regenslot">${regenButtonHtml(info)}</span>
     ${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}${dl('/report/download/html','⬇ HTML')}
     <label style="font-size:12px;white-space:nowrap" title="On: the report gets an Evidence section with every item and its pictures (also in the PDF and HTML), and the AI is given the evidence — names, descriptions, linked findings and the text of text files, never the pictures themselves. Regenerate the report after changing it."><input type="checkbox" style="width:auto" ${info.include_evidence?'checked':''} onchange="evToggleInclude('${esc(id)}',this.checked)"/> Include evidence in the report and AI</label>
@@ -1587,9 +1587,9 @@ function regenReport(id){
   // instead. Saying "sending case data to the model" up front was untrue there
   // (QA TASK-12656).
   // use_llm:true -> premium LLM narrative (the only report path that spends tokens)
-  const _st=(document.getElementById('rp-stage')||{}).value||'';
-  if(_st && curInfo && curInfo.case_id===id) curInfo.report_stage=_st;
-  api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({use_llm:true, stage:_st||undefined})})
+  const _rt=(document.getElementById('rp-type')||{}).value||'';
+  if(_rt && curInfo && curInfo.case_id===id) curInfo.report_type=_rt;
+  api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({use_llm:true, report_type:_rt||undefined})})
    .then(r=>{
      if(r && r.status==='offline'){
        // Already written, synchronously. Nothing is generating; just show it.

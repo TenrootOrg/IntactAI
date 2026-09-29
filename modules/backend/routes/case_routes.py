@@ -14,7 +14,7 @@ from flask import Blueprint, jsonify, request, Response, send_file
 
 from services.fusion import store, render
 from services.fusion import case_files as _case_files
-from services.fusion import report_stages as _report_stages
+from services.fusion import report_types as _report_types
 from services.fusion.schema import FusionGraph
 
 case_bp = Blueprint("case", __name__)
@@ -404,8 +404,8 @@ def get_case(case_id):
                     **store.case_info(d),
                     "case_files": _case_files.listing(d),
                     "include_evidence": _case_files.included(d),
-                    "report_stage": _report_stages.stage_of(d),
-                    "report_history": _report_stages.history(d),
+                    "report_type": _report_types.type_of(d),
+                    "report_history": _report_types.history(d),
                     "masking": d.get("masking") or {"enabled": False, "patterns": []},
                     "included_run_ids": d.get("included_run_ids"),
                     # null-guarded for cases created before these existed
@@ -1349,11 +1349,10 @@ def regenerate_report(case_id):
     if not store.get_case(case_id):
         return jsonify({"error": "case not found"}), 404
     b = request.get_json(silent=True) or {}
-    # Flash / Interim / Final (plan step 9): the stage of THIS report, remembered
-    # for the next one; missing or unknown -> the case keeps the stage it had.
-    from services.fusion import report_stages as _rs
-    if b.get("stage") in _rs.STAGES:
-        store._merge_case_details(case_id, {"report_stage": b["stage"]})
+    # Who this report is for — Technical / Technical customers / Directors —
+    # remembered for the next one; missing or unknown keeps the case's type.
+    if b.get("report_type") in _report_types.TYPES:
+        store._merge_case_details(case_id, {"report_type": b["report_type"]})
     use_llm = bool(b.get("use_llm"))
     if not use_llm:
         res = store.regenerate_report(case_id, audience=b.get("audience"), use_llm=False)
@@ -1422,8 +1421,8 @@ def report_download_html(case_id):
 def kept_report(case_id, rid):
     """One report from the case's history (its Markdown), to view on the page."""
     d = store.get_case(case_id)
-    item = next((x for x in _report_stages.history(d or {}) if x["id"] == rid), None)
-    md = _report_stages.read(case_id, rid) if item else None
+    item = next((x for x in _report_types.history(d or {}) if x["id"] == rid), None)
+    md = _report_types.read(case_id, rid) if item else None
     if not md:
         return jsonify({"error": "no such report"}), 404
     return jsonify({**item, "report_md": md})
@@ -1433,15 +1432,15 @@ def kept_report(case_id, rid):
 def kept_report_download(case_id, rid):
     """?fmt=md | pdf | html — a report from the history, like the current one's downloads."""
     d = store.get_case(case_id)
-    item = next((x for x in _report_stages.history(d or {}) if x["id"] == rid), None)
-    md = _report_stages.read(case_id, rid) if item else None
+    item = next((x for x in _report_types.history(d or {}) if x["id"] == rid), None)
+    md = _report_types.read(case_id, rid) if item else None
     if not md:
         return jsonify({"error": "no such report"}), 404
     fmt = request.args.get("fmt", "pdf")
-    # "IntactAI Incident Report - <case> - Interim - 2026-09-29 1012": the stage and
+    # "IntactAI Incident Report - <case> - Directors - 2026-09-29 1012": the type and
     # WHEN it was written, not today's date
     base = (_report_filename(d, "x")[:-2].rsplit(" - ", 1)[0]
-            + f" - {_report_stages.LABEL[item['stage']]} - {str(item['at'])[:16].replace('T', ' ').replace(':', '')}")
+            + f" - {item['label']} - {str(item['at'])[:16].replace('T', ' ').replace(':', '')}")
     if fmt == "md":
         return Response(store.engagement_markdown(case_id, body=md), mimetype="text/markdown",
                         headers={"Content-Disposition": f'attachment; filename="{base}.md"'})
@@ -1463,7 +1462,7 @@ def kept_report_download(case_id, rid):
 def delete_kept_report(case_id, rid):
     if not store.get_case(case_id):
         return jsonify({"error": "case not found"}), 404
-    res = _report_stages.delete(case_id, rid)
+    res = _report_types.delete(case_id, rid)
     return jsonify(res), (404 if res.get("error") else 200)
 
 

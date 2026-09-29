@@ -140,10 +140,11 @@ def _extract_cover_meta(md: str) -> dict:
     m = _SEVERITY_RE.search(md)
     if m:
         out['severity'] = m.group('severity').strip()
-    # Flash / Interim / Final (report stages): the cover says which report this is
-    m = re.search(r"_Report stage: \*\*(Flash|Interim|Final)\*\*", md)
+    # Who the report is for (report types): the cover says which report this is
+    m = re.search(r"_Report for: \*\*(Technical customers|Directors|Technical)\*\*", md)
     if m:
-        out['stage_title'] = f"{m.group(1)} Report"
+        out['stage_title'] = {"Technical customers": "Technical Customer Report",
+                              "Directors": "Directors Report"}.get(m.group(1), "Technical Report")
     return out
 
 
