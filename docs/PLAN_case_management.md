@@ -108,6 +108,7 @@ kept with its stage and date, so an Interim does not overwrite the Final.
 | Item | Decision |
 |---|---|
 | 1. A note on a verdict | Built as step 2, then reverted (55cca3ba) — not wanted now. |
+| 4. Next steps checklist | Built as step 5, then reverted — not wanted. |
 | 3. IOC tab (add/edit, CSV / STIX / MISP export) | Not needed. |
 | 7. Who-did-what on every action, a log that cannot be cleared | Multi-user does not exist yet; leave it until it does. |
 | 8. Search across cases | Cases are deliberately separate; hunts and workflows from another case can be pulled in when needed. |
