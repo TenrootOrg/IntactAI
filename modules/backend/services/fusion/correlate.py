@@ -475,6 +475,7 @@ def _apply_dispositions(g: FusionGraph, dispositions) -> None:
                 if sev.at_least(f.severity, "critical"):
                     f.summary += note + " (≥critical — surfaced anyway for review)"
                 else:
+                    f.orig_severity = f.orig_severity or f.severity
                     f.severity = "informational"
                     f.confidence = "low"
                     f.kind = "dispositioned"
@@ -517,6 +518,7 @@ def _apply_part_dispositions(g: FusionGraph, dispositions) -> None:
             if sev.at_least(f.severity, "critical"):
                 f.summary += note + " (≥critical — surfaced anyway for review)"
             else:
+                f.orig_severity = f.orig_severity or f.severity
                 f.severity, f.confidence, f.kind = "informational", "low", "dispositioned"
                 f.summary += note
         elif benign:

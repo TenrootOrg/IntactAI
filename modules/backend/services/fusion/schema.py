@@ -230,6 +230,10 @@ class Finding:
     # when EVERY part is (correlate._apply_dispositions) — one rule of two can be
     # a real attack while the other is noise.
     parts: list = field(default_factory=list)
+    # The severity before an analyst's False positive / Known lowered it to
+    # informational for risk. Screens show THIS, greyed — the verdict must not
+    # relabel what the detection was (QA: a cancelled FP read as "informational").
+    orig_severity: Optional[str] = None
 
     def ids(self) -> list:
         """This row's id first, then every id it absorbed."""
@@ -267,7 +271,13 @@ class Finding:
             group=d.get("group") if isinstance(d.get("group"), dict) else None,
             recurring=d.get("recurring") if isinstance(d.get("recurring"), dict) else None,
             parts=[p for p in (d.get("parts") or []) if isinstance(p, dict) and p.get("id")],
+            orig_severity=_as_str(d.get("orig_severity")) or None,
         )
+
+    def shown_severity(self) -> str:
+        """What a screen shows: the detection's own severity, never the
+        informational a benign verdict set for risk."""
+        return self.orig_severity or self.severity
 
 
 @dataclass

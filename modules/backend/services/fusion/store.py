@@ -5387,7 +5387,7 @@ def get_finding_detail(case_id, finding_id) -> dict | None:
                             "shown_occurrences": len(occ), "mitre": f.mitre,
                             "sources": f.sources, "hosts": hosts},
                 "occurrences": occ}
-    return {"finding": {"id": f.id, "title": f.title, "severity": f.severity,
+    return {"finding": {"id": f.id, "title": f.title, "severity": f.shown_severity(),
                         "confidence": f.confidence, "summary": f.summary,
                         "occ_count": f.occ_count, "occ_latest": f.occ_latest,
                         "shown_occurrences": len(occ), "mitre": f.mitre,

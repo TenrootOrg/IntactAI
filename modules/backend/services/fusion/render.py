@@ -61,7 +61,7 @@ def timeline(graph, *, window=None, initial_access=None):
             continue
         rows.append({"finding_id": f.id,            # stable key for real/not-real validation
                      "ts": fmt_ts(f.ts), "host": ", ".join(_host_label(graph, a) for a in f.asset_ids) or "-",
-                     "phase": _phase(f), "title": f.title, "severity": f.severity,
+                     "phase": _phase(f), "title": f.title, "severity": f.shown_severity(),
                      "mitre": f.mitre, "artifacts": _artifacts_of(graph, f),
                      # the episode's last hit and hit count, so the row shows the
                      # range it covers instead of only where it started
