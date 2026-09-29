@@ -55,6 +55,8 @@ class Types(unittest.TestCase):
         for x in (c, d):
             self.assertIn("marked False Positive is NOT part of the incident", x)
             self.assertIn("no product or feature names", x)
+            self.assertIn("do not even list it as excluded", x)      # qa test: "AnyDesk ... marked false positive"
+            self.assertIn("never use our data words (graph", x)
         src = open(os.path.join(_ROOT, "modules/backend/services/fusion/llm_sim.py"), encoding="utf-8").read()
         self.assertIn("if report_type:\n                audience = \"both\"", src)   # replaces the old tone setting
 
