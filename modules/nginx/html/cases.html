@@ -1043,44 +1043,6 @@ function patchReportStatus(info){
   if(st) st.innerHTML=reportStatusHtml(info);
   if(bt) bt.innerHTML=regenButtonHtml(info);
 }
-// Next steps (plan step 5): the investigation's to-do list. A report adds its
-// "Recommended Next Steps"; the analyst ticks, adds and deletes. Old cases: none.
-function nextStepsHtml(info){
-  const L=Array.isArray(info&&info.next_steps)?info.next_steps.filter(x=>x&&x.id&&typeof x.text==='string'):[];
-  const done=L.filter(x=>x.done).length, open=window._nsOpen!==false, cid=esc((info&&info.case_id)||'');
-  const items=L.map(x=>`<div class="erow" style="align-items:flex-start;gap:6px">
-      <input type="checkbox" ${x.done?'checked':''} style="width:auto;margin-top:3px" onchange="nsToggle('${cid}','${esc(x.id)}',this.checked)"/>
-      <span style="flex:1;${x.done?'text-decoration:line-through;color:var(--muted)':''}">${esc(x.text)}${x.source==='report'?' <span style="color:var(--muted);font-size:10px">from report</span>':''}</span>
-      <span style="color:var(--muted);cursor:pointer;font-size:11px" title="Delete this step" onclick="nsDel('${cid}','${esc(x.id)}')">✕</span></div>`).join('');
-  return `<details ${open?'open':''} ontoggle="window._nsOpen=this.open" style="margin:0 0 10px;border:1px solid var(--bd);border-radius:8px;padding:6px 10px">
-    <summary style="cursor:pointer;font-size:13px"><b>Next steps</b> <span style="color:var(--muted)">· ${L.length?`${done} of ${L.length} done`:'none yet'}</span></summary>
-    <div style="margin-top:6px">${items||'<div style="color:var(--muted);font-size:12px">A report adds its recommended next steps here; you can add your own.</div>'}
-      <div class="row" style="gap:6px;margin-top:6px"><input id="ns-new" maxlength="300" placeholder="add a step…" style="flex:1" onkeydown="if(event.key==='Enter')nsAdd('${cid}')"/><button class="ghost" onclick="nsAdd('${cid}')">+ Add</button></div>
-    </div></details>`;
-}
-function _nsRedraw(cid, fn){
-  if(curInfo && curInfo.case_id===cid){ curInfo.next_steps=fn(Array.isArray(curInfo.next_steps)?curInfo.next_steps:[]); const b=$('#nextsteps'); if(b) b.innerHTML=nextStepsHtml(curInfo); }
-}
-function _nsCall(method, url, body){
-  return fetch(url,{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined})
-    .then(r=>r.json().catch(()=>({error:'the server did not answer (HTTP '+r.status+')'})))
-    .then(d=>{ if(!d||d.error) throw new Error((d&&d.error)||'unknown error'); return d; });
-}
-function nsAdd(cid){
-  const el=$('#ns-new'), t=(el&&el.value||'').trim(); if(!t) return;
-  _nsCall('POST','/api/cases/'+encodeURIComponent(cid)+'/next_steps',{text:t})
-    .then(item=>_nsRedraw(cid, L=>L.concat([item]))).catch(e=>toast('Not added: '+e.message));
-}
-function nsToggle(cid, sid, done){
-  _nsCall('PATCH','/api/cases/'+encodeURIComponent(cid)+'/next_steps/'+encodeURIComponent(sid),{done})
-    .then(()=>_nsRedraw(cid, L=>L.map(x=>x.id===sid?Object.assign({},x,{done}):x)))
-    .catch(e=>{ toast('Not saved: '+e.message); _nsRedraw(cid, L=>L); });
-}
-function nsDel(cid, sid){
-  if(!confirm('Delete this step?')) return;
-  _nsCall('DELETE','/api/cases/'+encodeURIComponent(cid)+'/next_steps/'+encodeURIComponent(sid))
-    .then(()=>_nsRedraw(cid, L=>L.filter(x=>x.id!==sid))).catch(e=>toast('Not deleted: '+e.message));
-}
 function renderReport(info){
   const id=info.case_id;
   const dl=(p,l)=>`<a class="dlbtn" href="/api/cases/${id}${p}" target="_blank">${l}</a>`;
@@ -1094,7 +1056,7 @@ function renderReport(info){
     <span id="regenslot">${regenButtonHtml(info)}</span>
     ${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}
     <span style="color:var(--muted);font-size:11px;margin-left:auto">auto-generated on first scan · regenerate to apply Timeline changes</span>
-  </div><div id="nextsteps">${nextStepsHtml(info)}</div><div id="zoomcards">${_zoomHtml.id===id?_zoomHtml.html:''}</div><div class="md">${mdToHtml(mdBody)}</div>`;
+  </div><div id="zoomcards">${_zoomHtml.id===id?_zoomHtml.html:''}</div><div class="md">${mdToHtml(mdBody)}</div>`;
   clampEvidence($('#tabc'));
   loadZoomTargets(id);   // macro report -> clickable "Analyze this scope" presets
   // A page reload (or a tab switch back to Analysis) while a generation is

@@ -400,7 +400,6 @@ def get_case(case_id):
                     "is_system": bool(d.get("is_system")
                                       or d.get("name") == store.SYSTEM_CASE_NAME),
                     **store.case_info(d),
-                    "next_steps": store.next_steps(d),
                     "masking": d.get("masking") or {"enabled": False, "patterns": []},
                     "included_run_ids": d.get("included_run_ids"),
                     # null-guarded for cases created before these existed
@@ -543,30 +542,6 @@ def get_case_risk(case_id):
         r["vr_isolated"] = bool(m and m.group(0) in isolated)
     return jsonify({"case_id": case_id, "rows": rows, "total": len(rows),
                     "is_stale": bool(store.stale_member_runs(case_id, d))})
-
-
-def _ns_reply(res):
-    if res.get("error") == "case not found":
-        return jsonify(res), 404
-    return jsonify(res), (400 if res.get("error") else 200)
-
-
-@case_bp.route("/api/cases/<case_id>/next_steps", methods=["POST"])
-def add_next_step(case_id):
-    """{text}: the analyst adds a next step."""
-    return _ns_reply(store.add_next_step(case_id, (request.get_json(silent=True) or {}).get("text")))
-
-
-@case_bp.route("/api/cases/<case_id>/next_steps/<step_id>", methods=["PATCH"])
-def update_next_step(case_id, step_id):
-    """{done?, text?}: tick / untick or reword a next step."""
-    b = request.get_json(silent=True) or {}
-    return _ns_reply(store.update_next_step(case_id, step_id, done=b.get("done"), text=b.get("text")))
-
-
-@case_bp.route("/api/cases/<case_id>/next_steps/<step_id>", methods=["DELETE"])
-def delete_next_step(case_id, step_id):
-    return _ns_reply(store.delete_next_step(case_id, step_id))
 
 
 @case_bp.route("/api/cases/<case_id>/hosts/status", methods=["POST"])
