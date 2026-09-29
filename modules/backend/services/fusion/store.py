@@ -4992,29 +4992,6 @@ def validate_timeline(case_id, finding_id, status, notes="") -> dict:
     return {"finding_id": finding_id, "status": status}
 
 
-def note_timeline(case_id, finding_id, notes) -> dict:
-    """The analyst's note on a verdict — WHY it is a false positive, who confirmed
-    it is known. Text only: no re-fuse, no change to what is suppressed. A row
-    with no verdict has nothing to attach a note to."""
-    notes = str(notes or "").strip()[:2000]
-    found = {}
-
-    def _mutate(vals):
-        for v in vals:
-            if v.get("finding_id") == finding_id:
-                v["notes"] = notes
-                found["status"] = v.get("status")
-        return vals
-
-    _mutate_list_field(case_id, "timeline_validations", _mutate)
-    if not found:
-        return {"error": "give the row a verdict first — a note belongs to a verdict"}
-    _report_behind(case_id)
-    log_case_event(case_id, "Timeline · note", "info",
-                   f"{finding_id} ({found['status']}): note {'saved' if notes else 'cleared'}")
-    return {"finding_id": finding_id, "notes": notes}
-
-
 def validate_timeline_many(case_id, finding_ids, status, notes="") -> dict:
     """One verdict on several rows at once — a cross-host group's header. Each row
     still gets its OWN record with its OWN watermark (a verdict belongs to one
@@ -5067,12 +5044,9 @@ def validate_timeline_many(case_id, finding_ids, status, notes="") -> dict:
             push_d += [{**x, "target": pt["id"], "watermark": pt.get("wm")} for x in rd]
 
     def _mutate(vals):
-        # A changed verdict keeps its note (False positive -> Known is the same
-        # reasoning refined); Pending drops the record and the note with it.
-        had = {v.get("finding_id"): v.get("notes") or "" for v in vals}
         kept = [v for v in vals if v.get("finding_id") not in set(ids) | drop] + push_v
         if status != "pending":
-            kept += [{"finding_id": i, "status": status, "notes": notes or had.get(i, ""),
+            kept += [{"finding_id": i, "status": status, "notes": notes,
                       "watermark": wms.get(i)} for i in ids]
         return kept
 
@@ -5253,8 +5227,7 @@ def _part_rows(r, f, row_v, vrec, row_wm, stale) -> list:
                     "hits": int(p.get("hits") or 1), "host": r.get("host"), "phase": r.get("phase"),
                     "severity": p.get("severity") or r.get("severity"),
                     "artifacts": r.get("artifacts"), "validation": st, "reopened": reopened,
-                    "kind": p.get("kind"), "source": "fusion",
-                    **({"notes": pv["notes"]} if pv and pv.get("notes") else {})})
+                    "kind": p.get("kind"), "source": "fusion"})
     return out
 
 
@@ -5297,8 +5270,6 @@ def get_timeline(case_id) -> list:
                 r["validation"] = st
         else:
             r["validation"] = "pending"
-        if v and v.get("notes"):
-            r["notes"] = v["notes"]
         f = fmap.get(fid)
         if f is not None and f.parts:
             r["parts"] = _part_rows(r, f, v, vrec, fwm.get(fid, ""), _wm_new_activity)

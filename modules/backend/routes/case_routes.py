@@ -1149,19 +1149,6 @@ def timeline_validate(case_id):
     return jsonify({"case_id": case_id, **res})
 
 
-@case_bp.route("/api/cases/<case_id>/timeline/note", methods=["POST"])
-def timeline_note(case_id):
-    """The note on a verdict ({finding_id, notes}); text only, no re-fuse."""
-    if not store.get_case(case_id):
-        return jsonify({"error": "case not found"}), 404
-    b = request.get_json(silent=True) or {}
-    fid = (b.get("finding_id") or "").strip()
-    if not fid:
-        return jsonify({"error": "finding_id required"}), 400
-    res = store.note_timeline(case_id, fid, b.get("notes", ""))
-    return jsonify({"case_id": case_id, **res}), (400 if res.get("error") else 200)
-
-
 @case_bp.route("/api/cases/<case_id>/timeline/seen", methods=["POST"])
 def timeline_seen(case_id):
     """"Mark seen" on a group: its new rows / new activity are acknowledged."""

@@ -192,7 +192,7 @@ class RowDisplay(unittest.TestCase):
         fns = []
         fns.append(re.search(r"const _TL_SEVS=\[.*?\];", src).group(0))
         for name in ("_tlUntil", "_tlJev", "_tlParts", "_tlPartsToggle", "_tlRow", "_tlRowHtml",
-                     "_tlTitle", "_tlLoggedAs", "_tlSevChip", "_tlNote"):
+                     "_tlTitle", "_tlLoggedAs", "_tlSevChip"):
             m = re.search(r"function %s\(.*?\n\}" % re.escape(name), src, re.S)
             self.assertTrue(m, name + " missing from cases.html")
             fns.append(m.group(0))
