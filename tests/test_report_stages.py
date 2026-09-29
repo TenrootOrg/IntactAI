@@ -95,6 +95,12 @@ class History(unittest.TestCase):
         self.assertIn("**Flash**", rs.read("c1", a["id"]))
         self.assertIsNone(rs.read("c1", "../../etc/passwd"))
 
+    def test_two_reports_in_the_same_second_the_later_is_current(self):
+        with mock.patch.object(store, "_now_iso", lambda: "2026-09-29T10:00:00"):
+            a = rs.archive("c1", TEMPLATE, "flash")
+            b = rs.archive("c1", AI, "final")
+        self.assertEqual([x["id"] for x in rs.history(self.d)], [b["id"], a["id"]])
+
     def test_delete_one_and_a_whole_case(self):
         a = rs.archive("c1", AI, "interim")
         self.assertEqual(rs.delete("c1", a["id"]), {"deleted": a["id"]})

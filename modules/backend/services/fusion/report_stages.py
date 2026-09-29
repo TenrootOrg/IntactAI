@@ -117,14 +117,16 @@ def history(d) -> list:
     entry is skipped, never raised."""
     raw = (d or {}).get("report_history") if isinstance(d, dict) else None
     out = []
-    for x in raw if isinstance(raw, list) else []:
+    for i, x in enumerate(raw if isinstance(raw, list) else []):
         if isinstance(x, dict) and _ID.fullmatch(str(x.get("id") or "")):
-            out.append({"id": x["id"], "stage": x.get("stage") if x.get("stage") in STAGES else "interim",
-                        "at": x.get("at"), "chars": int(x.get("chars") or 0),
-                        "kind": "ai" if x.get("kind") == "ai" else "template",
-                        "sha256": str(x.get("sha256") or "")})
-    out.sort(key=lambda x: str(x.get("at") or ""), reverse=True)
-    return out
+            out.append((str(x.get("at") or ""), i, {
+                "id": x["id"], "stage": x.get("stage") if x.get("stage") in STAGES else "interim",
+                "at": x.get("at"), "chars": int(x.get("chars") or 0),
+                "kind": "ai" if x.get("kind") == "ai" else "template",
+                "sha256": str(x.get("sha256") or "")}))
+    # newest first; two written in the same second: the later-kept one first
+    out.sort(key=lambda t: (t[0], t[1]), reverse=True)
+    return [t[2] for t in out]
 
 
 def archive(case_id, md, stage) -> dict | None:
