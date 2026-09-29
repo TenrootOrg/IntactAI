@@ -69,6 +69,15 @@ class SuggestDispositions(unittest.TestCase):
         self.assertIn("a", written)
         self.assertNotIn("gone", written)       # findings that vanished are dropped
 
+    def test_a_row_judged_part_by_part_is_not_asked_and_its_notice_knows_its_parts(self):
+        judged, open_ = _f("j"), _f("o")
+        judged.parts = [{"id": "jp1"}, {"id": "jp2"}]
+        open_.parts = [{"id": "op1"}, {"id": "op2"}]
+        d = {"timeline_validations": [{"finding_id": "jp2", "status": "false_positive"}]}
+        n, asked, _ = self.run_pass(d, [judged, open_], {"o": _ans("true_positive")})
+        self.assertEqual(asked, ["o"])                    # a part verdict reviews its row
+        self.assertEqual(self.merged["jev_notice"][0]["parts"], ["op1", "op2"])
+
     def test_nothing_to_do_writes_nothing(self):
         a = _f("a")
         n, asked, written = self.run_pass(
@@ -108,6 +117,13 @@ class Notice(unittest.TestCase):
     def test_a_verdict_on_an_absorbed_row_also_clears_it(self):
         d = {"jev_notice": [{"id": "a", "title": "A", "aliases": ["old-b"]}],
              "timeline_validations": [{"finding_id": "old-b", "status": "true_positive"}]}
+        with mock.patch.object(jev, "enabled", return_value=True):
+            self.assertEqual(jev.unreviewed_notice(d), [])
+
+    def test_a_verdict_on_one_part_clears_its_row(self):
+        # QA 2026-09-29: Mimikatz (+2 related) judged part by part stayed "not reviewed yet"
+        d = {"jev_notice": [{"id": "a", "title": "A", "aliases": [], "parts": ["p1", "p2"]}],
+             "timeline_validations": [{"finding_id": "p2", "status": "true_positive"}]}
         with mock.patch.object(jev, "enabled", return_value=True):
             self.assertEqual(jev.unreviewed_notice(d), [])
 

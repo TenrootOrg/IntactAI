@@ -254,8 +254,11 @@ def suggest_dispositions(case_id, d, g) -> int:
     last ask. Returns how many findings were asked about."""
     have = d.get("jev_suggestions") or {}
     validated = {v.get("finding_id") for v in (d.get("timeline_validations") or [])}
+    from .correlate import _part_ids
+    # Reviewed = the row or any of its parts has a verdict (a row judged part by
+    # part was still asked about, and still listed as "not reviewed yet").
     todo = [f for f in g.findings
-            if not (set(f.ids()) & validated) and f.kind != "dispositioned"
+            if not (set(f.ids() + _part_ids(f)) & validated) and f.kind != "dispositioned"
             and (have.get(f.id) or {}).get("wm") != f.watermark()]
     new = dict(have)
     if todo:
@@ -279,7 +282,9 @@ def suggest_dispositions(case_id, d, g) -> int:
     # re-parsing titles (which split "Shared binary: x on 3 hosts" wrongly).
     from .correlate import _detection_name
     det = {f.id: _detection_name(f) for f in g.findings}
-    notice = [{"id": k, "title": title[k], "detection": det[k], "aliases": alias.get(k) or []}
+    parts = {f.id: _part_ids(f) for f in g.findings if f.parts}
+    notice = [{"id": k, "title": title[k], "detection": det[k], "aliases": alias.get(k) or [],
+               **({"parts": parts[k]} if parts.get(k) else {})}
               for k, v in new.items()
               if v.get("label") == "true_positive" and v.get("confidence", 0) >= floor]
     fresh = [n for n in notice if n["id"] in {f.id for f in todo}]
@@ -301,7 +306,7 @@ def unreviewed_notice(d):
         return []
     done = {v.get("finding_id") for v in (d.get("timeline_validations") or [])}
     return [n for n in (d.get("jev_notice") or [])
-            if not ({n.get("id"), *(n.get("aliases") or [])} & done)]
+            if not ({n.get("id"), *(n.get("aliases") or []), *(n.get("parts") or [])} & done)]
 
 
 def suggestion_for(d_suggestions, fid, wm):
