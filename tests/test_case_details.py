@@ -84,16 +84,18 @@ class Page(unittest.TestCase):
             self.skipTest("no node on this host")
         with open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
             src = fh.read()
-        parts = [re.search(r"const CASE_STATUS_LABEL=\{.*?\};", src).group(0)] + \
-                [re.search(r"function %s\(.*?\n\}" % n, src, re.S).group(0) for n in ("caseMetaHtml", "caseDetailsBox")]
+        parts = [re.search(r"const CASE_STATUS_LABEL=\{.*?\};", src).group(0),
+                 re.search(r"let _cdEdit=null, _cdDraft=\{\};", src).group(0)] + \
+                [re.search(r"function %s\(.*?\n\}" % n, src, re.S).group(0) for n in ("caseMetaHtml", "caseEditForm")]
         js = "const esc=s=>String(s);\n" + "\n".join(parts) + """
 console.log(JSON.stringify([
   caseMetaHtml({name:'old case'}),
   caseMetaHtml({case_status:'contained', case_severity:'high', case_owner:'Dan', case_description:'ransomware'}),
   caseMetaHtml({case_status:5, case_severity:'huge', case_owner:['x'], case_description:null}),
   caseMetaHtml(null),
-  caseDetailsBox({case_id:'c1', name:'Default', is_default:true}),
-  caseDetailsBox({case_id:'c2', name:'qa'})]));"""
+  caseEditForm({case_id:'c1', name:'Default', is_default:true}),
+  caseEditForm({case_id:'c2', name:'qa', case_status:'bogus'}),
+  (()=>{ _cdDraft={'cdf-owner':'typed before a redraw'}; return caseEditForm({case_id:'c2', name:'qa', case_owner:'saved'}); })()]));"""
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as t:
             t.write(js)
         try:
@@ -108,9 +110,12 @@ console.log(JSON.stringify([
         self.assertIn(">Open<", out[2])                          # damaged: defaults, no crash
         self.assertNotIn("huge", out[2])
         self.assertIn(">Open<", out[3])
-        self.assertIn('id="cd-name" value="Default" maxlength="100" disabled', out[4])
-        self.assertNotIn("disabled", out[5].split('id="cd-name"')[1].split(">")[0])
-        self.assertIn('oninput="event.stopPropagation()"', out[5])   # never marks the Refusion rail edited
+        self.assertIn('id="cdf-name" value="Default" maxlength="100" disabled', out[4])
+        self.assertNotIn("disabled", out[5].split('id="cdf-name"')[1].split(">")[0])
+        self.assertIn('onclick="event.stopPropagation()"', out[5])    # a click in the form never switches case
+        self.assertIn('<option value="open" selected>', out[5])         # damaged status: Open
+        self.assertIn('value="typed before a redraw"', out[6])          # typing survives a list redraw
+        self.assertNotIn("caseDetailsBox", src)                         # not in the Analysis rail any more
 
 
 if __name__ == "__main__":
