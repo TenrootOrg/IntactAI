@@ -14,6 +14,8 @@ import json
 import os
 import re
 import threading
+
+from . import report_stages as _rs
 import traceback
 
 from .schema import FusionGraph
@@ -893,6 +895,10 @@ def delete_case(case_id) -> dict:
     try:                                   # the analyst's attached files go with it
         from . import case_files
         case_files.delete_case_files(case_id)
+    except Exception:
+        pass
+    try:                                   # and the reports kept in its history
+        _rs.delete_case_reports(case_id)
     except Exception:
         pass
     # Tagged runs UNION the legacy member list. get_automation_runs_by_case reads
@@ -2117,6 +2123,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     g.identity_verdicts = list(d.get("identity_verdicts") or [])
     g.manual_events = _visible_manual_events(d)
     g.case_files = _ai_case_files(case_id, d)
+    g.host_status = _host_status_labels(g, d)
     try:
         gv = _filter_graph_by_hosts(g, d.get("excluded_hosts"))
     except Exception as _e:                                   # noqa: BLE001
@@ -2158,8 +2165,10 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
               "the fused graph is empty (no run in this case matches the selected "
               "modules, hosts or window), so the existing report was kept and no "
               "model call was made. Fix the selection and Refusion again", pct=88)
+    _report_is_new = True
     if d.get("report_md") and (not force_report or _empty_keep):
         report = d.get("report_md")
+        _report_is_new = False         # reused verbatim: keeps the stage it was written for
         # NO NARRATION ON THIS PATH -- the report is reused verbatim. Bound here
         # because the patch below reads it: it was assigned ONLY in the else
         # branch, so every re-fuse of a case that already had a report raised
@@ -2253,7 +2262,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                              kwargs={"write_off": False}, daemon=True).start()
         try:
             report = llm_sim.generate_report(
-                gr, window=_rwindow, min_severity=min_sev,
+                gr, stage=_rs.stage_of(d), window=_rwindow, min_severity=min_sev,
                 initial_access=d.get("initial_access_estimate"),
                 case_name=d.get("name", "Case"), run_id=case_id,
                 audience=d.get("audience", "both"), language=d.get("language", "en"),
@@ -2406,7 +2415,15 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
           f"{len(pruned.get('entities') or {}):,} entities → sidecar", pct=95)
     if not _write_graph_sidecar(case_id, pruned):
         _plog("Refusion · graph write", "error", "sidecar write failed (see backend log)")
+    _stage = _rs.stage_of(d)
+    if _report_is_new:
+        report = _rs.apply(report, _stage)
     report = _with_evidence(case_id, report, d)
+    if _report_is_new:
+        try:
+            _rs.archive(case_id, report, _stage)
+        except Exception as e:                               # noqa: BLE001 — history, never a failed fuse
+            print(f"[FUSION] report not kept in history for {case_id}: {e}", flush=True)
     _details = {"fusion_graph": {},
                                   "graph_counts": _counts_from_graph_dict(pruned),
                                   "report_md": report,
@@ -2735,6 +2752,7 @@ def view_graph(case_id, d=None, *, scoped=True) -> FusionGraph:
     g.identity_verdicts = list(d.get("identity_verdicts") or [])   # analyst: compromised or not
     g.manual_events = _visible_manual_events(d)                       # analyst-added Timeline events
     g.case_files = _ai_case_files(case_id, d)                         # files marked "Include in AI"
+    g.host_status = _host_status_labels(g, d)                         # analyst's containment per host
     return g
 
 
@@ -2747,6 +2765,18 @@ def _with_evidence(case_id, report, d) -> str:
     except Exception as e:                                   # noqa: BLE001 — never lose a report over it
         print(f"[FUSION] evidence section not added for {case_id}: {e}", flush=True)
         return report
+
+
+def _host_status_labels(g, d) -> dict:
+    """{host name: status} from the Risk tab's host statuses, for the model."""
+    try:
+        out = {}
+        for aid, st in host_statuses(d).items():
+            e = g.entities.get(aid)
+            out[e.label if e is not None else aid] = "quarantined" if st == "isolated" else st
+        return out
+    except Exception:                                        # noqa: BLE001 — context, never a failure
+        return {}
 
 
 def _ai_case_files(case_id, d) -> list:
@@ -2805,6 +2835,7 @@ def _filter_graph_by_window(g, window) -> FusionGraph:
     gv.identity_verdicts = getattr(g, "identity_verdicts", None)
     gv.manual_events = getattr(g, "manual_events", None)
     gv.case_files = getattr(g, "case_files", None)
+    gv.host_status = getattr(g, "host_status", None)
     findings = [f for f in g.findings if finding_in_window(f, window)]
     cited = {eid for f in findings for eid in (f.entity_ids or [])}
 
@@ -2917,6 +2948,7 @@ def _filter_graph_by_hosts(g, excluded_labels) -> FusionGraph:
     gv.identity_verdicts = getattr(g, "identity_verdicts", None)
     gv.manual_events = getattr(g, "manual_events", None)
     gv.case_files = getattr(g, "case_files", None)
+    gv.host_status = getattr(g, "host_status", None)
     keep = set()
     for e in g.entities.values():
         if e.id in ex_assets:
@@ -4182,7 +4214,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
                        "no LLM tokens spent")
     try:
         report = llm_sim.generate_report(
-            gv, window=window, min_severity=min_sev,
+            gv, stage=_rs.stage_of(d), window=window, min_severity=min_sev,
             initial_access=d.get("initial_access_estimate"), case_name=d.get("name", "Case"),
             run_id=case_id, audience=d.get("audience", "both"), language=d.get("language", "en"),
             altitude_mode=d.get("report_altitude") or "auto",
@@ -4251,6 +4283,8 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
     # "now generating the advisory" reads as the advisory's elapsed and is wrong
     # by however long the narrative took -- measured on a live case: the banner
     # said the advisory was 13 minutes in when it had been running for two.
+    _stage = _rs.stage_of(d)
+    report = _rs.apply(report, _stage)
     report = _with_evidence(case_id, report, d)
     _narrative_patch = {"report_md": report, "report_dirty": False,
                         # What this report was written FROM, for its own scope. The
@@ -4287,6 +4321,10 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
                 "discarded": True}
     try:
         _on_screen = write_report_for_scope(case_id, _gen_scope, _narrative_patch)
+        try:
+            _rs.archive(case_id, report, _stage)
+        except Exception as e:                               # noqa: BLE001 — history, never a failed save
+            print(f"[FUSION] report not kept in history for {case_id}: {e}", flush=True)
         log_case_event(case_id, "Report saved", "success",
                        f"narrative written to the database ({len(report or ''):,} chars)"
                        + ("" if _on_screen else
@@ -4343,7 +4381,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
     return {"report_md": report, "audience": d.get("audience", "both")}
 
 
-def engagement_markdown(case_id, pictures="name") -> str:
+def engagement_markdown(case_id, pictures="name", body=None) -> str:
     """Branded full report markdown (engagement-style cover + report body) for MD/PDF
     download. Reuses the engagement cover_block so the shared PDF renderer parses it."""
     from datetime import datetime, timezone
@@ -4360,7 +4398,7 @@ def engagement_markdown(case_id, pictures="name") -> str:
                         sources, tlp=d.get("tlp", "AMBER"), version=1,
                         customer_name=d.get("customer_name", ""),
                         include_workflows=False)   # operator: not needed in case reports
-    body = d.get("report_md") or "_No report yet — fuse the case first._"
+    body = body if body is not None else (d.get("report_md") or "_No report yet — fuse the case first._")
     try:
         from . import case_files
         body = case_files.resolve_pictures(body, case_id, d, pictures)

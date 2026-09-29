@@ -1496,6 +1496,11 @@ def analyst_context(dispositions=None, validations=None, manual_events=None, gra
     if people:
         out["analyst_identity_verdicts"] = [{"identity": ln, "verdict": v.replace("_", " ")}
                                             for v, ln in people]
+    hstat = getattr(graph, "host_status", None) if graph is not None else None
+    if hstat:
+        # The analyst's containment status per host (Risk tab) — the Interim
+        # report's Status section is built from it.
+        out["analyst_host_status"] = dict(hstat)
     files = getattr(graph, "case_files", None) if graph is not None else None
     if files:
         # Files the analyst attached AND marked "Include in AI": a picture by its
@@ -1765,7 +1770,7 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
 
 def generate_report(graph, *, window=None, min_severity="informational",
                     initial_access=None, case_name="Case", run_id=None,
-                    audience="both", language="en", master_prompt=None, mask=None,
+                    audience="both", language="en", master_prompt=None, mask=None, stage=None,
                     altitude_mode="auto",
                     dispositions=None, validations=None, prefer_llm=True,
                     max_entities=None, budget_chars=None, max_output_tokens=None,
@@ -1881,6 +1886,11 @@ def generate_report(graph, *, window=None, min_severity="informational",
                     system = system + "\n\n" + audience_language_directive(audience, language)
                 except Exception:
                     pass
+            if stage:                             # Flash / Interim / Final (plan step 9)
+                from . import report_stages as _rs
+                _d = _rs.directive(stage)
+                if _d:
+                    system = system + "\n\n" + _d
             if master_prompt:
                 system = ("## OPERATOR CONTEXT (from interactive validation) — treat as "
                           "ground truth; apply the removals/focus described:\n"

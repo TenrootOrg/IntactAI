@@ -14,6 +14,7 @@ from flask import Blueprint, jsonify, request, Response, send_file
 
 from services.fusion import store, render
 from services.fusion import case_files as _case_files
+from services.fusion import report_stages as _report_stages
 from services.fusion.schema import FusionGraph
 
 case_bp = Blueprint("case", __name__)
@@ -403,6 +404,8 @@ def get_case(case_id):
                     **store.case_info(d),
                     "case_files": _case_files.listing(d),
                     "include_evidence": _case_files.included(d),
+                    "report_stage": _report_stages.stage_of(d),
+                    "report_history": _report_stages.history(d),
                     "masking": d.get("masking") or {"enabled": False, "patterns": []},
                     "included_run_ids": d.get("included_run_ids"),
                     # null-guarded for cases created before these existed
@@ -1346,6 +1349,11 @@ def regenerate_report(case_id):
     if not store.get_case(case_id):
         return jsonify({"error": "case not found"}), 404
     b = request.get_json(silent=True) or {}
+    # Flash / Interim / Final (plan step 9): the stage of THIS report, remembered
+    # for the next one; missing or unknown -> the case keeps the stage it had.
+    from services.fusion import report_stages as _rs
+    if b.get("stage") in _rs.STAGES:
+        store._merge_case_details(case_id, {"report_stage": b["stage"]})
     use_llm = bool(b.get("use_llm"))
     if not use_llm:
         res = store.regenerate_report(case_id, audience=b.get("audience"), use_llm=False)
@@ -1408,6 +1416,55 @@ def report_download_html(case_id):
                                   logo_b64=d.get("customer_logo_b64") or "")
     return Response(html, mimetype="text/html",
                     headers={"Content-Disposition": f'attachment; filename="{_report_filename(d, "html")}"'})
+
+
+@case_bp.route("/api/cases/<case_id>/reports/<rid>", methods=["GET"])
+def kept_report(case_id, rid):
+    """One report from the case's history (its Markdown), to view on the page."""
+    d = store.get_case(case_id)
+    item = next((x for x in _report_stages.history(d or {}) if x["id"] == rid), None)
+    md = _report_stages.read(case_id, rid) if item else None
+    if not md:
+        return jsonify({"error": "no such report"}), 404
+    return jsonify({**item, "report_md": md})
+
+
+@case_bp.route("/api/cases/<case_id>/reports/<rid>/download", methods=["GET"])
+def kept_report_download(case_id, rid):
+    """?fmt=md | pdf | html — a report from the history, like the current one's downloads."""
+    d = store.get_case(case_id)
+    item = next((x for x in _report_stages.history(d or {}) if x["id"] == rid), None)
+    md = _report_stages.read(case_id, rid) if item else None
+    if not md:
+        return jsonify({"error": "no such report"}), 404
+    fmt = request.args.get("fmt", "pdf")
+    # "IntactAI Incident Report - <case> - Interim - 2026-09-29 1012": the stage and
+    # WHEN it was written, not today's date
+    base = (_report_filename(d, "x")[:-2].rsplit(" - ", 1)[0]
+            + f" - {_report_stages.LABEL[item['stage']]} - {str(item['at'])[:16].replace('T', ' ').replace(':', '')}")
+    if fmt == "md":
+        return Response(store.engagement_markdown(case_id, body=md), mimetype="text/markdown",
+                        headers={"Content-Disposition": f'attachment; filename="{base}.md"'})
+    body = store.engagement_markdown(case_id, pictures="embed", body=md)
+    if fmt == "html":
+        from services.engagement.pdf import render_engagement_html
+        return Response(render_engagement_html(body, case_id, logo_b64=d.get("customer_logo_b64") or ""),
+                        mimetype="text/html", headers={"Content-Disposition": f'attachment; filename="{base}.html"'})
+    try:
+        from services.engagement.pdf import render_engagement_pdf
+        pdf = render_engagement_pdf(body, case_id, logo_b64=d.get("customer_logo_b64") or "")
+    except Exception as e:                                     # noqa: BLE001
+        return jsonify({"error": f"pdf render failed: {e}"}), 503
+    return Response(pdf, mimetype="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{base}.pdf"'})
+
+
+@case_bp.route("/api/cases/<case_id>/reports/<rid>", methods=["DELETE"])
+def delete_kept_report(case_id, rid):
+    if not store.get_case(case_id):
+        return jsonify({"error": "case not found"}), 404
+    res = _report_stages.delete(case_id, rid)
+    return jsonify(res), (404 if res.get("error") else 200)
 
 
 @case_bp.route("/api/cases/<case_id>/report/download/pdf", methods=["GET"])
