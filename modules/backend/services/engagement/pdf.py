@@ -673,9 +673,13 @@ _SCREEN_CSS = """<style>
   html { background: #eef1f5; }
   body { max-width: 940px; margin: 28px auto 64px; padding: 0 0 36px; background: #fff;
          border-radius: 12px; box-shadow: 0 2px 14px rgba(15, 23, 42, .10);
-         font-size: 15px; line-height: 1.65; overflow: hidden; }
+         font-size: 15px; line-height: 1.65; }
   body > *:not(.cover) { margin-left: 48px; margin-right: 48px; }
-  .cover { height: auto; padding: 30px 48px 26px; margin: 0 0 30px; page-break-after: auto; }
+  /* NOT overflow:hidden on body to round the corners: a body's overflow applies
+     to the whole window, and the page could no longer be scrolled (only the
+     table-of-contents links moved it). The cover rounds its own corners. */
+  .cover { height: auto; padding: 30px 48px 26px; margin: 0 0 30px; page-break-after: auto;
+           border-radius: 12px 12px 0 0; }
   .cover .logo-wrap { margin-bottom: 20px; gap: 18px; }
   .cover .logo-wrap img { height: 42px; width: auto; max-width: 220px; }
   .cover .logo-wrap .sep { height: 34px; }
