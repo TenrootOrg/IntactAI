@@ -125,6 +125,20 @@ class Types(unittest.TestCase):
         g.host_status = {"DESKTOP-16OJFO6": "quarantined"}
         self.assertEqual(llm_sim.analyst_context(graph=g)["analyst_host_status"], {"DESKTOP-16OJFO6": "quarantined"})
 
+    def test_the_model_is_told_when_nothing_is_contained(self):
+        # qa test: an Open case with no host status got "the case has been contained".
+        g = FusionGraph(case_id="c")
+        g.host_status, g.case_status = {}, "open"
+        ctx = llm_sim.analyst_context(graph=g)
+        self.assertEqual(ctx["analyst_case_status"], "open")
+        self.assertIn("none recorded", ctx["analyst_host_status"])
+        self.assertNotIn("analyst_case_status", llm_sim.analyst_context(graph=FusionGraph(case_id="c")))
+        for t in ("customer", "directors"):
+            self.assertIn("containment has not been recorded yet", rt.directive(t))
+        src = open(os.path.join(_ROOT, "modules/backend/services/fusion/store.py"), encoding="utf-8").read()
+        self.assertEqual(src.count('g.case_status = case_info(d)["case_status"]'), 2)   # fuse + view graph
+        self.assertEqual(src.count('gv.case_status = getattr(g, "case_status", None)'), 2)
+
 
 class History(unittest.TestCase):
     def setUp(self):

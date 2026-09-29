@@ -1501,6 +1501,13 @@ def analyst_context(dispositions=None, validations=None, manual_events=None, gra
         # The analyst's containment status per host (Risk tab) — the Interim
         # report's Status section is built from it.
         out["analyst_host_status"] = dict(hstat)
+    cstat = getattr(graph, "case_status", None) if graph is not None else None
+    if cstat:
+        # Sent even when nothing is recorded: with no status to go on, the directors
+        # report wrote "the case has been contained" on an Open case (qa test).
+        out["analyst_case_status"] = cstat
+        if not hstat:
+            out["analyst_host_status"] = "none recorded — no host is marked isolated, cleaned or rebuilt"
     files = getattr(graph, "case_files", None) if graph is not None else None
     if files:
         # Files the analyst attached AND marked "Include in AI": a picture by its

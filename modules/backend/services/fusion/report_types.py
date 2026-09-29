@@ -73,7 +73,11 @@ _NO_INTERNALS = (
     "analyst-triage mechanics. Name evidence by what it is (Windows event logs, Sysmon, "
     "PowerShell logs, the file table, memory). Activity the analyst marked False Positive "
     "is NOT part of the incident — leave it out; activity marked Known may be mentioned as "
-    "expected activity confirmed with the customer.")
+    "expected activity confirmed with the customer. "
+    "State only actions that are recorded: containment and case state come from "
+    "analyst_case_status and analyst_host_status. Never say or imply that anything was "
+    "contained, isolated, cleaned, rebuilt or reset unless it is recorded there; when "
+    "nothing is recorded, say plainly that containment has not been recorded yet.")
 
 _DIRECTIVE = {
     "technical": "",            # the full internal report: the default instructions as they are
@@ -104,8 +108,10 @@ _DIRECTIVE = {
         "## Business Impact — what is affected in business terms: which kinds of systems, "
         "people and data; what is confirmed versus only possible; any regulatory or "
         "notification exposure worth considering.\n"
-        "## What We Have Done — containment and investigation so far, in plain words (use "
-        "analyst_host_status: which machines are isolated, cleaned or rebuilt).\n"
+        "## What We Have Done — the investigation so far, and containment ONLY as recorded "
+        "in analyst_case_status / analyst_host_status (which machines are isolated, "
+        "cleaned or rebuilt); if none is recorded, say containment has not been recorded "
+        "yet and list it under Decisions Needed.\n"
         "## Decisions Needed — each a clear question with the recommended option and why "
         "(e.g. 'Approve resetting all administrator passwords tonight — recommended, because "
         "...'). If no decision is needed now, say so.\n"

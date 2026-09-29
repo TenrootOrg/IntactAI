@@ -2124,6 +2124,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     g.manual_events = _visible_manual_events(d)
     g.case_files = _ai_case_files(case_id, d)
     g.host_status = _host_status_labels(g, d)
+    g.case_status = case_info(d)["case_status"]
     try:
         gv = _filter_graph_by_hosts(g, d.get("excluded_hosts"))
     except Exception as _e:                                   # noqa: BLE001
@@ -2753,6 +2754,7 @@ def view_graph(case_id, d=None, *, scoped=True) -> FusionGraph:
     g.manual_events = _visible_manual_events(d)                       # analyst-added Timeline events
     g.case_files = _ai_case_files(case_id, d)                         # files marked "Include in AI"
     g.host_status = _host_status_labels(g, d)                         # analyst's containment per host
+    g.case_status = case_info(d)["case_status"]                    # Open / Contained / Closed
     return g
 
 
@@ -2836,6 +2838,7 @@ def _filter_graph_by_window(g, window) -> FusionGraph:
     gv.manual_events = getattr(g, "manual_events", None)
     gv.case_files = getattr(g, "case_files", None)
     gv.host_status = getattr(g, "host_status", None)
+    gv.case_status = getattr(g, "case_status", None)
     findings = [f for f in g.findings if finding_in_window(f, window)]
     cited = {eid for f in findings for eid in (f.entity_ids or [])}
 
@@ -2949,6 +2952,7 @@ def _filter_graph_by_hosts(g, excluded_labels) -> FusionGraph:
     gv.manual_events = getattr(g, "manual_events", None)
     gv.case_files = getattr(g, "case_files", None)
     gv.host_status = getattr(g, "host_status", None)
+    gv.case_status = getattr(g, "case_status", None)
     keep = set()
     for e in g.entities.values():
         if e.id in ex_assets:
