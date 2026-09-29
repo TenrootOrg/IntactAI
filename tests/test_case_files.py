@@ -195,6 +195,10 @@ console.log(JSON.stringify([all, one, bad, form, linked]));""")
             src = fh.read()
         self.assertIn("evShowFor('${esc(r.finding_id)}')\">📎 ${r.evidence}", src)
         self.assertIn("📎 Attach evidence", src)
+        # one click: the button IS the file picker — no second "choose file" form
+        self.assertIn("📎 Attach evidence<input type=\"file\" multiple", src)
+        self.assertIn("fd.append('finding_id',fid)", src)
+        self.assertNotIn("evAttachForm", src)
 
 
 if __name__ == "__main__":

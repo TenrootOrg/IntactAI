@@ -1156,10 +1156,20 @@ function evDel(id){
   fetch('/api/cases/'+encodeURIComponent(curInfo.case_id)+'/files/'+encodeURIComponent(id),{method:'DELETE'}).then(_evJson)
     .then(()=>_evRefresh(L=>L.filter(y=>y.id!==id))).catch(e=>toast('Not deleted: '+e.message));
 }
-function evAttachForm(fid){
-  const box=$('#ev-attach'); if(!box) return;
-  box.innerHTML=`<div class="cfgcol" style="border:1px solid var(--bd);border-radius:8px;padding:8px 10px;margin-top:8px">${_evFields('eva',{},true,true)}
-    <div class="row" style="gap:6px;margin-top:6px"><button onclick="evSubmit('eva','${esc(fid)}')">Attach</button><button class="ghost" onclick="$('#ev-attach').innerHTML=''">Cancel</button></div></div>`;
+// From a Timeline event: one click — pick the file(s), they upload at once, named
+// from the event; a description can be added afterwards on the Evidence tab.
+function evAttachFiles(fid, files){
+  const box=$('#ev-attach');
+  [...(files||[])].forEach(file=>{
+    if(file.size>100*1024*1024){ toast(file.name+': larger than 100 MB'); return; }
+    const fd=new FormData(); fd.append('file',file); fd.append('finding_id',fid);
+    toast('Attaching '+file.name+'…');
+    fetch('/api/cases/'+encodeURIComponent(curInfo.case_id)+'/files',{method:'POST',body:fd}).then(_evJson)
+      .then(item=>{ _evRefresh(L=>L.concat([item]));
+        if(box) box.insertAdjacentHTML('beforeend',`<div class="cfghint" style="margin-top:4px">Attached: <b>${esc(item.name)}</b> · <span class="elink" onclick="closeFindingDetail();window._evEdit='${esc(item.id)}';window._evFilter='';setTab('evidence')">add a description</span></div>`);
+        toast('Evidence attached.'); })
+      .catch(e=>toast(file.name+' not attached: '+e.message));
+  });
 }
 function renderReport(info){
   const id=info.case_id;
@@ -2020,7 +2030,7 @@ function openFindingDetail(fid){
       ${f.summary?`<p style="font-size:13px;margin:6px 0">${esc(f.summary)}</p>`:''}
       ${(f.mitre&&f.mitre.length)?`<div style="font-size:11px;color:var(--muted)">MITRE: ${f.mitre.map(esc).join(', ')}</div>`:''}
       ${(f.sources&&f.sources.length)?`<div style="font-size:11px;color:var(--muted)">source: ${f.sources.map(esc).join(', ')}</div>`:''}
-      <div style="margin-top:10px"><button class="ghost" style="font-size:12px" onclick="evAttachForm('${esc(f.id||fid)}')" title="Attach a screenshot, e-mail or log to this event — it is linked to it and its host">📎 Attach evidence</button><div id="ev-attach"></div></div>
+      <div style="margin-top:10px"><label class="dlbtn" style="font-size:12px;cursor:pointer" title="Pick a screenshot, e-mail or log — it is attached to this event and its host straight away, named from the event">📎 Attach evidence<input type="file" multiple style="display:none" onchange="evAttachFiles('${esc(f.id||fid)}',this.files);this.value=''"/></label><div id="ev-attach"></div></div>
       <h4 style="margin:14px 0 4px;text-transform:none">Occurrences${more}</h4>
       ${occHtml}`;
   }).catch(_=>{dr.innerHTML='<div style="color:#f85149">could not load detail</div>';});
