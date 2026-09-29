@@ -2025,18 +2025,18 @@ function hostToggle(h){ (window._hostExpand=window._hostExpand||{})[h]=!window._
 function _vchip(v){ return v==='compromised'?'<span class="vchip c">compromised</span>':v==='not_compromised'?'<span class="vchip n">not compromised</span>':''; }
 // Host status (plan step 4): the analyst's label for a machine, and — read-only —
 // whether Velociraptor has it quarantined. Nothing here isolates or releases it.
-const HOST_STATUS_LABEL={compromised:'Compromised',isolated:'Isolated',reimaged:'Reimaged',clean:'Clean'};
+const HOST_STATUS_LABEL={compromised:'Compromised',isolated:'Quarantined',reimaged:'Reimaged',clean:'Clean'};
 function _hostStatusTags(r){
   const st=HOST_STATUS_LABEL[(r&&r.host_status)||''];
   const col={compromised:'var(--crit)',isolated:'#d29922',reimaged:'#58a6ff',clean:'#3fb950'}[(r&&r.host_status)||''];
   return (st?` · <span style="color:${col}">${st}</span>`:'')
-    +((r&&r.vr_isolated)?` · <span style="color:#d29922" title="Velociraptor has this machine quarantined (its Quarantine label). Read from Velociraptor — release it there.">⛔ isolated in Velociraptor</span>`:'');
+    +((r&&r.vr_isolated)?` · <span style="color:#d29922" title="Velociraptor has this machine quarantined (its Quarantine label). Read from Velociraptor — release it there.">⛔ Quarantine (Velociraptor)</span>`:'');
 }
 function _hostStatusSelect(r){
   const cur=HOST_STATUS_LABEL[(r&&r.host_status)||'']?r.host_status:'';
   const o=(v,l)=>`<option value="${v}" ${cur===v?'selected':''}>${l}</option>`;
   return `<select onclick="event.stopPropagation()" onchange="event.stopPropagation();hostSetStatus('${jsa(r.client_id||'')}',this.value)" style="font-size:12px">${o('','Not set')}${Object.entries(HOST_STATUS_LABEL).map(([k,l])=>o(k,l)).join('')}</select>`
-    +((r&&r.vr_isolated)?'<div style="font-size:11px;color:#d29922;margin-top:3px">⛔ isolated in Velociraptor</div>':'');
+    +((r&&r.vr_isolated)?'<div style="font-size:11px;color:#d29922;margin-top:3px">⛔ Quarantine (Velociraptor)</div>':'');
 }
 function hostSetStatus(assetId, status){
   if(!assetId) return;

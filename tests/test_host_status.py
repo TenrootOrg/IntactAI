@@ -111,8 +111,8 @@ console.log(JSON.stringify([
         finally:
             os.unlink(t.name)
         self.assertEqual(out[0], "")                                    # old case: nothing shown
-        self.assertIn(">Isolated<", out[1])
-        self.assertIn("isolated in Velociraptor", out[1])
+        self.assertIn(">Quarantined<", out[1])                          # Velociraptor's word
+        self.assertIn("Quarantine (Velociraptor)", out[1])
         self.assertEqual(out[2], "")                                    # damaged: nothing, no crash
         self.assertIn('<option value="clean" selected>', out[3])
         self.assertIn('<option value="" selected>Not set', out[4])
