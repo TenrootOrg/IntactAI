@@ -246,8 +246,7 @@ def with_evidence(md, d) -> str:
         f = _FOOTER.search(md, i)
         end = min(x for x in (j, f.start() if f else -1, len(md)) if x >= 0)
         md = md[:i] + md[end:]
-    from .report_types import wants_evidence
-    items = listing(d) if included(d) and wants_evidence(d) else []
+    items = listing(d) if included(d) else []
     if not items or not md.strip():
         return md
     items.sort(key=lambda x: (not x["finding_id"], x["host"], x["time"], x["name"]))

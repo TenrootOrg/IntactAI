@@ -1,21 +1,20 @@
 """Report types — who the report is for — and the history of every report written.
 
-Three readers, three different documents (not the same report in another tone):
+Two readers, two different documents (not the same report in another tone):
   technical  — us, the analysts: the full internal report (the default).
   customer   — the customer's technical team: what happened, affected assets,
                indicators to block, remediation — without our internal triage,
                scoring or tooling.
-  directors  — executives and decision makers: about one page, plain language,
-               business impact and the decisions needed; nothing technical.
 
 The type changes the instruction to the model (a structure of its own for the
-customer and directors reports), a title and a banner, and which of the tables
+customer report), a title and a banner, and which of the tables
 the system appends are kept. Every report written is KEPT with its type and date.
 
 History: files under DATA_DIR/<case_id>/<id>.md; described in the case details
 under "report_history": {id, type, at, sha256, chars, kind: ai | template}.
 Entries written before the types existed carry "stage" (flash / interim /
-final) and keep that label.
+final) and keep that label; so do reports of the Directors type, removed on
+2026-09-29 (the user: "lets skip the director").
 """
 from __future__ import annotations
 
@@ -25,13 +24,13 @@ import re
 import shutil
 import uuid
 
-TYPES = ("technical", "customer", "directors")
-LABEL = {"technical": "Technical", "customer": "Technical customers", "directors": "Directors"}
-TITLE = {"technical": "Technical Report", "customer": "Technical Customer Report", "directors": "Directors Report"}
+TYPES = ("technical", "customer")
+LABEL = {"technical": "Technical", "customer": "Technical customers"}
+TITLE = {"technical": "Technical Report", "customer": "Technical Customer Report"}
 READER = {"technical": "internal — the full detail for the investigating team",
-          "customer": "the customer's technical team",
-          "directors": "executives and decision makers"}
-LEGACY_LABEL = {"flash": "Flash", "interim": "Interim", "final": "Final"}
+          "customer": "the customer's technical team"}
+# kept reports of types / stages that no longer exist
+LEGACY_LABEL = {"flash": "Flash", "interim": "Interim", "final": "Final", "directors": "Directors"}
 DATA_DIR = "/app/data/case_reports"
 _ID = re.compile(r"[0-9a-f]{12}")
 _TEMPLATE_FOOTER = "_Deterministic report"
@@ -41,30 +40,21 @@ _TITLE = re.compile(r"^# (?:(?:Flash|Interim|Final|Technical|Technical Customer|
                     r"|Incident Case Report|Incident Report)\s+—\s+(.*)$")
 _INTERNAL_LINES = re.compile(r"(?m)^(?:_Report detail: \*\*[^\n]*_|_\*\*(?:Focused|Segmented) report\*\* — [^\n]*_"
                              r"|\| \*\*Entities correlated\*\* \|[^\n]*)\n?")
-_STATS_BLOCK = re.compile(r"(?m)^(?:> \*\*All timestamps are UTC\.\*\*\n\n\| \| \|\n\|---\|---\|\n(?:\| \*\*[^\n]*\n?)*"
-                          r"|_Scope: [^\n]*_\n?)")
 _STATUS_BLOCK = re.compile(r"(?ms)^## (?:Status|Containment Status)\n\n_Containment as set on the Risk tab[^\n]*_\n.*?(?=^## |\Z)")
 STATUS_LABEL = {"compromised": "Compromised", "isolated": "Quarantined", "quarantined": "Quarantined",
                 "reimaged": "Reimaged", "clean": "Clean"}
 
-# Tables the system appends to every AI report after the narrative.
-_SYSTEM_TABLES = ("Analyst Validations", "Timeline of Events", "MITRE ATT&CK Mapping",
-                  "Host Risk", "Limitations & Assumptions", "Indicators of Compromise",
-                  "Cross-Host Correlation", "Suspicious Timeframes", "Timeframes",
-                  "Phases at a glance", "Shared across hosts", "Activity outside")
 # What each type leaves out of a model-written report (only system tables —
 # nothing the model wrote is removed) …
 _DROP = {
     "customer": ("Analyst Validations", "Host Risk", "Suspicious Timeframes", "Timeframes",
                  "Phases at a glance", "Shared across hosts", "Activity outside"),
-    "directors": _SYSTEM_TABLES,
 }
 # … and what the offline template keeps.
 _TEMPLATE_KEEP = {
     "customer": ("Executive Summary", "Attack Assessment", "Timeline of Events",
                  "Indicators of Compromise", "MITRE ATT&CK Mapping", "Cross-Host Correlation",
                  "Recommendations", "Limitations & Assumptions", "Evidence attached"),
-    "directors": ("Executive Summary", "Attack Assessment", "Recommendations"),
 }
 
 _NO_INTERNALS = (
@@ -101,34 +91,12 @@ _DIRECTIVE = {
         "## Detection & Monitoring — what to alert on from now on, per technique seen.\n"
         "Technical terms are fine; explain any that are not common knowledge in a few words. "
         + _NO_INTERNALS),
-    "directors": (
-        "REPORT FOR: DIRECTORS AND EXECUTIVES — non-technical decision makers (CEO, board, "
-        "CFO, legal).\n"
-        "Use THIS structure instead of the default one — about one page, at most ~450 words:\n"
-        "## Bottom Line — 2-3 sentences: what happened, whether it is under control now, and "
-        "the overall risk (Critical / High / Medium / Low) in plain words.\n"
-        "## Business Impact — what is affected in business terms: which kinds of systems, "
-        "people and data; what is confirmed versus only possible; any regulatory or "
-        "notification exposure worth considering.\n"
-        "## What We Have Done — the investigation so far, and containment ONLY as recorded "
-        "in analyst_case_status / analyst_host_status (which machines are isolated, "
-        "cleaned or rebuilt); if none is recorded, say containment has not been recorded "
-        "yet and list it under Decisions Needed.\n"
-        "## Decisions Needed — each a clear question with the recommended option and why "
-        "(e.g. 'Approve resetting all administrator passwords tonight — recommended, because "
-        "...'). If no decision is needed now, say so.\n"
-        "## Next Steps — who does what, and when the next update comes.\n"
-        "Rules: NO technical language — no hashes, IP addresses, file paths, command lines, "
-        "detection or rule names, ATT&CK IDs, log names. Name tools only by what they do "
-        "('a password-stealing tool'). Refer to machines by role and count ('two employee "
-        "laptops and one server') unless a name matters for a decision. No tables. Calm and "
-        "factual. " + _NO_INTERNALS),
 }
 
 
 def basis(case_id, d):
     """(Executive Summary, time) of the newest AI-written Technical report, or
-    (None, None). The customer and directors reports restate THIS conclusion
+    (None, None). The customer report restates THIS conclusion
     instead of forming their own: written as separate model calls, the three
     reports of qa test disagreed (Technical: authorised forensic collection;
     Directors: likely compromise). Chosen by the user: follow the saved Technical
@@ -162,7 +130,7 @@ def directive(rtype, conclusion=None) -> str:
 def apply(md, rtype, host_status=None, case_status=None) -> str:
     """A freshly written report, shaped for its reader:
       - the title and a banner say which report it is (also on the PDF / HTML cover);
-      - customer / directors: only the tables that reader needs (the template keeps
+      - customer: only the tables that reader needs (the template keeps
         its matching sections; a model-written report loses only system tables);
       - customer: a Containment Status table from the Risk tab's host statuses."""
     md = _STATUS_BLOCK.sub("", _BANNER.sub("", str(md or "")))
@@ -172,10 +140,8 @@ def apply(md, rtype, host_status=None, case_status=None) -> str:
         md = (_keep_sections(md, _TEMPLATE_KEEP[rtype]) if _TEMPLATE_FOOTER in md
               else _drop_sections(md, _DROP[rtype]))
         # How WE built it (detail level, focused/segmented, entity counts) means
-        # nothing to an outside reader; directors also lose the statistics block.
+        # nothing to an outside reader.
         md = _INTERNAL_LINES.sub("", md)
-        if rtype == "directors":
-            md = _STATS_BLOCK.sub("", md)
         md = re.sub(r"\n{3,}", "\n\n", md)
     if rtype == "customer":
         # Before the first section, AFTER the statistics block: _STATUS_BLOCK removes
@@ -194,11 +160,6 @@ def apply(md, rtype, host_status=None, case_status=None) -> str:
             lines.insert(i + 1, "\n" + banner)
             return "\n".join(lines)
     return banner + "\n\n" + md
-
-
-def wants_evidence(d) -> bool:
-    """Directors get no evidence section; the other two do (when it is switched on)."""
-    return type_of(d) != "directors"
 
 
 def _status_block(host_status, case_status) -> str:
@@ -248,7 +209,7 @@ def history(d) -> list:
         if not (isinstance(x, dict) and _ID.fullmatch(str(x.get("id") or ""))):
             continue
         t = x.get("type") if x.get("type") in TYPES else None
-        label = LABEL[t] if t else LEGACY_LABEL.get(x.get("stage"), "Report")
+        label = LABEL[t] if t else LEGACY_LABEL.get(x.get("type") or x.get("stage"), "Report")
         out.append((str(x.get("at") or ""), i, {
             "id": x["id"], "type": t or "", "label": label, "at": x.get("at"),
             "chars": int(x.get("chars") or 0), "kind": "ai" if x.get("kind") == "ai" else "template",
@@ -311,7 +272,7 @@ def delete(case_id, rid) -> dict:
         os.remove(os.path.join(_dir(case_id), rid + ".md"))
     except OSError:
         pass
-    label = LABEL.get(gone.get("type")) or LEGACY_LABEL.get(gone.get("stage"), "Report")
+    label = LABEL.get(gone.get("type")) or LEGACY_LABEL.get(gone.get("type") or gone.get("stage"), "Report")
     store.log_case_event(case_id, "Report history", "info", f"{label} report of {gone.get('at')} deleted")
     return {"deleted": rid}
 

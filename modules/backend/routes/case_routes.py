@@ -1349,7 +1349,7 @@ def regenerate_report(case_id):
     if not store.get_case(case_id):
         return jsonify({"error": "case not found"}), 404
     b = request.get_json(silent=True) or {}
-    # Who this report is for — Technical / Technical customers / Directors —
+    # Who this report is for — Technical / Technical customers —
     # remembered for the next one; missing or unknown keeps the case's type.
     if b.get("report_type") in _report_types.TYPES:
         store._merge_case_details(case_id, {"report_type": b["report_type"]})

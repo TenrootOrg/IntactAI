@@ -1898,7 +1898,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
                     system = system + "\n\n" + audience_language_directive(audience, language)
                 except Exception:
                     pass
-            if report_type:                       # Technical / Technical customers / Directors
+            if report_type:                       # Technical / Technical customers
                 from . import report_types as _rt
                 # The Technical report's conclusion, masked like the rest of the input.
                 _d = _rt.directive(report_type, _apply_mask(report_basis, mask) if report_basis else None)

@@ -1,5 +1,6 @@
-"""Report types — who the report is for: Technical (us), Technical customers,
-Directors — three different documents, and the history of every report written.
+"""Report types — who the report is for: Technical (us) and Technical customers —
+two different documents, and the history of every report written. (A Directors
+type existed briefly and was removed; its kept reports keep their label.)
 """
 import json
 import os
@@ -39,20 +40,18 @@ class Types(unittest.TestCase):
     def test_default_is_technical_and_a_choice_is_kept(self):
         for d in ({"name": "old"}, {"report_type": "bogus"}, {"report_stage": "final"}, None):
             self.assertEqual(rt.type_of(d), "technical")
-        self.assertEqual(rt.type_of({"report_type": "directors"}), "directors")
+        self.assertEqual(rt.type_of({"report_type": "customer"}), "customer")
+        self.assertEqual(rt.type_of({"report_type": "directors"}), "technical")   # removed type: back to the default
+        self.assertEqual(rt.TYPES, ("technical", "customer"))
 
     def test_each_reader_gets_its_own_instructions(self):
         self.assertEqual(rt.directive("technical"), "")                        # the full report as it was
-        c, d = rt.directive("customer"), rt.directive("directors")
+        self.assertEqual(rt.directive("directors"), "")                        # removed
+        c = rt.directive("customer")
         for h in ("## Summary", "## What Happened", "## Affected Assets", "## Indicators to Block and Hunt",
                   "## Remediation Steps", "## Detection & Monitoring"):
             self.assertIn(h, c)
-        for h in ("## Bottom Line", "## Business Impact", "## What We Have Done", "## Decisions Needed",
-                  "## Next Steps"):
-            self.assertIn(h, d)
-        self.assertIn("NO technical language", d)
-        self.assertIn("No tables", d)
-        for x in (c, d):
+        for x in (c,):
             self.assertIn("marked False Positive is NOT part of the incident", x)
             self.assertIn("no product or feature names", x)
             self.assertIn("do not even list it as excluded", x)      # qa test: "AnyDesk ... marked false positive"
@@ -61,24 +60,21 @@ class Types(unittest.TestCase):
         self.assertIn("if report_type:\n                audience = \"both\"", src)   # replaces the old tone setting
 
     def test_title_and_banner_name_the_reader_and_are_never_repeated(self):
-        once = rt.apply(AI, "directors")
-        self.assertTrue(once.startswith("# Directors Report — qa\n\n_Report for: **Directors** — executives"))
+        once = rt.apply(AI, "customer")
+        self.assertTrue(once.startswith("# Technical Customer Report — qa\n\n_Report for: **Technical customers** — the customer's"))
         again = rt.apply(once, "technical")
         self.assertIn("# Technical Report — qa\n", again)
         self.assertEqual(again.count("_Report for:"), 1)
         old = "# Flash Report — qa\n\n_Report stage: **Flash** — initial notification._\n\n## Bottom Line\nx\n"
         self.assertNotIn("Report stage", rt.apply(old, "customer"))           # the earlier stage banner goes too
 
-    def test_directors_get_no_tables_and_no_evidence(self):
-        ai = rt.apply(AI, "directors")
-        self.assertEqual(heads(ai), ["Bottom Line", "Decisions Needed"])       # what the model wrote, only
-        self.assertIn("_Narrative by live LLM", ai)
-        self.assertEqual(heads(rt.apply(TEMPLATE, "directors")), ["Executive Summary", "Attack Assessment", "Recommendations"])
-        d = {"report_type": "directors", "include_evidence": True,
+    def test_evidence_follows_the_switch_for_every_type(self):
+        d = {"include_evidence": True,
              "case_files": [{"id": "0123456789ab", "name": "Popup", "sha256": "x", "file_name": "p.png"}]}
-        self.assertNotIn("Evidence attached", case_files.with_evidence("# R\n\n## Bottom Line\nx\n", d))
-        d["report_type"] = "customer"
-        self.assertIn("Evidence attached", case_files.with_evidence("# R\n\n## Summary\nx\n", d))
+        for t in ("technical", "customer", "directors"):                     # directors: an old saved choice
+            d["report_type"] = t
+            self.assertIn("Evidence attached", case_files.with_evidence("# R\n\n## Summary\nx\n", d))
+        self.assertEqual(rt.apply(AI, "directors"), AI)                      # an unknown type shapes nothing
 
     def test_technical_customers_lose_our_internals_keep_what_they_act_on(self):
         ai = rt.apply(AI, "customer", {"DESKTOP-16OJFO6": "isolated"}, "contained")
@@ -103,15 +99,12 @@ class Types(unittest.TestCase):
                 "_**Focused report** — one scope, analysed in depth. Every finding below is inside this window._\n\n"
                 "## Summary\nx\n\n_Report detail: **explicit** (set for this case)._\n\n"
                 "---\n_Narrative by live LLM; fact tables deterministic._\n")
-        c, d, t = (rt.apply(head, x) for x in ("customer", "directors", "technical"))
+        c, t = (rt.apply(head, x) for x in ("customer", "technical"))
         for gone in ("Focused report", "Report detail", "Entities correlated"):
             self.assertNotIn(gone, c)
-            self.assertNotIn(gone, d)
             self.assertIn(gone, t)
         self.assertIn("| **Hosts in scope** | 1 |", c)
-        self.assertNotIn("Hosts in scope", d)
-        self.assertNotIn("timestamps are UTC", d)
-        self.assertIn("_Narrative by live LLM", d)             # the footer tells an AI report from a template
+        self.assertIn("_Narrative by live LLM", c)             # the footer tells an AI report from a template
         again = rt.apply(c, "customer", {"h1": "isolated"})
         self.assertIn("| **Hosts in scope** | 1 |", again)       # re-shaping keeps the statistics
         self.assertEqual(again.count("## Containment Status"), 1)
@@ -135,8 +128,7 @@ class Types(unittest.TestCase):
         self.assertEqual(ctx["analyst_case_status"], "open")
         self.assertIn("none recorded", ctx["analyst_host_status"])
         self.assertNotIn("analyst_case_status", llm_sim.analyst_context(graph=FusionGraph(case_id="c")))
-        for t in ("customer", "directors"):
-            self.assertIn("containment has not been recorded yet", rt.directive(t))
+        self.assertIn("containment has not been recorded yet", rt.directive("customer"))
         src = open(os.path.join(_ROOT, "modules/backend/services/fusion/store.py"), encoding="utf-8").read()
         self.assertEqual(src.count('g.case_status = case_info(d)["case_status"]'), 2)   # fuse + view graph
         self.assertEqual(src.count('gv.case_status = getattr(g, "case_status", None)'), 2)
@@ -159,30 +151,29 @@ class History(unittest.TestCase):
             self.addCleanup(p.stop)
 
     def test_each_report_is_kept_once_newest_first_with_its_label(self):
-        a = rt.archive("c1", rt.apply(TEMPLATE, "directors"), "directors")
-        self.assertIsNone(rt.archive("c1", rt.apply(TEMPLATE, "directors"), "directors"))   # reused: not twice
+        a = rt.archive("c1", rt.apply(TEMPLATE, "technical"), "technical")
+        self.assertIsNone(rt.archive("c1", rt.apply(TEMPLATE, "technical"), "technical"))   # reused: not twice
         b = rt.archive("c1", rt.apply(AI, "customer"), "customer")
         h = rt.history(self.d)
         self.assertEqual([(x["id"], x["label"], x["kind"]) for x in h],
-                         [(b["id"], "Technical customers", "ai"), (a["id"], "Directors", "template")])
+                         [(b["id"], "Technical customers", "ai"), (a["id"], "Technical", "template")])
         self.assertIsNone(rt.read("c1", "../../etc/passwd"))
 
-    def test_customer_and_directors_follow_the_latest_ai_technical_report(self):
+    def test_the_customer_report_follows_the_latest_ai_technical_report(self):
         # qa test: three separate model calls, three different verdicts.
         self.assertEqual(rt.basis("c1", self.d), (None, None))
         tech = ("# Technical Report — qa\n\n## Executive Summary\nAuthorised forensic collection, not an "
                 "intrusion. Risk: HIGH.\n\n_Report detail: **explicit** (set for this case)._\n\n## Key Findings\nx\n"
                 "\n---\n_Narrative by live LLM; fact tables deterministic._\n")
         rt.archive("c1", tech, "technical")
-        rt.archive("c1", AI.replace("Bottom Line", "Other"), "directors")                       # newer, other type
+        rt.archive("c1", AI.replace("Bottom Line", "Other"), "customer")                        # newer, other type
         rt.archive("c1", TEMPLATE.replace("sum", "template summary"), "technical")             # newer, but no model
         text, at = rt.basis("c1", self.d)
         self.assertEqual(text, "Authorised forensic collection, not an intrusion. Risk: HIGH.")
         self.assertTrue(at)
-        for t in ("customer", "directors"):
-            self.assertIn("MUST reach the same conclusion", rt.directive(t, text))
-            self.assertIn("<<<\nAuthorised forensic collection", rt.directive(t, text))
-            self.assertNotIn("<<<", rt.directive(t))
+        self.assertIn("MUST reach the same conclusion", rt.directive("customer", text))
+        self.assertIn("<<<\nAuthorised forensic collection", rt.directive("customer", text))
+        self.assertNotIn("<<<", rt.directive("customer"))
         self.assertEqual(rt.directive("technical", text), "")                                  # it IS the conclusion
         llm = open(os.path.join(_ROOT, "modules/backend/services/fusion/llm_sim.py"), encoding="utf-8").read()
         self.assertIn("_rt.directive(report_type, _apply_mask(report_basis, mask) if report_basis else None)", llm)
@@ -195,11 +186,13 @@ class History(unittest.TestCase):
         old = {"report_history": [{"id": "0123456789ab", "stage": "final", "at": "2026-09-29T09:00:00"},
                                   {"id": "0123456789cd", "stage": "flash", "at": "2026-09-29T08:00:00"}]}
         self.assertEqual([x["label"] for x in rt.history(old)], ["Final", "Flash"])
+        gone = {"report_history": [{"id": "0123456789ef", "type": "directors", "at": "2026-09-29T11:26:49", "kind": "ai"}]}
+        self.assertEqual([(x["label"], x["type"]) for x in rt.history(gone)], [("Directors", "")])   # the removed type
 
     def test_same_second_the_later_is_current_and_delete(self):
         with mock.patch.object(store, "_now_iso", lambda: "2026-09-29T10:00:00"):
             a = rt.archive("c1", TEMPLATE, "technical")
-            b = rt.archive("c1", AI, "directors")
+            b = rt.archive("c1", AI, "customer")
         self.assertEqual([x["id"] for x in rt.history(self.d)], [b["id"], a["id"]])
         self.assertEqual(rt.delete("c1", a["id"]), {"deleted": a["id"]})
         rt.delete_case_reports("c1")
@@ -213,7 +206,7 @@ class Page(unittest.TestCase):
         if not node:
             self.skipTest("no node on this host")
         src = open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8").read()
-        self.assertIn("${so('technical','Technical (us)')}${so('customer','Technical customers')}${so('directors','Directors')}", src)
+        self.assertIn("${so('technical','Technical (us)')}${so('customer','Technical customers')}</select>", src)
         self.assertIn("report_type:_rt||undefined", src)
         js = ("const esc=s=>String(s); const window={};\n" + re.search(r"const RP_LABEL=\{.*?\};", src).group(0)
               + "\n" + re.search(r"function reportHistoryHtml\(.*?\n\}", src, re.S).group(0) + """
