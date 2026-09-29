@@ -2263,7 +2263,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                              kwargs={"write_off": False}, daemon=True).start()
         try:
             report = llm_sim.generate_report(
-                gr, report_type=_rs.type_of(d), window=_rwindow, min_severity=min_sev,
+                gr, report_type=_rs.type_of(d), report_basis=_rs.basis(case_id, d)[0], window=_rwindow, min_severity=min_sev,
                 initial_access=d.get("initial_access_estimate"),
                 case_name=d.get("name", "Case"), run_id=case_id,
                 audience=d.get("audience", "both"), language=d.get("language", "en"),
@@ -4216,9 +4216,19 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
     else:
         log_case_event(case_id, "Report · regenerating (deterministic)", "info",
                        "no LLM tokens spent")
+    _basis, _basis_at = _rs.basis(case_id, d) if _rs.type_of(d) != "technical" else (None, None)
+    if will_narrate and _rs.type_of(d) != "technical":
+        if _basis:
+            log_case_event(case_id, "Report · following the Technical report", "info",
+                           f"the conclusion of the Technical report of "
+                           f"{str(_basis_at).replace('T', ' ')[:16]} UTC is restated for this reader")
+        else:
+            log_case_event(case_id, "Report · no Technical report yet", "warning",
+                           "this report forms its own conclusion — generate the Technical "
+                           "report first so all the reports agree")
     try:
         report = llm_sim.generate_report(
-            gv, report_type=_rs.type_of(d), window=window, min_severity=min_sev,
+            gv, report_type=_rs.type_of(d), report_basis=_basis, window=window, min_severity=min_sev,
             initial_access=d.get("initial_access_estimate"), case_name=d.get("name", "Case"),
             run_id=case_id, audience=d.get("audience", "both"), language=d.get("language", "en"),
             altitude_mode=d.get("report_altitude") or "auto",

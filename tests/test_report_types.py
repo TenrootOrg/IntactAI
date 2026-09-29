@@ -167,6 +167,30 @@ class History(unittest.TestCase):
                          [(b["id"], "Technical customers", "ai"), (a["id"], "Directors", "template")])
         self.assertIsNone(rt.read("c1", "../../etc/passwd"))
 
+    def test_customer_and_directors_follow_the_latest_ai_technical_report(self):
+        # qa test: three separate model calls, three different verdicts.
+        self.assertEqual(rt.basis("c1", self.d), (None, None))
+        tech = ("# Technical Report — qa\n\n## Executive Summary\nAuthorised forensic collection, not an "
+                "intrusion. Risk: HIGH.\n\n_Report detail: **explicit** (set for this case)._\n\n## Key Findings\nx\n"
+                "\n---\n_Narrative by live LLM; fact tables deterministic._\n")
+        rt.archive("c1", tech, "technical")
+        rt.archive("c1", AI.replace("Bottom Line", "Other"), "directors")                       # newer, other type
+        rt.archive("c1", TEMPLATE.replace("sum", "template summary"), "technical")             # newer, but no model
+        text, at = rt.basis("c1", self.d)
+        self.assertEqual(text, "Authorised forensic collection, not an intrusion. Risk: HIGH.")
+        self.assertTrue(at)
+        for t in ("customer", "directors"):
+            self.assertIn("MUST reach the same conclusion", rt.directive(t, text))
+            self.assertIn("<<<\nAuthorised forensic collection", rt.directive(t, text))
+            self.assertNotIn("<<<", rt.directive(t))
+        self.assertEqual(rt.directive("technical", text), "")                                  # it IS the conclusion
+        llm = open(os.path.join(_ROOT, "modules/backend/services/fusion/llm_sim.py"), encoding="utf-8").read()
+        self.assertIn("_rt.directive(report_type, _apply_mask(report_basis, mask) if report_basis else None)", llm)
+        st = open(os.path.join(_ROOT, "modules/backend/services/fusion/store.py"), encoding="utf-8").read()
+        self.assertIn("report_basis=_rs.basis(case_id, d)[0]", st)                             # fuse
+        self.assertIn("report_basis=_basis", st)                                               # Regenerate
+        self.assertIn('"Report · no Technical report yet"', st)
+
     def test_reports_from_the_stage_version_keep_their_label(self):
         old = {"report_history": [{"id": "0123456789ab", "stage": "final", "at": "2026-09-29T09:00:00"},
                                   {"id": "0123456789cd", "stage": "flash", "at": "2026-09-29T08:00:00"}]}

@@ -126,14 +126,37 @@ _DIRECTIVE = {
 }
 
 
+def basis(case_id, d):
+    """(Executive Summary, time) of the newest AI-written Technical report, or
+    (None, None). The customer and directors reports restate THIS conclusion
+    instead of forming their own: written as separate model calls, the three
+    reports of qa test disagreed (Technical: authorised forensic collection;
+    Directors: likely compromise). Chosen by the user: follow the saved Technical
+    report rather than write one first."""
+    for x in history(d):
+        if x["type"] == "technical" and x["kind"] == "ai":
+            m = re.search(r"(?ms)^## Executive Summary\n(.*?)(?=^## |\Z)", read(case_id, x["id"]) or "")
+            txt = _INTERNAL_LINES.sub("", m.group(1)).strip()[:3000] if m else ""
+            return (txt, x["at"]) if txt else (None, None)
+    return None, None
+
+
 def type_of(d) -> str:
     """The report type last chosen for the case; Technical when none (old cases)."""
     t = (d or {}).get("report_type") if isinstance(d, dict) else None
     return t if t in TYPES else "technical"
 
 
-def directive(rtype) -> str:
-    return _DIRECTIVE.get(rtype, "")
+def directive(rtype, conclusion=None) -> str:
+    d = _DIRECTIVE.get(rtype, "")
+    if d and conclusion:
+        d += ("\n\nTHE INVESTIGATING TEAM'S CONCLUSION — the Executive Summary of our Technical "
+              "report. Your report MUST reach the same conclusion: the same most likely "
+              "explanation, the same overall risk level and the same confidence, put in words for "
+              "your reader. Do not re-judge the evidence or reach a different verdict. Where the "
+              "analyst's verdicts or host statuses in the data are newer, those still apply.\n"
+              "<<<\n" + str(conclusion).strip() + "\n>>>")
+    return d
 
 
 def apply(md, rtype, host_status=None, case_status=None) -> str:

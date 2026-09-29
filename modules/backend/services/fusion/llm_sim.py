@@ -1778,6 +1778,7 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
 def generate_report(graph, *, window=None, min_severity="informational",
                     initial_access=None, case_name="Case", run_id=None,
                     audience="both", language="en", master_prompt=None, mask=None, report_type=None,
+                    report_basis=None,
                     altitude_mode="auto",
                     dispositions=None, validations=None, prefer_llm=True,
                     max_entities=None, budget_chars=None, max_output_tokens=None,
@@ -1899,7 +1900,8 @@ def generate_report(graph, *, window=None, min_severity="informational",
                     pass
             if report_type:                       # Technical / Technical customers / Directors
                 from . import report_types as _rt
-                _d = _rt.directive(report_type)
+                # The Technical report's conclusion, masked like the rest of the input.
+                _d = _rt.directive(report_type, _apply_mask(report_basis, mask) if report_basis else None)
                 if _d:
                     system = system + "\n\n" + _d
             if master_prompt:
