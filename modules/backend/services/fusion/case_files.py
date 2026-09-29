@@ -224,12 +224,19 @@ _SECTION = "## Evidence attached to this case"
 _FOOTER = re.compile(r"\n\n---\n_(?:Deterministic report|Narrative by live LLM)[\s\S]*$")
 
 
+def included(d) -> bool:
+    """The case's one switch (Analysis tab): evidence goes into the report and to
+    the AI only when it is on. Off by default; old cases have no switch = off."""
+    return bool(isinstance(d, dict) and d.get("include_evidence") is True)
+
+
 def with_evidence(md, d) -> str:
     """The report with its evidence section — built here, not by the model, so the
-    AI report, the offline template report and the PDF all carry it. Every item is
-    listed (the report stays on the appliance; Include in AI only governs what the
-    MODEL is given). Idempotent: an existing section is replaced, never repeated;
-    placed before the report's closing footer."""
+    AI report and the offline template report both carry it — when the case's
+    switch is on; without it the section is removed. Pictures go in as
+    ![name](evidence:<id>) and are resolved per output (resolve_pictures).
+    Idempotent: an existing section is replaced, never repeated; placed before
+    the report's closing footer."""
     md = str(md or "")
     i = md.find("\n" + _SECTION)
     if i < 0 and md.startswith(_SECTION):
@@ -239,7 +246,7 @@ def with_evidence(md, d) -> str:
         f = _FOOTER.search(md, i)
         end = min(x for x in (j, f.start() if f else -1, len(md)) if x >= 0)
         md = md[:i] + md[end:]
-    items = listing(d)
+    items = listing(d) if included(d) else []
     if not items or not md.strip():
         return md
     items.sort(key=lambda x: (not x["finding_id"], x["host"], x["time"], x["name"]))
@@ -253,11 +260,51 @@ def with_evidence(md, d) -> str:
             head += f" · from {x['source']}"
         out.append(head)
         out.append(f"    - {x['file_name']} · SHA-256 `{x['sha256']}`" + (f" · {x['description']}" if x["description"] else ""))
+        if x["kind"] == "image":
+            out += ["", f"![{x['name'].replace(']', ')')}](evidence:{x['id']})", ""]
     block = "\n".join(out) + "\n"
     f = _FOOTER.search(md)
     if f:
         return md[:f.start()].rstrip() + "\n\n" + block + md[f.start():]
     return md.rstrip() + "\n\n" + block
+
+
+_PIC = re.compile(r"!\[([^\]]*)\]\(evidence:([0-9a-f]{12})\)")
+EMBED_CAP = 10 * 1024 * 1024
+_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+         ".bmp": "image/bmp", ".webp": "image/webp", ".tif": "image/tiff", ".tiff": "image/tiff"}
+
+
+def picture_mime(file_name) -> str | None:
+    return _MIME.get(os.path.splitext(str(file_name or "").lower())[1])
+
+
+def resolve_pictures(md, case_id, d, mode) -> str:
+    """Turn ![name](evidence:<id>) into what each output can show:
+      "url"   — the appliance URL (the Analysis tab);
+      "embed" — a data: URL (PDF and HTML, which fetch nothing), capped;
+      "name"  — the file name (Markdown, which cannot carry the picture)."""
+    import base64
+    items = {x["id"]: x for x in listing(d)}
+
+    def _one(m):
+        alt, fid = m.group(1), m.group(2)
+        x = items.get(fid)
+        if not x:
+            return f"_(picture removed: {alt})_"
+        if mode == "url":
+            return f"![{alt}](/api/cases/{case_id}/files/{fid}?inline=1)"
+        if mode == "embed":
+            p, mime = path_of(case_id, fid), picture_mime(x["file_name"])
+            if not p or not mime:
+                return f"_(picture not available: {x['file_name']})_"
+            if os.path.getsize(p) > EMBED_CAP:
+                return f"_(picture not embedded — larger than {EMBED_CAP // (1024 * 1024)} MB: {x['file_name']})_"
+            with open(p, "rb") as fh:
+                return f"![{alt}](data:{mime};base64,{base64.b64encode(fh.read()).decode()})"
+        return f"_(picture: {x['file_name']})_"
+
+    return _PIC.sub(_one, str(md or ""))
 
 
 def per_finding(d) -> dict:
@@ -270,12 +317,13 @@ def per_finding(d) -> dict:
 
 
 def for_model(case_id, d) -> list:
-    """What "Include in AI" hands the model: name, description, file, type, host,
-    time, linked event; a text file's text too (capped). Nothing for the rest."""
+    """With the case's switch on, the model gets every item: name, description,
+    file, type, host, time, linked event; a text file's text too (capped). Never
+    a picture's pixels. Switch off: nothing."""
     out = []
+    if not included(d):
+        return out
     for f in listing(d):
-        if not f["ai"]:
-            continue
         item = {"evidence": f["name"], "file": f["file_name"], "type": f["kind"]}
         for k in ("description", "host", "time", "source"):
             if f[k]:

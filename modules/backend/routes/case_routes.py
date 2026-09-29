@@ -402,6 +402,7 @@ def get_case(case_id):
                                       or d.get("name") == store.SYSTEM_CASE_NAME),
                     **store.case_info(d),
                     "case_files": _case_files.listing(d),
+                    "include_evidence": _case_files.included(d),
                     "masking": d.get("masking") or {"enabled": False, "patterns": []},
                     "included_run_ids": d.get("included_run_ids"),
                     # null-guarded for cases created before these existed
@@ -573,7 +574,16 @@ def download_case_file(case_id, file_id):
     p = _case_files.path_of(case_id, file_id)
     if not item or not p:
         return jsonify({"error": "no such file"}), 404
-    return send_file(p, as_attachment=True, download_name=item["file_name"])
+    # ?inline=1 shows a PICTURE in the page (the report's evidence section). Only
+    # raster pictures, by our own type table — never an uploaded .html or .svg,
+    # which the browser would run on the appliance's origin.
+    mime = _case_files.picture_mime(item["file_name"])
+    if request.args.get("inline") and item["kind"] == "image" and mime:
+        resp = send_file(p, mimetype=mime, as_attachment=False)
+    else:
+        resp = send_file(p, as_attachment=True, download_name=item["file_name"])
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    return resp
 
 
 @case_bp.route("/api/cases/<case_id>/files/<file_id>", methods=["PATCH"])
@@ -1387,6 +1397,19 @@ def report_download(case_id):
                              f'attachment; filename="{_report_filename(store.get_case(case_id), "md")}"'})
 
 
+@case_bp.route("/api/cases/<case_id>/report/download/html", methods=["GET"])
+def report_download_html(case_id):
+    """The branded report as one self-contained HTML file (pictures embedded)."""
+    d = store.get_case(case_id)
+    if not d:
+        return jsonify({"error": "case not found"}), 404
+    from services.engagement.pdf import render_engagement_html
+    html = render_engagement_html(store.engagement_markdown(case_id, pictures="embed"), case_id,
+                                  logo_b64=d.get("customer_logo_b64") or "")
+    return Response(html, mimetype="text/html",
+                    headers={"Content-Disposition": f'attachment; filename="{_report_filename(d, "html")}"'})
+
+
 @case_bp.route("/api/cases/<case_id>/report/download/pdf", methods=["GET"])
 def report_download_pdf(case_id):
     """Branded engagement-grade PDF (reuses the engagement WeasyPrint renderer)."""
@@ -1395,7 +1418,7 @@ def report_download_pdf(case_id):
         return jsonify({"error": "case not found"}), 404
     try:
         from services.engagement.pdf import render_engagement_pdf
-        md = store.engagement_markdown(case_id)
+        md = store.engagement_markdown(case_id, pictures="embed")
         pdf = render_engagement_pdf(md, case_id, logo_b64=d.get("customer_logo_b64") or "")
     except Exception as e:
         return jsonify({"error": f"pdf render failed: {e}"}), 503

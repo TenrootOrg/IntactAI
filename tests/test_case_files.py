@@ -76,7 +76,15 @@ class Evidence(unittest.TestCase):
         self.add("popup.png", b"img", finding_id="f_row", name="", description="")
         self.add("fw.csv", b"a", name="Kibana export", description="firewall rules", host="ALDC02", source="kibana")
         md = "# Report\n\n## Findings\n- x\n\n---\n_Deterministic report — no model_\n"
+        self.assertEqual(case_files.with_evidence(md, self.d), md)                # switch off: no section
+        self.d["include_evidence"] = True
         once = case_files.with_evidence(md, self.d)
+        pic = next(x for x in case_files.listing(self.d) if x["kind"] == "image")
+        self.assertIn(f"](evidence:{pic['id']})", once)                              # the picture is in the section
+        self.assertEqual(once.count("](evidence:"), 1)                                # the CSV is not a picture
+        self.d["include_evidence"] = False
+        self.assertNotIn("Evidence attached", case_files.with_evidence(once, self.d))  # switched off: section goes
+        self.d["include_evidence"] = True
         self.assertEqual(case_files.with_evidence(once, self.d), once)          # rebuilt, never repeated
         self.assertEqual(once.count("## Evidence attached to this case"), 1)
         self.assertLess(once.index("## Evidence attached"), once.index("---\n_Deterministic report"))
@@ -86,6 +94,29 @@ class Evidence(unittest.TestCase):
         self.assertLess(once.index("screenshot"), once.index("Kibana export"))  # linked items first
         self.assertEqual(case_files.with_evidence(md, {"name": "none"}), md)    # no evidence: unchanged
         self.assertNotIn("Evidence attached", case_files.with_evidence(once, {"name": "none"}))   # all deleted: section goes
+
+    def test_pictures_resolve_per_output(self):
+        pic = self.add("popup.png", b"\x89PNGdata", finding_id="f_row", name="", description="")
+        md = f"x\n\n![Popup](evidence:{pic['id']})\n\n![Gone](evidence:0000000000aa)\n"
+        url = case_files.resolve_pictures(md, "c1", self.d, "url")
+        self.assertIn(f"![Popup](/api/cases/c1/files/{pic['id']}?inline=1)", url)
+        self.assertIn("_(picture removed: Gone)_", url)
+        emb = case_files.resolve_pictures(md, "c1", self.d, "embed")
+        import base64
+        self.assertIn("![Popup](data:image/png;base64," + base64.b64encode(b"\x89PNGdata").decode() + ")", emb)
+        with mock.patch.object(case_files, "EMBED_CAP", 3):
+            self.assertIn("picture not embedded", case_files.resolve_pictures(md, "c1", self.d, "embed"))
+        self.assertIn("_(picture: popup.png)_", case_files.resolve_pictures(md, "c1", self.d, "name"))
+
+    def test_only_raster_pictures_are_ever_shown_inline(self):
+        self.assertEqual(case_files.picture_mime("a.PNG"), "image/png")
+        for bad in ("a.svg", "a.html", "a.htm", "a.txt", "a"):
+            self.assertIsNone(case_files.picture_mime(bad), bad)
+
+    def test_the_switch_is_off_for_old_and_damaged_cases(self):
+        for d in ({"name": "old"}, {"include_evidence": "yes"}, {"include_evidence": 1}, None):
+            self.assertFalse(case_files.included(d))
+        self.assertTrue(case_files.included({"include_evidence": True}))
 
     def test_a_manual_item_keeps_what_was_typed(self):
         it = self.add("ts-export.csv", b"a,b", host="ALDC02", time="2026-09-01T08:00:00Z", source="timesketch")
@@ -120,19 +151,18 @@ class Evidence(unittest.TestCase):
         for bad in ("../../etc/passwd", "..", "", "ABCDEF123456"):
             self.assertIsNone(case_files.path_of("c1", bad))
 
-    def test_only_flagged_items_reach_the_model_with_their_event(self):
+    def test_the_case_switch_decides_what_reaches_the_model(self):
         pic = self.add("popup.png", b"img", finding_id="f_row")
         log = self.add("fw.log", b"line1", name="Firewall log", description="exported from Kibana", source="kibana")
-        self.add("secret.txt", b"not for the model", name="Private", description="x")
-        case_files.update("c1", pic["id"], {"ai": True})
-        case_files.update("c1", log["id"], {"ai": True})
+        self.assertEqual(case_files.for_model("c1", self.d), [])                  # switch off: nothing
+        self.d["include_evidence"] = True
         got = case_files.for_model("c1", self.d)
         self.assertEqual(got[0], {"evidence": "AnyDesk prompt", "file": "popup.png", "type": "image",
                                   "description": "the silent-install prompt on the desktop",
                                   "host": "DESKTOP-16OJFO6", "time": TS, "source": "timeline",
                                   "supports_finding": _graph().findings[0].title})
         self.assertEqual(got[1]["text"], "line1")
-        self.assertNotIn("Private", json.dumps(got))
+        self.assertEqual(len(got), 2)                                              # switch on: every item
         g = FusionGraph(case_id="c1")
         g.case_files = got
         self.assertEqual(llm_sim.analyst_context(graph=g)["analyst_attached_files"], got)
@@ -180,7 +210,7 @@ console.log(JSON.stringify([all, one, bad, form, linked]));""")
         self.assertLess(all_.index("ALDC02"), all_.index("DESKTOP-16OJFO6"))          # grouped by host, A-Z
         self.assertLess(all_.index("DESKTOP-16OJFO6"), all_.index("Not linked to a host"))   # unlinked last
         self.assertIn("evGoEvent('f_row')", all_)
-        self.assertNotIn('style="width:auto" checked', all_)                          # Include in AI: off
+        self.assertNotIn("Include in AI", all_)                                        # one switch, not per item
         self.assertIn("Evidence for: <b>SIGMA: AnyDesk</b>", one)
         self.assertNotIn("Kibana export", one)                                         # filtered to that event
         self.assertIn("No evidence yet", bad)                                          # damaged: empty, no crash
@@ -199,6 +229,36 @@ console.log(JSON.stringify([all, one, bad, form, linked]));""")
         self.assertIn("📎 Attach evidence<input type=\"file\" multiple", src)
         self.assertIn("fd.append('finding_id',fid)", src)
         self.assertNotIn("evAttachForm", src)
+
+
+class ReportPictures(unittest.TestCase):
+    def test_the_page_shows_only_this_cases_evidence_pictures(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("no node on this host")
+        with open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
+            src = fh.read()
+        fns = "\n".join(re.search(r"function %s\(s\)\{.*?\n" % n, src).group(0) for n in ("escape", "inline"))
+        js = fns + """
+console.log(JSON.stringify([
+  inline('![Popup](/api/cases/case_1/files/0123456789ab?inline=1)'),
+  inline('![x](https://evil.example/a.png)'),
+  inline('![x](/api/cases/c/files/../../etc?inline=1)')]));"""
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as t:
+            t.write(js)
+        try:
+            out = json.loads(subprocess.run([node, t.name], capture_output=True, text=True, check=True).stdout)
+        finally:
+            os.unlink(t.name)
+        self.assertIn('<img src="/api/cases/case_1/files/0123456789ab?inline=1" alt="Popup"', out[0])
+        self.assertNotIn("<img", out[1])                  # nothing external
+        self.assertNotIn("<img", out[2])
+
+    def test_the_analysis_tab_has_the_switch_and_the_html_download(self):
+        with open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn("Include evidence in the report and AI</label>", src)
+        self.assertIn("dl('/report/download/html','⬇ HTML')", src)
 
 
 class Paste(unittest.TestCase):

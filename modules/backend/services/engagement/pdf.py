@@ -569,7 +569,9 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
 <head>
   <meta charset="utf-8">
   <title>{_html_escape('Incident Response Report — ' + (meta.get('customer') or meta['name']))}</title>
-  <style>{css}</style>
+  <style>{css}
+  img[alt] {{ max-width: 100%; max-height: 18cm; border: 1px solid #d0d7de; border-radius: 4px; margin: 4pt 0; }}
+  </style>
 </head>
 <body>
   <section class="cover">
@@ -652,6 +654,14 @@ def _html_escape(s) -> str:
         .replace('>', '&gt;')
         .replace('"', '&quot;')
     )
+
+
+def render_engagement_html(markdown_text: str, run_id: str, logo_b64: str = '') -> str:
+    """The same branded document as the PDF, as one self-contained HTML file —
+    pictures and logos embedded (data: URLs), opens offline in any browser."""
+    meta = _extract_cover_meta(markdown_text)
+    body = "## Table of Contents {.toc-heading}\n\n[TOC]\n\n" + _strip_cover_from_md(markdown_text)
+    return _build_html(body, meta, run_id, customer_logo=logo_b64)
 
 
 def render_engagement_pdf(markdown_text: str, run_id: str, logo_b64: str = '') -> bytes:

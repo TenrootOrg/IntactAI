@@ -3501,9 +3501,13 @@ def update_case_info(case_id, fields) -> dict:
         patch["case_owner"] = str(fields.get("case_owner") or "").strip()[:100]
     if "case_description" in fields:
         patch["case_description"] = str(fields.get("case_description") or "").strip()[:2000]
+    if "include_evidence" in fields:
+        patch["include_evidence"] = fields.get("include_evidence") is True
     if not patch:
         return {"error": "nothing to save"}
     _merge_case_details(case_id, patch)
+    if "include_evidence" in patch and patch["include_evidence"] != (d.get("include_evidence") is True):
+        _report_behind(case_id)            # the report's evidence section follows the switch
     log_case_event(case_id, "Case details saved", "info",
                    ", ".join(f"{k.replace('case_', '')}: {str(v)[:40] or '—'}" for k, v in patch.items()))
     return {"case_id": case_id, **case_info({**d, **patch}), "name": patch.get("name", d.get("name"))}
@@ -4339,7 +4343,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
     return {"report_md": report, "audience": d.get("audience", "both")}
 
 
-def engagement_markdown(case_id) -> str:
+def engagement_markdown(case_id, pictures="name") -> str:
     """Branded full report markdown (engagement-style cover + report body) for MD/PDF
     download. Reuses the engagement cover_block so the shared PDF renderer parses it."""
     from datetime import datetime, timezone
@@ -4357,6 +4361,11 @@ def engagement_markdown(case_id) -> str:
                         customer_name=d.get("customer_name", ""),
                         include_workflows=False)   # operator: not needed in case reports
     body = d.get("report_md") or "_No report yet — fuse the case first._"
+    try:
+        from . import case_files
+        body = case_files.resolve_pictures(body, case_id, d, pictures)
+    except Exception as e:                                   # noqa: BLE001 — never lose the report
+        print(f"[FUSION] evidence pictures not resolved for {case_id}: {e}", flush=True)
     return f"{cover}\n\n{body}"
 
 

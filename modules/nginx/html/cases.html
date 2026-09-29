@@ -1081,7 +1081,6 @@ function _evItem(x){
       <span style="color:var(--muted);font-size:11px">${esc(_evSrc(x.source))}${x.time?' · '+esc(x.time):''}</span>
       ${x.finding_id?`<span class="elink" style="font-size:11px" title="Open this event on the Timeline" onclick="evGoEvent('${esc(x.finding_id)}')">→ ${esc(lab.length>70?lab.slice(0,70)+'…':lab)}</span>`:''}
       <span style="margin-left:auto;display:flex;gap:10px;align-items:center;font-size:11px">
-        <label style="white-space:nowrap" title="${x.kind==='image'?'The AI gets its name, description and linked event — not the picture itself':'The AI gets its name, description, linked event and text (first 20,000 characters, masked)'}"><input type="checkbox" style="width:auto" ${x.ai?'checked':''} onchange="evPatch('${esc(x.id)}',{ai:this.checked})"/> Include in AI</label>
         <span class="elink" onclick="evEditToggle('${esc(x.id)}')">${edit?'close':'edit'}</span>
         <span style="color:var(--muted);cursor:pointer" title="Delete" onclick="evDel('${esc(x.id)}')">✕</span></span>
     </div>
@@ -1103,13 +1102,20 @@ function renderEvidence(info){
       +groups[h].sort((a,b)=>String(a.time||'').localeCompare(String(b.time||''))).map(_evItem).join('')).join('');
   const fl=f?(all.find(x=>x.finding_id===f)||{}).finding_title||'this event':'';
   $('#tabc').innerHTML=`<datalist id="ev-hosts">${(window._evHosts||[]).map(h=>`<option value="${esc(h)}">`).join('')}</datalist>
-    <p class="ent-cap">Evidence for this case — screenshots, e-mails, logs, exports from TimeSketch, Kibana or IRIS. Attach from a Timeline event (open it → <b>📎 Attach evidence</b>) and it is linked to that event and its host; or add it here. Nothing reaches the AI unless you tick <b>Include in AI</b>.</p>
+    <p class="ent-cap">Evidence for this case — screenshots, e-mails, logs, exports from TimeSketch, Kibana or IRIS. Attach from a Timeline event (open it → <b>📎 Attach evidence</b>) and it is linked to that event and its host; or add it here. It goes into the report (with its pictures, also in the PDF and HTML) and to the AI only when <b>Include evidence in the report and AI</b> is on — on the Analysis tab${info.include_evidence?' (<span style="color:#3fb950">on</span>)':' (off)'}.</p>
     ${f?`<div class="agnote">Evidence for: <b>${esc(fl)}</b> · <span class="elink" onclick="window._evFilter='';renderEvidence(curInfo)">show all</span></div>`:''}
     <div class="row" style="gap:8px;margin:6px 0"><button onclick="window._evAdd=!window._evAdd;renderEvidence(curInfo)">${window._evAdd?'Close':'+ Add evidence'}</button>
       <span style="color:var(--muted);font-size:12px">${all.length} item(s) · up to 100 MB each</span></div>
     ${window._evAdd?`<div class="cfgcol" style="border:1px solid var(--bd);border-radius:8px;padding:8px 10px;max-width:640px">${_evFields('evn',{},true,false)}
       <div class="row" style="margin-top:6px"><button onclick="evSubmit('evn','')">Add</button></div></div>`:''}
     ${body||'<div class="empty">No evidence yet.</div>'}`;
+}
+function evToggleInclude(cid, on){
+  fetch('/api/cases/'+encodeURIComponent(cid),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({include_evidence:!!on})})
+    .then(_evJson).then(()=>{ if(curInfo&&curInfo.case_id===cid){ curInfo.include_evidence=!!on; curInfo.report_dirty=true; }
+      const st=$('#reportstatus'); if(st&&curInfo) st.innerHTML=reportStatusHtml(curInfo);
+      toast(on?'Evidence will be in the report and given to the AI — regenerate the report.':'Evidence left out of the report and the AI — regenerate the report.'); })
+    .catch(e=>toast('Not saved: '+e.message));
 }
 function evShowFor(fid){ window._evFilter=fid; setTab('evidence'); }
 function evGoEvent(fid){ setTab('timeline'); setTimeout(()=>openFindingDetail(fid), 600); }
@@ -1179,10 +1185,13 @@ function renderReport(info){
   // rendered by one function from one `info` — see reportStatusHtml.
   // The report's own tail already told the story above; showing it again as a
   // raw markdown footnote would just repeat it in a smaller, unstyled font.
-  const mdBody = md.replace(/\n\n---\n_(?:Deterministic report — [\s\S]*?|Narrative by live LLM[\s\S]*?)_\n\s*$/, '');
+  const mdBody = md.replace(/\n\n---\n_(?:Deterministic report — [\s\S]*?|Narrative by live LLM[\s\S]*?)_\n\s*$/, '')
+    // evidence pictures: shown from the appliance (the PDF / HTML embed them)
+    .replace(/!\[([^\]]*)\]\(evidence:([0-9a-f]{12})\)/g, (m,a,f)=>`![${a}](/api/cases/${id}/files/${f}?inline=1)`);
   $('#tabc').innerHTML=`<div id="reportstatus">${reportStatusHtml(info)}</div><div class="row" style="gap:8px;margin-bottom:10px;align-items:center">
     <span id="regenslot">${regenButtonHtml(info)}</span>
-    ${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}
+    ${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}${dl('/report/download/html','⬇ HTML')}
+    <label style="font-size:12px;white-space:nowrap" title="On: the report gets an Evidence section with every item and its pictures (also in the PDF and HTML), and the AI is given the evidence — names, descriptions, linked findings and the text of text files, never the pictures themselves. Regenerate the report after changing it."><input type="checkbox" style="width:auto" ${info.include_evidence?'checked':''} onchange="evToggleInclude('${esc(id)}',this.checked)"/> Include evidence in the report and AI</label>
     <span style="color:var(--muted);font-size:11px;margin-left:auto">auto-generated on first scan · regenerate to apply Timeline changes</span>
   </div><div id="zoomcards">${_zoomHtml.id===id?_zoomHtml.html:''}</div><div class="md">${mdToHtml(mdBody)}</div>`;
   clampEvidence($('#tabc'));
@@ -2597,7 +2606,7 @@ document.addEventListener('click',e=>{
 
 // minimal, air-gap-safe markdown renderer
 function escape(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-function inline(s){return escape(s).replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>').replace(/_([^_]+)_/g,'<em>$1</em>');}
+function inline(s){return escape(s).replace(/!\[([^\]]*)\]\((\/api\/cases\/[A-Za-z0-9_]+\/files\/[0-9a-f]{12}\?inline=1)\)/g,'<img src="$2" alt="$1" style="max-width:100%;max-height:480px;border:1px solid var(--bd);border-radius:6px;margin:6px 0;display:block"/>').replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>').replace(/_([^_]+)_/g,'<em>$1</em>');}
 function mdToHtml(md){
   const out=[]; let inUL=false,inTbl=false,pre=null;
   const closeUL=()=>{if(inUL){out.push('</ul>');inUL=false;}};
