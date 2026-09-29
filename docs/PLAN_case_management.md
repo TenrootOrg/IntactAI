@@ -99,7 +99,7 @@ later) — next to the existing audience choice (Executive / Technical / Both).
 Each stage is a different section list and length; the case status (item 2)
 proposes the default (Open → Interim, Closed → Final). Each generated report is
 kept with its stage and date, so an Interim does not overwrite the Final.
-**Needs your pick of which stages to build.**
+**Built 2026-09-29:** Flash / Interim / Final with a report history (view, PDF / HTML / MD, delete). History does not travel in case export/import yet.
 
 ---
 
@@ -109,6 +109,7 @@ kept with its stage and date, so an Interim does not overwrite the Final.
 |---|---|
 | 1. A note on a verdict | Built as step 2, then reverted (55cca3ba) — not wanted now. |
 | 4. Next steps checklist | Built as step 5, then reverted — not wanted. |
+| 6b / step 7. Velociraptor links, hit list, "Pin as evidence" | Not needed (decided 2026-09-29). |
 | 3. IOC tab (add/edit, CSV / STIX / MISP export) | Not needed. |
 | 7. Who-did-what on every action, a log that cannot be cleared | Multi-user does not exist yet; leave it until it does. |
 | 8. Search across cases | Cases are deliberately separate; hunts and workflows from another case can be pulled in when needed. |
