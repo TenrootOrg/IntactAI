@@ -1189,10 +1189,11 @@ function reportHistoryHtml(info, viewing){
       <span class="sg-hint" style="border-style:solid">${esc(x.label||RP_LABEL[x.type]||'Report')}</span>
       <span>${esc(String(x.at||'').replace('T',' ').slice(0,16))} UTC</span>
       <span style="color:var(--muted)">${x.kind==='ai'?'AI report':'template report'}${i===0?' · current':''}</span>
-      <span style="margin-left:auto;display:flex;gap:10px">${viewing&&viewing.id===x.id?'<b>viewing</b>':`<span class="elink" onclick="rpView('${cid}','${esc(x.id)}')">view</span>`}
+      <span style="margin-left:auto;display:flex;gap:10px">${viewing&&viewing.id===x.id?'<b style="color:var(--acc)">● Viewing</b>':`<button class="dlbtn" style="padding:3px 12px;font-size:12px;border-color:var(--acc);color:var(--acc)" onclick="rpView('${cid}','${esc(x.id)}')">View</button>`}
         ${dl(x,'pdf','PDF')}${dl(x,'html','HTML')}${dl(x,'md','MD')}
         <span style="color:var(--muted);cursor:pointer" title="Delete this kept report" onclick="rpDelete('${cid}','${esc(x.id)}')">✕</span></span></div>`).join('');
-  const banner=viewing?`<div class="agnote">Viewing the <b>${esc(viewing.label||'')}</b> report of ${esc(String(viewing.at||'').replace('T',' ').slice(0,16))} UTC — not the current one. <span class="elink" onclick="rpBack()">Back to the current report</span></div>`:'';
+  const isCur=!!(viewing&&H[0]&&H[0].id===viewing.id);
+  const banner=viewing?`<div class="agnote">Viewing the <b>${esc(viewing.label||'')}</b> report of ${esc(String(viewing.at||'').replace('T',' ').slice(0,16))} UTC — ${isCur?'the current report':'not the current one'}. <span class="elink" onclick="rpBack()">${isCur?'Close':'Back to the current report'}</span></div>`:'';
   return `${banner}<details ${open||viewing?'open':''} ontoggle="window._rpHistOpen=this.open" style="margin:0 0 10px;border:1px solid var(--bd);border-radius:8px;padding:6px 10px">
     <summary style="cursor:pointer;font-size:13px"><b>Report history</b> <span style="color:var(--muted)">· ${H.length?H.length+' kept':'none yet — every report written from now on is kept here'}</span></summary>
     <div style="margin-top:4px">${rows||''}</div></details>`;

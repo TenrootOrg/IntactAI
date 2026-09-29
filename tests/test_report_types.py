@@ -230,6 +230,10 @@ console.log(JSON.stringify([reportHistoryHtml({case_id:'c1', report_history:H}, 
         self.assertIn(">Directors</span>", out[0])
         self.assertIn(">Final</span>", out[0])                                  # an old stage report
         self.assertIn("Viewing the <b>Directors</b> report", out[1])
+        self.assertIn("the current report", out[1])                     # the newest one IS current
+        self.assertNotIn("not the current one", out[1])
+        self.assertIn('>View</button>', out[1])                          # a button, not a faint link
+        self.assertIn("● Viewing", out[1])
 
 
 if __name__ == "__main__":
