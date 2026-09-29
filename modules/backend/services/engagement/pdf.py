@@ -661,7 +661,43 @@ def render_engagement_html(markdown_text: str, run_id: str, logo_b64: str = '') 
     pictures and logos embedded (data: URLs), opens offline in any browser."""
     meta = _extract_cover_meta(markdown_text)
     body = "## Table of Contents {.toc-heading}\n\n[TOC]\n\n" + _strip_cover_from_md(markdown_text)
-    return _build_html(body, meta, run_id, customer_logo=logo_b64)
+    html = _build_html(body, meta, run_id, customer_logo=logo_b64)
+    # The document's CSS is a PRINT layout (A4 sheets, a full-page cover pinned to
+    # the sheet, page breaks) — in a browser it read as broken. The HTML export
+    # gets a screen layout on top; the PDF is untouched.
+    return html.replace("</head>", _SCREEN_CSS + "\n</head>", 1)
+
+
+_SCREEN_CSS = """<style>
+@media screen {
+  html { background: #eef1f5; }
+  body { max-width: 940px; margin: 28px auto 64px; padding: 0 0 36px; background: #fff;
+         border-radius: 12px; box-shadow: 0 2px 14px rgba(15, 23, 42, .10);
+         font-size: 15px; line-height: 1.65; overflow: hidden; }
+  body > *:not(.cover) { margin-left: 48px; margin-right: 48px; }
+  .cover { height: auto; padding: 30px 48px 26px; margin: 0 0 30px; page-break-after: auto; }
+  .cover .logo-wrap { margin-bottom: 20px; gap: 18px; }
+  .cover .logo-wrap img { height: 42px; width: auto; max-width: 220px; }
+  .cover .logo-wrap .sep { height: 34px; }
+  .cover h1 { font-size: 28px; margin: 0 0 10px; }
+  .cover .subtitle { font-size: 14px; margin-bottom: 18px; max-width: 700px; }
+  .cover .tlp-badge { position: static; display: inline-block; margin-bottom: 14px; }
+  .cover .meta-grid { font-size: 13px; }
+  .cover .footer-line { position: static; margin-top: 20px; }
+  h2 { font-size: 21px; margin-top: 34px; padding-bottom: 6px; border-bottom: 1px solid #e5e7eb; }
+  h3 { font-size: 17px; margin-top: 22px; }
+  h4 { font-size: 15px; }
+  p, li { font-size: 15px; }
+  h2.toc-heading { page-break-before: auto; border-bottom: none; margin-top: 0; }
+  .toc { page-break-after: auto; background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 10px;
+         padding: 12px 20px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { padding: 7px 10px; }
+  pre { white-space: pre-wrap; word-break: break-word; }
+  img[alt] { display: block; max-width: 100%; max-height: 600px; height: auto; }
+  .cover .logo-wrap img[alt] { display: inline; border: none; max-height: 42px; }
+}
+</style>"""
 
 
 def render_engagement_pdf(markdown_text: str, run_id: str, logo_b64: str = '') -> bytes:
