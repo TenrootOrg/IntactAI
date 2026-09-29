@@ -235,6 +235,69 @@ class BundleTestBase(unittest.TestCase):
         return res["bundle_path"], res
 
 
+# ── evidence files (plan step 6) ─────────────────────────────────────────────
+class TestEvidenceTravels(BundleTestBase):
+    """The Evidence tab's files move with the case; their names, descriptions and
+    links already did (case.json). A case with none writes the bundle it always did."""
+
+    def setUp(self):
+        super().setUp()
+        import services.fusion.case_files as cf
+        self.cf = cf
+        self._old_dir = cf.DATA_DIR
+        cf.DATA_DIR = os.path.join(self.tmp, "case_files")
+        self.addCleanup(setattr, cf, "DATA_DIR", self._old_dir)
+
+    def add_evidence(self, case_id, fid, data, **meta):
+        d = self.cf._dir(case_id)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, fid), "wb") as fh:
+            fh.write(data)
+        item = {"id": fid, "name": meta.get("name", "Popup"), "description": "the prompt",
+                "file_name": meta.get("file_name", "popup.png"), "size": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(), "kind": "image", "host": "HOST0",
+                "finding_id": "finding:1", "finding_title": "SIGMA: x", "source": "timeline"}
+        det = self.ws.rows[case_id]["details"]
+        det.setdefault("case_files", []).append(item)
+        det["include_evidence"] = True
+        return item
+
+    def test_the_files_and_their_details_arrive_in_the_new_case(self):
+        case_id, _ = self.make_case()
+        a = self.add_evidence(case_id, "0123456789ab", b"\x89PNG-one")
+        b = self.add_evidence(case_id, "0123456789cd", b"mail body", name="Customer mail", file_name="mail.eml")
+        path, _ = self.export(case_id)
+        with zipfile.ZipFile(path) as z:
+            names = set(z.namelist())
+        self.assertTrue({"evidence/0123456789ab", "evidence/0123456789cd"} <= names)
+        new = cb.import_case_bundle(path)["case_id"]
+        det = self.ws.rows[new]["details"]
+        self.assertEqual([x["name"] for x in self.cf.listing(det)], ["Popup", "Customer mail"])
+        self.assertTrue(det.get("include_evidence"))
+        for item, data in ((a, b"\x89PNG-one"), (b, b"mail body")):
+            with open(self.cf.path_of(new, item["id"]), "rb") as fh:
+                self.assertEqual(fh.read(), data)
+        self.assertEqual(hashlib.sha256(open(self.cf.path_of(new, a["id"]), "rb").read()).hexdigest(), a["sha256"])
+
+    def test_a_case_without_evidence_writes_no_evidence_entries(self):
+        case_id, _ = self.make_case()
+        path, _ = self.export(case_id)
+        with zipfile.ZipFile(path) as z:
+            self.assertFalse([n for n in z.namelist() if n.startswith("evidence/")])
+
+    def test_a_missing_evidence_file_is_a_warning_not_a_failure(self):
+        case_id, _ = self.make_case()
+        item = self.add_evidence(case_id, "0123456789ab", b"x")
+        os.remove(self.cf.path_of(case_id, item["id"]))
+        plan = cb.plan_export(case_id)
+        self.assertTrue(any("missing on this appliance" in w for w in plan["warnings"]))
+
+    def test_a_crafted_evidence_path_is_refused(self):
+        for bad in ("evidence/../../etc/passwd", "evidence/0123456789AB", "evidence/x"):
+            self.assertIsNone(cb._ARC_RE.match(bad), bad)
+        self.assertIsNotNone(cb._ARC_RE.match("evidence/0123456789ab"))
+
+
 # ── the round trip ───────────────────────────────────────────────────────────
 class TestRoundTrip(BundleTestBase):
     def test_export_then_import_reproduces_the_case(self):

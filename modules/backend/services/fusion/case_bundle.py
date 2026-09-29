@@ -74,7 +74,8 @@ _ARC_RE = re.compile(
     r"^(?:case\.json|graph\.json"
     r"|runs/[A-Za-z0-9_]+\.json"
     r"|payloads/[A-Za-z0-9_]+/(?:raw_results|memory_payload)\.json"
-    r"|aws_runs/[A-Za-z0-9_]+\.json)$")
+    r"|aws_runs/[A-Za-z0-9_]+\.json"
+    r"|evidence/[0-9a-f]{12})$")
 
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
@@ -288,12 +289,30 @@ def plan_export(case_id) -> dict:
             payload_bytes += sz
             files.append({"arc": f"aws_runs/{rid}.json", "src": aws, "bytes": sz})
 
+    # The analyst's evidence files (screenshots, e-mails, logs). Their names,
+    # descriptions and links travel in case.json; the FILES travel here. A case
+    # with none writes exactly the bundle it always did.
+    evidence_bytes = 0
+    try:
+        from . import case_files as _cf
+        for it in _cf.listing(det):
+            src = _cf.path_of(case_id, it["id"])
+            if not src:
+                warnings.append(f"evidence file for \"{it['name']}\" is missing on this appliance — skipped")
+                continue
+            sz = os.path.getsize(src)
+            evidence_bytes += sz
+            files.append({"arc": f"evidence/{it['id']}", "src": src, "bytes": sz})
+    except Exception as e:                              # noqa: BLE001
+        warnings.append(f"evidence files could not be included: {e}")
+
     # A run whose collected data is gone (typically the Maintenance "Report
     # Downloads" purge) still exports — its row and its share of the fused graph
     # travel — but it will contribute nothing to a re-fuse on the destination,
     # and that is worth saying before the move rather than discovering after it.
     exported_for = {f["arc"].split("/")[1] if f["arc"].startswith("payloads/")
-                    else f["arc"].split("/")[1][:-5] for f in files}
+                    else f["arc"].split("/")[1][:-5] for f in files
+                    if f["arc"].startswith(("payloads/", "aws_runs/"))}
     for kind, run in rows:
         if kind != "member":
             continue
@@ -336,7 +355,8 @@ def plan_export(case_id) -> dict:
         "graph_inline": graph_inline,
         "payload_bytes": payload_bytes,
         "graph_bytes": graph_bytes,
-        "estimate_bytes": payload_bytes + graph_bytes + 8 * 1024 * 1024,
+        "evidence_bytes": evidence_bytes,
+        "estimate_bytes": payload_bytes + graph_bytes + evidence_bytes + 8 * 1024 * 1024,
         "warnings": warnings,
     }
 
@@ -880,6 +900,22 @@ def import_case_bundle(zip_path, *, run_id=None, name=None, cancel=None) -> dict
                 prog.log(f"Restored {os.path.basename(dest)} for {new_rid} "
                          f"({human_bytes(f.get('bytes'))})")
                 prog.pct(min(85, 35 + int(50.0 * done[0] / total)))
+
+            # Evidence files, under the NEW case (same volume as the graph).
+            ev_files = [f for f in files if f["path"].startswith("evidence/")]
+            if ev_files:
+                from . import case_files as _cf
+                ev_dir = _cf._dir(new_case_id)
+                os.makedirs(ev_dir, exist_ok=True)
+                created.append(("dir", ev_dir))
+                for f in ev_files:
+                    if cancel is not None and cancel.is_set():
+                        raise _Cancelled()
+                    fid = f["path"].split("/", 1)[1]
+                    with zf.open(f["path"]) as src, open(os.path.join(ev_dir, fid), "wb") as out:
+                        archive_guard.copy_bounded(src, out, int(f.get("bytes") or 0) + _CHUNK,
+                                                   what=f["path"])
+                prog.log(f"Restored {len(ev_files)} evidence file(s)")
 
             if "graph.json" in listed:
                 prog.pct(88, "Installing the fused graph so the case opens without "

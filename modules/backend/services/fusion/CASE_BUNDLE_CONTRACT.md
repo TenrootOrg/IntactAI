@@ -58,7 +58,18 @@ runs/<run_id>.json                         (0..n)      member run rows + baselin
 payloads/<run_id>/raw_results.json         (0..n)      collected rows
 payloads/<run_id>/memory_payload.json      (0..n)      memory plugins + YARA hits
 aws_runs/<run_id>.json                     (0..n)      cloud findings
+evidence/<id>                              (0..n)      the analyst's evidence files (see below)
 ```
+
+`evidence/<id>` (added on jev-test, 2026-09-29): the files on the Evidence tab —
+screenshots, e-mails, logs. `<id>` is 12 lowercase hex characters, the item's id
+in `case.json` → `details.case_files`, which carries each item's name,
+description, original file name, SHA-256 and links; the file lands under the new
+case on import. The entries are ADDITIVE and written only when the case has
+evidence, so a case without any produces exactly the schema-2 bundle it always
+did. A release older than this one refuses a bundle that has them (its path
+whitelist does not know `evidence/`) — with its "unexpected file" error, before
+anything is written.
 
 `manifest.json` fields:
 
