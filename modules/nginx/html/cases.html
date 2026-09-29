@@ -1726,6 +1726,26 @@ function _tlSevChip(sev, members){
     :`Rated as a whole: its ${members.length} parts are each lower, together they are ${sev}`;
   return `<span class="chip agg c-${esc(sev)}" title="${esc(tip)}">${esc(sev)}</span>`;
 }
+// The analyst's note on a verdict (why it is a false positive, who confirmed it
+// is known). Only on a judged row or part — a note belongs to a verdict — and not
+// on a row with parts: its verdict IS its parts', so the notes go on them.
+function _tlNote(r){
+  if(r.manual) return r.notes?`<span style="color:var(--muted);font-size:11px">— ${esc(r.notes)}</span>`:'';
+  if(_tlParts(r) || (r.validation||'pending')==='pending') return '';
+  const act=`event.stopPropagation();tlNote('${esc(r.finding_id)}')`;
+  return r.notes
+    ?`<span style="color:var(--muted);font-size:11px;cursor:pointer" title="Edit the note" onclick="${act}">— ${esc(r.notes)} ✎</span>`
+    :`<span style="color:var(--muted);font-size:10px;cursor:pointer;text-decoration:underline" title="Why this verdict? The note reaches the report and the chat" onclick="${act}">✎ note</span>`;
+}
+function tlNote(fid){
+  let row=null; _tlEachRow(x=>{ if(x.finding_id===fid) row=row||x; });
+  const txt=window.prompt('Note on this verdict (why) — it goes into the report and the chat:', (row&&row.notes)||'');
+  if(txt===null) return;
+  _tlEachRow(x=>{ if(x.finding_id===fid) x.notes=txt.trim(); });   // optimistic
+  tlPaint();
+  api('/api/cases/'+window._tlCase+'/timeline/note',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({finding_id:fid,notes:txt})})
+   .then(d=>toast(d&&d.error?d.error:(txt.trim()?'Note saved.':'Note removed.')));
+}
 function _tlRowHtml(r, supp, seg){
   const arts=(r.artifacts||[]).map(a=>`<span class="arti">${esc(a)}</span>`).join(' ');
   // A row with parts opens and closes like a group header when clicked (QA: the
@@ -1739,7 +1759,7 @@ function _tlRowHtml(r, supp, seg){
       <code style="white-space:nowrap">${esc(r.ts||'—')}${_tlUntil(r)}</code>
       <div class="tlmeta" style="cursor:pointer" title="${esc(tip)}" onclick="${act}">
         <span>${r.is_new?'<span class="tlnew" title="Joined or grew since this group was last reviewed">NEW</span> ':''}<strong>${esc(r.host||'-')}</strong> ${r.phase?`<span style="color:var(--muted)">[${esc(r.phase)}]</span>`:''} ${esc(_tlTitle(r))} ${det}</span>
-        <span class="l2">${arts}${_tlLoggedAs(r)}${_tlPartsToggle(r)}${r.reopened?'<span class="sg-hint" style="border-color:#d29922;color:#e3b341" title="A new occurrence arrived after your last verdict — re-validate this one.">⟳ re-opened: new activity since you validated</span>':''}${r.manual?'<span class="sg-hint" style="border-style:solid">manual</span>':''}${(r.hits||1)>1?`<span class="sg-hint" style="border-style:solid;color:var(--muted)" title="Hits in this episode — the detection is one row until it goes quiet for 4 hours">${Number(r.hits).toLocaleString()} hits</span>`:''}${_tlJev(r)}${r.notes?`<span style="color:var(--muted);font-size:11px">— ${esc(r.notes)}</span>`:''}</span>
+        <span class="l2">${arts}${_tlLoggedAs(r)}${_tlPartsToggle(r)}${r.reopened?'<span class="sg-hint" style="border-color:#d29922;color:#e3b341" title="A new occurrence arrived after your last verdict — re-validate this one.">⟳ re-opened: new activity since you validated</span>':''}${r.manual?'<span class="sg-hint" style="border-style:solid">manual</span>':''}${(r.hits||1)>1?`<span class="sg-hint" style="border-style:solid;color:var(--muted)" title="Hits in this episode — the detection is one row until it goes quiet for 4 hours">${Number(r.hits).toLocaleString()} hits</span>`:''}${_tlJev(r)}${_tlNote(r)}</span>
       </div>
       ${_tlSevChip(r.severity, _tlParts(r))}
       <span class="seg">${seg}</span>

@@ -2133,7 +2133,8 @@ def _analyst_validations_md(graph, dispositions, validations) -> str:
         fid, st = v.get("finding_id"), v.get("status")
         if st in buckets and fid not in seen:
             seen.add(fid)
-            buckets[st].append(title_of.get(fid, str(fid)))
+            note = str(v.get("notes") or "").strip()
+            buckets[st].append(title_of.get(fid, str(fid)) + (f" — _{note}_" if note else ""))
     for d in (dispositions or []):                 # chat-driven triage not in the timeline
         tgt = d.get("target")
         if tgt in seen:
