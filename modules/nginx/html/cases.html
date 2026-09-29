@@ -1057,7 +1057,7 @@ function _evList(){ return Array.isArray(curInfo&&curInfo.case_files)?curInfo.ca
 function _evSrc(k){ return (EV_SOURCES.find(([x])=>x===k)||[,'Other'])[1]; }
 function _evFields(pre, v, withFile, linked){
   const o=(k,l,cur)=>`<option value="${k}" ${cur===k?'selected':''}>${l}</option>`;
-  return `${withFile?`<label>File</label><input type="file" id="${pre}-file"/>`:''}
+  return `${withFile?`<label>File <span style="color:var(--muted);font-weight:400">— or paste a picture (Ctrl+V)</span></label><input type="file" id="${pre}-file" onchange="window._evPasted=null;const n=document.getElementById('${pre}-pasted');if(n)n.textContent=''"/><div id="${pre}-pasted" style="font-size:11px;color:#3fb950"></div>`:''}
     <label>Name ${linked&&withFile?'<span style="color:var(--muted);font-weight:400">— optional; made from the event if empty</span>':'<span style="color:var(--crit)">*</span> <span style="color:var(--muted);font-weight:400">— what it is; the report and the AI use it</span>'}</label>
     <input id="${pre}-name" maxlength="200" value="${esc(v.name||'')}" placeholder="${linked&&withFile?'e.g. “Mimikatz Execution via PowerShell — screenshot”':'e.g. AnyDesk silent-install prompt on the desktop'}"/>
     <label>Description ${linked?'<span style="color:var(--muted);font-weight:400">— optional</span>':'<span style="color:var(--crit)">*</span>'}</label>
@@ -1125,15 +1125,15 @@ function _evRefresh(fn){
 }
 function evSubmit(pre, findingId){
   const v=k=>(document.getElementById(pre+'-'+k)||{}).value||'';
-  const fe=document.getElementById(pre+'-file'), file=fe&&fe.files&&fe.files[0];
-  if(!file){ toast('Choose a file.'); return; }
+  const fe=document.getElementById(pre+'-file'), file=(fe&&fe.files&&fe.files[0])||(pre==='evn'&&window._evPasted)||null;
+  if(!file){ toast('Choose a file or paste a picture.'); return; }
   if(file.size>100*1024*1024){ toast('The file is larger than 100 MB.'); return; }
   if(!findingId && (!v('name').trim()||!v('desc').trim())){ toast('Give the evidence a name and a description.'); return; }
   const fd=new FormData(); fd.append('file',file); fd.append('name',v('name')); fd.append('description',v('desc'));
   if(findingId) fd.append('finding_id',findingId); else { fd.append('host',v('host')); fd.append('time',v('time')); fd.append('source',v('src')); }
   toast('Uploading '+file.name+'…');
   fetch('/api/cases/'+encodeURIComponent(curInfo.case_id)+'/files',{method:'POST',body:fd}).then(_evJson)
-    .then(item=>{ window._evAdd=false; const box=$('#ev-attach'); if(box) box.innerHTML='<div class="agnote">Attached: <b>'+esc(item.name)+'</b></div>';
+    .then(item=>{ window._evAdd=false; window._evPasted=null; const box=$('#ev-attach'); if(box) box.innerHTML='<div class="agnote">Attached: <b>'+esc(item.name)+'</b></div>';
       _evRefresh(L=>L.concat([item])); toast('Evidence added.'); })
     .catch(e=>toast('Not added: '+e.message));
 }
@@ -2011,6 +2011,7 @@ function openFindingDetail(fid){
   api('/api/cases/'+window._tlCase+'/finding/'+encodeURIComponent(fid)).then(d=>{
     if(!d||d.error){dr.innerHTML=`<div style="display:flex;justify-content:space-between"><b>Detail</b><button class="ghost" onclick="closeFindingDetail()">✕</button></div><p style="color:var(--muted)">${esc((d&&d.error)||'not found')}</p>`;return;}
     const f=d.finding||{}, occ=d.occurrences||[];
+    window._fdFid=f.id||fid;                 // Ctrl+V of a picture attaches to this event
     const occHtml=occ.length? occ.map(o=>{
       const kv=Object.entries(o.attrs||{}).map(([k,v])=>`<div class="kv"><b>${esc(k)}</b><span>${esc(String(v))}</span></div>`).join('');
       return `<div class="fdocc">
@@ -2030,12 +2031,33 @@ function openFindingDetail(fid){
       ${f.summary?`<p style="font-size:13px;margin:6px 0">${esc(f.summary)}</p>`:''}
       ${(f.mitre&&f.mitre.length)?`<div style="font-size:11px;color:var(--muted)">MITRE: ${f.mitre.map(esc).join(', ')}</div>`:''}
       ${(f.sources&&f.sources.length)?`<div style="font-size:11px;color:var(--muted)">source: ${f.sources.map(esc).join(', ')}</div>`:''}
-      <div style="margin-top:10px"><label class="dlbtn" style="font-size:12px;cursor:pointer" title="Pick a screenshot, e-mail or log — it is attached to this event and its host straight away, named from the event">📎 Attach evidence<input type="file" multiple style="display:none" onchange="evAttachFiles('${esc(f.id||fid)}',this.files);this.value=''"/></label><div id="ev-attach"></div></div>
+      <div style="margin-top:10px"><label class="dlbtn" style="font-size:12px;cursor:pointer" title="Pick a screenshot, e-mail or log — or paste a picture with Ctrl+V — it is attached to this event and its host straight away, named from the event">📎 Attach evidence<input type="file" multiple style="display:none" onchange="evAttachFiles('${esc(f.id||fid)}',this.files);this.value=''"/></label><span style="color:var(--muted);font-size:11px;margin-left:8px">or paste a picture (Ctrl+V)</span><div id="ev-attach"></div></div>
       <h4 style="margin:14px 0 4px;text-transform:none">Occurrences${more}</h4>
       ${occHtml}`;
   }).catch(_=>{dr.innerHTML='<div style="color:#f85149">could not load detail</div>';});
 }
-function closeFindingDetail(){const dr=$('#fdetail'),bk=$('#fdback');if(dr)dr.classList.remove('open');if(bk)bk.classList.remove('open');}
+function closeFindingDetail(){window._fdFid=null;const dr=$('#fdetail'),bk=$('#fdback');if(dr)dr.classList.remove('open');if(bk)bk.classList.remove('open');}
+// Ctrl+V of a PICTURE: with an event's detail open it is attached to that event;
+// with "+ Add evidence" open it becomes that form's file. Text paste is untouched.
+function _evPastedPicture(e){
+  const it=[...((e.clipboardData||{}).items||[])].find(i=>i.kind==='file' && /^image\//.test(i.type||''));
+  const f=it&&it.getAsFile(); if(!f) return null;
+  const ext=(f.type.split('/')[1]||'png').replace('jpeg','jpg').replace(/[^a-z0-9]/gi,'')||'png';
+  const ts=new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+  return new File([f], `pasted-${ts}.${ext}`, {type:f.type});
+}
+document.addEventListener('paste',e=>{
+  const dr=$('#fdetail');
+  if(dr && dr.classList.contains('open') && window._fdFid){
+    const pic=_evPastedPicture(e); if(!pic) return;
+    e.preventDefault(); evAttachFiles(window._fdFid,[pic]); return;
+  }
+  if(tab==='evidence' && window._evAdd){
+    const pic=_evPastedPicture(e); if(!pic) return;
+    e.preventDefault(); window._evPasted=pic;
+    const n=$('#evn-pasted'); if(n) n.textContent='📋 pasted picture ready — '+pic.name;
+  }
+});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeFindingDetail();});
 function tlToggleStatus(k){window._tlf.status[k]=!window._tlf.status[k];tlBuild();}
 function tlSet(k,v){window._tlf[k]=v;tlPaint();}

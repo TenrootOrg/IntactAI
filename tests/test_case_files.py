@@ -201,5 +201,32 @@ console.log(JSON.stringify([all, one, bad, form, linked]));""")
         self.assertNotIn("evAttachForm", src)
 
 
+class Paste(unittest.TestCase):
+    def test_only_a_picture_on_the_clipboard_is_taken(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("no node on this host")
+        with open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
+            src = fh.read()
+        fn = re.search(r"function _evPastedPicture\(e\)\{.*?\n\}", src, re.S).group(0)
+        js = ("class File{constructor(p,n,o){this.name=n;this.type=o.type;}}\n" + fn + """
+const ev=items=>({clipboardData:{items}});
+const pic={kind:'file', type:'image/jpeg', getAsFile:()=>({type:'image/jpeg'})};
+const txt={kind:'string', type:'text/plain', getAsFile:()=>null};
+const doc={kind:'file', type:'application/pdf', getAsFile:()=>({type:'application/pdf'})};
+const a=_evPastedPicture(ev([txt,pic])), b=_evPastedPicture(ev([txt])), c=_evPastedPicture(ev([doc])), d=_evPastedPicture({});
+console.log(JSON.stringify([a&&a.name, a&&a.type, b, c, d]));""")
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as t:
+            t.write(js)
+        try:
+            out = json.loads(subprocess.run([node, t.name], capture_output=True, text=True, check=True).stdout)
+        finally:
+            os.unlink(t.name)
+        self.assertRegex(out[0], r"^pasted-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.jpg$")
+        self.assertEqual(out[1], "image/jpeg")
+        self.assertEqual(out[2:], [None, None, None])        # text / a PDF / nothing: normal paste
+        self.assertIn("evAttachFiles(window._fdFid,[pic])", src)   # with an event open: attached to it
+
+
 if __name__ == "__main__":
     unittest.main()
