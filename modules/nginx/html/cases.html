@@ -454,7 +454,7 @@ function loadCases(cb){
             :c.is_system?'<span class="defbadge">system</span>'
                        :`<button class="del" onclick="delWorkspace('${c.case_id}','${nm}',event)">delete</button>`}
         </div></div>
-      <div class="meta">${c.members} run(s)</div></div>`;}).join('')||'<i style="color:var(--muted)">no cases yet</i>';
+      <div class="meta">${c.members} run(s)</div>${caseMetaHtml(c)}</div>`;}).join('')||'<i style="color:var(--muted)">no cases yet</i>';
     if(cb)cb();
   });
 }
@@ -630,7 +630,8 @@ function render(info,md,g){
   $('#main').innerHTML=`
     <div class="outwrap">
       <div class="row" style="justify-content:space-between">
-        <div><h1 style="margin:0;font-size:19px">${esc(info.name||info.case_id)}</h1>
+        <div><h1 id="case-name" style="margin:0;font-size:19px">${esc(info.name||info.case_id)}</h1>
+          <div id="case-meta">${caseMetaHtml(info)}</div>
           <div id="case-since" style="color:var(--muted);font-size:12px">${scopeSinceHtml(info, tw)}</div></div>
       </div>
       <div id="statbar" style="margin:6px 0 14px">${statSpans(g)}</div>
@@ -757,6 +758,55 @@ function _riskWhy(r){
 // facts about the case; these two are facts about how it is PRICED and what the
 // fusion ontology saves -- the same subject as the model line they now sit
 // under, and configuration rather than a headline.
+// Case details (plan step 3): the analyst's labels — status, severity, owner,
+// description. A case from an older version has none: it reads as Open, unset.
+const CASE_STATUS_LABEL={open:'Open',contained:'Contained',closed:'Closed'};
+function caseMetaHtml(info){
+  info=info||{};
+  const st=CASE_STATUS_LABEL[String(info.case_status||'').toLowerCase()]||'Open';
+  const sv=String(info.case_severity||'').toLowerCase();
+  const own=typeof info.case_owner==='string'?info.case_owner.trim():'';
+  const desc=typeof info.case_description==='string'?info.case_description.trim():'';
+  return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:3px 0;font-size:12px">`
+    +`<span class="sg-hint" style="border-style:solid">${esc(st)}</span>`
+    +(['low','medium','high','critical'].includes(sv)?`<span class="chip c-${sv}" style="margin:0">${sv}</span>`:'')
+    +(own?`<span style="color:var(--muted)">owner: ${esc(own)}</span>`:'')
+    +(desc?`<span style="color:var(--muted);max-width:560px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(desc)}">— ${esc(desc)}</span>`:'')
+    +`</div>`;
+}
+function caseDetailsBox(info){
+  const i=info||{}, builtin=!!(i.is_default||i.is_system);
+  const o=(v,l,cur)=>`<option value="${v}" ${cur===v?'selected':''}>${l}</option>`;
+  const st=CASE_STATUS_LABEL[String(i.case_status||'').toLowerCase()]?String(i.case_status).toLowerCase():'open';
+  const sv=String(i.case_severity||'').toLowerCase();
+  // Its own Save: typing here must not mark the Refusion rail as edited (that
+  // pauses every background refresh until a Refusion).
+  return `<div id="casedet" oninput="event.stopPropagation()" onchange="event.stopPropagation()">
+        <h4>Case details</h4>
+        <label>Name</label><input id="cd-name" value="${esc(i.name||'')}" maxlength="100" ${builtin?'disabled title="The built-in cases cannot be renamed"':''}/>
+        <label>Status</label><select id="cd-status">${o('open','Open',st)}${o('contained','Contained',st)}${o('closed','Closed',st)}</select>
+        <label>Severity</label><select id="cd-sev">${o('','— not set —',sv)}${['low','medium','high','critical'].map(x=>o(x,x[0].toUpperCase()+x.slice(1),sv)).join('')}</select>
+        <label>Owner</label><input id="cd-owner" value="${esc(typeof i.case_owner==='string'?i.case_owner:'')}" maxlength="100" placeholder="who leads this case"/>
+        <label>Description</label><textarea id="cd-desc" maxlength="2000" style="min-height:48px" placeholder="what this case is about">${esc(typeof i.case_description==='string'?i.case_description:'')}</textarea>
+        <button class="dlbtn" style="margin-top:6px" onclick="saveCaseDetails('${esc(i.case_id||'')}')">Save details</button>
+        <div class="cfghint">Labels only — saving does not re-fuse or change the analysis.</div>
+      </div>`;
+}
+function saveCaseDetails(id){
+  if(!id) return;
+  const v=x=>(document.getElementById(x)||{}).value;
+  const body={case_status:v('cd-status'),case_severity:v('cd-sev'),case_owner:v('cd-owner'),case_description:v('cd-desc')};
+  const nm=document.getElementById('cd-name'); if(nm && !nm.disabled) body.name=nm.value;
+  fetch('/api/cases/'+encodeURIComponent(id),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+   .then(r=>r.json().catch(()=>({error:'the server did not answer (HTTP '+r.status+')'})))
+   .then(d=>{
+     if(!d || d.error){ toast('Not saved: '+((d&&d.error)||'unknown error')); return; }
+     if(curInfo && curInfo.case_id===id) Object.assign(curInfo,d);
+     const m=$('#case-meta'); if(m) m.innerHTML=caseMetaHtml(d);
+     const h=$('#case-name'); if(h && d.name) h.textContent=d.name;
+     toast('Case details saved.');
+   }).catch(e=>toast('Not saved: '+e));
+}
 function renderConfig(info){
   const alt=info.report_altitude||'auto', mk=info.masking||{};
   // The window in the rail is the TIMEFRAME BEING READ — the selected scope's, or
@@ -769,6 +819,7 @@ function renderConfig(info){
   $('#tabc').innerHTML=`
     <div class="cfgwrap">
       <div class="cfgcol">
+        ${caseDetailsBox(info)}
         <h4>Scope</h4>
         <label>Time window — start</label><input id="cf-start" value="${esc(tw.start||'')}" placeholder="pick date + time…"/>
         <label>Time window — end <span style="color:var(--muted)">(empty = up to now)</span></label><input id="cf-end" value="${esc(tw.end||'')}" placeholder="empty = now / open"/>

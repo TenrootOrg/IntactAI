@@ -330,7 +330,7 @@ def list_cases():
                       "status": r.get("status"), "is_default": is_default,
                       "is_system": is_system, "builtin": is_default or is_system,
                       "members": len(members) or len(det.get("member_run_ids") or []),
-                      "created_at": r.get("created_at")})
+                      "created_at": r.get("created_at"), **store.case_info(det)})
     # Default first, then System, then newest-first among the rest (stable passes)
     cases.sort(key=lambda c: c.get("created_at") or "", reverse=True)
     cases.sort(key=lambda c: (not c["is_default"], not c["is_system"]))
@@ -399,6 +399,7 @@ def get_case(case_id):
                                        or d.get("name") == store.DEFAULT_CASE_NAME),
                     "is_system": bool(d.get("is_system")
                                       or d.get("name") == store.SYSTEM_CASE_NAME),
+                    **store.case_info(d),
                     "masking": d.get("masking") or {"enabled": False, "patterns": []},
                     "included_run_ids": d.get("included_run_ids"),
                     # null-guarded for cases created before these existed
@@ -689,6 +690,17 @@ def finding_evidence(case_id, finding_id):
     rows = store.get_evidence_rows(case_id, finding_id)
     return jsonify({"case_id": case_id, "finding_id": finding_id,
                     "count": len(rows), "rows": rows})
+
+
+@case_bp.route("/api/cases/<case_id>", methods=["PATCH"])
+def update_case(case_id):
+    """Case details: name, case_status, case_severity, case_owner, case_description.
+    Labels only — no re-fuse."""
+    b = request.get_json(silent=True) or {}
+    res = store.update_case_info(case_id, b)
+    if res.get("error") == "case not found":
+        return jsonify(res), 404
+    return jsonify(res), (400 if res.get("error") else 200)
 
 
 @case_bp.route("/api/cases/<case_id>", methods=["DELETE"])

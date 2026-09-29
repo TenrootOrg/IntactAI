@@ -3421,6 +3421,63 @@ def _model_label(model):
     return model or "the plan's default model"
 
 
+CASE_STATUSES = ("open", "contained", "closed")
+CASE_SEVERITIES = ("", "low", "medium", "high", "critical")
+
+
+def case_info(d) -> dict:
+    """The analyst's own description of the case (plan step 3). Labels only —
+    nothing is locked, hidden or re-fused by them.
+
+    Cases made before these fields existed — and bundles imported from older
+    appliances — have none of them, and a hand-edited or damaged record may hold
+    anything: every field falls back to its default instead of raising."""
+    d = d if isinstance(d, dict) else {}
+    st = str(d.get("case_status") or "").lower()
+    sv = str(d.get("case_severity") or "").lower()
+    return {"case_status": st if st in CASE_STATUSES else "open",
+            "case_severity": sv if sv in CASE_SEVERITIES else "",
+            "case_owner": d.get("case_owner") if isinstance(d.get("case_owner"), str) else "",
+            "case_description": d.get("case_description") if isinstance(d.get("case_description"), str) else ""}
+
+
+def update_case_info(case_id, fields) -> dict:
+    """Save name / status / severity / owner / description. Only the keys given
+    change; a bad value refuses the whole save."""
+    d = get_case(case_id)
+    if not d:
+        return {"error": "case not found"}
+    patch = {}
+    if "name" in fields:
+        name = str(fields.get("name") or "").strip()[:100]
+        builtin = d.get("is_default") or d.get("is_system") or d.get("name") in (DEFAULT_CASE_NAME, SYSTEM_CASE_NAME)
+        if not name:
+            return {"error": "the name cannot be empty"}
+        if builtin and name != d.get("name"):
+            return {"error": "the built-in Default and System cases cannot be renamed"}
+        patch["name"] = name
+    if "case_status" in fields:
+        st = str(fields.get("case_status") or "").lower()
+        if st not in CASE_STATUSES:
+            return {"error": f"status must be one of: {', '.join(CASE_STATUSES)}"}
+        patch["case_status"] = st
+    if "case_severity" in fields:
+        sv = str(fields.get("case_severity") or "").lower()
+        if sv not in CASE_SEVERITIES:
+            return {"error": "severity must be low, medium, high, critical or empty"}
+        patch["case_severity"] = sv
+    if "case_owner" in fields:
+        patch["case_owner"] = str(fields.get("case_owner") or "").strip()[:100]
+    if "case_description" in fields:
+        patch["case_description"] = str(fields.get("case_description") or "").strip()[:2000]
+    if not patch:
+        return {"error": "nothing to save"}
+    _merge_case_details(case_id, patch)
+    log_case_event(case_id, "Case details saved", "info",
+                   ", ".join(f"{k.replace('case_', '')}: {str(v)[:40] or '—'}" for k, v in patch.items()))
+    return {"case_id": case_id, **case_info({**d, **patch}), "name": patch.get("name", d.get("name"))}
+
+
 def _merge_case_details(case_id, patch) -> None:
     """Merge a patch into the case details without disturbing its status.
 
