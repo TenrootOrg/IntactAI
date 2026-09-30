@@ -2456,7 +2456,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     report = _with_evidence(case_id, report, d)
     if _report_is_new:
         try:
-            _rh.archive(case_id, report)
+            _rh.archive(case_id, report, _gen_scope, _scope_label(get_case(case_id) or d, _gen_scope))
         except Exception as e:                               # noqa: BLE001 — history, never a failed fuse
             print(f"[FUSION] report not kept in history for {case_id}: {e}", flush=True)
     _details = {"fusion_graph": {},
@@ -3357,6 +3357,13 @@ def scope_counts(case_id, d=None) -> dict:
     return counts
 
 
+def _scope_label(d, scope_id) -> str:
+    """The timeframe's name as the scope dropdown shows it."""
+    prev = next((s for s in _scopes(d) if s["id"] == scope_id), None) or {}
+    return prev.get("label") or (_full_scope_label(d) if scope_id == FULL_SCOPE_ID
+                                 else _window_label(prev.get("window")))
+
+
 def write_report_for_scope(case_id, scope_id, patch) -> bool:
     """Save a finished report into the scope it was GENERATED FOR, whichever scope
     is on screen by the time it lands.
@@ -3376,8 +3383,7 @@ def write_report_for_scope(case_id, scope_id, patch) -> bool:
         _merge_case_details(case_id, patch)
     prev = next((s for s in _scopes(d) if s["id"] == scope_id), None) or {}
     entry = {"id": scope_id,
-             "label": prev.get("label") or (_full_scope_label(d) if scope_id == FULL_SCOPE_ID
-                                            else _window_label(prev.get("window"))),
+             "label": _scope_label(d, scope_id),
              "window": prev.get("window") or None, "used_at": prev.get("used_at") or _now_iso(),
              **{k: prev.get(k) for k in _SCOPE_FIELDS},
              **{k: v for k, v in patch.items() if k in _SCOPE_FIELDS}}
@@ -4358,7 +4364,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
     try:
         _on_screen = write_report_for_scope(case_id, _gen_scope, _narrative_patch)
         try:
-            _rh.archive(case_id, report)
+            _rh.archive(case_id, report, _gen_scope, _scope_label(get_case(case_id) or d, _gen_scope))
         except Exception as e:                               # noqa: BLE001 — history, never a failed save
             print(f"[FUSION] report not kept in history for {case_id}: {e}", flush=True)
         log_case_event(case_id, "Report saved", "success",

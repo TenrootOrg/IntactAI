@@ -79,6 +79,23 @@ class History(unittest.TestCase):
         self.assertIsNone(rh.read("c1", "../../etc/passwd"))
         self.assertNotIn("type", self.d["report_history"][0])
 
+    def test_one_entry_per_timeframe_a_newer_report_replaces_it(self):
+        # "why there are 2 when i just enter data once": the first scan's template
+        # report and the AI report written over it were two entries.
+        a = rh.archive("c1", TEMPLATE, "full", "2016-09-24 → 2026-09-24")
+        b = rh.archive("c1", AI, "full", "2016-09-24 → 2026-09-24")
+        self.assertEqual(b["id"], a["id"])                          # the same entry, updated
+        h = rh.history(self.d)
+        self.assertEqual([(x["id"], x["kind"], x["scope_label"]) for x in h], [(a["id"], "ai", "2016-09-24 → 2026-09-24")])
+        self.assertEqual(rh.read("c1", a["id"]), AI)
+        self.assertIsNone(rh.archive("c1", AI, "full", "x"))        # the same text again: nothing
+        c = rh.archive("c1", TEMPLATE, "s1", "2025-10-05 → 2025-10-22")   # another timeframe: its own
+        self.assertNotEqual(c["id"], a["id"])
+        d = rh.archive("c1", AI.replace("b", "full again"), "full", "2016-09-24 → 2026-09-24")
+        self.assertEqual([x["id"] for x in rh.history(self.d)], [a["id"], c["id"]])   # updated one is newest
+        self.assertEqual(d["id"], a["id"])
+        self.assertEqual(len(self.d["report_history"]), 2)
+
     def test_reports_kept_while_stages_and_types_existed_keep_their_label(self):
         old = {"report_history": [
             {"id": "0123456789ab", "stage": "final", "at": "2026-09-29T09:00:00"},
@@ -113,7 +130,7 @@ class Page(unittest.TestCase):
         self.assertIn("body:JSON.stringify({use_llm:true})", src)
         js = ("const esc=s=>String(s); const window={};\n" + re.search(r"const _rpLab=.*?;\n", src).group(0)
               + re.search(r"function reportHistoryHtml\(.*?\n\}", src, re.S).group(0) + """
-const H=[{id:'0123456789ab',label:'Report',at:'2026-09-30T10:12:00',kind:'ai'},
+const H=[{id:'0123456789ab',label:'Report',at:'2026-09-30T10:12:00',kind:'ai',scope_label:'2016-09-24 → 2026-09-24'},
          {id:'0123456789cd',label:'Final',at:'2026-09-28T08:00:00',kind:'ai'}];
 console.log(JSON.stringify([reportHistoryHtml({case_id:'c1', report_history:H}, null),
   reportHistoryHtml({case_id:'c1', report_history:H}, {id:'0123456789ab', label:'Report', at:'2026-09-30T10:12:00'}),
@@ -125,6 +142,7 @@ console.log(JSON.stringify([reportHistoryHtml({case_id:'c1', report_history:H}, 
         finally:
             os.unlink(t.name)
         self.assertNotIn(">Report</span>", out[0])                       # a new report needs no label
+        self.assertIn(">2016-09-24 → 2026-09-24</span>", out[0])          # its timeframe
         self.assertIn(">Final</span>", out[0])                            # an old stage report keeps it
         self.assertIn("Viewing the report of 2026-09-30 10:12 UTC — the current report", out[1])
         self.assertIn("● Viewing", out[1])

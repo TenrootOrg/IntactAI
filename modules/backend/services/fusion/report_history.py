@@ -1,8 +1,12 @@
 """Report history — every report written for a case is KEPT, so regenerating
 never loses the previous one: view, download (PDF / HTML / MD) or delete it.
 
+ONE entry per timeframe (scope): a new report for a timeframe that already has an
+entry replaces it; a new timeframe -- a Refusion over other dates, or "Analyze this
+scope" -- gets its own entry.
+
 Files under DATA_DIR/<case_id>/<id>.md; described in the case details under
-"report_history": {id, at, sha256, chars, kind: ai | template}.
+"report_history": {id, at, sha256, chars, kind: ai | template, scope, scope_label}.
 
 Report stages (Flash / Interim / Final) and report types (Technical, Technical
 customers, Directors) were tried on 2026-09-29 and removed — one report again.
@@ -42,24 +46,38 @@ def history(d) -> list:
         out.append((str(x.get("at") or ""), i, {
             "id": x["id"], "label": label_of(x), "at": x.get("at"),
             "chars": int(x.get("chars") or 0), "kind": "ai" if x.get("kind") == "ai" else "template",
-            "sha256": str(x.get("sha256") or "")}))
+            "sha256": str(x.get("sha256") or ""), "scope_label": str(x.get("scope_label") or "")}))
     # newest first; two written in the same second: the later-kept one first
     out.sort(key=lambda t: (t[0], t[1]), reverse=True)
     return [t[2] for t in out]
 
 
-def archive(case_id, md) -> dict | None:
-    """Keep this report in the case's history. Not again when it is the same text
-    as the newest kept one (a Refusion that reused the report)."""
+def archive(case_id, md, scope=None, scope_label=None) -> dict | None:
+    """Keep this report in the case's history -- one entry per timeframe.
+
+    A report for a timeframe that already has an entry REPLACES it: same id (a View
+    link on screen stays valid), new text and time, and it becomes the newest. The
+    first scan's template report and the AI report written over it minutes later
+    used to be two entries for the one load of data. A report for a new timeframe
+    is a new entry. Without a scope (and entries kept before scopes were recorded)
+    it is the old rule: a new entry, unless it repeats the newest one's text.
+    """
     from . import store
     md = str(md or "")
     if not md.strip():
         return None
     sha = hashlib.sha256(md.encode("utf-8")).hexdigest()
-    hist = history(store.get_case(case_id) or {})
-    if hist and hist[0]["sha256"] == sha:
+    raw = (store.get_case(case_id) or {}).get("report_history")
+    raw = [x for x in (raw if isinstance(raw, list) else [])
+           if isinstance(x, dict) and _ID.fullmatch(str(x.get("id") or ""))]
+    same = next((x for x in reversed(raw) if x.get("scope") == scope), None) if scope else None
+    if same is not None and same.get("sha256") == sha:
         return None
-    rid = uuid.uuid4().hex[:12]
+    if scope is None:
+        hist = history({"report_history": raw})
+        if hist and hist[0]["sha256"] == sha:
+            return None
+    rid = same["id"] if same is not None else uuid.uuid4().hex[:12]
     os.makedirs(_dir(case_id), exist_ok=True)
     tmp = os.path.join(_dir(case_id), rid + ".part")
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -67,8 +85,11 @@ def archive(case_id, md) -> dict | None:
     os.replace(tmp, os.path.join(_dir(case_id), rid + ".md"))
     item = {"id": rid, "at": store._now_iso(),
             "sha256": sha, "chars": len(md), "kind": "template" if _TEMPLATE_FOOTER in md else "ai"}
+    if scope:
+        item.update(scope=str(scope), scope_label=str(scope_label or ""))
     store._mutate_list_field(case_id, "report_history",
-                             lambda v: (v if isinstance(v, list) else []) + [item])
+                             lambda v: [x for x in (v if isinstance(v, list) else [])
+                                        if not (isinstance(x, dict) and x.get("id") == rid)] + [item])
     return item
 
 

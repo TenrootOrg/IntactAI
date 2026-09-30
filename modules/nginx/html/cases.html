@@ -1228,6 +1228,7 @@ function reportHistoryHtml(info, viewing){
   const rows=H.map((x,i)=>`<div class="erow" style="gap:10px;align-items:center;font-size:12px">
       ${_rpLab(x)?`<span class="sg-hint" style="border-style:solid">${esc(_rpLab(x))}</span>`:''}
       <span>${esc(String(x.at||'').replace('T',' ').slice(0,16))} UTC</span>
+      ${x.scope_label?`<span title="The timeframe this report covers — one kept report per timeframe; a newer report for it replaces this one">${esc(x.scope_label)}</span>`:''}
       <span style="color:var(--muted)">${x.kind==='ai'?'AI report':'template report'}${i===0?' · current':''}</span>
       <span style="margin-left:auto;display:flex;gap:10px">${viewing&&viewing.id===x.id?'<b style="color:var(--acc)">● Viewing</b>':`<button class="dlbtn" style="padding:3px 12px;font-size:12px;border-color:var(--acc);color:var(--acc)" onclick="rpView('${cid}','${esc(x.id)}')">View</button>`}
         ${dl(x,'pdf','PDF')}${dl(x,'html','HTML')}${dl(x,'md','MD')}
