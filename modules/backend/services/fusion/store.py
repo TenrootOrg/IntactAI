@@ -837,6 +837,43 @@ def _unfail_stale_idle_workspace(run: dict) -> None:
         pass
 
 
+# What a purge KEEPS on the built-in Default / System workspaces: who they are and
+# the operator's settings -- never data. A list of what to KEEP, not of what to drop:
+# the purge used to strip a named list of data keys, so every feature added after it
+# (evidence, report history, verdicts, host status, Jev) survived a purge on data
+# that no longer existed. A setting missing here is merely reset by a purge.
+PURGE_KEEPS = ("name", "is_default", "is_system", "time_window", "min_severity",
+               "initial_access_estimate", "audience", "language", "tlp", "customer_name",
+               "customer_logo_b64", "report_altitude", "masking", "max_entities",
+               "max_identities", "auto_fuse", "auto_report", "auto_regen_report",
+               "fusion_modules", "chat_send_full_context", "report_detail",
+               "llm_use_full_context", "llm_max_output_tokens", "include_evidence",
+               "case_status", "case_severity", "case_owner", "case_description")
+
+
+def purged_details(d) -> dict:
+    """A built-in workspace's details after a purge: its settings, and the empty
+    fields a new case starts with."""
+    d = d if isinstance(d, dict) else {}
+    return {**{k: d[k] for k in PURGE_KEEPS if k in d},
+            "member_run_ids": [], "fusion_graph": {}, "report_md": "", "chat_messages": []}
+
+
+def purge_case_files_and_index(case_id) -> None:
+    """What a built-in workspace owns OUTSIDE its row -- attached evidence, kept
+    reports, the fused-graph file, its knowledge-base entities, an armed auto-fuse.
+    (A user case is deleted outright by delete_case, which does all of this.)"""
+    for step in (lambda: __import__("services.fusion.autofuse", fromlist=["x"]).cancel(case_id),
+                 lambda: __import__("services.fusion.case_files", fromlist=["x"]).delete_case_files(case_id),
+                 lambda: _rh.delete_case_reports(case_id),
+                 lambda: _delete_graph_sidecar(case_id),
+                 lambda: __import__("services.fusion.kb", fromlist=["x"]).delete_case_entities(case_id)):
+        try:
+            step()
+        except Exception:                                    # noqa: BLE001 — best effort, per item
+            pass
+
+
 def ensure_default_case() -> str:
     """Return the id of the Default workspace, creating it if missing. Idempotent —
     safe to call on every startup."""

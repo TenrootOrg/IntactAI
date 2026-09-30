@@ -74,10 +74,16 @@ class TheElkSectionMustAuthenticate(unittest.TestCase):
 
 class TheKnowledgeBaseMustBePurgeable(unittest.TestCase):
     def test_purging_runs_also_clears_those_cases_from_the_kb(self):
-        body = _src().split("def _delete_runs_preserve_cases")[1].split("\ndef ")[0]
-        self.assertIn("kb.delete_case_entities", body,
-                      "the purge stripped the graph and report but left the KB, so "
-                      "a purged box kept enriching new cases from deleted evidence")
+        # The purge deletes operator cases through delete_case and empties the
+        # built-in workspaces through purge_case_files_and_index; both clear the KB.
+        body = _src().split("def _purge_runs_and_cases")[1].split("\ndef ")[0]
+        self.assertIn("store.delete_case(cid)", body)
+        self.assertIn("store.purge_case_files_and_index(cid)", body)
+        st = _src(STORE)
+        for fn in ("def delete_case", "def purge_case_files_and_index"):
+            self.assertIn("delete_case_entities", st.split(fn)[1].split("\ndef ")[0],
+                          "the purge stripped the graph and report but left the KB, so "
+                          "a purged box kept enriching new cases from deleted evidence")
 
     def test_there_is_an_orphan_sweep(self):
         s = _src()

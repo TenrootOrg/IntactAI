@@ -267,81 +267,75 @@ def get_velociraptor_tools_inventory():
         return jsonify({"error": str(e)}), 500
 
 
-def _delete_runs_preserve_cases(c, run_id, include_system=False):
-    """Delete investigation run rows, preserving:
+def _purge_runs_and_cases(c, run_id, include_system=False):
+    """Delete the investigation data: every case the operator created (with all it
+    owns), every investigation run, and empty the built-in workspaces. Preserves:
 
       (a) the purge run itself,
-      (b) every case workspace — a case is an organizational container, not
-          accumulated data; a *data* purge empties the workspaces, it does not
-          destroy the workspace structure. The builtin Default/System
-          workspaces in particular must always survive (they're undeletable
-          through the normal case-delete path too). Without this guard the raw
-          `DELETE FROM workflows` wiped every case, the active workspace the UI
-          was scoped to vanished mid-run, and the purge log appeared to "stop
-          in the middle."
+      (b) the built-in Default and System workspaces -- undeletable everywhere, and
+          where the UI and every untagged run fall back -- emptied down to their
+          settings (store.PURGE_KEEPS). Operator cases used to be kept too, emptied
+          by a list of data keys to strip; every feature added since survived the
+          purge, and the case list looked untouched ("I used purge and I still see
+          all cases"). They are now deleted through store.delete_case, the same path
+          as the case page's delete, which removes the evidence files, the kept
+          reports, runs, baselines, export bundles, the graph file and the KB.
       (c) system/admin run history (SYSTEM_TYPES: upgrade/maintenance/purge/
-          support-bundle/settings/…) UNLESS ``include_system=True``. This is an
-          audit trail, not investigation data — a normal purge keeps it; only
+          support-bundle/settings/...) UNLESS ``include_system=True``. This is an
+          audit trail, not investigation data -- a normal purge keeps it; only
           the explicit "System Operation History" section removes it.
 
-    Surviving cases now reference deleted member runs, so their cached fusion
-    graph is stale — strip it so the UI doesn't render a graph built from
-    purged evidence. Returns (runs_deleted, cases_kept).
-    """
+    The page's active case may be one of those deleted: it falls back to Default on
+    its next load (active-case.js ensureActiveCase), and this run lives in System.
+    Store work runs BEFORE this connection writes -- delete_case uses its own
+    connection, and an open write here would lock it out.
+    Returns (runs_deleted, cases_deleted, builtins_kept)."""
     import json as _json
+    from services.fusion import store
     from services.workflow_service import SYSTEM_TYPES
-    keep = {"case"} | (set() if include_system else set(SYSTEM_TYPES))
-    placeholders = ",".join("?" * len(keep))
     before = c.execute("SELECT COUNT(*) FROM workflows").fetchone()[0]
-    cases = c.execute(
-        "SELECT COUNT(*) FROM workflows WHERE automation_type = 'case'"
-    ).fetchone()[0]
-    c.execute(
-        f"DELETE FROM workflows WHERE run_id != ? "
-        f"AND automation_type NOT IN ({placeholders})",
-        (run_id, *sorted(keep)),
-    )
-    after = c.execute("SELECT COUNT(*) FROM workflows").fetchone()[0]
     rows = c.execute(
         "SELECT run_id, details FROM workflows WHERE automation_type = 'case'"
     ).fetchall()
+    builtin, cases_deleted = [], 0
     for cid, det in rows:
         try:
             d = _json.loads(det) if det else {}
         except (TypeError, ValueError):
             d = {}
-        if not isinstance(d, dict):
+        d = d if isinstance(d, dict) else {}
+        if d.get("is_default") or d.get("is_system") or \
+                d.get("name") in (store.DEFAULT_CASE_NAME, store.SYSTEM_CASE_NAME):
+            builtin.append((cid, d))
             continue
-        changed = False
-        # "scopes" carries a saved report per timeframe, each built from the
-        # evidence this purge is deleting — selecting one would restore it verbatim,
-        # which is exactly what stripping report_md exists to prevent.
-        for k in ("fusion_graph", "graph_counts", "fused_run_ids", "report_md",
-                  "report_html", "stale_run_ids", "scopes", "active_scope",
-                  "scope_counts"):
-            if k in d:
-                d.pop(k, None)
-                changed = True
-        if changed:
-            c.execute("UPDATE workflows SET details = ? WHERE run_id = ?",
-                      (_json.dumps(d), cid))
-        try:                                  # drop the fused-graph sidecar file too
-            from services.fusion.store import _delete_graph_sidecar
-            _delete_graph_sidecar(cid)
-        except Exception:
-            pass
-        # ...AND the case's entries in the cross-case knowledge base. delete_case()
-        # already does this, with a comment saying why: entities left indexed keep
-        # resurfacing as "prior sightings" in unrelated future cases. THIS path
-        # stripped the graph and the report and left the KB, so a purged box went on
-        # enriching new cases from evidence the operator believed they had deleted.
         try:
-            from services.fusion import kb
-            kb.delete_case_entities(cid)
-        except Exception:
-            pass
+            if (store.delete_case(cid) or {}).get("deleted"):
+                cases_deleted += 1
+        except Exception as e:                               # noqa: BLE001 — next case
+            print(f"[PURGE] case {cid} not deleted: {e}", flush=True)
+    keep = {"case"} | (set() if include_system else set(SYSTEM_TYPES))
+    placeholders = ",".join("?" * len(keep))
+    where = f"run_id != ? AND automation_type NOT IN ({placeholders})"
+    params = (run_id, *sorted(keep))
+    gone_ids = [r[0] for r in c.execute(f"SELECT run_id FROM workflows WHERE {where}", params)]
+    c.execute(f"DELETE FROM workflows WHERE {where}", params)
+    for cid, d in builtin:
+        c.execute("UPDATE workflows SET details = ? WHERE run_id = ?",
+                  (_json.dumps(store.purged_details(d)), cid))
+    after = c.execute("SELECT COUNT(*) FROM workflows").fetchone()[0]
+    c.connection.commit()
+    for cid, _ in builtin:
+        store.purge_case_files_and_index(cid)
+    # The runs' Elasticsearch copies: the run list MERGES ES rows missing from
+    # SQLite, so a run deleted here only would come back (see delete_workflow_run).
+    try:
+        from services import elasticsearch_service as _es
+        for rid in gone_ids:
+            _es.delete_workflow_run(rid)
+    except Exception:                                        # noqa: BLE001
+        pass
     _purge_kb_orphans()
-    return max(0, before - after), cases
+    return max(0, before - after), cases_deleted, len(builtin)
 
 
 def _purge_kb_orphans() -> int:
@@ -446,7 +440,7 @@ def run_system_purge():
         try:
             # === 1. Workflows & Reports ===
             add_log_to_run(run_id, "=" * 50, "info")
-            add_log_to_run(run_id, "PURGE: Workflows & Reports", "info")
+            add_log_to_run(run_id, "PURGE: Cases, Investigation Runs & Reports", "info")
             add_log_to_run(run_id, "=" * 50, "info")
             update_run_status(run_id, "running", progress=10)
 
@@ -457,7 +451,7 @@ def run_system_purge():
                 c = conn.cursor()
                 c.execute("SELECT COUNT(*) FROM reports")
                 rpt_count = c.fetchone()[0]
-                runs_deleted, cases_kept = _delete_runs_preserve_cases(c, run_id)
+                runs_deleted, cases_deleted, builtins = _purge_runs_and_cases(c, run_id)
                 c.execute("DELETE FROM reports")
                 conn.commit()
                 c.execute("VACUUM")
@@ -466,7 +460,7 @@ def run_system_purge():
                 db_size_after = os.path.getsize(db_path) if os.path.exists(db_path) else 0
                 freed = max(0, db_size_before - db_size_after)
                 total_freed += freed
-                add_log_to_run(run_id, f"  Deleted {runs_deleted} investigation runs, {rpt_count} reports (kept {cases_kept} case workspaces + system operation history)", "info")
+                add_log_to_run(run_id, f"  Deleted {cases_deleted} case(s), {runs_deleted} investigation runs, {rpt_count} reports (emptied the {builtins} built-in workspaces; kept system operation history)", "info")
                 add_log_to_run(run_id, f"  Freed: {fmt(freed)}", "success")
             except Exception as e:
                 add_log_to_run(run_id, f"  Error: {e}", "error")
@@ -795,10 +789,10 @@ def _scan_workflows():
     from services.workflow_service import SYSTEM_TYPES
     p = "/app/data/intact.db"
     db_size = os.path.getsize(p) if os.path.exists(p) else 0
-    wf_count = rp_count = 0
-    # Count INVESTIGATION runs only — case workspaces and system/admin history
-    # are preserved by this section's purge, so don't advertise them as
-    # reclaimable here.
+    wf_count = rp_count = case_count = 0
+    # Investigation runs, and the operator's cases (this section deletes them; the
+    # built-in Default / System workspaces are emptied, not counted). System/admin
+    # history is preserved, so it is not advertised as reclaimable here.
     exclude = ["case", *sorted(SYSTEM_TYPES)]
     ph = ",".join("?" * len(exclude))
     try:
@@ -811,6 +805,12 @@ def _scan_workflows():
             rp_count = conn.execute("SELECT COUNT(*) FROM reports").fetchone()[0]
         except sqlite3.OperationalError:
             rp_count = 0
+        case_count = conn.execute(
+            "SELECT COUNT(*) FROM workflows WHERE automation_type = 'case' "
+            "AND COALESCE(json_extract(details, '$.is_default'), 0) = 0 "
+            "AND COALESCE(json_extract(details, '$.is_system'), 0) = 0 "
+            "AND COALESCE(json_extract(details, '$.name'), '') NOT IN ('Default', 'System')"
+        ).fetchone()[0]
         conn.close()
     except Exception:
         pass
@@ -823,8 +823,10 @@ def _scan_workflows():
     # estimate -- they are files, and on a real case they dwarf the row estimate
     # above (measured: 16MB of sidecars beside a 2.2MB estimate).
     sidecars = _scan_dir("/app/data/fusion_graphs")
-    return min(estimated, db_size) + sidecars, \
-        f"{wf_count} investigation runs, {rp_count} reports"
+    # ...and what cases keep beside their row: attached evidence and kept reports.
+    case_data = _scan_dir("/app/data/case_files") + _scan_dir("/app/data/case_reports")
+    return min(estimated, db_size) + sidecars + case_data, \
+        f"{case_count} case(s), {wf_count} investigation runs, {rp_count} reports"
 
 
 def _scan_system_workflows():
@@ -1186,7 +1188,7 @@ def _purge_workflows(run_id):
         rp = c.execute("SELECT COUNT(*) FROM reports").fetchone()[0]
     except sqlite3.OperationalError:
         pass
-    runs_deleted, cases_kept = _delete_runs_preserve_cases(c, run_id)
+    runs_deleted, cases_deleted, builtins = _purge_runs_and_cases(c, run_id)
     try:
         c.execute("DELETE FROM reports")
     except sqlite3.OperationalError:
@@ -1196,7 +1198,8 @@ def _purge_workflows(run_id):
     conn.commit()
     conn.close()
     after = os.path.getsize(db_path) if os.path.exists(db_path) else 0
-    return max(0, before - after), f"{runs_deleted} investigation runs, {rp} reports (kept {cases_kept} workspaces + system history)"
+    return max(0, before - after), (f"{cases_deleted} case(s), {runs_deleted} investigation runs, {rp} reports "
+                                    f"(emptied the {builtins} built-in workspaces; kept system history)")
 
 
 def _purge_system_workflows(run_id):
@@ -1671,7 +1674,7 @@ _SECTION_COVERS = {
 _PURGE_SECTIONS = (
     # System operation history first — but excluded from "Select all" (above).
     ("system_workflows",   "System Operation History (upgrades, purges, …)", _scan_system_workflows, _purge_system_workflows),
-    ("workflows",          "Investigation Runs & Reports",        _scan_workflows,         _purge_workflows),
+    ("workflows",          "Cases, Investigation Runs & Reports", _scan_workflows,         _purge_workflows),
     ("azure_runs",         "Azure Scan Data",                     _scan_azure_runs,        _purge_azure_runs),
     ("uploads",            "Upload Data (KAPE, packages, logs)",  _scan_uploads,           _purge_uploads),
     ("upgrade_packages",   "Upgrade Packages",                    _scan_upgrade_packages,  _purge_upgrade_packages),
