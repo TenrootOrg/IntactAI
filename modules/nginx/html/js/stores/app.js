@@ -45,10 +45,10 @@ document.addEventListener('alpine:init', () => {
     // App store - tab switching and navigation
     Alpine.store('app', {
         currentTab: 'dashboard',
-        // Set on the FIRST entry into Case Analysis; every later entry reloads
-        // the iframe instead. Declared here rather than sprung into existence in
-        // switchTab so it is reactive state like everything else on this store.
-        _analysisFrameLoaded: false,
+        // Iframe tabs (Case Analysis, Case Management) entered once: every later
+        // entry reloads the iframe instead. Declared here rather than sprung into
+        // existence in switchTab so it is reactive state like everything else.
+        _framesLoaded: {},
         modulesOpen: false,
         sidebarCollapsed: localStorage.getItem('sidebarCollapsed') === 'true',
 
@@ -148,14 +148,19 @@ document.addEventListener('alpine:init', () => {
             // Skipped on the first entry: the frame is loading its initial
             // document already, and reloading it there just fetches everything
             // twice — and a report fetch is not cheap.
-            if (tab === 'case-analysis') {
-                const frame = document.getElementById('analysis-frame');
+            //
+            // Case Management is the same kind of iframe and had no reload: after a
+            // purge (or a case deleted / created from the other tab) it still listed
+            // the old cases until browser-refresh.
+            const frameId = { 'case-analysis': 'analysis-frame', 'cases': 'cases-frame' }[tab];
+            if (frameId) {
+                const frame = document.getElementById(frameId);
                 if (frame) {
-                    if (this._analysisFrameLoaded) {
+                    if (this._framesLoaded[frameId]) {
                         try { frame.contentWindow.location.reload(); }
                         catch (e) { frame.src = frame.src; }   // cross-origin fallback
                     } else {
-                        this._analysisFrameLoaded = true;
+                        this._framesLoaded[frameId] = true;
                     }
                 }
             }
