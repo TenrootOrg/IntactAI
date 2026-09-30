@@ -315,7 +315,10 @@
 </header>
 <div class="wrap">
   <div class="side">
-    <button id="ncopen" onclick="openNewCase()" style="width:100%">＋ New case</button>
+    <h2>New Case</h2>
+    <div class="row" style="margin-top:10px">
+      <button id="ncopen" onclick="openNewCase()">＋ New case</button>
+    </div>
     <dialog id="ncdlg">
       <form onsubmit="event.preventDefault();createWorkspace()">
         <h2 style="margin-top:0">New Case</h2>
