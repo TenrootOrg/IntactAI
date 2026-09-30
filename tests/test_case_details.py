@@ -157,15 +157,18 @@ class CreateAsksForTheDetails(unittest.TestCase):
 
     def test_the_page_sends_every_field_and_the_selector_opens_the_form(self):
         html = open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8").read()
+        dlg = re.search(r'<dialog id="ncdlg">.*?</dialog>', html, re.S).group(0)
         for i in ('id="cname"', 'id="cstatus"', 'id="csev"', 'id="cowner"', 'id="cdesc"'):
-            self.assertIn(i, html)
+            self.assertIn(i, dlg)                                      # in the pop-up, not always open
+            self.assertEqual(html.count(i), 1)
+        self.assertIn('onclick="openNewCase()"', html)
         if not shutil.which("node"):
             self.skipTest("no node on this host")
         fn = re.search(r"function createWorkspace\(\)\{.*?\n\}", html, re.S).group(0)
         js = """
 const vals={cname:' IR 05 ',cstatus:'closed',csev:'critical',cowner:' Dan ',cdesc:' phishing '};
 const $=s=>({value:vals[s.slice(1)]}); let sent=null;
-const api=(p,o)=>{sent=JSON.parse(o.body); return {then(){}};}; const toast=()=>{};
+const api=(p,o)=>{sent=JSON.parse(o.body); return {then(){return {catch(){}};}};}; const toast=()=>{};
 """ + fn + "\ncreateWorkspace(); console.log(JSON.stringify(sent));"
         out = subprocess.run(["node", "-e", js], capture_output=True, text=True)
         self.assertEqual(json.loads(out.stdout), {"name": "IR 05", "case_status": "closed", "case_severity": "critical",

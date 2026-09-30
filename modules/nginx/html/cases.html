@@ -127,6 +127,11 @@
   .fdocc{border:1px solid var(--bd);border-radius:6px;padding:8px 10px;margin:6px 0;font-size:12px}
   .fdocc .kv{display:flex;gap:6px;padding:1px 0;word-break:break-word}
   .fdocc .kv b{color:var(--muted);font-weight:500;flex:0 0 120px}
+  /* New Case pop-up: the browser's own <dialog> (backdrop, Esc, focus kept inside) */
+  #ncdlg{background:var(--panel,#161b22);color:var(--tx,#e6edf3);border:1px solid var(--bd);border-radius:10px;
+    padding:16px 18px;width:440px;max-width:94vw;box-shadow:0 12px 40px rgba(0,0,0,.6)}
+  #ncdlg::backdrop{background:rgba(0,0,0,.55)}
+  #ncdlg input,#ncdlg select,#ncdlg textarea{width:100%;box-sizing:border-box}
   .fdback{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9997;display:none}
   .fdback.open{display:block}
   .casehead{display:flex;align-items:center;gap:8px;justify-content:space-between}
@@ -310,15 +315,22 @@
 </header>
 <div class="wrap">
   <div class="side">
-    <h2>New Case</h2>
-    <label>Name</label><input id="cname" maxlength="100"/>
-    <label>Status</label><select id="cstatus"><option value="open" selected>Open</option><option value="contained">Contained</option><option value="closed">Closed</option></select>
-    <label>Severity</label><select id="csev"><option value="" selected>— not set —</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="critical">Critical</option></select>
-    <label>Owner</label><input id="cowner" maxlength="100" placeholder="who leads this case"/>
-    <label>Description</label><textarea id="cdesc" maxlength="2000" style="min-height:48px" placeholder="what this case is about"></textarea>
-    <div class="row" style="margin-top:10px">
-      <button onclick="createWorkspace()">Create case</button>
-    </div>
+    <button id="ncopen" onclick="openNewCase()" style="width:100%">＋ New case</button>
+    <dialog id="ncdlg">
+      <form onsubmit="event.preventDefault();createWorkspace()">
+        <h2 style="margin-top:0">New Case</h2>
+        <label>Name</label><input id="cname" maxlength="100" required/>
+        <label>Status</label><select id="cstatus"><option value="open" selected>Open</option><option value="contained">Contained</option><option value="closed">Closed</option></select>
+        <label>Severity</label><select id="csev"><option value="" selected>— not set —</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="critical">Critical</option></select>
+        <label>Owner</label><input id="cowner" maxlength="100" placeholder="who leads this case"/>
+        <label>Description</label><textarea id="cdesc" maxlength="2000" style="min-height:60px" placeholder="what this case is about"></textarea>
+        <div id="ncerr" style="color:var(--crit,#f85149);font-size:12px;margin-top:8px;min-height:1em"></div>
+        <div class="row" style="margin-top:8px;gap:8px;justify-content:flex-end">
+          <button type="button" class="ghost" onclick="closeNewCase()">Cancel</button>
+          <button type="submit">Create case</button>
+        </div>
+      </form>
+    </dialog>
     <p style="color:var(--muted);font-size:11px;margin-top:8px">Runs you launch (Agentic, Volatile Memory, cloud…) while this case is active are tagged to it automatically. Open it any time to fuse them.</p>
     <h2 style="display:flex;align-items:center;justify-content:space-between">Cases
       <button class="ghost" style="font-size:11px;padding:4px 10px" onclick="document.getElementById('case-import-file').click()" title="Import a case exported from another Intact appliance — runs as a System action, watch it in Settings → Actions">⬆ Import</button>
@@ -360,7 +372,9 @@ function jsa(s){return String(s==null?'':s)
 
 function createWorkspace(){
   const name=$('#cname').value.trim();
-  if(!name){toast('Enter a case name.');return;}
+  // Said INSIDE the pop-up: a toast sits under the modal and would not be seen.
+  const fail=m=>{ const e=$('#ncerr'); if(e && ($('#ncdlg')||{}).open) e.textContent=m; else toast(m); };
+  if(!name){fail('Enter a case name.');return;}
   // No time window at creation. It was an optional field nobody filled in, and
   // a case that needs one can set it later in the case's own Settings tab
   // (#cf-start) — where end date and severity live too. Omitting the key is
@@ -371,10 +385,11 @@ function createWorkspace(){
   const body={name, case_status:v('cstatus')||'open', case_severity:v('csev'),
               case_owner:v('cowner').trim(), case_description:v('cdesc').trim()};
   api('/api/cases',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-   .then(d=>{ if(!d||!d.case_id){toast(d&&d.error?'Not created: '+d.error:'The case could not be created. Please try again.');return;}
-     for(const [id,def] of [['cname',''],['cstatus','open'],['csev',''],['cowner',''],['cdesc','']]){ const e=$('#'+id); if(e) e.value=def; }
+   .then(d=>{ if(!d||!d.case_id){fail(d&&d.error?'Not created: '+d.error:'The case could not be created. Please try again.');return;}
+     closeNewCase();
      window.ActiveCase.set(d.case_id); toast('Case created and set as the active case.');
-     loadCases(()=>{ if(VIEW!=='manage') openCase(d.case_id); }); refreshSelector(); });
+     loadCases(()=>{ if(VIEW!=='manage') openCase(d.case_id); }); refreshSelector(); })
+   .catch(e=>fail('The case could not be created: '+e));
 }
 
 function delWorkspace(id, name, ev){
@@ -470,15 +485,20 @@ function loadCases(cb){
 
 async function refreshSelector(){
   const bar=$('#wsbar'); if(bar&&window.ActiveCase) await window.ActiveCase.renderCaseSelector(bar,{manageLink:false,
-    onNewCase: VIEW==='manage' ? focusNewCase : undefined});
+    onNewCase: VIEW==='manage' ? openNewCase : undefined});
 }
-// "＋ New case…" in the case selector brings the operator to this form (it used to
-// be a name-only prompt, and everything else had to be edited in afterwards).
-function focusNewCase(){
+// The New Case pop-up -- from the "＋ New case" button here, and from "＋ New case…"
+// in the case selector (which used to be a name-only prompt; everything else had to
+// be edited in afterwards).
+function openNewCase(){
   try{ sessionStorage.removeItem('intact:newCase'); }catch(e){}
-  const n=$('#cname'); if(!n) return;
-  n.scrollIntoView({block:'center'}); n.focus();
+  const dlg=$('#ncdlg'); if(!dlg) return;
+  for(const [id,def] of [['cname',''],['cstatus','open'],['csev',''],['cowner',''],['cdesc','']]){ const e=$('#'+id); if(e) e.value=def; }
+  const er=$('#ncerr'); if(er) er.textContent='';
+  if(!dlg.open){ try{ dlg.showModal(); }catch(e){ dlg.setAttribute('open',''); } }
+  const n=$('#cname'); if(n) n.focus();
 }
+function closeNewCase(){ const dlg=$('#ncdlg'); if(dlg && dlg.open){ try{ dlg.close(); }catch(e){ dlg.removeAttribute('open'); } } }
 
 // A configured key can still be dead (revoked, no credit, no route to the
 // provider) — llm_status() (part of the /api/cases/<id> payload) never makes a
@@ -2727,7 +2747,7 @@ function caseNamePlaceholder(){
   await refreshSelector();
   loadCases();
   let _wantNew=false; try{ _wantNew=sessionStorage.getItem('intact:newCase')==='1'; }catch(e){}
-  if(VIEW==='manage' && _wantNew) focusNewCase();
+  if(VIEW==='manage' && _wantNew) openNewCase();
   // re-render the list highlight when the workspace changes elsewhere
   window.addEventListener('active-case-changed', ()=>loadCases());
   // analysis view: always show the ACTIVE workspace's fusion; follow active changes
