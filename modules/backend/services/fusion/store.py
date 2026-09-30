@@ -14,9 +14,9 @@ import json
 import os
 import re
 import threading
-
-from . import report_types as _rs
 import traceback
+
+from . import report_history as _rh
 
 from .schema import FusionGraph
 from . import correlate, llm_sim, keys, render, budget
@@ -898,7 +898,7 @@ def delete_case(case_id) -> dict:
     except Exception:
         pass
     try:                                   # and the reports kept in its history
-        _rs.delete_case_reports(case_id)
+        _rh.delete_case_reports(case_id)
     except Exception:
         pass
     # Tagged runs UNION the legacy member list. get_automation_runs_by_case reads
@@ -2169,7 +2169,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
     _report_is_new = True
     if d.get("report_md") and (not force_report or _empty_keep):
         report = d.get("report_md")
-        _report_is_new = False         # reused verbatim: keeps the stage it was written for
+        _report_is_new = False         # reused verbatim: already in the history
         # NO NARRATION ON THIS PATH -- the report is reused verbatim. Bound here
         # because the patch below reads it: it was assigned ONLY in the else
         # branch, so every re-fuse of a case that already had a report raised
@@ -2263,7 +2263,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                              kwargs={"write_off": False}, daemon=True).start()
         try:
             report = llm_sim.generate_report(
-                gr, report_type=_rs.type_of(d), report_basis=_rs.basis(case_id, d)[0], window=_rwindow, min_severity=min_sev,
+                gr, window=_rwindow, min_severity=min_sev,
                 initial_access=d.get("initial_access_estimate"),
                 case_name=d.get("name", "Case"), run_id=case_id,
                 audience=d.get("audience", "both"), language=d.get("language", "en"),
@@ -2416,13 +2416,10 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
           f"{len(pruned.get('entities') or {}):,} entities → sidecar", pct=95)
     if not _write_graph_sidecar(case_id, pruned):
         _plog("Refusion · graph write", "error", "sidecar write failed (see backend log)")
-    _rtype = _rs.type_of(d)
-    if _report_is_new:
-        report = _rs.apply(report, _rtype, _host_status_labels(g, d), case_info(d)["case_status"])
     report = _with_evidence(case_id, report, d)
     if _report_is_new:
         try:
-            _rs.archive(case_id, report, _rtype)
+            _rh.archive(case_id, report)
         except Exception as e:                               # noqa: BLE001 — history, never a failed fuse
             print(f"[FUSION] report not kept in history for {case_id}: {e}", flush=True)
     _details = {"fusion_graph": {},
@@ -4216,19 +4213,9 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
     else:
         log_case_event(case_id, "Report · regenerating (deterministic)", "info",
                        "no LLM tokens spent")
-    _basis, _basis_at = _rs.basis(case_id, d) if _rs.type_of(d) != "technical" else (None, None)
-    if will_narrate and _rs.type_of(d) != "technical":
-        if _basis:
-            log_case_event(case_id, "Report · following the Technical report", "info",
-                           f"the conclusion of the Technical report of "
-                           f"{str(_basis_at).replace('T', ' ')[:16]} UTC is restated for this reader")
-        else:
-            log_case_event(case_id, "Report · no Technical report yet", "warning",
-                           "this report forms its own conclusion — generate the Technical "
-                           "report first so all the reports agree")
     try:
         report = llm_sim.generate_report(
-            gv, report_type=_rs.type_of(d), report_basis=_basis, window=window, min_severity=min_sev,
+            gv, window=window, min_severity=min_sev,
             initial_access=d.get("initial_access_estimate"), case_name=d.get("name", "Case"),
             run_id=case_id, audience=d.get("audience", "both"), language=d.get("language", "en"),
             altitude_mode=d.get("report_altitude") or "auto",
@@ -4297,8 +4284,6 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
     # "now generating the advisory" reads as the advisory's elapsed and is wrong
     # by however long the narrative took -- measured on a live case: the banner
     # said the advisory was 13 minutes in when it had been running for two.
-    _rtype = _rs.type_of(d)
-    report = _rs.apply(report, _rtype, _host_status_labels(g, d), case_info(d)["case_status"])
     report = _with_evidence(case_id, report, d)
     _narrative_patch = {"report_md": report, "report_dirty": False,
                         # What this report was written FROM, for its own scope. The
@@ -4336,7 +4321,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
     try:
         _on_screen = write_report_for_scope(case_id, _gen_scope, _narrative_patch)
         try:
-            _rs.archive(case_id, report, _rtype)
+            _rh.archive(case_id, report)
         except Exception as e:                               # noqa: BLE001 — history, never a failed save
             print(f"[FUSION] report not kept in history for {case_id}: {e}", flush=True)
         log_case_event(case_id, "Report saved", "success",

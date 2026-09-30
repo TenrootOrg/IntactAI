@@ -1,6 +1,7 @@
-"""Report types — who the report is for: Technical (us) and Technical customers —
-two different documents, and the history of every report written. (A Directors
-type existed briefly and was removed; its kept reports keep their label.)
+"""Report history — every report written is kept (view, download, delete) — and the
+case / host containment status the model is told, so a report cannot claim a
+containment nobody recorded. Report stages and types were tried and removed; the
+reports kept while they existed keep their label.
 """
 import json
 import os
@@ -19,102 +20,14 @@ for _p in (_HERE, os.path.join(_ROOT, "modules/backend")):
         sys.path.insert(0, _p)
 
 import _optional_deps  # noqa: F401,E402
-from services.fusion import case_files, llm_sim, report_types as rt, store  # noqa: E402
+from services.fusion import llm_sim, report_history as rh, store  # noqa: E402
 from services.fusion.schema import FusionGraph  # noqa: E402
 
-TEMPLATE = ("# Incident Case Report — qa\n\n## Executive Summary\nsum\n\n## Attack Assessment\na\n\n"
-            "## Timeline of Events\n- t\n\n## Host Risk — who to focus on first\n- h\n\n"
-            "## Indicators of Compromise (IOCs)\n- i\n\n## MITRE ATT&CK Mapping\n- m\n\n"
-            "## Analyst Validations\n- v\n\n## Recommendations\n- r\n\n---\n_Deterministic report — no model_\n")
-AI = ("# Incident Case Report — qa\n\n## Bottom Line\nb\n\n## Decisions Needed\nd\n\n"
-      "## Analyst Validations\n- v\n\n## Timeline of Events\n- t\n\n## MITRE ATT&CK Mapping\n- m\n\n"
-      "## Indicators of Compromise (IOCs)\n- i\n\n## Host Risk — who to focus on first\n- h\n\n"
-      "## Limitations & Assumptions\n- l\n\n---\n_Narrative by live LLM; fact tables deterministic._\n")
+TEMPLATE = "# Incident Case Report — qa\n\n## Executive Summary\nsum\n\n---\n_Deterministic report — no model_\n"
+AI = "# Incident Case Report — qa\n\n## Executive Summary\nb\n\n---\n_Narrative by live LLM; fact tables deterministic._\n"
 
 
-def heads(md):
-    return [h[3:] for h in re.findall(r"^## .*", md, re.M)]
-
-
-class Types(unittest.TestCase):
-    def test_default_is_technical_and_a_choice_is_kept(self):
-        for d in ({"name": "old"}, {"report_type": "bogus"}, {"report_stage": "final"}, None):
-            self.assertEqual(rt.type_of(d), "technical")
-        self.assertEqual(rt.type_of({"report_type": "customer"}), "customer")
-        self.assertEqual(rt.type_of({"report_type": "directors"}), "technical")   # removed type: back to the default
-        self.assertEqual(rt.TYPES, ("technical", "customer"))
-
-    def test_each_reader_gets_its_own_instructions(self):
-        self.assertEqual(rt.directive("technical"), "")                        # the full report as it was
-        self.assertEqual(rt.directive("directors"), "")                        # removed
-        c = rt.directive("customer")
-        for h in ("## Summary", "## What Happened", "## Affected Assets", "## Indicators to Block and Hunt",
-                  "## Remediation Steps", "## Detection & Monitoring"):
-            self.assertIn(h, c)
-        for x in (c,):
-            self.assertIn("marked False Positive is NOT part of the incident", x)
-            self.assertIn("no product or feature names", x)
-            self.assertIn("do not even list it as excluded", x)      # qa test: "AnyDesk ... marked false positive"
-            self.assertIn("never use our data words (graph", x)
-        src = open(os.path.join(_ROOT, "modules/backend/services/fusion/llm_sim.py"), encoding="utf-8").read()
-        self.assertIn("if report_type:\n                audience = \"both\"", src)   # replaces the old tone setting
-
-    def test_title_and_banner_name_the_reader_and_are_never_repeated(self):
-        once = rt.apply(AI, "customer")
-        self.assertTrue(once.startswith("# Technical Customer Report — qa\n\n_Report for: **Technical customers** — the customer's"))
-        again = rt.apply(once, "technical")
-        self.assertIn("# Technical Report — qa\n", again)
-        self.assertEqual(again.count("_Report for:"), 1)
-        old = "# Flash Report — qa\n\n_Report stage: **Flash** — initial notification._\n\n## Bottom Line\nx\n"
-        self.assertNotIn("Report stage", rt.apply(old, "customer"))           # the earlier stage banner goes too
-
-    def test_evidence_follows_the_switch_for_every_type(self):
-        d = {"include_evidence": True,
-             "case_files": [{"id": "0123456789ab", "name": "Popup", "sha256": "x", "file_name": "p.png"}]}
-        for t in ("technical", "customer", "directors"):                     # directors: an old saved choice
-            d["report_type"] = t
-            self.assertIn("Evidence attached", case_files.with_evidence("# R\n\n## Summary\nx\n", d))
-        self.assertEqual(rt.apply(AI, "directors"), AI)                      # an unknown type shapes nothing
-
-    def test_technical_customers_lose_our_internals_keep_what_they_act_on(self):
-        ai = rt.apply(AI, "customer", {"DESKTOP-16OJFO6": "isolated"}, "contained")
-        h = heads(ai)
-        for gone in ("Analyst Validations", "Host Risk — who to focus on first"):
-            self.assertNotIn(gone, h)
-        for kept in ("Timeline of Events", "MITRE ATT&CK Mapping", "Indicators of Compromise (IOCs)", "Containment Status"):
-            self.assertIn(kept, h)
-        self.assertIn("| DESKTOP-16OJFO6 | Quarantined |", ai)
-        self.assertEqual(rt.apply(ai, "customer").count("## Containment Status"), 1)   # rebuilt, never doubled
-        self.assertNotIn("Containment Status", rt.apply(ai, "technical"))
-        tmpl = heads(rt.apply(TEMPLATE, "customer"))
-        self.assertNotIn("Analyst Validations", tmpl)
-        self.assertIn("Indicators of Compromise (IOCs)", tmpl)
-
-    def test_technical_keeps_everything(self):
-        self.assertEqual(heads(rt.apply(AI, "technical")), heads(AI))
-
-    def test_outside_readers_do_not_see_how_we_built_it(self):
-        head = ("# Incident Case Report — qa\n\n> **All timestamps are UTC.**\n\n| | |\n|---|---|\n"
-                "| **Hosts in scope** | 1 |\n| **Entities correlated** | 468 across 112 links |\n\n\n"
-                "_**Focused report** — one scope, analysed in depth. Every finding below is inside this window._\n\n"
-                "## Summary\nx\n\n_Report detail: **explicit** (set for this case)._\n\n"
-                "---\n_Narrative by live LLM; fact tables deterministic._\n")
-        c, t = (rt.apply(head, x) for x in ("customer", "technical"))
-        for gone in ("Focused report", "Report detail", "Entities correlated"):
-            self.assertNotIn(gone, c)
-            self.assertIn(gone, t)
-        self.assertIn("| **Hosts in scope** | 1 |", c)
-        self.assertIn("_Narrative by live LLM", c)             # the footer tells an AI report from a template
-        again = rt.apply(c, "customer", {"h1": "isolated"})
-        self.assertIn("| **Hosts in scope** | 1 |", again)       # re-shaping keeps the statistics
-        self.assertEqual(again.count("## Containment Status"), 1)
-        self.assertLess(again.index("Hosts in scope"), again.index("## Containment Status"))
-        self.assertNotIn("\n\n\n", again)
-
-    def test_the_pdf_cover_names_the_reader(self):
-        src = open(os.path.join(_ROOT, "modules/backend/services/engagement/pdf.py"), encoding="utf-8").read()
-        self.assertIn(r"_Report for: \*\*(Technical customers|Directors|Technical)\*\*", src)
-
+class ContainmentReachesTheModel(unittest.TestCase):
     def test_host_statuses_reach_the_model(self):
         g = FusionGraph(case_id="c")
         g.host_status = {"DESKTOP-16OJFO6": "quarantined"}
@@ -128,10 +41,16 @@ class Types(unittest.TestCase):
         self.assertEqual(ctx["analyst_case_status"], "open")
         self.assertIn("none recorded", ctx["analyst_host_status"])
         self.assertNotIn("analyst_case_status", llm_sim.analyst_context(graph=FusionGraph(case_id="c")))
-        self.assertIn("containment has not been recorded yet", rt.directive("customer"))
         src = open(os.path.join(_ROOT, "modules/backend/services/fusion/store.py"), encoding="utf-8").read()
         self.assertEqual(src.count('g.case_status = case_info(d)["case_status"]'), 2)   # fuse + view graph
         self.assertEqual(src.count('gv.case_status = getattr(g, "case_status", None)'), 2)
+
+    def test_no_report_type_is_left(self):
+        for f in ("services/fusion/llm_sim.py", "services/fusion/store.py", "routes/case_routes.py"):
+            src = open(os.path.join(_ROOT, "modules/backend", f), encoding="utf-8").read()
+            self.assertNotIn("report_type", src, f)
+            self.assertNotIn("report_basis", src, f)
+        self.assertFalse(os.path.exists(os.path.join(_ROOT, "modules/backend/services/fusion/report_types.py")))
 
 
 class History(unittest.TestCase):
@@ -143,90 +62,74 @@ class History(unittest.TestCase):
 
         def mut(cid, field, fn):
             self.d[field] = fn(self.d.get(field) or [])
-        for t, a, v in ((rt, "DATA_DIR", self.tmp), (store, "get_case", lambda cid: self.d),
+        for t, a, v in ((rh, "DATA_DIR", self.tmp), (store, "get_case", lambda cid: self.d),
                         (store, "_mutate_list_field", mut), (store, "log_case_event", mock.Mock()),
                         (store, "_now_iso", lambda: next(self.t))):
             p = mock.patch.object(t, a, v)
             p.start()
             self.addCleanup(p.stop)
 
-    def test_each_report_is_kept_once_newest_first_with_its_label(self):
-        a = rt.archive("c1", rt.apply(TEMPLATE, "technical"), "technical")
-        self.assertIsNone(rt.archive("c1", rt.apply(TEMPLATE, "technical"), "technical"))   # reused: not twice
-        b = rt.archive("c1", rt.apply(AI, "customer"), "customer")
-        h = rt.history(self.d)
-        self.assertEqual([(x["id"], x["label"], x["kind"]) for x in h],
-                         [(b["id"], "Technical customers", "ai"), (a["id"], "Technical", "template")])
-        self.assertIsNone(rt.read("c1", "../../etc/passwd"))
+    def test_each_report_is_kept_once_newest_first(self):
+        a = rh.archive("c1", TEMPLATE)
+        self.assertIsNone(rh.archive("c1", TEMPLATE))              # reused by a Refusion: not twice
+        b = rh.archive("c1", AI)
+        self.assertEqual([(x["id"], x["label"], x["kind"]) for x in rh.history(self.d)],
+                         [(b["id"], "Report", "ai"), (a["id"], "Report", "template")])
+        self.assertEqual(rh.read("c1", b["id"]), AI)
+        self.assertIsNone(rh.read("c1", "../../etc/passwd"))
+        self.assertNotIn("type", self.d["report_history"][0])
 
-    def test_the_customer_report_follows_the_latest_ai_technical_report(self):
-        # qa test: three separate model calls, three different verdicts.
-        self.assertEqual(rt.basis("c1", self.d), (None, None))
-        tech = ("# Technical Report — qa\n\n## Executive Summary\nAuthorised forensic collection, not an "
-                "intrusion. Risk: HIGH.\n\n_Report detail: **explicit** (set for this case)._\n\n## Key Findings\nx\n"
-                "\n---\n_Narrative by live LLM; fact tables deterministic._\n")
-        rt.archive("c1", tech, "technical")
-        rt.archive("c1", AI.replace("Bottom Line", "Other"), "customer")                        # newer, other type
-        rt.archive("c1", TEMPLATE.replace("sum", "template summary"), "technical")             # newer, but no model
-        text, at = rt.basis("c1", self.d)
-        self.assertEqual(text, "Authorised forensic collection, not an intrusion. Risk: HIGH.")
-        self.assertTrue(at)
-        self.assertIn("MUST reach the same conclusion", rt.directive("customer", text))
-        self.assertIn("<<<\nAuthorised forensic collection", rt.directive("customer", text))
-        self.assertNotIn("<<<", rt.directive("customer"))
-        self.assertEqual(rt.directive("technical", text), "")                                  # it IS the conclusion
-        llm = open(os.path.join(_ROOT, "modules/backend/services/fusion/llm_sim.py"), encoding="utf-8").read()
-        self.assertIn("_rt.directive(report_type, _apply_mask(report_basis, mask) if report_basis else None)", llm)
-        st = open(os.path.join(_ROOT, "modules/backend/services/fusion/store.py"), encoding="utf-8").read()
-        self.assertIn("report_basis=_rs.basis(case_id, d)[0]", st)                             # fuse
-        self.assertIn("report_basis=_basis", st)                                               # Regenerate
-        self.assertIn('"Report · no Technical report yet"', st)
-
-    def test_reports_from_the_stage_version_keep_their_label(self):
-        old = {"report_history": [{"id": "0123456789ab", "stage": "final", "at": "2026-09-29T09:00:00"},
-                                  {"id": "0123456789cd", "stage": "flash", "at": "2026-09-29T08:00:00"}]}
-        self.assertEqual([x["label"] for x in rt.history(old)], ["Final", "Flash"])
-        gone = {"report_history": [{"id": "0123456789ef", "type": "directors", "at": "2026-09-29T11:26:49", "kind": "ai"}]}
-        self.assertEqual([(x["label"], x["type"]) for x in rt.history(gone)], [("Directors", "")])   # the removed type
+    def test_reports_kept_while_stages_and_types_existed_keep_their_label(self):
+        old = {"report_history": [
+            {"id": "0123456789ab", "stage": "final", "at": "2026-09-29T09:00:00"},
+            {"id": "0123456789cd", "type": "customer", "at": "2026-09-29T11:25:00", "kind": "ai"},
+            {"id": "0123456789ef", "type": "directors", "at": "2026-09-29T11:26:00", "kind": "ai"},
+            {"id": "0123456789aa", "type": "technical", "at": "2026-09-29T11:23:00", "kind": "ai"},
+            {"id": "not-an-id", "at": "2026-09-29T12:00:00"}]}
+        self.assertEqual([x["label"] for x in rh.history(old)],
+                         ["Directors", "Technical customers", "Technical", "Final"])
+        self.assertEqual(rh.history({"report_history": "junk"}), [])
+        self.assertEqual(rh.history(None), [])
 
     def test_same_second_the_later_is_current_and_delete(self):
         with mock.patch.object(store, "_now_iso", lambda: "2026-09-29T10:00:00"):
-            a = rt.archive("c1", TEMPLATE, "technical")
-            b = rt.archive("c1", AI, "customer")
-        self.assertEqual([x["id"] for x in rt.history(self.d)], [b["id"], a["id"]])
-        self.assertEqual(rt.delete("c1", a["id"]), {"deleted": a["id"]})
-        rt.delete_case_reports("c1")
-        self.assertFalse(os.path.exists(rt._dir("c1")))
-        self.assertEqual(rt.history({"report_history": "junk"}), [])
+            a = rh.archive("c1", TEMPLATE)
+            b = rh.archive("c1", AI)
+        self.assertEqual([x["id"] for x in rh.history(self.d)], [b["id"], a["id"]])
+        self.assertEqual(rh.delete("c1", a["id"]), {"deleted": a["id"]})
+        self.assertEqual(rh.delete("c1", a["id"]), {"error": "no such report"})
+        rh.delete_case_reports("c1")
+        self.assertFalse(os.path.exists(rh._dir("c1")))
 
 
 class Page(unittest.TestCase):
-    def test_selector_and_history_labels(self):
+    def test_no_type_choice_and_history_labels(self):
         node = shutil.which("node")
         if not node:
             self.skipTest("no node on this host")
         src = open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8").read()
-        self.assertIn("${so('technical','Technical (us)')}${so('customer','Technical customers')}</select>", src)
-        self.assertIn("report_type:_rt||undefined", src)
-        js = ("const esc=s=>String(s); const window={};\n" + re.search(r"const RP_LABEL=\{.*?\};", src).group(0)
-              + "\n" + re.search(r"function reportHistoryHtml\(.*?\n\}", src, re.S).group(0) + """
-const H=[{id:'0123456789ab',type:'directors',label:'Directors',at:'2026-09-29T10:12:00',kind:'ai'},
-         {id:'0123456789cd',type:'',label:'Final',at:'2026-09-28T08:00:00',kind:'ai'}];
+        self.assertNotIn('id="rp-type"', src)
+        self.assertNotIn("report_type", src)
+        self.assertIn("body:JSON.stringify({use_llm:true})", src)
+        js = ("const esc=s=>String(s); const window={};\n" + re.search(r"const _rpLab=.*?;\n", src).group(0)
+              + re.search(r"function reportHistoryHtml\(.*?\n\}", src, re.S).group(0) + """
+const H=[{id:'0123456789ab',label:'Report',at:'2026-09-30T10:12:00',kind:'ai'},
+         {id:'0123456789cd',label:'Final',at:'2026-09-28T08:00:00',kind:'ai'}];
 console.log(JSON.stringify([reportHistoryHtml({case_id:'c1', report_history:H}, null),
-  reportHistoryHtml({case_id:'c1', report_history:H}, {id:'0123456789ab', label:'Directors', at:'2026-09-29T10:12:00'})]));""")
+  reportHistoryHtml({case_id:'c1', report_history:H}, {id:'0123456789ab', label:'Report', at:'2026-09-30T10:12:00'}),
+  reportHistoryHtml({case_id:'c1', report_history:H}, {id:'0123456789cd', label:'Final', at:'2026-09-28T08:00:00'})]));""")
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as t:
             t.write(js)
         try:
             out = json.loads(subprocess.run([node, t.name], capture_output=True, text=True, check=True).stdout)
         finally:
             os.unlink(t.name)
-        self.assertIn(">Directors</span>", out[0])
-        self.assertIn(">Final</span>", out[0])                                  # an old stage report
-        self.assertIn("Viewing the <b>Directors</b> report", out[1])
-        self.assertIn("the current report", out[1])                     # the newest one IS current
-        self.assertNotIn("not the current one", out[1])
-        self.assertIn('>View</button>', out[1])                          # a button, not a faint link
+        self.assertNotIn(">Report</span>", out[0])                       # a new report needs no label
+        self.assertIn(">Final</span>", out[0])                            # an old stage report keeps it
+        self.assertIn("Viewing the report of 2026-09-30 10:12 UTC — the current report", out[1])
         self.assertIn("● Viewing", out[1])
+        self.assertIn(">View</button>", out[1])
+        self.assertIn("Viewing the <b>Final</b> report of 2026-09-28 08:00 UTC — not the current one", out[2])
 
 
 if __name__ == "__main__":

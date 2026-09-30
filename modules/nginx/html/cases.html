@@ -1177,23 +1177,24 @@ function evAttachFiles(fid, files){
       .catch(e=>toast(file.name+' not attached: '+e.message));
   });
 }
-// Report history (plan step 9): every report written is kept with its stage and
-// date; view one in place of the current report, download it (MD / PDF / HTML) or
-// delete it. The current report is always the newest.
-const RP_LABEL={technical:'Technical',customer:'Technical customers',directors:'Directors',flash:'Flash',interim:'Interim',final:'Final'};
+// Report history (plan step 9): every report written is kept with its date; view
+// one in place of the current report, download it (MD / PDF / HTML) or delete it.
+// The current report is always the newest. Reports kept while stages / types
+// existed (Flash, Technical customers, ...) show that label.
+const _rpLab=x=>(x&&x.label&&x.label!=='Report')?x.label:'';
 function reportHistoryHtml(info, viewing){
   const H=Array.isArray(info&&info.report_history)?info.report_history.filter(x=>x&&x.id):[];
   const cid=esc(info.case_id), open=!!window._rpHistOpen;
   const dl=(x,f,l)=>`<a class="elink" href="/api/cases/${cid}/reports/${esc(x.id)}/download?fmt=${f}" target="_blank">${l}</a>`;
   const rows=H.map((x,i)=>`<div class="erow" style="gap:10px;align-items:center;font-size:12px">
-      <span class="sg-hint" style="border-style:solid">${esc(x.label||RP_LABEL[x.type]||'Report')}</span>
+      ${_rpLab(x)?`<span class="sg-hint" style="border-style:solid">${esc(_rpLab(x))}</span>`:''}
       <span>${esc(String(x.at||'').replace('T',' ').slice(0,16))} UTC</span>
       <span style="color:var(--muted)">${x.kind==='ai'?'AI report':'template report'}${i===0?' · current':''}</span>
       <span style="margin-left:auto;display:flex;gap:10px">${viewing&&viewing.id===x.id?'<b style="color:var(--acc)">● Viewing</b>':`<button class="dlbtn" style="padding:3px 12px;font-size:12px;border-color:var(--acc);color:var(--acc)" onclick="rpView('${cid}','${esc(x.id)}')">View</button>`}
         ${dl(x,'pdf','PDF')}${dl(x,'html','HTML')}${dl(x,'md','MD')}
         <span style="color:var(--muted);cursor:pointer" title="Delete this kept report" onclick="rpDelete('${cid}','${esc(x.id)}')">✕</span></span></div>`).join('');
   const isCur=!!(viewing&&H[0]&&H[0].id===viewing.id);
-  const banner=viewing?`<div class="agnote">Viewing the <b>${esc(viewing.label||'')}</b> report of ${esc(String(viewing.at||'').replace('T',' ').slice(0,16))} UTC — ${isCur?'the current report':'not the current one'}. <span class="elink" onclick="rpBack()">${isCur?'Close':'Back to the current report'}</span></div>`:'';
+  const banner=viewing?`<div class="agnote">Viewing the ${_rpLab(viewing)?`<b>${esc(_rpLab(viewing))}</b> `:''}report of ${esc(String(viewing.at||'').replace('T',' ').slice(0,16))} UTC — ${isCur?'the current report':'not the current one'}. <span class="elink" onclick="rpBack()">${isCur?'Close':'Back to the current report'}</span></div>`:'';
   return `${banner}<details ${open||viewing?'open':''} ontoggle="window._rpHistOpen=this.open" style="margin:0 0 10px;border:1px solid var(--bd);border-radius:8px;padding:6px 10px">
     <summary style="cursor:pointer;font-size:13px"><b>Report history</b> <span style="color:var(--muted)">· ${H.length?H.length+' kept':'none yet — every report written from now on is kept here'}</span></summary>
     <div style="margin-top:4px">${rows||''}</div></details>`;
@@ -1228,10 +1229,7 @@ function renderReport(info){
   const mdBody = md.replace(/\n\n---\n_(?:Deterministic report — [\s\S]*?|Narrative by live LLM[\s\S]*?)_\n\s*$/, '')
     // evidence pictures: shown from the appliance (the PDF / HTML embed them)
     .replace(/!\[([^\]]*)\]\(evidence:([0-9a-f]{12})\)/g, (m,a,f)=>`![${a}](/api/cases/${id}/files/${f}?inline=1)`);
-  const rtp=['technical','customer'].includes(info.report_type)?info.report_type:'technical';
-  const so=(k,l)=>`<option value="${k}" ${rtp===k?'selected':''}>${l}</option>`;
   $('#tabc').innerHTML=`<div id="reportstatus">${reportStatusHtml(info)}</div><div class="row" style="gap:8px;margin-bottom:10px;align-items:center">
-    <label style="font-size:12px;white-space:nowrap">Report for <select id="rp-type" style="font-size:12px;width:auto" title="Technical — us, the investigating team: the full report · Technical customers — the customer's IT / security team: what happened, affected assets, indicators to block, remediation. Technical customers restates the conclusion of the latest AI Technical report — generate the Technical report first so both agree. Each report written is kept in the history below.">${so('technical','Technical (us)')}${so('customer','Technical customers')}</select></label>
     <span id="regenslot">${regenButtonHtml(info)}</span>
     ${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}${dl('/report/download/html','⬇ HTML')}
     <label style="font-size:12px;white-space:nowrap" title="On: the report gets an Evidence section with every item and its pictures (also in the PDF and HTML), and the AI is given the evidence — names, descriptions, linked findings and the text of text files, never the pictures themselves. Regenerate the report after changing it."><input type="checkbox" style="width:auto" ${info.include_evidence?'checked':''} onchange="evToggleInclude('${esc(id)}',this.checked)"/> Include evidence in the report and AI</label>
@@ -1588,9 +1586,7 @@ function regenReport(id){
   // instead. Saying "sending case data to the model" up front was untrue there
   // (QA TASK-12656).
   // use_llm:true -> premium LLM narrative (the only report path that spends tokens)
-  const _rt=(document.getElementById('rp-type')||{}).value||'';
-  if(_rt && curInfo && curInfo.case_id===id) curInfo.report_type=_rt;
-  api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({use_llm:true, report_type:_rt||undefined})})
+  api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({use_llm:true})})
    .then(r=>{
      if(r && r.status==='offline'){
        // Already written, synchronously. Nothing is generating; just show it.

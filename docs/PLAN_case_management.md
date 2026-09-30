@@ -94,18 +94,13 @@ DFIR engagements usually produce reports at stages (NIST SP 800-61, SANS):
 | **Lessons learned** | after closure | what worked, gaps, improvements to tooling and process |
 | Specialised | when required | regulatory / breach notification (e.g. GDPR 72 h), forensic examination report for legal use (chain of custody) |
 
-Chosen (2026-09-29): stages were dropped for **report types — who reads it**. The customer report restates the conclusion of the latest AI Technical report, so the two agree:
-
-| Type | Reader | What it is |
-|---|---|---|
-| **Technical** | us | the full internal report, every fact table (unchanged) |
-| **Technical customers** | the customer's IT / security team | what happened, affected assets, IOCs to block, remediation, detection; our internal tables (Analyst Validations, Host Risk, timeframes) removed; a Containment Status table |
-
-Each type is its own instruction to the model and works without one (the template
-keeps only that reader's sections). Each generated report is kept with its type and
-date in a report history (view, PDF / HTML / MD, delete); reports from the stage
-version keep their Flash / Interim / Final label. History does not travel in case
-export/import yet.
+**Result (2026-09-30): one report, with a history.** Stages (Flash / Interim /
+Final) and then report types (Technical, Technical customers, Directors) were built
+and removed — the user chose a single report type. Kept from that work: the report
+history (every report kept; view, PDF / HTML / MD, delete), the case and host
+containment status sent to the model (a report may not claim a containment nobody
+recorded), and a visible View button. Reports kept while stages / types existed keep
+their label. History does not travel in case export/import yet.
 
 ---
 
@@ -120,6 +115,6 @@ export/import yet.
 | 7. Who-did-what on every action, a log that cannot be cleared | Multi-user does not exist yet; leave it until it does. |
 | 8. Search across cases | Cases are deliberately separate; hunts and workflows from another case can be pulled in when needed. |
 | 9 (as proposed). DOCX export | Left for now; replaced by report types (above). |
-| 9. Directors report type | Built, then removed (2026-09-29) — not needed; kept Directors reports keep their label. |
+| 9. Report types (Technical / Technical customers / Directors) | Built, then removed (2026-09-30) — one report type is enough; kept reports keep their label. |
 | 9. Flash / Interim / Final stages | Built, then replaced — the reports did not differ enough; the reader matters more than the stage. |
 | 10. Multiple users with roles | Not in this version — too large for now; a later version. |

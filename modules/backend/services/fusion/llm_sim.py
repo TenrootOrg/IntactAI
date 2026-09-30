@@ -1498,13 +1498,12 @@ def analyst_context(dispositions=None, validations=None, manual_events=None, gra
                                             for v, ln in people]
     hstat = getattr(graph, "host_status", None) if graph is not None else None
     if hstat:
-        # The analyst's containment status per host (Risk tab) — the Interim
-        # report's Status section is built from it.
+        # The analyst's containment status per host (Risk tab).
         out["analyst_host_status"] = dict(hstat)
     cstat = getattr(graph, "case_status", None) if graph is not None else None
     if cstat:
-        # Sent even when nothing is recorded: with no status to go on, the directors
-        # report wrote "the case has been contained" on an Open case (qa test).
+        # Sent even when nothing is recorded: with no status to go on, a report
+        # wrote "the case has been contained" on an Open case (qa test).
         out["analyst_case_status"] = cstat
         if not hstat:
             out["analyst_host_status"] = "none recorded — no host is marked isolated, cleaned or rebuilt"
@@ -1777,8 +1776,7 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
 
 def generate_report(graph, *, window=None, min_severity="informational",
                     initial_access=None, case_name="Case", run_id=None,
-                    audience="both", language="en", master_prompt=None, mask=None, report_type=None,
-                    report_basis=None,
+                    audience="both", language="en", master_prompt=None, mask=None,
                     altitude_mode="auto",
                     dispositions=None, validations=None, prefer_llm=True,
                     max_entities=None, budget_chars=None, max_output_tokens=None,
@@ -1888,22 +1886,12 @@ def generate_report(graph, *, window=None, min_severity="informational",
                            "model could not analyse them. Say plainly which phases were not "
                            "analysed and why, and do not describe what happened in them "
                            "beyond their window, hosts and finding counts.")
-            # A report TYPE (who the report is for) replaces the older audience tone
-            # setting; the language setting still applies.
-            if report_type:
-                audience = "both"
             if (audience and audience != "both") or (language and language != "en"):
                 try:                              # reuse engagement audience/language tailoring
                     from services.engagement.templates import audience_language_directive
                     system = system + "\n\n" + audience_language_directive(audience, language)
                 except Exception:
                     pass
-            if report_type:                       # Technical / Technical customers
-                from . import report_types as _rt
-                # The Technical report's conclusion, masked like the rest of the input.
-                _d = _rt.directive(report_type, _apply_mask(report_basis, mask) if report_basis else None)
-                if _d:
-                    system = system + "\n\n" + _d
             if master_prompt:
                 system = ("## OPERATOR CONTEXT (from interactive validation) — treat as "
                           "ground truth; apply the removals/focus described:\n"

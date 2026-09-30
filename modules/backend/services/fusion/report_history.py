@@ -1,203 +1,34 @@
-"""Report types — who the report is for — and the history of every report written.
+"""Report history — every report written for a case is KEPT, so regenerating
+never loses the previous one: view, download (PDF / HTML / MD) or delete it.
 
-Two readers, two different documents (not the same report in another tone):
-  technical  — us, the analysts: the full internal report (the default).
-  customer   — the customer's technical team: what happened, affected assets,
-               indicators to block, remediation — without our internal triage,
-               scoring or tooling.
+Files under DATA_DIR/<case_id>/<id>.md; described in the case details under
+"report_history": {id, at, sha256, chars, kind: ai | template}.
 
-The type changes the instruction to the model (a structure of its own for the
-customer report), a title and a banner, and which of the tables
-the system appends are kept. Every report written is KEPT with its type and date.
-
-History: files under DATA_DIR/<case_id>/<id>.md; described in the case details
-under "report_history": {id, type, at, sha256, chars, kind: ai | template}.
-Entries written before the types existed carry "stage" (flash / interim /
-final) and keep that label; so do reports of the Directors type, removed on
-2026-09-29 (the user: "lets skip the director").
+Report stages (Flash / Interim / Final) and report types (Technical, Technical
+customers, Directors) were tried on 2026-09-29 and removed — one report again.
+Reports kept while they existed carry "stage" or "type" and keep that label.
 """
 from __future__ import annotations
 
 import hashlib
 import os
-import re
 import shutil
 import uuid
+import re
 
-TYPES = ("technical", "customer")
-LABEL = {"technical": "Technical", "customer": "Technical customers"}
-TITLE = {"technical": "Technical Report", "customer": "Technical Customer Report"}
-READER = {"technical": "internal — the full detail for the investigating team",
-          "customer": "the customer's technical team"}
-# kept reports of types / stages that no longer exist
-LEGACY_LABEL = {"flash": "Flash", "interim": "Interim", "final": "Final", "directors": "Directors"}
 DATA_DIR = "/app/data/case_reports"
+LEGACY_LABEL = {"flash": "Flash", "interim": "Interim", "final": "Final", "technical": "Technical",
+                "customer": "Technical customers", "directors": "Directors"}
 _ID = re.compile(r"[0-9a-f]{12}")
 _TEMPLATE_FOOTER = "_Deterministic report"
-# banners this version and the stage version before it wrote under the title
-_BANNER = re.compile(r"^_Report (?:for|stage): \*\*[^*\n]+\*\* — [^\n]*_\n?", re.M)
-_TITLE = re.compile(r"^# (?:(?:Flash|Interim|Final|Technical|Technical Customer|Directors) Report"
-                    r"|Incident Case Report|Incident Report)\s+—\s+(.*)$")
-_INTERNAL_LINES = re.compile(r"(?m)^(?:_Report detail: \*\*[^\n]*_|_\*\*(?:Focused|Segmented) report\*\* — [^\n]*_"
-                             r"|\| \*\*Entities correlated\*\* \|[^\n]*)\n?")
-_STATUS_BLOCK = re.compile(r"(?ms)^## (?:Status|Containment Status)\n\n_Containment as set on the Risk tab[^\n]*_\n.*?(?=^## |\Z)")
-STATUS_LABEL = {"compromised": "Compromised", "isolated": "Quarantined", "quarantined": "Quarantined",
-                "reimaged": "Reimaged", "clean": "Clean"}
-
-# What each type leaves out of a model-written report (only system tables —
-# nothing the model wrote is removed) …
-_DROP = {
-    "customer": ("Analyst Validations", "Host Risk", "Suspicious Timeframes", "Timeframes",
-                 "Phases at a glance", "Shared across hosts", "Activity outside"),
-}
-# … and what the offline template keeps.
-_TEMPLATE_KEEP = {
-    "customer": ("Executive Summary", "Attack Assessment", "Timeline of Events",
-                 "Indicators of Compromise", "MITRE ATT&CK Mapping", "Cross-Host Correlation",
-                 "Recommendations", "Limitations & Assumptions", "Evidence attached"),
-}
-
-_NO_INTERNALS = (
-    "Do not mention our internal tooling or workflow: no product or feature names (Intact, "
-    "Jev, Refusion, fusion, agentic, scopes), no internal confidence scores, and no "
-    "analyst-triage mechanics. Name evidence by what it is (Windows event logs, Sysmon, "
-    "PowerShell logs, the file table, memory). Activity the analyst marked False Positive "
-    "is NOT part of the incident — leave it out entirely, do not even list it as excluded; "
-    "activity marked Known may be mentioned as expected activity confirmed with the "
-    "customer. Say 'confirmed' instead of 'the analyst marked it true positive', and never "
-    "use our data words (graph, payload, finding, entity, Timeline row). "
-    "State only actions that are recorded: containment and case state come from "
-    "analyst_case_status and analyst_host_status. Never say or imply that anything was "
-    "contained, isolated, cleaned, rebuilt or reset unless it is recorded there; when "
-    "nothing is recorded, say plainly that containment has not been recorded yet.")
-
-_DIRECTIVE = {
-    "technical": "",            # the full internal report: the default instructions as they are
-    "customer": (
-        "REPORT FOR: THE CUSTOMER'S TECHNICAL TEAM (IT / security staff of the affected "
-        "organisation — technical readers, but outside our team).\n"
-        "Use THIS structure instead of the default one:\n"
-        "## Summary — 4-6 sentences: what happened, when, how it most likely started, and "
-        "the current state.\n"
-        "## What Happened — the attack as a chronological narrative with UTC times, hosts, "
-        "accounts and the techniques used (ATT&CK names with their IDs are fine).\n"
-        "## Affected Assets — a table: Host or account | What was seen | Current status "
-        "(from analyst_host_status: compromised / quarantined / reimaged / clean; "
-        "'not yet contained' when none is given).\n"
-        "## Indicators to Block and Hunt — a table: Type | Value | Context — only indicators "
-        "seen in THIS incident (hashes, IPs, domains, file paths, account names).\n"
-        "## Remediation Steps — numbered and ordered: Immediate (next 24 h), Short-term "
-        "(1-2 weeks), Hardening.\n"
-        "## Detection & Monitoring — what to alert on from now on, per technique seen.\n"
-        "Technical terms are fine; explain any that are not common knowledge in a few words. "
-        + _NO_INTERNALS),
-}
 
 
-def basis(case_id, d):
-    """(Executive Summary, time) of the newest AI-written Technical report, or
-    (None, None). The customer report restates THIS conclusion
-    instead of forming their own: written as separate model calls, the three
-    reports of qa test disagreed (Technical: authorised forensic collection;
-    Directors: likely compromise). Chosen by the user: follow the saved Technical
-    report rather than write one first."""
-    for x in history(d):
-        if x["type"] == "technical" and x["kind"] == "ai":
-            m = re.search(r"(?ms)^## Executive Summary\n(.*?)(?=^## |\Z)", read(case_id, x["id"]) or "")
-            txt = _INTERNAL_LINES.sub("", m.group(1)).strip()[:3000] if m else ""
-            return (txt, x["at"]) if txt else (None, None)
-    return None, None
-
-
-def type_of(d) -> str:
-    """The report type last chosen for the case; Technical when none (old cases)."""
-    t = (d or {}).get("report_type") if isinstance(d, dict) else None
-    return t if t in TYPES else "technical"
-
-
-def directive(rtype, conclusion=None) -> str:
-    d = _DIRECTIVE.get(rtype, "")
-    if d and conclusion:
-        d += ("\n\nTHE INVESTIGATING TEAM'S CONCLUSION — the Executive Summary of our Technical "
-              "report. Your report MUST reach the same conclusion: the same most likely "
-              "explanation, the same overall risk level and the same confidence, put in words for "
-              "your reader. Do not re-judge the evidence or reach a different verdict. Where the "
-              "analyst's verdicts or host statuses in the data are newer, those still apply.\n"
-              "<<<\n" + str(conclusion).strip() + "\n>>>")
-    return d
-
-
-def apply(md, rtype, host_status=None, case_status=None) -> str:
-    """A freshly written report, shaped for its reader:
-      - the title and a banner say which report it is (also on the PDF / HTML cover);
-      - customer: only the tables that reader needs (the template keeps
-        its matching sections; a model-written report loses only system tables);
-      - customer: a Containment Status table from the Risk tab's host statuses."""
-    md = _STATUS_BLOCK.sub("", _BANNER.sub("", str(md or "")))
-    if rtype not in TYPES or not md.strip():
-        return md
-    if rtype in _DROP:
-        md = (_keep_sections(md, _TEMPLATE_KEEP[rtype]) if _TEMPLATE_FOOTER in md
-              else _drop_sections(md, _DROP[rtype]))
-        # How WE built it (detail level, focused/segmented, entity counts) means
-        # nothing to an outside reader.
-        md = _INTERNAL_LINES.sub("", md)
-        md = re.sub(r"\n{3,}", "\n\n", md)
-    if rtype == "customer":
-        # Before the first section, AFTER the statistics block: _STATUS_BLOCK removes
-        # up to the next "## ", so placed above the statistics it took them with it
-        # the next time the report was shaped.
-        block = _status_block(host_status, case_status) + "\n"
-        m = re.search(r"(?m)^## ", md)
-        md = md[:m.start()] + block + md[m.start():] if m else md.rstrip() + "\n\n" + block
-    banner = f"_Report for: **{LABEL[rtype]}** — {READER[rtype]}._"
-    lines = md.split("\n")
-    for i, ln in enumerate(lines):
-        if ln.startswith("# "):
-            m = _TITLE.match(ln)
-            name = m.group(1) if m else ln[2:].strip()
-            lines[i] = f"# {TITLE[rtype]} — {name}"
-            lines.insert(i + 1, "\n" + banner)
-            return "\n".join(lines)
-    return banner + "\n\n" + md
-
-
-def _status_block(host_status, case_status) -> str:
-    rows = sorted((host_status or {}).items())
-    out = ["## Containment Status", "",
-           f"_Containment as set on the Risk tab · case status: {str(case_status or 'open').capitalize()}_", ""]
-    if rows:
-        out += ["| Host | Status |", "|---|---|"]
-        out += [f"| {h} | {STATUS_LABEL.get(st, str(st).capitalize())} |" for h, st in rows]
-    else:
-        out.append("No host has a containment status recorded yet.")
-    return "\n".join(out) + "\n"
-
-
-def _split(md):
-    parts = re.split(r"(?m)^(?=## )", md)
-    head, secs = parts[0], parts[1:]
-    footer = ""
-    if secs:
-        m = re.search(r"\n\n---\n_(?:Deterministic report|Narrative by live LLM)[\s\S]*$", secs[-1])
-        if m:
-            footer, secs[-1] = secs[-1][m.start():], secs[-1][:m.start()]
-    return head, secs, footer
-
-
-def _keep_sections(md, keep) -> str:
-    head, secs, footer = _split(md)
-    return head + "".join(s for s in secs if any(s[3:].startswith(k) for k in keep)) + footer
-
-
-def _drop_sections(md, drop) -> str:
-    head, secs, footer = _split(md)
-    return head + "".join(s for s in secs if not any(s[3:].startswith(k) for k in drop)) + footer
-
-
-# ---- history -----------------------------------------------------------------
 def _dir(case_id) -> str:
     return os.path.join(DATA_DIR, re.sub(r"[^A-Za-z0-9_.-]", "_", str(case_id)))
+
+
+def label_of(x) -> str:
+    return LEGACY_LABEL.get(x.get("type") or x.get("stage"), "Report")
 
 
 def history(d) -> list:
@@ -208,10 +39,8 @@ def history(d) -> list:
     for i, x in enumerate(raw if isinstance(raw, list) else []):
         if not (isinstance(x, dict) and _ID.fullmatch(str(x.get("id") or ""))):
             continue
-        t = x.get("type") if x.get("type") in TYPES else None
-        label = LABEL[t] if t else LEGACY_LABEL.get(x.get("type") or x.get("stage"), "Report")
         out.append((str(x.get("at") or ""), i, {
-            "id": x["id"], "type": t or "", "label": label, "at": x.get("at"),
+            "id": x["id"], "label": label_of(x), "at": x.get("at"),
             "chars": int(x.get("chars") or 0), "kind": "ai" if x.get("kind") == "ai" else "template",
             "sha256": str(x.get("sha256") or "")}))
     # newest first; two written in the same second: the later-kept one first
@@ -219,7 +48,7 @@ def history(d) -> list:
     return [t[2] for t in out]
 
 
-def archive(case_id, md, rtype) -> dict | None:
+def archive(case_id, md) -> dict | None:
     """Keep this report in the case's history. Not again when it is the same text
     as the newest kept one (a Refusion that reused the report)."""
     from . import store
@@ -236,7 +65,7 @@ def archive(case_id, md, rtype) -> dict | None:
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(md)
     os.replace(tmp, os.path.join(_dir(case_id), rid + ".md"))
-    item = {"id": rid, "type": rtype if rtype in TYPES else "technical", "at": store._now_iso(),
+    item = {"id": rid, "at": store._now_iso(),
             "sha256": sha, "chars": len(md), "kind": "template" if _TEMPLATE_FOOTER in md else "ai"}
     store._mutate_list_field(case_id, "report_history",
                              lambda v: (v if isinstance(v, list) else []) + [item])
@@ -272,7 +101,7 @@ def delete(case_id, rid) -> dict:
         os.remove(os.path.join(_dir(case_id), rid + ".md"))
     except OSError:
         pass
-    label = LABEL.get(gone.get("type")) or LEGACY_LABEL.get(gone.get("type") or gone.get("stage"), "Report")
+    label = label_of(gone)
     store.log_case_event(case_id, "Report history", "info", f"{label} report of {gone.get('at')} deleted")
     return {"deleted": rid}
 
