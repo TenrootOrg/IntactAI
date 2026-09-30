@@ -848,7 +848,7 @@ PURGE_KEEPS = ("name", "is_default", "is_system", "time_window", "min_severity",
                "max_identities", "auto_fuse", "auto_report", "auto_regen_report",
                "fusion_modules", "chat_send_full_context", "report_detail",
                "llm_use_full_context", "llm_max_output_tokens", "include_evidence",
-               "case_status", "case_severity", "case_owner", "case_description")
+               "case_status", "case_owner", "case_description")
 
 
 def purged_details(d) -> dict:
@@ -3529,7 +3529,6 @@ def _model_label(model):
 
 
 CASE_STATUSES = ("open", "contained", "closed")
-CASE_SEVERITIES = ("", "low", "medium", "high", "critical")
 
 
 def case_info(d) -> dict:
@@ -3541,15 +3540,15 @@ def case_info(d) -> dict:
     anything: every field falls back to its default instead of raising."""
     d = d if isinstance(d, dict) else {}
     st = str(d.get("case_status") or "").lower()
-    sv = str(d.get("case_severity") or "").lower()
+    # No case severity: it was asked for and shown, and not needed (removed
+    # 2026-09-30). A value stored on a case from before is ignored.
     return {"case_status": st if st in CASE_STATUSES else "open",
-            "case_severity": sv if sv in CASE_SEVERITIES else "",
             "case_owner": d.get("case_owner") if isinstance(d.get("case_owner"), str) else "",
             "case_description": d.get("case_description") if isinstance(d.get("case_description"), str) else ""}
 
 
 def update_case_info(case_id, fields) -> dict:
-    """Save name / status / severity / owner / description. Only the keys given
+    """Save name / status / owner / description. Only the keys given
     change; a bad value refuses the whole save."""
     d = get_case(case_id)
     if not d:
@@ -3568,11 +3567,6 @@ def update_case_info(case_id, fields) -> dict:
         if st not in CASE_STATUSES:
             return {"error": f"status must be one of: {', '.join(CASE_STATUSES)}"}
         patch["case_status"] = st
-    if "case_severity" in fields:
-        sv = str(fields.get("case_severity") or "").lower()
-        if sv not in CASE_SEVERITIES:
-            return {"error": "severity must be low, medium, high, critical or empty"}
-        patch["case_severity"] = sv
     if "case_owner" in fields:
         patch["case_owner"] = str(fields.get("case_owner") or "").strip()[:100]
     if "case_description" in fields:

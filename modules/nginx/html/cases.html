@@ -323,10 +323,8 @@
       <form onsubmit="event.preventDefault();createWorkspace()">
         <h2 style="margin-top:0">New Case</h2>
         <label>Name</label><input id="cname" maxlength="100" required/>
-        <label>Status</label><select id="cstatus"><option value="open" selected>Open</option><option value="contained">Contained</option><option value="closed">Closed</option></select>
-        <label>Severity</label><select id="csev"><option value="" selected>— not set —</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="critical">Critical</option></select>
         <label>Owner</label><input id="cowner" maxlength="100" placeholder="who leads this case"/>
-        <label>Description</label><textarea id="cdesc" maxlength="2000" style="min-height:60px" placeholder="what this case is about"></textarea>
+        <label>Description <span style="color:var(--muted)">(optional)</span></label><textarea id="cdesc" maxlength="2000" style="min-height:60px" placeholder="what this case is about"></textarea>
         <div id="ncerr" style="color:var(--crit,#f85149);font-size:12px;margin-top:8px;min-height:1em"></div>
         <div class="row" style="margin-top:8px;gap:8px;justify-content:flex-end">
           <button type="button" class="ghost" onclick="closeNewCase()">Cancel</button>
@@ -382,11 +380,10 @@ function createWorkspace(){
   // a case that needs one can set it later in the case's own Settings tab
   // (#cf-start) — where end date and severity live too. Omitting the key is
   // the same thing the route already did with an empty one.
-  // Asked here rather than in an edit afterwards: the same fields as the case's
-  // edit form (status / severity / owner / description).
+  // Asked here rather than in an edit afterwards: owner and an optional
+  // description. A new case is always Open (its status is changed by editing it).
   const v=id=>($('#'+id)||{}).value||'';
-  const body={name, case_status:v('cstatus')||'open', case_severity:v('csev'),
-              case_owner:v('cowner').trim(), case_description:v('cdesc').trim()};
+  const body={name, case_owner:v('cowner').trim(), case_description:v('cdesc').trim()};
   api('/api/cases',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
    .then(d=>{ if(!d||!d.case_id){fail(d&&d.error?'Not created: '+d.error:'The case could not be created. Please try again.');return;}
      closeNewCase();
@@ -475,7 +472,7 @@ function loadCases(cb){
       return `<div class="caseitem ${sel===c.case_id?'sel':''}" onclick="rowClick('${c.case_id}')">
       <div class="casehead"><span class="nm">${isAct?'● ':''}${esc(c.name||c.case_id)}</span>
         <div class="row" style="gap:6px">
-          <button class="ghost" style="font-size:11px;padding:3px 8px" onclick="event.stopPropagation();cdEdit('${c.case_id}')" title="Status, severity, owner, description, name">${_cdEdit===c.case_id?'close':'edit'}</button>
+          <button class="ghost" style="font-size:11px;padding:3px 8px" onclick="event.stopPropagation();cdEdit('${c.case_id}')" title="Status, owner, description, name">${_cdEdit===c.case_id?'close':'edit'}</button>
           ${expBtn(c.case_id)}
           ${c.is_default?'<span class="defbadge">default</span>'
             :c.is_system?'<span class="defbadge">system</span>'
@@ -496,7 +493,7 @@ async function refreshSelector(){
 function openNewCase(){
   try{ sessionStorage.removeItem('intact:newCase'); }catch(e){}
   const dlg=$('#ncdlg'); if(!dlg) return;
-  for(const [id,def] of [['cname',''],['cstatus','open'],['csev',''],['cowner',''],['cdesc','']]){ const e=$('#'+id); if(e) e.value=def; }
+  for(const id of ['cname','cowner','cdesc']){ const e=$('#'+id); if(e) e.value=''; }
   const er=$('#ncerr'); if(er) er.textContent='';
   if(!dlg.open){ try{ dlg.showModal(); }catch(e){ dlg.setAttribute('open',''); } }
   const n=$('#cname'); if(n) n.focus();
@@ -800,18 +797,16 @@ function _riskWhy(r){
 // facts about the case; these two are facts about how it is PRICED and what the
 // fusion ontology saves -- the same subject as the model line they now sit
 // under, and configuration rather than a headline.
-// Case details (plan step 3): the analyst's labels — status, severity, owner,
+// Case details (plan step 3): the analyst's labels — status, owner,
 // description. A case from an older version has none: it reads as Open, unset.
 const CASE_STATUS_LABEL={open:'Open',contained:'Contained',closed:'Closed'};
 function caseMetaHtml(info){
   info=info||{};
   const st=CASE_STATUS_LABEL[String(info.case_status||'').toLowerCase()]||'Open';
-  const sv=String(info.case_severity||'').toLowerCase();
   const own=typeof info.case_owner==='string'?info.case_owner.trim():'';
   const desc=typeof info.case_description==='string'?info.case_description.trim():'';
   return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:3px 0;font-size:12px">`
     +`<span class="sg-hint" style="border-style:solid">${esc(st)}</span>`
-    +(['low','medium','high','critical'].includes(sv)?`<span class="chip c-${sv}" style="margin:0">${sv}</span>`:'')
     +(own?`<span style="color:var(--muted)">owner: ${esc(own)}</span>`:'')
     +(desc?`<span style="color:var(--muted);max-width:560px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(desc)}">— ${esc(desc)}</span>`:'')
     +`</div>`;
@@ -820,27 +815,25 @@ function caseMetaHtml(info){
 // the form keeps what was typed (_cdDraft) if the list redraws meanwhile.
 let _cdEdit=null, _cdDraft={};
 function cdEdit(id){ _cdEdit=(_cdEdit===id)?null:id; _cdDraft={}; loadCases(); }
-function cdDraft(){ ['cdf-name','cdf-status','cdf-sev','cdf-owner','cdf-desc'].forEach(k=>{ const el=document.getElementById(k); if(el) _cdDraft[k]=el.value; }); }
+function cdDraft(){ ['cdf-name','cdf-status','cdf-owner','cdf-desc'].forEach(k=>{ const el=document.getElementById(k); if(el) _cdDraft[k]=el.value; }); }
 function caseEditForm(c){
   const i=c||{}, builtin=!!(i.is_default||i.is_system), d=_cdDraft;
   const val=(k,v)=>(k in d)?d[k]:v;
   const o=(v,l,cur)=>`<option value="${v}" ${cur===v?'selected':''}>${l}</option>`;
   const st=val('cdf-status', CASE_STATUS_LABEL[String(i.case_status||'').toLowerCase()]?String(i.case_status).toLowerCase():'open');
-  const sv=val('cdf-sev', String(i.case_severity||'').toLowerCase());
   return `<div class="cdform" onclick="event.stopPropagation()" oninput="cdDraft()" onchange="cdDraft()" style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--bd)">
       <label>Name</label><input id="cdf-name" value="${esc(val('cdf-name', i.name||''))}" maxlength="100" ${builtin?'disabled style="opacity:.5;cursor:not-allowed" title="The built-in cases cannot be renamed"':''}/>
       ${builtin?`<div style="color:var(--muted);font-size:11px;margin-top:2px">The built-in ${esc(i.name||'Default')} case keeps its name.</div>`:''}
       <label>Status</label><select id="cdf-status">${o('open','Open',st)}${o('contained','Contained',st)}${o('closed','Closed',st)}</select>
-      <label>Severity</label><select id="cdf-sev">${o('','— not set —',sv)}${['low','medium','high','critical'].map(x=>o(x,x[0].toUpperCase()+x.slice(1),sv)).join('')}</select>
       <label>Owner</label><input id="cdf-owner" value="${esc(val('cdf-owner', typeof i.case_owner==='string'?i.case_owner:''))}" maxlength="100" placeholder="who leads this case"/>
-      <label>Description</label><textarea id="cdf-desc" maxlength="2000" style="min-height:48px" placeholder="what this case is about">${esc(val('cdf-desc', typeof i.case_description==='string'?i.case_description:''))}</textarea>
+      <label>Description <span style="color:var(--muted)">(optional)</span></label><textarea id="cdf-desc" maxlength="2000" style="min-height:48px" placeholder="what this case is about">${esc(val('cdf-desc', typeof i.case_description==='string'?i.case_description:''))}</textarea>
       <div class="row" style="gap:6px;margin-top:6px"><button onclick="saveCaseDetails('${esc(i.case_id||'')}')">Save</button><button class="ghost" onclick="cdEdit('${esc(i.case_id||'')}')">Cancel</button></div>
     </div>`;
 }
 function saveCaseDetails(id){
   if(!id) return;
   const v=x=>(document.getElementById(x)||{}).value;
-  const body={case_status:v('cdf-status'),case_severity:v('cdf-sev'),case_owner:v('cdf-owner'),case_description:v('cdf-desc')};
+  const body={case_status:v('cdf-status'),case_owner:v('cdf-owner'),case_description:v('cdf-desc')};
   const nm=document.getElementById('cdf-name'); if(nm && !nm.disabled) body.name=nm.value;
   fetch('/api/cases/'+encodeURIComponent(id),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
    .then(r=>r.json().catch(()=>({error:'the server did not answer (HTTP '+r.status+')'})))
