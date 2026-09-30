@@ -1701,7 +1701,7 @@ def _fuse_lock(case_id):
 
 def fuse_case(case_id, *, contributions_override=None, log=None, _record=True,
               force_report=False, trigger=None, allow_llm=True,
-              refetch=None) -> FusionGraph:
+              refetch=None, defer_report=False) -> FusionGraph:
     """Fuse the case. Refuses to run concurrently with itself.
 
     `allow_llm=False` forbids this fuse from calling the model even when one is
@@ -1748,7 +1748,7 @@ def fuse_case(case_id, *, contributions_override=None, log=None, _record=True,
         g = _fuse_case_locked(case_id, contributions_override=contributions_override,
                               log=log, _record=_record, force_report=force_report,
                               trigger=trigger, allow_llm=allow_llm,
-                              refetch=refetch, _phase=phase)
+                              refetch=refetch, _phase=phase, defer_report=defer_report)
     except Exception as e:
         # A fuse that dies used to leave the log ending mid-progress — the last row
         # was whatever phase it reached, with no indication anything went wrong, so
@@ -1850,7 +1850,7 @@ def _group_news(members, fmap, seen, ack) -> dict:
 
 def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record=True,
                       force_report=False, trigger=None, allow_llm=True,
-                      refetch=None, _phase=None) -> FusionGraph:
+                      refetch=None, _phase=None, defer_report=False) -> FusionGraph:
     ws = _ws()
     d = get_case(case_id)
     # WHY this fuse is running. A fuse costs ~33s on a real case (9 hosts / 18.7k
@@ -2227,6 +2227,17 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         # Report left frozen while the graph was rebuilt (a triage/disposition
         # re-fuse) → it may now be behind. Surface a "report not up to date" hint.
         report_dirty = True
+    elif defer_report and not d.get("report_md"):
+        # NO REPORT YET, and the caller writes one WITH THE MODEL right after this
+        # fuse (the automatic path: autofuse._regenerate_report). Writing the
+        # offline report here first gave a case two reports for one load of data --
+        # the offline one, then the AI one over it minutes later ("it need to have
+        # only one"). The graph still lands now; the report follows, and if the
+        # model fails that step writes the offline report itself, with the reason.
+        report, _report_is_new, _narrate = "", False, False
+        report_members, report_dirty = [], True
+        _plog("Refusion · report follows", "info",
+              "the AI report is written right after this fuse — no offline report first", pct=88)
     else:
         # Decided BEFORE the log line so the progress message describes what is
         # actually about to happen. It used to read "deterministic report" in

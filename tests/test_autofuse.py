@@ -364,6 +364,55 @@ class TestItRenarratesAfterTheFuse(_Base):
         self.settle()
         self.assertEqual(self.store.report_llm_flags(), [True])
 
+    # ONE report for one load of data. The fuse wrote the offline report (the case
+    # had none), then this step wrote the AI one over it minutes later — "if there
+    # is llm connection why its generate first the offline report and then the
+    # online. it need to have only one".
+    def test_with_a_model_the_fuse_leaves_the_first_report_to_this_step(self):
+        _FakeLlmSim.use_real = True
+        autofuse.schedule("case_1")
+        self.settle()
+        self.assertIs(self.store.fuses[0]["defer_report"], True)
+        self.assertIs(self.store.fuses[0]["allow_llm"], False)       # the fuse still calls no model
+        self.assertEqual(self.store.report_llm_flags(), [True])      # the one report
+
+    def test_the_fuse_defers_only_a_report_that_does_not_exist_yet(self):
+        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "modules/backend/services/fusion/store.py"), encoding="utf-8").read()
+        body = src.split("def _fuse_case_locked")[1].split("\ndef ")[0]
+        self.assertIn('elif defer_report and not d.get("report_md"):', body)
+        # after the reuse branch (an existing report is kept), before the one that writes
+        self.assertLess(body.index("_report_is_new = False         # reused verbatim"),
+                        body.index('elif defer_report and not d.get("report_md"):'))
+        self.assertLess(body.index('elif defer_report and not d.get("report_md"):'),
+                        body.index("_narrate = allow_llm and llm_sim._use_real()"))
+
+    def test_without_a_model_the_fuse_writes_the_offline_report_as_before(self):
+        _FakeLlmSim.use_real = False
+        autofuse.schedule("case_1")
+        self.settle()
+        self.assertIs(self.store.fuses[0]["defer_report"], False)
+
+    def test_with_automatic_reports_off_the_fuse_writes_its_own(self):
+        # Nothing will narrate after it, so deferring would leave the case with no report.
+        _FakeLlmSim.use_real = True
+        self.store.case = {"name": "QA case", "auto_report": False}
+        autofuse.schedule("case_1")
+        self.settle()
+        self.assertIs(self.store.fuses[0]["defer_report"], False)
+
+    def test_a_case_with_no_report_gets_one_even_when_the_counts_did_not_move(self):
+        # The fuse may have deferred to this step; "already current" cannot be true of nothing.
+        same = {"findings": 0, "entities": 0, "links": 0, "hosts": 0, "cross_host": 0}
+        self.store.scope_counts = lambda cid: dict(same)
+        self.store.case = {"name": "QA case"}                          # no report_md
+        autofuse._regenerate_report("case_1", self.store.case, before_counts=dict(same))
+        self.assertEqual(len(self.store.reports), 1)
+        self.store.reports.clear()
+        self.store.case = {"name": "QA case", "report_md": "# written"}
+        autofuse._regenerate_report("case_1", self.store.case, before_counts=dict(same))
+        self.assertEqual(self.store.reports, [])                        # has one, nothing moved: none bought
+
     def test_it_always_takes_the_report_lock(self):
         # Both the deterministic and the LLM report go through the guarded entry
         # point. An automatic deterministic render finishing while an operator's

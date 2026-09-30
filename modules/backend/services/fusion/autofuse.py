@@ -350,7 +350,9 @@ def _fire(case_id, reason="new data", attempt=0) -> None:
         try:
             store.fuse_case(case_id,
                             trigger=store.TRIGGER_AUTOMATIC_RUN_LANDED,
-                            allow_llm=False)
+                            allow_llm=False,
+                            # one report, not two: see _will_narrate
+                            defer_report=_will_narrate(d))
             store._merge_case_details(case_id, {"auto_fuse_incomplete": False})
             # The graph is current. Bring the words that describe it up to date
             # too — SEPARATELY, so a narration that fails or is refused never
@@ -381,6 +383,18 @@ def _fire(case_id, reason="new data", attempt=0) -> None:
                 f"automatic re-fuse failed — {type(e).__name__}: {e}")
         except Exception:
             pass
+
+
+def _will_narrate(d) -> bool:
+    """True when the report step after this fuse will write the report WITH THE
+    MODEL. The fuse then writes no offline report of its own for a case that has
+    none yet -- a first scan used to produce the offline report and, minutes
+    later, the AI one over it. Same two questions _regenerate_report asks."""
+    try:
+        from services.fusion import llm_sim
+        return bool(_report_enabled(d or {}) and llm_sim._use_real())
+    except Exception:                          # noqa: BLE001 — no model is not an error
+        return False
 
 
 def _regenerate_report(case_id, d=None, attempt=0, before_counts=None) -> None:
@@ -435,7 +449,10 @@ def _regenerate_report(case_id, d=None, attempt=0, before_counts=None) -> None:
             _after = store.scope_counts(case_id) or {}
         except Exception:                          # noqa: BLE001
             _after = {}
-        if before_counts is not None and not _case_data_changed(before_counts, _after):
+        # A case with NO report yet always gets one: the fuse may have left it to this
+        # step (defer_report), and "nothing changed" cannot be true of nothing.
+        _has_report = bool((store.get_case(case_id) or {}).get("report_md"))
+        if _has_report and before_counts is not None and not _case_data_changed(before_counts, _after):
             # Outside the selected scope's window, or filtered out by the case's
             # severity floor or host set. Re-narrating would spend a full model run
             # to produce the same words.
