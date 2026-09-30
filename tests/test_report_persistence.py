@@ -104,12 +104,10 @@ class NarrativeSurvivesEnrichmentFailure(unittest.TestCase):
         out, writes, _ = self._run()
         saved = [w for w in writes if "report_md" in w]
         self.assertEqual(len(saved), 1, f"narrative not persisted; writes={writes}")
-        # the narrative, marked with who it is for (report types)
-        self.assertTrue(saved[0]["report_md"].startswith("_Report for: **Technical** — internal"))
-        self.assertTrue(saved[0]["report_md"].endswith("NARRATIVE"))
+        self.assertEqual(saved[0]["report_md"], "NARRATIVE")
         self.assertEqual(saved[0]["report_run_ids"], ["run-1"])
         self.assertFalse(saved[0]["report_dirty"])
-        self.assertTrue(out["report_md"].endswith("NARRATIVE"))
+        self.assertEqual(out["report_md"], "NARRATIVE")
 
     def test_a_failing_checklist_does_not_cost_the_narrative(self):
         """The checklist is the remaining enrichment that runs after the report."""
@@ -117,8 +115,8 @@ class NarrativeSurvivesEnrichmentFailure(unittest.TestCase):
             checklist_side_effect=RuntimeError("provider 502"), has_checklist=False)
         saved = [w for w in writes if "report_md" in w]
         self.assertEqual(len(saved), 1)
-        self.assertTrue(saved[0]["report_md"].endswith("NARRATIVE"))
-        self.assertTrue(out["report_md"].endswith("NARRATIVE"))
+        self.assertEqual(saved[0]["report_md"], "NARRATIVE")
+        self.assertEqual(out["report_md"], "NARRATIVE")
         self.assertIn(("Checklist · failed", "warning"), logs)
 
     def test_the_report_is_saved_before_the_checklist_is_asked_for(self):

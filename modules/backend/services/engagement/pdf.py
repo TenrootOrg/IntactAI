@@ -140,11 +140,6 @@ def _extract_cover_meta(md: str) -> dict:
     m = _SEVERITY_RE.search(md)
     if m:
         out['severity'] = m.group('severity').strip()
-    # Who the report is for (report types): the cover says which report this is
-    m = re.search(r"_Report for: \*\*(Technical customers|Directors|Technical)\*\*", md)
-    if m:
-        out['stage_title'] = {"Technical customers": "Technical Customer Report",
-                              "Directors": "Directors Report"}.get(m.group(1), "Technical Report")
     return out
 
 
@@ -585,7 +580,7 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
       {f'<div class="sep"></div><img src="{_html_escape(cust_logo)}" alt="Customer">' if cust_logo else ''}
     </div>
     <div class="tlp-badge">TLP:{_html_escape(meta['tlp'])}</div>
-    <h1>{_html_escape(meta.get('stage_title') or 'Engagement Report')}<br><span class="accent">{_html_escape(meta['name'])}</span></h1>
+    <h1>Engagement Report<br><span class="accent">{_html_escape(meta['name'])}</span></h1>
     <p class="subtitle">Incident Response Engagement Deliverable — multi-environment forensic write-up prepared by the Intact.AI engagement builder, reviewed by the operator who ran the source workflows.</p>
     <div class="meta-grid">
       <div class="meta-row"><div class="meta-label">Classification</div><div class="meta-value">TLP:{_html_escape(meta['tlp'])}</div></div>
