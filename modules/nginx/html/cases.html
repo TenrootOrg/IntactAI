@@ -288,7 +288,7 @@
         display:inline-flex;align-items:center;justify-content:center;font-size:10px}
 </style>
 <!-- MUST be first: installs the X-Case-Id fetch hook before any /api call -->
-<script src="js/active-case.js?v=8"></script>
+<script src="js/active-case.js?v=9"></script>
 <!-- set embed + view mode before body renders (no flash) -->
 <script>(function(){var q=new URLSearchParams(location.search);
   if(q.get('embed')==='1')document.documentElement.classList.add('embed');
@@ -311,7 +311,11 @@
 <div class="wrap">
   <div class="side">
     <h2>New Case</h2>
-    <label>Name</label><input id="cname"/>
+    <label>Name</label><input id="cname" maxlength="100"/>
+    <label>Status</label><select id="cstatus"><option value="open" selected>Open</option><option value="contained">Contained</option><option value="closed">Closed</option></select>
+    <label>Severity</label><select id="csev"><option value="" selected>— not set —</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="critical">Critical</option></select>
+    <label>Owner</label><input id="cowner" maxlength="100" placeholder="who leads this case"/>
+    <label>Description</label><textarea id="cdesc" maxlength="2000" style="min-height:48px" placeholder="what this case is about"></textarea>
     <div class="row" style="margin-top:10px">
       <button onclick="createWorkspace()">Create case</button>
     </div>
@@ -361,10 +365,14 @@ function createWorkspace(){
   // a case that needs one can set it later in the case's own Settings tab
   // (#cf-start) — where end date and severity live too. Omitting the key is
   // the same thing the route already did with an empty one.
-  const body={name};
+  // Asked here rather than in an edit afterwards: the same fields as the case's
+  // edit form (status / severity / owner / description).
+  const v=id=>($('#'+id)||{}).value||'';
+  const body={name, case_status:v('cstatus')||'open', case_severity:v('csev'),
+              case_owner:v('cowner').trim(), case_description:v('cdesc').trim()};
   api('/api/cases',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-   .then(d=>{ if(!d||!d.case_id){toast('The case could not be created. Please try again.');return;}
-     $('#cname').value='';
+   .then(d=>{ if(!d||!d.case_id){toast(d&&d.error?'Not created: '+d.error:'The case could not be created. Please try again.');return;}
+     for(const [id,def] of [['cname',''],['cstatus','open'],['csev',''],['cowner',''],['cdesc','']]){ const e=$('#'+id); if(e) e.value=def; }
      window.ActiveCase.set(d.case_id); toast('Case created and set as the active case.');
      loadCases(()=>{ if(VIEW!=='manage') openCase(d.case_id); }); refreshSelector(); });
 }
@@ -461,7 +469,15 @@ function loadCases(cb){
 }
 
 async function refreshSelector(){
-  const bar=$('#wsbar'); if(bar&&window.ActiveCase) await window.ActiveCase.renderCaseSelector(bar,{manageLink:false});
+  const bar=$('#wsbar'); if(bar&&window.ActiveCase) await window.ActiveCase.renderCaseSelector(bar,{manageLink:false,
+    onNewCase: VIEW==='manage' ? focusNewCase : undefined});
+}
+// "＋ New case…" in the case selector brings the operator to this form (it used to
+// be a name-only prompt, and everything else had to be edited in afterwards).
+function focusNewCase(){
+  try{ sessionStorage.removeItem('intact:newCase'); }catch(e){}
+  const n=$('#cname'); if(!n) return;
+  n.scrollIntoView({block:'center'}); n.focus();
 }
 
 // A configured key can still be dead (revoked, no credit, no route to the
@@ -2710,6 +2726,8 @@ function caseNamePlaceholder(){
   await window.ActiveCase.ensureActiveCase();
   await refreshSelector();
   loadCases();
+  let _wantNew=false; try{ _wantNew=sessionStorage.getItem('intact:newCase')==='1'; }catch(e){}
+  if(VIEW==='manage' && _wantNew) focusNewCase();
   // re-render the list highlight when the workspace changes elsewhere
   window.addEventListener('active-case-changed', ()=>loadCases());
   // analysis view: always show the ACTIVE workspace's fusion; follow active changes

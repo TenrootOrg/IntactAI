@@ -120,5 +120,59 @@ console.log(JSON.stringify([
         self.assertNotIn("caseDetailsBox", src)                         # not in the Analysis rail any more
 
 
+
+class CreateAsksForTheDetails(unittest.TestCase):
+    """The New Case form asks for status / severity / owner / description, not just
+    a name that then had to be edited. Runs the REAL route (case_routes needs Flask,
+    so its source runs here with a stub request)."""
+    SRC = open(os.path.join(_ROOT, "modules/backend/routes/case_routes.py"), encoding="utf-8").read()
+
+    def post(self, body):
+        fn = re.search(r'@case_bp.route\("/api/cases", methods=\["POST"\]\)\ndef create_case\(\):.*?(?=\n\n\n)', self.SRC, re.S).group(0)
+        fn = fn.split("\n", 1)[1]                                   # drop the decorator
+        made, saved = [], []
+        ns = {"request": mock.Mock(get_json=lambda silent=True: body), "jsonify": lambda x: x, "store": store}
+        with mock.patch.object(store, "create_case", lambda name, **kw: made.append(name) or "case_new"), \
+                mock.patch.object(store, "update_case_info", lambda cid, f: saved.append((cid, f)) or {}):
+            exec(fn, ns)
+            out = ns["create_case"]()
+        return out, made, saved
+
+    def test_the_details_are_saved_with_the_new_case(self):
+        out, made, saved = self.post({"name": "IR 05", "case_status": "contained", "case_severity": "high",
+                                      "case_owner": "Dan", "case_description": "phishing"})
+        self.assertEqual(out, {"case_id": "case_new", "status": "created"})
+        self.assertEqual(saved, [("case_new", {"case_status": "contained", "case_severity": "high",
+                                               "case_owner": "Dan", "case_description": "phishing"})])
+
+    def test_a_bad_value_creates_nothing(self):
+        for bad in ({"case_status": "done"}, {"case_severity": "extreme"}):
+            out, made, saved = self.post({"name": "IR 05", **bad})
+            self.assertEqual(out[1], 400)
+            self.assertEqual((made, saved), ([], []))
+
+    def test_a_name_alone_still_works(self):                      # the API and older callers
+        out, made, saved = self.post({"name": "IR 05"})
+        self.assertEqual((made, saved), (["IR 05"], []))
+
+    def test_the_page_sends_every_field_and_the_selector_opens_the_form(self):
+        html = open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8").read()
+        for i in ('id="cname"', 'id="cstatus"', 'id="csev"', 'id="cowner"', 'id="cdesc"'):
+            self.assertIn(i, html)
+        if not shutil.which("node"):
+            self.skipTest("no node on this host")
+        fn = re.search(r"function createWorkspace\(\)\{.*?\n\}", html, re.S).group(0)
+        js = """
+const vals={cname:' IR 05 ',cstatus:'closed',csev:'critical',cowner:' Dan ',cdesc:' phishing '};
+const $=s=>({value:vals[s.slice(1)]}); let sent=null;
+const api=(p,o)=>{sent=JSON.parse(o.body); return {then(){}};}; const toast=()=>{};
+""" + fn + "\ncreateWorkspace(); console.log(JSON.stringify(sent));"
+        out = subprocess.run(["node", "-e", js], capture_output=True, text=True)
+        self.assertEqual(json.loads(out.stdout), {"name": "IR 05", "case_status": "closed", "case_severity": "critical",
+                                                  "case_owner": "Dan", "case_description": "phishing"}, out.stderr)
+        ac = open(os.path.join(_ROOT, "modules/nginx/html/js/active-case.js"), encoding="utf-8").read()
+        self.assertNotIn("prompt('New case name", ac)
+        self.assertIn("app.switchTab('cases')", ac)
+
 if __name__ == "__main__":
     unittest.main()

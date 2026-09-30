@@ -299,12 +299,21 @@ def create_case():
     name = (d.get("name") or "").strip()
     if not name:
         return jsonify({"error": "name is required"}), 400
+    # The case details asked for at creation (the New Case form), checked BEFORE
+    # the case exists so a bad value creates nothing -- the same rules as editing.
+    info = {k: d[k] for k in ("case_status", "case_severity", "case_owner", "case_description") if k in d}
+    if str(info.get("case_status") or "open").lower() not in store.CASE_STATUSES:
+        return jsonify({"error": f"status must be one of: {', '.join(store.CASE_STATUSES)}"}), 400
+    if str(info.get("case_severity") or "").lower() not in store.CASE_SEVERITIES:
+        return jsonify({"error": "severity must be low, medium, high, critical or empty"}), 400
     tw = d.get("time_window") or {}
     rid = store.create_case(
         name, time_window={"start": tw.get("start"), "end": tw.get("end")} if tw else {},
         initial_access=d.get("initial_access_estimate") or d.get("initial_access"),
         min_severity=(d.get("min_severity") or "medium"),
         member_run_ids=d.get("member_run_ids") or [])
+    if info:
+        store.update_case_info(rid, info)
     return jsonify({"case_id": rid, "status": "created"})
 
 

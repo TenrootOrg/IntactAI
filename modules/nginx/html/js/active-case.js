@@ -247,11 +247,17 @@
     const sel = el.querySelector('.ac-select');
     sel.addEventListener('change', async () => {
       if (sel.value === '__new__') {
-        const name = (prompt('New case name (e.g. GOOGLE IR 05-03-2026):') || '').trim();
-        if (!name) { sel.value = id; return; }
-        const res = await createCase(name);
-        if (res && res.case_id) { set(res.case_id); location.reload(); }
-        else { sel.value = id; }
+        sel.value = id;
+        // The New Case form in Case Management asks for the name AND status,
+        // severity, owner and description. A name-only prompt() here created a
+        // case that then had to be edited to fill in the rest.
+        try { sessionStorage.setItem('intact:newCase', '1'); } catch (e) { /* private mode */ }
+        if (opts.onNewCase) { opts.onNewCase(); return; }            // already on that page
+        try {
+          const app = window.parent !== window && window.parent.Alpine && window.parent.Alpine.store('app');
+          if (app) { app.switchTab('cases'); return; }               // inside the dashboard
+        } catch (e) { /* not embedded */ }
+        location.href = '/cases.html?view=manage';
         return;
       }
       set(sel.value);
