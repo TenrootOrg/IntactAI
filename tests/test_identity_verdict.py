@@ -142,8 +142,9 @@ console.log(JSON.stringify([idVerdictSel("c1",{key:"k",verdict:"compromised"}), 
             self.skipTest("no node on this host")
         js = r"""
 const fs=require("fs"); const src=fs.readFileSync(process.argv[1],"utf8");
-for (const n of ["_entHosts","_hostPeople","_idJev","_riskWhy","_vchip"]) eval(src.match(new RegExp("function "+n+"\\([^)]*\\)\\{[\\s\\S]*?\\n\\}"))[0]);
+for (const n of ["_entHosts","_hostPeople","_idJev","_riskWhy","_vchip","_hostStatusSelect","_hostStatusTags"]) eval(src.match(new RegExp("function "+n+"\\([^)]*\\)\\{[\\s\\S]*?\\n\\}"))[0]);
 const esc=s=>String(s), jsa=s=>String(s);
+eval(src.match(/const HOST_STATUS_LABEL=\{.*?\};/)[0].replace("const ", "var "));   // the host-status helpers read it
 const people=[{key:"k1",name:"kobia",verdict:"compromised",seen_on:["WS1"],jev_compromise:0.9,worst:"high"},
               {key:"k2",name:"amy",seen_on:["WS1","WS2"]}];
 const rows=[{host:"WS1",severity:"critical",risk_score:100,by_severity:{critical:1,high:2},finding_count:3,row_count:9,
