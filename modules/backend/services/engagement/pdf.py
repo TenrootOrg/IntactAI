@@ -662,44 +662,221 @@ def render_engagement_html(markdown_text: str, run_id: str, logo_b64: str = '') 
     meta = _extract_cover_meta(markdown_text)
     body = "## Table of Contents {.toc-heading}\n\n[TOC]\n\n" + _strip_cover_from_md(markdown_text)
     html = _build_html(body, meta, run_id, customer_logo=logo_b64)
-    # The document's CSS is a PRINT layout (A4 sheets, a full-page cover pinned to
-    # the sheet, page breaks) — in a browser it read as broken. The HTML export
-    # gets a screen layout on top; the PDF is untouched.
-    return html.replace("</head>", _SCREEN_CSS + "\n</head>", 1)
+    return _screen_layout(html)
 
+
+# ---------------------------------------------------------------------------
+# The HTML export's SCREEN design. The document's own CSS is a print layout (A4
+# sheets, a cover pinned to the sheet, page breaks); under it a browser showed a
+# narrow white column with a grey box of links on top ("the html export is very
+# ugly"). This lays the same document out as a case file to READ: a contents rail
+# that follows the reader, a reading column, numbered sections, severity chips, a
+# risk banner. Self-contained and offline: system fonts only, no web requests,
+# a few lines of inline script (contents highlight + reading progress), and it
+# degrades to a plain readable page without script. Everything visual is inside
+# `@media screen`, so printing from the browser still gets the print layout, and
+# the PDF path never sees any of this.
+# ---------------------------------------------------------------------------
+_TOC_BLOCK = re.compile(r'<h\d[^>]*class="toc-heading"[^>]*>.*?</h\d>\s*(<div class="toc">.*?</div>)', re.S)
+_SEV_TAG = re.compile(r'<strong>\[(critical|high|medium|low|informational)\]</strong>', re.I)
+_RISK_P = re.compile(r'<p><strong>Risk:\s*(CRITICAL|HIGH|MEDIUM|LOW)</strong>', re.I)
+
+
+def _screen_layout(html: str) -> str:
+    """Re-shape the built document for the screen: the contents list becomes a
+    side rail, the rest a reading column. Any step that does not find what it
+    expects is skipped — the worst case is the plain document with the new CSS."""
+    head, sep, rest = html.partition("</section>")           # the cover ends here
+    body, end, tail = rest.rpartition("</body>")
+    if not (sep and end):
+        return html.replace("</head>", _SCREEN_CSS + "\n</head>", 1)
+    toc = ""
+    m = _TOC_BLOCK.search(body)
+    if m:
+        toc = re.sub(r'<li><a href="#table-of-contents">.*?</a></li>\s*', "", m.group(1), count=1)
+        body = body[:m.start()] + body[m.end():]
+    body = body.replace("<table>", '<div class="rp-tw"><table>').replace("</table>", "</table></div>")
+    body = _SEV_TAG.sub(lambda x: f'<span class="rp-sev rp-{x.group(1).lower()}">{x.group(1).lower()}</span>', body)
+    body = _RISK_P.sub(lambda x: f'<p class="rp-risk rp-{x.group(1).lower()}"><strong>Risk: {x.group(1).upper()}</strong>', body)
+    nav = (f'<nav class="rp-nav" aria-label="Contents"><div class="rp-nav-title">Contents</div>{toc}</nav>'
+           if toc else "")
+    shell = (f'\n<div class="rp-progress" aria-hidden="true"></div>\n'
+             f'<div class="rp-shell{"" if toc else " rp-solo"}">{nav}<main class="rp-main">{body}</main></div>\n'
+             f'{_SCREEN_JS}\n')
+    return (head + sep + shell + end + tail).replace("</head>", _SCREEN_CSS + "\n</head>", 1)
+
+
+_SCREEN_JS = """<script>
+(function(){
+  var bar=document.querySelector('.rp-progress'), links={}, on=null;
+  document.querySelectorAll('.rp-nav a[href^="#"]').forEach(function(a){ links[a.getAttribute('href').slice(1)]=a; });
+  function progress(){ var h=document.documentElement, max=h.scrollHeight-h.clientHeight;
+    if(bar) bar.style.transform='scaleX('+(max>0?Math.min(1,h.scrollTop/max):0)+')'; }
+  window.addEventListener('scroll',progress,{passive:true}); progress();
+  if(!('IntersectionObserver' in window)) return;
+  var io=new IntersectionObserver(function(es){ es.forEach(function(e){
+    if(!e.isIntersecting||!links[e.target.id]) return;
+    if(on) on.classList.remove('on'); on=links[e.target.id]; on.classList.add('on');
+    var n=on.closest('.rp-nav'); if(n&&n.scrollHeight>n.clientHeight){
+      var r=on.getBoundingClientRect(), b=n.getBoundingClientRect();
+      if(r.top<b.top+40||r.bottom>b.bottom-40) n.scrollTop+=r.top-b.top-b.height/2; }
+  }); },{rootMargin:'-12% 0px -78% 0px'});
+  document.querySelectorAll('.rp-main h2[id],.rp-main h3[id],.rp-main h4[id]').forEach(function(h){ io.observe(h); });
+})();
+</script>"""
 
 _SCREEN_CSS = """<style>
+/* severity chips and the risk line: every medium, so a browser print keeps them */
+.rp-sev { display: inline-block; font: 700 .72em/1.5 ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+          letter-spacing: .06em; text-transform: uppercase; padding: 0 .5em; border-radius: 3px; vertical-align: .08em;
+          color: var(--sev, #5b6675); border: 1px solid var(--sev, #5b6675); }
+.rp-critical { --sev: #b4232f; } .rp-high { --sev: #c2570c; } .rp-medium { --sev: #9a6700; }
+.rp-low { --sev: #2f6f4f; } .rp-informational { --sev: #5b6675; }
+@media print { .rp-progress { display: none; } .rp-nav-title { font-weight: 700; margin: 0 0 2mm; } }
+
 @media screen {
-  html { background: #eef1f5; }
-  body { max-width: 940px; margin: 28px auto 64px; padding: 0 0 36px; background: #fff;
-         border-radius: 12px; box-shadow: 0 2px 14px rgba(15, 23, 42, .10);
-         font-size: 15px; line-height: 1.65; }
-  body > *:not(.cover) { margin-left: 48px; margin-right: 48px; }
-  /* NOT overflow:hidden on body to round the corners: a body's overflow applies
-     to the whole window, and the page could no longer be scrolled (only the
-     table-of-contents links moved it). The cover rounds its own corners. */
-  .cover { height: auto; padding: 30px 48px 26px; margin: 0 0 30px; page-break-after: auto;
-           border-radius: 12px 12px 0 0; }
-  .cover .logo-wrap { margin-bottom: 20px; gap: 18px; }
-  .cover .logo-wrap img { height: 42px; width: auto; max-width: 220px; }
-  .cover .logo-wrap .sep { height: 34px; }
-  .cover h1 { font-size: 28px; margin: 0 0 10px; }
-  .cover .subtitle { font-size: 14px; margin-bottom: 18px; max-width: 700px; }
-  .cover .tlp-badge { position: static; display: inline-block; margin-bottom: 14px; }
-  .cover .meta-grid { font-size: 13px; }
-  .cover .footer-line { position: static; margin-top: 20px; }
-  h2 { font-size: 21px; margin-top: 34px; padding-bottom: 6px; border-bottom: 1px solid #e5e7eb; }
-  h3 { font-size: 17px; margin-top: 22px; }
-  h4 { font-size: 15px; }
-  p, li { font-size: 15px; }
-  h2.toc-heading { page-break-before: auto; border-bottom: none; margin-top: 0; }
-  .toc { page-break-after: auto; background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 10px;
-         padding: 12px 20px; }
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  th, td { padding: 7px 10px; }
-  pre { white-space: pre-wrap; word-break: break-word; }
-  img[alt] { display: block; max-width: 100%; max-height: 600px; height: auto; }
-  .cover .logo-wrap img[alt] { display: inline; border: none; max-height: 42px; }
+  :root {
+    --paper: #f3efe6; --sheet: #fffdf8; --ink: #17202c; --ink2: #3c4858; --muted: #7b8493;
+    --rule: #ddd5c4; --tint: #f4efe3; --navy: #0d1826; --navy2: #16263b; --accent: #c93b4f;
+    --link: #1f5a8c; --code: #1d4468; --codebg: #eef1f0; --shadow: 0 1px 0 #fff inset, 0 18px 50px -22px rgba(23, 32, 44, .35);
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
+    --sans: "Avenir Next", "Segoe UI Variable Text", "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, "DejaVu Sans Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --paper: #0a0f17; --sheet: #111924; --ink: #e7ebf1; --ink2: #b8c1cf; --muted: #7f8a9b;
+            --rule: #253142; --tint: #162130; --navy: #070c13; --navy2: #101c2c; --accent: #ef6b7c;
+            --link: #7db4e6; --code: #a9cdf0; --codebg: #1a2635; --shadow: 0 18px 50px -22px rgba(0, 0, 0, .8); }
+    .rp-critical { --sev: #ff7b86; } .rp-high { --sev: #ffa25c; } .rp-medium { --sev: #e3b341; }
+    .rp-low { --sev: #6fcf97; } .rp-informational { --sev: #9aa6b6; }
+  }
+  html { background: var(--paper); scroll-behavior: smooth; scroll-padding-top: 28px; }
+  html, body { font-family: var(--serif); font-size: 17px; line-height: 1.72; color: var(--ink); }
+  body { margin: 0; padding: 0; max-width: none; border-radius: 0; box-shadow: none;
+         background: radial-gradient(circle at 1px 1px, rgba(120, 110, 90, .13) 1px, transparent 0) 0 0 / 22px 22px, var(--paper); }
+  ::selection { background: var(--accent); color: #fff; }
+
+  .rp-progress { position: fixed; inset: 0 0 auto 0; height: 3px; background: var(--accent);
+                 transform: scaleX(0); transform-origin: 0 50%; z-index: 20; }
+
+  /* ---- cover: a full-width header, not a sheet ---- */
+  .cover { height: auto; min-height: 0; margin: 0; padding: 64px max(32px, calc((100vw - 1180px) / 2 + 32px)) 44px;
+           page-break-after: auto; border-radius: 0; position: relative; overflow: hidden; color: #f3f6fa;
+           background:
+             radial-gradient(900px 420px at 88% -10%, rgba(201, 59, 79, .34), transparent 62%),
+             repeating-linear-gradient(118deg, rgba(255, 255, 255, .035) 0 1px, transparent 1px 13px),
+             linear-gradient(160deg, var(--navy) 0%, var(--navy2) 58%, var(--navy) 100%);
+           border-bottom: 3px solid var(--accent); }
+  .cover > * { animation: rp-rise .6s cubic-bezier(.2, .7, .2, 1) both; }
+  .cover > :nth-child(2) { animation-delay: .06s; } .cover > :nth-child(3) { animation-delay: .12s; }
+  .cover > :nth-child(4) { animation-delay: .18s; } .cover > :nth-child(5) { animation-delay: .24s; }
+  .cover > :nth-child(6) { animation-delay: .30s; }
+  @keyframes rp-rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .cover > * { animation: none; } html { scroll-behavior: auto; } }
+  .cover .logo-wrap { margin: 0 0 40px; gap: 18px; }
+  .cover .logo-wrap img, .cover .logo-wrap img[alt] { display: inline; height: 40px; width: auto; max-width: 220px; max-height: 40px;
+                                                      border: none; border-radius: 0; margin: 0; }
+  .cover .logo-wrap .sep { height: 32px; }
+  .cover .tlp-badge { position: static; display: inline-block; margin: 0 0 18px; padding: 4px 12px; border-radius: 2px;
+                      font: 700 12px/1.6 var(--sans); letter-spacing: .16em; }
+  .cover h1 { font: 600 clamp(34px, 5.2vw, 62px)/1.04 var(--serif); letter-spacing: -.02em; margin: 0 0 18px; color: #fff; max-width: 18ch; }
+  .cover h1 .accent { color: #ffb4a6; font-style: italic; font-weight: 500; }
+  .cover .subtitle { font: 400 15px/1.6 var(--sans); color: #aab6c6; max-width: 62ch; margin: 0 0 34px; }
+  .cover .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0; width: auto;
+                      border-top: 1px solid rgba(255, 255, 255, .16); font-size: 15px; }
+  .cover .meta-row { display: block; padding: 14px 18px 14px 0; border-bottom: 1px solid rgba(255, 255, 255, .1); }
+  .cover .meta-label { display: block; width: auto; padding: 0 0 3px; font: 600 10.5px/1.4 var(--sans); letter-spacing: .16em; color: #7f93ab; }
+  .cover .meta-value { display: block; padding: 0; font: 400 15px/1.45 var(--sans); color: #f3f6fa; overflow-wrap: anywhere; }
+  .cover code { font-family: var(--mono); font-size: 12.5px; background: rgba(255, 255, 255, .08); color: #dbe5f1; padding: 1px 6px; }
+  .cover .footer-line { position: static; margin: 26px 0 0; padding: 0; border: none; font: 400 12px/1.5 var(--sans);
+                        letter-spacing: .04em; color: #6f8198; }
+
+  /* ---- shell: contents rail + reading column ---- */
+  .rp-shell { display: grid; grid-template-columns: 270px minmax(0, 1fr); gap: 56px; align-items: start;
+              max-width: 1180px; margin: 0 auto; padding: 44px 32px 110px; }
+  .rp-shell.rp-solo { grid-template-columns: minmax(0, 880px); justify-content: center; }
+  .rp-nav { position: sticky; top: 24px; max-height: calc(100vh - 48px); overflow: auto; padding: 4px 6px 12px 0;
+            font: 400 13.5px/1.45 var(--sans); scrollbar-width: thin; }
+  .rp-nav-title { font: 700 10.5px/1 var(--sans); letter-spacing: .2em; text-transform: uppercase; color: var(--muted);
+                  padding: 0 0 12px 14px; }
+  .rp-nav .toc { background: none; border: none; border-radius: 0; padding: 0; margin: 0; page-break-after: auto; }
+  .rp-nav ul { list-style: none; margin: 0; padding: 0; }
+  .rp-nav li { margin: 0; padding: 0; }
+  .rp-nav a { display: block; padding: 5px 10px 5px 14px; border-left: 2px solid var(--rule); color: var(--ink2);
+              text-decoration: none; transition: color .15s, border-color .15s, background .15s; }
+  .rp-nav a:hover { color: var(--ink); border-left-color: var(--muted); text-decoration: none; }
+  .rp-nav a.on { color: var(--ink); border-left-color: var(--accent); background: linear-gradient(90deg, rgba(201, 59, 79, .1), transparent 85%); font-weight: 600; }
+  .rp-nav .toc > ul > li > a { font-weight: 600; color: var(--ink); }
+  .rp-nav .toc > ul > li > ul { counter-reset: nav; }
+  .rp-nav .toc > ul > li > ul > li > a::before { counter-increment: nav; content: counter(nav, decimal-leading-zero);
+                                                 font: 600 10.5px/1 var(--mono); color: var(--muted); margin-right: 9px; }
+  .rp-nav ul ul ul a { padding-left: 40px; font-size: 12.5px; color: var(--muted); }
+
+  .rp-main { counter-reset: sec; background: var(--sheet); border: 1px solid var(--rule); border-radius: 3px;
+             padding: 52px clamp(22px, 5vw, 68px) 60px; box-shadow: var(--shadow); min-width: 0; }
+  .rp-main > :first-child { margin-top: 0; }
+  .rp-main > h3:first-child { border-top: none; padding-top: 0; }
+
+  /* the report's title, its sections, the phases inside them */
+  .rp-main h2 { font: 600 clamp(26px, 3vw, 36px)/1.15 var(--serif); letter-spacing: -.015em; color: var(--ink);
+                margin: 44px 0 18px; padding: 0; border: none; }
+  .rp-main h3 { font: 600 23px/1.25 var(--serif); letter-spacing: -.01em; color: var(--ink);
+                margin: 58px 0 16px; padding: 22px 0 0; border-top: 1px solid var(--rule); }
+  .rp-main h2 ~ h3::before { counter-increment: sec; content: counter(sec, decimal-leading-zero);
+                             display: block; font: 700 11.5px/1 var(--mono); letter-spacing: .14em; color: var(--accent); margin: 0 0 9px; }
+  .rp-main h4 { font: 600 17.5px/1.35 var(--serif); font-style: italic; color: var(--ink);
+                margin: 34px 0 10px; padding-left: 14px; border-left: 3px solid var(--accent); }
+  .rp-main h2 + h3, .rp-main h3 + h4 { margin-top: 26px; }
+  .rp-main h5, .rp-main h6 { font: 700 12px/1.4 var(--sans); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin: 24px 0 8px; }
+
+  .rp-main p { font-size: 17px; margin: 0 0 15px; }
+  .rp-main p, .rp-main li { color: var(--ink2); overflow-wrap: anywhere; }
+  .rp-main strong { color: var(--ink); font-weight: 650; }
+  .rp-main a { color: var(--link); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  .rp-main ul, .rp-main ol { margin: 0 0 18px; padding-left: 24px; }
+  .rp-main li { font-size: 16.5px; margin: 0 0 9px; padding-left: 4px; }
+  .rp-main li::marker { color: var(--accent); }
+  .rp-main li > ul, .rp-main li > ol { margin: 8px 0 4px; }
+  .rp-main li li { font-size: 15px; margin-bottom: 5px; }
+  .rp-main li li::marker { color: var(--rule); }
+
+  .rp-main code { font-family: var(--mono); font-size: .82em; background: var(--codebg); color: var(--code);
+                  padding: 1px 5px; border-radius: 3px; overflow-wrap: anywhere; }
+  .rp-main pre { white-space: pre-wrap; word-break: break-word; background: var(--navy); border-radius: 4px; padding: 14px 16px; margin: 0 0 18px; }
+  .rp-main pre code { display: block; background: none; color: #dbe5f1; padding: 0; font-size: 13px; line-height: 1.55; }
+
+  .rp-main blockquote { margin: 0 0 20px; padding: 12px 18px; border-left: 3px solid var(--accent); background: var(--tint);
+                        color: var(--ink2); font-style: normal; border-radius: 0 3px 3px 0; }
+  .rp-main blockquote p { margin: 0; font: 400 14.5px/1.55 var(--sans); }
+
+  .rp-main p.rp-risk { margin: 22px 0 8px; padding: 14px 18px; border-left: 5px solid var(--sev, var(--accent));
+                       background: var(--tint); border-radius: 0 3px 3px 0; font-size: 16px; }
+  .rp-main p.rp-risk strong { font: 800 12.5px/1 var(--sans); letter-spacing: .14em; color: var(--sev, var(--accent)); margin-right: 6px; }
+
+  .rp-tw { overflow-x: auto; margin: 0 0 24px; border: 1px solid var(--rule); border-radius: 3px; }
+  .rp-main table { width: 100%; border-collapse: collapse; margin: 0; font: 400 14px/1.5 var(--sans); }
+  .rp-main th { text-align: left; padding: 10px 14px; font: 700 10.5px/1.4 var(--sans); letter-spacing: .14em; text-transform: uppercase;
+                color: var(--muted); background: var(--tint); border: none; border-bottom: 2px solid var(--ink); white-space: nowrap; }
+  .rp-main td { padding: 9px 14px; border: none; border-bottom: 1px solid var(--rule); color: var(--ink2); vertical-align: top; background: none; }
+  .rp-main tbody tr:last-child td { border-bottom: none; }
+  .rp-main tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--tint) 55%, transparent); }
+  .rp-main td:first-child { color: var(--ink); font-weight: 600; }
+  .rp-main thead.is-empty { display: none; }
+
+  .rp-main img[alt] { display: block; max-width: 100%; max-height: 640px; height: auto; margin: 12px 0 20px;
+                      border: 1px solid var(--rule); border-radius: 3px; box-shadow: var(--shadow); }
+  .rp-main hr { border: none; border-top: 1px solid var(--rule); margin: 54px 0 18px; }
+  .rp-main hr + p { font: 400 12.5px/1.5 var(--sans); color: var(--muted); text-align: center; }
+  .rp-main em { color: inherit; }
+
+  @media (max-width: 980px) {
+    html, body { font-size: 16px; }
+    .cover { padding: 44px 22px 32px; }
+    .rp-shell { grid-template-columns: minmax(0, 1fr); gap: 22px; padding: 24px 14px 72px; }
+    .rp-nav { position: static; max-height: 260px; border: 1px solid var(--rule); border-radius: 3px;
+              background: var(--sheet); padding: 14px 8px 10px 0; }
+    .rp-main { padding: 30px 20px 40px; }
+  }
 }
 </style>"""
 
