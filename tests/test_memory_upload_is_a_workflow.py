@@ -310,7 +310,7 @@ class TestTheUploadLogReadsInOrder(unittest.TestCase):
 
     def test_the_door_closes_before_the_first_completion_line(self):
         """Marking it finished AFTER logging would leave the same race open."""
-        blk = self.SRC[self.SRC.index("elif event_type == 'post-finish':"):][:3000]
+        blk = self.SRC[self.SRC.index("elif event_type == 'post-finish':"):][:4500]
         self.assertLess(blk.index("_mark_upload_finished(upload_id)"),
                         blk.index('add_log_to_run(run_id, f"Upload complete'))
 

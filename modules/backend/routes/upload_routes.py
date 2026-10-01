@@ -47,6 +47,11 @@ def _mark_upload_finished(upload_id):
             _finished_uploads.discard(old)
 
 
+# How long post-finish waits for post-create to have opened the run (see there).
+POST_CREATE_WAIT_TRIES = 40
+POST_CREATE_WAIT_STEP = 0.25
+
+
 def _resolve_upload_run(upload_id, *, pop=False):
     """Return the run_id for this upload — from the in-memory map, or recovered
     from storage by matching details.upload_id. Keeps upload + processing as ONE
@@ -574,6 +579,19 @@ def handle_tus_hook():
             # Get workflow run_id from pre-create (recover from storage if the
             # in-memory map was lost to a restart — keeps this ONE workflow).
             run_id = _resolve_upload_run(upload_id, pop=True)
+            if not run_id:
+                # tusd sends post-create and post-finish as two separate requests,
+                # in no guaranteed order. A file that fits in one chunk (a 280 KB
+                # symbol table) FINISHES before post-create has opened its run —
+                # seen live: the file was installed with run_id None, and the run
+                # post-create then opened sat at "running 0%" for ever. Wait for it,
+                # briefly; an upload with no run at all proceeds as before.
+                for _ in range(POST_CREATE_WAIT_TRIES):
+                    time.sleep(POST_CREATE_WAIT_STEP)
+                    run_id = _resolve_upload_run(upload_id, pop=True)
+                    if run_id:
+                        print(f"[TUS HOOK] post-finish waited for post-create: {upload_id} -> {run_id}", flush=True)
+                        break
 
             # Close the door on late progress hooks BEFORE writing the first
             # completion line, so none of them can interleave behind it.

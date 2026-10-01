@@ -283,6 +283,31 @@ class TheSharedUploadHook(unittest.TestCase):
         self.assertIn("workflow_type = 'memory_symbols_upload'", post)
         self.assertIn('workflow_name = f"Symbol table upload: {filename}"', post)
 
+    def test_finish_waits_for_create_when_a_small_file_outruns_it(self):
+        # Live: a 0.3 MB upload's post-finish arrived before post-create had opened
+        # the run -- installed with run_id None, and the run sat at "running 0%".
+        fin = self.SRC[self.SRC.index("elif event_type == 'post-finish':"):self.SRC.index("elif event_type == 'post-terminate':")]
+        wait = fin[fin.index("run_id = _resolve_upload_run(upload_id, pop=True)"):fin.index("_mark_upload_finished(upload_id)")]
+        self.assertIn("if not run_id:", wait)
+        self.assertIn("for _ in range(POST_CREATE_WAIT_TRIES):", wait)
+        self.assertIn("time.sleep(POST_CREATE_WAIT_STEP)", wait)
+        # the wait itself, run: the run appears on the third look
+        looks = []
+
+        def resolve(uid, pop=False):
+            looks.append(uid)
+            return "run-9" if len(looks) >= 4 else None
+        body = "run_id = _resolve_upload_run(upload_id, pop=True)\n" + __import__("textwrap").dedent(
+            re.search(r"(            if not run_id:\n.*?break\n)", wait, re.S).group(1))
+        ns = {"_resolve_upload_run": resolve, "upload_id": "u1", "time": mock.Mock(),
+              "POST_CREATE_WAIT_TRIES": 40, "POST_CREATE_WAIT_STEP": 0.25, "print": lambda *a, **k: None}
+        exec(body, ns)
+        self.assertEqual((ns["run_id"], len(looks)), ("run-9", 4))
+        looks.clear()
+        ns["_resolve_upload_run"] = lambda uid, pop=False: looks.append(uid)      # never appears: give up, go on
+        exec(body, ns)
+        self.assertEqual((ns["run_id"], len(looks)), (None, 41))
+
     def test_the_install_runs_in_the_background_and_always_ends_the_run(self):
         fin = self.SRC[self.SRC.index("elif event_type == 'post-finish':"):self.SRC.index("elif event_type == 'post-terminate':")]
         blk = fin[fin.index("elif purpose == 'memory_symbols':"):fin.index("elif purpose == 'upgrade_package':")]
