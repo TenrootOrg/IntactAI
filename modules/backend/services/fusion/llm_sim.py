@@ -1782,6 +1782,7 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
 def generate_report(graph, *, window=None, min_severity="informational",
                     initial_access=None, case_name="Case", run_id=None,
                     audience="both", language="en", master_prompt=None, mask=None,
+                    estimates=None,
                     altitude_mode="auto",
                     dispositions=None, validations=None, prefer_llm=True,
                     max_entities=None, budget_chars=None, max_output_tokens=None,
@@ -1825,6 +1826,11 @@ def generate_report(graph, *, window=None, min_severity="informational",
                                        altitude_mode=altitude_mode)
             # give the model the analyst's triage so the narrative reflects it
             _analyst = analyst_context(dispositions, validations, manual_events, graph, checklist)
+            if estimates:
+                # Jev's estimates (jev.report_estimates): a second model's opinion,
+                # carried with its own note saying so, into every call of this
+                # report -- the focused one, each phase and the synthesis.
+                _analyst = {**_analyst, "automated_estimates": estimates}
             payload.update(_analyst)
             _, _scoped_r = render.scope(graph, window=window, min_severity=min_severity)
             # MICRO for the report: critical findings and the ones the analyst confirmed.
@@ -1897,6 +1903,12 @@ def generate_report(graph, *, window=None, min_severity="informational",
                     system = system + "\n\n" + audience_language_directive(audience, language)
                 except Exception:
                     pass
+            if estimates:
+                system = system + ("\n\n`automated_estimates` in the data are a second model's "
+                                   "probabilities, NOT analyst verdicts: an analyst verdict always "
+                                   "overrides them. Use them to prioritise and to state likelihood; "
+                                   "when a statement relies on one, say 'automated estimate' and "
+                                   "never 'confirmed'.")
             if master_prompt:
                 system = ("## OPERATOR CONTEXT (from interactive validation) — treat as "
                           "ground truth; apply the removals/focus described:\n"

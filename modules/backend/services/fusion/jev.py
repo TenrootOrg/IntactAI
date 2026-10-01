@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 
 URL = "https://openrouter.ai/api/v1/systemone"
 USES = ("disposition", "relevance", "grounding", "identity", "chat_intent", "injection",
-        "chat_confidence", "scopes", "compromise")
+        "chat_confidence", "scopes", "compromise", "report")
 DEFAULTS = {"enabled": False, "model": "jev-latest", "min_confidence": 0.8,
             # Jev's own OpenRouter key. Empty = use the main key, which only works
             # while OpenRouter is the selected chat provider.
@@ -765,6 +765,80 @@ def _one_pass(case_id):
         suggest_scopes(case_id, get_case(case_id) or d)
     if enabled("compromise"):
         suggest_compromise(case_id, get_case(case_id) or d)
+
+
+# ---------------------------------------------------------------------------
+# The report reads Jev's estimates (use "report"): the report step waits, bounded,
+# for the pass above, then gives the report model the per-finding verdict
+# suggestions and per-person compromise estimates -- LABELLED as automated
+# estimates. They are never verdicts: anything the analyst judged is left out
+# here, because the analyst's own verdict already reaches the model and rules.
+# Off, unreachable or slow: the report is written without them, as before.
+# ---------------------------------------------------------------------------
+REPORT_WAIT_SECONDS = 90
+_ESTIMATE = {"true_positive": "likely malicious",
+             "known": "likely expected or administrative activity",
+             "false_positive": "likely a false detection"}
+ESTIMATES_NOTE = ("Automated estimates from a second model -- NOT analyst verdicts. An analyst "
+                  "verdict always overrides them. Use them to prioritise and to state "
+                  "likelihood; when a statement relies on one, say 'automated estimate' and "
+                  "never 'confirmed'.")
+
+
+def report_wait_seconds() -> float:
+    try:
+        return max(0.0, float(settings().get("report_wait_seconds", REPORT_WAIT_SECONDS)))
+    except (TypeError, ValueError):
+        return REPORT_WAIT_SECONDS
+
+
+def wait_idle(case_id, timeout) -> bool:
+    """Wait (at most `timeout` seconds) for the case's after-fuse pass. True when
+    none is running any more."""
+    import time
+    end = time.monotonic() + max(0.0, timeout)
+    while True:
+        with _workers_lock:
+            if case_id not in _running:
+                return True
+        if time.monotonic() >= end:
+            return False
+        time.sleep(0.25)
+
+
+def report_estimates(case_id, d, g) -> dict:
+    """{} or {"note", "findings": [...], "identities": [...]} for the report model.
+    Only estimates that are still valid for the evidence as it is now, at or above
+    the confidence floor, and only where the analyst has not decided."""
+    if not enabled("report"):
+        return {}
+    out = {}
+    try:
+        if enabled("disposition"):
+            from .correlate import _part_ids
+            done = {v.get("finding_id") for v in (d.get("timeline_validations") or [])}
+            sug = d.get("jev_suggestions") or {}
+            rows = []
+            for f in g.findings:
+                if (set(f.ids() + _part_ids(f)) & done) or f.kind == "dispositioned":
+                    continue
+                s = suggestion_for(sug, f.id, f.watermark())
+                if s:
+                    rows.append({"finding": f.title, "estimate": _ESTIMATE.get(s["label"], s["label"]),
+                                 "confidence": round(float(s["p"]), 2)})
+            if rows:
+                out["findings"] = sorted(rows, key=lambda r: -r["confidence"])[:60]
+        if enabled("compromise"):
+            from .store import identity_view
+            people = [{"identity": c.get("name"), "compromise_probability": round(float(c["jev_compromise"]), 2)}
+                      for c in ((identity_view(case_id) or {}).get("identities") or [])
+                      if isinstance(c.get("jev_compromise"), (int, float)) and not c.get("verdict")]
+            if people:
+                out["identities"] = sorted(people, key=lambda r: -r["compromise_probability"])[:30]
+    except Exception as e:  # noqa: BLE001 — an estimate is never worth a failed report
+        log.warning("jev: report estimates for %s skipped: %s", case_id, e)
+        return {}
+    return {"note": ESTIMATES_NOTE, **out} if out else {}
 
 
 # ---------------------------------------------------------------------------

@@ -2311,7 +2311,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                              kwargs={"write_off": False}, daemon=True).start()
         try:
             report = llm_sim.generate_report(
-                gr, window=_rwindow, min_severity=min_sev,
+                gr, estimates=_jev_estimates(case_id, d, gr, _narrate), window=_rwindow, min_severity=min_sev,
                 initial_access=d.get("initial_access_estimate"),
                 case_name=d.get("name", "Case"), run_id=case_id,
                 audience=d.get("audience", "both"), language=d.get("language", "en"),
@@ -2812,6 +2812,34 @@ def _with_evidence(case_id, report, d) -> str:
     except Exception as e:                                   # noqa: BLE001 — never lose a report over it
         print(f"[FUSION] evidence section not added for {case_id}: {e}", flush=True)
         return report
+
+
+def _jev_estimates(case_id, d, g, narrating, waited=None) -> dict:
+    """Jev's estimates for this report, and one Log line saying whether it has them.
+    {} when nothing is narrated, Jev's report use is off, or none are valid."""
+    if not narrating:
+        return {}
+    try:
+        from . import jev
+        if not jev.enabled("report"):
+            return {}
+        est = jev.report_estimates(case_id, d, g)
+        if est:
+            log_case_event(case_id, "Report · using Jev's estimates", "info",
+                           f"{len(est.get('findings') or [])} finding(s), "
+                           f"{len(est.get('identities') or [])} identity(ies) — given to the "
+                           f"model as automated estimates, not as verdicts")
+        else:
+            log_case_event(case_id, "Report · no Jev estimates", "info",
+                           ("Jev was still working after "
+                            f"{int(jev.report_wait_seconds())}s — the report is written without "
+                            "its estimates" if waited is False else
+                            "none are available for the evidence as it is now — the report is "
+                            "written without them"))
+        return est
+    except Exception as e:                                   # noqa: BLE001 — never a failed report
+        print(f"[FUSION] Jev estimates skipped for {case_id}: {e}", flush=True)
+        return {}
 
 
 def _host_status_labels(g, d) -> dict:
@@ -4219,6 +4247,17 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
     if not _wait_for_fuses(case_id):
         log_case_event(case_id, "Report · written from an older graph", "warning",
                        "the case was still fusing after 15 minutes — writing from the graph it has")
+    # Jev's after-fuse pass (verdict suggestions, compromise estimates) is read by
+    # the report: wait for it, bounded, so a report written right after a fuse is
+    # not written without them. Off, slow or unreachable: written without, as before.
+    _jev_wait = None
+    if use_llm and not offline:
+        try:
+            from . import jev as _jev
+            if _jev.enabled("report"):
+                _jev_wait = _jev.wait_idle(case_id, _jev.report_wait_seconds())
+        except Exception:                                    # noqa: BLE001 — never a failed report
+            _jev_wait = None
     d = get_case(case_id)
     g = load_graph(case_id)
     # The SELECTED scope's window: this report describes that slice of the case,
@@ -4271,9 +4310,10 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
     else:
         log_case_event(case_id, "Report · regenerating (deterministic)", "info",
                        "no LLM tokens spent")
+    _estimates = _jev_estimates(case_id, d, gv, will_narrate, waited=_jev_wait)
     try:
         report = llm_sim.generate_report(
-            gv, window=window, min_severity=min_sev,
+            gv, estimates=_estimates, window=window, min_severity=min_sev,
             initial_access=d.get("initial_access_estimate"), case_name=d.get("name", "Case"),
             run_id=case_id, audience=d.get("audience", "both"), language=d.get("language", "en"),
             altitude_mode=d.get("report_altitude") or "auto",
