@@ -480,6 +480,22 @@ class TestItRenarratesAfterTheFuse(_Base):
         self.assertTrue(autofuse._case_data_changed(same, dict(same, findings=26)))
         self.assertTrue(autofuse._case_data_changed(same, dict(same, hosts=4)))
 
+    def test_an_already_current_report_is_not_left_marked_behind(self):
+        # Live: new data landed outside the selected scope; the Log said "already
+        # current" while the page said "this report is older than your latest changes".
+        same = {"findings": 16, "entities": 40, "links": 9, "hosts": 3, "cross_host": 2}
+        self.store.scope_counts = lambda cid: dict(same)
+        self.store._merge_case_details = lambda cid, patch: self.store.merges.append(patch)
+        self.store._active_scope_id, self.store.FULL_SCOPE_ID = (lambda d: "w1"), "full"   # a micro scope is selected
+        before = {"name": "QA case", "report_md": "# written", "report_dirty": False}
+        self.store.case = dict(before, report_dirty=True)              # what the fuse left behind
+        autofuse._regenerate_report("case_1", before, before_counts=dict(same))
+        self.assertIn({"report_dirty": False}, self.store.merges)
+        self.assertIn("Report · already current", self.store.actions())
+        self.store.merges.clear()                                      # it really WAS behind a triage edit
+        autofuse._regenerate_report("case_1", dict(before, report_dirty=True), before_counts=dict(same))
+        self.assertIn({"report_dirty": True}, self.store.merges)
+
     def test_an_unknown_before_or_after_counts_as_changed(self):
         """Never skip a report on ignorance — a legacy case has no counts."""
         self.assertTrue(autofuse._case_data_changed({}, {"findings": 1}))

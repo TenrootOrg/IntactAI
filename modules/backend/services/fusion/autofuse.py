@@ -457,6 +457,16 @@ def _regenerate_report(case_id, d=None, attempt=0, before_counts=None) -> None:
             # severity floor or host set. Re-narrating would spend a full model run
             # to produce the same words.
             _sid = store._active_scope_id(d)
+            # The fuse marks a reused report "possibly behind" (report_dirty). This
+            # one is not: nothing it describes changed. Left set, the page said
+            # "This report is older than your latest changes (triage, Timeline...)"
+            # about a report the line below calls current. Put the mark back to
+            # what it was BEFORE the fuse (`d`), so a report that really was behind
+            # an earlier triage edit still says so.
+            try:
+                store._merge_case_details(case_id, {"report_dirty": bool(d.get("report_dirty"))})
+            except Exception:                      # noqa: BLE001 — a hint, never a failure
+                pass
             store.log_case_event(
                 case_id, "Report · already current", "info",
                 ("the new data is outside the scope you are reading"
