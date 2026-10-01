@@ -96,6 +96,20 @@ class History(unittest.TestCase):
         self.assertEqual(d["id"], a["id"])
         self.assertEqual(len(self.d["report_history"]), 2)
 
+    def test_each_scope_lists_only_its_own_reports(self):
+        # "both of the reports are being found in both scopes"
+        a = rh.archive("c1", AI, "full", "2016 → 2026")
+        b = rh.archive("c1", TEMPLATE, "w20250921", "2025-09-21 11:09 → 13:23")
+        self.d["report_history"].insert(0, {"id": "0123456789ab", "stage": "final", "at": "2026-09-29T09:00:00"})
+        self.assertEqual([x["id"] for x in rh.history(self.d, scope="w20250921")], [b["id"]])
+        # a report kept before scopes were recorded belongs to the whole-case scope
+        self.assertEqual([x["id"] for x in rh.history(self.d, scope="full")], [a["id"], "0123456789ab"])
+        self.assertEqual(rh.history(self.d, scope="a scope with no report yet"), [])
+        self.assertEqual(len(rh.history(self.d)), 3)                 # by id (view, download, delete): all
+        src = open(os.path.join(_ROOT, "modules/backend/routes/case_routes.py"), encoding="utf-8").read()
+        self.assertIn("_report_history.history(d, scope=store._active_scope_id(d))", src)   # the page's list
+        self.assertEqual(src.count("_report_history.history(d or {})"), 2)                  # the by-id lookups
+
     def test_reports_kept_while_stages_and_types_existed_keep_their_label(self):
         old = {"report_history": [
             {"id": "0123456789ab", "stage": "final", "at": "2026-09-29T09:00:00"},

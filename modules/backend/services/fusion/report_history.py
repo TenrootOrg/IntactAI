@@ -35,13 +35,23 @@ def label_of(x) -> str:
     return LEGACY_LABEL.get(x.get("type") or x.get("stage"), "Report")
 
 
-def history(d) -> list:
-    """Every report kept for the case, newest first, each with its label. Old
-    cases: none; a damaged entry is skipped, never raised."""
+FULL_SCOPE = "full"       # store.FULL_SCOPE_ID; an entry kept before scopes were recorded belongs here
+
+
+def history(d, scope=None) -> list:
+    """The reports kept for the case, newest first, each with its label. Old
+    cases: none; a damaged entry is skipped, never raised.
+
+    `scope`: only that timeframe's reports -- what the Analysis tab lists. Every
+    scope has its own reports; the list used to show every scope's rows under
+    whichever scope was selected ("both of the reports are being found in both
+    scopes"). None = all of them (looking one up by id, the bundle, the tests)."""
     raw = (d or {}).get("report_history") if isinstance(d, dict) else None
     out = []
     for i, x in enumerate(raw if isinstance(raw, list) else []):
         if not (isinstance(x, dict) and _ID.fullmatch(str(x.get("id") or ""))):
+            continue
+        if scope is not None and str(x.get("scope") or FULL_SCOPE) != str(scope):
             continue
         out.append((str(x.get("at") or ""), i, {
             "id": x["id"], "label": label_of(x), "at": x.get("at"),

@@ -409,7 +409,8 @@ def get_case(case_id):
                     **store.case_info(d),
                     "case_files": _case_files.listing(d),
                     "include_evidence": _case_files.included(d),
-                    "report_history": _report_history.history(d),
+                    # the SELECTED scope's reports only: each scope has its own
+                    "report_history": _report_history.history(d, scope=store._active_scope_id(d)),
                     "masking": d.get("masking") or {"enabled": False, "patterns": []},
                     "included_run_ids": d.get("included_run_ids"),
                     # null-guarded for cases created before these existed

@@ -1209,8 +1209,9 @@ function evAttachFiles(fid, files){
       .catch(e=>toast(file.name+' not attached: '+e.message));
   });
 }
-// Report history (plan step 9): every report written is kept with its date; view
-// one in place of the current report, download it (MD / PDF / HTML) or delete it.
+// Report history (plan step 9): the SELECTED scope's kept reports (each scope has
+// its own; the server sends only that scope's); view one in place of the current
+// report, download it (MD / PDF / HTML) or delete it.
 // The current report is always the newest. Reports kept while stages / types
 // existed (Flash, Technical customers, ...) show that label.
 const _rpLab=x=>(x&&x.label&&x.label!=='Report')?x.label:'';
@@ -1229,7 +1230,7 @@ function reportHistoryHtml(info, viewing){
   const isCur=!!(viewing&&H[0]&&H[0].id===viewing.id);
   const banner=viewing?`<div class="agnote">Viewing the ${_rpLab(viewing)?`<b>${esc(_rpLab(viewing))}</b> `:''}report of ${esc(String(viewing.at||'').replace('T',' ').slice(0,16))} UTC — ${isCur?'the current report':'not the current one'}. <span class="elink" onclick="rpBack()">${isCur?'Close':'Back to the current report'}</span></div>`:'';
   return `${banner}<details ${open||viewing?'open':''} ontoggle="window._rpHistOpen=this.open" style="margin:0 0 10px;border:1px solid var(--bd);border-radius:8px;padding:6px 10px">
-    <summary style="cursor:pointer;font-size:13px"><b>Report history</b> <span style="color:var(--muted)">· ${H.length?H.length+' kept':'none yet — every report written from now on is kept here'}</span></summary>
+    <summary style="cursor:pointer;font-size:13px"><b>Report history</b> <span style="color:var(--muted)">· ${H.length?H.length+' kept for this timeframe':'none yet for this timeframe — a report written for it is kept here'}</span></summary>
     <div style="margin-top:4px">${rows||''}</div></details>`;
 }
 function rpView(cid, rid){
