@@ -48,11 +48,21 @@ class TestTheHookAcceptsAMemoryUpload(unittest.TestCase):
         """A file the browser let the operator choose must never be refused
         server-side -- that reads as a bug in the upload, not a wrong file."""
         panel = _read("modules/nginx/html/partials/memory.html")
-        offered = set(re.findall(r'accept="([^"]+)"', panel)[0].split(","))
+        # the DUMP picker (the Symbol tables tab has a picker of its own, below)
+        offered = set(re.search(r'accept="(\.raw[^"]*)"', panel).group(1).split(","))
         blk = self.SRC[self.SRC.index("elif purpose == 'memory':"):][:900]
         allowed = set(re.search(r"allowed_extensions = \[([^\]]+)\]", blk)
                       .group(1).replace("'", "").replace(" ", "").split(","))
         self.assertEqual(offered, allowed)
+
+    def test_the_symbol_picker_offers_what_the_hook_accepts(self):
+        panel = _read("modules/nginx/html/partials/memory.html")
+        offered = set(re.search(r'accept="([^"]+)" x-ref="symFile"', panel).group(1).split(","))
+        blk = self.SRC[self.SRC.index("elif purpose == 'memory_symbols':"):][:1200]
+        allowed = set(re.search(r"allowed_extensions = \[([^\]]+)\]", blk)
+                      .group(1).replace("'", "").replace(" ", "").split(","))
+        # a browser's accept list matches the LAST extension only: .json.xz is ".xz" there
+        self.assertEqual(offered, {"." + a.rsplit(".", 1)[-1] for a in allowed})
 
     def test_the_row_is_a_memory_run_not_an_upload_run(self):
         blk = self.SRC[self.SRC.index("workflow_type = 'case_import'"):][:900]

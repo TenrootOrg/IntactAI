@@ -31,8 +31,11 @@ document.addEventListener('alpine:init', () => {
         // at submit time, so the backend keeps its current 3-way schema.
         // Blank = pipeline uses CURATED_PLUGINS fallback.
         blueprintId: 'memory_layered_default',
-        includeYara: true,
-        symUploading: false, symMsg: '', symMsgOk: false,        // independent of blueprint — adds yarascan layer
+        includeYara: true,        // independent of blueprint — adds yarascan layer
+        // Symbol tables tab: the upload's state and the line under the button
+        symUploading: false,
+        symMsg: '',
+        symMsgOk: false,
         // Keep the .raw after the run so a re-run costs nothing. Off by
         // default — on is a standing ~9 GB/host disk cost, and TabReset puts
         // it back to off on tab re-entry, which is the behaviour we want.
@@ -173,22 +176,42 @@ document.addEventListener('alpine:init', () => {
         },
 
         // ---- Symbol tables (air-gapped analysis) ----------------------
-        async uploadSymbol(input) {
+        /** Add a symbol file to the library — through the SAME resumable (tus)
+         *  uploader every other upload uses, purpose 'memory_symbols'.
+         *
+         *  It used to be one plain POST: the button read "Uploading…" for the
+         *  840 MB windows.zip with no progress and no run anywhere, so there was
+         *  nothing to look at and no way to tell it had arrived — the pack was
+         *  sent twice and stored twice. Now the tusd hook opens a run before the
+         *  first byte ("Symbol table upload: <file>", a System action), logs
+         *  "Uploading: N%", then every step of checking and installing it; and
+         *  the page hands off to Settings → Actions, where that run is. */
+        uploadSymbol(input) {
             const f = input && input.files && input.files[0];
             if (!f) { this.symMsgOk = false; this.symMsg = 'Choose a file first.'; return; }
+            if (typeof tus === 'undefined' || typeof TusUploader === 'undefined') {
+                this.symMsgOk = false; this.symMsg = 'Upload component not loaded — reload the page.'; return;
+            }
             this.symUploading = true; this.symMsg = '';
-            try {
-                const fd = new FormData(); fd.append('file', f);
-                const r = await fetch('/api/memory/symbols/upload', { method: 'POST', body: fd });
-                const j = await r.json().catch(() => ({}));
-                if (!r.ok || j.error) { this.symMsgOk = false; this.symMsg = j.error || ('HTTP ' + r.status); return; }
-                this.symMsgOk = true;
-                this.symMsg = j.pack ? `Symbol pack added (${j.file}).`
-                    : (j.already_had ? `The library already had ${j.file} — nothing changed.`
-                                     : `Added ${j.file}. Images from that Windows build can be analysed now.`);
-                input.value = '';
-            } catch (e) { this.symMsgOk = false; this.symMsg = 'Could not reach the appliance: ' + (e && e.message || e); }
-            finally { this.symUploading = false; }
+            const uploader = new TusUploader({
+                purpose: 'memory_symbols',
+                // a System action: which case is selected is irrelevant
+                systemGuard: false,
+                onProgress: () => {},          // the run carries the progress (see startUpload)
+                onSuccess: () => {
+                    this.symUploading = false; this.symMsgOk = true;
+                    this.symMsg = 'Uploaded — it is being checked and added. Follow it in Settings → Actions.';
+                },
+                onError: (error) => {
+                    this.symUploading = false; this.symMsgOk = false;
+                    this.symMsg = 'Upload failed: ' + ((error && error.message) || error);
+                },
+            });
+            uploader.upload(f);
+            input.value = '';
+            this.symMsgOk = true;
+            this.symMsg = 'Upload started — follow it in Settings → Actions.';
+            setTimeout(() => { try { window.ActiveCase.gotoSystemWorkflows(); } catch (e) { /* stay here */ } }, 600);
         },
 
         async removeDump(d) {

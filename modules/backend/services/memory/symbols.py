@@ -72,9 +72,20 @@ print(json.dumps({"file": "windows/%s/%s-%d.json.xz" % (db, guid, age),
 '''
 
 
-def add(local_path: str, filename: str, dumps_dir: str = DUMPS_DIR) -> dict:
+def _sha256(path: str) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(4 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def add(local_path: str, filename: str, dumps_dir: str = DUMPS_DIR, log=None) -> dict:
     """Add one uploaded symbol file to VolWeb's library. `local_path` is the
-    upload as saved by the route (anywhere); it is removed afterwards."""
+    upload as saved by the route (anywhere); it is removed afterwards.
+    `log(message)` narrates the steps into the upload's run (Settings → Actions)."""
+    say = log or (lambda msg: None)
     fname = os.path.basename(filename or "").lower()
     if fname.endswith(".pdb"):
         kind = "pdb"
@@ -92,8 +103,11 @@ def add(local_path: str, filename: str, dumps_dir: str = DUMPS_DIR) -> dict:
         import zipfile
         try:
             with zipfile.ZipFile(local_path) as z:
-                ok = any(n.startswith("windows/") and n.endswith((".json.xz", ".json"))
-                         for n in z.namelist())
+                tables = [n for n in z.namelist()
+                          if n.startswith("windows/") and n.endswith((".json.xz", ".json"))]
+                ok = bool(tables)
+                if ok:
+                    say(f"Symbol pack: {len(tables):,} Windows symbol table(s) — verifying every file's checksum…")
                 bad = z.testzip() if ok else None
         except (zipfile.BadZipFile, OSError) as e:
             return {"error": f"not a readable .zip ({e})"}
@@ -111,12 +125,27 @@ def add(local_path: str, filename: str, dumps_dir: str = DUMPS_DIR) -> dict:
     in_worker = f"{STAGING_IN_VOLWEB}/{INCOMING}/{tag}_{safe}"
     try:
         if kind == "zip":
+            # THE SAME PACK IS NOT STORED TWICE. Volatility reads every pack in the
+            # library on every run, and with no feedback during the upload the
+            # 840 MB windows.zip was sent twice and kept twice. Compared by
+            # content, so a renamed copy is recognised too.
+            say("Pack verified — checking whether the library already has it…")
+            mine = _sha256(staged)
+            r = _exec(f"cd {shlex.quote(SYMBOLS_DIR)} 2>/dev/null && sha256sum *.zip 2>/dev/null", 900)
+            for line in (r.stdout or "").splitlines():
+                digest, _, name = line.partition("  ")
+                if digest.strip() == mine and name.strip():
+                    return {"file": name.strip(), "pack": True, "already_had": True}
             # A symbol pack is read in place by Volatility: it goes in whole.
+            say("Storing the pack in VolWeb's symbol library…")
             dest = f"{SYMBOLS_DIR}/{tag}_{safe}"
             r = _exec(f"cp {shlex.quote(in_worker)} {shlex.quote(dest)} && chown app:app {shlex.quote(dest)}", 300)
             if r.returncode != 0:
                 return {"error": "could not store the pack: " + (r.stderr or "")[-200:]}
             return {"file": f"{tag}_{safe}", "pack": True}
+        say({"pdb": "Converting the .pdb to a symbol table with the Volatility inside VolWeb…",
+             "json": "Compressing the table and reading its own metadata…",
+             "xz": "Reading the table's own metadata…"}[kind])
         sp = ("SP=$(ls -d /home/app/.local/lib/python3*/site-packages 2>/dev/null | head -1); "
               f"PYTHONPATH=\"$SP\" python3 -c {shlex.quote(_PLACE)} "
               f"{shlex.quote(in_worker)} {kind} {shlex.quote(SYMBOLS_DIR)}; "

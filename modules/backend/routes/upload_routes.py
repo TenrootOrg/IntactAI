@@ -303,13 +303,14 @@ def handle_tus_hook():
             purpose = metadata.get('purpose', '')
             filename = metadata.get('filename', '')
 
-            if purpose not in ['velociraptor', 'timesketch', 'upgrade_package', 'agentic_external', 'case_import', 'memory']:
+            if purpose not in ['velociraptor', 'timesketch', 'upgrade_package', 'agentic_external', 'case_import', 'memory',
+                               'memory_symbols']:
                 print(f"[TUS HOOK] Rejected: Invalid purpose '{purpose}'", flush=True)
                 return jsonify({
                     "RejectUpload": True,
                     "HTTPResponse": {
                         "StatusCode": 400,
-                        "Body": json.dumps({"error": "Invalid upload purpose. Must be 'velociraptor', 'timesketch', 'upgrade_package', 'agentic_external', 'case_import' or 'memory'"})
+                        "Body": json.dumps({"error": "Invalid upload purpose. Must be 'velociraptor', 'timesketch', 'upgrade_package', 'agentic_external', 'case_import', 'memory_symbols' or 'memory'"})
                     }
                 }), 200  # Return 200 but with RejectUpload flag
 
@@ -346,6 +347,22 @@ def handle_tus_hook():
                         "HTTPResponse": {
                             "StatusCode": 400,
                             "Body": json.dumps({"error": f"Memory images must be one of: {', '.join(allowed_extensions)}"})
+                        }
+                    }), 200
+            elif purpose == 'memory_symbols':
+                # A Volatility symbol table for the Memory module's library
+                # (Memory → Symbol tables): Volatility's windows.zip pack, a
+                # Microsoft .pdb, or a ready .json.xz / .json table. Refused HERE,
+                # before a byte is sent — services/memory/symbols.add checks the
+                # content afterwards.
+                allowed_extensions = ['.zip', '.pdb', '.json.xz', '.json']
+                if not any(filename.lower().endswith(ext) for ext in allowed_extensions):
+                    print(f"[TUS HOOK] Rejected: not a symbol file '{filename}'", flush=True)
+                    return jsonify({
+                        "RejectUpload": True,
+                        "HTTPResponse": {
+                            "StatusCode": 400,
+                            "Body": json.dumps({"error": "Symbol files must be a .zip symbol pack, a .pdb, or a .json.xz / .json table"})
                         }
                     }), 200
             elif purpose == 'agentic_external':
@@ -400,6 +417,14 @@ def handle_tus_hook():
                 # perfectly and then contribute nothing to the case, silently.
                 workflow_type = 'memory'
                 workflow_name = f"Memory (upload) — {filename}"
+            elif purpose == 'memory_symbols':
+                # A SYSTEM action (workflow_service.SYSTEM_TYPES): it changes the
+                # appliance's symbol library, not a case. It used to be one plain
+                # POST from the page — no run, no progress, no log: the button
+                # read "Uploading…" for an 840 MB pack and nothing anywhere said
+                # whether it had arrived.
+                workflow_type = 'memory_symbols_upload'
+                workflow_name = f"Symbol table upload: {filename}"
             else:
                 workflow_type = f"{purpose}_upload"
                 workflow_name = f"Upload: {filename}"
@@ -827,6 +852,47 @@ def handle_tus_hook():
                 if run_id:
                     add_log_to_run(run_id, f"External log file ready: {original_filename}", "success")
                     update_run_status(run_id, "completed", progress=100)
+
+            elif purpose == 'memory_symbols':
+                # Checked and installed in the background (verifying an 840 MB
+                # pack and copying it into VolWeb takes a while; the hook must
+                # answer tusd now). The run carries every step and its outcome.
+                if run_id:
+                    add_log_to_run(run_id, "Checking the symbol file…")
+                    update_run_status(run_id, "running", progress=40)
+
+                def run_symbol_install():
+                    try:
+                        from services.memory import symbols
+                        res = symbols.add(file_path, original_filename,
+                                          log=(lambda m: add_log_to_run(run_id, m)) if run_id else None)
+                    except Exception as e:           # noqa: BLE001 — the run must end, never hang "running"
+                        res = {"error": f"The symbol file could not be processed: {type(e).__name__}: {e}"}
+                    finally:
+                        for leftover in (file_path, f"{file_path}.info"):
+                            try:
+                                if os.path.exists(leftover):
+                                    os.remove(leftover)
+                            except OSError:
+                                pass
+                    print(f"[TUS HOOK] symbol upload result: {res}", flush=True)
+                    if not run_id:
+                        return
+                    if res.get("error"):
+                        add_log_to_run(run_id, res["error"], "error")
+                        update_run_status(run_id, "failed", error=res["error"])
+                        return
+                    if res.get("already_had"):
+                        done = f"The library already had this — nothing changed ({res.get('file')})"
+                    elif res.get("pack"):
+                        done = f"Symbol pack added to the library: {res.get('file')}"
+                    else:
+                        done = (f"Symbol table added: {res.get('file')} — images from that "
+                                f"Windows build can be analysed now")
+                    add_log_to_run(run_id, done, "success")
+                    update_run_status(run_id, "completed", progress=100, details={"result": res})
+
+                threading.Thread(target=run_symbol_install, daemon=True).start()
 
             elif purpose == 'upgrade_package':
                 # Upload only — DOES NOT auto-apply. The operator reviews the

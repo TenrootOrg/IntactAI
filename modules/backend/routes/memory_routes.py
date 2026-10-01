@@ -827,21 +827,62 @@ def upload_memory_symbol():
     import os
     import tempfile
     from services.memory import symbols
-    f = request.files.get("file")
+
+    # LOGGED AS A RUN, like every other upload (Velociraptor, Timesketch, an
+    # upgrade package): this one left nothing anywhere -- an 840 MB pack went in,
+    # or failed, and no log said so. A System action (Settings → Actions): it
+    # changes the appliance's symbol library, not a case. Created BEFORE the body
+    # is read (nginx streams this route), so the run shows while the file is still
+    # arriving; the page sends the name and size in the query for that.
+    def _mb(n):
+        return f"{int(n or 0) / 1048576:.1f} MB"
+    hint = os.path.basename((request.args.get("name") or "").strip())[:200]
+    try:
+        size_hint = int(request.args.get("size") or request.content_length or 0)
+    except (TypeError, ValueError):
+        size_hint = 0
+    run_id = create_automation_run(
+        automation_type="memory_symbols_upload",
+        name=f"Symbol table upload: {hint}" if hint else "Symbol table upload",
+        details={"filename": hint, "trigger": "manual"})
+    update_run_status(run_id, "running", progress=5)
+    add_log_to_run(run_id, f"Upload started: {hint or 'symbol file'}"
+                           + (f" ({_mb(size_hint)})" if size_hint else ""), "info")
+
+    def _fail(msg, code=400):
+        add_log_to_run(run_id, msg, "error")
+        update_run_status(run_id, "failed", error=msg)
+        return jsonify({"error": msg, "run_id": run_id}), code
+
+    f = request.files.get("file")                    # reads the body: the upload itself
     if not f or not f.filename:
-        return jsonify({"error": "choose a file"}), 400
+        return _fail("No file arrived — choose a file and upload again.")
     fd, tmp = tempfile.mkstemp(prefix="sym-", dir="/tmp")
     os.close(fd)
     try:
         f.save(tmp)
-        res = symbols.add(tmp, f.filename, _DUMPS_DIR)
+        add_log_to_run(run_id, f"Upload complete: {f.filename} ({_mb(os.path.getsize(tmp))}) received", "info")
+        update_run_status(run_id, "running", progress=40)
+        res = symbols.add(tmp, f.filename, _DUMPS_DIR,
+                          log=lambda m: add_log_to_run(run_id, m, "info"))
+    except Exception as e:                           # noqa: BLE001 — the run must end, not hang "running"
+        return _fail(f"The upload could not be processed: {type(e).__name__}: {e}", 500)
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
     if res.get("error"):
-        return jsonify(res), 400
+        return _fail(res["error"])
+    if res.get("pack"):
+        done = f"Symbol pack added to the library: {res.get('file')}"
+    elif res.get("already_had"):
+        done = f"The library already had {res.get('file')} — nothing changed"
+    else:
+        done = (f"Symbol table added: {res.get('file')} — images from that Windows build "
+                f"can be analysed now")
+    add_log_to_run(run_id, done, "success")
+    update_run_status(run_id, "completed", progress=100, details={"result": res})
     print(f"[MEMORY] symbol table added: {res.get('file')}", flush=True)
-    return jsonify(res)
+    return jsonify({**res, "run_id": run_id})
 
 
 @memory_bp.route("/api/memory/dumps/<name>", methods=["DELETE"])

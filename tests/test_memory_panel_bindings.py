@@ -56,14 +56,15 @@ class TestEveryTabHasSomethingBehindIt(unittest.TestCase):
     typo'd in one place and not the other renders an EMPTY tab — the button
     highlights, nothing appears, and nothing errors."""
 
-    TABS = {"acquire", "reuse", "upload", "adopt"}
+    # four ways of getting memory into a case, and the symbol-table library
+    TABS = {"acquire", "reuse", "upload", "adopt", "symbols"}
 
     def setUp(self):
         self.panel = _read(PANEL)
         self.buttons = set(re.findall(r"memoryTab = '(\w+)'", self.panel))
         self.panels = set(re.findall(r"memoryTab (?:===|!==) '(\w+)'", self.panel))
 
-    def test_the_expected_four_tabs_exist(self):
+    def test_the_expected_tabs_exist(self):
         self.assertEqual(self.buttons, self.TABS)
 
     def test_no_button_leads_nowhere(self):

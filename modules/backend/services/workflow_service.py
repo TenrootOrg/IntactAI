@@ -60,7 +60,11 @@ SYSTEM_TYPES = {"upgrade", "online_upgrade", "prepare_package", "maintenance",
                 # System). It rides in the SAME System workspace as the apply now.
                 # NB: only the UPGRADE-package upload — velociraptor_upload /
                 # timesketch_upload stay investigation-workspace runs.
-                "upgrade_package_upload"}
+                "upgrade_package_upload",
+                # A Volatility symbol table / pack added on Memory -> Symbol tables.
+                # It changes the appliance's library, not a case -- and it had no
+                # run at all: an 840 MB upload left nothing in any log.
+                "memory_symbols_upload"}
 
 # Internal bookkeeping run-types (match services.fusion.store CASE_TYPE /
 # BASELINE_TYPE). The workspace row + fusion baseline marker are not case work

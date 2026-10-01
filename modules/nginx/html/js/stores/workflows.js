@@ -365,6 +365,8 @@ document.addEventListener('alpine:init', () => {
                 maintenance: 'bg-red-700',
                 // Jev relevance scoring (reads data, changes nothing) — not red.
                 jev_relevance: 'bg-indigo-600',
+                // a symbol table / pack added to the memory module's library
+                memory_symbols_upload: 'bg-indigo-600',
             };
             return colors[type] || 'bg-slate-700';
         },
