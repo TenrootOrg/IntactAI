@@ -612,8 +612,14 @@ function showCase(id,info,rep){
      // Only the Analysis tab shows this banner, and `tab` can carry over from
      // whatever the operator was last on (switching cases doesn't reset it) —
      // so skip the check entirely unless Analysis is what's about to be drawn.
+     // ONLY the status line and the Regenerate button follow the answer — never a
+     // redraw of the whole tab. The first check takes seconds (it is live, then
+     // cached), so a drawTab() here landed ~6s after the tab opened and rebuilt
+     // everything under the operator: an Export menu opened meanwhile was closed
+     // and the format picked from it was lost ("only the second time it actually
+     // downloads").
      if(tab==='report'){
-       refreshLlmReachability().then(()=>{ if(curInfo && curInfo.case_id===id && tab==='report'){ drawTab(); } });
+       refreshLlmReachability().then(()=>{ if(curInfo && curInfo.case_id===id && tab==='report'){ patchReportStatus(curInfo); } });
      }
 }
 
@@ -729,7 +735,7 @@ function setTab(t){
   // Only Analysis shows the reachability banner — Chat/Timeline/Identities/
   // Risk/Configuration/Log have no use for it, so don't spend a check on them.
   if(t==='report'){
-    refreshLlmReachability().then(()=>{ if(tab===t){ drawTab(); } });
+    refreshLlmReachability().then(()=>{ if(tab===t && curInfo){ patchReportStatus(curInfo); } });   // not drawTab — see openCase
   }
 }
 // An operator EDITING the Configuration tab must never have their input thrown

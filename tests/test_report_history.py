@@ -149,6 +149,14 @@ class Page(unittest.TestCase):
             self.assertIn("${dl('%s','%s')}" % (path, label), menu)
         self.assertEqual(src.count("dl('/report/download/pdf'"), 1)        # nowhere else on the row
         self.assertNotIn("⬇ Markdown", src)
+        # The live "is the AI reachable?" check answers seconds after the tab opens.
+        # It redrew the WHOLE tab, closing an Export menu opened meanwhile, so the
+        # format picked was lost and "only the second time it actually downloads".
+        calls = re.findall(r"refreshLlmReachability\(\)\.then\(\(\)=>\{(.*?)\}\);", src)
+        self.assertEqual(len(calls), 2)                                # opening a case, switching to the tab
+        for c in calls:
+            self.assertIn("patchReportStatus(curInfo)", c)
+            self.assertNotIn("drawTab", c)
         js = ("const esc=s=>String(s); const window={};\n" + re.search(r"const _rpLab=.*?;\n", src).group(0)
               + re.search(r"function reportHistoryHtml\(.*?\n\}", src, re.S).group(0) + """
 const H=[{id:'0123456789ab',label:'Report',at:'2026-09-30T10:12:00',kind:'ai',scope_label:'2016-09-24 → 2026-09-24'},
