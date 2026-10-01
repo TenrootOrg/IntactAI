@@ -14,6 +14,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import threading
 import uuid
 
 from .volweb_client import _VOLWEB_WORKER_CONTAINER, _config_value
@@ -72,6 +73,12 @@ print(json.dumps({"file": "windows/%s/%s-%d.json.xz" % (db, guid, age),
 '''
 
 
+# One install at a time. Two uploads of the same pack seconds apart (seen in the
+# live test) each checked the library before the other had stored anything, and
+# both went in.
+_ADD_LOCK = threading.Lock()
+
+
 def _sha256(path: str) -> str:
     import hashlib
     h = hashlib.sha256()
@@ -123,6 +130,7 @@ def add(local_path: str, filename: str, dumps_dir: str = DUMPS_DIR, log=None) ->
     staged = os.path.join(incoming, f"{tag}_{safe}")
     shutil.move(local_path, staged)
     in_worker = f"{STAGING_IN_VOLWEB}/{INCOMING}/{tag}_{safe}"
+    _ADD_LOCK.acquire()
     try:
         if kind == "zip":
             # THE SAME PACK IS NOT STORED TWICE. Volatility reads every pack in the
@@ -159,6 +167,7 @@ def add(local_path: str, filename: str, dumps_dir: str = DUMPS_DIR, log=None) ->
     except subprocess.TimeoutExpired:
         return {"error": "the conversion took too long (over 10 minutes)"}
     finally:
+        _ADD_LOCK.release()
         try:
             os.remove(staged)
         except OSError:

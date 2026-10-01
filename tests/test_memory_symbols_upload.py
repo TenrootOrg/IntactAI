@@ -251,6 +251,12 @@ class TheUploadIsLogged(unittest.TestCase):
             res = symbols.add(p, "renamed-copy.zip", dumps_dir=d)
         self.assertEqual(res, {"file": "a1bed8b31c1f_windows.zip", "pack": True, "already_had": True})
         self.assertFalse(any(c.startswith("cp ") for c in calls))            # nothing was copied in
+        self.assertFalse(symbols._ADD_LOCK.locked())                         # and the lock was given back
+        # one install at a time: two uploads seconds apart each checked before the
+        # other had stored anything (live test), and both went in
+        body = open(symbols.__file__, encoding="utf-8").read().split("def add(")[1]
+        self.assertLess(body.index("_ADD_LOCK.acquire()"), body.index("sha256sum *.zip"))
+        self.assertLess(body.index("sha256sum *.zip"), body.index("_ADD_LOCK.release()"))
         self.assertEqual(os.listdir(os.path.join(d, symbols.INCOMING)), [])  # and the staged copy is gone
 
     @staticmethod
