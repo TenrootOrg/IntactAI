@@ -1586,10 +1586,15 @@ def _with_deadline(fn, seconds, what):
     pool = _cf.ThreadPoolExecutor(max_workers=2, thread_name_prefix=f"llm-{what}")
     futs = [pool.submit(fn)]
     try:
-        deadline = time.time() + seconds
+        # MONOTONIC, not the wall clock. The appliance (a VM) was paused overnight
+        # with a report call in flight; on resume the wall clock jumped 12 hours,
+        # this gave up at once with "took too long", and the model's answer --
+        # which arrived a minute later -- was thrown away. The monotonic clock
+        # does not count time the machine was not running.
+        deadline = time.monotonic() + seconds
         while True:
-            wait_for = (hedge if (hedge and len(futs) == 1) else max(0.0, deadline - time.time()))
-            done, _ = _cf.wait(futs, timeout=max(0.0, min(wait_for, max(0.0, deadline - time.time()))),
+            wait_for = (hedge if (hedge and len(futs) == 1) else max(0.0, deadline - time.monotonic()))
+            done, _ = _cf.wait(futs, timeout=max(0.0, min(wait_for, max(0.0, deadline - time.monotonic()))),
                                return_when=_cf.FIRST_COMPLETED)
             for f in done:                              # first ANSWER wins; a failure
                 try:                                    # does not cancel its twin
@@ -1598,7 +1603,7 @@ def _with_deadline(fn, seconds, what):
                     futs = [x for x in futs if x is not f]
                     if not futs:
                         raise
-            if time.time() >= deadline:
+            if time.monotonic() >= deadline:
                 raise LLMUnavailable("timeout") from None
             if hedge and len(futs) == 1:
                 futs.append(pool.submit(fn))            # the straggler gets a twin

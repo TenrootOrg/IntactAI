@@ -3980,6 +3980,12 @@ def _report_watchdog(case_id, model_label, stop, *, gen_id=None, write_off=True)
     itself still waiting and the call's own timeout ends it.
     """
     hb, stuck = _watchdog_limits()
+    # Silence is counted on the MONOTONIC clock from the moment this thread saw the
+    # progress stamp change. Read off the stored wall-clock stamps, a paused VM
+    # that resumed 12 hours later had been "silent for 709 min" in the first
+    # second after waking and was written off — while its call was still alive.
+    import time as _time
+    _seen, _seen_at, _was = None, _time.monotonic(), 0.0
     while not stop.wait(hb):
         try:
             d = get_case(case_id) or {}
@@ -3987,9 +3993,13 @@ def _report_watchdog(case_id, model_label, stop, *, gen_id=None, write_off=True)
                 return                                  # retired or replaced elsewhere
             since = (d.get("report_last_progress_at")
                      or d.get("report_generating_started_at"))
-            silent = seconds_since(since) if since else None
-            if silent is None:
+            if not since:
                 continue
+            if since != _seen:                           # progress: restart the count,
+                _age = seconds_since(since)              # from how old the stamp is now
+                _seen, _seen_at = since, _time.monotonic()
+                _was = min(max(0.0, _age or 0.0), hb * 2)   # ...never more than it can be
+            silent = _was + (_time.monotonic() - _seen_at)
             _d = lambda sec: f"{int(sec)}s" if sec < 90 else f"{round(sec / 60)} min"
             if write_off and silent >= stuck:
                 _retire_generation(
