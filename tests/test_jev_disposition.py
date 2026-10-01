@@ -73,6 +73,15 @@ class SuggestDispositions(unittest.TestCase):
         self.assertEqual(len(line), 1)
         self.assertEqual(line[0][2], "info")
 
+    def test_a_long_notice_names_five_and_counts_the_rest(self):
+        # 98 findings printed as a 500-character wall of detection names.
+        fs = [_f("f%02d" % i) for i in range(12)]
+        self.run_pass({}, fs, {f.id: _ans("true_positive", 0.95) for f in fs})
+        line = [c.args for c in self.logged.call_args_list if "look malicious" in str(c.args[1])][0]
+        self.assertIn("12 finding(s)", line[1])
+        self.assertEqual(line[3].count(";"), 4)                       # five names
+        self.assertTrue(line[3].endswith("… +7 more — see the Timeline"))
+
     def test_only_unjudged_changed_findings_are_asked(self):
         a, b, c, e = _f("a"), _f("b", occ=3), _f("c"), _f("e", kind="dispositioned")
         d = {"timeline_validations": [{"finding_id": "c", "status": "known"}],

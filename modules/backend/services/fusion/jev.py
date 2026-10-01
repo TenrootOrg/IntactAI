@@ -260,6 +260,9 @@ def _answer_to_suggestion(ans):
             "confidence": float(ans.get("confidence") or 0.0)}
 
 
+NOTICE_NAMES = 5          # findings named in the Log's "not reviewed yet" line
+
+
 def suggest_dispositions(case_id, d, g) -> int:
     """Ask about every unreviewed finding whose occurrences changed since the
     last ask. Returns how many findings were asked about."""
@@ -315,8 +318,13 @@ def suggest_dispositions(case_id, d, g) -> int:
         # INFO, not a warning: nothing went wrong -- it says where to look first. As a
         # warning it read as a fault in a run that had none ("I dont wanna see any
         # warnings why is this?").
+        # The first few by name, then a count: 98 findings used to print as a
+        # 500-character wall of "Defender Alert (Severe) ...; Rubeus ...; Mimikatz ...".
+        _names = "; ".join(n["title"] for n in fresh[:NOTICE_NAMES])
+        if len(fresh) > NOTICE_NAMES:
+            _names += f" … +{len(fresh) - NOTICE_NAMES} more — see the Timeline"
         log_case_event(case_id, f"Jev · {len(fresh)} finding(s) look malicious — not reviewed yet",
-                       "info", "; ".join(n["title"] for n in fresh)[:500],
+                       "info", _names[:700],
                        finding_ids=[n["id"] for n in fresh])
     return len(todo)
 
