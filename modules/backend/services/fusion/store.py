@@ -845,8 +845,7 @@ def _unfail_stale_idle_workspace(run: dict) -> None:
 PURGE_KEEPS = ("name", "is_default", "is_system", "time_window", "min_severity",
                "initial_access_estimate", "audience", "language", "tlp", "customer_name",
                "customer_logo_b64", "report_altitude", "masking", "max_entities",
-               "max_identities", "auto_fuse", "auto_report", "auto_regen_report",
-               "fusion_modules", "chat_send_full_context", "report_detail",
+               "max_identities", "auto_fuse", "auto_report", "fusion_modules", "chat_send_full_context", "report_detail",
                "llm_use_full_context", "llm_max_output_tokens", "include_evidence",
                "case_status", "case_owner", "case_description")
 
