@@ -83,9 +83,19 @@ def ask(state, questions, *, run_id=None, cfg=None):
         return None
     model = settings(cfg)["model"]
     try:
-        r = requests.post(URL, timeout=15,
-                          headers={"Authorization": f"Bearer {key}"},
-                          json={"model": model, "state": state, "questions": questions})
+        # A 5xx is the provider's own hiccup, not an outage: retried ONCE. Seen
+        # live: one HTTP 520 on the verdict question left a 285-finding case with
+        # no suggestions at all, silently. A connection error, a timeout or a 4xx
+        # is still one call -- a dead provider must not cost a dozen.
+        for attempt in (0, 1):
+            r = requests.post(URL, timeout=15,
+                              headers={"Authorization": f"Bearer {key}"},
+                              json={"model": model, "state": state, "questions": questions})
+            if r.status_code < 500 or attempt:
+                break
+            log.warning("jev: HTTP %s — retrying once", r.status_code)
+            import time
+            time.sleep(RETRY_SECONDS)
         _last["too_big"] = False
         if r.status_code != 200:
             # Jev's own token count is the only exact one; ours is chars/4. A
@@ -111,6 +121,7 @@ def ask(state, questions, *, run_id=None, cfg=None):
 
 
 _last = {"too_big": False}     # did the last ask() fail because the request was too large?
+RETRY_SECONDS = 2              # the pause before the one retry of a 5xx answer
 
 
 def pack(items, render, max_tokens=MAX_TOKENS, max_items=50, per_item=0):
@@ -269,6 +280,14 @@ def suggest_dispositions(case_id, d, g) -> int:
             s = _answer_to_suggestion(ans)
             if s:
                 new[f.id] = {"wm": f.watermark(), **s}
+        if not any(a is not None for a in answers):
+            # Said in the case Log: it used to show only in the backend log, so a
+            # Timeline with no suggestion chips looked like "nothing to suggest".
+            from .store import log_case_event
+            log_case_event(case_id, "Jev · no verdict suggestions this time", "info",
+                           f"Jev did not answer for {len(todo)} finding(s) (its provider "
+                           "returned an error or could not be reached) — they are asked "
+                           "about again on the next fuse")
     # No early return when nothing changed: the notice below must still be built
     # (a case suggested before the notice existed, or a changed threshold).
     live = {f.id for f in g.findings}

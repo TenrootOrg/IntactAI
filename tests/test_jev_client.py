@@ -96,6 +96,22 @@ class Ask(unittest.TestCase):
             self.assertIsNone(jev.ask({}, q, cfg={**ON, "online_llm": {"provider": "claude"}}))
             post.assert_not_called()
 
+    def test_a_provider_hiccup_is_retried_once_an_outage_is_not(self):
+        # Live: one HTTP 520 left a 285-finding case with no suggestions, silently.
+        q = {"q0": {"type": "noul", "instructions": "?"}}
+        ok = _Resp(200, {"answers": {"q0": {"noul": 0.9}}})
+        with mock.patch.object(jev, "RETRY_SECONDS", 0):
+            with mock.patch.object(jev.requests, "post", side_effect=[_Resp(520), ok]) as post:
+                self.assertEqual(jev.ask({}, q, cfg=ON), {"q0": {"noul": 0.9}})
+                self.assertEqual(post.call_count, 2)
+            with mock.patch.object(jev.requests, "post", side_effect=[_Resp(520), _Resp(502)]) as post:
+                self.assertIsNone(jev.ask({}, q, cfg=ON))
+                self.assertEqual(post.call_count, 2)                 # once, not for ever
+            for dead in (dict(return_value=_Resp(429)), dict(side_effect=OSError("no route"))):
+                with mock.patch.object(jev.requests, "post", **dead) as post:
+                    self.assertIsNone(jev.ask({}, q, cfg=ON))
+                    self.assertEqual(post.call_count, 1)             # a dead provider costs one call
+
     def test_usage_lands_on_the_run(self):
         body = {"answers": {"q0": {}}, "usage": {"input_tokens": 7, "cost": 0.5}}
         rec = mock.Mock()

@@ -56,6 +56,16 @@ class SuggestDispositions(unittest.TestCase):
         written = self.merged["jev_suggestions"] if merge.called else None
         return n, asked, written
 
+    def test_a_pass_that_got_no_answer_at_all_says_so_in_the_case_log(self):
+        # Live: Jev's provider answered HTTP 520 and a 285-finding case got no
+        # suggestions — visible only in the backend log.
+        n, asked, written = self.run_pass({}, [_f("a"), _f("b")], {})
+        self.assertEqual((n, asked), (2, ["a", "b"]))
+        self.assertEqual(self.logged.call_args.args[1], "Jev · no verdict suggestions this time")
+        self.assertIn("asked about again on the next fuse", self.logged.call_args.args[3])
+        n, _, written = self.run_pass({}, [_f("a"), _f("b")], {"a": _ans("known")})
+        self.assertNotIn("no verdict suggestions", " ".join(str(c.args[1]) for c in self.logged.call_args_list))
+
     def test_only_unjudged_changed_findings_are_asked(self):
         a, b, c, e = _f("a"), _f("b", occ=3), _f("c"), _f("e", kind="dispositioned")
         d = {"timeline_validations": [{"finding_id": "c", "status": "known"}],
