@@ -245,24 +245,21 @@ class Chip(unittest.TestCase):
         with open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
             src = fh.read()
         fn = re.search(r"function _tlJev\(r\)\{.*?\n\}", src, re.S)
-        note = re.search(r"function _jevNote\(info\)\{.*?\n\}", src, re.S)
+        # The Analysis-tab banner ("Jev: N detections look malicious...") was removed
+        # at the user's request; the suggestions stay on the Timeline rows.
+        self.assertNotIn("_jevNote", src)
+        self.assertNotIn("look malicious and", src)
         gj = re.search(r"function _tlGroupJev\(members\)\{.*?\n\}", src, re.S)
         self.assertTrue(gj, "_tlGroupJev missing from cases.html")
-        self.assertTrue(note, "_jevNote missing from cases.html")
         states = re.search(r"const TL_STATES=\[.*?\];", src)
         self.assertTrue(fn and states, "_tlJev / TL_STATES missing from cases.html")
         parts = re.search(r"function _tlParts\(r\)\{.*?\}", src)
         js = (states.group(0) + "\nconst esc=s=>String(s).replace(/[<>&'\"]/g,'');\n"
-              + parts.group(0) + "\n" + fn.group(0) + "\n" + note.group(0) + "\n" + gj.group(0) + """
+              + parts.group(0) + "\n" + fn.group(0) + "\n" + gj.group(0) + """
 const out=[
   _tlJev({finding_id:'f1', jev:{label:'known', p:0.914}}),
   _tlJev({finding_id:'f1'}),
   _tlJev({finding_id:'f1', jev:{label:'nonsense', p:0.9}}),
-  _jevNote({jev_unreviewed:[{id:'a',title:'Log Cleared on HOST1'},{id:'b',title:'Mimikatz on HOST1'}]}),
-  _jevNote({jev_unreviewed:[{id:'a',title:'Base64 on H1'},{id:'b',title:'Base64 on H2'},{id:'c',title:'Base64 (+1 related) on 3 hosts'},{id:'d',title:'Log Cleared on H1'}]}),
-  _jevNote({jev_unreviewed:[]}),
-  _jevNote(null),
-  _jevNote({jev_unreviewed:[{id:'a',title:'Shared binary: x.exe on 3 hosts',detection:'Shared binary: x.exe'},{id:'b',title:'Shared binary: x.exe on 2 hosts',detection:'Shared binary: x.exe'}]}),
   _tlGroupJev([{jev:{label:'known',p:0.9}},{jev:{label:'known',p:0.9}},{jev:{label:'true_positive',p:0.9}},{}]),
   _tlGroupJev([{},{}]),
 ];
@@ -274,15 +271,9 @@ console.log(JSON.stringify(out));""")
         finally:
             os.unlink(t.name)
         import json
-        chip, none, bad, notice, grouped, empty, nothing, shared, gchip, gnone = json.loads(out)
-        self.assertIn("<b>1</b> detection (2 rows)", shared)      # keyed on detection, not " on "
+        chip, none, bad, gchip, gnone = json.loads(out)
         self.assertIn("2 likely Known · 1 likely True Positive", gchip)
         self.assertEqual(gnone, "")
-        self.assertIn("<b>2</b> detections (4 rows)", grouped)
-        self.assertIn("Base64 ×3 · Log Cleared", grouped)
-        self.assertIn("<b>2</b> detections (2 rows) look malicious", notice)
-        self.assertIn("Log Cleared · Mimikatz", notice)
-        self.assertEqual((empty, nothing), ("", ""))
         self.assertIn("likely Known · 91% (Jev)", chip)
         self.assertIn("event.stopPropagation();tlValidate('f1','known')", chip)
         self.assertEqual((none, bad), ("", ""))

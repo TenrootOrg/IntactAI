@@ -40,6 +40,14 @@
          border:1px solid var(--bd);border-radius:6px;background:var(--panel2);color:var(--tx);
          font-size:12px;font-weight:500;transition:border-color .15s,background .15s}
   .dlbtn:hover{border-color:var(--acc);background:var(--panel)}
+  /* Export: one button, then the format (the browser's own <details> as the menu) */
+  .expmenu{position:relative;display:inline-block}
+  .expmenu>summary{list-style:none;cursor:pointer;user-select:none}
+  .expmenu>summary::-webkit-details-marker{display:none}
+  .expitems{position:absolute;top:calc(100% + 4px);left:0;z-index:60;min-width:170px;padding:4px;
+            background:var(--panel);border:1px solid var(--bd);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.5)}
+  .expitems .dlbtn{display:flex;border:0;background:transparent;border-radius:5px;padding:7px 10px}
+  .expitems .dlbtn:hover{background:var(--panel2)}
   .md h1{font-size:22px;border-bottom:1px solid var(--bd);padding-bottom:6px}
   .md h2{font-size:16px;color:var(--tx);text-transform:none;letter-spacing:0;margin-top:22px}
   .md h3{font-size:14px;color:var(--acc)}
@@ -1023,21 +1031,7 @@ function airGapBanner(ag){
 function reportStatusHtml(info){
   if(info && info.report_generating)
     return genStatusHtml(info.report_generating_elapsed_s, info.report_phase, info.report_phase_elapsed_s);
-  return airGapBanner(reportAirGap(window._md||'', info && info.llm_status)) + behindNote(info) + _jevNote(info);
-}
-// Jev's notice (Settings → Agentic → Fast decisions): findings it is confident are
-// malicious that nobody has reviewed yet. Only a pointer to the Timeline, where the
-// analyst decides; absent entirely when Jev is off or found nothing.
-function _jevNote(info){
-  const n=(info&&info.jev_unreviewed)||[]; if(!n.length) return '';
-  // One detection now has a row per episode, so count DETECTIONS and say how
-  // many rows each has — "72 findings" read as 72 different threats.
-  const by={};
-  for(const x of n){ const k=x.detection||String(x.title||'').split(' on ')[0].replace(/\s*\(\+\d+ related\)$/,''); by[k]=(by[k]||0)+1; }
-  const names=Object.entries(by).sort((a,b)=>b[1]-a[1]);
-  const shown=names.slice(0,4).map(([k,c])=>esc(k)+(c>1?` ×${c}`:'')).join(' · ');
-  const d=names.length;
-  return `<div class="agnote" style="border-color:#58a6ff">Jev: <b>${d}</b> detection${d===1?'':'s'} (${n.length} row${n.length===1?'':'s'}) look${d===1?'s':''} malicious and ${n.length===1?'is':'are'} not reviewed yet — ${shown}${d>4?' …':''}. Review them on the <b>Timeline</b>.</div>`;
+  return airGapBanner(reportAirGap(window._md||'', info && info.llm_status)) + behindNote(info);
 }
 // What the page on screen does not reflect yet, in one quiet line. Nothing runs by
 // itself: a Refusion or a regeneration is the operator's call (and the latter spends
@@ -1265,7 +1259,8 @@ function renderReport(info){
     .replace(/!\[([^\]]*)\]\(evidence:([0-9a-f]{12})\)/g, (m,a,f)=>`![${a}](/api/cases/${id}/files/${f}?inline=1)`);
   $('#tabc').innerHTML=`<div id="reportstatus">${reportStatusHtml(info)}</div><div class="row" style="gap:8px;margin-bottom:10px;align-items:center">
     <span id="regenslot">${regenButtonHtml(info)}</span>
-    ${dl('/report/download','⬇ Markdown')}${dl('/report/download/pdf','⬇ Branded PDF')}${dl('/report/download/html','⬇ HTML')}
+    <details class="expmenu"><summary class="dlbtn" title="Download this report">⬇ Export</summary>
+      <div class="expitems" onclick="this.parentElement.open=false">${dl('/report/download/pdf','Branded PDF')}${dl('/report/download/html','HTML')}${dl('/report/download','Markdown')}</div></details>
     <label style="font-size:12px;white-space:nowrap" title="On: the report gets an Evidence section with every item and its pictures (also in the PDF and HTML), and the AI is given the evidence — names, descriptions, linked findings and the text of text files, never the pictures themselves. Regenerate the report after changing it."><input type="checkbox" style="width:auto" ${info.include_evidence?'checked':''} onchange="evToggleInclude('${esc(id)}',this.checked)"/> Include evidence in the report and AI</label>
     <span style="color:var(--muted);font-size:11px;margin-left:auto">auto-generated on first scan · regenerate to apply Timeline changes</span>
   </div>${reportHistoryHtml(info, viewing)}<div id="zoomcards">${viewing?'':(_zoomHtml.id===id?_zoomHtml.html:'')}</div><div class="md">${mdToHtml(mdBody)}</div>`;
@@ -2153,6 +2148,8 @@ function evPasteAttach(fid){
   const file=new File([pic], nm, {type:pic.type});
   evPasteCancel(); evAttachFiles(fid,[file]);
 }
+// the Export menu closes when you click anywhere else
+document.addEventListener('click',e=>{ document.querySelectorAll('details.expmenu[open]').forEach(d=>{ if(!d.contains(e.target)) d.open=false; }); });
 document.addEventListener('paste',e=>{
   const dr=$('#fdetail');
   if(dr && dr.classList.contains('open') && window._fdFid){

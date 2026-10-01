@@ -258,7 +258,7 @@ console.log(JSON.stringify([
         with open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
             src = fh.read()
         self.assertIn("Include evidence in the report and AI</label>", src)
-        self.assertIn("dl('/report/download/html','⬇ HTML')", src)
+        self.assertIn("dl('/report/download/html','HTML')", src)             # in the Export menu
 
 
 class Paste(unittest.TestCase):

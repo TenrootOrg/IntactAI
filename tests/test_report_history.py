@@ -142,6 +142,13 @@ class Page(unittest.TestCase):
         self.assertNotIn('id="rp-type"', src)
         self.assertNotIn("report_type", src)
         self.assertIn("body:JSON.stringify({use_llm:true})", src)
+        # ONE Export button, then the format (three download buttons before)
+        menu = re.search(r'<details class="expmenu">.*?</details>', src, re.S).group(0)
+        self.assertIn(">⬇ Export</summary>", menu)
+        for path, label in (("/report/download/pdf", "Branded PDF"), ("/report/download/html", "HTML"), ("/report/download", "Markdown")):
+            self.assertIn("${dl('%s','%s')}" % (path, label), menu)
+        self.assertEqual(src.count("dl('/report/download/pdf'"), 1)        # nowhere else on the row
+        self.assertNotIn("⬇ Markdown", src)
         js = ("const esc=s=>String(s); const window={};\n" + re.search(r"const _rpLab=.*?;\n", src).group(0)
               + re.search(r"function reportHistoryHtml\(.*?\n\}", src, re.S).group(0) + """
 const H=[{id:'0123456789ab',label:'Report',at:'2026-09-30T10:12:00',kind:'ai',scope_label:'2016-09-24 → 2026-09-24'},
