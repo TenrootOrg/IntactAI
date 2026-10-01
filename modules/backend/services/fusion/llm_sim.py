@@ -1906,9 +1906,10 @@ def generate_report(graph, *, window=None, min_severity="informational",
             if estimates:
                 system = system + ("\n\n`automated_estimates` in the data are a second model's "
                                    "probabilities, NOT analyst verdicts: an analyst verdict always "
-                                   "overrides them. Use them to prioritise and to state likelihood; "
-                                   "when a statement relies on one, say 'automated estimate' and "
-                                   "never 'confirmed'.")
+                                   "overrides them. Follow the `note` inside it: state the estimate "
+                                   "in brackets wherever you discuss a listed finding or identity, "
+                                   "name the unreviewed 'likely malicious' ones in the summary, and "
+                                   "never write 'confirmed' for an estimate.")
             if master_prompt:
                 system = ("## OPERATOR CONTEXT (from interactive validation) — treat as "
                           "ground truth; apply the removals/focus described:\n"

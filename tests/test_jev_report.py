@@ -62,7 +62,9 @@ class Estimates(unittest.TestCase):
             {"finding": "Defender disabled", "estimate": "likely expected or administrative activity", "confidence": 0.85}])
         self.assertEqual(est["identities"], [{"identity": "adatum\\srv", "compromise_probability": 0.91}])
         self.assertIn("NOT analyst verdicts", est["note"])
-        self.assertIn("never 'confirmed'", est["note"])
+        self.assertIn("Never write 'confirmed'", est["note"])
+        self.assertIn("Say nothing about estimates for findings", est["note"])   # live: "[No automated estimate supplied.]"
+        self.assertIn("state its estimate in brackets", est["note"])       # by name: "may use" was ignored live
 
     def test_off_means_nothing_and_a_failure_means_nothing(self):
         self.assertEqual(self.run_it(uses=("disposition", "compromise")), {})        # the report use is off
@@ -108,7 +110,7 @@ class ReportModel(unittest.TestCase):
             for _sys, user in calls:
                 self.assertIn("automated_estimates", user, alt)
                 self.assertIn("NOT analyst verdicts", user, alt)          # the note travels with the data
-            self.assertIn("never 'confirmed'", calls[-1][0])              # and the final call's instructions
+            self.assertIn("never write 'confirmed'", calls[-1][0])        # and the final call's instructions
         self.assertGreater(len(self.calls("macro", self.EST)), 1)        # phases + synthesis
 
     def test_without_estimates_nothing_changes(self):

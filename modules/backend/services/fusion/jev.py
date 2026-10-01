@@ -779,10 +779,17 @@ REPORT_WAIT_SECONDS = 90
 _ESTIMATE = {"true_positive": "likely malicious",
              "known": "likely expected or administrative activity",
              "false_positive": "likely a false detection"}
+# Asked for by name. The first wording ("when a statement relies on one, say
+# 'automated estimate'") let the model ignore them entirely: on a live case with
+# two findings rated likely malicious the report never mentioned an estimate.
 ESTIMATES_NOTE = ("Automated estimates from a second model -- NOT analyst verdicts. An analyst "
-                  "verdict always overrides them. Use them to prioritise and to state "
-                  "likelihood; when a statement relies on one, say 'automated estimate' and "
-                  "never 'confirmed'.")
+                  "verdict always overrides them. Where the report discusses a finding or "
+                  "identity listed here, state its estimate in brackets, e.g. '(automated "
+                  "estimate: likely malicious, 0.87)' or '(automated estimate: 0.57 likely "
+                  "compromised)'. In the summary, name the findings estimated likely malicious "
+                  "that no analyst has reviewed yet. Say nothing about estimates for findings "
+                  "or identities that are not listed here. Never write 'confirmed' for an "
+                  "estimate.")
 
 
 def report_wait_seconds() -> float:
