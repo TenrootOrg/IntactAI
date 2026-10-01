@@ -231,6 +231,7 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
     )
     body_html = _wrap_findings_severity(body_html)
     body_html = _mark_empty_theads(body_html)
+    body_html = _report_marks(body_html)
 
     tenroot_logo = _logo_data_url()
     cust_logo = (customer_logo or '').strip()
@@ -293,7 +294,9 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
            plus its own height), so the metadata grid can never run into it again. */
         padding: 34mm 22mm 36mm 22mm;
         height: 297mm;
-        background: linear-gradient(160deg, #0f172a 0%, #1e293b 60%, #0f172a 100%);
+        /* the application's own dark: #0d1117 / #161b22, with its accent below */
+        background: linear-gradient(160deg, #0d1117 0%, #161b22 60%, #0d1117 100%);
+        border-bottom: 2mm solid #e0556e;
         color: #f8fafc;
         position: relative;
     }}
@@ -330,7 +333,7 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
         color: #f8fafc;
         letter-spacing: -0.01em;
     }}
-    .cover h1 .accent {{ color: #38bdf8; }}
+    .cover h1 .accent {{ color: #e0556e; }}
     .cover .subtitle {{
         font-size: 11pt;
         line-height: 1.6;
@@ -406,10 +409,22 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
         border-bottom: 1px solid #cbd5e1;
         page-break-after: avoid;
     }}
+    body {{ counter-reset: sec; }}
+    /* numbered sections, as in the HTML export: 01, 02, … in the accent colour */
+    h2 ~ h3::before {{
+        counter-increment: sec;
+        content: counter(sec, decimal-leading-zero);
+        font-family: "DejaVu Sans Mono", "Consolas", monospace;
+        font-size: 8pt;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        color: #e0556e;
+        margin-right: 2.5mm;
+    }}
     h3 {{
         font-size: 11.5pt;
         font-weight: 700;
-        color: #1e3a8a;
+        color: #0d1117;
         margin: 9mm 0 3mm 0;
         letter-spacing: -0.005em;
         page-break-after: avoid;
@@ -417,8 +432,10 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
     h4 {{
         font-size: 10pt;
         font-weight: 700;
-        color: #334155;
+        color: #161b22;
         margin: 6mm 0 2.5mm 0;
+        padding-left: 2.5mm;
+        border-left: 3px solid #e0556e;
         page-break-after: avoid;
     }}
     /* A heading immediately after another must not inherit the full gap -- the
@@ -481,8 +498,8 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
         page-break-inside: avoid;
     }}
     th {{
-        background: #0f172a;
-        color: #f8fafc;
+        background: #161b22;
+        color: #e6edf3;
         font-weight: 600;
         text-align: left;
         padding: 2.6mm 3mm;
@@ -514,6 +531,38 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
         text-transform: uppercase;
         color: #ffffff;
     }}
+    /* The report's severity chips ([high] → HIGH) and its risk banner — the same
+       marks the HTML export shows, in the application's severity colours, tinted
+       for white paper. Explicit colours, no var(): this sheet is WeasyPrint's too. */
+    .rp-sev {{
+        display: inline-block;
+        font-family: "DejaVu Sans Mono", "Consolas", monospace;
+        font-size: 7pt;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        padding: 0 1.6mm;
+        border-radius: 3px;
+        border: 1px solid #cbd5e1;
+        color: #475569;
+        background: #f1f5f9;
+    }}
+    .rp-sev.rp-critical {{ color: #c62828; background: #fdecea; border-color: #f5b5b0; }}
+    .rp-sev.rp-high     {{ color: #b4500f; background: #fdf0e6; border-color: #f3c9a5; }}
+    .rp-sev.rp-medium   {{ color: #8a6100; background: #fbf3dc; border-color: #ecd596; }}
+    .rp-sev.rp-low      {{ color: #1f7a3a; background: #e9f7ee; border-color: #b2dfc0; }}
+    p.rp-risk {{
+        margin: 4mm 0 3mm 0;
+        padding: 3mm 4mm;
+        border-left: 4px solid #e0556e;
+        background: #f8fafc;
+        page-break-inside: avoid;
+    }}
+    p.rp-risk strong {{ letter-spacing: 0.08em; font-size: 8.5pt; margin-right: 1.5mm; }}
+    p.rp-risk.rp-critical {{ border-left-color: #f85149; }} p.rp-risk.rp-critical strong {{ color: #c62828; }}
+    p.rp-risk.rp-high     {{ border-left-color: #db6d28; }} p.rp-risk.rp-high strong     {{ color: #b4500f; }}
+    p.rp-risk.rp-medium   {{ border-left-color: #d29922; }} p.rp-risk.rp-medium strong   {{ color: #8a6100; }}
+    p.rp-risk.rp-low      {{ border-left-color: #3fb950; }} p.rp-risk.rp-low strong      {{ color: #1f7a3a; }}
     .sev-critical {{ background: #b91c1c; }}
     .sev-high     {{ background: #c2410c; }}
     .sev-medium   {{ background: #b45309; }}
@@ -522,7 +571,7 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
     /* Finding block container — applied via h3 + following content */
     h3 + ul {{
         background: #f8fafc;
-        border-left: 3px solid #1e3a8a;
+        border-left: 3px solid #e0556e;
         /* was 2mm 4mm: the text sat hard against the accent rule */
         padding: 4mm 5mm 4mm 9mm;
         margin: 0 0 4mm 0;
@@ -576,7 +625,7 @@ def _build_html(md_body: str, meta: dict, source_run_id: str, customer_logo: str
 <body>
   <section class="cover">
     <div class="logo-wrap">
-      {f'<img src="{tenroot_logo}" alt="Tenroot">' if tenroot_logo else '<div style="font-weight:800;font-size:18pt;color:#38bdf8;">TENROOT</div>'}
+      {f'<img src="{tenroot_logo}" alt="Tenroot">' if tenroot_logo else '<div style="font-weight:800;font-size:18pt;color:#e0556e;">TENROOT</div>'}
       {f'<div class="sep"></div><img src="{_html_escape(cust_logo)}" alt="Customer">' if cust_logo else ''}
     </div>
     <div class="tlp-badge">TLP:{_html_escape(meta['tlp'])}</div>
@@ -669,9 +718,10 @@ def render_engagement_html(markdown_text: str, run_id: str, logo_b64: str = '') 
 # The HTML export's SCREEN design. The document's own CSS is a print layout (A4
 # sheets, a cover pinned to the sheet, page breaks); under it a browser showed a
 # narrow white column with a grey box of links on top ("the html export is very
-# ugly"). This lays the same document out as a case file to READ: a contents rail
-# that follows the reader, a reading column, numbered sections, severity chips, a
-# risk banner. Self-contained and offline: system fonts only, no web requests,
+# ugly"). This lays the same document out to READ, in the application's own dark
+# theme: a contents rail that follows the reader, a reading column, numbered
+# sections. The severity chips and the risk banner are shared with the PDF
+# (_report_marks), which carries the same colours on white pages. Self-contained and offline: system fonts only, no web requests,
 # a few lines of inline script (contents highlight + reading progress), and it
 # degrades to a plain readable page without script. Everything visual is inside
 # `@media screen`, so printing from the browser still gets the print layout, and
@@ -680,6 +730,16 @@ def render_engagement_html(markdown_text: str, run_id: str, logo_b64: str = '') 
 _TOC_BLOCK = re.compile(r'<h\d[^>]*class="toc-heading"[^>]*>.*?</h\d>\s*(<div class="toc">.*?</div>)', re.S)
 _SEV_TAG = re.compile(r'<strong>\[(critical|high|medium|low|informational)\]</strong>', re.I)
 _RISK_P = re.compile(r'<p><strong>Risk:\s*(CRITICAL|HIGH|MEDIUM|LOW)</strong>', re.I)
+
+
+def _report_marks(body_html: str) -> str:
+    """Severity as a chip and the risk line as a banner — in the PDF and the HTML
+    alike, so the two exports share one design. `[high]` → a `HIGH` chip;
+    `Risk: CRITICAL — …` → a paragraph the stylesheet draws as a banner."""
+    body_html = _SEV_TAG.sub(
+        lambda x: f'<span class="rp-sev rp-{x.group(1).lower()}">{x.group(1).lower()}</span>', body_html)
+    return _RISK_P.sub(
+        lambda x: f'<p class="rp-risk rp-{x.group(1).lower()}"><strong>Risk: {x.group(1).upper()}</strong>', body_html)
 
 
 def _screen_layout(html: str) -> str:
@@ -696,8 +756,6 @@ def _screen_layout(html: str) -> str:
         toc = re.sub(r'<li><a href="#table-of-contents">.*?</a></li>\s*', "", m.group(1), count=1)
         body = body[:m.start()] + body[m.end():]
     body = body.replace("<table>", '<div class="rp-tw"><table>').replace("</table>", "</table></div>")
-    body = _SEV_TAG.sub(lambda x: f'<span class="rp-sev rp-{x.group(1).lower()}">{x.group(1).lower()}</span>', body)
-    body = _RISK_P.sub(lambda x: f'<p class="rp-risk rp-{x.group(1).lower()}"><strong>Risk: {x.group(1).upper()}</strong>', body)
     nav = (f'<nav class="rp-nav" aria-label="Contents"><div class="rp-nav-title">Contents</div>{toc}</nav>'
            if toc else "")
     shell = (f'\n<div class="rp-progress" aria-hidden="true"></div>\n'
@@ -726,156 +784,158 @@ _SCREEN_JS = """<script>
 </script>"""
 
 _SCREEN_CSS = """<style>
-/* severity chips and the risk line: every medium, so a browser print keeps them */
-.rp-sev { display: inline-block; font: 700 .72em/1.5 ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
-          letter-spacing: .06em; text-transform: uppercase; padding: 0 .5em; border-radius: 3px; vertical-align: .08em;
-          color: var(--sev, #5b6675); border: 1px solid var(--sev, #5b6675); }
-.rp-critical { --sev: #b4232f; } .rp-high { --sev: #c2570c; } .rp-medium { --sev: #9a6700; }
-.rp-low { --sev: #2f6f4f; } .rp-informational { --sev: #5b6675; }
 @media print { .rp-progress { display: none; } .rp-nav-title { font-weight: 700; margin: 0 0 2mm; } }
 
+/* The application's own theme (modules/nginx/html/cases.html :root): one dark
+   theme, its accent, its severity colours, its font. */
 @media screen {
   :root {
-    --paper: #f3efe6; --sheet: #fffdf8; --ink: #17202c; --ink2: #3c4858; --muted: #7b8493;
-    --rule: #ddd5c4; --tint: #f4efe3; --navy: #0d1826; --navy2: #16263b; --accent: #c93b4f;
-    --link: #1f5a8c; --code: #1d4468; --codebg: #eef1f0; --shadow: 0 1px 0 #fff inset, 0 18px 50px -22px rgba(23, 32, 44, .35);
-    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
-    --sans: "Avenir Next", "Segoe UI Variable Text", "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
-    --mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, "DejaVu Sans Mono", monospace;
+    --bg: #0d1117; --panel: #161b22; --panel2: #1c232c; --bd: #2a323c; --tx: #e6edf3; --muted: #8b949e;
+    --acc: #e0556e; --info: #58a6ff; --crit: #f85149; --high: #db6d28; --med: #d29922; --low: #3fb950;
+    --sans: system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace;
+    color-scheme: dark;
   }
-  @media (prefers-color-scheme: dark) {
-    :root { --paper: #0a0f17; --sheet: #111924; --ink: #e7ebf1; --ink2: #b8c1cf; --muted: #7f8a9b;
-            --rule: #253142; --tint: #162130; --navy: #070c13; --navy2: #101c2c; --accent: #ef6b7c;
-            --link: #7db4e6; --code: #a9cdf0; --codebg: #1a2635; --shadow: 0 18px 50px -22px rgba(0, 0, 0, .8); }
-    .rp-critical { --sev: #ff7b86; } .rp-high { --sev: #ffa25c; } .rp-medium { --sev: #e3b341; }
-    .rp-low { --sev: #6fcf97; } .rp-informational { --sev: #9aa6b6; }
-  }
-  html { background: var(--paper); scroll-behavior: smooth; scroll-padding-top: 28px; }
-  html, body { font-family: var(--serif); font-size: 17px; line-height: 1.72; color: var(--ink); }
-  body { margin: 0; padding: 0; max-width: none; border-radius: 0; box-shadow: none;
-         background: radial-gradient(circle at 1px 1px, rgba(120, 110, 90, .13) 1px, transparent 0) 0 0 / 22px 22px, var(--paper); }
-  ::selection { background: var(--accent); color: #fff; }
+  html { background: var(--bg); scroll-behavior: smooth; scroll-padding-top: 28px; }
+  html, body { font-family: var(--sans); font-size: 15.5px; line-height: 1.7; color: var(--tx); }
+  body { margin: 0; padding: 0; max-width: none; border-radius: 0; box-shadow: none; background: var(--bg); }
+  ::selection { background: var(--acc); color: #fff; }
 
-  .rp-progress { position: fixed; inset: 0 0 auto 0; height: 3px; background: var(--accent);
+  .rp-progress { position: fixed; inset: 0 0 auto 0; height: 3px; background: var(--acc);
                  transform: scaleX(0); transform-origin: 0 50%; z-index: 20; }
 
   /* ---- cover: a full-width header, not a sheet ---- */
-  .cover { height: auto; min-height: 0; margin: 0; padding: 64px max(32px, calc((100vw - 1180px) / 2 + 32px)) 44px;
-           page-break-after: auto; border-radius: 0; position: relative; overflow: hidden; color: #f3f6fa;
+  .cover { height: auto; min-height: 0; margin: 0; padding: 60px max(32px, calc((100vw - 1180px) / 2 + 32px)) 40px;
+           page-break-after: auto; border-radius: 0; position: relative; overflow: hidden; color: var(--tx);
            background:
-             radial-gradient(900px 420px at 88% -10%, rgba(201, 59, 79, .34), transparent 62%),
-             repeating-linear-gradient(118deg, rgba(255, 255, 255, .035) 0 1px, transparent 1px 13px),
-             linear-gradient(160deg, var(--navy) 0%, var(--navy2) 58%, var(--navy) 100%);
-           border-bottom: 3px solid var(--accent); }
+             radial-gradient(900px 420px at 88% -10%, rgba(224, 85, 110, .22), transparent 62%),
+             linear-gradient(180deg, #000 0%, var(--bg) 100%);
+           border-bottom: 1px solid var(--bd); box-shadow: inset 0 -3px 0 var(--acc); }
   .cover > * { animation: rp-rise .6s cubic-bezier(.2, .7, .2, 1) both; }
   .cover > :nth-child(2) { animation-delay: .06s; } .cover > :nth-child(3) { animation-delay: .12s; }
   .cover > :nth-child(4) { animation-delay: .18s; } .cover > :nth-child(5) { animation-delay: .24s; }
   .cover > :nth-child(6) { animation-delay: .30s; }
   @keyframes rp-rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
   @media (prefers-reduced-motion: reduce) { .cover > * { animation: none; } html { scroll-behavior: auto; } }
-  .cover .logo-wrap { margin: 0 0 40px; gap: 18px; }
+  .cover .logo-wrap { margin: 0 0 36px; gap: 18px; }
   .cover .logo-wrap img, .cover .logo-wrap img[alt] { display: inline; height: 40px; width: auto; max-width: 220px; max-height: 40px;
                                                       border: none; border-radius: 0; margin: 0; }
-  .cover .logo-wrap .sep { height: 32px; }
-  .cover .tlp-badge { position: static; display: inline-block; margin: 0 0 18px; padding: 4px 12px; border-radius: 2px;
-                      font: 700 12px/1.6 var(--sans); letter-spacing: .16em; }
-  .cover h1 { font: 600 clamp(34px, 5.2vw, 62px)/1.04 var(--serif); letter-spacing: -.02em; margin: 0 0 18px; color: #fff; max-width: 18ch; }
-  .cover h1 .accent { color: #ffb4a6; font-style: italic; font-weight: 500; }
-  .cover .subtitle { font: 400 15px/1.6 var(--sans); color: #aab6c6; max-width: 62ch; margin: 0 0 34px; }
+  .cover .logo-wrap .sep { height: 32px; background: var(--bd); }
+  .cover .tlp-badge { position: static; display: inline-block; margin: 0 0 16px; padding: 3px 11px; border-radius: 10px;
+                      font: 700 11.5px/1.6 var(--sans); letter-spacing: .12em; }
+  .cover h1 { font: 700 clamp(30px, 4.6vw, 52px)/1.08 var(--sans); letter-spacing: -.02em; margin: 0 0 16px; color: #fff; max-width: 22ch; }
+  .cover h1 .accent { color: var(--acc); font-weight: 600; }
+  .cover .subtitle { font: 400 14.5px/1.6 var(--sans); color: var(--muted); max-width: 66ch; margin: 0 0 30px; }
   .cover .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0; width: auto;
-                      border-top: 1px solid rgba(255, 255, 255, .16); font-size: 15px; }
-  .cover .meta-row { display: block; padding: 14px 18px 14px 0; border-bottom: 1px solid rgba(255, 255, 255, .1); }
-  .cover .meta-label { display: block; width: auto; padding: 0 0 3px; font: 600 10.5px/1.4 var(--sans); letter-spacing: .16em; color: #7f93ab; }
-  .cover .meta-value { display: block; padding: 0; font: 400 15px/1.45 var(--sans); color: #f3f6fa; overflow-wrap: anywhere; }
-  .cover code { font-family: var(--mono); font-size: 12.5px; background: rgba(255, 255, 255, .08); color: #dbe5f1; padding: 1px 6px; }
-  .cover .footer-line { position: static; margin: 26px 0 0; padding: 0; border: none; font: 400 12px/1.5 var(--sans);
-                        letter-spacing: .04em; color: #6f8198; }
+                      border-top: 1px solid var(--bd); font-size: 14.5px; color: var(--tx); }
+  .cover .meta-row { display: block; padding: 13px 18px 13px 0; border-bottom: 1px solid var(--bd); }
+  .cover .meta-label { display: block; width: auto; padding: 0 0 3px; font: 600 10.5px/1.4 var(--sans); letter-spacing: .14em; color: var(--muted); }
+  .cover .meta-value { display: block; padding: 0; font: 400 14.5px/1.45 var(--sans); color: var(--tx); overflow-wrap: anywhere; }
+  .cover code { font-family: var(--mono); font-size: 12.5px; background: rgba(88, 166, 255, .08); color: var(--info);
+                border: 1px solid var(--bd); border-radius: 4px; padding: 1px 6px; }
+  .cover .footer-line { position: static; margin: 24px 0 0; padding: 0; border: none; font: 400 12px/1.5 var(--sans); color: var(--muted); }
 
   /* ---- shell: contents rail + reading column ---- */
-  .rp-shell { display: grid; grid-template-columns: 270px minmax(0, 1fr); gap: 56px; align-items: start;
-              max-width: 1180px; margin: 0 auto; padding: 44px 32px 110px; }
+  .rp-shell { display: grid; grid-template-columns: 270px minmax(0, 1fr); gap: 44px; align-items: start;
+              max-width: 1180px; margin: 0 auto; padding: 36px 32px 110px; }
   .rp-shell.rp-solo { grid-template-columns: minmax(0, 880px); justify-content: center; }
   .rp-nav { position: sticky; top: 24px; max-height: calc(100vh - 48px); overflow: auto; padding: 4px 6px 12px 0;
-            font: 400 13.5px/1.45 var(--sans); scrollbar-width: thin; }
-  .rp-nav-title { font: 700 10.5px/1 var(--sans); letter-spacing: .2em; text-transform: uppercase; color: var(--muted);
+            font: 400 13px/1.45 var(--sans); scrollbar-width: thin; }
+  .rp-nav-title { font: 700 11px/1 var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
                   padding: 0 0 12px 14px; }
   .rp-nav .toc { background: none; border: none; border-radius: 0; padding: 0; margin: 0; page-break-after: auto; }
   .rp-nav ul { list-style: none; margin: 0; padding: 0; }
   .rp-nav li { margin: 0; padding: 0; }
-  .rp-nav a { display: block; padding: 5px 10px 5px 14px; border-left: 2px solid var(--rule); color: var(--ink2);
+  .rp-nav a { display: block; padding: 5px 10px 5px 14px; border-left: 2px solid var(--bd); color: var(--muted);
               text-decoration: none; transition: color .15s, border-color .15s, background .15s; }
-  .rp-nav a:hover { color: var(--ink); border-left-color: var(--muted); text-decoration: none; }
-  .rp-nav a.on { color: var(--ink); border-left-color: var(--accent); background: linear-gradient(90deg, rgba(201, 59, 79, .1), transparent 85%); font-weight: 600; }
-  .rp-nav .toc > ul > li > a { font-weight: 600; color: var(--ink); }
+  .rp-nav a:hover { color: var(--tx); border-left-color: var(--muted); text-decoration: none; }
+  .rp-nav a.on { color: var(--tx); border-left-color: var(--acc); background: linear-gradient(90deg, rgba(224, 85, 110, .12), transparent 85%); font-weight: 600; }
+  .rp-nav .toc > ul > li > a { font-weight: 600; color: var(--tx); }
   .rp-nav .toc > ul > li > ul { counter-reset: nav; }
   .rp-nav .toc > ul > li > ul > li > a::before { counter-increment: nav; content: counter(nav, decimal-leading-zero);
                                                  font: 600 10.5px/1 var(--mono); color: var(--muted); margin-right: 9px; }
-  .rp-nav ul ul ul a { padding-left: 40px; font-size: 12.5px; color: var(--muted); }
+  .rp-nav ul ul ul a { padding-left: 40px; font-size: 12.5px; }
 
-  .rp-main { counter-reset: sec; background: var(--sheet); border: 1px solid var(--rule); border-radius: 3px;
-             padding: 52px clamp(22px, 5vw, 68px) 60px; box-shadow: var(--shadow); min-width: 0; }
+  .rp-main { counter-reset: sec; background: var(--panel); border: 1px solid var(--bd); border-radius: 8px;
+             padding: 44px clamp(22px, 4.5vw, 60px) 52px; min-width: 0; }
   .rp-main > :first-child { margin-top: 0; }
   .rp-main > h3:first-child { border-top: none; padding-top: 0; }
 
   /* the report's title, its sections, the phases inside them */
-  .rp-main h2 { font: 600 clamp(26px, 3vw, 36px)/1.15 var(--serif); letter-spacing: -.015em; color: var(--ink);
-                margin: 44px 0 18px; padding: 0; border: none; }
-  .rp-main h3 { font: 600 23px/1.25 var(--serif); letter-spacing: -.01em; color: var(--ink);
-                margin: 58px 0 16px; padding: 22px 0 0; border-top: 1px solid var(--rule); }
+  .rp-main h2 { font: 700 clamp(24px, 2.8vw, 32px)/1.2 var(--sans); letter-spacing: -.015em; color: var(--tx);
+                margin: 40px 0 16px; padding: 0 0 12px; border: none; border-bottom: 1px solid var(--bd); }
+  .rp-main h3 { font: 600 20px/1.3 var(--sans); letter-spacing: -.01em; color: var(--tx);
+                margin: 50px 0 14px; padding: 20px 0 0; border-top: 1px solid var(--bd); }
   .rp-main h2 ~ h3::before { counter-increment: sec; content: counter(sec, decimal-leading-zero);
-                             display: block; font: 700 11.5px/1 var(--mono); letter-spacing: .14em; color: var(--accent); margin: 0 0 9px; }
-  .rp-main h4 { font: 600 17.5px/1.35 var(--serif); font-style: italic; color: var(--ink);
-                margin: 34px 0 10px; padding-left: 14px; border-left: 3px solid var(--accent); }
-  .rp-main h2 + h3, .rp-main h3 + h4 { margin-top: 26px; }
-  .rp-main h5, .rp-main h6 { font: 700 12px/1.4 var(--sans); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin: 24px 0 8px; }
+                             display: block; font: 700 11.5px/1 var(--mono); letter-spacing: .14em; color: var(--acc); margin: 0 0 8px; }
+  .rp-main h4 { font: 600 16px/1.4 var(--sans); color: var(--tx);
+                margin: 30px 0 10px; padding-left: 12px; border-left: 3px solid var(--acc); }
+  .rp-main h2 + h3, .rp-main h3 + h4 { margin-top: 24px; }
+  .rp-main h5, .rp-main h6 { font: 700 11.5px/1.4 var(--sans); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin: 22px 0 8px; }
 
-  .rp-main p { font-size: 17px; margin: 0 0 15px; }
-  .rp-main p, .rp-main li { color: var(--ink2); overflow-wrap: anywhere; }
-  .rp-main strong { color: var(--ink); font-weight: 650; }
-  .rp-main a { color: var(--link); text-decoration-thickness: 1px; text-underline-offset: 3px; }
-  .rp-main ul, .rp-main ol { margin: 0 0 18px; padding-left: 24px; }
-  .rp-main li { font-size: 16.5px; margin: 0 0 9px; padding-left: 4px; }
-  .rp-main li::marker { color: var(--accent); }
-  .rp-main li > ul, .rp-main li > ol { margin: 8px 0 4px; }
-  .rp-main li li { font-size: 15px; margin-bottom: 5px; }
-  .rp-main li li::marker { color: var(--rule); }
+  .rp-main p { font-size: 15.5px; margin: 0 0 14px; }
+  .rp-main p, .rp-main li { color: #c9d1d9; overflow-wrap: anywhere; }
+  .rp-main strong { color: var(--tx); font-weight: 600; }
+  .rp-main a { color: var(--info); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  .rp-main ul, .rp-main ol { margin: 0 0 16px; padding-left: 22px; }
+  .rp-main li { font-size: 15px; margin: 0 0 8px; padding-left: 4px; }
+  .rp-main li::marker { color: var(--acc); }
+  .rp-main li > ul, .rp-main li > ol { margin: 7px 0 4px; }
+  .rp-main li li { font-size: 13.5px; margin-bottom: 4px; }
+  .rp-main li li::marker { color: var(--bd); }
+  /* a list right under a section heading is plain here (the print sheet boxes it) */
+  .rp-main h3 + ul { background: none; border-left: none; padding: 0 0 0 22px; margin: 0 0 16px; }
 
-  .rp-main code { font-family: var(--mono); font-size: .82em; background: var(--codebg); color: var(--code);
-                  padding: 1px 5px; border-radius: 3px; overflow-wrap: anywhere; }
-  .rp-main pre { white-space: pre-wrap; word-break: break-word; background: var(--navy); border-radius: 4px; padding: 14px 16px; margin: 0 0 18px; }
-  .rp-main pre code { display: block; background: none; color: #dbe5f1; padding: 0; font-size: 13px; line-height: 1.55; }
+  .rp-main code { font-family: var(--mono); font-size: .84em; background: rgba(88, 166, 255, .08); color: #9ecbff;
+                  padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+  .rp-main pre { white-space: pre-wrap; word-break: break-word; background: var(--bg); border: 1px solid var(--bd);
+                 border-radius: 6px; padding: 12px 14px; margin: 0 0 16px; }
+  .rp-main pre code { display: block; background: none; color: var(--tx); padding: 0; font-size: 12.5px; line-height: 1.55; }
 
-  .rp-main blockquote { margin: 0 0 20px; padding: 12px 18px; border-left: 3px solid var(--accent); background: var(--tint);
-                        color: var(--ink2); font-style: normal; border-radius: 0 3px 3px 0; }
-  .rp-main blockquote p { margin: 0; font: 400 14.5px/1.55 var(--sans); }
+  .rp-main blockquote { margin: 0 0 18px; padding: 10px 16px; border-left: 3px solid var(--info); background: var(--panel2);
+                        color: var(--muted); font-style: normal; border-radius: 0 6px 6px 0; }
+  .rp-main blockquote p { margin: 0; font-size: 13.5px; line-height: 1.55; color: var(--muted); }
 
-  .rp-main p.rp-risk { margin: 22px 0 8px; padding: 14px 18px; border-left: 5px solid var(--sev, var(--accent));
-                       background: var(--tint); border-radius: 0 3px 3px 0; font-size: 16px; }
-  .rp-main p.rp-risk strong { font: 800 12.5px/1 var(--sans); letter-spacing: .14em; color: var(--sev, var(--accent)); margin-right: 6px; }
+  /* severity chips and the risk banner: the application's chip, tinted on dark */
+  .rp-sev { font-family: var(--mono); font-size: .72em; padding: 1px 7px; border-radius: 10px; border: none; vertical-align: .08em;
+            color: var(--muted); background: rgba(139, 148, 158, .16); }
+  .rp-sev.rp-critical { color: var(--crit); background: rgba(248, 81, 73, .18); border: none; }
+  .rp-sev.rp-high { color: var(--high); background: rgba(219, 109, 40, .18); border: none; }
+  .rp-sev.rp-medium { color: var(--med); background: rgba(210, 153, 34, .18); border: none; }
+  .rp-sev.rp-low { color: var(--low); background: rgba(63, 185, 80, .16); border: none; }
+  .rp-main p.rp-risk { margin: 20px 0 8px; padding: 13px 16px; border-left: 4px solid var(--acc); background: var(--panel2);
+                       border-radius: 0 6px 6px 0; font-size: 15px; color: var(--tx); }
+  .rp-main p.rp-risk strong { font: 800 12px/1 var(--sans); letter-spacing: .12em; margin-right: 6px; color: var(--acc); }
+  .rp-main p.rp-risk.rp-critical { border-left-color: var(--crit); background: rgba(248, 81, 73, .08); }
+  .rp-main p.rp-risk.rp-critical strong { color: var(--crit); }
+  .rp-main p.rp-risk.rp-high { border-left-color: var(--high); background: rgba(219, 109, 40, .08); }
+  .rp-main p.rp-risk.rp-high strong { color: var(--high); }
+  .rp-main p.rp-risk.rp-medium { border-left-color: var(--med); } .rp-main p.rp-risk.rp-medium strong { color: var(--med); }
+  .rp-main p.rp-risk.rp-low { border-left-color: var(--low); } .rp-main p.rp-risk.rp-low strong { color: var(--low); }
 
-  .rp-tw { overflow-x: auto; margin: 0 0 24px; border: 1px solid var(--rule); border-radius: 3px; }
-  .rp-main table { width: 100%; border-collapse: collapse; margin: 0; font: 400 14px/1.5 var(--sans); }
-  .rp-main th { text-align: left; padding: 10px 14px; font: 700 10.5px/1.4 var(--sans); letter-spacing: .14em; text-transform: uppercase;
-                color: var(--muted); background: var(--tint); border: none; border-bottom: 2px solid var(--ink); white-space: nowrap; }
-  .rp-main td { padding: 9px 14px; border: none; border-bottom: 1px solid var(--rule); color: var(--ink2); vertical-align: top; background: none; }
+  .rp-tw { overflow-x: auto; margin: 0 0 22px; border: 1px solid var(--bd); border-radius: 8px; }
+  .rp-main table { width: 100%; border-collapse: collapse; margin: 0; font: 400 13.5px/1.5 var(--sans); }
+  .rp-main th { text-align: left; padding: 9px 13px; font: 600 11px/1.4 var(--sans); letter-spacing: .08em; text-transform: uppercase;
+                color: var(--muted); background: var(--panel2); border: none; border-bottom: 1px solid var(--bd); white-space: nowrap; }
+  .rp-main td { padding: 8px 13px; border: none; border-bottom: 1px solid var(--bd); color: #c9d1d9; vertical-align: top; background: none; }
   .rp-main tbody tr:last-child td { border-bottom: none; }
-  .rp-main tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--tint) 55%, transparent); }
-  .rp-main td:first-child { color: var(--ink); font-weight: 600; }
+  .rp-main tbody tr:nth-child(even) td { background: rgba(255, 255, 255, .02); }
+  .rp-main td:first-child { color: var(--tx); font-weight: 600; }
   .rp-main thead.is-empty { display: none; }
 
-  .rp-main img[alt] { display: block; max-width: 100%; max-height: 640px; height: auto; margin: 12px 0 20px;
-                      border: 1px solid var(--rule); border-radius: 3px; box-shadow: var(--shadow); }
-  .rp-main hr { border: none; border-top: 1px solid var(--rule); margin: 54px 0 18px; }
-  .rp-main hr + p { font: 400 12.5px/1.5 var(--sans); color: var(--muted); text-align: center; }
+  .rp-main img[alt] { display: block; max-width: 100%; max-height: 640px; height: auto; margin: 12px 0 18px;
+                      border: 1px solid var(--bd); border-radius: 6px; }
+  .rp-main hr { border: none; border-top: 1px solid var(--bd); margin: 48px 0 16px; }
+  .rp-main hr + p { font-size: 12.5px; line-height: 1.5; color: var(--muted); text-align: center; }
   .rp-main em { color: inherit; }
 
   @media (max-width: 980px) {
-    html, body { font-size: 16px; }
-    .cover { padding: 44px 22px 32px; }
-    .rp-shell { grid-template-columns: minmax(0, 1fr); gap: 22px; padding: 24px 14px 72px; }
-    .rp-nav { position: static; max-height: 260px; border: 1px solid var(--rule); border-radius: 3px;
-              background: var(--sheet); padding: 14px 8px 10px 0; }
-    .rp-main { padding: 30px 20px 40px; }
+    html, body { font-size: 15px; }
+    .cover { padding: 40px 22px 28px; }
+    .rp-shell { grid-template-columns: minmax(0, 1fr); gap: 20px; padding: 22px 14px 72px; }
+    .rp-nav { position: static; max-height: 260px; border: 1px solid var(--bd); border-radius: 8px;
+              background: var(--panel); padding: 14px 8px 10px 0; }
+    .rp-main { padding: 28px 18px 36px; }
   }
 }
 </style>"""

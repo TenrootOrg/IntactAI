@@ -20,7 +20,8 @@ SRC = open(os.path.join(ROOT, "modules/backend/services/engagement/pdf.py"), enc
 BLOCK = SRC[SRC.index("_TOC_BLOCK = re.compile"):SRC.index("def render_engagement_pdf(")]
 NS = {"re": re}
 exec(BLOCK, NS)
-layout, CSS, JS = NS["_screen_layout"], NS["_SCREEN_CSS"], NS["_SCREEN_JS"]
+layout, marks, CSS, JS = NS["_screen_layout"], NS["_report_marks"], NS["_SCREEN_CSS"], NS["_SCREEN_JS"]
+BASE_CSS = SRC[SRC.index('    css = f"""'):SRC.index('    return f"""<!doctype html>')]       # the PDF's (print) sheet
 
 DOC = """<!doctype html>
 <html lang="en">
@@ -64,7 +65,9 @@ class ScreenLayout(unittest.TestCase):
         self.assertEqual(out.count("<main"), 1)
 
     def test_severity_reads_as_chips_and_the_risk_as_a_banner(self):
-        out = layout(DOC)
+        # Made ONCE, in _build_html, so the PDF and the HTML carry the same marks.
+        self.assertIn("body_html = _report_marks(body_html)", SRC[SRC.index("def _build_html("):SRC.index("    css = f\"\"\"")])
+        out = layout(marks(DOC))
         self.assertIn('<span class="rp-sev rp-high">high</span>', out)
         self.assertIn('<span class="rp-sev rp-critical">critical</span>', out)
         self.assertNotIn("<strong>[high]</strong>", out)
@@ -92,15 +95,36 @@ class ScreenLayout(unittest.TestCase):
 
     def test_the_design_is_for_the_screen_only_and_the_page_still_scrolls(self):
         before, screen = CSS.split("@media screen {", 1)
-        self.assertNotIn("font-family", before)                      # only chips + print rules apply to print
+        self.assertNotIn("font-family", before)                      # nothing but print rules outside it
         self.assertIn("@media print", before)
         body_rule = re.search(r"\n  body \{.*?\}", screen, re.S).group(0)
         self.assertNotIn("overflow", body_rule)                      # overflow on body stopped the page scrolling
-        self.assertIn("prefers-color-scheme: dark", screen)
+        self.assertNotIn("prefers-color-scheme", screen)             # ONE theme: the application's
         self.assertIn("prefers-reduced-motion", screen)
         self.assertEqual(CSS.count("{"), CSS.count("}"))
 
-    def test_the_pdf_is_not_touched(self):
+    def test_it_wears_the_applications_theme(self):
+        # "change the theme and colors similar to my application": cases.html :root
+        app = open(os.path.join(ROOT, "modules/nginx/html/cases.html"), encoding="utf-8").read()
+        root = re.search(r":root\{(.*?)\}", app, re.S).group(1)
+        for var in ("bg", "panel", "panel2", "bd", "tx", "muted", "acc", "crit", "high", "med", "low", "info"):
+            colour = re.search(r"--%s:(#[0-9a-fA-F]{6})" % var, root).group(1)
+            self.assertIn(f"--{var}: {colour};", CSS, var)             # the same value, not a look-alike
+        self.assertIn('--sans: system-ui, "Segoe UI", Roboto', CSS)   # and its font
+        self.assertIn("color-scheme: dark", CSS)
+
+    def test_the_pdf_shares_the_design_on_white_pages(self):
+        # "check the md and pdf to see they have the same design": the PDF had a
+        # sky-blue accent, blue headings, [high] as text and no risk banner.
+        for want in (".rp-sev.rp-critical", "p.rp-risk", "h2 ~ h3::before", "#e0556e", "#0d1117", "#161b22"):
+            self.assertIn(want, BASE_CSS, want)
+        for gone in ("#38bdf8", "#1e3a8a"):
+            self.assertNotIn(gone, SRC, gone)
+        chips = BASE_CSS[BASE_CSS.index(".rp-sev {{"):BASE_CSS.index(".sev-critical")]
+        self.assertNotIn("var(", chips)                               # WeasyPrint draws this sheet
+        self.assertNotIn("background: #0d1117", BASE_CSS.split("/* Body */")[1])   # pages stay white: printable
+
+    def test_the_pdf_never_gets_the_screen_layout(self):
         pdf = SRC[SRC.index("def render_engagement_pdf("):]
         pdf = pdf[:pdf.index("\ndef ", 10)] if "\ndef " in pdf[10:] else pdf
         self.assertNotIn("_screen_layout", pdf)
