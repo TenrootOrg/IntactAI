@@ -61,10 +61,19 @@ class Estimates(unittest.TestCase):
             {"finding": "Eventlog Cleared", "estimate": "likely malicious", "confidence": 0.93},
             {"finding": "Defender disabled", "estimate": "likely expected or administrative activity", "confidence": 0.85}])
         self.assertEqual(est["identities"], [{"identity": "adatum\\srv", "compromise_probability": 0.91}])
-        self.assertIn("NOT analyst verdicts", est["note"])
-        self.assertIn("Never write 'confirmed'", est["note"])
-        self.assertIn("Say nothing about estimates for findings", est["note"])   # live: "[No automated estimate supplied.]"
-        self.assertIn("state its estimate in brackets", est["note"])       # by name: "may use" was ignored live
+        # DATA ONLY. A note carried in this payload was caught by the prompt-injection
+        # guard on a live case: withheld from every call and quoted in the report.
+        self.assertEqual(sorted(est), ["findings", "identities"])
+        from services.fusion import injection
+        for row in est["findings"] + est["identities"]:
+            for v in row.values():
+                if isinstance(v, str) and v not in ("Eventlog Cleared", "Defender disabled", "adatum\\srv"):
+                    self.assertLess(len(v.split()), injection._MIN_WORDS_FOR_JEV, v)   # too short to be "addressed to an AI"
+        rule = llm_sim.ESTIMATES_RULE
+        self.assertIn("NOT analyst verdicts", rule)
+        self.assertIn("Never write 'confirmed'", rule)
+        self.assertIn("Say nothing about estimates for findings", rule)   # live: "[No automated estimate supplied.]"
+        self.assertIn("state its estimate in brackets", rule)             # by name: "may use" was ignored live
 
     def test_off_means_nothing_and_a_failure_means_nothing(self):
         self.assertEqual(self.run_it(uses=("disposition", "compromise")), {})        # the report use is off
@@ -91,7 +100,7 @@ class Wait(unittest.TestCase):
 
 
 class ReportModel(unittest.TestCase):
-    EST = {"note": jev.ESTIMATES_NOTE, "findings": [{"finding": "Finding 3", "estimate": "likely malicious", "confidence": 0.93}]}
+    EST = {"findings": [{"finding": "Finding 3", "estimate": "likely malicious", "confidence": 0.93}]}
 
     def calls(self, altitude, estimates):
         out = []
@@ -108,9 +117,9 @@ class ReportModel(unittest.TestCase):
             calls = self.calls(alt, self.EST)
             self.assertTrue(calls)
             for _sys, user in calls:
-                self.assertIn("automated_estimates", user, alt)
-                self.assertIn("NOT analyst verdicts", user, alt)          # the note travels with the data
-            self.assertIn("never write 'confirmed'", calls[-1][0])        # and the final call's instructions
+                self.assertIn("automated_estimates", user, alt)           # the numbers, in the data
+                self.assertNotIn("NOT analyst verdicts", user, alt)       # no instructions in the data
+                self.assertIn(llm_sim.ESTIMATES_RULE, _sys, alt)          # the rule, in EVERY call's instructions
         self.assertGreater(len(self.calls("macro", self.EST)), 1)        # phases + synthesis
 
     def test_without_estimates_nothing_changes(self):

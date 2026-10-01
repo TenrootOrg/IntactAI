@@ -1577,6 +1577,21 @@ def _hedge_seconds() -> float:
         return HEDGE_SECONDS_DEFAULT
 
 
+# How the report model uses Jev's estimates (the `automated_estimates` key). In the
+# SYSTEM prompt, never in the data: instructions inside the case data are what the
+# prompt-injection guard exists to withhold, and it withheld these.
+# Asked for by name -- "when a statement relies on one, say 'automated estimate'"
+# let the model ignore them entirely on a live case.
+ESTIMATES_RULE = (
+    "`automated_estimates` in the data are a second model's probabilities, NOT analyst "
+    "verdicts: an analyst verdict always overrides them. Where you discuss a finding or "
+    "identity listed there, state its estimate in brackets, e.g. '(automated estimate: "
+    "likely malicious, 0.87)' or '(automated estimate: 0.57 likely compromised)'. In the "
+    "summary, name the findings estimated likely malicious that no analyst has reviewed "
+    "yet. Say nothing about estimates for findings or identities that are not listed "
+    "there. Never write 'confirmed' for an estimate.")
+
+
 def _with_deadline(fn, seconds, what):
     """Run `fn`, hedge it if it is slow, and give up after `seconds` whatever the
     provider's client does. Abandoned calls are left to die on their own (they
@@ -1690,6 +1705,8 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
         if mask:
             body = _apply_mask(body, mask)
         sys_p = PHASE_SYSTEM_PROMPT
+        if (analyst or {}).get("automated_estimates"):
+            sys_p = sys_p + "\n\n" + ESTIMATES_RULE
         if master_prompt:
             sys_p = ("## OPERATOR CONTEXT — treat as ground truth:\n"
                      f"{master_prompt.strip()}\n\n---\n\n") + sys_p
@@ -1904,12 +1921,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
                 except Exception:
                     pass
             if estimates:
-                system = system + ("\n\n`automated_estimates` in the data are a second model's "
-                                   "probabilities, NOT analyst verdicts: an analyst verdict always "
-                                   "overrides them. Follow the `note` inside it: state the estimate "
-                                   "in brackets wherever you discuss a listed finding or identity, "
-                                   "name the unreviewed 'likely malicious' ones in the summary, and "
-                                   "never write 'confirmed' for an estimate.")
+                system = system + "\n\n" + ESTIMATES_RULE
             if master_prompt:
                 system = ("## OPERATOR CONTEXT (from interactive validation) — treat as "
                           "ground truth; apply the removals/focus described:\n"
