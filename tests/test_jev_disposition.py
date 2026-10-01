@@ -66,6 +66,13 @@ class SuggestDispositions(unittest.TestCase):
         n, _, written = self.run_pass({}, [_f("a"), _f("b")], {"a": _ans("known")})
         self.assertNotIn("no verdict suggestions", " ".join(str(c.args[1]) for c in self.logged.call_args_list))
 
+    def test_the_not_reviewed_notice_is_an_info_line_not_a_warning(self):
+        # Nothing went wrong when Jev flags findings; a warning read as a fault.
+        self.run_pass({}, [_f("a")], {"a": _ans("true_positive", 0.95)})
+        line = [c.args for c in self.logged.call_args_list if "look malicious" in str(c.args[1])]
+        self.assertEqual(len(line), 1)
+        self.assertEqual(line[0][2], "info")
+
     def test_only_unjudged_changed_findings_are_asked(self):
         a, b, c, e = _f("a"), _f("b", occ=3), _f("c"), _f("e", kind="dispositioned")
         d = {"timeline_validations": [{"finding_id": "c", "status": "known"}],

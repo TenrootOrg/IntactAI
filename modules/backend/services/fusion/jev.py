@@ -312,8 +312,11 @@ def suggest_dispositions(case_id, d, g) -> int:
         _merge_case_details(case_id, {"jev_suggestions": new, "jev_notice": notice})
     if fresh:
         from .store import log_case_event
+        # INFO, not a warning: nothing went wrong -- it says where to look first. As a
+        # warning it read as a fault in a run that had none ("I dont wanna see any
+        # warnings why is this?").
         log_case_event(case_id, f"Jev · {len(fresh)} finding(s) look malicious — not reviewed yet",
-                       "warning", "; ".join(n["title"] for n in fresh)[:500],
+                       "info", "; ".join(n["title"] for n in fresh)[:500],
                        finding_ids=[n["id"] for n in fresh])
     return len(todo)
 
