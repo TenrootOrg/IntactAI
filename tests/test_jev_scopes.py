@@ -129,7 +129,9 @@ class Card(unittest.TestCase):
             src = fh.read()
         fn = re.search(r"function _ztJev\(t\)\{.*?\n\}", src, re.S)
         self.assertTrue(fn, "_ztJev missing from cases.html")
-        js = fn.group(0) + "\nconsole.log(JSON.stringify([_ztJev({jev_p:0.816}),_ztJev({}),_ztJev(null)]));"
+        helpers = (re.search(r"const _JEV_SEV=.*?;", src).group(0) + "\n"   # the severity bands it now uses
+                   + re.search(r"function _jevSev\(p\)\{.*?\}\n", src).group(0))
+        js = helpers + fn.group(0) + "\nconsole.log(JSON.stringify([_ztJev({jev_p:0.816}),_ztJev({}),_ztJev(null)]));"
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as t:
             t.write(js)
         try:
@@ -137,7 +139,8 @@ class Card(unittest.TestCase):
         finally:
             os.unlink(t.name)
         line, none1, none2 = json.loads(out)
-        self.assertIn("82% likely attacker activity (Jev)", line)
+        self.assertIn("82%</span> likely attacker activity (Jev)", line)
+        self.assertIn('chip c-high', line)                           # 82%: high (critical from 85%)
         self.assertEqual((none1, none2), ("", ""))
 
 

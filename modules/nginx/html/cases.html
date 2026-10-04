@@ -1376,10 +1376,17 @@ let _zoomTargets=[];
 let _zoomHtml={id:null, html:''};
 // Jev's estimate for a scope card (Settings → Agentic → Fast decisions). Present
 // only when Jev is on and answered for exactly this window's findings.
+// Jev's estimate on a phase card, on the app's own severity scale and colours, so
+// the phases read apart at a glance (they were all one blue line: 66% looked like 86%).
+const _JEV_SEV=[[0.85,'critical'],[0.75,'high'],[0.55,'medium'],[0.35,'low']];   // stricter: Jev runs high (every window it scores has detections); 60% is medium, not high
+function _jevSev(p){ for(const [t,s] of _JEV_SEV) if(p>=t) return s; return 'informational'; }
 function _ztJev(t){
   if(!t || typeof t.jev_p!=='number') return '';
-  const p=Math.round(t.jev_p*100);
-  return `<div class="zt-meta" style="color:#79c0ff" title="Jev's estimate from this window's findings — a second opinion to help pick where to zoom, not a verdict.">${p}% likely attacker activity (Jev)</div>`;
+  const p=Math.round(t.jev_p*100), sev=_jevSev(t.jev_p);
+  const col={critical:'var(--crit)',high:'var(--high)',medium:'var(--med)',low:'var(--low)'}[sev]||'var(--info)';
+  return `<div class="zt-meta" style="display:flex;gap:6px;align-items:center" title="Jev's estimate from this window's findings — a second opinion to help pick where to zoom, not a verdict. Critical ≥ 85%, high ≥ 75%, medium ≥ 55%, low ≥ 35%.">`
+    +`<span class="chip c-${sev}" style="margin:0;font-size:10px">${sev}</span>`
+    +`<span style="color:${col};font-weight:600">${p}%</span> likely attacker activity (Jev)</div>`;
 }
 function loadZoomTargets(id){
   api('/api/cases/'+id+'/zoom_targets').then(d=>{
