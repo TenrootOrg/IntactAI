@@ -241,6 +241,17 @@ console.log(JSON.stringify([all, one, bad, form, linked]));""")
         self.assertNotIn("the AI use", form)                                           # evidence never goes to the AI
         self.assertNotIn("evn-host", linked.replace("eva", "evn"))                     # from the Timeline: host comes from the event
 
+    def test_a_deleted_pictures_link_is_named_not_requested(self):
+        # A report written before an evidence item was deleted kept its picture link:
+        # a broken image and "get files/<id> failed - no such file" in the Log per view.
+        with open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
+            src = fh.read()
+        line = src[src.index("(m,a,f)=> _evList().some(x=>x.id===f)"):][:200]
+        self.assertIn("`_(picture removed: ${a})_`", line)
+        md = "![gone](evidence:0123456789ab)"
+        self.assertEqual(case_files.resolve_pictures(md, "c1", {"case_files": []}, "embed"),
+                         "_(picture removed: gone)_")                         # the exports say the same
+
     def test_the_timeline_row_shows_its_evidence_count(self):
         with open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
             src = fh.read()

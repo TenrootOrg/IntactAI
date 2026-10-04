@@ -1282,8 +1282,12 @@ function renderReport(info){
   // The report's own tail already told the story above; showing it again as a
   // raw markdown footnote would just repeat it in a smaller, unstyled font.
   const mdBody = md.replace(/\n\n---\n_(?:Deterministic report — [\s\S]*?|Narrative by live LLM[\s\S]*?)_\n\s*$/, '')
-    // evidence pictures: shown from the appliance (the PDF / HTML embed them)
-    .replace(/!\[([^\]]*)\]\(evidence:([0-9a-f]{12})\)/g, (m,a,f)=>`![${a}](/api/cases/${id}/files/${f}?inline=1)`);
+    // evidence pictures: shown from the appliance (the PDF / HTML embed them). One
+    // deleted since the report was written is named, not requested -- a broken image
+    // and a "no such file" line in the case Log on every view. Same wording as the
+    // exports (case_files.resolve_pictures).
+    .replace(/!\[([^\]]*)\]\(evidence:([0-9a-f]{12})\)/g, (m,a,f)=> _evList().some(x=>x.id===f)
+      ? `![${a}](/api/cases/${id}/files/${f}?inline=1)` : `_(picture removed: ${a})_`);
   $('#tabc').innerHTML=`<div id="reportstatus">${reportStatusHtml(info)}</div><div class="row" style="gap:8px;margin-bottom:10px;align-items:center">
     <span id="regenslot">${regenButtonHtml(info)}</span>
     <details class="expmenu"><summary class="dlbtn" title="Download this report">⬇ Export</summary>
