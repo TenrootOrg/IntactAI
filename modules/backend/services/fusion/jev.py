@@ -622,15 +622,46 @@ def _scope_state(z, by_id, g, verdicts=None):
             "findings": [_finding_brief(g, f, verdicts or {}, 3) for f in fs]}
 
 
+def _cards_of_every_scope(case_id, d):
+    """[(card, sig)] for the cards of EVERY scope of the case, the active one first,
+    each window once. Only the active scope's cards used to be scored -- and every
+    other estimate was then dropped as "no longer exists" -- so a fuse run inside a
+    narrow scope left the broad view with 1 figure for 10 phases (asd, 2026-10-04).
+    Each scope's cards are built on a COPY of the case with that scope selected;
+    nothing is written. ponytail: the graph is re-read per scope; fine for a handful."""
+    from .store import FULL_SCOPE_ID, _active_scope_id, _scopes, scope_cards
+    verdicts = analyst_verdicts(d)
+    ids = [_active_scope_id(d)] + [x["id"] for x in _scopes(d)] + [FULL_SCOPE_ID]
+    out, seen, g0, g_full = [], set(), None, None
+    for sid in dict.fromkeys(ids):
+        try:
+            _alt, _r, cards, g = scope_cards(case_id, dict(d, active_scope=sid))
+        except Exception as e:                            # noqa: BLE001 — one scope, never the rest
+            print(f"[JEV] scope cards for {case_id}/{sid} not built: {e}", flush=True)
+            continue
+        g0 = g0 or g
+        if sid == FULL_SCOPE_ID:
+            g_full = g                                    # holds every scope's findings
+        by_id = {f.id: f for f in g.findings}
+        for z in cards:
+            sig = None if z.get("rollup") else _scope_sig(z, by_id, verdicts)
+            if sig and sig not in seen:
+                seen.add(sig)
+                out.append((z, sig, g))
+    # Jev is told about every card from the whole case's graph: a narrow scope's
+    # graph lacks the findings of the broader scopes' cards.
+    return out, (g_full or g0)
+
+
 def suggest_scopes(case_id, d) -> int:
-    from .store import _merge_case_details, scope_cards
-    altitude, _r, cards, g = scope_cards(case_id, d)
-    by_id = {f.id: f for f in g.findings}
+    from .store import _merge_case_details
+    pairs, g = _cards_of_every_scope(case_id, d)
     verdicts = analyst_verdicts(d)
     have = d.get("jev_scopes") or {}
-    todo = [(z, sig) for z in cards if not z.get("rollup")
-            for sig in [_scope_sig(z, by_id, verdicts)] if sig and sig not in have]
-    if todo:
+    todo = [(z, sig) for z, sig, _g in pairs if sig not in have]
+    if g is not None:
+        by_id = {f.id: f for f in g.findings}
+    if todo and g is not None:
         mask = mask_for(d, g)
         answers = ask_each(todo, lambda t: masked(_scope_state(t[0], by_id, g, verdicts), mask), lambda k: {
             "type": "noul",
@@ -645,8 +676,8 @@ def suggest_scopes(case_id, d) -> int:
                 new[sig] = round(float(a["noul"]), 3)
     else:
         new = dict(have)
-    live = {_scope_sig(z, by_id, verdicts) for z in cards}
-    new = {k: v for k, v in new.items() if k in live}        # windows that no longer exist
+    live = {sig for _z, sig, _g in pairs}
+    new = {k: v for k, v in new.items() if k in live}        # windows that no longer exist IN ANY scope
     if new != have:
         _merge_case_details(case_id, {"jev_scopes": new})
     return len(todo)
@@ -709,27 +740,40 @@ def _compromised_question(k):
 
 
 def suggest_compromise(case_id, d) -> int:
+    """Every person, in EVERY scope of the case. A person's findings -- and so the
+    cache key -- differ per scope; only the active scope's people used to be asked,
+    and every other estimate was dropped, so switching scope after a fuse left the
+    Identities tab with no figure at all (asd, 2026-10-04: 0 of 19). Each scope is
+    read on a copy of the case with that scope selected; nothing is written."""
     from . import identities as idf
-    from .store import _merge_case_details, identity_view, view_graph
-    cards = (identity_view(case_id) or {}).get("identities") or []
-    g = view_graph(case_id, d)                        # the graph the tab reads
+    from .store import FULL_SCOPE_ID, _active_scope_id, _merge_case_details, _scopes, identity_view, view_graph
     have = d.get("jev_compromise") or {}
     verdicts = analyst_verdicts(d)
-    todo, live = [], set()
-    for c in cards:
-        ids = [a["id"] for a in c.get("accounts") or [] if not a.get("disabled")]
-        fs = idf.person_findings(g, ids)
-        sig = compromise_sig(ids, fs, verdicts)
-        if sig:
-            live.add(sig)
-            if sig not in have:
-                todo.append((c, fs, sig))
-    new = {k: v for k, v in have.items() if k in live}      # people whose evidence changed
+    todo, live, g_full = [], set(), None
+    for sid in dict.fromkeys([_active_scope_id(d)] + [x["id"] for x in _scopes(d)] + [FULL_SCOPE_ID]):
+        dd = dict(d, active_scope=sid)
+        try:
+            cards = (identity_view(case_id, dd) or {}).get("identities") or []
+            g = view_graph(case_id, dd)                  # the graph the tab reads in that scope
+        except Exception as e:                            # noqa: BLE001 — one scope, never the rest
+            print(f"[JEV] identities for {case_id}/{sid} not read: {e}", flush=True)
+            continue
+        if sid == FULL_SCOPE_ID:
+            g_full = g
+        for c in cards:
+            ids = [a["id"] for a in c.get("accounts") or [] if not a.get("disabled")]
+            fs = idf.person_findings(g, ids)
+            sig = compromise_sig(ids, fs, verdicts)
+            if sig and sig not in live:
+                live.add(sig)
+                if sig not in have:
+                    todo.append((c, fs, sig, g))
+    new = {k: v for k, v in have.items() if k in live}      # people whose evidence changed everywhere
     if todo:
-        mask = mask_for(d, g)
-        answers = ask_each(todo, lambda t: masked(_person_state(g, t[0], t[1], verdicts), mask),
+        mask = mask_for(d, g_full or todo[0][3])
+        answers = ask_each(todo, lambda t: masked(_person_state(t[3], t[0], t[1], verdicts), mask),
                            _compromised_question, run_id=case_id)
-        for (c, fs, sig), a in zip(todo, answers):
+        for (c, fs, sig, _g), a in zip(todo, answers):
             if isinstance(a, dict) and isinstance(a.get("noul"), (int, float)):
                 new[sig] = round(float(a["noul"]), 3)
     if new != have:

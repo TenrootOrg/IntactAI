@@ -37,8 +37,8 @@ class Suggest(unittest.TestCase):
         asked = []
 
         def fake_ask_each(items, render, question, **kw):
-            asked.extend(c["name"] for c, fs, sig in items)
-            return [answers.get(c["name"]) for c, fs, sig in items]
+            asked.extend(it[0]["name"] for it in items)
+            return [answers.get(it[0]["name"]) for it in items]
         with mock.patch.object(store, "identity_view", return_value={"identities": cards}), \
              mock.patch.object(store, "view_graph", return_value=g), \
              mock.patch.object(jev, "ask_each", fake_ask_each), \
@@ -46,6 +46,30 @@ class Suggest(unittest.TestCase):
              mock.patch.object(store, "_merge_case_details") as merge:
             jev.suggest_compromise("c1", d)
         return asked, (merge.call_args.args[1]["jev_compromise"] if merge.called else None)
+
+    def test_people_of_every_scope_are_scored_and_kept(self):
+        # asd, 2026-10-04: a fuse in one scope scored only that scope's people and
+        # dropped the rest; after switching scope the tab showed 0 of 19 figures.
+        a, b = _f("a"), _f("b")
+        per_scope = {"narrow": ([_card("kobia", "acc-a")], [a]),
+                     "full": ([_card("kobia", "acc-a"), _card("giladt", "acc-b")], [a, b])}
+        asked = []
+
+        def fake_ask_each(items, render, question, **kw):
+            asked.extend(it[0]["name"] for it in items)
+            return [{"noul": 0.7} for _ in items]
+        d = {"active_scope": "narrow", "scopes": [{"id": "narrow"}, {"id": "full"}]}
+        with mock.patch.object(store, "identity_view",
+                               side_effect=lambda cid, dd: {"identities": per_scope[dd["active_scope"]][0]}), \
+             mock.patch.object(store, "view_graph",
+                               side_effect=lambda cid, dd: types.SimpleNamespace(
+                                   findings=per_scope[dd["active_scope"]][1], relationships=[], entities={})), \
+             mock.patch.object(jev, "ask_each", fake_ask_each), \
+             mock.patch.object(jev, "mask_for", return_value=None), \
+             mock.patch.object(store, "_merge_case_details") as merge:
+            jev.suggest_compromise("c1", d)
+        self.assertEqual(sorted(asked), ["giladt", "kobia"])       # the other scope's person too
+        self.assertEqual(len(merge.call_args.args[1]["jev_compromise"]), 2)
 
     def test_asks_people_with_findings_once(self):
         a = _f("a")

@@ -54,6 +54,28 @@ class Suggest(unittest.TestCase):
             jev.suggest_scopes("c1", d)
         return asked, (merge.call_args.args[1]["jev_scopes"] if merge.called else None)
 
+    def test_every_scopes_cards_are_scored_whichever_scope_is_active(self):
+        # asd, 2026-10-04: a fuse inside the 2025-09-21 scope scored only that scope's
+        # card and DROPPED the rest -- the broad view had 1 figure for 10 phases.
+        a, b, c = _f("a"), _f("b"), _f("c")
+        g = types.SimpleNamespace(findings=[a, b, c], entities={})
+        per_scope = {"narrow": _cards(["a"]), "full": _cards(["a"], ["b"], ["c"])}
+        asked = []
+
+        def fake_ask_each(items, render, question, **kw):
+            asked.extend(tuple(z["finding_ids"]) for z, _ in items)
+            return [{"noul": 0.5} for _ in items]
+        d = {"active_scope": "narrow", "scopes": [{"id": "narrow"}, {"id": "full"}],
+             "jev_scopes": {}}
+        with mock.patch.object(store, "scope_cards",
+                               side_effect=lambda cid, dd: ("macro", "", per_scope[dd["active_scope"]], g)), \
+             mock.patch.object(jev, "ask_each", fake_ask_each), \
+             mock.patch.object(jev, "_scope_state", lambda z, by, g, v=None: {}), \
+             mock.patch.object(store, "_merge_case_details") as merge:
+            jev.suggest_scopes("c1", d)
+        self.assertEqual(sorted(asked), [("a",), ("b",), ("c",)])   # the broad cards too, "a" once
+        self.assertEqual(len(merge.call_args.args[1]["jev_scopes"]), 3)  # none dropped
+
     def test_asks_each_new_window_once_never_the_rollup(self):
         a, b = _f("a"), _f("b")
         asked, saved = self.run_pass({}, [a, b], _cards(["a"], ["b"]),

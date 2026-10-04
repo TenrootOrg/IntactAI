@@ -4989,13 +4989,15 @@ def undo_identity_decision(case_id, decision_id) -> dict:
     return {"removed": decision_id}
 
 
-def identity_view(case_id) -> dict:
+def identity_view(case_id, d=None) -> dict:
     """The Identities tab model — a unified IDENTITY PAGE (like UEBA/identity platforms):
     one card per resolved person (their accounts across AWS/Azure/Endpoint + the hosts
     they operate), resolved deterministically by name. Fuzzy/uncertain cross-name links
     surface as small per-identity SUGGESTIONS to confirm — not a candidate queue, and no
-    global manual-link form. Best-effort: any failure returns an empty, non-breaking view."""
-    d = get_case(case_id)
+    global manual-link form. Best-effort: any failure returns an empty, non-breaking view.
+    `d` lets Jev read the view of a scope that is not the one selected (a copy of
+    the case with another active_scope); nothing is written."""
+    d = get_case(case_id) if d is None else d
     if not d:
         return {"error": "not found"}
     try:
