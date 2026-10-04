@@ -2394,9 +2394,8 @@ function idCard(cid,it,jev){
   const fl=(it.findings||[]).slice(0,5);        // supporting detail: last, small, the worst five
   const body=`<div class="pbody"><div style="display:flex;gap:28px;flex-wrap:wrap">
        <div style="flex:1;min-width:240px">${sec('Accounts')}${accts}</div>
-       <div style="flex:1;min-width:200px">${sec('Seen on hosts')}${so.map(h=>{ const r=_hostRow(h);
-          const all=((window._riskData||{}).rows)||[], rank=r?all.indexOf(r)+1:0;
-          return `<div class="erow"><span class="elink" onclick="event.stopPropagation();entOpenHost('${jsa(h)}')" title="Open this host on the Risk tab">${esc(h)}</span>${r?`<span class="chip c-${esc(r.severity)}" style="font-size:10px">${esc(r.severity)}</span><span style="color:var(--muted)" title="Risk ${r.risk_score} of 100">ranked #${rank} of ${all.length} hosts</span>`:''}</div>`;}).join('')||'<span style="color:var(--muted)">—</span>'}</div></div>
+       <div style="flex:1;min-width:200px">${sec('Seen on hosts')}${so.map(h=>{ const r=_hostRow(h);   // name + severity; the Risk tab has the rest
+          return `<div class="erow"><span class="elink" onclick="event.stopPropagation();entOpenHost('${jsa(h)}')" title="Open this host on the Risk tab">${esc(h)}</span>${r?`<span class="chip c-${esc(r.severity)}" style="font-size:10px">${esc(r.severity)}</span>`:''}</div>`;}).join('')||'<span style="color:var(--muted)">—</span>'}</div></div>
      ${mfrom?`<div style="margin-top:10px">${sec('How this person was assembled — Separate to undo')}${mfrom}</div>`:''}
      ${sugg?`<div style="margin-top:10px">${sec('Suggested links — Merge folds them into this person')}${sugg}</div>`:''}
      ${fl.length?`<div style="margin-top:10px">${sec(`Findings on these accounts — ${fl.length<it.finding_rows?`worst ${fl.length} of ${it.finding_rows}`:it.finding_rows} · click for detail`)}${fl.map(f=>`<div style="cursor:pointer;padding:1px 0;font-size:12px;color:var(--muted)" onclick="event.stopPropagation();window._tlCase='${jsa(cid)}';openFindingDetail('${jsa(f.id)}')"><span class="chip c-${esc(f.severity)}" style="font-size:10px">${esc(f.severity)}</span> ${esc(f.title)}</div>`).join('')}</div>`:''}</div>`;
