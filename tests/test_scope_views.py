@@ -200,6 +200,10 @@ class ScopesAreLensesNotCopies(unittest.TestCase):
             self.assertNotIn(gone, page)
         # the line under the case name does not repeat the dropdown ("showing <dates>")
         self.assertNotIn("'showing '+", page)
+        # a new case with no report must not show the previous case's (QA: "air-gap"
+        # opened on "Incident Case Report — asd"): render() sets the case's own report
+        body = page[page.index("function render(info,md,g){"):][:600]
+        self.assertIn("window._md=md||'';", body)
         self.assertIn("if(asList(info&&info.scopes).length>1) return '';", page)
 
     def test_the_same_window_twice_is_one_scope(self):

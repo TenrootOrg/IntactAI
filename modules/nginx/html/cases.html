@@ -671,6 +671,11 @@ function costBadge(ce){
 }
 function render(info,md,g){
   curInfo=info; curGraph=g;
+  // THIS case's report, even when it has none yet. drawTab keeps the last report it
+  // was given unless a new one is non-empty (so a tab switch can redraw it), and a
+  // freshly made case with no report went on showing the PREVIOUS case's -- QA:
+  // a new case "air-gap" opened on "Incident Case Report — asd".
+  window._md=md||'';
   // The case now watches itself for as long as it is on screen, whichever tab
   // that is — a fuse started anywhere reaches the view with no reload. Cheap,
   // and a no-op when it is already watching this case.
