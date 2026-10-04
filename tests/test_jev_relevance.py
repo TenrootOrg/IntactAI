@@ -137,35 +137,16 @@ class SystemType(unittest.TestCase):
         self.assertIn("jev_relevance", workflow_service.SYSTEM_TYPES)
 
 
-class Panel(unittest.TestCase):
-    """The real _tlRelHtml from cases.html, run in node."""
-
-    def test_panel_markup(self):
-        node = shutil.which("node")
-        if not node:
-            self.skipTest("no node on this host")
+class NoTimelineButton(unittest.TestCase):
+    def test_the_timeline_has_no_scoring_button_or_list(self):
+        # "remove the score collected rows button, I don't like it". The job and
+        # its route stay; nothing on the page starts it or shows its rows.
         with open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
             src = fh.read()
-        fn = re.search(r"function _tlRelHtml\(d\)\{.*?\n\}", src, re.S)
-        self.assertTrue(fn, "_tlRelHtml missing from cases.html")
-        js = ("const esc=s=>String(s).replace(/</g,'&lt;');\n" + fn.group(0) + """
-console.log(JSON.stringify([
-  _tlRelHtml({}),
-  _tlRelHtml({scored_at:'2026-09-24T10:00:00', rows_scored:4, rows_total:10,
-              rows:[{p:0.93, artifact:'Pslist', text:'<script>'}]}),
-]));""")
-        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as t:
-            t.write(js)
-        try:
-            out = subprocess.run([node, t.name], capture_output=True, text=True, check=True).stdout
-        finally:
-            os.unlink(t.name)
-        empty, panel = json.loads(out)
-        self.assertEqual(empty, "")
-        self.assertIn("1 most relevant collected rows", panel)
-        self.assertIn("stopped at 4 of 10", panel)
-        self.assertIn("93%", panel)
-        self.assertNotIn("<script>", panel)
+        for gone in ("Score collected rows", "tlRelStart", "_tlRelHtml", 'id="tlrel"'):
+            self.assertNotIn(gone, src)
+        with open(os.path.join(_ROOT, "modules/nginx/html/partials/settings.html"), encoding="utf-8") as fh:
+            self.assertNotIn("jev.uses.relevance", fh.read())
 
 
 if __name__ == "__main__":
