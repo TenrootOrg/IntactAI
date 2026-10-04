@@ -273,10 +273,6 @@
   .scopebar .lbl{font-size:12px;color:var(--muted)}
   .scopebar select{font-size:12px;padding:4px 8px;min-width:230px}
   .scopebar .ghost{font-size:11px;padding:3px 9px}
-  .scopenew{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 12px;
-            padding:9px 11px;border:1px solid var(--bd);border-radius:7px;background:rgba(88,166,255,.05)}
-  .scopenew input{font-size:12px;padding:4px 7px}
-  .scopenew .hint{font-size:11px;color:var(--muted);flex-basis:100%}
   .zt-title{font-weight:600;font-size:13px;margin-bottom:3px}
   .zt-meta{font-size:11px;color:var(--muted)}
   .zt-win{font-size:10px;color:var(--muted);font-family:var(--mono,monospace);margin:4px 0 8px}
@@ -1323,7 +1319,9 @@ function scopeBarHtml(info){
   const sc=asList(info&&info.scopes);
   // One scope is just "the whole case" — nothing to choose between yet, so the
   // bar stays out of the way until the first window is saved.
-  if(sc.length<2 && !window._scopeNewOpen) return '';
+  if(sc.length<2) return '';
+  // No button to add a scope: one opens on its own when the time window changes
+  // (Configuration) or from a phase card's "Analyze this scope".
   // The label IS the timeframe (the backend names every scope by its dates), so
   // nothing is appended to it but whether it has been written up yet.
   // "[N hosts]" is LIVE — the hosts with evidence in that timeframe of the case as
@@ -1337,15 +1335,8 @@ function scopeBarHtml(info){
   return `<div class="scopebar">
       <span class="lbl">Scope</span>
       <select onchange="switchScope('${esc(info.case_id)}',this.value)">${opts}</select>
-      <button class="ghost" onclick="scopeNewToggle()">+ New scope</button>
       ${act.id&&act.id!=='full'?`<button class="ghost" onclick="scopeDelete('${esc(info.case_id)}','${esc(act.id)}')" title="Forget this window and the report written in it. No evidence is deleted.">Delete scope</button>`:''}
-    </div>` + (window._scopeNewOpen?`<div class="scopenew">
-      <input id="sc-from" placeholder="from (YYYY-MM-DD)"/>
-      <input id="sc-to" placeholder="to (YYYY-MM-DD)"/>
-      <button onclick="scopeCreate('${esc(info.case_id)}')">Create</button>
-      <button class="ghost" onclick="scopeNewToggle()">Cancel</button>
-      <span class="hint">A scope is a way of reading this case, not a new copy of it: the evidence, the verdicts and the identities stay the case's, and each scope keeps its own report and chat.</span>
-    </div>`:'');
+    </div>`;
 }
 // The dates under the case name belong to whatever is selected, or the case.
 function scopeSinceHtml(info, tw){
@@ -1353,25 +1344,12 @@ function scopeSinceHtml(info, tw){
   if(act && act.id!=='full') return 'showing '+esc(act.label);
   return tw.start?('since '+esc(tw.start)):'no start date';
 }
-function scopeNewToggle(){ window._scopeNewOpen=!window._scopeNewOpen; if(curInfo) render(curInfo, window._md||'', curInfo.counts||{}); }
 async function switchScope(id,sid){
   try{
     await api('/api/cases/'+id+'/scope',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({id:sid})});
     openCase(id);            // instant: a view change, nothing was fused
   }catch(e){ toast('The scope could not be selected: '+((e&&e.message)||e)); openCase(id); }
-}
-async function scopeCreate(id){
-  const from=($('#sc-from')||{}).value||'', to=($('#sc-to')||{}).value||'';
-  if(!from){ toast('A scope needs a start date.'); return; }
-  const iso=v=>v && v.length===10 ? v+'T00:00:00' : v;
-  try{
-    await api('/api/cases/'+id+'/scopes',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({window:{start:iso(from), end:iso(to)||null}})});
-    window._scopeNewOpen=false;
-    toast('Scope created. Generate its report when you want one.');
-    openCase(id);
-  }catch(e){ toast('The scope could not be created: '+((e&&e.message)||e)); }
 }
 async function scopeDelete(id,sid){
   if(!confirm('Forget this scope?\n\nIts saved window, report and chat are removed. The case\u2019s evidence, verdicts and identities are not touched.')) return;

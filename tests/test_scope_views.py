@@ -195,6 +195,9 @@ class ScopesAreLensesNotCopies(unittest.TestCase):
                                  "modules/nginx/html/cases.html"), encoding="utf-8").read()
         self.assertIn("host_labels:t.host_labels, name:t.name||''", page)          # the card sends it
         self.assertIn("${hosts(s.hosts)}${s.name?' · '+esc(s.name):''}", page)       # dates [N hosts] · name
+        # no "+ New scope": a scope opens on its own (time window change, phase card)
+        for gone in ("+ New scope", "scopeNewToggle", "scopeCreate", "_scopeNewOpen"):
+            self.assertNotIn(gone, page)
 
     def test_the_same_window_twice_is_one_scope(self):
         a = store.create_scope(CASE, "Phase 2", PHASE_WIN)
