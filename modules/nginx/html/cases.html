@@ -48,6 +48,7 @@
             background:var(--panel);border:1px solid var(--bd);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.5)}
   .expitems .dlbtn{display:flex;border:0;background:transparent;border-radius:5px;padding:7px 10px}
   .expitems .dlbtn:hover{background:var(--panel2)}
+  .expright .expitems{left:auto;right:0}    /* at the right edge (Report history rows): open leftwards */
   .md h1{font-size:22px;border-bottom:1px solid var(--bd);padding-bottom:6px}
   .md h2{font-size:16px;color:var(--tx);text-transform:none;letter-spacing:0;margin-top:22px}
   .md h3{font-size:14px;color:var(--acc)}
@@ -1239,14 +1240,15 @@ const _rpLab=x=>(x&&x.label&&x.label!=='Report')?x.label:'';
 function reportHistoryHtml(info, viewing){
   const H=Array.isArray(info&&info.report_history)?info.report_history.filter(x=>x&&x.id):[];
   const cid=esc(info.case_id), open=!!window._rpHistOpen;
-  const dl=(x,f,l)=>`<a class="elink" href="/api/cases/${cid}/reports/${esc(x.id)}/download?fmt=${f}" target="_blank">${l}</a>`;
+  const dl=(x,f,l)=>`<a class="dlbtn" href="/api/cases/${cid}/reports/${esc(x.id)}/download?fmt=${f}" target="_blank">${l}</a>`;
   const rows=H.map((x,i)=>`<div class="erow" style="gap:10px;align-items:center;font-size:12px">
       ${_rpLab(x)?`<span class="sg-hint" style="border-style:solid">${esc(_rpLab(x))}</span>`:''}
       <span>${esc(String(x.at||'').replace('T',' ').slice(0,16))} UTC</span>
       ${x.scope_label?`<span title="The timeframe this report covers — one kept report per timeframe; a newer report for it replaces this one">${esc(x.scope_label)}</span>`:''}
       <span style="color:var(--muted)">${x.kind==='ai'?'AI report':'template report'}${i===0?' · current':''}</span>
       <span style="margin-left:auto;display:flex;gap:10px">${viewing&&viewing.id===x.id?'<b style="color:var(--acc)">● Viewing</b>':`<button class="dlbtn" style="padding:3px 12px;font-size:12px;border-color:var(--acc);color:var(--acc)" onclick="rpView('${cid}','${esc(x.id)}')">View</button>`}
-        ${dl(x,'pdf','PDF')}${dl(x,'html','HTML')}${dl(x,'md','MD')}
+        <details class="expmenu expright"><summary class="dlbtn" style="padding:3px 12px" title="Download this kept report">⬇ Export</summary>
+          <div class="expitems" onclick="this.parentElement.open=false">${dl(x,'pdf','PDF')}${dl(x,'html','HTML')}${dl(x,'md','Markdown')}</div></details>
         <span style="color:var(--muted);cursor:pointer" title="Delete this kept report" onclick="rpDelete('${cid}','${esc(x.id)}')">✕</span></span></div>`).join('');
   const isCur=!!(viewing&&H[0]&&H[0].id===viewing.id);
   const banner=viewing?`<div class="agnote">Viewing the ${_rpLab(viewing)?`<b>${esc(_rpLab(viewing))}</b> `:''}report of ${esc(String(viewing.at||'').replace('T',' ').slice(0,16))} UTC — ${isCur?'the current report':'not the current one'}. <span class="elink" onclick="rpBack()">${isCur?'Close':'Back to the current report'}</span></div>`:'';
@@ -1291,7 +1293,7 @@ function renderReport(info){
   $('#tabc').innerHTML=`<div id="reportstatus">${reportStatusHtml(info)}</div><div class="row" style="gap:8px;margin-bottom:10px;align-items:center">
     <span id="regenslot">${regenButtonHtml(info)}</span>
     <details class="expmenu"><summary class="dlbtn" title="Download this report">⬇ Export</summary>
-      <div class="expitems" onclick="this.parentElement.open=false">${dl('/report/download/pdf','Branded PDF')}${dl('/report/download/html','HTML')}${dl('/report/download','Markdown')}</div></details>
+      <div class="expitems" onclick="this.parentElement.open=false">${dl('/report/download/pdf','PDF')}${dl('/report/download/html','HTML')}${dl('/report/download','Markdown')}</div></details>
     <label style="font-size:12px;white-space:nowrap" title="On: the report gets an Evidence section with every item and its pictures (also in the PDF and HTML). The AI is never given the evidence. Regenerate the report after changing it."><input type="checkbox" style="width:auto" ${info.include_evidence?'checked':''} onchange="evToggleInclude('${esc(id)}',this.checked)"/> Include evidence in the report</label>
     <span style="color:var(--muted);font-size:11px;margin-left:auto">auto-generated on first scan · regenerate to apply Timeline changes</span>
   </div>${reportHistoryHtml(info, viewing)}<div id="zoomcards">${viewing?'':(_zoomHtml.id===id?_zoomHtml.html:'')}</div><div class="md">${mdToHtml(mdBody)}</div>`;

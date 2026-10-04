@@ -145,7 +145,7 @@ class Page(unittest.TestCase):
         # ONE Export button, then the format (three download buttons before)
         menu = re.search(r'<details class="expmenu">.*?</details>', src, re.S).group(0)
         self.assertIn(">⬇ Export</summary>", menu)
-        for path, label in (("/report/download/pdf", "Branded PDF"), ("/report/download/html", "HTML"), ("/report/download", "Markdown")):
+        for path, label in (("/report/download/pdf", "PDF"), ("/report/download/html", "HTML"), ("/report/download", "Markdown")):
             self.assertIn("${dl('%s','%s')}" % (path, label), menu)
         self.assertEqual(src.count("dl('/report/download/pdf'"), 1)        # nowhere else on the row
         self.assertNotIn("⬇ Markdown", src)
@@ -172,6 +172,11 @@ console.log(JSON.stringify([reportHistoryHtml({case_id:'c1', report_history:H}, 
             os.unlink(t.name)
         self.assertNotIn(">Report</span>", out[0])                       # a new report needs no label
         self.assertIn(">2016-09-24 → 2026-09-24</span>", out[0])          # its timeframe
+        # each kept report: one Export button, then the format (three bare links before)
+        self.assertIn('<details class="expmenu expright"><summary class="dlbtn"', out[0])
+        for f, l in (("pdf", "PDF"), ("html", "HTML"), ("md", "Markdown")):
+            self.assertIn('/reports/0123456789ab/download?fmt=%s" target="_blank">%s</a>' % (f, l), out[0])
+        self.assertNotIn(">MD</a>", out[0])
         self.assertIn(">Final</span>", out[0])                            # an old stage report keeps it
         self.assertIn("Viewing the report of 2026-09-30 10:12 UTC — the current report", out[1])
         self.assertIn("● Viewing", out[1])

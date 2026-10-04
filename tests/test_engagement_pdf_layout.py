@@ -132,3 +132,38 @@ class TheDocumentMustNotBeSetTight(unittest.TestCase):
         self.assertGreaterEqual(p_gap, 3.0)
         td = s.split("    td {{")[1].split("}}")[0]
         self.assertGreaterEqual(_mm(re.search(r"padding:\s*([\d.]+mm)", td).group(1)), 2.0)
+
+
+class ThePdfWearsTheHtmlExportsDesign(unittest.TestCase):
+    """"Make it look as good as the html": the PDF's pages use the app's dark theme
+    (the HTML export's palette), not white paper behind a dark cover. Only the PDF:
+    the HTML export's own print view keeps the shared print-on-white sheet."""
+
+    def setUp(self):
+        with open(SRC, encoding="utf-8") as fh:
+            self.src = fh.read()
+        self.dark = re.search(r'_PDF_DARK_CSS = """(.*?)"""', self.src, re.S).group(1)
+
+    def test_every_page_is_dark_in_the_app_palette(self):
+        self.assertIn("@page { background: #0d1117;", self.dark)
+        for want in ("html, body { background: #0d1117; color: #c9d1d9; }",
+                     "h2 ~ h3::before { display: block;",            # 01 above the heading, as in HTML
+                     "th { background: #1c232c; color: #8b949e;",
+                     "code { background: #16202c; color: #9ecbff; }",
+                     ".rp-sev.rp-critical { color: #f85149;"):
+            self.assertIn(want, self.dark)
+
+    def test_it_is_added_to_the_pdf_only_and_after_the_shared_sheet(self):
+        pdf_fn = self.src[self.src.index("def render_engagement_pdf("):]
+        self.assertIn('html.replace("</head>", "<style>" + _PDF_DARK_CSS', pdf_fn)
+        html_fn = self.src[self.src.index("def render_engagement_html("):self.src.index("def _report_marks(")]
+        self.assertNotIn("_PDF_DARK_CSS", html_fn)
+
+    def test_the_menus_say_pdf(self):
+        with open(os.path.join(ROOT, "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
+            page = fh.read()
+        self.assertNotIn("Branded PDF", page)
+
+
+if __name__ == "__main__":
+    unittest.main()

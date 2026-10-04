@@ -941,6 +941,55 @@ _SCREEN_CSS = """<style>
 </style>"""
 
 
+# The PDF in the HTML export's design: the application's dark theme on every page,
+# not only the cover ("make it look as good as the html"). The shared stylesheet in
+# _build_html stays print-on-white for the HTML's own print view; this layer is added
+# to the PDF only, after it, so the same selectors win. Explicit colours, no var():
+# the values are the app theme (cases.html :root) that _SCREEN_CSS uses.
+_PDF_DARK_CSS = """
+@page { background: #0d1117;
+        @top-left { color: #8b949e; } @bottom-center { color: #8b949e; } @bottom-left { color: #6e7681; } }
+html, body { background: #0d1117; color: #c9d1d9; }
+p, li, td { color: #c9d1d9; }
+strong { color: #e6edf3; }
+a { color: #58a6ff; }
+li::marker { color: #e0556e; }
+li li::marker { color: #6e7681; }
+h2 { color: #e6edf3; border-bottom: 1px solid #2a323c; }
+h3 { color: #e6edf3; border-top: 1px solid #2a323c; padding-top: 4mm; margin-top: 10mm; }
+h2 + h3 { border-top: none; padding-top: 0; }
+h2 ~ h3::before { display: block; margin: 0 0 1.6mm 0; letter-spacing: 0.14em; }
+h4 { color: #e6edf3; }
+h5, h6 { color: #8b949e; }
+code { background: #16202c; color: #9ecbff; }
+pre { background: #0d1117; border: 1px solid #2a323c; border-radius: 4px; }
+pre code { background: none; color: #e6edf3; }
+blockquote { border-left: 3px solid #58a6ff; background: #1c232c; color: #8b949e; font-style: normal;
+             padding: 2.5mm 4mm; margin: 0 0 4mm 0; }
+blockquote p { color: #8b949e; }
+hr { border-top: 1px solid #2a323c; }
+table { border: 1px solid #2a323c; }
+th { background: #1c232c; color: #8b949e; border-bottom: 1px solid #2a323c; }
+td { border-bottom: 1px solid #2a323c; background: #161b22; }
+tr:nth-child(even) td { background: #131920; }
+td:first-child { color: #e6edf3; font-weight: 600; }
+.rp-sev { color: #8b949e; background: #1c232c; border-color: #2a323c; }
+.rp-sev.rp-critical { color: #f85149; background: #35191b; border-color: #5c2b2b; }
+.rp-sev.rp-high     { color: #db6d28; background: #33210f; border-color: #5a3820; }
+.rp-sev.rp-medium   { color: #d29922; background: #2e260f; border-color: #54431a; }
+.rp-sev.rp-low      { color: #3fb950; background: #122a19; border-color: #1f4d2b; }
+p.rp-risk { background: #1c232c; color: #e6edf3; }
+p.rp-risk strong { color: #e0556e; }
+p.rp-risk.rp-critical strong { color: #f85149; } p.rp-risk.rp-high strong { color: #db6d28; }
+p.rp-risk.rp-medium strong { color: #d29922; } p.rp-risk.rp-low strong { color: #3fb950; }
+h3 + ul { background: #161b22; border-left: 3px solid #e0556e; }
+h2.toc-heading { color: #e6edf3; }
+.toc a { color: #c9d1d9; }
+.toc > ul > li > a { color: #e6edf3; font-weight: 600; }
+img[alt] { border: 1px solid #2a323c; }
+"""
+
+
 def render_engagement_pdf(markdown_text: str, run_id: str, logo_b64: str = '') -> bytes:
     """Public entry point. Takes the engagement-report markdown and
     returns the PDF as bytes ready to ship in an HTTP response.
@@ -960,6 +1009,7 @@ def render_engagement_pdf(markdown_text: str, run_id: str, logo_b64: str = '') -
     # distinct page rather than running into the first section.
     body = "## Table of Contents {.toc-heading}\n\n[TOC]\n\n" + body
     html = _build_html(body, meta, run_id, customer_logo=logo_b64)
+    html = html.replace("</head>", "<style>" + _PDF_DARK_CSS + "</style>\n</head>", 1)
     buf = io.BytesIO()
     try:
         HTML(string=html, base_url=None,
