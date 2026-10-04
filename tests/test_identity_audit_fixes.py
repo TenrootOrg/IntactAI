@@ -54,16 +54,37 @@ class Cards(unittest.TestCase):
         self.assertTrue(all("DC1" in c["seen_on"] for c in adm))
         self.assertEqual(sorted(len(c["accounts"]) for c in adm), [1, 1])
 
-    def test_a_builtins_local_copies_share_one_labelled_card(self):
+    def test_a_builtins_local_copies_are_one_card_per_host(self):
+        # "built-in identities are local and totally different from each other":
+        # one card for ten local Administrators meant one verdict for ten accounts.
         g = _graph()
         for h in ("WS1", "WS2"):
             g.upsert(schema.Entity(id=f"account:asset:{h}:guest", type="account", label="guest",
                                    attrs={"_assets": [f"asset:{h}"]},
                                    evidence=[schema.EvidenceRef("velociraptor", "r1", "Windows.Forensics.SAM/row=1")]))
         guest = [c for c in identities.resolve_identities(g) if c["name"] == "guest"]
-        self.assertEqual(len(guest), 1)
-        self.assertTrue(guest[0]["local_group"])
-        self.assertEqual(guest[0]["seen_on"], ["WS1", "WS2"])
+        self.assertEqual(sorted(c["seen_on"] for c in guest), [["WS1"], ["WS2"]])
+        self.assertTrue(all(c["builtin"] and len(c["accounts"]) == 1 for c in guest))
+        self.assertFalse(any(c["local_group"] for c in guest))
+
+    def test_listed_only_means_seen_in_an_account_list_and_nowhere_else(self):
+        ent = lambda *locs: schema.Entity(id="a", type="account", label="x", attrs={},
+                                          evidence=[schema.EvidenceRef("v", "r", l) for l in locs])
+        self.assertTrue(identities.listed_only(ent("Windows.Forensics.SAM/Parsed/row=1",
+                                                   "Windows.Forensics.SAM/CreateTimes/row=2")))
+        self.assertTrue(identities.listed_only(ent("Windows.Sys.Users/row=4")))
+        self.assertFalse(identities.listed_only(ent("Windows.Forensics.SAM/row=1", "Generic.System.Pstree/row=9")))
+        self.assertFalse(identities.listed_only(ent("DetectRaptor.Windows.Detection.Powershell.PSReadline/row=3")))
+        self.assertFalse(identities.listed_only(ent()))                    # no record: not "only listed"
+        dict_ev = schema.Entity(id="a", type="account", label="x", attrs={})
+        dict_ev.evidence = [{"locator": "Windows.Forensics.SAM/row=1"}]
+        self.assertTrue(identities.listed_only(dict_ev))                  # the dict form too
+        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "modules/backend/services/fusion/store.py"), encoding="utf-8").read()
+        self.assertIn('it["activity"] = bool(fs) or any(not _idf.listed_only(', src)
+        blk = src[src.index('it["activity"] = bool(fs)'):][:700]
+        self.assertIn("except Exception as _e:", blk)                     # never fails the tab
+        self.assertIn('it["activity"] = True', blk)                        # on error: shown, not hidden
 
     def test_every_host_is_listed(self):
         srv = self._card("srv")

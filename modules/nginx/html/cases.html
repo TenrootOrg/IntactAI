@@ -2247,12 +2247,18 @@ function _idRender(id){
     || (it.seen_on||[]).some(h=>String(h).toLowerCase().includes(q));
   const ppl=_hostPeople(idents);
   const hhit=r=> !q || String(r.host||'').toLowerCase().includes(q) || (ppl[r.host]||[]).some(it=>(it.name||'').toLowerCase().includes(q));
-  const shown = view==='people' ? idents.filter(hit) : hosts.filter(hhit);
+  // Identities that only EXIST (listed in a SAM / user list, no activity, no verdict,
+  // nothing to decide) wait behind a toggle — the QA rule: something that is merely
+  // present is not something that happened. A search still finds them.
+  const quiet=it=> it.activity===false && !it.verdict && !((it.suggestions||[]).length);
+  const nQuiet = view==='people' ? idents.filter(quiet).length : 0;
+  const shown = view==='people' ? idents.filter(it=>hit(it) && (q || window._idShowQuiet || !quiet(it))) : hosts.filter(hhit);
   const total = view==='people' ? idents.length : hosts.length;
   const sug=(d.counts&&d.counts.suggestions)||0;
   let h=`<div class="ent-top">
       <input id="id-search" placeholder="${view==='people'?'filter people, accounts, hosts…':'filter hosts or identities…'}" value="${esc((view==='people'?window._idQuery:window._hostQuery)||'')}" oninput="idSearch(this.value)" autocomplete="off" style="flex:1;min-width:160px;max-width:340px;padding:6px 8px">
-      <span style="color:var(--muted);font-size:11px">${q?`${shown.length} of `:''}${total} ${view==='people'?(total===1?'identity':'identities'):(total===1?'host':'hosts')}${view==='people'&&sug?` · ${sug} link suggestion${sug===1?'':'s'}`:''}</span>
+      <span style="color:var(--muted);font-size:11px">${shown.length!==total?`${shown.length} of `:''}${total} ${view==='people'?(total===1?'identity':'identities'):(total===1?'host':'hosts')}${view==='people'&&sug?` · ${sug} link suggestion${sug===1?'':'s'}`:''}</span>
+      ${view==='people'&&nQuiet&&!q?`<button class="ghost" style="font-size:11px" title="Accounts seen only in account lists (e.g. a host’s SAM) — no activity collected" onclick="window._idShowQuiet=!window._idShowQuiet;_idRender('${jsa(id)}')">${window._idShowQuiet?'Hide':'Show'} ${nQuiet} with no activity</button>`:''}
       ${view==='people'?`<span style="margin-left:auto;display:flex;gap:6px"><button class="ghost" style="font-size:11px" onclick="idExpandAll(true)">expand all</button><button class="ghost" style="font-size:11px" onclick="idExpandAll(false)">collapse all</button></span>`:''}
     </div>`;
   if(d.stale && view==='people') h+=`<div class="agnote">${d.stale} run(s) not yet fused — new uploads appear after a <b>Refusion</b>.</div>`;
@@ -2370,7 +2376,7 @@ function idCard(cid,it,jev){
   const so=it.seen_on||[];
   const row=`<div class="pgrid${jev?'':' nojev'}" onclick="idToggle('${jsa(it.key)}')">
      <div class="pname" style="min-width:0"><span style="color:var(--muted);display:inline-block;width:14px">${open?'▾':'▸'}</span><b>${esc(it.name||it.key)}</b>${it.builtin?bdg('built-in','#d29922'):''}${it.local_group?`<span title="${nAcc} separate local accounts with this built-in name, one per host — grouped because a shared local password links them. A verdict applies to all of them." style="font-size:10px;border:1px solid var(--bd);color:var(--muted);border-radius:8px;padding:0 6px;margin-left:6px">local · ${so.length} hosts</span>`:''}${it.account_kind?bdg(it.account_kind):''}${buckets}${confb}
-       <div class="psub" style="padding-left:14px">${nAcc} account${nAcc===1?'':'s'}${sugN?` · <span style="color:var(--acc)">${sugN} link suggestion${sugN===1?'':'s'}</span>`:''}${it.detections?'':' · <span title="No detection involves these accounts: they come from account lists (e.g. the SAM), not from activity">no findings — seen in account data only</span>'}</div></div>
+       <div class="psub" style="padding-left:14px">${nAcc} account${nAcc===1?'':'s'}${sugN?` · <span style="color:var(--acc)">${sugN} link suggestion${sugN===1?'':'s'}</span>`:''}${it.detections?'':it.activity!==false?' · <span title="Active (processes, logons, commands) but no detection involves these accounts">no findings</span>':' · <span title="Seen only in account lists (e.g. the host’s SAM): the account exists, nothing collected shows it doing anything">no activity — only listed in account data</span>'}</div></div>
      <div>${it.worst?`<span class="chip c-${esc(it.worst)}">${esc(it.worst)}</span>`:'<span class="pcell">—</span>'}</div>
      <div class="pcell">${it.detections?`<b style="color:var(--tx)">${it.detections}</b> <span>(${it.finding_rows} row${it.finding_rows===1?'':'s'})</span>`:'—'}</div>
      <div class="pcell" title="${esc(so.join(', '))}">${so.length?esc(so.slice(0,3).join(', '))+(so.length>3?` +${so.length-3}`:''):'—'}</div>

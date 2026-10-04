@@ -64,6 +64,20 @@ _DOMAIN_SUFFIX_SKIP = {"onmicrosoft", "com", "net", "org", "io", "local", "inter
 # offered as a fuzzy name match to other accounts.
 BUILTIN_ACCOUNTS = frozenset({"administrator", "guest", "user"})
 
+# Artifacts that only LIST accounts (a host's SAM, user listings). An account seen
+# nowhere else exists but did nothing we collected; noda (68 processes) and eldara
+# (PowerShell history) had no detections yet were active, so "no findings" was the
+# wrong test for "nothing happened".
+_LISTING_ARTIFACT = ("sys.users", "allusers", "localusers", ".sam", "forensics.sam", ".users")
+
+
+def listed_only(entity) -> bool:
+    """True when every record of this account comes from an account listing."""
+    arts = [str((ev.get("locator") if isinstance(ev, dict) else getattr(ev, "locator", "")) or "")
+            .split("/row=")[0].split("/")[0].lower()
+            for ev in (getattr(entity, "evidence", None) or [])]
+    return bool(arts) and all(any(k in a or a.endswith(k) for k in _LISTING_ARTIFACT) for a in arts)
+
 
 # Non-person accounts by naming convention (svc_backup, sqlsvc, kobitst). A HINT
 # for a badge and for sorting after people — they are still identities.
@@ -379,20 +393,19 @@ def resolve_identities(graph, merges=None, splits=None, host_excludes=None) -> l
     # `admin01` on ALClient01 are two separate local principals, and merging them made
     # "Identity 'admin01' active on 2 hosts" — lateral movement between two unrelated
     # accounts. A local account joins only accounts seen on its OWN host; the same
-    # local name elsewhere is offered as a suggestion (compute_candidates). Built-in
-    # names (Administrator…) keep one card per name, flagged built-in.
+    # local name elsewhere is offered as a suggestion (compute_candidates).
+    # BUILT-IN locals (Administrator, Guest, User) are no exception: each host's copy
+    # has its own SID and password. They were one card per name ("administrator ·
+    # local · 10 hosts"), so one verdict covered ten unrelated accounts and painted
+    # ten hosts red. Now one card per host, flagged built-in; and never joined to the
+    # DOMAIN account of the same name (CORP\Administrator and nine local
+    # Administrators were one card on jev_test).
     bynorm = defaultdict(list)
     locals_ = []
     for e in accounts:
         n = _norm_user(e.label)
-        if _local_host(e) and n not in BUILTIN_ACCOUNTS:
+        if _local_host(e):
             locals_.append(e)
-        elif _local_host(e):
-            # A built-in's LOCAL copies (Guest / Administrator from each host's SAM)
-            # share one card of their own — a shared local password is a real path
-            # between hosts — but never the domain account's: CORP\Administrator and
-            # nine local Administrators were one card on jev_test.
-            bynorm["\0local:" + n].append(e)
         else:
             bynorm[n].append(e)
     for accs in bynorm.values():
@@ -400,7 +413,7 @@ def resolve_identities(graph, merges=None, splits=None, host_excludes=None) -> l
             _union(e.id, accs[0].id)
     for e in locals_:
         h, n = _local_host(e), _norm_user(e.label)
-        for o in bynorm.get(n, []) + locals_:
+        for o in (locals_ if n in BUILTIN_ACCOUNTS else bynorm.get(n, []) + locals_):
             if o is e or _norm_user(o.label) != n:
                 continue
             oh = _local_host(o)

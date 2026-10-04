@@ -5080,6 +5080,17 @@ def identity_view(case_id) -> dict:
         it["findings"] = [{"id": f.id, "title": f.title, "severity": f.severity} for f in fs[:12]]
         it["finding_rows"] = len(fs)
         it["detections"] = len({_detection_name(f) for f in fs})
+        # seen anywhere but an account listing (processes, logons, commands, detections)
+        # Never fails the tab: on any error the identity counts as ACTIVE (shown,
+        # never wrongly hidden) and the error goes to the backend log.
+        try:
+            _ents = getattr(g, "entities", None) or {}
+            it["activity"] = bool(fs) or any(not _idf.listed_only(_ents[a["id"]])
+                                             for a in it["accounts"] if a["id"] in _ents)
+        except Exception as _e:                              # noqa: BLE001
+            it["activity"] = True
+            print(f"[IDENTITIES] {case_id}: activity for {it.get('name')!r} not computed "
+                  f"({type(_e).__name__}: {_e}) — shown as active", flush=True)
         it["worst"] = fs[0].severity if fs else None
     # With Jev on: the analyst's verdicts first (compromised, then not), then
     # Jev's compromise estimate (highest first), then A–Z. With Jev off: A–Z only.
