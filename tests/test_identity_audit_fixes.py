@@ -175,5 +175,18 @@ console.log(idCard("c1",{key:"k",jev_compromise:0.9,verdict:"compromised",name:"
         self.assertNotIn("ranked #", out)                                      # "the ranked is not necessary"
 
 
+class RiskSaysIdentities(unittest.TestCase):
+    def test_the_risk_tab_says_identities_not_people(self):
+        # "people in risk sound not professional, call it Identities"
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
+            src = fh.read()
+        for want in ("<span>Lead finding</span><span>Identities</span>", "Identities on this host",
+                     "filter hosts or identities…", 'title="Open this identity"'):
+            self.assertIn(want, src)
+        for gone in ("<span>People</span>", "People on this host", "filter hosts or people", "and who.</p>"):
+            self.assertNotIn(gone, src)
+
+
 if __name__ == "__main__":
     unittest.main()

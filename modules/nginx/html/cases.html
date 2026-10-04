@@ -2251,7 +2251,7 @@ function _idRender(id){
   const total = view==='people' ? idents.length : hosts.length;
   const sug=(d.counts&&d.counts.suggestions)||0;
   let h=`<div class="ent-top">
-      <input id="id-search" placeholder="${view==='people'?'filter people, accounts, hosts…':'filter hosts or people…'}" value="${esc((view==='people'?window._idQuery:window._hostQuery)||'')}" oninput="idSearch(this.value)" autocomplete="off" style="flex:1;min-width:160px;max-width:340px;padding:6px 8px">
+      <input id="id-search" placeholder="${view==='people'?'filter people, accounts, hosts…':'filter hosts or identities…'}" value="${esc((view==='people'?window._idQuery:window._hostQuery)||'')}" oninput="idSearch(this.value)" autocomplete="off" style="flex:1;min-width:160px;max-width:340px;padding:6px 8px">
       <span style="color:var(--muted);font-size:11px">${q?`${shown.length} of `:''}${total} ${view==='people'?(total===1?'identity':'identities'):(total===1?'host':'hosts')}${view==='people'&&sug?` · ${sug} link suggestion${sug===1?'':'s'}`:''}</span>
       ${view==='people'?`<span style="margin-left:auto;display:flex;gap:6px"><button class="ghost" style="font-size:11px" onclick="idExpandAll(true)">expand all</button><button class="ghost" style="font-size:11px" onclick="idExpandAll(false)">collapse all</button></span>`:''}
     </div>`;
@@ -2320,13 +2320,13 @@ function _entHosts(rows, ppl, d){
   if(!((d.rows||[]).length)) return '<div class="empty">No fused data yet — fuse the case first.</div>';
   const jev=(window._idData||{}).sort==='jev', open=window._hostExpand||{}, all=d.rows||[];
   const sevc={critical:'var(--crit)',high:'var(--high)',medium:'var(--med)',low:'var(--low)'};
-  const head=`<div class="hgrid phead"><span>#</span><span>Host</span><span>Severity</span><span title="0–100, relative to the other hosts in this case">Risk</span><span title="Distinct detections by severity">Detections</span><span>Lead finding</span><span>People</span></div>`;
+  const head=`<div class="hgrid phead"><span>#</span><span>Host</span><span>Severity</span><span title="0–100, relative to the other hosts in this case">Risk</span><span title="Distinct detections by severity">Detections</span><span>Lead finding</span><span>Identities</span></div>`;
   const body=rows.map(r=>{
     const t=r.by_severity||{}, i=all.indexOf(r), why=_riskWhy(r).split('; ').filter(Boolean);
     const pp=(ppl[r.host]||[]), comp=pp.filter(it=>it.verdict==='compromised');
     const col=sevc[r.severity]||'var(--muted)';
     const cnt=[[t.critical,'c','crit'],[t.high,'h','high'],[t.medium,'m','med']].filter(([n])=>n).map(([n,k,l])=>`<span class="${k}"><b>${n}</b> ${l}</span>`).join(' · ')||'—';
-    const pcell=pp.length?pp.slice(0,3).map(it=>`<span class="hppl${it.verdict==='compromised'?' c':''}" onclick="event.stopPropagation();entOpenPerson('${jsa(it.key)}')" title="Open this person">${it.verdict==='compromised'?'● ':''}${esc(it.name||it.key)}</span>`).join('')+(pp.length>3?`<span style="color:var(--muted)">+${pp.length-3}</span>`:''):'—';
+    const pcell=pp.length?pp.slice(0,3).map(it=>`<span class="hppl${it.verdict==='compromised'?' c':''}" onclick="event.stopPropagation();entOpenPerson('${jsa(it.key)}')" title="Open this identity">${it.verdict==='compromised'?'● ':''}${esc(it.name||it.key)}</span>`).join('')+(pp.length>3?`<span style="color:var(--muted)">+${pp.length-3}</span>`:''):'—';
     const row=`<div class="hgrid" onclick="hostToggle('${jsa(r.host)}')">
        <span style="color:var(--muted);text-align:right;font-size:12px">${i+1}</span>
        <div class="pname" style="min-width:0"><span style="color:var(--muted);display:inline-block;width:14px">${open[r.host]?'▾':'▸'}</span><b>${esc(r.host)}</b>
@@ -2346,12 +2346,12 @@ function _entHosts(rows, ppl, d){
         <div><div class="hsec">Host status</div>${_hostStatusSelect(r)}
           <div class="hsec" style="margin-top:10px">Next step</div>${r.next_action?`<div class="hnext">${esc(r.next_action)}</div>`:'<span style="color:var(--muted)">—</span>'}
           <div style="margin-top:8px;font-size:12px;color:var(--muted)">${r.finding_count} distinct detections in ${r.row_count} timeline rows · collected by ${esc((r.modules||[]).join(', ')||'—')}${r.deep?' · deep collection done':''}</div></div>
-        <div><div class="hsec">People on this host</div>${people||(rest.length?'':'<span style="color:var(--muted)">—</span>')}${also}</div>
+        <div><div class="hsec">Identities on this host</div>${people||(rest.length?'':'<span style="color:var(--muted)">—</span>')}${also}</div>
       </div></div>`;
     return `<div class="prow${comp.length?' v-compromised':''}">${row}${bodyH}</div>`;
   }).join('');
   return `${d.is_stale?'<div class="agnote">New collections have landed that are not in this ranking yet — run <b>Refusion</b> to include them.</div>':''}
-    <p class="ent-cap">Endpoints ranked by risk — work top-down. Severity is the host’s worst detection; risk orders hosts within it (each distinct detection counts once, cross-host ones weigh more). A red edge: someone you marked compromised was active there. Click a host for why, the next step, and who.</p>
+    <p class="ent-cap">Endpoints ranked by risk — work top-down. Severity is the host’s worst detection; risk orders hosts within it (each distinct detection counts once, cross-host ones weigh more). A red edge: an identity you marked compromised was active there. Click a host for why, the next step, and the identities on it.</p>
     ${head}${body||'<p style="color:var(--muted)">no match.</p>'}`;
 }
 function idSearch(v){ if(tab==='risk') window._hostQuery=v; else window._idQuery=v; window._idFocus=true; _idRender(window._idCase); }
