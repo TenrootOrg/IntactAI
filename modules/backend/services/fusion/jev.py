@@ -222,7 +222,7 @@ def masked(text, mask):
 VERDICTS = {
     "true_positive": "Malicious or attacker activity that needs a response.",
     "known": "Expected activity by IT, administrators or sanctioned tools.",
-    "false_positive": "A detection error: the rule fired on something harmless.",
+    "false_positive": "A detection error: the rule matched something harmless.",
 }
 
 

@@ -1865,7 +1865,7 @@ def _group_simultaneous_detections(g: FusionGraph, grouping: dict) -> None:
             id=_fid("grp", asset_id, logged, _k),
             title=f"{top.title.rsplit(' on ', 1)[0]} (+{len(fs) - 1} related) on {host}",
             severity=top.severity, confidence="high",
-            summary=f"{len(fs)} detections fired on the same event at {second}Z on {host}: "
+            summary=f"{len(fs)} detections matched the same event at {second}Z on {host}: "
                     + "; ".join(rules) + ".",
             entity_ids=ents[:50], asset_ids=[asset_id],
             sources=sorted({s for f in fs for s in f.sources}),
@@ -1972,7 +1972,7 @@ def _fold_routines(groups: dict, name_of, host_of) -> tuple:
                 title=f"{name} (recurring {when}) on {host}" if host else f"{name} (recurring {when})",
                 severity=max(routine, key=lambda f: sev.rank(f.severity)).severity,
                 confidence=first.confidence,
-                summary=(f"{name} fired every {'day' if per == 'daily' else 'week'} at about "
+                summary=(f"{name} matched every {'day' if per == 'daily' else 'week'} at about "
                          f"{tod} UTC for {len(routine)} {unit} ({first.ts} → {latest}), up to "
                          f"{per_run} hit(s) each time — a routine, such as a scheduled task or "
                          f"service. Runs that broke the routine are separate rows."),
@@ -2304,7 +2304,7 @@ def _coordinated_activity(g: FusionGraph, *, window=None, baseline=None) -> None
             summary=f"{len(titles)} distinct non-baseline detections"
                     + (f" across {len(techs)} ATT&CK techniques ({', '.join(sorted(techs))})"
                        if techs else "")
-                    + f" fired on {host} between {ts_all[0][:19]}Z and {ts_all[-1][:19]}Z "
+                    + f" matched on {host} between {ts_all[0][:19]}Z and {ts_all[-1][:19]}Z "
                       f"({span}) — a coordinated-activity pattern, not isolated noise. Each of "
                       f"them is too low-severity to reach the timeline on its own; together "
                       f"they are the finding. Detections: {', '.join(sorted(titles)[:8])}"

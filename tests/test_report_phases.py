@@ -63,7 +63,7 @@ class DeterministicPhases(unittest.TestCase):
         sec = self.md[self.md.index("### Phase 1 —"):]
         sec = sec[:sec.index("### Phase 2 —")] if "### Phase 2 —" in sec else sec
         self.assertIn("From the evidence — no AI narrative", sec)
-        self.assertIn("**Rules fired", sec)
+        self.assertIn("**Rules matched", sec)
         self.assertIn("**Stages (ATT&CK):**", sec)
         self.assertIn("**Start here:**", sec)
         self.assertIn("**Timeline — this phase**", sec)

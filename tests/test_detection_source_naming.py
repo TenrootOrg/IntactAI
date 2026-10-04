@@ -121,6 +121,16 @@ class TestTheMapperAndTheFindingAgree(unittest.TestCase):
         src = _read("modules/backend/services/fusion/correlate.py")
         self.assertNotIn("summary=f\"Detection '{title}' fired", src)
         self.assertIn('f"{title} matched {n:,}× on {host}."', src)   # TASK-12666: not "fired"
+        # "fired" reads as "ran" (TASK-12666): no summary or report line the engine
+        # writes says it -- related, recurring and burst rows included.
+        import re as _re
+        for f in ("correlate.py", "render.py", "jev.py"):
+            with open(os.path.join(ROOT, "modules/backend/services/fusion", f), encoding="utf-8") as fh:
+                tree = ast.parse(fh.read())
+            docs = {id(n.value) for n in ast.walk(tree) if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)}
+            said = [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                    and id(n) not in docs and _re.search(r"\bfired\b", n.value)]
+            self.assertEqual(said, [], f)
 
     def test_hayabusas_own_prefix_is_unchanged(self):
         """Both paths must land on the same word, or the fix moves the

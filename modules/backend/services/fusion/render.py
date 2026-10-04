@@ -692,7 +692,7 @@ def phase_brief_md(graph, z, pf, *, verdicts=None, people=None) -> str:
         more = f"  - _… and {len(dets) - 8} more rule(s)_" if len(dets) > 8 else ""
         # By RULE across hosts (one line per rule) — a different count from the
         # "N distinct detections" above, which counts a rule once per host.
-        out.append(f"- **Rules fired ({len(dets)}):**")
+        out.append(f"- **Rules matched ({len(dets)}):**")
         out += lines + ([more] if more else [])
     stages = Counter(_phase(f) for f in pf if _phase(f) not in ("Unclassified",))
     if stages:
