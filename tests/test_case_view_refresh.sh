@@ -53,7 +53,7 @@ python3 - "$SRC" <<'PY' || fails=$((fails+1))
 import re, sys
 s = open(sys.argv[1], encoding="utf-8").read()
 order = re.findall(r'data-tab="([a-z]+)"', s)
-want = ["report", "chat", "timeline", "identities", "risk", "config", "log"]
+want = ["report", "chat", "timeline", "identities", "risk", "evidence", "config", "log"]   # Evidence: plan step 6
 if order != want:
     sys.exit("  FAIL tab order is %s, expected %s" % (order, want))
 m = re.search(r"let sel=null, tab='([a-z]+)'", s)

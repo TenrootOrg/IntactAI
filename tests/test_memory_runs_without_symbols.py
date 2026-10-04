@@ -152,6 +152,14 @@ class TestTheSymbolLibraryAccumulates(unittest.TestCase):
 
     SRC = _read("modules/backend/services/memory/volweb_client.py")
 
+    def _fn(self):
+        """The WHOLE harvest_symbols, up to the next method. A fixed slice
+        (2600 chars) stopped finding the code once the comments explaining it
+        grew past it -- the suite failed while the function was fine."""
+        start = self.SRC.index("def harvest_symbols(self)")
+        end = self.SRC.find("\n    def ", start + 1)
+        return self.SRC[start:end if end != -1 else None]
+
     def test_there_is_a_harvest(self):
         self.assertIn("def harvest_symbols(self)", self.SRC)
 
@@ -159,32 +167,34 @@ class TestTheSymbolLibraryAccumulates(unittest.TestCase):
         """Volatility runs in the extraction worker, so that is the only
         container the downloads land in. Pointed at the backend it finds 0 and
         silently does nothing — which is how the first cut was written."""
-        blk = self.SRC[self.SRC.index("def harvest_symbols(self)"):][:2600]
+        blk = self._fn()
         self.assertIn('_config_value("worker_container"', blk)
         self.assertNotIn("_resolve_backend_container()", blk)
 
     def test_it_copies_into_the_volume_on_vol3s_search_path(self):
-        blk = self.SRC[self.SRC.index("def harvest_symbols(self)"):][:2600]
+        blk = self._fn()
         self.assertIn("/home/app/web/media/symbols", blk)
 
     def test_it_never_moves_and_never_overwrites(self):
         """The package dir must stay valid for the running process, and an ISF
         an operator seeded by hand always wins."""
-        blk = self.SRC[self.SRC.index("def harvest_symbols(self)"):][:2600]
+        blk = self._fn()
         self.assertIn("cp -rn", blk)
         self.assertNotIn("mv ", blk)
 
     def test_it_cannot_break_a_finished_run(self):
         """Housekeeping after the results are already in."""
-        blk = self.SRC[self.SRC.index("def harvest_symbols(self)"):][:3400]
+        blk = self._fn()
         self.assertIn("except Exception:", blk)
         self.assertIn("return -1", blk)
 
     def test_the_pipeline_calls_it_and_survives_it_failing(self):
         pipe = _read("modules/backend/services/memory/pipeline.py")
         self.assertIn("client.harvest_symbols()", pipe)
-        blk = pipe[pipe.index("client.harvest_symbols()") - 400:]
-        blk = blk[:800]
+        # the try that wraps the call, through its except -- not a fixed 800 chars
+        start = pipe.rfind("try:", 0, pipe.index("client.harvest_symbols()"))
+        blk = pipe[start:pipe.index("except Exception as _se:", start) + 40]
+        self.assertIn("client.harvest_symbols()", blk)
         self.assertIn("except Exception as _se:", blk)
 
 
