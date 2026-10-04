@@ -2683,14 +2683,17 @@ function ask(id){
 // and let a click open them, rather than truncating: the operator asked for the
 // end of the string, so it has to be present to be reachable.
 function clampEvidence(root){
-  (root||document).querySelectorAll('.md li.sub, .md li.ev').forEach(li=>{
-    li.classList.remove('clip','open');
-    li.classList.add('clip');                     // apply the max-height first…
-    // +4, not +1: line boxes round sub-pixel and an inline <code> can sit a
-    // shade taller than its line. Too tight a tolerance offers "more" on items
-    // that have nothing more to show, which is worse than never offering it.
-    if(li.scrollHeight <= li.clientHeight + 4) li.classList.remove('clip');  // …then ask
-  });
+  // Three passes, not one loop: writing a class and then reading a height in the
+  // same loop forced a full layout of the whole report PER LINE -- 179 lines on a
+  // real case, the seconds-long pause on every switch to Analysis. Write all,
+  // read all (one layout), then write again.
+  const lis=[...(root||document).querySelectorAll('.md li.sub, .md li.ev')];
+  lis.forEach(li=>{ li.classList.remove('open'); li.classList.add('clip'); });   // apply the max-height first…
+  // +4, not +1: line boxes round sub-pixel and an inline <code> can sit a
+  // shade taller than its line. Too tight a tolerance offers "more" on items
+  // that have nothing more to show, which is worse than never offering it.
+  const fits=lis.map(li=>li.scrollHeight <= li.clientHeight + 4);                  // …then ask, all at once
+  lis.forEach((li,i)=>{ if(fits[i]) li.classList.remove('clip'); });
 }
 document.addEventListener('click',e=>{
   const li = e.target && e.target.closest && e.target.closest('.md li.sub.clip, .md li.ev.clip');
