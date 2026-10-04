@@ -473,6 +473,8 @@ def resolve_identities(graph, merges=None, splits=None, host_excludes=None) -> l
         return {"key": key, "name": dominant, "names": names, "buckets": sorted(buckets),
                 "accounts": acct_out, "hosts": hosts_out, "seen_on": seen_on,
                 "builtin": dominant in BUILTIN_ACCOUNTS, "account_kind": account_kind(dominant),
+                # read from a host's own account database (SAM): exists on that host only
+                "local": all(_local_host(e) for e in accs),
                 # separate local accounts, one per host, grouped by their built-in name
                 "local_group": len(accs) > 1 and all(_local_host(e) for e in accs),
                 "confidence": round(sum(confs) / len(confs), 2)}

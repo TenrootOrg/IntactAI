@@ -66,6 +66,14 @@ class Cards(unittest.TestCase):
         self.assertEqual(sorted(c["seen_on"] for c in guest), [["WS1"], ["WS2"]])
         self.assertTrue(all(c["builtin"] and len(c["accounts"]) == 1 for c in guest))
         self.assertFalse(any(c["local_group"] for c in guest))
+        self.assertTrue(all(c["local"] for c in guest))              # badge: "local", not "built-in"
+        adm = {tuple(c["seen_on"]) + (c["local"],) for c in self._card("administrator")}
+        self.assertEqual(adm, {("DC1", True), ("DC1", False)})       # the SAM one is local; CORP\ is not
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertNotIn("bdg('built-in'", src)
+        self.assertIn("${it.local?`<span title=\"A local account", src)
 
     def test_listed_only_means_seen_in_an_account_list_and_nowhere_else(self):
         ent = lambda *locs: schema.Entity(id="a", type="account", label="x", attrs={},
