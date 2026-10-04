@@ -63,14 +63,16 @@ def history(d, scope=None) -> list:
 
 
 def archive(case_id, md, scope=None, scope_label=None) -> dict | None:
-    """Keep this report in the case's history -- one entry per timeframe.
+    """Keep this report in the case's history: every distinct report, per timeframe.
 
-    A report for a timeframe that already has an entry REPLACES it: same id (a View
-    link on screen stays valid), new text and time, and it becomes the newest. The
-    first scan's template report and the AI report written over it minutes later
-    used to be two entries for the one load of data. A report for a new timeframe
-    is a new entry. Without a scope (and entries kept before scopes were recorded)
-    it is the old rule: a new entry, unless it repeats the newest one's text.
+    "I want the same scope to have more report": each report written for a
+    timeframe is a NEW entry, newest first -- Regenerate, Refusion, and an
+    automatic regeneration when data lands alike. Only one that repeats the
+    timeframe's newest text is skipped. (It used to REPLACE the timeframe's entry,
+    so a scope only ever had one report. The first scan's double entry -- template
+    then AI minutes later -- no longer arises: that report is deferred until the AI
+    one is ready, see fuse_case(defer_report=).) Without a scope (entries kept
+    before scopes were recorded) the same rule applies to the whole history.
     """
     from . import store
     md = str(md or "")
@@ -87,7 +89,7 @@ def archive(case_id, md, scope=None, scope_label=None) -> dict | None:
         hist = history({"report_history": raw})
         if hist and hist[0]["sha256"] == sha:
             return None
-    rid = same["id"] if same is not None else uuid.uuid4().hex[:12]
+    rid = uuid.uuid4().hex[:12]
     os.makedirs(_dir(case_id), exist_ok=True)
     tmp = os.path.join(_dir(case_id), rid + ".part")
     with open(tmp, "w", encoding="utf-8") as fh:

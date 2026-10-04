@@ -79,22 +79,20 @@ class History(unittest.TestCase):
         self.assertIsNone(rh.read("c1", "../../etc/passwd"))
         self.assertNotIn("type", self.d["report_history"][0])
 
-    def test_one_entry_per_timeframe_a_newer_report_replaces_it(self):
-        # "why there are 2 when i just enter data once": the first scan's template
-        # report and the AI report written over it were two entries.
+    def test_every_distinct_report_of_a_timeframe_is_kept(self):
+        # "I want the same scope to have more report" (it used to keep one per scope)
         a = rh.archive("c1", TEMPLATE, "full", "2016-09-24 → 2026-09-24")
         b = rh.archive("c1", AI, "full", "2016-09-24 → 2026-09-24")
-        self.assertEqual(b["id"], a["id"])                          # the same entry, updated
-        h = rh.history(self.d)
-        self.assertEqual([(x["id"], x["kind"], x["scope_label"]) for x in h], [(a["id"], "ai", "2016-09-24 → 2026-09-24")])
-        self.assertEqual(rh.read("c1", a["id"]), AI)
-        self.assertIsNone(rh.archive("c1", AI, "full", "x"))        # the same text again: nothing
+        self.assertNotEqual(b["id"], a["id"])                       # a second entry, not a replacement
+        self.assertEqual([(x["id"], x["kind"]) for x in rh.history(self.d, scope="full")],
+                         [(b["id"], "ai"), (a["id"], "template")])  # newest first
+        self.assertEqual((rh.read("c1", a["id"]), rh.read("c1", b["id"])), (TEMPLATE, AI))   # both kept
+        self.assertIsNone(rh.archive("c1", AI, "full", "x"))        # the newest text again: nothing
         c = rh.archive("c1", TEMPLATE, "s1", "2025-10-05 → 2025-10-22")   # another timeframe: its own
-        self.assertNotEqual(c["id"], a["id"])
+        self.assertEqual([x["id"] for x in rh.history(self.d, scope="s1")], [c["id"]])
         d = rh.archive("c1", AI.replace("b", "full again"), "full", "2016-09-24 → 2026-09-24")
-        self.assertEqual([x["id"] for x in rh.history(self.d)], [a["id"], c["id"]])   # updated one is newest
-        self.assertEqual(d["id"], a["id"])
-        self.assertEqual(len(self.d["report_history"]), 2)
+        self.assertEqual([x["id"] for x in rh.history(self.d, scope="full")], [d["id"], b["id"], a["id"]])
+        self.assertEqual(len(self.d["report_history"]), 4)
 
     def test_each_scope_lists_only_its_own_reports(self):
         # "both of the reports are being found in both scopes"
