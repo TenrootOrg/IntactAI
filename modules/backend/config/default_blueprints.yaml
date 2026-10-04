@@ -198,7 +198,6 @@ velociraptor:
       - Windows.Detection.Malfind
       - DetectRaptor.Windows.Detection.Evtx
       - DetectRaptor.Windows.Detection.MFT
-      - DetectRaptor.Windows.Detection.MFT.Erasing.Tools
       - DetectRaptor.Windows.Detection.BinaryRename
       - DetectRaptor.Windows.Detection.Applications
       - DetectRaptor.Windows.Detection.Powershell.PSReadline

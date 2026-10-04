@@ -28,7 +28,7 @@ from . import keys
 # what findings are or how they are counted, so a report written by an earlier
 # engine says so on the Analysis tab (store: report_engine; case payload:
 # report_engine_behind) instead of reading as current.
-FUSION_ENGINE = "2026-09-28.burst-any-detection"   # any detection keeps a burst open; rows during it named
+FUSION_ENGINE = "2026-10-04.no-erasing-tools"   # MFT.Erasing.Tools no longer fused (TASK-12666)
 
 
 def _fid(*parts) -> str:

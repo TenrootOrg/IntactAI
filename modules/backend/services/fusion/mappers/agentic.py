@@ -225,10 +225,9 @@ SUPPORTED_ARTIFACTS = frozenset({
     # PowerShell ISE autosave carrying attacker script content. Rows nest the
     # ATT&CK rule in Detection.Name and the date in FileInfo.Mtime.
     "detectraptor.windows.detection.powershell.iseautosave",
-    # Anti-forensic / data-wiping tool names in the MFT (sdelete, BleachBit,
-    # CCleaner...). Dated via $FN; unlike the general MFT-detection artifact this
-    # one promotes to the timeline (see the "erasing" case in the MFT branch).
-    "detectraptor.windows.detection.mft.erasing.tools",
+    # DetectRaptor.Windows.Detection.MFT.Erasing.Tools is NOT fused (QA,
+    # TASK-12666): it only says a wiping tool's file sits on disk -- not that it
+    # ran, nor when -- so it has no place on the Timeline or in the report.
     "detectraptor.windows.detection.webhistory",
     "detectraptor.windows.detection.hijacklibsmft",
     "detectraptor.windows.detection.hijacklibsenv",
@@ -1019,7 +1018,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                  detection=str(dname), path=str(ipath)[:200],
                                  title=f"ISE autosave: {str(dname)[:60]}", on_disk=True))
 
-            elif "mft" in an and ("detection" in an or "erasing" in an) \
+            elif "mft" in an and "detection" in an \
                     and "hijacklib" not in an:
                 det = F.get(r, "Detection", default=None)
                 dname = (det.get("Name") if isinstance(det, dict) else det) or artifact
@@ -1037,13 +1036,9 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                 _fn = r.get("FNTimestamps") if isinstance(r.get("FNTimestamps"), dict) else {}
                 mft_ts = keys.norm_ts(_fn.get("Created0x30") or _si.get("Created0x10")
                                       or _si.get("LastModified0x10") or _fn.get("LastModified0x30") or ts)
-                # Anti-forensic tooling is the exception to the BAU rule below:
-                # a data-wiping utility (sdelete / BleachBit / CCleaner) on disk is
-                # a real detection, not a routine file, so the Erasing.Tools
-                # artifact PROMOTES to the timeline. The general MFT-detection
-                # artifact keeps "mft_detection" only (its rules fire on BAU files
-                # like OneDrive uploads and must not become findings).
-                erasing = "erasing" in an
+                # "mft_detection" only: its rules match BAU files like OneDrive
+                # uploads and must not become findings. (Erasing.Tools, which used
+                # to promote here, is no longer fused -- see SUPPORTED_ARTIFACTS.)
                 ev = _ent(keys.event_key(asset, f"mft:{dname}", f"{path}"),
                           "event", f"MFT: {str(dname)[:70]}", asset, run_id, loc,
                           anomaly=_level_anomaly(crit), first=mft_ts, artifact=artifact,
@@ -1052,9 +1047,8 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                           # the 'detection' flag the mapper stamps"), so stamping it
                           # for a routine BAU file would turn every rule-author
                           # "High" into a case finding. The event still lands on the
-                          # timeline; nothing filters events on flags. Erasing tools
-                          # are the deliberate exception (see note above).
-                          flags=["detection"] if erasing else ["mft_detection"],
+                          # timeline; nothing filters events on flags.
+                          flags=["mft_detection"],
                           title=f"MFT: {str(dname)[:60]}", detection=str(dname),
                           criticality=str(crit).lower(), path=str(path)[:200],
                           # a file FOUND on disk, not a record of it running
