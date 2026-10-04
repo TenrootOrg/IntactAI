@@ -11,7 +11,7 @@ import os
 import threading
 import traceback
 
-from flask import Blueprint, jsonify, send_file
+from flask import Blueprint, Response, jsonify, request, send_file
 
 from services import (
     create_automation_run,
@@ -112,3 +112,34 @@ def download_support_bundle(run_id):
         download_name=bundle_name,
         mimetype='application/zip',
     )
+
+
+# Settings -> Logs: each container's log, live. Read only while its viewer is
+# open, new lines only (services/live_logs.py) -- nothing polls in the background.
+@support_bundle_bp.route('/api/system/logs', methods=['GET'])
+def system_logs_list():
+    from services import live_logs
+    try:
+        return jsonify({'logs': live_logs.sources()})
+    except Exception as e:                                   # noqa: BLE001 — no docker, timeout
+        return jsonify({'error': str(e)}), 500
+
+
+@support_bundle_bp.route('/api/system/logs/<name>', methods=['GET'])
+def system_log_read(name):
+    from services import live_logs
+    out = live_logs.read(name, request.args.get('since') or None)
+    if out is None:
+        return jsonify({'error': 'no such log'}), 404
+    return jsonify(out)
+
+
+@support_bundle_bp.route('/api/system/logs/<name>/download', methods=['GET'])
+def system_log_download(name):
+    from services import live_logs
+    got = live_logs.download(name)
+    if got is None:
+        return jsonify({'error': 'no such log'}), 404
+    fname, body = got
+    return Response(body, mimetype='text/plain',
+                    headers={'Content-Disposition': f'attachment; filename="{fname}"'})

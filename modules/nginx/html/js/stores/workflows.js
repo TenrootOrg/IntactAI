@@ -199,6 +199,7 @@ document.addEventListener('alpine:init', () => {
                     this.stopAutoRefresh();
                     return;
                 }
+                if (document.hidden) return;     // a window left open in a background tab: no polling
                 try {
                     const response = await fetch(`/api/dashboard/automation/${runId}`);
                     if (!response.ok) {
@@ -245,6 +246,51 @@ document.addEventListener('alpine:init', () => {
             }, 1000);
         },
 
+        // Settings → Logs: a container's log in this same viewer. The first read is
+        // the last 1000 lines; every poll after asks only for lines past the cursor
+        // and appends them. Polls only while the window is open and the browser tab
+        // is visible -- closeModal() stops it like a run's.
+        SYSTEM_LOG_KEEP: 5000,
+        async viewSystemLog(name) {
+            this.stopAutoRefresh();
+            const url = `/api/system/logs/${encodeURIComponent(name)}`;
+            this.selectedRun = { id: name, name, type: 'container log', is_system_log: true, logs: [] };
+            this.modalOpen = true;
+            this.currentRunId = name;
+            let cursor = '', busy = false, failures = 0;
+            const poll = async () => {
+                if (busy || document.hidden || !this.modalOpen || this.currentRunId !== name) return;
+                busy = true;
+                try {
+                    const r = await fetch(url + (cursor ? `?since=${encodeURIComponent(cursor)}` : ''));
+                    const d = await r.json().catch(() => ({}));
+                    if (this.currentRunId !== name) return;
+                    if (!r.ok) {
+                        if (++failures >= 120 || r.status === 404) {
+                            this.selectedRun = { ...this.selectedRun, reconnecting: false, fetchError: d.error || `HTTP ${r.status}` };
+                            this.stopAutoRefresh();
+                        } else this.selectedRun = { ...this.selectedRun, reconnecting: true };
+                        return;
+                    }
+                    failures = 0;
+                    cursor = d.cursor || cursor;
+                    const logs = (this.selectedRun.logs || []).concat(d.logs || []).slice(-this.SYSTEM_LOG_KEEP);
+                    if ((d.logs || []).length || this.selectedRun.reconnecting || this.selectedRun.status !== d.status) {
+                        this.selectedRun = { ...this.selectedRun, status: d.status, reconnecting: false, logs };
+                        if (this.autoScroll) this.scrollToBottom();
+                    }
+                } catch (e) {
+                    if (++failures >= 120) {
+                        this.selectedRun = { ...this.selectedRun, reconnecting: false, fetchError: e.message };
+                        this.stopAutoRefresh();
+                    } else this.selectedRun = { ...this.selectedRun, reconnecting: true };
+                } finally { busy = false; }
+            };
+            await poll();
+            this.scrollToBottom();
+            if (this.modalOpen && this.currentRunId === name) this.refreshInterval = setInterval(poll, 1000);
+        },
+
         stopAutoRefresh() {
             if (this.refreshInterval) {
                 clearInterval(this.refreshInterval);
@@ -270,6 +316,12 @@ document.addEventListener('alpine:init', () => {
 
         downloadLogs() {
             const run = this.selectedRun;
+            // A container log: the server's longer tail (what a bundle holds), not
+            // just the lines on screen.
+            if (run?.is_system_log) {
+                window.location.href = `/api/system/logs/${encodeURIComponent(run.id)}/download`;
+                return;
+            }
             if (!run?.logs?.length) return;
 
             const header = `# ${run.name || run.id} — workflow log\n# All times in UTC+00:00\n\n`;

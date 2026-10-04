@@ -32,6 +32,9 @@
                         <button @click="settingsTab = 'actions'; $store.settings.loadActions()" :class="settingsTab === 'actions' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
                             Actions
                         </button>
+                        <button @click="settingsTab = 'logs'; $store.settings.loadSystemLogs()" :class="settingsTab === 'logs' ? 'border-b-2 border-blue-500 text-blue-400' : 'text-gray-400 hover:text-gray-200'" class="px-4 py-2 text-sm font-medium transition-colors">
+                            Logs
+                        </button>
                     </div>
 
                     <!-- Actions Tab — system-operation run history (System is no longer a workspace) -->
@@ -117,6 +120,53 @@
                                                         Logs
                                                     </button>
                                                 </div>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Logs Tab — each container's log. Listed on entry / Refresh only; a log is
+                         read only while its viewer is open, new lines only (services/live_logs.py). -->
+                    <div x-show="settingsTab === 'logs'" x-transition class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+                        <div class="flex items-center justify-between mb-4">
+                            <div>
+                                <h3 class="text-lg font-semibold text-white">Logs</h3>
+                                <p class="text-sm text-gray-400">Each service's container log, with credentials masked as in a support bundle. A log updates only while it is open.</p>
+                            </div>
+                            <button @click="$store.settings.loadSystemLogs()" class="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-gray-200 rounded">↻ Refresh</button>
+                        </div>
+                        <template x-if="$store.settings.systemLogsLoading && !$store.settings.systemLogs.length">
+                            <p class="text-sm text-gray-400">Loading…</p>
+                        </template>
+                        <template x-if="$store.settings.systemLogsError">
+                            <p class="text-sm text-red-400" x-text="'Could not list the logs: ' + $store.settings.systemLogsError"></p>
+                        </template>
+                        <div class="overflow-x-auto" x-show="$store.settings.systemLogs.length > 0">
+                            <table class="w-full text-left">
+                                <thead class="text-xs text-gray-400 uppercase border-b border-gray-700">
+                                    <tr>
+                                        <th class="px-4 py-3 font-medium">Container</th>
+                                        <th class="px-4 py-3 font-medium">State</th>
+                                        <th class="px-4 py-3 font-medium">Status</th>
+                                        <th class="px-4 py-3 font-medium">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-gray-700 text-sm">
+                                    <template x-for="l in $store.settings.systemLogs" :key="l.id">
+                                        <tr class="hover:bg-gray-700/40 transition-colors">
+                                            <td class="px-4 py-3 font-medium text-white" x-text="l.name"></td>
+                                            <td class="px-4 py-3">
+                                                <span :class="(l.state === 'running' ? 'bg-green-600' : l.state === 'exited' || l.state === 'dead' ? 'bg-red-600' : 'bg-gray-600') + ' px-3 py-1 rounded-full text-xs font-semibold uppercase'" x-text="l.state"></span>
+                                            </td>
+                                            <td class="px-4 py-3 text-gray-300 text-xs" x-text="l.status"></td>
+                                            <td class="px-4 py-3 whitespace-nowrap">
+                                                <button @click.stop="$store.workflows.viewSystemLog(l.id)" style="color:#fff;background-color:#475569;" class="hover:bg-slate-600 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1" title="View this log">
+                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+                                                    Logs
+                                                </button>
                                             </td>
                                         </tr>
                                     </template>

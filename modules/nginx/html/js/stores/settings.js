@@ -409,6 +409,26 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
+        // --- Settings → Logs (each container's log) ------------------------
+        // Read when the tab is opened or ↻ Refresh is pressed -- never polled. The
+        // log itself updates only while its viewer is open ($store.workflows).
+        systemLogs: [],
+        systemLogsLoading: false,
+        systemLogsError: '',
+        async loadSystemLogs() {
+            this.systemLogsLoading = true;
+            try {
+                const r = await fetch('/api/system/logs');
+                const d = await r.json();
+                this.systemLogs = (d && d.logs) || [];
+                this.systemLogsError = r.ok ? '' : (d.error || ('HTTP ' + r.status));
+            } catch (e) {
+                this.systemLogsError = e.message;
+            } finally {
+                this.systemLogsLoading = false;
+            }
+        },
+
         async generateSupportBundle() {
             this.saving = true;
             this.showMessage('Support bundle workflow starting...', 'info');

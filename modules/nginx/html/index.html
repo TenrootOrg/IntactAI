@@ -648,8 +648,8 @@
     <!-- App stores (split from the former monolithic app.js) -->
     <script src="js/stores/app.js?v=3"></script>
     <script src="js/stores/services.js?v=1"></script>
-    <script src="js/stores/workflows.js?v=7"></script>
-    <script src="js/stores/settings.js?v=31"></script>
+    <script src="js/stores/workflows.js?v=8"></script>
+    <script src="js/stores/settings.js?v=32"></script>
     <script src="js/legacy/handlers.js?v=1"></script>
     <script src="js/velociraptor.js?v=9"></script>
     <script src="js/blueprints.js?v=4"></script>
@@ -671,7 +671,7 @@
     <script src="js/components/workspace-bar.js?v=3"></script>
     <script src="js/components/cloud-datepickers.js?v=2"></script>
     <!-- MUST be last: injects partials/*.html then starts Alpine over the full DOM. -->
-    <script src="js/bootstrap/partial-loader.js?v=166"></script>
+    <script src="js/bootstrap/partial-loader.js?v=167"></script>
 
     <!-- ======================================================================
          Workflow Log Viewer Modal (body-level placement).
@@ -693,7 +693,7 @@
                         :title="$store.workflows.selectedRun?.name || 'Workflow Logs'"
                         x-text="$store.workflows.selectedRun?.name || 'Workflow Logs'"></h3>
                     <p class="text-gray-400 text-sm mt-1"
-                       x-text="($store.workflows.selectedRun?.type || 'unknown').toUpperCase() + ' | ' + ($store.workflows.selectedRun?.status || 'unknown').toUpperCase() + ' | ' + ($store.workflows.selectedRun?.progress || 0) + '% Complete'"></p>
+                       x-text="($store.workflows.selectedRun?.type || 'unknown').toUpperCase() + ' | ' + ($store.workflows.selectedRun?.status || 'unknown').toUpperCase() + ' | ' + ($store.workflows.selectedRun?.is_system_log ? 'live — last ' + ($store.workflows.selectedRun?.logs || []).length + ' lines' : ($store.workflows.selectedRun?.progress || 0) + '% Complete')"></p>
                 </div>
                 <div class="flex items-center gap-4 flex-shrink-0">
                     <button @click="$store.workflows.toggleAutoScroll()"
@@ -704,7 +704,7 @@
                         </svg>
                         <span x-text="$store.workflows.autoScroll ? 'Auto-scroll ON' : 'Auto-scroll OFF'"></span>
                     </button>
-                    <template x-if="$store.workflows.selectedRun?.status === 'running' || $store.workflows.selectedRun?.status === 'pending'">
+                    <template x-if="!$store.workflows.selectedRun?.is_system_log && ($store.workflows.selectedRun?.status === 'running' || $store.workflows.selectedRun?.status === 'pending')">
                         <button @click="$store.workflows.stopWorkflow($store.workflows.selectedRun?.id)"
                                 class="bg-red-600 hover:bg-red-700 px-3 py-2 h-10 w-40 rounded-lg text-sm font-medium inline-flex items-center justify-center gap-2 transition-colors whitespace-nowrap">
                             <svg class="w-4 h-4 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24">
@@ -741,7 +741,7 @@
                     <template x-if="!$store.workflows.selectedRun?.fetchError && (!$store.workflows.selectedRun?.logs || $store.workflows.selectedRun?.logs.length === 0)">
                         <p class="text-gray-400">No logs available yet.</p>
                     </template>
-                    <template x-for="log in ($store.workflows.selectedRun?.logs || [])" :key="log.timestamp">
+                    <template x-for="(log, i) in ($store.workflows.selectedRun?.logs || [])" :key="i">
                         <div class="flex gap-4 py-1">
                             <span class="text-gray-500 text-xs w-24 flex-shrink-0" x-text="$store.workflows.utcTime(log.timestamp)"></span>
                             <span :class="$store.workflows.getLogColor(log.level) + ' flex-1'" x-html="$store.workflows.formatLogMessage(log.message)"></span>
