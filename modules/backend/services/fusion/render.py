@@ -701,7 +701,7 @@ def phase_brief_md(graph, z, pf, *, verdicts=None, people=None) -> str:
     ppl = [(n, c) for n, fids, c in (people or []) if fids & ids]
     if ppl:
         ppl.sort(key=lambda p: (not p[1], p[0]))
-        out.append("- **People:** " + ", ".join(f"**{n}** (marked compromised)" if c else n for n, c in ppl[:8])
+        out.append("- **Identities:** " + ", ".join(f"**{n}** (marked compromised)" if c else n for n, c in ppl[:8])
                    + (f" +{len(ppl) - 8}" if len(ppl) > 8 else ""))
     tri = Counter(row_verdict(f, verdicts) for f in pf)
     labels = {"true_positive": "True Positive", "false_positive": "False Positive", "known": "Known", None: "not reviewed"}
