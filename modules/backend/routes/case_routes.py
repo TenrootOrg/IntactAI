@@ -573,7 +573,8 @@ def upload_case_file(case_id):
     return _cf_reply(_case_files.add(case_id, f.stream, f.filename, name=fm.get("name", ""),
                                      description=fm.get("description", ""), host=fm.get("host", ""),
                                      time=fm.get("time", ""), source=fm.get("source", ""),
-                                     finding_id=fm.get("finding_id", "")))
+                                     finding_id=fm.get("finding_id", ""),
+                                     source_other=fm.get("source_other", "")))
 
 
 @case_bp.route("/api/cases/<case_id>/files/<file_id>", methods=["GET"])
@@ -596,7 +597,7 @@ def download_case_file(case_id, file_id):
 
 @case_bp.route("/api/cases/<case_id>/files/<file_id>", methods=["PATCH"])
 def update_case_file(case_id, file_id):
-    """{name?, description?, host?, time?, source?, ai?, finding_id: "" to unlink}"""
+    """{name?, description?, host?, time?, source?, source_other?, ai?, finding_id: "" to unlink}"""
     return _cf_reply(_case_files.update(case_id, file_id, request.get_json(silent=True) or {}))
 
 

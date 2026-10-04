@@ -19,7 +19,9 @@ import uuid
 
 DATA_DIR = "/app/data/case_files"
 MAX_BYTES = 100 * 1024 * 1024
-SOURCES = ("timeline", "timesketch", "kibana", "iris", "velociraptor", "other")
+SOURCES = ("timeline", "timesketch", "kibana", "iris", "velociraptor", "memory", "other")
+_SOURCE_LABEL = {"timesketch": "TimeSketch", "kibana": "Kibana", "iris": "IRIS",
+                 "velociraptor": "Velociraptor", "memory": "Volatile Memory"}
 _IMAGE = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff")
 _TEXT = (".txt", ".log", ".csv", ".tsv", ".json", ".jsonl", ".eml", ".md", ".xml", ".yaml", ".yml",
          ".ini", ".cfg", ".conf", ".ps1", ".psm1", ".bat", ".cmd", ".sh", ".vbs", ".js", ".html", ".htm")
@@ -64,6 +66,9 @@ def listing(d) -> list:
                     "kind": x.get("kind") or _kind(fname), "ai": bool(x.get("ai")),
                     "host": _s(x.get("host"), 200), "time": _s(x.get("time"), 40),
                     "source": x.get("source") if x.get("source") in SOURCES else "other",
+                    # "Other" says what it was: the analyst types it (required in the form)
+                    "source_other": _s(x.get("source_other"), 100) if x.get("source") not in SOURCES
+                    or x.get("source") == "other" else "",
                     "finding_id": _s(x.get("finding_id"), 100), "finding_title": _s(x.get("finding_title"), 300),
                     "added_at": x.get("added_at")})
     return out
@@ -93,7 +98,8 @@ def _event(case_id, finding_id) -> dict | None:
     return {"finding_id": f.id, "finding_title": f.title, "host": ", ".join(hosts), "time": f.ts or ""}
 
 
-def add(case_id, stream, file_name, *, name, description, host="", time="", source="", finding_id="") -> dict:
+def add(case_id, stream, file_name, *, name, description, host="", time="", source="", finding_id="",
+        source_other="") -> dict:
     """Save one evidence file; its SHA-256 is computed while it is written."""
     st = _store()
     if not st.get_case(case_id):
@@ -137,6 +143,7 @@ def add(case_id, stream, file_name, *, name, description, host="", time="", sour
             "sha256": h.hexdigest(), "kind": _kind(fname), "ai": False,
             "host": link.get("host") or _s(host, 200), "time": link.get("time") or _s(time, 40),
             "source": "timeline" if link else (source if source in SOURCES else "other"),
+            "source_other": "" if link or source in SOURCES and source != "other" else _s(source_other, 100),
             "finding_id": link.get("finding_id", ""), "finding_title": link.get("finding_title", ""),
             "added_at": st._now_iso()}
     st._mutate_list_field(case_id, "case_files", lambda v: (v if isinstance(v, list) else []) + [item])
@@ -170,6 +177,10 @@ def update(case_id, file_id, fields) -> dict:
                         v[k] = _s(fields.get(k), cap)
                 if "source" in fields:
                     v["source"] = fields["source"]
+                    if fields["source"] != "other":
+                        v["source_other"] = ""
+                if "source_other" in fields and v.get("source") == "other":
+                    v["source_other"] = _s(fields.get("source_other"), 100)
                 if "ai" in fields:
                     v["ai"] = bool(fields.get("ai"))
                 if "finding_id" in fields and not _s(fields.get("finding_id"), 100):
@@ -180,7 +191,7 @@ def update(case_id, file_id, fields) -> dict:
     st._mutate_list_field(case_id, "case_files", _mutate)
     if not found:
         return {"error": "no such evidence"}
-    changed = [k for k in ("name", "description", "host", "time", "source", "ai", "finding_id")
+    changed = [k for k in ("name", "description", "host", "time", "source", "source_other", "ai", "finding_id")
                if k in fields and old.get(k) != found.get(k)]
     if changed:
         if [k for k in changed if k != "ai"]:
@@ -254,8 +265,8 @@ def with_evidence(md, d) -> str:
         head = f"- **{x['name']}**" + (f" — {where}" if where else "")
         if x["finding_title"]:
             head += f" · supports: {x['finding_title']}"
-        elif x["source"] != "other":
-            head += f" · from {x['source']}"
+        elif x["source"] != "other" or x["source_other"]:
+            head += f" · from {x['source_other'] or _SOURCE_LABEL.get(x['source'], x['source'])}"
         out.append(head)
         out.append(f"    - {x['file_name']} · SHA-256 `{x['sha256']}`" + (f" · {x['description']}" if x["description"] else ""))
         if x["kind"] == "image":

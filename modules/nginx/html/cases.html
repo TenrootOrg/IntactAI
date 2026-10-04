@@ -1083,10 +1083,10 @@ function patchReportStatus(info){
 // and time then come from the event). Added there or here (+ Add evidence), edited
 // and removed here. The case's switch puts it in the report; the model never gets
 // it -- what it shows is already in the Timeline the model reads.
-const EV_SOURCES=[['timeline','Timeline'],['timesketch','TimeSketch'],['kibana','Kibana'],['iris','IRIS'],['velociraptor','Velociraptor'],['other','Other']];
+const EV_SOURCES=[['timeline','Timeline'],['timesketch','TimeSketch'],['kibana','Kibana'],['iris','IRIS'],['velociraptor','Velociraptor'],['memory','Volatile Memory'],['other','Other']];
 function _evSize(n){ n=+n||0; return n>=1048576?(n/1048576).toFixed(1)+' MB':n>=1024?Math.round(n/1024)+' KB':n+' B'; }
 function _evList(){ return Array.isArray(curInfo&&curInfo.case_files)?curInfo.case_files.filter(x=>x&&x.id&&x.name):[]; }
-function _evSrc(k){ return (EV_SOURCES.find(([x])=>x===k)||[,'Other'])[1]; }
+function _evSrc(k, other){ return (k==='other'||!EV_SOURCES.some(([x])=>x===k)) && other ? other : (EV_SOURCES.find(([x])=>x===k)||[,'Other'])[1]; }
 function _evFields(pre, v, withFile, linked){
   const o=(k,l,cur)=>`<option value="${k}" ${cur===k?'selected':''}>${l}</option>`;
   return `${withFile?`<label>File <span style="color:var(--muted);font-weight:400">— or paste a picture (Ctrl+V)</span></label><input type="file" id="${pre}-file" onchange="window._evPasted=null;const n=document.getElementById('${pre}-pasted');if(n)n.textContent=''"/><div id="${pre}-pasted" style="font-size:11px;color:#3fb950"></div>`:''}
@@ -1097,7 +1097,8 @@ function _evFields(pre, v, withFile, linked){
     ${linked?`<div class="cfghint">Linked to the Timeline event — host and time come from it.</div>`:`
     <label>Host</label><input id="${pre}-host" list="ev-hosts" value="${esc(v.host||'')}" placeholder="pick one of the case's hosts, or type"/>
     <label>Date &amp; time <span style="color:var(--muted);font-weight:400">(UTC)</span></label><input id="${pre}-time" class="ev-time" value="${esc(v.time||'')}" placeholder="pick a date and time — or type 2026-09-01T07:20:51Z"/>
-    <label>Source</label><select id="${pre}-src">${EV_SOURCES.filter(([k])=>k!=='timeline'||v.source==='timeline').map(([k,l])=>o(k,l,v.source||'other')).join('')}</select>`}`;
+    <label>Source</label><select id="${pre}-src" onchange="document.getElementById('${pre}-srcotherbox').style.display=this.value==='other'?'':'none'">${EV_SOURCES.filter(([k])=>k!=='timeline'||v.source==='timeline').map(([k,l])=>o(k,l,v.source||'other')).join('')}</select>
+    <div id="${pre}-srcotherbox" style="display:${(v.source||'other')==='other'?'':'none'}"><label>Which source <span style="color:var(--crit)">*</span></label><input id="${pre}-srcother" value="${esc(v.source_other||'')}" placeholder="e.g. Splunk, EDR console, customer e-mail"/></div>`}`;
 }
 function _evHostList(cid){
   if(window._evHostCase===cid) return;
@@ -1119,7 +1120,7 @@ function _evItem(x){
     ${_evThumb(x)}<div style="flex:1;min-width:0">
     <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
       <b>${esc(x.name)}</b>
-      <span style="color:var(--muted);font-size:11px">${esc(_evSrc(x.source))}${x.time?' · '+esc(x.time):''}</span>
+      <span style="color:var(--muted);font-size:11px">${esc(_evSrc(x.source, x.source_other))}${x.time?' · '+esc(x.time):''}</span>
       ${x.finding_id?`<span class="elink" style="font-size:11px" title="Open this event on the Timeline" onclick="evGoEvent('${esc(x.finding_id)}')">→ ${esc(lab.length>70?lab.slice(0,70)+'…':lab)}</span>`:''}
       <span style="margin-left:auto;display:flex;gap:10px;align-items:center;font-size:11px">
         <span class="elink" onclick="evEditToggle('${esc(x.id)}')">${edit?'close':'edit'}</span>
@@ -1185,8 +1186,9 @@ function evSubmit(pre, findingId){
   if(!file){ toast('Choose a file or paste a picture.'); return; }
   if(file.size>100*1024*1024){ toast('The file is larger than 100 MB.'); return; }
   if(!findingId && (!v('name').trim()||!v('desc').trim())){ toast('Give the evidence a name and a description.'); return; }
+  if(!findingId && v('src')==='other' && !v('srcother').trim()){ toast('Say which source it came from.'); return; }
   const fd=new FormData(); fd.append('file',file); fd.append('name',v('name')); fd.append('description',v('desc'));
-  if(findingId) fd.append('finding_id',findingId); else { fd.append('host',v('host')); fd.append('time',v('time')); fd.append('source',v('src')); }
+  if(findingId) fd.append('finding_id',findingId); else { fd.append('host',v('host')); fd.append('time',v('time')); fd.append('source',v('src')); fd.append('source_other',v('srcother').trim()); }
   toast('Uploading '+file.name+'…');
   fetch('/api/cases/'+encodeURIComponent(curInfo.case_id)+'/files',{method:'POST',body:fd}).then(_evJson)
     .then(item=>{ window._evAdd=false; window._evPasted=null; const box=$('#ev-attach'); if(box) box.innerHTML='<div class="agnote">Attached: <b>'+esc(item.name)+'</b></div>';
@@ -1201,7 +1203,8 @@ function evPatch(id, body){
 function evSaveEdit(id){
   const v=k=>{ const el=document.getElementById('eve-'+k); return el?el.value:undefined; };
   const body={name:v('name'),description:v('desc')};
-  if(v('host')!==undefined){ body.host=v('host'); body.time=v('time'); body.source=v('src'); }
+  if(v('host')!==undefined){ body.host=v('host'); body.time=v('time'); body.source=v('src'); body.source_other=String(v('srcother')||'').trim();
+    if(body.source==='other' && !body.source_other){ toast('Say which source it came from.'); return; } }
   const un=document.getElementById('eve-unlink'); if(un&&un.checked) body.finding_id='';
   if(!String(body.name||'').trim()){ toast('The name cannot be empty.'); return; }
   evPatch(id, body).then(it=>{ if(it){ window._evEdit=null; renderEvidence(curInfo); toast('Saved.'); } });

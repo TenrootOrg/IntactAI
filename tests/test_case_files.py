@@ -60,6 +60,23 @@ class Evidence(unittest.TestCase):
         kw.setdefault("description", "the silent-install prompt on the desktop")
         return case_files.add("c1", io.BytesIO(data), file_name, **kw)
 
+    def test_volatile_memory_and_a_typed_other_source(self):
+        # "there is no volatile memory here and if source other is chosen, writing is required"
+        mem = self.add("pslist.txt", b"x", source="memory")
+        self.assertEqual((mem["source"], mem["source_other"]), ("memory", ""))
+        oth = self.add("splunk.csv", b"y", source="other", source_other="  Splunk  ")
+        self.assertEqual((oth["source"], oth["source_other"]), ("other", "Splunk"))
+        self.assertEqual(self.add("k.csv", b"z", source="kibana", source_other="ignored")["source_other"], "")
+        # switching away from Other drops the typed name; editing it keeps it
+        self.assertEqual(case_files.update("c1", oth["id"], {"source_other": "Splunk ES"})["source_other"], "Splunk ES")
+        self.assertEqual(case_files.update("c1", oth["id"], {"source": "iris"})["source_other"], "")
+        self.d["include_evidence"] = True
+        md = case_files.with_evidence("# R\n\n## Findings\n- x\n", self.d)
+        self.assertIn("from Volatile Memory", md)
+        self.assertIn("from IRIS", md)                                             # switched away: the label
+        self.add("edr.json", b"w", name="EDR alert", source="other", source_other="CrowdStrike")
+        self.assertIn("**EDR alert** · from CrowdStrike", case_files.with_evidence("# R\n\n## Findings\n- x\n", self.d))
+
     def test_name_and_description_are_required(self):
         for kw in ({"name": ""}, {"description": "  "}):
             self.assertIn("name and a description", self.add("a.png", b"x", **kw)["error"])
@@ -90,7 +107,7 @@ class Evidence(unittest.TestCase):
         self.assertEqual(once.count("## Evidence attached to this case"), 1)
         self.assertLess(once.index("## Evidence attached"), once.index("---\n_Deterministic report"))
         self.assertIn("supports: SIGMA: AnyDesk Silent Installation", once)
-        self.assertIn("**Kibana export** — ALDC02 · from kibana", once)
+        self.assertIn("**Kibana export** — ALDC02 · from Kibana", once)
         self.assertIn("SHA-256 `" + hashlib.sha256(b"img").hexdigest() + "`", once)
         self.assertLess(once.index("screenshot"), once.index("Kibana export"))  # linked items first
         self.assertEqual(case_files.with_evidence(md, {"name": "none"}), md)    # no evidence: unchanged
