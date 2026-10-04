@@ -210,7 +210,10 @@
   .tlrow .tlt{flex:1} .tlrow.notreal{opacity:.5;text-decoration:line-through}
   .tlrow.suppressed{opacity:.55} .tlrow.manual{background:rgba(88,166,255,.05)}
   /* A cross-host GROUP is one visible block: accent bar, frame, its rows inside. */
-  .tlgrp{margin:10px 0;border:1px solid rgba(88,166,255,.35);border-left:4px solid #58a6ff;border-radius:8px;background:rgba(88,166,255,.05);overflow:hidden}
+  /* The box sits OUTSIDE the column grid: pulled out by its own border + padding
+     (left 4+10, right 1+10) so a group's time, severity and verdict buttons line up
+     with the plain rows above and below it (QA: "make them be in the same line"). */
+  .tlgrp{margin:10px -11px 10px -14px;border:1px solid rgba(88,166,255,.35);border-left:4px solid #58a6ff;border-radius:8px;background:rgba(88,166,255,.05);overflow:hidden}
   .tlgrp.hasnew{border-color:rgba(210,153,34,.6);border-left-color:#d29922}
   .tlgrp > .tlgroup{padding:8px 10px;border-bottom:none;cursor:pointer}
   .tlgrp > .tlgroup:hover{background:rgba(88,166,255,.08)}
@@ -232,8 +235,9 @@
   /* Hosts & People: one tab, two lists, the same table grammar */
   .ent-top{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 8px}
   .ent-cap{color:var(--muted);font-size:12px;margin:0 0 8px}
-  .pgrid{display:grid;grid-template-columns:minmax(190px,1.6fr) 84px 104px minmax(140px,1.5fr) 140px 158px;align-items:center;gap:0 14px}
-  .pgrid.nojev{grid-template-columns:minmax(190px,1.6fr) 84px 104px minmax(140px,1.5fr) 158px}
+  /* the likelihood column fits its bar + "88% · Likely" (it was cut at 140px) */
+  .pgrid{display:grid;grid-template-columns:minmax(190px,1.6fr) 84px 84px minmax(140px,1.5fr) 170px 158px;align-items:center;gap:0 14px}
+  .pgrid.nojev{grid-template-columns:minmax(190px,1.6fr) 84px 84px minmax(140px,1.5fr) 158px}
   .phead{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;padding:4px 13px 6px}
   .prow{border:1px solid var(--bd);border-left:3px solid var(--bd);border-radius:8px;margin:0 0 6px;background:var(--bg)}
   .prow.v-compromised{border-left-color:var(--crit)} .prow.v-not_compromised{border-left-color:var(--ok)}
@@ -2259,7 +2263,7 @@ function _idRender(id){
   if(view==='people'){
     const jev=d.sort==='jev';
     h+=`<p class="ent-cap">${jev?'<b>Compromise likelihood</b> is Jev’s estimate, from each person’s findings, of how likely the account is in an attacker’s hands (Likely ≥ 70%, Unlikely ≤ 30%) — a second opinion; your verdict decides. Sorted by your verdict, then likelihood, then A–Z.':'Sorted A–Z.'} Click a person for accounts, hosts, findings and link suggestions.</p>`;
-    h+=`<div class="pgrid phead${jev?'':' nojev'}"><span>Person</span><span>Severity</span><span>Detections</span><span>Seen on</span>${jev?'<span title="Jev’s estimate, from this person’s findings, that the account is in an attacker’s hands">Compromise likelihood</span>':''}<span>Your verdict</span></div>`;
+    h+=`<div class="pgrid phead${jev?'':' nojev'}"><span>Person</span><span>Severity</span><span>Detections</span><span>Seen on</span>${jev?'<span title="Jev’s estimate, from this person’s findings, that the account is in an attacker’s hands">Compromise likelihood (Jev)</span>':''}<span>Your verdict</span></div>`;
     h+=shown.map(it=>idCard(id,it,jev)).join('') || '<p style="color:var(--muted)">no match.</p>';
   } else {
     h+=_entHosts(shown, ppl, window._riskData||{});
@@ -2287,7 +2291,7 @@ function entOpenHost(label){
 function hostToggle(h){ (window._hostExpand=window._hostExpand||{})[h]=!window._hostExpand[h]; window._idFocus=false; _idRender(window._idCase); }
 // Hosts in the People row grammar. The row: how bad (severity, a risk meter,
 // distinct critical/high/medium), the lead finding, and who was there. Opened:
-// why it ranks here, the next step, and the people — those with findings in
+// why it ranks here, its status, and the identities — those with findings in
 // full (severity, likelihood, your verdict), the rest on one line.
 function _vchip(v){ return v==='compromised'?'<span class="vchip c">compromised</span>':v==='not_compromised'?'<span class="vchip n">not compromised</span>':''; }
 // Host status (plan step 4): the analyst's label for a machine, and — read-only —
@@ -2344,14 +2348,13 @@ function _entHosts(rows, ppl, d){
     const bodyH=`<div class="pbody"><div class="hpanel">
         <div><div class="hsec">Why it ranks #${i+1}</div>${why.map(w=>`<div class="hwhy">${esc(w)}</div>`).join('')||'—'}</div>
         <div><div class="hsec">Host status</div>${_hostStatusSelect(r)}
-          <div class="hsec" style="margin-top:10px">Next step</div>${r.next_action?`<div class="hnext">${esc(r.next_action)}</div>`:'<span style="color:var(--muted)">—</span>'}
           <div style="margin-top:8px;font-size:12px;color:var(--muted)">${r.finding_count} distinct detections in ${r.row_count} timeline rows · collected by ${esc((r.modules||[]).join(', ')||'—')}${r.deep?' · deep collection done':''}</div></div>
         <div><div class="hsec">Identities on this host</div>${people||(rest.length?'':'<span style="color:var(--muted)">—</span>')}${also}</div>
       </div></div>`;
     return `<div class="prow${comp.length?' v-compromised':''}">${row}${bodyH}</div>`;
   }).join('');
   return `${d.is_stale?'<div class="agnote">New collections have landed that are not in this ranking yet — run <b>Refusion</b> to include them.</div>':''}
-    <p class="ent-cap">Endpoints ranked by risk — work top-down. Severity is the host’s worst detection; risk orders hosts within it (each distinct detection counts once, cross-host ones weigh more). A red edge: an identity you marked compromised was active there. Click a host for why, the next step, and the identities on it.</p>
+    <p class="ent-cap">Endpoints ranked by risk — work top-down. Severity is the host’s worst detection; risk orders hosts within it (each distinct detection counts once, cross-host ones weigh more). A red edge: an identity you marked compromised was active there. Click a host for why it ranks there and the identities on it.</p>
     ${head}${body||'<p style="color:var(--muted)">no match.</p>'}`;
 }
 function idSearch(v){ if(tab==='risk') window._hostQuery=v; else window._idQuery=v; window._idFocus=true; _idRender(window._idCase); }
@@ -2372,7 +2375,7 @@ function idCard(cid,it,jev){
      <div class="pname" style="min-width:0"><span style="color:var(--muted);display:inline-block;width:14px">${open?'▾':'▸'}</span><b>${esc(it.name||it.key)}</b>${it.local?`<span title="A local account, read from this host’s own account database (SAM) — it exists on this machine only" style="font-size:10px;border:1px solid var(--bd);color:var(--muted);border-radius:8px;padding:0 6px;margin-left:6px">local</span>`:''}${it.account_kind?bdg(it.account_kind):''}${buckets}${confb}
        <div class="psub" style="padding-left:14px">${nAcc} account${nAcc===1?'':'s'}${sugN?` · <span style="color:var(--acc)">${sugN} link suggestion${sugN===1?'':'s'}</span>`:''}${it.detections?'':it.activity!==false?' · <span title="Active (processes, logons, commands) but no detection involves these accounts">no findings</span>':' · <span title="Seen only in account lists (e.g. the host’s SAM): the account exists, nothing collected shows it doing anything">no activity — only listed in account data</span>'}</div></div>
      <div>${it.worst?`<span class="chip c-${esc(it.worst)}">${esc(it.worst)}</span>`:'<span class="pcell">—</span>'}</div>
-     <div class="pcell">${it.detections?`<b style="color:var(--tx)">${it.detections}</b> <span>(${it.finding_rows} row${it.finding_rows===1?'':'s'})</span>`:'—'}</div>
+     <div class="pcell">${it.detections?`<b style="color:var(--tx)">${it.detections}</b>`:'—'}</div>
      <div class="pcell" title="${esc(so.join(', '))}">${so.length?esc(so.slice(0,3).join(', '))+(so.length>3?` +${so.length-3}`:''):'—'}</div>
      ${jev?`<div>${_idJev(it)}</div>`:''}
      <div onclick="event.stopPropagation()">${idVerdictSel(cid,it)}</div>
@@ -2415,7 +2418,7 @@ function _idJev(it){
   const p=it&&it.jev_compromise; if(typeof p!=='number') return '<span class="pcell" title="No findings on this person, so Jev was not asked">—</span>';
   const pct=Math.round(p*100), col=p>=0.7?'var(--crit)':p<=0.3?'var(--ok)':'var(--med)';
   const word=p>=0.7?'Likely':p<=0.3?'Unlikely':'Possible';
-  return `<span title="Jev's estimate, from this person's findings, that the account is in an attacker's hands: ${pct}%. A second opinion — your verdict decides." style="white-space:nowrap"><span class="meter"><i style="width:${pct}%;background:${col}"></i></span><b style="color:${col};font-size:12px">${pct}%</b> <span style="color:${col};font-size:11px">· ${word} (Jev)</span></span>`;
+  return `<span title="Jev's estimate, from this person's findings, that the account is in an attacker's hands: ${pct}%. A second opinion — your verdict decides." style="white-space:nowrap"><span class="meter" style="width:48px"><i style="width:${pct}%;background:${col}"></i></span><b style="color:${col};font-size:12px">${pct}%</b> <span style="color:${col};font-size:11px">· ${word}</span></span>`;
 }
 function idVerdict(cid,key,verdict){
   const it=(((window._idData||{}).identities)||[]).find(x=>x.key===key); if(!it) return;

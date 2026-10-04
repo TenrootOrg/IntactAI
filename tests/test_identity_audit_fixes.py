@@ -197,11 +197,13 @@ console.log(idCard("c1",{key:"k",jev_compromise:0.9,verdict:"compromised",name:"
         html = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "modules/nginx/html/cases.html")
         out = subprocess.run([node, "-e", js, html], capture_output=True, text=True, check=True).stdout
         for want in (">service</span>", 'class="chip c-critical"', "openFindingDetail('f1')",
-                     ">1</b> <span>(3 rows)</span>", "worst 1 of 3", 'class="prow v-compromised"',
-                     "90%</b>", '<option value="compromised" selected>',
+                     ">1</b></div>", "worst 1 of 3", 'class="prow v-compromised"',     # detections only, no rows
+                     "90%</b> <span style=\"color:var(--crit);font-size:11px\">· Likely</span>",  # not cut: no "(Jev)"
+                     '<option value="compromised" selected>',
                      "entOpenHost('WS1')", 'class="chip c-high"'):        # person -> host and its severity
             self.assertIn(want, out)
         self.assertNotIn("ranked #", out)                                      # "the ranked is not necessary"
+        self.assertNotIn("rows)</span>", out)                                  # "dont write the rows"
 
 
 class RiskSaysIdentities(unittest.TestCase):

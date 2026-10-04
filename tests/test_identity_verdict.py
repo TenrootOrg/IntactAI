@@ -159,7 +159,8 @@ console.log(_entHosts(rows,_hostPeople(people),{rows}));"""
         self.assertIn("entOpenPerson('k1')", out)                    # host -> person
         self.assertIn("Mimikatz", out)
         self.assertIn("Odd service", out)                            # expanded: every top finding
-        self.assertIn("Deep-dive now", out)
+        self.assertNotIn("Next step", out)                                     # removed from the host panel (QA)
+        self.assertNotIn("Deep-dive now", out)
         self.assertIn('<span class="vchip c">compromised</span>', out)
         self.assertIn("Also seen:", out)                              # people without findings on one line
         self.assertIn("Why it ranks #1", out)
