@@ -1105,9 +1105,18 @@ function _evHostList(cid){
   api('/api/cases/'+cid+'/risk').then(r=>{ window._evHosts=((r&&r.rows)||[]).map(x=>x.host).filter(Boolean);
     const dl=$('#ev-hosts'); if(dl) dl.innerHTML=window._evHosts.map(h=>`<option value="${esc(h)}">`).join(''); }).catch(()=>{});
 }
+// A picture shows as a small thumbnail; clicking it opens the full image. ?inline=1
+// serves raster pictures only (case_routes.download_case_file), never .svg/.html.
+function _evThumb(x){
+  if(x.kind!=='image') return '';
+  const u=`/api/cases/${esc(curInfo.case_id)}/files/${esc(x.id)}?inline=1`;
+  return `<a href="${u}" target="_blank" rel="noopener" title="Open full size" style="flex:0 0 auto">
+    <img src="${u}" alt="${esc(x.name)}" loading="lazy" style="width:120px;height:80px;object-fit:cover;border-radius:6px;border:1px solid var(--bd);display:block;background:var(--panel2)"></a>`;
+}
 function _evItem(x){
   const edit=window._evEdit===x.id, lab=x.finding_title||'';
-  return `<div style="border:1px solid var(--bd);border-radius:8px;padding:8px 10px;margin:6px 0">
+  return `<div style="border:1px solid var(--bd);border-radius:8px;padding:8px 10px;margin:6px 0;display:flex;gap:12px;align-items:flex-start">
+    ${_evThumb(x)}<div style="flex:1;min-width:0">
     <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
       <b>${esc(x.name)}</b>
       <span style="color:var(--muted);font-size:11px">${esc(_evSrc(x.source))}${x.time?' · '+esc(x.time):''}</span>
@@ -1121,7 +1130,7 @@ function _evItem(x){
     ${edit?`<div class="cfgcol" style="margin-top:6px">${_evFields('eve',x,false,!!x.finding_id)}
       ${x.finding_id?`<label style="margin-top:6px"><input type="checkbox" id="eve-unlink" style="width:auto"/> Unlink from the Timeline event</label>`:''}
       <div class="row" style="gap:6px;margin-top:6px"><button onclick="evSaveEdit('${esc(x.id)}')">Save</button><button class="ghost" onclick="evEditToggle('${esc(x.id)}')">Cancel</button></div></div>`:''}
-  </div>`;
+  </div></div>`;
 }
 function renderEvidence(info){
   const cid=info.case_id, all=_evList(), f=window._evFilter||'';

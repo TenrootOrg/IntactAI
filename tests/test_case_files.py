@@ -183,7 +183,7 @@ class Page(unittest.TestCase):
             src = fh.read()
         parts = [re.search(r"const EV_SOURCES=.*?;\n", src).group(0)] + \
                 [re.search(r"function %s\(.*?\n\}" % n, src, re.S).group(0)
-                 for n in ("_evFields", "_evItem", "renderEvidence", "_evList", "_evHostList")] + \
+                 for n in ("_evFields", "_evThumb", "_evItem", "renderEvidence", "_evList", "_evHostList")] + \
                 [re.search(r"function %s\(.*?\}\n" % n, src).group(0) for n in ("_evSize", "_evSrc")]
         js = ("const esc=s=>String(s); const window={}; let OUT=''; const $=()=>({set innerHTML(v){OUT=v}});"
               "const api=()=>Promise.resolve({rows:[]}); let curInfo=null;\n" + "\n".join(parts) + "\n" + calls)
@@ -207,6 +207,10 @@ console.log(JSON.stringify([all, one, bad, form, linked]));""")
         self.assertLess(all_.index("ALDC02"), all_.index("DESKTOP-16OJFO6"))          # grouped by host, A-Z
         self.assertLess(all_.index("DESKTOP-16OJFO6"), all_.index("Not linked to a host"))   # unlinked last
         self.assertIn("evGoEvent('f_row')", all_)
+        # a picture shows as a thumbnail that opens full size ("show the images minimized")
+        self.assertIn('<img src="/api/cases/c1/files/0123456789a1?inline=1"', all_)
+        self.assertIn('href="/api/cases/c1/files/0123456789a1?inline=1" target="_blank"', all_)
+        self.assertIn('loading="lazy"', all_)
         self.assertNotIn("Include in AI", all_)                                        # one switch, not per item
         self.assertIn("Evidence for: <b>SIGMA: AnyDesk</b>", one)
         self.assertNotIn("Kibana export", one)                                         # filtered to that event
