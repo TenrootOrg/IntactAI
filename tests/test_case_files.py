@@ -1,6 +1,7 @@
 """Evidence (plan step 6): files attached to a case, each with a name and a
 description (required), SHA-256, host / time / source, and the Timeline event it
-belongs to when attached from there. "Include in AI" is off by default.
+belongs to when attached from there. It goes into the report when the case's
+switch is on, and never to the AI.
 """
 import hashlib
 import io
@@ -151,21 +152,17 @@ class Evidence(unittest.TestCase):
         for bad in ("../../etc/passwd", "..", "", "ABCDEF123456"):
             self.assertIsNone(case_files.path_of("c1", bad))
 
-    def test_the_case_switch_decides_what_reaches_the_model(self):
-        pic = self.add("popup.png", b"img", finding_id="f_row")
-        log = self.add("fw.log", b"line1", name="Firewall log", description="exported from Kibana", source="kibana")
-        self.assertEqual(case_files.for_model("c1", self.d), [])                  # switch off: nothing
+    def test_evidence_never_reaches_the_model(self):
+        # "remove the AI ... no need since it had all the data in the timeline already"
+        self.add("fw.log", b"line1", name="Firewall log", description="exported from Kibana", source="kibana")
         self.d["include_evidence"] = True
-        got = case_files.for_model("c1", self.d)
-        self.assertEqual(got[0], {"evidence": "AnyDesk prompt", "file": "popup.png", "type": "image",
-                                  "description": "the silent-install prompt on the desktop",
-                                  "host": "DESKTOP-16OJFO6", "time": TS, "source": "timeline",
-                                  "supports_finding": _graph().findings[0].title})
-        self.assertEqual(got[1]["text"], "line1")
-        self.assertEqual(len(got), 2)                                              # switch on: every item
-        g = FusionGraph(case_id="c1")
-        g.case_files = got
-        self.assertEqual(llm_sim.analyst_context(graph=g)["analyst_attached_files"], got)
+        self.assertFalse(hasattr(case_files, "for_model"))
+        ctx = llm_sim.analyst_context(graph=FusionGraph(case_id="c1"))
+        self.assertNotIn("analyst_attached_files", ctx)
+        with open(os.path.join(_ROOT, "modules/backend/services/fusion/store.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertNotIn("case_files = ", src)
+        self.assertIn("case_files.with_evidence(report", src)                  # the report keeps it
 
     def test_older_and_damaged_items(self):
         # the first version of this feature: name = file name, no description / host
@@ -257,7 +254,7 @@ console.log(JSON.stringify([
     def test_the_analysis_tab_has_the_switch_and_the_html_download(self):
         with open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
             src = fh.read()
-        self.assertIn("Include evidence in the report and AI</label>", src)
+        self.assertIn("Include evidence in the report</label>", src)
         self.assertIn("dl('/report/download/html','HTML')", src)             # in the Export menu
 
 

@@ -6,9 +6,8 @@ name, size, type, SHA-256), and what it belongs to: host, time, source, and —
 when attached from a Timeline event — that event. Stored on the appliance under
 DATA_DIR/<case_id>/<id>; described in the case details under "case_files".
 
-The model sees an item ONLY when "Include in AI" is set (off by default): its
-name, description and linked event; a text file's text too (capped, masked with
-the rest of the case). Never a picture's pixels.
+The model never sees an item: what evidence shows is already in the Timeline it
+reads. The case's switch puts the items, pictures included, in the report only.
 """
 from __future__ import annotations
 
@@ -20,7 +19,6 @@ import uuid
 
 DATA_DIR = "/app/data/case_files"
 MAX_BYTES = 100 * 1024 * 1024
-AI_TEXT_CAP = 20_000
 SOURCES = ("timeline", "timesketch", "kibana", "iris", "velociraptor", "other")
 _IMAGE = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff")
 _TEXT = (".txt", ".log", ".csv", ".tsv", ".json", ".jsonl", ".eml", ".md", ".xml", ".yaml", ".yml",
@@ -150,7 +148,7 @@ def add(case_id, stream, file_name, *, name, description, host="", time="", sour
 
 
 def update(case_id, file_id, fields) -> dict:
-    """Edit name, description, host, time, source, "Include in AI"; finding_id ""
+    """Edit name, description, host, time, source; finding_id ""
     unlinks the Timeline event. Name and description cannot be emptied."""
     st = _store()
     if not st.get_case(case_id):
@@ -225,8 +223,8 @@ _FOOTER = re.compile(r"\n\n---\n_(?:Deterministic report|Narrative by live LLM)[
 
 
 def included(d) -> bool:
-    """The case's one switch (Analysis tab): evidence goes into the report and to
-    the AI only when it is on. Off by default; old cases have no switch = off."""
+    """The case's one switch (Analysis tab): evidence goes into the report only
+    when it is on (never to the AI). Off by default; old cases have no switch = off."""
     return bool(isinstance(d, dict) and d.get("include_evidence") is True)
 
 
@@ -313,35 +311,6 @@ def per_finding(d) -> dict:
     for f in listing(d):
         if f["finding_id"]:
             out[f["finding_id"]] = out.get(f["finding_id"], 0) + 1
-    return out
-
-
-def for_model(case_id, d) -> list:
-    """With the case's switch on, the model gets every item: name, description,
-    file, type, host, time, linked event; a text file's text too (capped). Never
-    a picture's pixels. Switch off: nothing."""
-    out = []
-    if not included(d):
-        return out
-    for f in listing(d):
-        item = {"evidence": f["name"], "file": f["file_name"], "type": f["kind"]}
-        for k in ("description", "host", "time", "source"):
-            if f[k]:
-                item[k] = f[k]
-        if f["finding_title"]:
-            item["supports_finding"] = f["finding_title"]
-        if f["kind"] == "text":
-            p = path_of(case_id, f["id"])
-            if p:
-                try:
-                    with open(p, "rb") as fh:
-                        raw = fh.read(AI_TEXT_CAP * 4)
-                    if b"\x00" not in raw[:4096]:
-                        txt = raw.decode("utf-8", "replace")
-                        item["text"] = txt[:AI_TEXT_CAP] + ("…[cut]" if len(txt) > AI_TEXT_CAP else "")
-                except OSError:
-                    pass
-        out.append(item)
     return out
 
 
