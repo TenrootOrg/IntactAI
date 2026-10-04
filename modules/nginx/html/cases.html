@@ -1090,13 +1090,13 @@ function _evSrc(k){ return (EV_SOURCES.find(([x])=>x===k)||[,'Other'])[1]; }
 function _evFields(pre, v, withFile, linked){
   const o=(k,l,cur)=>`<option value="${k}" ${cur===k?'selected':''}>${l}</option>`;
   return `${withFile?`<label>File <span style="color:var(--muted);font-weight:400">— or paste a picture (Ctrl+V)</span></label><input type="file" id="${pre}-file" onchange="window._evPasted=null;const n=document.getElementById('${pre}-pasted');if(n)n.textContent=''"/><div id="${pre}-pasted" style="font-size:11px;color:#3fb950"></div>`:''}
-    <label>Name ${linked&&withFile?'<span style="color:var(--muted);font-weight:400">— optional; made from the event if empty</span>':'<span style="color:var(--crit)">*</span> <span style="color:var(--muted);font-weight:400">— what it is; the report and the AI use it</span>'}</label>
+    <label>Name ${linked&&withFile?'<span style="color:var(--muted);font-weight:400">— optional; made from the event if empty</span>':'<span style="color:var(--crit)">*</span> <span style="color:var(--muted);font-weight:400">— what it is; the report uses it</span>'}</label>
     <input id="${pre}-name" maxlength="200" value="${esc(v.name||'')}" placeholder="${linked&&withFile?'e.g. “Mimikatz Execution via PowerShell — screenshot”':'e.g. AnyDesk silent-install prompt on the desktop'}"/>
     <label>Description ${linked?'<span style="color:var(--muted);font-weight:400">— optional</span>':'<span style="color:var(--crit)">*</span>'}</label>
     <textarea id="${pre}-desc" maxlength="1000" style="min-height:44px" placeholder="what it shows and why it matters">${esc(v.description||'')}</textarea>
     ${linked?`<div class="cfghint">Linked to the Timeline event — host and time come from it.</div>`:`
     <label>Host</label><input id="${pre}-host" list="ev-hosts" value="${esc(v.host||'')}" placeholder="pick one of the case's hosts, or type"/>
-    <label>Time</label><input id="${pre}-time" value="${esc(v.time||'')}" placeholder="e.g. 2026-09-01T07:20:51Z"/>
+    <label>Date &amp; time <span style="color:var(--muted);font-weight:400">(UTC)</span></label><input id="${pre}-time" class="ev-time" value="${esc(v.time||'')}" placeholder="pick a date and time — or type 2026-09-01T07:20:51Z"/>
     <label>Source</label><select id="${pre}-src">${EV_SOURCES.filter(([k])=>k!=='timeline'||v.source==='timeline').map(([k,l])=>o(k,l,v.source||'other')).join('')}</select>`}`;
 }
 function _evHostList(cid){
@@ -1150,6 +1150,7 @@ function renderEvidence(info){
     ${window._evAdd?`<div class="cfgcol" style="border:1px solid var(--bd);border-radius:8px;padding:8px 10px;max-width:640px">${_evFields('evn',{},true,false)}
       <div class="row" style="margin-top:6px"><button onclick="evSubmit('evn','')">Add</button></div></div>`:''}
     ${body||'<div class="empty">No evidence yet.</div>'}`;
+  _evPickers();
 }
 function evToggleInclude(cid, on){
   fetch('/api/cases/'+encodeURIComponent(cid),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({include_evidence:!!on})})
@@ -1160,6 +1161,14 @@ function evToggleInclude(cid, on){
 }
 function evShowFor(fid){ window._evFilter=fid; setTab('evidence'); }
 function evGoEvent(fid){ setTab('timeline'); setTimeout(()=>openFindingDetail(fid), 600); }
+// The same date+time calendar as the Configuration tab's time window, writing the
+// Timeline's own UTC form (…T07:20:51Z). allowInput: an exact time can still be
+// typed or pasted.
+function _evPickers(){
+  if(!window.flatpickr) return;
+  document.querySelectorAll('#tabc .ev-time').forEach(el=>flatpickr(el,
+    {enableTime:true,enableSeconds:true,time_24hr:true,dateFormat:'Y-m-d\\TH:i:S\\Z',allowInput:true}));
+}
 function evEditToggle(id){ window._evEdit=(window._evEdit===id)?null:id; renderEvidence(curInfo); }
 function _evJson(r){ return r.json().catch(()=>({error:'the server did not answer (HTTP '+r.status+')'})).then(d=>{ if(!d||d.error) throw new Error((d&&d.error)||'unknown error'); return d; }); }
 function _evRefresh(fn){

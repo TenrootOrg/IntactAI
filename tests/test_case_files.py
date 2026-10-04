@@ -183,7 +183,7 @@ class Page(unittest.TestCase):
             src = fh.read()
         parts = [re.search(r"const EV_SOURCES=.*?;\n", src).group(0)] + \
                 [re.search(r"function %s\(.*?\n\}" % n, src, re.S).group(0)
-                 for n in ("_evFields", "_evThumb", "_evItem", "renderEvidence", "_evList", "_evHostList")] + \
+                 for n in ("_evFields", "_evThumb", "_evItem", "renderEvidence", "_evList", "_evHostList", "_evPickers")] + \
                 [re.search(r"function %s\(.*?\}\n" % n, src).group(0) for n in ("_evSize", "_evSrc")]
         js = ("const esc=s=>String(s); const window={}; let OUT=''; const $=()=>({set innerHTML(v){OUT=v}});"
               "const api=()=>Promise.resolve({rows:[]}); let curInfo=null;\n" + "\n".join(parts) + "\n" + calls)
@@ -219,6 +219,9 @@ console.log(JSON.stringify([all, one, bad, form, linked]));""")
         self.assertIn("Name <span style=\"color:var(--crit)\">*", form)               # name and description required
         self.assertIn("Description <span style=\"color:var(--crit)\">*", form)
         self.assertIn('id="evn-host" list="ev-hosts"', form)                           # host picked or typed
+        self.assertIn('id="evn-time" class="ev-time"', form)                         # the date+time calendar
+        self.assertIn("Date &amp; time", form)
+        self.assertNotIn("the AI use", form)                                           # evidence never goes to the AI
         self.assertNotIn("evn-host", linked.replace("eva", "evn"))                     # from the Timeline: host comes from the event
 
     def test_the_timeline_row_shows_its_evidence_count(self):
