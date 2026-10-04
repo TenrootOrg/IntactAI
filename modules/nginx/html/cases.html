@@ -1331,7 +1331,7 @@ function scopeBarHtml(info){
   // unticking a host moves only that timeframe's count.
   const hosts=n=>(typeof n==='number')?` [${n} host${n===1?'':'s'}]`:'';
   const opts=sc.map(s=>
-    `<option value="${esc(s.id)}" ${s.active?'selected':''}>${esc(s.label)}${hosts(s.hosts)}${s.has_report?'':' · no report yet'}</option>`
+    `<option value="${esc(s.id)}" ${s.active?'selected':''}>${esc(s.label)}${hosts(s.hosts)}${s.name?' · '+esc(s.name):''}${s.has_report?'':' · no report yet'}</option>`
   ).join('');
   const act=sc.find(s=>s.active)||{};
   return `<div class="scopebar">
@@ -1425,7 +1425,7 @@ async function applyZoom(id,i){
   const label=_scopeDates(t.window);     // the timeframe is the name
   try{
     await api('/api/cases/'+id+'/zoom',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({window:t.window, host_labels:t.host_labels})});
+      body:JSON.stringify({window:t.window, host_labels:t.host_labels, name:t.name||''})});
   }catch(e){ toast('The scope could not be created: '+((e&&e.message)||e)); return; }
   toast('Timeframe '+label+' selected. Writing its report — progress is in the Log.');
   // Re-read first, so the page is ON the new scope before the report is asked

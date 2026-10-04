@@ -180,6 +180,22 @@ class ScopesAreLensesNotCopies(unittest.TestCase):
         self.assertIsNone(store.active_scope_window(self.d))
         self.assertEqual(2, len(store.view_graph(CASE, self.d).findings), "the whole case")
 
+    def test_a_phase_cards_name_rides_on_the_scope(self):
+        # "when micro section is created give it proper name ... and then the name of it"
+        sid = store.create_scope(CASE, None, PHASE_WIN, name="  PAExec and PowerShell spread ")
+        row = next(r for r in store.scopes_for_payload(self.d) if r["id"] == sid)
+        self.assertEqual(row["name"], "PAExec and PowerShell spread")
+        self.assertEqual(row["label"], store._window_label(PHASE_WIN))          # the dates stay the label
+        store.switch_scope(CASE, "full")
+        store.create_scope(CASE, None, PHASE_WIN)                              # again, from a card with no name
+        self.assertEqual(next(r for r in store.scopes_for_payload(self.d) if r["id"] == sid)["name"],
+                         "PAExec and PowerShell spread")                       # keeps it
+        self.assertEqual(next(r for r in store.scopes_for_payload(self.d) if r["id"] == "full")["name"], "")
+        page = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                 "modules/nginx/html/cases.html"), encoding="utf-8").read()
+        self.assertIn("host_labels:t.host_labels, name:t.name||''", page)          # the card sends it
+        self.assertIn("${hosts(s.hosts)}${s.name?' · '+esc(s.name):''}", page)       # dates [N hosts] · name
+
     def test_the_same_window_twice_is_one_scope(self):
         a = store.create_scope(CASE, "Phase 2", PHASE_WIN)
         store.switch_scope(CASE, "full")

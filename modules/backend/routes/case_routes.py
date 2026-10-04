@@ -648,7 +648,7 @@ def apply_zoom(case_id):
     tab shows the part of the case inside that window. Deterministic and instant —
     nothing is fused, nothing is copied, and the case's own settings are untouched.
     The report for the scope is the operator's next click.
-    Body: {window:{start,end}, host_labels:[...], label?}."""
+    Body: {window:{start,end}, host_labels:[...], label?, name?}."""
     d = store.get_case(case_id)
     if not d:
         return jsonify({"error": "case not found"}), 404
@@ -661,7 +661,8 @@ def apply_zoom(case_id):
     # re-fuse the case into that window and rewrite excluded_hosts to "everything
     # but these", which destroyed the case's own view and could not be undone.
     sid = store.create_scope(case_id, body.get("label"),
-                             {"start": win["start"], "end": win["end"]})
+                             {"start": win["start"], "end": win["end"]},
+                             name=body.get("name"))
     return jsonify({"case_id": case_id, "status": "scoped", "scope": sid,
                     "hosts_in_window": sorted(keep), "window": win})
 

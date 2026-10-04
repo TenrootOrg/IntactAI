@@ -3233,10 +3233,12 @@ def _save_active_scope(case_id, d) -> None:
                             **_live_scope_fields(d)})
 
 
-def create_scope(case_id, label, window) -> str:
+def create_scope(case_id, label, window, name=None) -> str:
     """Add a scope (from a phase card, or from "+ New scope") and select it. The
     window is a LENS — nothing is fused, nothing is copied, and the case's own
-    time window (what it fuses) is untouched."""
+    time window (what it fuses) is untouched. `name` is what the phase card called
+    the window ("PAExec and PowerShell spread"); the dropdown shows it after the
+    dates, which stay the label."""
     d = get_case(case_id) or {}
     if not (window or {}).get("start"):
         raise ValueError("a scope needs a start date")
@@ -3248,12 +3250,15 @@ def create_scope(case_id, label, window) -> str:
     entry.update({"id": sid, "label": label or _window_label(window),
                   "window": {"start": window.get("start"), "end": window.get("end")},
                   "used_at": _now_iso()})
+    if str(name or "").strip():                      # a card without a name keeps any earlier one
+        entry["name"] = str(name).strip()[:120]
     if not known:                                    # a fresh window starts empty
         entry.update({k: None for k in _SCOPE_FIELDS})
         entry["report_md"], entry["chat_messages"] = "", []
     _upsert_scope(case_id, entry, active=sid)
     _merge_case_details(case_id, _scope_restore_patch(entry))
-    log_case_event(case_id, f"Scope · {entry['label']}", "info",
+    log_case_event(case_id, f"Scope · {entry['label']}"
+                   + (f" · {entry['name']}" if entry.get("name") else ""), "info",
                    ("selected again" if known else "created") +
                    f" — {_window_label(entry['window'])}. The case's evidence is "
                    f"unchanged; this is a view of it")
@@ -3480,6 +3485,7 @@ def scopes_for_payload(d, host_counts=None) -> list:
                      "label": (_full_scope_label(d) if s["id"] == FULL_SCOPE_ID
                                else s.get("label") or _window_label(s.get("window"))),
                      "window": s.get("window") or {},
+                     "name": str(s.get("name") or ""),
                      "report_written_at": s.get("report_written_at"),
                      "has_report": bool(s.get("report_md")),
                      "hosts": (host_counts or {}).get(s["id"]),
