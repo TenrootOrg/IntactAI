@@ -2253,7 +2253,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
             # Asked before the progress line below, so it never claims a model call
             # an air-gapped appliance cannot make (see llm_sim.provider_route).
             try:
-                _route = llm_sim.provider_route()
+                _route = llm_sim.preflight()                 # no route, or a key refused before
             except Exception:                            # noqa: BLE001
                 _route = None
             if _route and not _route["ok"]:
@@ -3523,6 +3523,9 @@ def _log_checklist_outcome(case_id, outcome, items):
 
 
 def _offline_log_text(route) -> str:
+    if route.get("code") in llm_sim._DEFINITE and route.get("reason"):
+        return (f"{route['reason']} -- the report is built directly from the case evidence, "
+                f"without the model. {route.get('fix') or ''}").strip()
     target = f" ({route['target']})" if route.get("target") else ""
     return (f"no AI model is reachable from this appliance{target} — the report is "
             f"built directly from the case evidence and nothing is sent outside the "
@@ -4157,7 +4160,7 @@ def regenerate_report_async(case_id, *, audience=None, use_llm=False) -> dict:
     # No route to the provider: write the report offline, now, from this thread --
     # before anything tells the operator a model is being called.
     try:
-        route = llm_sim.provider_route() if llm_sim._use_real() else None
+        route = llm_sim.preflight() if llm_sim._use_real() else None
     except Exception:                                     # noqa: BLE001
         route = None
     if route and not route["ok"]:

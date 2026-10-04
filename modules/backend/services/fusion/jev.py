@@ -75,13 +75,46 @@ def min_confidence() -> float:
         return DEFAULTS["min_confidence"]
 
 
+# One failure answers for every Jev call: the provider is skipped until DOWN_SECONDS
+# have passed or its key / model change. On an air-gapped box every feature (verdicts,
+# phases, people, report grounding, chat) asked on its own after every fuse and
+# report -- 15 rejected calls in one minute -- each one waiting out a timeout or a 401
+# that the first had already answered.
+DOWN_SECONDS = 600
+_down = {"until": 0.0, "fp": None, "why": ""}
+
+
+def _fp(key, model):
+    import hashlib
+    return hashlib.sha1(f"{model}|{key}".encode()).hexdigest()[:12]
+
+
+def unavailable(cfg=None):
+    """Why Jev is being skipped right now, or "" when it may be called."""
+    import time
+    cfg = _cfg() if cfg is None else cfg
+    if _down["fp"] == _fp(_key(cfg), settings(cfg)["model"]) and time.monotonic() < _down["until"]:
+        return _down["why"]
+    return ""
+
+
 def ask(state, questions, *, run_id=None, cfg=None):
     """One Decisions call. Returns the `answers` map, or None on any failure."""
+    import time
     cfg = _cfg() if cfg is None else cfg
     key = _key(cfg)
     if not key or not questions:
         return None
     model = settings(cfg)["model"]
+    if unavailable(cfg):                     # failed moments ago: skip, offline, no call
+        _last["too_big"] = False
+        return None
+
+    def _trip(why):
+        if not unavailable(cfg):
+            log.warning("jev: %s -- every Jev call is skipped for %d min (offline) or until "
+                        "its settings change", why, DOWN_SECONDS // 60)
+        _down.update(until=time.monotonic() + DOWN_SECONDS, fp=_fp(key, model), why=why)
     try:
         # A 5xx is the provider's own hiccup, not an outage: retried ONCE. Seen
         # live: one HTTP 520 on the verdict question left a 285-finding case with
@@ -102,12 +135,16 @@ def ask(state, questions, *, run_id=None, cfg=None):
             # request it calls too large is split and retried by _ask_chunk.
             _last["too_big"] = r.status_code in (400, 413) and "max_tokens" in r.text
             log.warning("jev: HTTP %s: %s", r.status_code, r.text[:200])
+            if not _last["too_big"]:                 # too big is ours to split, not an outage
+                _trip(f"HTTP {r.status_code}")
             return None
         body = r.json()
     except Exception as e:  # noqa: BLE001 — every failure means "no suggestion"
         _last["too_big"] = False
         log.warning("jev: call failed: %s", e)
+        _trip(f"unreachable ({type(e).__name__})")
         return None
+    _down["until"] = 0.0                         # answered: not down
     if run_id:
         u = body.get("usage") or {}
         try:

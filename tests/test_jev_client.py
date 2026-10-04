@@ -43,6 +43,9 @@ class _Resp:
 
 
 class Enabled(unittest.TestCase):
+    def setUp(self):
+        jev._down.update(until=0.0, fp=None, why='')
+
     def test_every_condition_is_required(self):
         self.assertTrue(jev.enabled("disposition", ON))
         self.assertFalse(jev.enabled("disposition", {**ON, "jev": {}}))
@@ -74,6 +77,9 @@ class Enabled(unittest.TestCase):
 
 
 class Ask(unittest.TestCase):
+    def setUp(self):
+        jev._down.update(until=0.0, fp=None, why='')
+
     def test_request_shape_and_answers(self):
         body = {"model": "jev-1.13.0", "answers": {"q0": {"noul": 0.9}},
                 "usage": {"input_tokens": 10, "output_tokens": 1, "cost": 0.001}}
@@ -108,6 +114,7 @@ class Ask(unittest.TestCase):
                 self.assertIsNone(jev.ask({}, q, cfg=ON))
                 self.assertEqual(post.call_count, 2)                 # once, not for ever
             for dead in (dict(return_value=_Resp(429)), dict(side_effect=OSError("no route"))):
+                jev._down.update(until=0.0)                          # each case on its own (see Breaker)
                 with mock.patch.object(jev.requests, "post", **dead) as post:
                     self.assertIsNone(jev.ask({}, q, cfg=ON))
                     self.assertEqual(post.call_count, 1)             # a dead provider costs one call
@@ -126,6 +133,9 @@ class Ask(unittest.TestCase):
 
 
 class Pack(unittest.TestCase):
+    def setUp(self):
+        jev._down.update(until=0.0, fp=None, why='')
+
     def test_limits(self):
         chunks = list(jev.pack(range(120), lambda i: "x" * 40, max_tokens=10**6, max_items=50))
         self.assertEqual([len(c) for c in chunks], [50, 50, 20])
@@ -147,6 +157,9 @@ class Pack(unittest.TestCase):
 
 
 class TooBig(unittest.TestCase):
+    def setUp(self):
+        jev._down.update(until=0.0, fp=None, why='')
+
     """Found live: Jev refused batches our estimate thought fit
     (max_tokens_exceeded) and 108 of 323 rows went unanswered."""
 
@@ -194,11 +207,44 @@ class TooBig(unittest.TestCase):
 
 
 class Masking(unittest.TestCase):
+    def setUp(self):
+        jev._down.update(until=0.0, fp=None, why='')
+
     def test_off_is_none_and_broken_refuses_to_send(self):
         self.assertIsNone(jev.mask_for({}, None))
         with self.assertRaises(RuntimeError):
             jev.masked("host-1", False)
         self.assertEqual(jev.masked("host-1", None), "host-1")
+
+
+class Breaker(unittest.TestCase):
+    """One failure answers for every Jev call: 15 rejected calls in a minute on an
+    air-gapped box. Skipped for DOWN_SECONDS, or until the key / model change."""
+
+    def setUp(self):
+        jev._down.update(until=0.0, fp=None, why='')
+
+    def test_one_failure_skips_every_call_until_the_key_changes(self):
+        cfg = {"jev": {"enabled": True, "api_key": "k1"}}
+        bad = mock.Mock(status_code=401, text="Missing Authentication header")
+        with mock.patch.object(jev.requests, "post", return_value=bad) as post:
+            self.assertIsNone(jev.ask({"s": 1}, {"q0": {"type": "noul"}}, cfg=cfg))
+            self.assertIsNone(jev.ask({"s": 1}, {"q0": {"type": "noul"}}, cfg=cfg))
+            self.assertIsNone(jev.ask({"s": 1}, {"q0": {"type": "noul"}}, cfg=cfg))
+        self.assertEqual(post.call_count, 1)                       # the first only
+        self.assertIn("401", jev.unavailable(cfg))
+        good = mock.Mock(status_code=200, json=lambda: {"answers": {"q0": {"noul": 0.9}}})
+        with mock.patch.object(jev.requests, "post", return_value=good) as post:
+            cfg2 = {"jev": {"enabled": True, "api_key": "k2"}}      # a new key: asked at once
+            self.assertEqual(jev.ask({"s": 1}, {"q0": {"type": "noul"}}, cfg=cfg2), {"q0": {"noul": 0.9}})
+        self.assertEqual(jev.unavailable(cfg2), "")
+
+    def test_too_big_is_not_an_outage(self):
+        cfg = {"jev": {"enabled": True, "api_key": "k1"}}
+        big = mock.Mock(status_code=400, text='{"detail":{"error_type":"max_tokens_exceeded"}}')
+        with mock.patch.object(jev.requests, "post", return_value=big):
+            jev.ask({"s": 1}, {"q0": {"type": "noul"}}, cfg=cfg)
+        self.assertEqual(jev.unavailable(cfg), "")                 # split and retried, not skipped
 
 
 if __name__ == "__main__":

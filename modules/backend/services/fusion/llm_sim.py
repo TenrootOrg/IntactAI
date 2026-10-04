@@ -954,6 +954,29 @@ def llm_status_known() -> dict:
     return st
 
 
+# Answers that hold for every call until the AI settings change: no point sending a
+# single phase. (A timeout or a rate limit can pass, so they do not count.)
+_DEFINITE = ("invalid_key", "no_credit", "missing_key")
+
+
+def preflight():
+    """None to go ahead, or a provider_route()-shaped {"ok": False, ...} to write the
+    report offline at once: no route to the provider, or the last live check of THIS
+    exact config (same provider, model and key) was a definite refusal. A rejected key
+    used to be found out by every phase in turn -- 6 in parallel, then the rest."""
+    try:
+        r = provider_route()
+    except Exception:                                 # noqa: BLE001
+        r = None
+    if r and not r["ok"]:
+        return r
+    st = llm_status_known()
+    if not st.get("available") and st.get("code") in _DEFINITE:
+        return {"ok": False, "code": st["code"], "reason": st.get("reason") or "",
+                "fix": st.get("fix") or "", "target": ""}
+    return None
+
+
 def _sim_tag() -> str:
     st = llm_status()
     if st["available"]:                        # narration was possible but not taken
@@ -1723,6 +1746,12 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
         # run's synthesis went to the operator's real subscription.
         if should_continue and not should_continue():
             raise GenerationStopped()
+        # One definite failure (a rejected key, no route, no credit) answers for every
+        # phase: the rest are not sent. They all went out anyway -- a 10-phase case
+        # made 10 calls with a key the provider had already refused, before writing
+        # the report offline.
+        if _fatal:
+            raise LLMUnavailable(_fatal["code"])
         _w = z.get("window") or {}
         _case_event(run_id, f"Report · phase {z['n']} of {_total} — sending", "info",
                     f"{_w.get('start') or '?'} → {_w.get('end') or '?'} · "
@@ -1745,6 +1774,8 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
                 raise
             except Exception as e:                       # noqa: BLE001
                 code = _classify_llm_error(e)
+                if code not in _PHASE_RETRYABLE:
+                    _fatal.setdefault("code", code)       # every phase still to start skips
                 if (attempt >= retries or code not in _PHASE_RETRYABLE
                         or (should_continue and not should_continue())):
                     raise
@@ -1754,6 +1785,7 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
 
     phases = render.analysable(zt)
     results = {}
+    _fatal = {}                                           # set by the first definite failure
     if not phases:
         return results
     # EVERY phase is visible in the Log. A broad case used to show one "sending

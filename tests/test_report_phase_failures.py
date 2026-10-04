@@ -67,6 +67,29 @@ class PhaseFailures(unittest.TestCase):
         _run(m2, retries=3)
         self.assertEqual(phases, m2.calls, "a rate limit must not be retried")
 
+    def test_a_rejected_key_stops_the_phases_not_yet_sent(self):
+        # One definite failure answers for every phase: the rest are not sent. Run one
+        # phase at a time so "not yet sent" is real (in the app up to 6 go together).
+        import concurrent.futures as cf
+        real = cf.ThreadPoolExecutor
+        m = Model(lambda n, u: (_ for _ in ()).throw(Exception("401 Unauthorized: invalid api key")))
+        with mock.patch.object(cf, "ThreadPoolExecutor", lambda *a, **k: real(max_workers=1)):
+            md, events = _run(m)
+        self.assertEqual(m.calls, 1)                        # the first only; the second skipped
+        self.assertIn("_Deterministic report", md)
+
+    def test_preflight_goes_offline_on_a_key_refused_before(self):
+        refused = {"available": False, "code": "invalid_key", "reason": "The AI provider rejected the API key.",
+                   "fix": "Enter a valid key."}
+        with mock.patch.object(_LLM, "provider_route", return_value={"ok": True}), \
+             mock.patch.object(_LLM, "llm_status_known", return_value=refused):
+            r = _LLM.preflight()
+        self.assertEqual((r["ok"], r["code"]), (False, "invalid_key"))
+        for passing in ("rate_limited", "timeout"):              # these can pass: go ahead
+            with mock.patch.object(_LLM, "provider_route", return_value={"ok": True}), \
+                 mock.patch.object(_LLM, "llm_status_known", return_value={**refused, "code": passing}):
+                self.assertIsNone(_LLM.preflight())
+
     def test_every_phase_failing_skips_the_synthesis_and_says_why(self):
         m = Model(lambda n, u: (_ for _ in ()).throw(Exception("429 You've hit your usage limit")))
         md, events = _run(m)
