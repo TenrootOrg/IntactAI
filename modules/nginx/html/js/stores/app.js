@@ -157,7 +157,14 @@ document.addEventListener('alpine:init', () => {
                 const frame = document.getElementById(frameId);
                 if (frame) {
                     if (this._framesLoaded[frameId]) {
-                        try { frame.contentWindow.location.reload(); }
+                        // Fresh data in place (cases.html refreshOnEntry), not a
+                        // reload of the whole frame; a reload only when the page
+                        // is not ready to take it.
+                        try {
+                            const w = frame.contentWindow;
+                            if (typeof w.refreshOnEntry === 'function') w.refreshOnEntry();
+                            else w.location.reload();
+                        }
                         catch (e) { frame.src = frame.src; }   // cross-origin fallback
                     } else {
                         this._framesLoaded[frameId] = true;

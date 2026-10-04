@@ -2761,6 +2761,23 @@ function caseNamePlaceholder(){
     window.addEventListener('storage', e=>{ if(e.key==='activeCaseId') open(); });
   }
 })();
+// Coming back to this tab (js/stores/app.js). It used to reload the whole frame so
+// a purge seen elsewhere would show here -- 210 KB of page and every script again,
+// a skeleton, then the case re-fetched: the lag on every visit. Fresh data in place
+// does the same job; the case on screen is redrawn only if it actually changed.
+window.refreshOnEntry=async function(){
+  await window.ActiveCase.ensureActiveCase();      // a purged case: moves to Default
+  await refreshSelector();
+  loadCases();
+  if(VIEW!=='analysis') return;
+  const a=window.ActiveCase.get();
+  if(!a){ $('#main').innerHTML='<div class="empty">No active case — create or pick one in Cases.</div>'; return; }
+  if(!(curInfo && curInfo.case_id===a)) return openCase(a);
+  const v=rememberedView(a);
+  const [info,rep]=await Promise.all([api('/api/cases/'+a),api('/api/cases/'+a+'/report')]);
+  if(v && JSON.stringify([info,rep])===JSON.stringify([v.info,v.rep])) return;   // unchanged
+  openCase(a);
+};
 </script>
 </body>
 </html>
