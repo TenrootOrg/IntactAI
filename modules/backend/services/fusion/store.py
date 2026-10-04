@@ -5493,7 +5493,37 @@ def scope_cards(case_id, d=None):
     # can still see what was left out.
     zt = (render.zoom_targets(g, window=win, min_severity=ms, force_phases=(mode == "macro"))
           if altitude == "macro" else [])
-    return altitude, reason, render.analysable(zt) + [z for z in zt if z.get("rollup")], g
+    cards = render.analysable(zt) + [z for z in zt if z.get("rollup")]
+    return altitude, reason, _cards_inside_scope(cards, active_scope_window(d)), g
+
+
+def _cards_inside_scope(cards, win) -> list:
+    """Inside a SELECTED scope, a card can only narrow it. Cards are built from the
+    findings active in the window, so a recurring detection that began months
+    earlier brought a card dated outside it ("Analyze this scope" on 2025-05-27
+    from inside 2025-09-21), and another card was the very window already on
+    screen -- clicking it changed nothing. Clip each card to the scope, drop the
+    ones outside it or equal to it; with none left the panel has nothing to offer.
+    ponytail: a clipped card keeps its full counts and title; recount if it misleads."""
+    if not win or not win.get("start") or not win.get("end"):
+        return cards
+    ws, we = keys.to_utc_dt(win["start"]), keys.to_utc_dt(win["end"])
+    if ws is None or we is None:
+        return cards
+    out = []
+    for c in cards:
+        w = c.get("window") or {}
+        s, e = keys.to_utc_dt(w.get("start")), keys.to_utc_dt(w.get("end"))
+        if c.get("rollup") or s is None or e is None:
+            out.append(c)
+            continue
+        if max(s, ws) > min(e, we) or (s <= ws and e >= we):
+            continue                                    # outside the scope, or the scope itself
+        if s < ws or e > we:
+            c = dict(c, window={"start": win["start"] if s < ws else w["start"],
+                                "end": win["end"] if e > we else w["end"]})
+        out.append(c)
+    return out if any(not c.get("rollup") for c in out) else []
 
 
 def _part_rows(r, f, row_v, vrec, row_wm, stale) -> list:
