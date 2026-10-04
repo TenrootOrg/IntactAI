@@ -198,6 +198,9 @@ class ScopesAreLensesNotCopies(unittest.TestCase):
         # no "+ New scope": a scope opens on its own (time window change, phase card)
         for gone in ("+ New scope", "scopeNewToggle", "scopeCreate", "_scopeNewOpen"):
             self.assertNotIn(gone, page)
+        # the line under the case name does not repeat the dropdown ("showing <dates>")
+        self.assertNotIn("'showing '+", page)
+        self.assertIn("if(asList(info&&info.scopes).length>1) return '';", page)
 
     def test_the_same_window_twice_is_one_scope(self):
         a = store.create_scope(CASE, "Phase 2", PHASE_WIN)

@@ -1339,11 +1339,14 @@ function scopeBarHtml(info){
     </div>`;
 }
 // The dates under the case name belong to whatever is selected, or the case.
+// The line under the case name. With the Scope dropdown on screen it would only
+// repeat the dates the dropdown already shows ("showing 2025-11-03 … → …", QA:
+// "not looking good"), so it is empty then; a case with one timeframe says since when.
 function scopeSinceHtml(info, tw){
-  const act=asList(info&&info.scopes).find(s=>s.active);
-  if(act && act.id!=='full') return 'showing '+esc(act.label);
-  return tw.start?('since '+esc(tw.start)):'no start date';
+  if(asList(info&&info.scopes).length>1) return '';
+  return _sinceText((tw||{}).start);
 }
+function _sinceText(start){ return start ? 'since '+esc(String(start).replace('T',' ')) : 'no start date'; }
 async function switchScope(id,sid){
   try{
     await api('/api/cases/'+id+'/scope',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -1758,7 +1761,7 @@ function _applyCfgLocally(cfg){
   // a full re-open — so without this it keeps naming the old start for as long
   // as the fuse takes, even though the rail beneath it already shows the new one.
   const since=$('#case-since'), st=(cfg.time_window||{}).start;
-  if(since) since.textContent = st ? ('since '+st) : 'no start date';
+  if(since) since.innerHTML = asList(curInfo.scopes).length>1 ? '' : _sinceText(st);
 }
 // Refusion = SAVE config → re-fuse the DATA (deterministic graph). Fast, no LLM/tokens.
 // The /rescan endpoint persists the posted config (set_analysis_config) before fusing,
