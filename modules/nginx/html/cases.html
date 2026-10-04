@@ -2699,7 +2699,19 @@ document.addEventListener('click',e=>{
 
 // minimal, air-gap-safe markdown renderer
 function escape(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-function inline(s){return escape(s).replace(/!\[([^\]]*)\]\((\/api\/cases\/[A-Za-z0-9_]+\/files\/[0-9a-f]{12}\?inline=1)\)/g,'<img src="$2" alt="$1" style="max-width:100%;max-height:480px;border:1px solid var(--bd);border-radius:6px;margin:6px 0;display:block"/>').replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>').replace(/_([^_]+)_/g,'<em>$1</em>');}
+// Pictures are set aside before any emphasis and put back after: the italic rule
+// used to run over the finished <img> tag, pair the "_" in "case_1790…" (its URL)
+// with the one in an evidence name ("trick_ryuk.profile") and cut the tag apart.
+// And "_" only marks italics at a word edge, as in standard Markdown: inside a word
+// (sccm_sql, trick_ryuk) it is a character, not markup.
+function inline(s){
+  const pics=[];
+  return escape(s).replace(/!\[([^\]]*)\]\((\/api\/cases\/[A-Za-z0-9_]+\/files\/[0-9a-f]{12}\?inline=1)\)/g,
+      (m,a,u)=>{ pics.push(`<img src="${u}" alt="${a.replace(/"/g,'&quot;')}" style="max-width:100%;max-height:480px;border:1px solid var(--bd);border-radius:6px;margin:6px 0;display:block"/>`); return `\u0000${pics.length-1}\u0000`; })
+    .replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+    .replace(/(^|[^A-Za-z0-9_])_([^_]+)_(?![A-Za-z0-9_])/g,'$1<em>$2</em>')
+    .replace(/\u0000(\d+)\u0000/g,(m,i)=>pics[+i]);
+}
 function mdToHtml(md){
   const out=[]; let inUL=false,inTbl=false,pre=null;
   const closeUL=()=>{if(inUL){out.push('</ul>');inUL=false;}};

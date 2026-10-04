@@ -270,7 +270,8 @@ class ReportPictures(unittest.TestCase):
             self.skipTest("no node on this host")
         with open(os.path.join(_ROOT, "modules/nginx/html/cases.html"), encoding="utf-8") as fh:
             src = fh.read()
-        fns = "\n".join(re.search(r"function %s\(s\)\{.*?\n" % n, src).group(0) for n in ("escape", "inline"))
+        fns = (re.search(r"function escape\(s\)\{.*?\n", src).group(0)
+               + re.search(r"function inline\(s\)\{.*?\n\}", src, re.S).group(0))   # inline() spans lines
         js = fns + """
 console.log(JSON.stringify([
   inline('![Popup](/api/cases/case_1/files/0123456789ab?inline=1)'),

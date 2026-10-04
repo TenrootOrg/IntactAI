@@ -11,7 +11,8 @@ for (let i = src.indexOf('{', start); i < src.length; i++) {
   else if (src[i] === '}' && --depth === 0) { end = i + 1; break; }
 }
 const escape = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const inlineSrc = src.slice(src.indexOf('function inline(s){'), src.indexOf('\n', src.indexOf('function inline(s){')));
+const _i = src.indexOf('function inline(s){');
+const inlineSrc = src.slice(_i, src.indexOf('\n}', _i) + 2);   // the whole function, not its first line
 const mdToHtml = new Function('escape', inlineSrc + '\n' + src.slice(start, end) + '; return mdToHtml;')(escape);
 const html = mdToHtml([
   '- `2026-09-01T09:13:38Z → 2026-09-01T11:54:46Z` · **[high]** SIGMA: Potential PowerShell Command Line Obfuscation `[T1027, T1059.001]` · ×2 · DESKTOP-16OJFO6, DESKTOP-566AT85',
