@@ -144,13 +144,26 @@ def add(local_path: str, filename: str, dumps_dir: str = DUMPS_DIR, log=None) ->
                 digest, _, name = line.partition("  ")
                 if digest.strip() == mine and name.strip():
                     return {"file": name.strip(), "pack": True, "already_had": True}
-            # A symbol pack is read in place by Volatility: it goes in whole.
+            # A symbol pack is read in place by Volatility: it goes in whole,
+            # UNDER ITS OWN NAME, so a newer windows.zip replaces the older one
+            # instead of piling up beside it (each upload used to get a random
+            # prefix and every edition stayed). Copied beside it and renamed, so
+            # a running analysis never reads half a pack; older prefixed copies
+            # of the same pack (<12-hex>_windows.zip) are removed.
             say("Storing the pack in VolWeb's symbol library…")
-            dest = f"{SYMBOLS_DIR}/{tag}_{safe}"
-            r = _exec(f"cp {shlex.quote(in_worker)} {shlex.quote(dest)} && chown app:app {shlex.quote(dest)}", 300)
+            dest = f"{SYMBOLS_DIR}/{safe}"
+            tmp = f"{SYMBOLS_DIR}/.{safe}.incoming"
+            old = f"{SYMBOLS_DIR}/" + "[0-9a-f]" * 12 + f"_{safe}"
+            r = _exec(f"cp {shlex.quote(in_worker)} {shlex.quote(tmp)} && chown app:app {shlex.quote(tmp)}"
+                      f" && R=$([ -e {shlex.quote(dest)} ] && echo 1); mv -f {shlex.quote(tmp)} {shlex.quote(dest)}"
+                      f" && for o in {old}; do [ -f \"$o\" ] && rm -f \"$o\" && R=1; done; echo \"replaced=$R\"", 300)
             if r.returncode != 0:
+                _exec(f"rm -f {shlex.quote(tmp)}", 30)
                 return {"error": "could not store the pack: " + (r.stderr or "")[-200:]}
-            return {"file": f"{tag}_{safe}", "pack": True}
+            replaced = "replaced=1" in (r.stdout or "")
+            if replaced:
+                say("An older copy of this pack was replaced — only the newest is kept.")
+            return {"file": safe, "pack": True, "replaced": replaced}
         say({"pdb": "Converting the .pdb to a symbol table with the Volatility inside VolWeb…",
              "json": "Compressing the table and reading its own metadata…",
              "xz": "Reading the table's own metadata…"}[kind])

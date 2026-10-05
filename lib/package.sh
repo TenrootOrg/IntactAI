@@ -502,10 +502,9 @@ for p in glob.glob(f'{work}/*/manifests/intact.json') + glob.glob(f'{work}/*/man
         "yara_rulesets|${_yara_seed}/yara_rulesets|VolWeb YARA ruleset"
         # Volatility3 ISF symbols. Consumer: lib/modules/volweb.sh:
         # seed_volweb_symbols, which docker-cp's them into VolWeb's media
-        # volume. Nothing ships them today (the Microsoft pack is 801 MiB and
-        # is per-site anyway) -- staging is wired first so a release CAN, and
-        # so an operator who drops a kernel's ISF into a package gets it
-        # installed rather than ignored.
+        # volume. Every release's volweb asset carries the newest windows.zip
+        # (package.py); an operator who drops a kernel's ISF into a package
+        # gets it installed rather than ignored.
         "volweb_symbols|${SCRIPT_DIR}/data/volweb-symbols|VolWeb Volatility symbol"
     )
     local _sp _srcdir _destdir _label _f _n
@@ -519,6 +518,13 @@ for p in glob.glob(f'{work}/*/manifests/intact.json') + glob.glob(f'{work}/*/man
         while IFS= read -r _f; do
             if [[ ! -e "$_destdir/$(basename "$_f")" ]] \
                     && cp -n "$_f" "$_destdir/" 2>/dev/null; then
+                _n=$((_n + 1))
+            elif [[ "$_label" == "VolWeb Volatility symbol" ]] \
+                    && ! cmp -s "$_f" "$_destdir/$(basename "$_f")" \
+                    && cp -f "$_f" "$_destdir/" 2>/dev/null; then
+                # A symbol pack is replaced by the package's newer one, never
+                # kept beside it: the name says which pack, the content which
+                # edition.
                 _n=$((_n + 1))
             fi
         done < <(find "$_srcdir" -maxdepth 1 -type f 2>/dev/null)

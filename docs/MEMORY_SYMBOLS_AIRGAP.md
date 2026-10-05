@@ -116,9 +116,15 @@ Two things to know before you carry 801 MiB across an air gap:
   (upgrade, `docker compose up -d --force-recreate`). Loose per-kernel ISFs cost
   effectively nothing to re-index.
 
-Nothing in the release package ships this file: it is per-site, it is large, and
-it does not cover modern kernels. The staging path is wired so that a site which
-*does* want it only has to put it in `data/volweb-symbols/`.
+**Every release ships it.** Since 2026-10-05 the release build downloads the
+newest `windows.zip` into the VolWeb asset (`volweb_symbols/windows.zip`, its
+sha256 in the manifest), and install and upgrade put it in VolWeb. Only the
+newest copy is kept: a changed pack **replaces** the old one of the same name,
+earlier uploads of it (`<12-hex>_windows.zip`) are removed, and an upload through
+Memory → *Symbol tables* replaces it the same way. Per-kernel ISFs (Option 1, and
+what the box downloads from Microsoft itself) are never removed — each is a
+different kernel, not an older copy. A site can still drop its own pack or ISFs
+into `data/volweb-symbols/`.
 
 ## Check where you stand
 

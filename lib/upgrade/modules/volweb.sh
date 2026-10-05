@@ -96,8 +96,13 @@ upgrade_module_volweb() {
         # -- so this is normally a no-op that simply REPORTS coverage. It
         # matters on the upgrade-as-install path (module enabled, never
         # deployed) and when a release starts shipping a symbol pack.
+        # The release's own pack, straight from the package: nothing stages an
+        # upgrade's data into data/volweb-symbols, so without this a newer
+        # windows.zip reached fresh installs only.
         if declare -F seed_volweb_symbols >/dev/null; then
-            seed_volweb_symbols || log_warn "  Volatility symbol seeding had issues"
+            local _sym_src="${SCRIPT_DIR}/data/volweb-symbols"
+            [[ -n "${UPKG_DIR:-}" && -d "${UPKG_DIR}/volweb_symbols" ]] && _sym_src="${UPKG_DIR}/volweb_symbols"
+            seed_volweb_symbols "$_sym_src" || log_warn "  Volatility symbol seeding had issues"
         fi
         _volweb_verify_symbols "$_sym_before"
         discard_backup "$bak"

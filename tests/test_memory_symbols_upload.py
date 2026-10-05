@@ -116,6 +116,58 @@ class Add(unittest.TestCase):
 
 
 
+class ANewerPackReplacesTheOld(unittest.TestCase):
+    """2026-10-05: each upload kept its own <12-hex>_windows.zip, so every edition
+    of the pack stayed in the library. The real shell commands, run on a temp
+    library: the pack is stored under its own name and the newest one wins."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, ignore_errors=True)
+        self.lib = os.path.join(self.d, "symbols")
+        os.makedirs(self.lib)
+        for k, v in (("SYMBOLS_DIR", self.lib), ("STAGING_IN_VOLWEB", self.d)):
+            pt = mock.patch.object(symbols, k, v)
+            pt.start()
+            self.addCleanup(pt.stop)
+
+        def local(script, timeout=300):
+            return subprocess.run(["sh", "-c", script.replace("chown app:app", "true")],
+                                  capture_output=True, text=True, timeout=timeout)
+        pt = mock.patch.object(symbols, "_exec", local)
+        pt.start()
+        self.addCleanup(pt.stop)
+
+    def pack(self, edition):
+        p = os.path.join(self.d, f"up-{edition}.zip")
+        with zipfile.ZipFile(p, "w") as z:
+            z.writestr("windows/ntkrnlmp.pdb/X-1.json.xz", edition)
+        return p
+
+    def edition(self, name):
+        with zipfile.ZipFile(os.path.join(self.lib, name)) as z:
+            return z.read("windows/ntkrnlmp.pdb/X-1.json.xz").decode()
+
+    def test_the_newest_pack_is_the_only_one_left(self):
+        with open(os.path.join(self.lib, "0123456789ab_windows.zip"), "w") as fh:
+            fh.write("an older upload")                     # the old naming
+        with open(os.path.join(self.lib, "my_windows.zip"), "w") as fh:
+            fh.write("an operator's own pack")              # not ours to touch
+        first = symbols.add(self.pack("2019"), "windows.zip", dumps_dir=self.d)
+        self.assertEqual(first["file"], "windows.zip")
+        self.assertTrue(first["replaced"])                  # the prefixed copy went
+        again = symbols.add(self.pack("2026"), "windows.zip", dumps_dir=self.d)
+        self.assertTrue(again["replaced"])
+        self.assertEqual(sorted(os.listdir(self.lib)), ["my_windows.zip", "windows.zip"])
+        self.assertEqual(self.edition("windows.zip"), "2026")
+
+    def test_the_same_pack_twice_is_still_stored_once(self):
+        symbols.add(self.pack("2026"), "windows.zip", dumps_dir=self.d)
+        res = symbols.add(self.pack("2026"), "windows.zip", dumps_dir=self.d)
+        self.assertTrue(res["already_had"])
+        self.assertEqual(os.listdir(self.lib), ["windows.zip"])
+
+
 class TheUploadIsLogged(unittest.TestCase):
     """"The upload table upload should be logged in the workflow like the other
     upload in other modules": an 840 MB pack went in and nothing anywhere said so.

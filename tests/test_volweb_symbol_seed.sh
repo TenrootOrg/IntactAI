@@ -15,7 +15,8 @@
 #      (docker cp -- the volume is root-owned under /var/lib/docker and the
 #      installer must not assume it can write there);
 #   2. a file already in the container is not copied again -- re-running an
-#      install or an upgrade must not re-push an 801 MiB symbol pack;
+#      install or an upgrade must not re-push an 801 MiB symbol pack -- but a
+#      NEWER pack of the same name replaces it, and older uploaded copies go;
 #   3. zero symbols on an air-gapped install is a WARNING that names the
 #      failure the operator is otherwise going to meet mid-investigation.
 set -uo pipefail
@@ -27,11 +28,11 @@ fail() { TOTAL=$((TOTAL+1)); echo "  FAIL - $1"; [[ -n "${2:-}" ]] && echo "    
 LOG_FILE="$(mktemp)"
 SCRIPT_DIR="$ROOT"
 DOCKER_CALLS="$(mktemp)"
-# Basenames the fake container already holds, one per line.
-ALREADY_THERE="$(mktemp)"
-# What the final `find | wc -l` report should answer.
-SYMBOL_COUNT=0
-trap 'rm -f "$LOG_FILE" "$DOCKER_CALLS" "$ALREADY_THERE"' EXIT
+# The container's filesystem: a temp dir the fake docker really writes to, so
+# the copy / compare / rename / cleanup commands run for real.
+FS="$(mktemp -d)"
+LIB="/home/app/web/media/symbols"
+trap 'rm -rf "$LOG_FILE" "$DOCKER_CALLS" "$FS"' EXIT
 
 source "${ROOT}/lib/common.sh"
 source "${ROOT}/lib/modules/volweb.sh"
@@ -42,41 +43,36 @@ read_config() { echo "true"; }
 is_enabled() { [[ "${1:-}" == "true" ]]; }
 is_module_installed() { return 0; }
 
-# Fake docker: records every call, answers the three shapes the function uses.
+# Fake docker: records every call, then runs it against $FS. `chown app:app`
+# is the one thing a non-root test cannot do, and is only recorded.
 docker() {
     echo "$*" >> "$DOCKER_CALLS"
+    local a=() x
     case "${1:-}" in
-        cp) return 0 ;;
+        cp) command cp "$2" "${FS}${3#intact_volweb_backend:}" ;;
         exec)
-            if [[ "$*" == *" test -e "* ]]; then
-                local path="${*##* }"
-                grep -qx "$(basename "$path")" "$ALREADY_THERE"
-                return $?
-            fi
-            if [[ "$*" == *"wc -l"* ]]; then
-                echo "$SYMBOL_COUNT"
-                return 0
-            fi
-            return 0 ;;
+            shift 2
+            for x in "$@"; do a+=("${x//\/home\/app\/web\/media/${FS}/home/app/web/media}"); done
+            [[ "${a[0]}" == chown ]] && return 0
+            "${a[@]}" ;;
     esac
-    return 0
 }
+has() { [[ -f "${FS}${LIB}/$1" ]]; }
 
 echo "== staged symbols reach the volume VolWeb reads =="
 SEED="$(mktemp -d)"
 mkdir -p "${SEED}/windows/ntkrnlmp.pdb"
-: > "${SEED}/windows/ntkrnlmp.pdb/3006AD7D-2.json.xz"
-: > "${SEED}/windows.zip"
+echo isf > "${SEED}/windows/ntkrnlmp.pdb/3006AD7D-2.json.xz"
+echo pack-2019 > "${SEED}/windows.zip"
 : > "${SEED}/notes.txt"                # not an ISF: must be ignored
-SYMBOL_COUNT=2
 OUT="$(seed_volweb_symbols "$SEED" 2>&1)"
 
-if grep -q "cp ${SEED}/windows/ntkrnlmp.pdb/3006AD7D-2.json.xz intact_volweb_backend:/home/app/web/media/symbols/3006AD7D-2.json.xz" "$DOCKER_CALLS"; then
+if has 3006AD7D-2.json.xz; then
     ok "a loose .json.xz ISF is copied in"
 else
     fail "a loose .json.xz ISF is copied in" "$(tail -3 "$DOCKER_CALLS")"
 fi
-if grep -q "cp ${SEED}/windows.zip intact_volweb_backend:/home/app/web/media/symbols/windows.zip" "$DOCKER_CALLS"; then
+if has windows.zip; then
     ok "a whole .zip symbol pack is copied in (vol3 reads ISFs inside it)"
 else
     fail "a whole .zip symbol pack is copied in" "$(tail -3 "$DOCKER_CALLS")"
@@ -94,8 +90,6 @@ esac
 echo
 echo "== re-running does not re-push an 801 MiB pack =="
 : > "$DOCKER_CALLS"
-basename "${SEED}/windows.zip" >> "$ALREADY_THERE"
-echo "3006AD7D-2.json.xz" >> "$ALREADY_THERE"
 OUT="$(seed_volweb_symbols "$SEED" 2>&1)"
 if ! grep -q "^cp " "$DOCKER_CALLS"; then
     ok "nothing is copied when the container already has it"
@@ -108,9 +102,37 @@ case "$OUT" in
 esac
 
 echo
+echo "== a release's newer pack replaces the old one, and only that =="
+# 2026-10-05: the seed skipped any name already present, so a newer windows.zip
+# could never land, and earlier uploads (<12-hex>_windows.zip) stayed beside it.
+echo older-upload > "${FS}${LIB}/0123456789ab_windows.zip"
+echo own-pack > "${FS}${LIB}/my_windows.zip"
+echo pack-2026 > "${SEED}/windows.zip"
+OUT="$(seed_volweb_symbols "$SEED" 2>&1)"
+if [[ "$(cat "${FS}${LIB}/windows.zip")" == pack-2026 ]]; then
+    ok "the newer pack replaced the old one"
+else
+    fail "the newer pack replaced the old one" "$(cat "${FS}${LIB}/windows.zip")"
+fi
+if ! has 0123456789ab_windows.zip && has my_windows.zip; then
+    ok "an older uploaded copy is removed; a differently named pack is not"
+else
+    fail "an older uploaded copy is removed; a differently named pack is not" "$(ls "${FS}${LIB}")"
+fi
+if ! ls -A "${FS}${LIB}" | grep -q incoming; then
+    ok "no half-copied file is left behind"
+else
+    fail "no half-copied file is left behind" "$(ls -A "${FS}${LIB}")"
+fi
+case "$OUT" in
+    *"replaced by the newer copy"*) ok "and the install says so" ;;
+    *) fail "and the install says so" "$OUT" ;;
+esac
+
+echo
+FS="$(mktemp -d)"                      # a box with an empty library
 echo "== an air-gapped box with no symbols is warned, not left to find out =="
 EMPTY="$(mktemp -d)"
-SYMBOL_COUNT=0
 OUT="$(INTACT_AIRGAP=1 seed_volweb_symbols "$EMPTY" 2>&1)"
 case "$OUT" in
     *"NO Volatility symbols"*) ok "the warning names the condition" ;;
@@ -149,7 +171,6 @@ echo "== the library is handed to app even when nothing was staged =="
 # harvest that copies a run's learned symbols out of the worker failed EACCES
 # into 2>/dev/null and reported 0 files, on a box with symbols sitting there.
 : > "$DOCKER_CALLS"
-SYMBOL_COUNT=0
 seed_volweb_symbols "$EMPTY" >/dev/null 2>&1
 if grep -q "exec intact_volweb_backend chown -R app:app" "$DOCKER_CALLS"; then
     ok "an install that stages nothing still chowns the directory to app"

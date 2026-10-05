@@ -15,6 +15,7 @@ module, sharing a top-level `intact-upgrade-<tag>/` directory, each carrying a
 `manifests/<module>.json` sidecar for the CI index job to merge.
 """
 
+import hashlib
 import os
 import json
 import shutil
@@ -2661,6 +2662,51 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                             "the air-gap target. Operator can run "
                             "Maintenance → Refresh YARA Rulesets later if "
                             "the target gets internet.", "warning")
+
+                    # The newest Volatility Windows symbol pack, fetched at build
+                    # time so every release carries whatever the site has now.
+                    # Consumer: lib/package.sh stages volweb_symbols/ into
+                    # data/volweb-symbols, and seed_volweb_symbols puts it in
+                    # VolWeb, replacing an older pack of the same name. A release
+                    # without it must not look like a release with it, so CI
+                    # fails; a box's own Prepare Upgrade only warns.
+                    sym_url = "https://downloads.volatilityfoundation.org/volatility3/symbols/windows.zip"
+                    sym_dir = os.path.join(package_dir, 'volweb_symbols')
+                    sym_dst = os.path.join(sym_dir, 'windows.zip')
+                    os.makedirs(sym_dir, exist_ok=True)
+                    log("Bundling the Volatility Windows symbol pack (~800 MB)...", "info")
+                    cp = run_command(
+                        f"curl -fL --retry 3 --retry-delay 10 --max-time 3600 "
+                        f"--connect-timeout 30 -o {sym_dst} {sym_url}",
+                        logger=None, timeout=3700, run_id=run_id,
+                    )
+                    try:
+                        import zipfile
+                        with zipfile.ZipFile(sym_dst) as z:
+                            n_tables = sum(1 for n in z.namelist()
+                                           if n.startswith("windows/") and n.endswith((".json.xz", ".json")))
+                    except (zipfile.BadZipFile, OSError):
+                        n_tables = 0
+                    if cp.get('success') and n_tables:
+                        h = hashlib.sha256()
+                        with open(sym_dst, 'rb') as fh:
+                            for chunk in iter(lambda: fh.read(4 << 20), b""):
+                                h.update(chunk)
+                        manifest["contents"]["volweb_symbols"] = {
+                            "file": "volweb_symbols/windows.zip", "source_url": sym_url,
+                            "tables": n_tables, "sha256": h.hexdigest(),
+                            "size": os.path.getsize(sym_dst)}
+                        log(f"  ✓ windows.zip ({os.path.getsize(sym_dst) / 1048576:.0f} MB, "
+                            f"{n_tables:,} tables)", "success")
+                    else:
+                        shutil.rmtree(sym_dir, ignore_errors=True)
+                        msg = (f"Volatility symbol pack not bundled ({sym_url}: "
+                               f"{(cp.get('error') or 'not a Windows symbol pack')[:200]})")
+                        if os.environ.get("GITHUB_ACTIONS") == "true":
+                            raise RuntimeError(msg)
+                        log(f"  ✗ {msg} — the target resolves symbols from Microsoft "
+                            f"online, or stage them by hand (docs/MEMORY_SYMBOLS_AIRGAP.md)",
+                            "warning")
             elif module == 'aws_sigma':
                 # aws_sigma ships no docker image — the versioned artifact is the
                 # SIGMA AWS CloudTrail rule pack (cloned from SigmaHQ into

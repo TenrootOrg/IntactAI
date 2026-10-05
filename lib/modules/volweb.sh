@@ -648,8 +648,12 @@ seed_yara_rulesets() {
 # root-owned under /var/lib/docker and the installer must not assume it can
 # write there. Same mechanism _seed_yara_from_bundle() already uses.
 #
-# Idempotent: a file already present in the container is left alone, so
-# re-running install or an upgrade never re-copies an 800 MB pack.
+# Idempotent, and NEWEST WINS: a file already present with the same content is
+# left alone (size first, sha256 only on a size tie), so re-running install or
+# an upgrade never re-copies an 800 MB pack -- but a release carrying a newer
+# windows.zip replaces the old one instead of being skipped by name. Copies of
+# the same pack an operator uploaded earlier (<12-hex>_windows.zip) go too:
+# Volatility reads every pack in the library on every run.
 seed_volweb_symbols() {
     local seed_dir="${1:-${SCRIPT_DIR}/data/volweb-symbols}"
     local dest="/home/app/web/media/symbols"
@@ -667,18 +671,31 @@ seed_volweb_symbols() {
 
     docker exec intact_volweb_backend mkdir -p "$dest" >/dev/null 2>&1
 
-    local staged=0 present=0 f base
+    local staged=0 present=0 f base have_size
     if [[ -d "$seed_dir" ]]; then
         while IFS= read -r f; do
             base="$(basename "$f")"
-            if docker exec intact_volweb_backend test -e "${dest}/${base}" >/dev/null 2>&1; then
+            have_size="$(docker exec intact_volweb_backend stat -c %s "${dest}/${base}" 2>/dev/null | tr -dc '0-9')"
+            if [[ -n "$have_size" && "$have_size" == "$(stat -c %s "$f")" ]] \
+                    && [[ "$(docker exec intact_volweb_backend sha256sum "${dest}/${base}" 2>/dev/null | cut -d' ' -f1)" \
+                          == "$(sha256sum "$f" | cut -d' ' -f1)" ]]; then
                 present=$((present + 1))
                 continue
             fi
-            if docker cp "$f" "intact_volweb_backend:${dest}/${base}" >/dev/null 2>&1; then
+            # Beside it, then a rename: a memory run reading the old pack never
+            # sees half a new one.
+            if docker cp "$f" "intact_volweb_backend:${dest}/.${base}.incoming" >/dev/null 2>&1 \
+                    && docker exec intact_volweb_backend mv -f "${dest}/.${base}.incoming" "${dest}/${base}" >/dev/null 2>&1; then
                 staged=$((staged + 1))
+                [[ -n "$have_size" ]] && log_info "    ↻ ${base}: replaced by the newer copy"
             else
+                docker exec intact_volweb_backend rm -f "${dest}/.${base}.incoming" >/dev/null 2>&1
                 log_warn "    ✗ ${base}: docker cp into intact_volweb_backend failed"
+            fi
+            if [[ "$base" == *.zip ]]; then
+                docker exec intact_volweb_backend sh -c \
+                    "for o in ${dest}/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]_${base}; do [ -f \"\$o\" ] && rm -f \"\$o\" && echo \"\$o\"; done" \
+                    2>/dev/null | while IFS= read -r o; do log_info "    🗑 $(basename "$o"): older copy of ${base} removed"; done
             fi
         done < <(find "$seed_dir" -type f \
             \( -name '*.json' -o -name '*.json.xz' -o -name '*.json.gz' -o -name '*.zip' \) \
