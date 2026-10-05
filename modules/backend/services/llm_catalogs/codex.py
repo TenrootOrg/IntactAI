@@ -79,7 +79,8 @@ def refresh_catalog(logger: Optional[Callable] = None, api_key: Optional[str] = 
             msg = "the Codex subscription is not connected — sign in from Settings → Agentic"
         elif reason == "cli_credential_expired":
             msg = ("the Codex sign-in expired at its first token refresh — on the appliance "
-                   "host run `codex login`, or `codex login --device-auth` without a browser")
+                   "host run `codex login` (after `export PATH=\"$HOME/.local/bin:$PATH\"` in a shell older than the install), "
+                   "or `codex login --device-auth` without a browser")
         else:
             msg = str(e)
         log(f"refresh skipped: {msg}", "warning")

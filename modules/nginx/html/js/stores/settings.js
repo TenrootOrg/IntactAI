@@ -1683,11 +1683,17 @@ document.addEventListener('alpine:init', () => {
         // one job — the appliance is no use after the first without the second —
         // and splitting them gave the operator two boxes and two buttons for
         // something they were always going to paste together.
+        // The installer puts codex in ~/.local/bin and only puts that on the PATH of
+        // NEW shells ("Current terminal: export PATH=..."). A bare `codex login` in
+        // the terminal the operator just installed from -- or any shell older than
+        // the install -- is "command not found", while this page already says
+        // "Found". So the commands carry the PATH themselves.
         cliInstallCommands() {
             return 'curl -fsSL https://chatgpt.com/codex/install.sh | sh\n' +
+                   'export PATH="$HOME/.local/bin:$PATH"\n' +
                    'codex login';
         },
-        cliLoginCommand() { return 'codex login'; },
+        cliLoginCommand() { return 'export PATH="$HOME/.local/bin:$PATH" && codex login'; },
         cliDocsUrl() { return 'https://developers.openai.com/codex/cli/'; },
 
         async cliRefresh() {

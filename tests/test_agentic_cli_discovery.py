@@ -616,6 +616,11 @@ class TestThePanelTellsThemTheRightCommand(_Base):
         body = body[:body.index("},")]
         self.assertIn("chatgpt.com/codex/install.sh", body)
         self.assertIn("codex login", body)
+        # a shell older than the install has no ~/.local/bin on its PATH: "codex:
+        # command not found" while the panel says Found (QA, Win11 server)
+        self.assertIn('export PATH="$HOME/.local/bin:$PATH"', body)
+        login = src[src.index("cliLoginCommand()"):][:200]
+        self.assertIn('export PATH="$HOME/.local/bin:$PATH" && codex login', login)
 
     def test_the_panel_offers_no_install_button(self):
         panel = os.path.join(ROOT, "modules/nginx/html/partials/settings.html")
