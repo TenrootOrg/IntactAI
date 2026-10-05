@@ -1360,6 +1360,14 @@ def regenerate_report(case_id):
     if not use_llm:
         res = store.regenerate_report(case_id, audience=b.get("audience"), use_llm=False)
         return jsonify({"case_id": case_id, **res})
+    if b.get("force"):
+        # The analyst's "Force regenerate" on a report that looks stuck: stop
+        # waiting for the attempt in flight (its late answer is discarded, its
+        # lock replaced) and start a new one. Never automatic — a click.
+        store._retire_generation(
+            case_id, "Report · stopped by the analyst (Force regenerate)",
+            "stopped waiting for the attempt in progress — its answer is thrown away "
+            "if it ever arrives; a new report is being generated")
     try:
         res = store.regenerate_report_async(case_id, audience=b.get("audience"), use_llm=True)
     except store.ReportGenerationBusy as e:

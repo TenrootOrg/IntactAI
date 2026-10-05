@@ -44,6 +44,15 @@ check(/Report ready/.test(genStatusHtml(600, 'checklist', 30)),
 check(!/NaN|undefined|Infinity/.test(genStatusHtml(NaN, 'narrative', NaN)),
   'a missing figure must never reach the screen as NaN/undefined');
 
+// Force regenerate (2026-10-05): the analyst's way out of a report that looks
+// stuck, on the banner they are looking at — only while it is still generating.
+check(/onclick="regenReport\('case_1',true\)"[^>]*>Force regenerate</.test(genStatusHtml(600, 'narrative', 600, 'case_1')),
+  'a generating report offers Force regenerate for its case');
+check(!/Force regenerate/.test(genStatusHtml(600, 'checklist', 30, 'case_1')),
+  'once the report is ready (checklist phase) there is nothing to force');
+check(!/Force regenerate/.test(genStatusHtml(600, 'narrative', 600)),
+  'no case id, no button');
+
 if (failures.length) {
   console.error('FAIL:\n  - ' + failures.slice(0, 10).join('\n  - ')
                 + (failures.length > 10 ? `\n  …and ${failures.length - 10} more` : ''));

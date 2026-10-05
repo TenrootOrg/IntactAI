@@ -1042,7 +1042,7 @@ function airGapBanner(ag){
 // REPLACES the whole slot, and the button slot with it, from the same `info`.
 function reportStatusHtml(info){
   if(info && info.report_generating)
-    return genStatusHtml(info.report_generating_elapsed_s, info.report_phase, info.report_phase_elapsed_s);
+    return genStatusHtml(info.report_generating_elapsed_s, info.report_phase, info.report_phase_elapsed_s, info.case_id);
   return airGapBanner(reportAirGap(window._md||'', info && info.llm_status)) + behindNote(info);
 }
 // What the page on screen does not reflect yet, in one quiet line. Nothing runs by
@@ -1450,7 +1450,7 @@ let _genPoll=null, _genPollCase=null, _genPhase=null;
 // drifted showed a report that started ten minutes ago as "running 1063 min",
 // which reads as a stuck job. Nothing in this file may compute a duration from
 // the browser clock; tests/test_no_browser_clock_durations.py enforces that.
-function genStatusHtml(elapsedS, phase, phaseElapsedS){
+function genStatusHtml(elapsedS, phase, phaseElapsedS, cid){
   const elapsedMin = (secs) =>
     (typeof secs === 'number' && isFinite(secs)) ? Math.max(0, Math.round(secs/60)) : null;
   // `startedAt` was this function's OLD first parameter, a server timestamp this
@@ -1487,7 +1487,9 @@ function genStatusHtml(elapsedS, phase, phaseElapsedS){
   return `<div class="agbanner agbanner-live">
       <div class="agtitle">⏳ Generating the report with the AI model — ${esc(since)}</div>${slow}
       <div class="agdetail">Large cases are analysed phase by phase and then summarised. This usually takes a minute or two.</div>
-      <div class="agaction">The report updates automatically when it is ready. You can keep working in other tabs or cases in the meantime.</div>
+      <div class="agaction">The report updates automatically when it is ready. You can keep working in other tabs or cases in the meantime.${cid?`
+        <button class="ghost" style="margin-left:10px;font-size:12px;padding:2px 10px" onclick="regenReport('${esc(cid)}',true)"
+          title="Stuck? Stop waiting for this attempt and start a new report. Its answer is thrown away if it ever arrives; the previous report stays until the new one is ready.">Force regenerate</button>`:''}</div>
     </div>`;
 }
 
@@ -1640,13 +1642,16 @@ function pollReportGen(id){
   tick();
 }
 
-function regenReport(id){
+function regenReport(id, force){
+  // Force (the "Generating…" banner, 2026-10-05): stop waiting for an attempt
+  // that looks stuck and start over. The operator decides; nothing does it for them.
+  if(force && !confirm('Stop waiting for the report being generated and start a new one?\n\nIts answer is thrown away if it ever arrives. The previous report stays until the new one is ready. The new attempt uses AI tokens again.')) return;
   // No toast before the answer: the server first checks it can reach the AI
   // provider, and on an air-gapped appliance it writes the report offline
   // instead. Saying "sending case data to the model" up front was untrue there
   // (QA TASK-12656).
   // use_llm:true -> premium LLM narrative (the only report path that spends tokens)
-  api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({use_llm:true})})
+  api('/api/cases/'+id+'/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(force?{use_llm:true,force:true}:{use_llm:true})})
    .then(r=>{
      if(r && r.status==='offline'){
        // Already written, synchronously. Nothing is generating; just show it.
