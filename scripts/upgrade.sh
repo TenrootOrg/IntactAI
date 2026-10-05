@@ -641,6 +641,11 @@ main() {
     if declare -F bootstrap_iris_api_key >/dev/null; then
         bootstrap_iris_api_key || true
     fi
+    # Same trap for the Volatility symbol pack: it rides every release, VolWeb
+    # does not move with it.
+    if declare -F volweb_symbols_after_upgrade >/dev/null; then
+        volweb_symbols_after_upgrade || true
+    fi
 
     refresh_nginx_upstreams
     fix_source_permissions

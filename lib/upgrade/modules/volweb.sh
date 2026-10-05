@@ -110,6 +110,21 @@ upgrade_module_volweb() {
     return $rc
 }
 
+# The release's symbol pack, when VolWeb itself did not move. upgrade_module_volweb
+# seeds it on a VolWeb upgrade; on every other upgrade (VolWeb releases every few
+# months, the pack should land every release -- 2026-10-05) it was never reached.
+# The pack is in the package either way: an air-gapped package carries every
+# asset, and a filtered online fetch takes the volweb asset when its pack differs
+# (lib/release.sh). seed_volweb_symbols replaces only a CHANGED pack and never fails.
+volweb_symbols_after_upgrade() {
+    [[ " ${UPGRADE_OK[*]:-} " == *" volweb "* ]] && return 0          # seeded in its own step
+    [[ -n "${UPKG_DIR:-}" && -d "${UPKG_DIR}/volweb_symbols" ]] || return 0
+    declare -F seed_volweb_symbols >/dev/null || return 0
+    log_info "VolWeb symbol pack from this release (VolWeb itself unchanged):"
+    seed_volweb_symbols "${UPKG_DIR}/volweb_symbols" || log_warn "  Volatility symbol seeding had issues"
+    return 0
+}
+
 # Four to six containers mount the shared volweb_media volume at once and race
 # its initialisation. These four messages are that race and nothing else, so
 # they are the only ones retried. Ported from volweb.py:110-183.

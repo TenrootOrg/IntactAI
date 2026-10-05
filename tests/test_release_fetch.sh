@@ -105,8 +105,9 @@ test_happy_path_stages_the_bundle() {
 # branch out of lib/release.sh and running it -- a reimplementation here would
 # pass while the shipped logic drifted.
 # ---------------------------------------------------------------------------
-_selection() {   # <INTACT_RELEASE_ONLY_MODULES> -> the asset names it would fetch
-    INTACT_RELEASE_ONLY_MODULES="$1" python3 - "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/release.sh" <<'PYEOF'
+_selection() {   # <INTACT_RELEASE_ONLY_MODULES> [<box symbols sha>] -> the asset names it would fetch
+    INTACT_RELEASE_ONLY_MODULES="$1" INTACT_HAVE_SYMBOLS_SHA256="${2:-}" \
+        python3 - "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/release.sh" <<'PYEOF'
 import json, os, sys
 src = open(sys.argv[1]).read().split("\n")
 start = next(i for i, l in enumerate(src) if l.strip() == "want = []")
@@ -117,6 +118,8 @@ index = {"assets": {
     "elk":       {"asset": "t-elk.tar.gz",       "sha256": "b", "parts": []},
     "iris":      {"asset": "t-iris.tar.gz",      "sha256": "c", "parts": []},
     "portainer": {"asset": "t-portainer.tar.gz", "sha256": "d", "parts": []},
+    "volweb":    {"asset": "t-volweb.tar.gz",    "sha256": "e", "parts": [],
+                  "volweb_symbols": {"sha256": "PACK2026", "size": 1, "tables": 1}},
 }}
 names = [v["asset"] for v in index["assets"].values()] + ["t.manifest.json"]
 tag = "t"
@@ -175,6 +178,25 @@ test_upgrade_sh_always_appends_intact_to_the_filter() {
     local r
     r="$(printf '%s\n' intact elk intact | awk '!seen[$0]++' | tr '\n' ' ')"
     assert_eq "${r% }" "intact elk" "the de-dup must collapse a repeated intact"
+}
+
+# 2026-10-05: the symbol pack rides in the volweb asset, but VolWeb itself moves
+# every few months -- a filtered upgrade must still bring a NEWER pack.
+test_a_newer_symbol_pack_brings_the_volweb_asset_along() {
+    assert_contains "$(_selection "elk intact" "PACK2019")" "t-volweb.tar.gz" \
+        "the release pack differs from the box pack: fetch the asset that carries it"
+    assert_contains "$(_selection "elk intact" "none")" "t-volweb.tar.gz" \
+        "a box with no pack at all gets the release one"
+}
+
+test_the_same_pack_downloads_nothing_extra() {
+    assert_not_contains "$(_selection "elk intact" "PACK2026")" "t-volweb.tar.gz" \
+        "an unchanged pack must not cost a 1.4 GB download"
+}
+
+test_no_volweb_on_the_box_means_no_pack_fetch() {
+    assert_not_contains "$(_selection "elk intact" "")" "t-volweb.tar.gz" \
+        "VolWeb not running here: leave the asset"
 }
 
 test_install_never_sets_the_filter() {

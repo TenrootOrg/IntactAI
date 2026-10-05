@@ -72,8 +72,20 @@ download_release_assets() {
     # "<file-to-download><TAB><whole-asset><TAB><sha256-or-empty>" per line --
     # three columns because a split asset is downloaded as .part-NN pieces but
     # verified as the reassembled tarball.
+    # The box's own symbol pack, so a filtered upgrade can tell whether the
+    # release carries a newer one (see the selection below). Only for a
+    # filtered fetch -- an install takes everything anyway -- and only when
+    # VolWeb runs here. "none" = VolWeb runs but holds no pack.
+    local have_sym=""
+    if [[ -n "${INTACT_RELEASE_ONLY_MODULES:-}" ]] \
+            && [[ "$(docker inspect -f '{{.State.Running}}' intact_volweb_backend 2>/dev/null)" == "true" ]]; then
+        have_sym="$(docker exec intact_volweb_backend sh -c \
+            'sha256sum /home/app/web/media/symbols/windows.zip 2>/dev/null | cut -d" " -f1' 2>/dev/null)"
+        have_sym="${have_sym:-none}"
+    fi
+
     local names
-    names="$(printf '%s' "$json" | INDEX_TAG="$tag" INDEX_JSON="$index_json" python3 -c '
+    names="$(printf '%s' "$json" | INDEX_TAG="$tag" INDEX_JSON="$index_json" INTACT_HAVE_SYMBOLS_SHA256="$have_sym" python3 -c '
 import json, os, sys
 tag = os.environ["INDEX_TAG"]
 try:
@@ -118,9 +130,17 @@ if index:
     # nothing to exec into and the box silently applies the release with its
     # OWN older engine.
     only = {m for m in (os.environ.get("INTACT_RELEASE_ONLY_MODULES") or "").split() if m}
+    # The Volatility symbol pack rides in the volweb asset, and VolWeb moves
+    # every few months while the pack should reach every box every release
+    # (2026-10-05). So that asset comes along whenever its pack differs from
+    # the one on this box -- "none" when there is none; unset or empty when
+    # VolWeb is not running here, which means: leave it.
+    have_sym = os.environ.get("INTACT_HAVE_SYMBOLS_SHA256") or ""
     attached, missing = set(names), []
     for mod, entry in (index.get("assets") or {}).items():
-        if only and mod not in only:
+        sym = (entry.get("volweb_symbols") or {}).get("sha256") or ""
+        newer_pack = bool(have_sym and sym and sym != have_sym)
+        if only and mod not in only and not newer_pack:
             continue
         whole, sha = entry["asset"], entry.get("sha256") or ""
         parts = [p for p in (entry.get("parts") or []) if p in attached]

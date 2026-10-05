@@ -754,6 +754,11 @@ jobs:
                                   f"other assets cannot be checked")
                   continue
               c = (json.load(open(man)).get("contents") or {})
+              # The symbol pack's identity, so a filtered upgrade can decide to
+              # fetch this asset for a newer pack alone (lib/release.sh).
+              if c.get("volweb_symbols"):
+                  entries[mod]["volweb_symbols"] = {k: c["volweb_symbols"].get(k)
+                                                    for k in ("sha256", "size", "tables")}
               for img in (c.get("images") or []):
                   if img in images and images[img] != mod:
                       problems.append(f"image {img} claimed by both {images[img]} and {mod}")

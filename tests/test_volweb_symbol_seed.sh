@@ -189,6 +189,29 @@ else
 fi
 
 echo
+echo "== an upgrade where VolWeb itself did not move still seeds the release pack =="
+# 2026-10-05: VolWeb releases every few months, the pack should land every
+# release. The real function, lifted like _volweb_verify_symbols below.
+eval "$(sed -n '/^volweb_symbols_after_upgrade() {/,/^}/p' "${ROOT}/lib/upgrade/modules/volweb.sh")"
+SEEDED=""
+_real_seed="$(declare -f seed_volweb_symbols)"
+seed_volweb_symbols() { SEEDED="$1"; }
+PKG="$(mktemp -d)"; mkdir -p "${PKG}/volweb_symbols"
+UPKG_DIR="$PKG"; UPGRADE_OK=("intact 1 -> 2" "elk 8 -> 9")
+volweb_symbols_after_upgrade >/dev/null 2>&1
+[[ "$SEEDED" == "${PKG}/volweb_symbols" ]] && ok "a noop VolWeb still gets the release pack" \
+    || fail "a noop VolWeb still gets the release pack" "seeded: [$SEEDED]"
+SEEDED=""; UPGRADE_OK=("volweb 3.16.0 -> 3.17.0")
+volweb_symbols_after_upgrade >/dev/null 2>&1
+[[ -z "$SEEDED" ]] && ok "a VolWeb upgrade seeds in its own step, not twice" || fail "a VolWeb upgrade seeds in its own step, not twice"
+SEEDED=""; UPGRADE_OK=("intact 1 -> 2"); UPKG_DIR="$(mktemp -d)"
+volweb_symbols_after_upgrade >/dev/null 2>&1
+[[ -z "$SEEDED" ]] && ok "a package without a pack seeds nothing" || fail "a package without a pack seeds nothing"
+grep -q "volweb_symbols_after_upgrade" "${ROOT}/scripts/upgrade.sh" && ok "upgrade.sh calls it after the module loop" \
+    || fail "upgrade.sh calls it after the module loop"
+eval "$_real_seed"; rm -rf "$PKG"
+
+echo
 echo "== an upgrade notices if the symbol library shrank =="
 # Sourcing lib/upgrade/modules/volweb.sh whole would drag in the engine; the
 # two functions under test are self-contained, so lift just those.
