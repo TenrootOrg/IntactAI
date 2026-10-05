@@ -2308,8 +2308,8 @@ _LLM_ERR_MESSAGES = {
     "cli_credential_expired": (
         "The subscription sign-in expired: its refresh token was already used (the appliance keeps every "
         "refresh from the next sign-in on).",
-        "On the appliance HOST run `export PATH=\"$HOME/.local/bin:$PATH\" && codex login` "
-        "(add --device-auth without a browser), then try again."),
+        "On the appliance HOST run `export PATH=\"$HOME/.local/bin:$PATH\"`, then "
+        "`codex login` (or `codex login --device-auth` without a browser), then try again."),
     # Covers both a subscription plan that does not include the model and a model
     # id the provider does not have at all — the operator's action is the same.
     "model_unsupported": ("The provider does not offer the selected model to this account.",

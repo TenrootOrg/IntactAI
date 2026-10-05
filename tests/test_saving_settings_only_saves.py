@@ -50,7 +50,9 @@ class SavingSettingsStartsNothing(unittest.TestCase):
 
     def test_regenerating_by_hand_still_exists(self):
         """Non-vacuous: the deliberate path must be untouched."""
-        self.assertIn("function regenReport(id)", self.page)
+        # regenReport(id, force) since 2026-10-05: Force regenerate on a stuck
+        # report is the same deliberate path with one optional flag.
+        self.assertRegex(self.page, r"function regenReport\(id(, force)?\)")
         self.assertIn("Regenerate report", self.page)
 
     def test_the_model_catalog_refresh_survives(self):
