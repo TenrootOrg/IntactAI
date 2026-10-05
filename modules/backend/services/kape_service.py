@@ -243,6 +243,26 @@ def monitor_flow_completion(client_id, flow_id, timeout_seconds=10000, logger=No
         start_time = time.time()
         check_count = 0
         last_rows = 0
+        # A flow on an endpoint that is not connected reads exactly like one
+        # that is working: "State: RUNNING - Rows: 0", for the whole timeout.
+        # 2026-10-05: a memory capture sat like that for 13 minutes (90 allowed)
+        # on a PC last seen 45 minutes before; nothing said why. Ask when the
+        # client last checked in and say so. Never aborts -- it may come back.
+        _OFFLINE_AFTER_S, _REPEAT_S = 300, 600
+        offline_checked_at, offline_said_at = 0.0, 0.0
+
+        def client_silence_s():
+            try:
+                q = api_pb2.VQLCollectorArgs(max_wait=10, max_row=1, Query=[api_pb2.VQLRequest(
+                    VQL=f"SELECT last_seen_at FROM clients(client_id='{client_id}')")])
+                for resp in stub.Query(q, timeout=15):
+                    if resp.Response:
+                        rows = json.loads(resp.Response)
+                        if rows and rows[0].get("last_seen_at"):
+                            return time.time() - int(rows[0]["last_seen_at"]) / 1e6
+            except Exception:
+                return None
+            return None
 
         while True:
             check_count += 1
@@ -303,6 +323,17 @@ def monitor_flow_completion(client_id, flow_id, timeout_seconds=10000, logger=No
                 # Treat like a transient miss: keep last known state and retry
                 # on the next poll instead of aborting the run.
                 log(f"⚠ Could not parse flow state response: {e}", "warning")
+
+            if total_rows == 0 and time.time() - offline_checked_at >= 60:
+                offline_checked_at = time.time()
+                quiet = client_silence_s()
+                if quiet is not None and quiet >= _OFFLINE_AFTER_S \
+                        and time.time() - offline_said_at >= _REPEAT_S:
+                    offline_said_at = time.time()
+                    log(f"⚠ The endpoint has not checked in for {int(quiet // 60)} min — it "
+                        f"looks offline (powered off, asleep or no network). The collection "
+                        f"starts when it reconnects; stop the run if it is not coming back.",
+                        "warning")
 
             # Log progress every 5 checks or when rows change significantly
             if check_count % 5 == 1 or total_rows != last_rows:
