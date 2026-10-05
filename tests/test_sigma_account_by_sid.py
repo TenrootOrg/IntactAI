@@ -90,5 +90,62 @@ class SidLinking(unittest.TestCase):
         self.assertTrue(identities.person_findings(G, [self.acct["defaultuser0"]]))
 
 
+class TheCardShowsThem(unittest.TestCase):
+    """attacked-win11 had 8 linked detections and its card said "no findings":
+    none of the case's findings carried them. The card now lists detections on
+    the accounts that no finding carries, at the case's severity floor."""
+
+    def view(self):
+        from unittest import mock
+        from services.fusion import schema, store
+        g = schema.FusionGraph(case_id="c")
+        g.upsert(schema.Entity(id="asset:PC", type="asset", label="PC", attrs={"bucket": "endpoint"}))
+        g.upsert(schema.Entity(id="account:asset:PC:alice", type="account", label="alice",
+                               attrs={"_assets": ["asset:PC"]},
+                               evidence=[schema.EvidenceRef("velociraptor", "r1", "Windows.Hayabusa.Rules/row=1")]))
+        for eid, title, sev in (("event:pwsh", "Potentially Malicious PwSh", "medium"),
+                                ("event:msi", "MSI Install", "low"),
+                                ("event:cred", "Credential Manager Enumerated", "high")):
+            g.upsert(schema.Entity(id=eid, type="event", label=f"SIGMA: {title}", severity=sev,
+                                   flags=["sigma"], attrs={"title": title, "occurrences": 6}))
+            g.relationships.append(schema.Relationship("account:asset:PC:alice", eid, "executed"))
+        g.findings = [schema.Finding(id="f1", title="Cred dump on PC", severity="high", confidence="high",
+                                     summary="", entity_ids=["event:cred"])]
+        ws = mock.Mock()
+        ws.get_automation_runs_by_case.return_value = []
+        with mock.patch.object(store, "get_case", return_value={"min_severity": "medium"}), \
+             mock.patch.object(store, "view_graph", return_value=g), \
+             mock.patch("services.fusion.jev.enabled", return_value=False), \
+             mock.patch.object(store, "_ws", return_value=ws):
+            return {c["name"]: c for c in store.identity_view("c1")["identities"]}["alice"]
+
+    def test_linked_detections_no_finding_carries_are_on_the_card(self):
+        card = self.view()
+        self.assertEqual(card["other_detection_count"], 1)          # low is below the floor
+        self.assertEqual(card["other_detections"],
+                         [{"title": "Potentially Malicious PwSh", "severity": "medium", "count": 6}])
+
+    def test_card_markup(self):
+        import shutil, subprocess
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("no node on this host")
+        js = r"""
+const fs=require("fs"); const src=fs.readFileSync(process.argv[1],"utf8");
+eval(src.match(/function idCard\(cid,it,jev\)\{[\s\S]*?\n\}/)[0]);
+eval(src.match(/const ID_VERDICTS=\[.*?\];/s)[0].replace("const ","var ")); eval(src.match(/function idVerdictSel\(cid,it\)\{[\s\S]*?\n\}/)[0]); eval(src.match(/function _idJev\(it\)\{[\s\S]*?\n\}/)[0]); eval(src.match(/function _hostRow\(label\)\{[^\n]*\}/)[0]);
+const esc=s=>String(s).replace(/[<>&"]/g,""), jsa=s=>String(s); window={_idExpand:{k:true},_riskData:{rows:[]}};
+console.log(idCard("c1",{key:"k",name:"attacked-win11",detections:0,finding_rows:0,activity:true,other_detection_count:8,
+  other_detections:[{title:"Potentially Malicious PwSh",severity:"medium",count:6}],
+  accounts:[{id:"a",label:"attacked-win11"}],seen_on:["PC"],findings:[]},false));"""
+        html = os.path.join(_ROOT, "modules/nginx/html/cases.html")
+        out = subprocess.run([node, "-e", js, html], capture_output=True, text=True, check=True).stdout
+        self.assertIn("8 detections, none part of a finding", out)
+        self.assertNotIn(">no findings<", out)
+        self.assertIn("Detections by these accounts — not part of any finding · worst 1 of 8", out)
+        self.assertIn('class="chip c-medium"', out)
+        self.assertIn("Potentially Malicious PwSh <span style=\"font-size:11px\">×6</span>", out)
+
+
 if __name__ == "__main__":
     unittest.main()

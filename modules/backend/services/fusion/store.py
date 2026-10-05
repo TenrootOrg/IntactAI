@@ -5091,6 +5091,27 @@ def identity_view(case_id, d=None) -> dict:
         it["findings"] = [{"id": f.id, "title": f.title, "severity": f.severity} for f in fs[:12]]
         it["finding_rows"] = len(fs)
         it["detections"] = len({_detection_name(f) for f in fs})
+        # Detections these accounts are linked to that no finding carries — a
+        # medium PowerShell rule they ran is not a finding on its own, and the
+        # card used to say "no findings" as if nothing had fired (2026-10-05,
+        # attacked-win11: 8 linked detections, card "0"). Same severity floor as
+        # the case's timeline.
+        try:
+            _ents = getattr(g, "entities", None) or {}
+            _in_f = {x for f in fs for x in (f.entity_ids or [])}
+            _floor = d.get("min_severity") or "medium"
+            _od = [_ents[x] for x in _idf.person_reach(g, live)
+                   if x in _ents and x not in _in_f and _ents[x].type == "event"
+                   and {"sigma", "detection"} & set(_ents[x].flags or [])
+                   and _sev.at_least(_ents[x].severity or "info", _floor)]
+            _od.sort(key=lambda e: (-_sev.rank(e.severity), e.label))
+            it["other_detections"] = [{"title": e.attrs.get("title") or e.label, "severity": e.severity,
+                                       "count": e.attrs.get("occurrences") or 1} for e in _od[:12]]
+            it["other_detection_count"] = len(_od)
+        except Exception as _e:                              # noqa: BLE001
+            it["other_detections"], it["other_detection_count"] = [], 0
+            print(f"[IDENTITIES] {case_id}: other detections for {it.get('name')!r} not computed "
+                  f"({type(_e).__name__}: {_e})", flush=True)
         # seen anywhere but an account listing (processes, logons, commands, detections)
         # Never fails the tab: on any error the identity counts as ACTIVE (shown,
         # never wrongly hidden) and the error goes to the backend log.
