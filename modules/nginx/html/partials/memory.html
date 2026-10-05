@@ -84,7 +84,7 @@
                             class="px-4 py-2 text-sm font-medium -mb-px whitespace-nowrap">
                             Pull from another case
                         </button>
-                        <button @click="memoryTab = 'symbols'"
+                        <button @click="memoryTab = 'symbols'; $store.memory.loadSymbols()"
                             :class="memoryTab === 'symbols' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-gray-400 hover:text-gray-300'"
                             class="px-4 py-2 text-sm font-medium -mb-px whitespace-nowrap">
                             Symbol tables
@@ -323,6 +323,36 @@
                                 That pack was last updated in October 2019, so it covers Windows builds up to then. A newer build
                                 needs its own table: upload its <code>.pdb</code> from Microsoft or a <code>.json.xz</code>.
                             </p>
+                        </div>
+
+                        <!-- What THIS appliance has (2026-10-05: "mention the version or date of
+                             the table on this machine"). A pack's date is the newest table inside
+                             it, from the zip itself — not the day it reached this box. -->
+                        <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
+                            <div class="flex items-center justify-between mb-2">
+                                <label class="block text-sm font-medium text-gray-300">On this appliance</label>
+                                <button type="button" @click="$store.memory.loadSymbols()" class="text-xs text-gray-400 hover:text-gray-200">↻ Refresh</button>
+                            </div>
+                            <p x-show="$store.memory.symLibLoading && !$store.memory.symLib" class="text-xs text-gray-400">Reading VolWeb's symbol library…</p>
+                            <p x-show="$store.memory.symLibErr" class="text-xs text-red-400" x-text="$store.memory.symLibErr"></p>
+                            <template x-if="$store.memory.symLib">
+                                <div class="text-xs text-gray-300 space-y-1.5">
+                                    <template x-for="p in $store.memory.symLib.packs" :key="p.name">
+                                        <div><b x-text="p.name"></b> —
+                                            <span x-text="p.tables.toLocaleString() + ' Windows tables'"></span> ·
+                                            <span>newest table dated <b class="text-gray-100" x-text="$store.memory.symDate(p.dated)"></b></span> ·
+                                            <span x-text="Math.round(p.size / 1048576) + ' MB'"></span> ·
+                                            <span class="text-gray-400" x-text="'on this appliance since ' + $store.memory.symDate(p.added)"></span></div>
+                                    </template>
+                                    <div x-show="!$store.memory.symLib.packs.length" class="text-gray-400">No symbol pack installed.</div>
+                                    <div><b x-text="$store.memory.symLib.kernels"></b> per-kernel table(s)
+                                        <span class="text-gray-400" x-show="$store.memory.symLib.newest_kernel"
+                                              x-text="'— newest added ' + $store.memory.symDate(($store.memory.symLib.newest_kernel || {}).added)"></span>
+                                        <span class="text-gray-500">(one per Windows build: downloaded from Microsoft by an analysis, or uploaded here)</span></div>
+                                    <div>Symbol index: <b :class="$store.memory.symIndexState() === 'ready' ? 'text-green-400' : 'text-yellow-400'"
+                                                          x-text="$store.memory.symIndexLabel()"></b></div>
+                                </div>
+                            </template>
                         </div>
 
                         <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">

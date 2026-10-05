@@ -34,6 +34,9 @@ document.addEventListener('alpine:init', () => {
         includeYara: true,        // independent of blueprint — adds yarascan layer
         // Symbol tables tab: the upload's state and the line under the button
         symUploading: false,
+        symLib: null,          // GET /api/memory/symbols: packs (+ their own date), kernels, index
+        symLibErr: '',
+        symLibLoading: false,
         symMsg: '',
         symMsgOk: false,
         // Keep the .raw after the run so a re-run costs nothing. Off by
@@ -176,6 +179,37 @@ document.addEventListener('alpine:init', () => {
         },
 
         // ---- Symbol tables (air-gapped analysis) ----------------------
+        async loadSymbols() {
+            this.symLibLoading = true; this.symLibErr = '';
+            try {
+                const r = await fetch('/api/memory/symbols');
+                const j = await r.json().catch(() => ({}));
+                if (!r.ok || j.error) { this.symLibErr = j.error || ('Could not read the library (HTTP ' + r.status + ').'); }
+                else this.symLib = j;
+            } catch (e) { this.symLibErr = 'Could not reach the appliance: ' + (e && e.message || e); }
+            this.symLibLoading = false;
+        },
+        symDate(iso) {
+            if (!iso) return '—';
+            const d = new Date(iso.length === 10 ? iso + 'T00:00:00Z' : iso);
+            return isNaN(d) ? iso : d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+        },
+        /** One word for both workers: "building" wins, then "missing", else "ready". */
+        symIndexState() {
+            const v = Object.values((this.symLib && this.symLib.index) || {}).map(x => x.state);
+            return v.includes('building') ? 'building' : (v.length && v.every(x => x === 'ready')) ? 'ready'
+                 : v.includes('missing') ? 'missing' : 'unknown';
+        },
+        symIndexLabel() {
+            const st = this.symIndexState();
+            if (st === 'building') return 'building in the background — the next memory analysis may wait for it';
+            if (st === 'missing') return 'not built yet — the first memory analysis will build it (can take ~10 min with a full pack)';
+            if (st === 'ready') {
+                const b = Object.values(this.symLib.index).map(x => x.built).filter(Boolean).sort().pop();
+                return 'ready' + (b ? ' (built ' + this.symDate(b) + ')' : '');
+            }
+            return 'unknown — VolWeb workers not reachable';
+        },
         /** Add a symbol file to the library — through the SAME resumable (tus)
          *  uploader every other upload uses, purpose 'memory_symbols'.
          *
@@ -201,6 +235,7 @@ document.addEventListener('alpine:init', () => {
                 onSuccess: () => {
                     this.symUploading = false; this.symMsgOk = true;
                     this.symMsg = 'Uploaded — it is being checked and added. Follow it in Settings → Actions.';
+                    this.loadSymbols();
                 },
                 onError: (error) => {
                     this.symUploading = false; this.symMsgOk = false;

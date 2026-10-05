@@ -102,6 +102,66 @@ def prewarm_index(say=None) -> None:
             "analysis will not have to wait for it.")
 
 
+# What the library holds, for the Symbol tables page (2026-10-05: "mention the
+# version or date of the table on this machine"). A pack's DATE is the newest
+# table inside it -- the zip's own record, not when it reached this box (the
+# Volatility pack is 2019 whichever day it was installed). Read-only.
+_LIBRARY = r'''
+import json, os, sys, zipfile, datetime as dt
+lib = sys.argv[1]
+iso = lambda t: dt.datetime.fromtimestamp(t, dt.timezone.utc).isoformat(timespec="seconds")
+packs, kernels = [], []
+for root, _dirs, files in os.walk(lib):
+    for f in files:
+        p = os.path.join(root, f)
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        if f.endswith(".zip") and root == lib:
+            try:
+                with zipfile.ZipFile(p) as z:
+                    infos = [i for i in z.infolist() if i.filename.startswith("windows/")
+                             and i.filename.endswith((".json.xz", ".json"))]
+                newest = max((i.date_time for i in infos), default=None)
+            except (zipfile.BadZipFile, OSError):
+                infos, newest = [], None
+            packs.append({"name": f, "size": st.st_size, "added": iso(st.st_mtime), "tables": len(infos),
+                          "dated": dt.date(*newest[:3]).isoformat() if newest else None})
+        elif f.endswith((".json.xz", ".json", ".json.gz")) and "/windows/" in p:
+            kernels.append((st.st_mtime, os.path.relpath(p, lib)))
+kernels.sort()
+print(json.dumps({"packs": packs, "kernels": len(kernels),
+                  "newest_kernel": ({"file": kernels[-1][1], "added": iso(kernels[-1][0])} if kernels else None)}))
+'''
+_INDEX_STATE = ('c="${XDG_CACHE_HOME:-$HOME/.cache}/volatility3/identifier.cache"; '
+                'if pgrep -f "[S]qliteCache" >/dev/null 2>&1; then echo building; '
+                'elif [ -f "$c" ]; then echo "ready $(stat -c %Y "$c")"; else echo missing; fi')
+
+
+def library() -> dict:
+    """Packs (with their own date), per-kernel tables and the index state of each
+    worker. {"error": ...} when VolWeb cannot be reached."""
+    import json
+    try:
+        r = _exec(f"python3 -c {shlex.quote(_LIBRARY)} {shlex.quote(SYMBOLS_DIR)}", 60)
+        out = json.loads([ln for ln in (r.stdout or "").splitlines() if ln.startswith("{")][-1])
+    except (IndexError, ValueError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return {"error": "VolWeb's symbol library could not be read — is VolWeb running?"}
+    import datetime as _dt
+    out["index"] = {}
+    for c in _INDEX_WORKERS:
+        try:
+            st = subprocess.run(["docker", "exec", "-u", "app", c, "sh", "-c", _INDEX_STATE],
+                                capture_output=True, text=True, timeout=30).stdout.split()
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            st = []
+        state = st[0] if st else "unknown"
+        out["index"][c] = {"state": state, "built": (_dt.datetime.fromtimestamp(int(st[1]), _dt.timezone.utc)
+                                                     .isoformat(timespec="seconds") if len(st) > 1 else None)}
+    return out
+
+
 # One install at a time. Two uploads of the same pack seconds apart (seen in the
 # live test) each checked the library before the other had stored anything, and
 # both went in.

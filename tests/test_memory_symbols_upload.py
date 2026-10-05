@@ -33,6 +33,44 @@ def setUpModule():
     unittest.addModuleCleanup(p.stop)
 
 
+class WhatTheApplianceHas(unittest.TestCase):
+    """2026-10-05: "in this page you have to mention the version or date of the
+    table in this machine". The real library script, run on a temp library."""
+
+    def test_a_pack_is_dated_by_its_newest_table_and_kernels_are_counted(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        with zipfile.ZipFile(os.path.join(d, "windows.zip"), "w") as z:
+            for name, when in (("windows/ntkrnlmp.pdb/A-1.json.xz", (2018, 5, 1, 0, 0, 0)),
+                               ("windows/ntkrnlmp.pdb/B-1.json.xz", (2019, 1, 16, 0, 0, 0)),
+                               ("README.txt", (2020, 1, 1, 0, 0, 0))):      # not a table: no say in the date
+                z.writestr(zipfile.ZipInfo(name, when), b"x")
+        os.makedirs(os.path.join(d, "windows", "tcpip.pdb"))
+        for f in ("windows/tcpip.pdb/C-1.json.xz", "windows/tcpip.pdb/D-1.json.xz"):
+            open(os.path.join(d, f), "w").close()
+
+        real_run = subprocess.run
+
+        def run(script, timeout=60):
+            if script.startswith("python3 -c "):
+                return real_run(["sh", "-c", script.replace(symbols.SYMBOLS_DIR, d)],
+                                      capture_output=True, text=True, timeout=timeout)
+            raise AssertionError(script)
+        idx = subprocess.CompletedProcess([], 0, stdout="ready 1791194240\n", stderr="")
+        with mock.patch.object(symbols, "_exec", run), \
+                mock.patch.object(symbols.subprocess, "run", side_effect=lambda *a, **k: idx
+                                  if a[0][:2] == ["docker", "exec"] else real_run(*a, **k)):
+            out = symbols.library()
+        self.assertEqual([(p["name"], p["tables"], p["dated"]) for p in out["packs"]],
+                         [("windows.zip", 2, "2019-01-16")])
+        self.assertEqual(out["kernels"], 2)
+        self.assertEqual({v["state"] for v in out["index"].values()}, {"ready"})
+
+    def test_an_unreachable_volweb_is_said_not_shown_as_empty(self):
+        with mock.patch.object(symbols, "_exec", side_effect=FileNotFoundError):
+            self.assertIn("error", symbols.library())
+
+
 class PrewarmIndex(unittest.TestCase):
     """2026-10-05: the first analysis after a new windows.zip spent ~14 minutes
     indexing it before any plugin ran. An upload now starts that in both

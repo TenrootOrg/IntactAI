@@ -818,6 +818,14 @@ def list_memory_dumps():
 # ---------------------------------------------------------------------------
 
 
+@memory_bp.route("/api/memory/symbols", methods=["GET"])
+def memory_symbol_library():
+    """What symbol tables this appliance has: packs and their date, per-kernel
+    tables, and whether Volatility's index is ready. Read-only."""
+    from services.memory import symbols
+    return jsonify(symbols.library())
+
+
 @memory_bp.route("/api/memory/symbols/upload", methods=["POST"])
 def upload_memory_symbol():
     """Add a symbol file the analyst brought: a Microsoft .pdb (converted here),
