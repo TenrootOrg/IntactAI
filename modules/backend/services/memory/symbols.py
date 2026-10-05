@@ -73,6 +73,35 @@ print(json.dumps({"file": "windows/%s/%s-%d.json.xz" % (db, guid, age),
 '''
 
 
+# Build Volatility's symbol index in the background in both workers right after
+# the library changed, so the next memory analysis does not pay for it: vol3
+# indexes every table before any plugin runs, ~14 minutes for windows.zip
+# (2026-10-05). Same snippet as lib/modules/volweb.sh:_VOLWEB_PREWARM_PY.
+_PREWARM = ('import os, volatility3.symbols as s; s.__path__.append(os.path.abspath("media/symbols")); '
+            'from volatility3.framework import constants; '
+            'from volatility3.framework.automagic import symbol_cache as c; '
+            'c.SqliteCache(os.path.join(constants.CACHE_PATH, constants.IDENTIFIERS_FILENAME)).update()')
+_INDEX_WORKERS = ("intact_volweb_workers", "intact_volweb_workers_yarascan")
+
+
+def prewarm_index(say=None) -> None:
+    """Start the index build in each worker and return at once. Best-effort."""
+    log_to = '"${XDG_CACHE_HOME:-$HOME/.cache}"'
+    script = (f"mkdir -p {log_to} && cd /home/app/web && "
+              f"nice -n 10 python3 -c {shlex.quote(_PREWARM)} > {log_to}/symbol-index.log 2>&1")
+    started = 0
+    for c in _INDEX_WORKERS:
+        try:
+            r = subprocess.run(["docker", "exec", "-d", "-u", "app", c, "sh", "-c", script],
+                               capture_output=True, text=True, timeout=30)
+            started += r.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            pass
+    if started and say:
+        say("Indexing the symbol library in the background — the next memory "
+            "analysis will not have to wait for it.")
+
+
 # One install at a time. Two uploads of the same pack seconds apart (seen in the
 # live test) each checked the library before the other had stored anything, and
 # both went in.
@@ -163,6 +192,7 @@ def add(local_path: str, filename: str, dumps_dir: str = DUMPS_DIR, log=None) ->
             replaced = "replaced=1" in (r.stdout or "")
             if replaced:
                 say("An older copy of this pack was replaced — only the newest is kept.")
+            prewarm_index(say)
             return {"file": safe, "pack": True, "replaced": replaced}
         say({"pdb": "Converting the .pdb to a symbol table with the Volatility inside VolWeb…",
              "json": "Compressing the table and reading its own metadata…",
@@ -176,7 +206,10 @@ def add(local_path: str, filename: str, dumps_dir: str = DUMPS_DIR, log=None) ->
         last = [ln for ln in (r.stdout or "").splitlines() if ln.startswith("{")]
         if not last:
             return {"error": "the conversion gave no answer: " + (r.stderr or r.stdout or "")[-300:]}
-        return json.loads(last[-1])
+        res = json.loads(last[-1])
+        if not res.get("error") and not res.get("already_had"):
+            prewarm_index(say)
+        return res
     except subprocess.TimeoutExpired:
         return {"error": "the conversion took too long (over 10 minutes)"}
     finally:

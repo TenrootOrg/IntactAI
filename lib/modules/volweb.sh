@@ -654,6 +654,26 @@ seed_yara_rulesets() {
 # windows.zip replaces the old one instead of being skipped by name. Copies of
 # the same pack an operator uploaded earlier (<12-hex>_windows.zip) go too:
 # Volatility reads every pack in the library on every run.
+# Build Volatility's symbol index NOW, in the background, in both workers --
+# not inside the first memory analysis. vol3 indexes every table before any
+# plugin runs (json.load + hash of each one, a single commit at the end), and
+# for the 3,014-table windows.zip that took ~14 minutes per worker on
+# 2026-10-05, inside the analysis's own budget. With XDG_CACHE_HOME on the media
+# volume (docker-compose.yaml) the index outlives recreates and upgrades; when
+# nothing changed this is a quick mtime check. Same snippet as
+# services/memory/symbols.py:_PREWARM. Never waited on, never fatal.
+_VOLWEB_PREWARM_PY='import os, volatility3.symbols as s; s.__path__.append(os.path.abspath("media/symbols")); from volatility3.framework import constants; from volatility3.framework.automagic import symbol_cache as c; c.SqliteCache(os.path.join(constants.CACHE_PATH, constants.IDENTIFIERS_FILENAME)).update()'
+prewarm_volweb_symbol_index() {
+    local c
+    for c in intact_volweb_workers intact_volweb_workers_yarascan; do
+        docker exec -d -u app "$c" sh -c \
+            "mkdir -p \"\${XDG_CACHE_HOME:-\$HOME/.cache}\" && cd /home/app/web && nice -n 10 python3 -c '${_VOLWEB_PREWARM_PY}' > \"\${XDG_CACHE_HOME:-\$HOME/.cache}/symbol-index.log\" 2>&1" \
+            >/dev/null 2>&1 \
+            && log_info "  Building the Volatility symbol index in ${c} (background)"
+    done
+    return 0
+}
+
 seed_volweb_symbols() {
     local seed_dir="${1:-${SCRIPT_DIR}/data/volweb-symbols}"
     local dest="/home/app/web/media/symbols"
@@ -715,6 +735,8 @@ seed_volweb_symbols() {
     if (( staged > 0 )); then
         log_success "  Staged ${staged} Volatility symbol file(s) into VolWeb"
     fi
+
+    prewarm_volweb_symbol_index
 
     # Report what the box actually HAS, not what we just copied -- an operator
     # who dropped files in by hand, or a previous install that already seeded

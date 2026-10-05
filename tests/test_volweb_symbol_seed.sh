@@ -51,6 +51,7 @@ docker() {
     case "${1:-}" in
         cp) command cp "$2" "${FS}${3#intact_volweb_backend:}" ;;
         exec)
+            [[ "${2:-}" == -d ]] && return 0      # a detached build: recorded only
             shift 2
             for x in "$@"; do a+=("${x//\/home\/app\/web\/media/${FS}/home/app/web/media}"); done
             [[ "${a[0]}" == chown ]] && return 0
@@ -86,6 +87,14 @@ case "$OUT" in
     *"offline memory analysis is covered"*) ok "and the install reports the box as covered" ;;
     *) fail "and the install reports the box as covered" "$OUT" ;;
 esac
+
+for w in intact_volweb_workers intact_volweb_workers_yarascan; do
+    if grep -q "^exec -d -u app ${w} sh -c mkdir -p .*SqliteCache(" "$DOCKER_CALLS"; then
+        ok "the symbol index is built in the background in ${w}"
+    else
+        fail "the symbol index is built in the background in ${w}" "$(grep -- '-d' "$DOCKER_CALLS")"
+    fi
+done
 
 echo
 echo "== re-running does not re-push an 801 MiB pack =="

@@ -22,6 +22,42 @@ import _optional_deps  # noqa: F401,E402
 from services.memory import symbols  # noqa: E402
 
 
+# Never start a real index build from a test: on the appliance `docker exec`
+# reaches the live VolWeb workers. PrewarmIndex below tests the real function.
+_REAL_PREWARM = symbols.prewarm_index
+
+
+def setUpModule():
+    p = mock.patch.object(symbols, "prewarm_index", lambda say=None: None)
+    p.start()
+    unittest.addModuleCleanup(p.stop)
+
+
+class PrewarmIndex(unittest.TestCase):
+    """2026-10-05: the first analysis after a new windows.zip spent ~14 minutes
+    indexing it before any plugin ran. An upload now starts that in both
+    workers itself, detached, as the VolWeb user."""
+
+    def test_both_workers_build_the_index_in_the_background(self):
+        ok = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        said = []
+        with mock.patch.object(symbols.subprocess, "run", return_value=ok) as run:
+            _REAL_PREWARM(said.append)
+        cmds = [c.args[0] for c in run.call_args_list]
+        self.assertEqual([c[:6] for c in cmds],
+                         [["docker", "exec", "-d", "-u", "app", w] for w in
+                          ("intact_volweb_workers", "intact_volweb_workers_yarascan")])
+        script = cmds[0][-1]
+        self.assertIn('mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}"', script)   # before the redirect
+        self.assertIn("SqliteCache(", script)
+        self.assertIn('abspath("media/symbols")', script)                    # VolWeb's own search path
+        self.assertTrue(said)
+
+    def test_no_docker_is_silent(self):
+        with mock.patch.object(symbols.subprocess, "run", side_effect=FileNotFoundError):
+            _REAL_PREWARM(None)
+
+
 class Place(unittest.TestCase):
     """The script that runs inside VolWeb's worker, run here on real ISF files."""
 

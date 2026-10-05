@@ -211,6 +211,12 @@ services:
       - BROKER_HOST=intact_volweb_redis
       - BROKER_PORT=6379
       - MALLOC_ARENA_MAX=2
+      # Volatility's symbol index (~/.cache/volatility3) on the media volume,
+      # one folder per worker. In the container it was rebuilt after every
+      # recreate and upgrade, and indexing the 3,014-table windows.zip cost
+      # the first analysis ~14 minutes before any plugin ran (2026-10-05).
+      # seed_volweb_symbols / a symbol upload build it in the background.
+      - XDG_CACHE_HOME=/home/app/web/media/.cache/workers
     volumes:
       - volweb_media:/home/app/web/media
       # Shared memory-dump staging — same `intact_memory_dumps` volume
@@ -289,6 +295,8 @@ services:
       - BROKER_HOST=intact_volweb_redis
       - BROKER_PORT=6379
       - MALLOC_ARENA_MAX=2
+      # Same reason as intact_volweb_workers: a persistent symbol index.
+      - XDG_CACHE_HOME=/home/app/web/media/.cache/yarascan
     volumes:
       - volweb_media:/home/app/web/media
       # Shared memory-dump staging — same `intact_memory_dumps` volume
