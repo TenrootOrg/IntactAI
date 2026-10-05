@@ -1081,6 +1081,36 @@ class VolWebClient:
                 out[current] = m.group(1).strip()[:180]
         return out
 
+    def stop_tasks(self, evidence_id: int, task_ids=()) -> list:
+        """Stop this run's VolWeb tasks: the extraction we dispatched and the
+        task the evidence row names now (the yarascan, in layered mode).
+
+        Cancelling a run stopped Velociraptor but never VolWeb: on 2026-10-05 a
+        cancelled run's extraction went on running plugins for an image nobody
+        wanted, holding the only worker. VolWeb's own Stop buttons revoke
+        `evidence.celery_task_id` alone — ONE slot that the yarascan overwrites —
+        so they would have stopped the scan and left the extraction running.
+        One broadcast reaches both workers. Best-effort: returns the ids asked to
+        stop, [] when there was nothing or docker is unreachable.
+        """
+        ids = {t for t in task_ids if t}
+        snap = self._evidence_snapshot(evidence_id) if evidence_id else None
+        if snap and snap.get("celery_task_id"):
+            ids.add(str(snap["celery_task_id"]))
+        if not ids:
+            return []
+        container = _config_value("worker_container", default=None) or _VOLWEB_WORKER_CONTAINER
+        try:
+            r = subprocess.run(
+                ["docker", "exec", "-u", "app", container, "sh", "-c",
+                 "cd /home/app/web && PATH=$HOME/.local/bin:$PATH "
+                 "celery -A backend control terminate SIGTERM " + " ".join(sorted(ids))],
+                capture_output=True, text=True, timeout=60,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return []
+        return sorted(ids) if r.returncode == 0 else []
+
     def plugin_in_progress(self, *, since_s: int = 3600) -> str | None:
         """The plugin the extraction worker is running right now, or ``None``.
 

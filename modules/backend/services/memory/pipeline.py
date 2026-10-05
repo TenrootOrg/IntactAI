@@ -673,6 +673,10 @@ def run_memory_pipeline(
     #                it ends without results — a run that got nothing out of the
     #                image is exactly the run whose image you still need.
     dump_preserved: str = "operator" if keep_dump else ""
+    # VolWeb tasks this run dispatched, and whether the run ended normally:
+    # cleanup on any other ending stops them (see VolWebClient.stop_tasks).
+    volweb_task_ids: list = []
+    finished: list = []
     client = VolWebClient(
         logger=lambda m, level="info": add_log_to_run(run_id, m, level),
     )
@@ -685,6 +689,11 @@ def run_memory_pipeline(
     # triggers cleanup the same way a normal failure path would.
     # ----------------------------------------------------------------
     def _cleanup() -> None:
+        if not finished and evidence_id:
+            stopped = client.stop_tasks(evidence_id, volweb_task_ids)
+            if stopped:
+                log(f"cleanup: stopped VolWeb task(s) {', '.join(stopped)} — "
+                    f"the run did not finish, so its analysis must not go on", "info")
         cleanup_after_run(
             client_id=client_id,
             flow_id=flow_id,
@@ -782,6 +791,7 @@ def run_memory_pipeline(
             extract_task_id: str | None = None
             if run_plugins:
                 extract_task_id = client.trigger_extraction(evidence_id, plugins_to_run)
+                volweb_task_ids.append(extract_task_id)
             if run_yara:
                 client.trigger_yarascan(evidence_id, rulesets=_yara_rulesets, rules=_yara_rules)
             log("pipeline: extract — " + _extract_queued_label(plugins_to_run, run_plugins, run_yara), "info")
@@ -1114,6 +1124,7 @@ def run_memory_pipeline(
         # Phase 6 — Cleanup (post-success: keep DB rows, remove .raw files)
         # ----------------------------------------------------------------
         log("pipeline: cleanup — purging .raw files on host + VolWeb + Velociraptor", "info")
+        finished.append(True)
         _cleanup()
         cumulative += _PHASE_WEIGHTS["cleanup"]
 
