@@ -1239,6 +1239,8 @@ function evAttachFiles(fid, files){
 // Report history (plan step 9): the SELECTED scope's kept reports (each scope has
 // its own; the server sends only that scope's); view one in place of the current
 // report, download it (MD / PDF / HTML) or delete it.
+// No timeframe per row: every row shares the scope's (a different timeframe is
+// a different scope with its own history), so only when it was written varies.
 // The current report is always the newest. Reports kept while stages / types
 // existed (Flash, Technical customers, ...) show that label.
 const _rpLab=x=>(x&&x.label&&x.label!=='Report')?x.label:'';
@@ -1249,7 +1251,6 @@ function reportHistoryHtml(info, viewing){
   const rows=H.map((x,i)=>`<div class="erow" style="gap:10px;align-items:center;font-size:12px">
       ${_rpLab(x)?`<span class="sg-hint" style="border-style:solid">${esc(_rpLab(x))}</span>`:''}
       <span>${esc(String(x.at||'').replace('T',' ').slice(0,16))} UTC</span>
-      ${x.scope_label?`<span title="The timeframe this report covers — every report written for it is kept here, newest first">${esc(x.scope_label)}</span>`:''}
       <span style="color:var(--muted)">${x.kind==='ai'?'AI report':'template report'}${i===0?' · current':''}</span>
       <span style="margin-left:auto;display:flex;gap:10px">${viewing&&viewing.id===x.id?'<b style="color:var(--acc)">● Viewing</b>':`<button class="dlbtn" style="padding:3px 12px;font-size:12px;border-color:var(--acc);color:var(--acc)" onclick="rpView('${cid}','${esc(x.id)}')">View</button>`}
         <details class="expmenu expright"><summary class="dlbtn" style="padding:3px 12px" title="Download this kept report">⬇ Export</summary>

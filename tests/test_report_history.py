@@ -169,7 +169,9 @@ console.log(JSON.stringify([reportHistoryHtml({case_id:'c1', report_history:H}, 
         finally:
             os.unlink(t.name)
         self.assertNotIn(">Report</span>", out[0])                       # a new report needs no label
-        self.assertIn(">2016-09-24 → 2026-09-24</span>", out[0])          # its timeframe
+        # no timeframe per row: it is the scope's, the same on every row (2026-10-05)
+        self.assertNotIn("2016-09-24 → 2026-09-24", out[0])
+        self.assertIn("<span>2026-09-30 10:12 UTC</span>", out[0])        # when it was written
         # each kept report: one Export button, then the format (three bare links before)
         self.assertIn('<details class="expmenu expright"><summary class="dlbtn"', out[0])
         for f, l in (("pdf", "PDF"), ("html", "HTML"), ("md", "Markdown")):
