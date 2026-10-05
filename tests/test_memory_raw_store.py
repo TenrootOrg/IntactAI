@@ -249,6 +249,19 @@ class Levels(unittest.TestCase):
                                   logger=lambda m, level="info": said.append((level, m)))
         self.assertEqual([lv for lv, m in said if "PRESERVING" in m], ["warning"])   # automatic keep: still a warning
 
+    def test_a_run_stopped_before_the_image_arrived_keeps_nothing(self):
+        # memory_1791194318036 (2026-10-05), stopped mid-acquisition with keep on:
+        # "PRESERVING the memory image … Kept: host (none) … Re-run against it".
+        from services.memory import cleanup
+        said = []
+        cleanup.cleanup_after_run(client_id=None, flow_id="F.X", host_path=None, evidence_id=None,
+                                  evidence_filename=None, volweb_client=None, preserve_dump="operator",
+                                  logger=lambda m, level="info": said.append((level, m)))
+        text = " ".join(m for _lv, m in said)
+        self.assertNotIn("PRESERVING", text)
+        self.assertNotIn("(none)", text)
+        self.assertIn("no memory image was acquired before the run ended", text)
+
 
 if __name__ == "__main__":
     unittest.main()

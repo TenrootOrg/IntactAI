@@ -183,7 +183,13 @@ def cleanup_after_run(
     # untouched server-side original as well. See the docstring.
     keep_velociraptor_flow = bool(preserve_dump) and preserve_dump != "operator"
 
-    if preserve_dump == "operator":
+    if preserve_dump == "operator" and not host_path:
+        # Stopped before the image arrived: there is nothing to keep, and
+        # "Kept: host (none) … re-run against it" sent the operator looking for
+        # an image that was never acquired (2026-10-05).
+        log("cleanup: no memory image was acquired before the run ended — nothing "
+            "to keep.", "info")
+    elif preserve_dump == "operator":
         # Only mention the Velociraptor copy when there IS one. A re-analysis or
         # an uploaded dump never had a flow, and "the Velociraptor flow (none) is
         # removed as usual" reads like something went wrong.
