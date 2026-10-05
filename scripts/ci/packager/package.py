@@ -2675,10 +2675,13 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                     sym_dst = os.path.join(sym_dir, 'windows.zip')
                     os.makedirs(sym_dir, exist_ok=True)
                     log("Bundling the Volatility Windows symbol pack (~800 MB)...", "info")
+                    # -C -: a retry resumes instead of starting the 801 MiB over.
+                    # Measured 0.5-1.4 MB/s from this host; at the slow end one
+                    # hour was not enough, and a fresh restart never would be.
                     cp = run_command(
-                        f"curl -fL --retry 3 --retry-delay 10 --max-time 3600 "
-                        f"--connect-timeout 30 -o {sym_dst} {sym_url}",
-                        logger=None, timeout=3700, run_id=run_id,
+                        f"curl -fL -C - --retry 5 --retry-delay 10 --retry-all-errors "
+                        f"--max-time 7200 --connect-timeout 30 -o {sym_dst} {sym_url}",
+                        logger=None, timeout=7300, run_id=run_id,
                     )
                     try:
                         import zipfile
