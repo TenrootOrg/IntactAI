@@ -1081,6 +1081,33 @@ class VolWebClient:
                 out[current] = m.group(1).strip()[:180]
         return out
 
+    def plugin_in_progress(self, *, since_s: int = 3600) -> str | None:
+        """The plugin the extraction worker is running right now, or ``None``.
+
+        The last ``RUNNING:`` line in the worker's log, unless a later line says
+        the selective task ended. Exists for the idle-grace exit: VolWeb runs the
+        plugins ONE AT A TIME, so a single slow scan (Malfind took 6 minutes on a
+        5 GB Windows 11 image) holds the row count still while everything behind
+        it is merely queued — and "stable for 300s" gave up on five plugins that
+        all finished minutes later. Best-effort: anything unreadable → ``None``.
+        """
+        container = _config_value("worker_container", default=None) or _VOLWEB_WORKER_CONTAINER
+        try:
+            r = subprocess.run(
+                ["docker", "logs", "--since", f"{int(since_s)}s", "--tail", "2000", container],
+                capture_output=True, text=True, timeout=30,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return None
+        current = None
+        for line in ((r.stdout or "") + "\n" + (r.stderr or "")).splitlines():
+            m = re.search(r"RUNNING:\s+(\S+)", line)
+            if m:
+                current = m.group(1).rsplit(".", 1)[-1]
+            elif "SelectiveEngine[" in line and re.search(r"succeeded|raised|failed", line):
+                current = None
+        return current
+
     def harvest_symbols(self) -> int:
         """Keep the symbol files Volatility downloaded for this image.
 
@@ -1586,13 +1613,30 @@ class VolWebClient:
                     w.rsplit(".", 1)[-1]
                     for w in wanted - set(done.keys()) - set(errored.keys())
                 )
-                self._log(
-                    f"plugin extract: row count stable for {idle_grace_s}s at "
-                    f"{len(done)}/{len(wanted)} done — proceeding without "
-                    f"missing plugins: {', '.join(missing)}",
-                    "warning",
+                # Quiet is not stuck: the worker is still grinding through one
+                # of ours. Wait on — the budget and the task_done marker bound it.
+                busy = self.plugin_in_progress(
+                    since_s=int(time.time() - started_at) + 60,
                 )
-                return done, True
+                # Not `continue`: that would skip the poll sleep and the deadline.
+                if busy in missing:
+                    last_change_at = time.time()
+                    if (busy, "busy") not in announced:
+                        announced.add((busy, "busy"))
+                        self._log(
+                            f"plugin extract: no new rows for {idle_grace_s}s but "
+                            f"VolWeb is still running {busy} — waiting for "
+                            f"{', '.join(missing)}",
+                            "info",
+                        )
+                else:
+                    self._log(
+                        f"plugin extract: row count stable for {idle_grace_s}s at "
+                        f"{len(done)}/{len(wanted)} done — proceeding without "
+                        f"missing plugins: {', '.join(missing)}",
+                        "warning",
+                    )
+                    return done, True
 
             # ----------------------------------------------------------------
             # Say something. Everything above only speaks on a state CHANGE, so
