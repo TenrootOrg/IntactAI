@@ -210,6 +210,18 @@ const shown = (win, el) => {
     }
   }
 
+  console.log('\n-- the keep tick survives leaving the tab --');
+  // 2026-10-05: both runs on the same PC went out with keep off. The tick was
+  // set, the operator left (Start itself jumps to Workflows), came back, and
+  // TabReset had put it back to false — so each run reclaimed its own image.
+  store.keepDump = true;
+  win.Alpine.store('app').switchTab('workflows');
+  await sleep(300);
+  win.Alpine.store('app').switchTab('modules-memory');
+  await sleep(600);
+  check(store.keepDump === true, `keepDump is still ticked after leaving and re-entering (got ${store.keepDump})`);
+  store.keepDump = false;
+
   console.log('\n-- acquire: every mode the page can produce --');
   // The page derives the mode from the blueprint + the checkbox, which is the
   // thing that was never exercised: only 'plugin' ever got tested by hand.

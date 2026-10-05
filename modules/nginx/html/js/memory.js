@@ -469,10 +469,12 @@ document.addEventListener('alpine:init', () => {
     // clearing it mid-dispatch would let a second run through.
     // `dumps` is a cache like `blueprints` — wiping it would blank the picker
     // on every tab switch. `selectedDump`/`reuseStatus` ARE operator input and
-    // reset as normal.
+    // reset as normal. `keepDump` is a preference, not leftover input: Start
+    // jumps to Workflows, so resetting it sent every next run from the same PC
+    // out with keep off and it reclaimed its own image (2026-10-05).
     TabReset.arm(Alpine.store('memory'), 'modules-memory',
                  { keep: ['blueprints', 'blueprintsLoadedAt', '_pollTimer',
-                          'dispatching', 'dumps'] });
+                          'dispatching', 'dumps', 'keepDump'] });
 
     // Re-scan on entry so an image a run has just kept is listed without the
     // operator having to press Refresh.
