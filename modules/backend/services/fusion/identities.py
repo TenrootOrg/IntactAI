@@ -98,7 +98,8 @@ def person_reach(graph, account_ids) -> set:
     ids = set(account_ids or [])
     rels = getattr(graph, "relationships", None) or []
     ran = {r.dst for r in rels if r.kind == "executed" and r.src in ids}
-    about = {r.dst for r in rels if r.kind == "event_about" and r.src in ran}
+    # ...and events ABOUT the account itself (a 4732 adding it to Administrators).
+    about = {r.dst for r in rels if r.kind == "event_about" and r.src in ran | ids}
     return ids | ran | about
 
 

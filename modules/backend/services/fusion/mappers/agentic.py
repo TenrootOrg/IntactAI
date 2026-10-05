@@ -380,6 +380,62 @@ def _detection_prefix(row, artifact: str) -> str:
         return ""
 
 
+# Account-management events whose TargetSid/TargetUserName name a USER. In the
+# group events (4728/4732/…) the same two fields name the GROUP instead.
+_ACCOUNT_MGMT_EIDS = frozenset({4720, 4722, 4723, 4724, 4725, 4726, 4738, 4740, 4767, 4781})
+
+
+def _win_event(row):
+    """(eid, System, EventData) of a detection row, from its top level or _Event."""
+    ev = row.get("_Event") if isinstance(row.get("_Event"), dict) else {}
+    sysd = ev.get("System") if isinstance(ev.get("System"), dict) else {}
+    data = (row.get("EventData") if isinstance(row.get("EventData"), dict)
+            else ev.get("EventData") if isinstance(ev.get("EventData"), dict) else {})
+    eid = row.get("EID") or row.get("EventID") or sysd.get("EventID")
+    if isinstance(eid, dict):
+        eid = eid.get("Value")
+    try:
+        eid = int(eid)
+    except (TypeError, ValueError):
+        eid = None
+    return eid, sysd, data
+
+
+def _acct_sid(v):
+    """A real account SID (S-1-5-21-…), or None. SYSTEM, LOCAL/NETWORK SERVICE,
+    service SIDs (S-1-5-80-…) and builtin groups are not people."""
+    s = _scalar(v).upper()
+    return s if s.startswith("S-1-5-21-") else None
+
+
+def _sid_name_pairs(row):
+    """(sid, domain, user) pairs an event states outright — 4624/4672 subjects and
+    targets, 4720/4724 targets. What lets a bare SID elsewhere be named exactly."""
+    eid, _sysd, data = _win_event(row)
+    cols = [("SubjectUserSid", "SubjectDomainName", "SubjectUserName"),
+            ("TargetUserSid", "TargetDomainName", "TargetUserName")]
+    if eid in _ACCOUNT_MGMT_EIDS:
+        cols.append(("TargetSid", "TargetDomainName", "TargetUserName"))
+    for sc, dc, uc in cols:
+        sid, user = _acct_sid(data.get(sc)), _scalar(data.get(uc))
+        if sid and user and user != "-":
+            yield sid, _scalar(data.get(dc)), user
+
+
+def _event_sids(row):
+    """(actor SID, [SIDs the event is ABOUT]) — account SIDs only. Hayabusa's
+    Details often names nobody (4104, 7045, Defender) or only a SID (4732's
+    added member), so the full event is where the account is written."""
+    eid, sysd, data = _win_event(row)
+    sec = sysd.get("Security") if isinstance(sysd.get("Security"), dict) else {}
+    actor = _acct_sid(data.get("SubjectUserSid")) or _acct_sid(sec.get("UserID"))
+    about = [data.get("MemberSid"), data.get("TargetUserSid")]
+    if eid in _ACCOUNT_MGMT_EIDS:
+        about.append(data.get("TargetSid"))
+    about = [t for t in dict.fromkeys(_acct_sid(x) for x in about) if t and t != actor]
+    return actor, about
+
+
 def _account_eid(asset, domain, user, local_hosts=()):
     """Domain accounts -> global node (cross-host); local -> asset-scoped.
 
@@ -1342,7 +1398,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
         # processes/accounts/IOCs from parsed details, and feeding it 183k rows
         # to produce a handful of capped entities was pure waste.
         sigma_events.append((eid, a_id, pd, agg["first"], agg["artifact"],
-                             (assets_seen.get(a_id), logged)))
+                             (assets_seen.get(a_id), logged), r))
 
     # ---- spawned edges (ppid) across the processes we created -----------
     for artifact, rows in (collected_data or {}).items():
@@ -1368,7 +1424,7 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
     _DET_CAP = 300                                   # per-asset flood guard
     _det_made: dict = {}
     # (A) create from_detection processes where Pstree missed them
-    for eid, asset, pd, ts, src_artifact, _hosts in sigma_events:
+    for eid, asset, pd, ts, src_artifact, _hosts, _row in sigma_events:
         p, pname = DET.pid(pd), DET.proc(pd)
         if not p or not pname or (asset, p) in proc_by_asset_pid:
             continue
@@ -1381,8 +1437,19 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
         ents.append(_ent(peid, "process", f"{name} ({p})", asset, run_id, _det_locator(src_artifact),
                          anomaly=0, first=keys.norm_ts(ts), flags=["from_detection"],
                          pid=p, name=name, cmdline=DET.cmdline(pd), createtime=keys.norm_ts(ts), artifact=src_artifact))
+    # Every SID -> name a host's own events state, for naming bare SIDs below.
+    _sid_names: dict = {}
+    if sigma_events:
+        for artifact, rows in (collected_data or {}).items():
+            an = artifact.lower()
+            if not ("hayabusa" in an or "sigma" in an):
+                continue
+            for r in rows or []:
+                if isinstance(r, dict):
+                    for sid, dom, usr in _sid_name_pairs(r):
+                        _sid_names.setdefault((asset_of(r)[0], sid), (dom, usr))
     # (B) edges: event_about(proc), spawned(parent), executed(account), connected(ioc)
-    for eid, asset, pd, ts, src_artifact, _hosts in sigma_events:
+    for eid, asset, pd, ts, src_artifact, _hosts, _row in sigma_events:
         p = DET.pid(pd)
         proc_eid = proc_by_asset_pid.get((asset, p)) if p else None
         if proc_eid:
@@ -1399,6 +1466,24 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                                  _det_locator(src_artifact), user=u, domain=d, artifact=src_artifact, first=ts))
                 if proc_eid:
                     rels.append(Relationship(aeid, proc_eid, "executed", sources=[MODULE], ts=ts))
+                # The detection itself too: with no process found, the account's
+                # card said "no findings" for an event that names it.
+                rels.append(Relationship(aeid, eid, "executed", sources=[MODULE], ts=ts))
+        # Accounts the full event names only by SID: the actor ran it, the member
+        # / target is what it is about. Only SIDs this host's own events name —
+        # never a guess from the RID. ponytail: the exemplar row only, so a
+        # (host, rule) aggregate across many users links the top row's accounts.
+        actor, about = _event_sids(_row) if isinstance(_row, dict) else (None, [])
+        for sid, kind in [(actor, "executed")] + [(t, "event_about") for t in about]:
+            named = _sid_names.get((asset, sid)) if sid else None
+            if not named:
+                continue
+            aeid, d, u = _account_eid(asset, named[0], named[1], local_hosts=_hosts)
+            if aeid:
+                ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset, run_id,
+                                 _det_locator(src_artifact), user=u, domain=d, artifact=src_artifact,
+                                 first=ts, sid=sid))
+                rels.append(Relationship(aeid, eid, kind, sources=[MODULE], ts=ts))
         tip = DET.tgtip(pd)
         if tip and keys.classify_indicator(tip) == "ip":
             # link only — anomaly 0 so benign cloud telemetry never auto-finds
