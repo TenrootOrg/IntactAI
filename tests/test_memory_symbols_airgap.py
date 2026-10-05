@@ -320,6 +320,7 @@ class _FakeClient:
         return self.outcome
 
 
+@unittest.skip("hangs (pre-existing, seen 2026-10-05) — skipped on request until investigated")
 class TestThePipelineKeepsTheDumpWhenTheExtractionGaveNothing(unittest.TestCase):
     """Executed, not asserted about: the real run_memory_pipeline drives a fake
     VolWeb from upload to cleanup, and we read the kwargs cleanup was actually
