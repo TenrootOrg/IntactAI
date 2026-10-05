@@ -3984,6 +3984,11 @@ def _watchdog_limits():
         hb = int(ag.get("report_heartbeat_seconds") or REPORT_HEARTBEAT_SECONDS)
         stuck = int(ag.get("report_stuck_seconds") or REPORT_STUCK_SECONDS)
         stuck = max(stuck, _call_timeout_seconds(ag) + REPORT_STUCK_MARGIN_SECONDS)
+        # Progress is stamped only when the model ANSWERS, so a lone phase that
+        # times out and is retried is silent for deadline x (retries + 1). The
+        # limit must outlast that, or a valid retry is written off mid-call.
+        stuck = max(stuck, int(llm_sim._phase_deadline() * (llm_sim._phase_retries() + 1))
+                    + REPORT_STUCK_MARGIN_SECONDS)
         return max(5, hb), max(hb, stuck)
     except Exception:                                  # noqa: BLE001
         return REPORT_HEARTBEAT_SECONDS, REPORT_STUCK_SECONDS
@@ -4031,9 +4036,17 @@ def _report_watchdog(case_id, model_label, stop, *, gen_id=None, write_off=True)
                     f"unchanged. Check Settings ▸ Agentic, or press Regenerate to try again.",
                     gen_id=gen_id)
                 return
+            # Both limits, named. "written off at 15 min" alone, beside a call
+            # cut at 5, read as the app contradicting itself (2026-10-05).
+            try:
+                _call = llm_sim._phase_deadline()
+                _calls = (f" — each call is given up after {_d(_call)}"
+                          + (f" and retried {llm_sim._phase_retries()}×" if llm_sim._phase_retries() else ""))
+            except Exception:                          # noqa: BLE001
+                _calls = ""
             log_case_event(case_id, "Report · still waiting on the model", "info",
-                           f"{model_label} has not answered for {_d(silent)}"
-                           + (f" — written off at {_d(stuck)} without an answer"
+                           f"{model_label} has not answered for {_d(silent)}" + _calls
+                           + (f"; the report is written off after {_d(stuck)} with no answer at all"
                               if write_off else ""))
         except Exception:                              # noqa: BLE001 — never kill the run
             continue

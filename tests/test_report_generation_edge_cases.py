@@ -88,6 +88,22 @@ class ASlowValidAnswerIsNotWrittenOff(unittest.TestCase):
         hb, stuck = self._limits(llm_mode="online", report_stuck_seconds=30)
         self.assertGreaterEqual(stuck, ONLINE_LLM_TIMEOUT_SECONDS + self.store.REPORT_STUCK_MARGIN_SECONDS)
 
+    def test_the_stuck_limit_outlasts_a_timed_out_call_and_its_retry(self):
+        # 2026-10-05: progress is stamped only on an answer, so one slow phase is
+        # silent for deadline x (retries + 1). A 600s call + 1 retry is 20 min;
+        # the old 15-min write-off would have killed the retry mid-call.
+        hb, stuck = self._limits(llm_mode="online", report_call_seconds=600, report_phase_retries=1)
+        self.assertGreaterEqual(stuck, 1200 + self.store.REPORT_STUCK_MARGIN_SECONDS)
+
+    def test_the_default_call_limit_lets_a_slow_model_answer(self):
+        # deepseek-v4-flash answered in 78-240s and was cut at 300s twice in one report
+        self.assertGreaterEqual(llm_sim.PHASE_DEADLINE_DEFAULT, 600)
+
+    def test_the_waiting_line_names_both_limits(self):
+        src = open(os.path.join(ROOT, "modules/backend/services/fusion/store.py"), encoding="utf-8").read()
+        self.assertIn("each call is given up after", src)
+        self.assertIn("the report is written off after", src)
+
     def test_a_longer_configured_limit_is_kept(self):
         hb, stuck = self._limits(llm_mode="offline", ollama_timeout=60, report_stuck_seconds=3600)
         self.assertEqual(3600, stuck)

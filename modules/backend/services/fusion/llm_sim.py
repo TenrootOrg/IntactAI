@@ -1551,7 +1551,12 @@ PHASE_RETRIES_DEFAULT = 1
 # silent for 15 minutes against a 600s client timeout that never fired (the
 # connection stayed open), and the run was written off as stuck with five other
 # phases already answered and thrown away.
-PHASE_DEADLINE_DEFAULT = 300.0
+# 600, not 300 (2026-10-05): deepseek-v4-flash via OpenRouter answered phases in
+# 78-240s on a 5-16k-token payload and was cut at 300s twice in one report while
+# still working -- each cut threw the answer away and fell back to the template.
+# 600 matches the provider client's own timeout; the 90s hedge still sends a twin
+# when a call stalls, and the watchdog covers deadline x (retries + 1).
+PHASE_DEADLINE_DEFAULT = 600.0
 # Entity rows ONE phase call may carry. The payload budget follows the model's
 # context window, so a 1M-context model let a 41-finding phase ship 2,230 entity
 # rows -- 483k of its 561k chars, 86% of the call -- while every other phase on the
