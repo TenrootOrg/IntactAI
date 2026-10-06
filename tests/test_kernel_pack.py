@@ -327,5 +327,38 @@ class ProgressAndFanOut(unittest.TestCase):
         self.assertEqual(len(json.loads(z.read("intact-kernel-pack.json"))["tables"]), 4)
 
 
+class TheSymbolServerIsRetried(unittest.TestCase):
+    """2026-10-06, the first cold CI plan: 62 of 1,682 builds lost to
+    "urlopen error timed out"; 11 more were a real 404."""
+
+    def fetch(self, *errors):
+        import io
+        import urllib.error
+        calls = []
+
+        def urlopen(req, timeout):
+            calls.append(timeout)
+            if len(calls) <= len(errors):
+                raise errors[len(calls) - 1]
+            return contextlib.nullcontext(io.BytesIO(b"PE"))
+        import contextlib
+        with mock.patch.object(k.urllib.request, "urlopen", urlopen), mock.patch.object(k.time, "sleep", lambda s: None):
+            try:
+                return k._get("https://msdl.microsoft.com/x", (0, 1)), calls
+            except urllib.error.HTTPError as e:
+                return e.code, calls
+
+    def test_a_timeout_is_retried(self):
+        import urllib.error
+        body, calls = self.fetch(urllib.error.URLError("timed out"), TimeoutError())
+        self.assertEqual(body, b"PE")
+        self.assertEqual(calls, [30, 30, 30])                # a header lookup gives up in 30 s, not 120
+
+    def test_a_404_is_final(self):
+        import urllib.error
+        code, calls = self.fetch(urllib.error.HTTPError("u", 404, "Not Found", {}, None))
+        self.assertEqual((code, len(calls)), (404, 1))
+
+
 if __name__ == "__main__":
     unittest.main()

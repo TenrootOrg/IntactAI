@@ -37,6 +37,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -59,17 +60,33 @@ VERSIONS = None
 UA = {"User-Agent": "Microsoft-Symbol-Server/10.0.0.0"}
 
 
-def _get(url: str, rng: tuple[int, int] | None = None, timeout: int = 120) -> bytes:
+def _get(url: str, rng: tuple[int, int] | None = None, timeout: int | None = None) -> bytes:
     hdr = dict(UA)
     if rng:
         hdr["Range"] = f"bytes={rng[0]}-{rng[1]}"
-    with urllib.request.urlopen(urllib.request.Request(url, headers=hdr), timeout=timeout) as r:
-        body = r.read()
-        # A server that ignores Range answers 200 with the whole file: slice it,
-        # or every offset below reads the wrong bytes.
-        if rng and getattr(r, "status", 206) == 200:
-            body = body[rng[0]:rng[1] + 1]
-        return body
+    # A few KB of a PE header answers in a second or never; a whole PDB can take minutes.
+    timeout = timeout or (30 if rng else 120)
+    # Retried: on 2026-10-06 the cold plan lost 62 of 1,682 builds to
+    # "urlopen error timed out" with 16 lookups in flight -- each then cost the
+    # assembling job a retry and the plan two minutes. A 404 is final: the
+    # symbol server does not have that build (11 that day).
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=hdr), timeout=timeout) as r:
+                body = r.read()
+                # A server that ignores Range answers 200 with the whole file: slice it,
+                # or every offset below reads the wrong bytes.
+                if rng and getattr(r, "status", 206) == 200:
+                    body = body[rng[0]:rng[1] + 1]
+                return body
+        except urllib.error.HTTPError as e:
+            if e.code < 500 or attempt == 2:
+                raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            if attempt == 2:
+                raise
+        time.sleep(5 * (attempt + 1))
+    raise AssertionError("unreachable")
 
 
 def builds(name: str, since: str, data: dict | None = None, versions=VERSIONS) -> list[dict]:
