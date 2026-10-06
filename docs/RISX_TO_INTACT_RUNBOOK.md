@@ -169,15 +169,13 @@ you have copied the wrong file — stop and find the right one.
 
 A backup that only exists on the box you are about to wipe is not a backup.
 
-On your laptop (PowerShell), replace the `<...>` parts:
+On your laptop (PowerShell):
 
 ```
-cd C:\Users\<your-windows-user>
-scp -r <user>@<risx-box-ip>:/home/<user>/velociraptor_backup .
+cd C:\Users\tenroot                                                  # change: your Windows user
+scp -r tenroot@192.168.120.10:/home/tenroot/velociraptor_backup .     # change: the risx box's user and IP
 dir .\velociraptor_backup
 ```
-
-Example: `scp -r tenroot@192.168.10.105:/home/tenroot/velociraptor_backup .`
 
 Move on to Step 2 only once `server.config.yaml` is in that listing.
 
@@ -298,7 +296,7 @@ Copy the backup folder onto the Intact box first:
 On your laptop (PowerShell), onto the NEW appliance:
 
 ```
-scp -r $HOME\velociraptor_backup <user>@<intact-box-ip>:~/
+scp -r $HOME\velociraptor_backup tenroot@192.168.120.11:~/     # change: the Intact.AI box's user and IP
 ```
 
 Then, on the Intact box, **from the install root**:
@@ -495,10 +493,9 @@ print('   nonce present  :', bool(d['Client'].get('nonce')))
     echo
     ls -lh ~/velociraptor_backup/
     echo
-    echo "  DONE. Now copy this folder OFF the machine before you touch anything:"
-    echo "     scp -r RISX_BOX:~/velociraptor_backup ./"
-    echo
-    echo "  Then verify the copy on the other end shows the SAME fingerprint."
+    echo "  DONE. Now copy this folder OFF the machine before you touch anything."
+    echo "  On your laptop (PowerShell):"
+    echo "     scp -r $USER@$(hostname -I | awk '{print $1}'):$HOME/velociraptor_backup ."
     echo "  Only then start Step 2."
     }
     }
