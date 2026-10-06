@@ -116,12 +116,12 @@ Two things to know before you carry 801 MiB across an air gap:
   (upgrade, `docker compose up -d --force-recreate`). Loose per-kernel ISFs cost
   effectively nothing to re-index.
 
-**Every release ships it.** Since 2026-10-05 the release build downloads the
-newest `windows.zip` into the VolWeb asset (`volweb_symbols/windows.zip`, its
-sha256 in the manifest), and install and upgrade put it in VolWeb. Only the
+**Every release ships it**, in the release's own **`<tag>-volweb_symbols.tar`**
+(`volweb_symbols/windows.zip`, its sha256 in the release index), and install and
+upgrade put it in VolWeb. Only the
 newest copy is kept: a changed pack **replaces** the old one of the same name,
 earlier uploads of it (`<12-hex>_windows.zip`) are removed, and an upload through
-Memory → *Symbol tables* replaces it the same way. Per-kernel ISFs (Option 1, and
+Settings → *Volatile Memory* replaces it the same way. Per-kernel ISFs (Option 1, and
 what the box downloads from Microsoft itself) are never removed — each is a
 different kernel, not an older copy. A site can still drop its own pack or ISFs
 into `data/volweb-symbols/`.
@@ -133,8 +133,11 @@ Measured on Windows 11 IoT Enterprise LTSC 24H2 (DESKTOP-2175T02): its kernel,
 10.0.26100.1742, needs `ntkrnlmp.pdb/953A8DE880B0818C32DA2DEC1D79C2D9-1`, which a
 connected box downloads from Microsoft and an air-gapped one cannot get.
 
-So every release also ships **`volweb_symbols/intact-windows-kernels.zip`**, built
-in CI by `scripts/ci/build_kernel_pack.py` (workflow `kernel-pack.yml`):
+So every release also ships **`intact-windows-kernels.zip`**, beside `windows.zip`
+in **`<tag>-volweb_symbols.tar`** — a release asset of its own, outside the volweb
+module asset (with both packs inside, that one passed GitHub's 2 GiB per-file
+limit). Built in CI by `scripts/ci/build_kernel_pack.py` (workflow
+`kernel-pack.yml`):
 
 | | |
 |---|---|
@@ -142,14 +145,14 @@ in CI by `scripts/ci/build_kernel_pack.py` (workflow `kernel-pack.yml`):
 | not covered | **Server 2022** (build 20348, its own kernel) — Winbindex indexes client Windows only. Windows 7/8.1/Server 2012 R2 only as far as `windows.zip` (2019) |
 | how | Winbindex lists the builds; each kernel's PDB identity is read from Microsoft's symbol server; the PDB is converted with Volatility 3.2.28's own `pdbconv` — the same server and converter VolWeb uses, and the same table (checked: identical to the one VolWeb downloaded itself) |
 | skips | tables `windows.zip` already has |
-| size | ~920 kernels + ~550 tcpip ≈ 700 MB |
-| fresh | `kernel-pack.yml` runs weekly on `main` (a warm cache for the next release) and in every release |
+| size | ~920 kernels + ~550 tcpip ≈ 610 MB (kernel ~615 KB, tcpip ~106 KB each) |
+| fresh | built in every release, as of that day, seeded from the previous release's pack — only what Microsoft published since is converted. No schedule |
 
 Install and upgrade treat it exactly like `windows.zip`: staged, seeded into
 `media/symbols`, replaced when it changed, indexed in the background. An upgrade
-fetches the volweb asset when **any** pack file differs from the box's
-(`volweb_symbols.files` in the release index), even when VolWeb itself does not
-move. Not covered: Server 2022 and post-2019 Windows 7/8.1/Server 2012 R2
+fetches `<tag>-volweb_symbols.tar` when **any** pack file differs from the box's
+(`volweb_symbols.files` in the release index), and only then — whether or not
+VolWeb itself moves. Not covered: Server 2022 and post-2019 Windows 7/8.1/Server 2012 R2
 updates; upload those per Option 1.
 
 ## Check where you stand
@@ -182,17 +185,21 @@ for those: an ISF must be built from the target kernel's debug package with
 
 ## Adding a symbol table from the UI (air-gapped boxes)
 
-Volatile Memory → **Symbol tables** → **Upload**. Accepted:
+Settings → **Volatile Memory** → **Upload** (the tab shows when VolWeb is
+installed; the page also lists what the box holds and which Windows the pack
+covers). Accepted, and where to get each:
 
-- **Volatility's full Windows pack** — `windows.zip` from
-  `https://downloads.volatilityfoundation.org/volatility3/symbols/windows.zip`
-  (840 MB, checked 2026-09-28; its Last-Modified is **16 Oct 2019**, so it covers
-  Windows builds up to 2019 — Windows 7 to early Windows 10). Upload it as is;
-  Volatility reads packs in place. nginx lets this one route take bodies over
+- **A newer pack** — `intact-windows-kernels.zip` out of a newer Intact.AI
+  release's `<tag>-volweb_symbols.tar`. Upload the `.zip` as is; Volatility reads
+  packs in place. nginx lets this one route take bodies over
   the 500M `/api/` cap (`location = /api/memory/symbols/upload`).
-- **One build's table** — its `.pdb` from Microsoft's symbol server (converted
-  on the box with `pdbconv -f`, named from the table's own metadata) or a ready
-  `.json.xz` / `.json`. Current Windows 10/11 builds are only covered this way.
+- **One build's table** — its `.pdb` from Microsoft's symbol server, at the link
+  the failed analysis prints in its log (converted on the box with `pdbconv -f`,
+  named from the table's own metadata); or a ready `.json.xz` / `.json`, e.g. from
+  a connected Intact.AI appliance's `media/symbols/windows/<pdb>/`.
+
+`windows.zip` from the Volatility Foundation is not offered: it was last
+published in 2019 and every release already carries it.
 
 Missing `ntkrnlmp.pdb` → no plugin output at all; missing `tcpip.pdb` → NetStat
 fails and NetScan comes back empty.

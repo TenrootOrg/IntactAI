@@ -48,7 +48,7 @@ class TestTheHookAcceptsAMemoryUpload(unittest.TestCase):
         """A file the browser let the operator choose must never be refused
         server-side -- that reads as a bug in the upload, not a wrong file."""
         panel = _read("modules/nginx/html/partials/memory.html")
-        # the DUMP picker (the Symbol tables tab has a picker of its own, below)
+        # the DUMP picker (the Symbol tables picker lives in Settings, below)
         offered = set(re.search(r'accept="(\.raw[^"]*)"', panel).group(1).split(","))
         blk = self.SRC[self.SRC.index("elif purpose == 'memory':"):][:900]
         allowed = set(re.search(r"allowed_extensions = \[([^\]]+)\]", blk)
@@ -56,7 +56,7 @@ class TestTheHookAcceptsAMemoryUpload(unittest.TestCase):
         self.assertEqual(offered, allowed)
 
     def test_the_symbol_picker_offers_what_the_hook_accepts(self):
-        panel = _read("modules/nginx/html/partials/memory.html")
+        panel = _read("modules/nginx/html/partials/settings.html")    # Settings → Volatile Memory
         offered = set(re.search(r'accept="([^"]+)" x-ref="symFile"', panel).group(1).split(","))
         blk = self.SRC[self.SRC.index("elif purpose == 'memory_symbols':"):][:1200]
         allowed = set(re.search(r"allowed_extensions = \[([^\]]+)\]", blk)

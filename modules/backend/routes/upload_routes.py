@@ -356,7 +356,7 @@ def handle_tus_hook():
                     }), 200
             elif purpose == 'memory_symbols':
                 # A Volatility symbol table for the Memory module's library
-                # (Memory → Symbol tables): Volatility's windows.zip pack, a
+                # (Settings → Volatile Memory): Volatility's windows.zip pack, a
                 # Microsoft .pdb, or a ready .json.xz / .json table. Refused HERE,
                 # before a byte is sent — services/memory/symbols.add checks the
                 # content afterwards.

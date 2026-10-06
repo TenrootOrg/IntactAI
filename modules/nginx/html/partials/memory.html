@@ -84,18 +84,13 @@
                             class="px-4 py-2 text-sm font-medium -mb-px whitespace-nowrap">
                             Pull from another case
                         </button>
-                        <button @click="memoryTab = 'symbols'; $store.memory.loadSymbols()"
-                            :class="memoryTab === 'symbols' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-gray-400 hover:text-gray-300'"
-                            class="px-4 py-2 text-sm font-medium -mb-px whitespace-nowrap">
-                            Symbol tables
-                        </button>
                     </div>
 
                     <!-- Card 1 — Blueprint + YARA toggle + Investigation name.
                          Shared by the three tabs that actually run an analysis;
                          "Pull from another case" copies finished findings and runs
                          nothing, so none of it applies there. -->
-                    <div x-show="memoryTab !== 'adopt' && memoryTab !== 'symbols'"
+                    <div x-show="memoryTab !== 'adopt'"
                          class="bg-gray-800 rounded-lg p-6 border border-gray-700 mb-4">
                         <label class="block text-sm font-medium text-gray-300 mb-2">Blueprint</label>
                         <select x-model="$store.memory.blueprintId"
@@ -299,83 +294,6 @@
                                     class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 disabled:cursor-not-allowed px-6 py-2 rounded-lg text-sm font-medium text-white">
                                 Analyze this image
                             </button>
-                        </div>
-                    </div>
-
-                    <!-- ==================== SYMBOL TABLES TAB ====================
-                         Volatility needs the symbol table of the image's EXACT Windows
-                         build. An air-gapped box cannot fetch it, so the analyst
-                         carries it in: find which file, download it elsewhere, upload
-                         it here. See services/memory/symbols.py. -->
-                    <div x-show="memoryTab === 'symbols'" class="space-y-4 mb-4">
-                        <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
-                            <label class="block text-sm font-medium text-gray-300">Symbol tables (air-gapped analysis)</label>
-                            <p class="text-xs text-gray-400 mt-1">
-                                Volatility needs the symbol table of the image's exact Windows build. A connected appliance
-                                downloads a missing one from Microsoft by itself; an air-gapped one uses the tables below.
-                            </p>
-                            <p class="text-xs text-gray-300 mt-3">
-                                <b>Every Windows build up to your release is already here.</b> Each Intact.AI release ships
-                                tables for every Windows 10 and 11 build published until that release (Server 2016, 2019
-                                and 2025 included), plus Windows 7 / 8.1. <b>Upgrade the appliance</b> to get the newest ones.
-                            </p>
-                            <p class="text-[11px] text-gray-500 mt-2">
-                                Not covered: Windows Server 2022, and Windows updates released after your installed release.
-                                For one of those, the analysis log names the file it needs and gives its Microsoft link
-                                (<code>https://msdl.microsoft.com/download/symbols/&lt;file&gt;/&lt;ID&gt;/&lt;file&gt;</code>):
-                                download it on a connected computer and upload the <code>.pdb</code> here.
-                            </p>
-                        </div>
-
-                        <!-- What THIS appliance has (2026-10-05: "mention the version or date of
-                             the table on this machine"). A pack's date is the newest table inside
-                             it, from the zip itself — not the day it reached this box. -->
-                        <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
-                            <div class="flex items-center justify-between mb-2">
-                                <label class="block text-sm font-medium text-gray-300">On this appliance</label>
-                                <button type="button" @click="$store.memory.loadSymbols()" class="text-xs text-gray-400 hover:text-gray-200">↻ Refresh</button>
-                            </div>
-                            <p x-show="$store.memory.symLibLoading && !$store.memory.symLib" class="text-xs text-gray-400">Reading VolWeb's symbol library…</p>
-                            <p x-show="$store.memory.symLibErr" class="text-xs text-red-400" x-text="$store.memory.symLibErr"></p>
-                            <template x-if="$store.memory.symLib">
-                                <div class="text-xs text-gray-300 space-y-1.5">
-                                    <template x-for="p in $store.memory.symLib.packs" :key="p.name">
-                                        <div><b x-text="p.name"></b> —
-                                            <span x-text="p.tables.toLocaleString() + ' Windows tables'"></span> ·
-                                            <template x-if="p.covers">
-                                                <span>covers <b class="text-gray-100" x-text="p.covers[0] + ' → ' + p.covers[1]"></b> ·
-                                                    newest build <b class="text-gray-100" x-text="p.newest_build"></b>,
-                                                    released <b class="text-gray-100" x-text="$store.memory.symDate(p.dated)"></b> ·
-                                                    <span class="text-gray-400" x-text="'built ' + $store.memory.symDate(p.built)"></span></span>
-                                            </template>
-                                            <span x-show="!p.covers">newest table dated <b class="text-gray-100" x-text="$store.memory.symDate(p.dated)"></b></span> ·
-                                            <span x-text="Math.round(p.size / 1048576) + ' MB'"></span> ·
-                                            <span class="text-gray-400" x-text="'on this appliance since ' + $store.memory.symDate(p.added)"></span></div>
-                                    </template>
-                                    <div x-show="!$store.memory.symLib.packs.length" class="text-gray-400">No symbol pack installed.</div>
-                                    <div><b x-text="$store.memory.symLib.kernels"></b> per-kernel table(s)
-                                        <span class="text-gray-400" x-show="$store.memory.symLib.newest_kernel"
-                                              x-text="'— newest added ' + $store.memory.symDate(($store.memory.symLib.newest_kernel || {}).added)"></span>
-                                        <span class="text-gray-500">(one per Windows build: downloaded from Microsoft by an analysis, or uploaded here)</span></div>
-                                    <div>Symbol index: <b :class="$store.memory.symIndexState() === 'ready' ? 'text-green-400' : 'text-yellow-400'"
-                                                          x-text="$store.memory.symIndexLabel()"></b></div>
-                                </div>
-                            </template>
-                        </div>
-
-                        <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
-                            <label class="block text-sm font-medium text-gray-300 mb-2">Upload a symbol file</label>
-                            <div class="flex gap-2 items-center flex-wrap">
-                                <input type="file" accept=".zip,.pdb,.xz,.json" x-ref="symFile"
-                                       class="flex-1 text-sm text-gray-300 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:bg-gray-700 file:text-gray-200">
-                                <button type="button" @click="$store.memory.uploadSymbol($refs.symFile)"
-                                        :disabled="$store.memory.symUploading"
-                                        class="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-700 px-4 py-2 rounded text-sm font-medium text-white">
-                                    <span x-text="$store.memory.symUploading ? 'Uploading…' : 'Upload'"></span>
-                                </button>
-                            </div>
-                            <p x-show="$store.memory.symMsg" class="text-xs mt-2"
-                               :class="$store.memory.symMsgOk ? 'text-green-400' : 'text-red-400'" x-text="$store.memory.symMsg"></p>
                         </div>
                     </div>
 

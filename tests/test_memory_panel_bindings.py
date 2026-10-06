@@ -57,7 +57,7 @@ class TestEveryTabHasSomethingBehindIt(unittest.TestCase):
     highlights, nothing appears, and nothing errors."""
 
     # four ways of getting memory into a case, and the symbol-table library
-    TABS = {"acquire", "reuse", "upload", "adopt", "symbols"}
+    TABS = {"acquire", "reuse", "upload", "adopt"}   # Symbol tables moved to Settings → Volatile Memory
 
     def setUp(self):
         self.panel = _read(PANEL)

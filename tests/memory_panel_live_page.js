@@ -222,25 +222,35 @@ const shown = (win, el) => {
   check(store.keepDump === true, `keepDump is still ticked after leaving and re-entering (got ${store.keepDump})`);
   store.keepDump = false;
 
-  console.log('\n-- symbol tables: what this appliance has --');
-  // 2026-10-05: "mention the version or date of the table in this machine".
-  // Real backend, real library: the tab loads it and the card shows a date.
-  byText('Symbol tables').click();
-  for (let i = 0; i < 40 && !store.symLib && !store.symLibErr; i++) await sleep(250);
-  check(!!store.symLib, `the library loaded from /api/memory/symbols (${store.symLibErr || 'ok'})`);
-  if (store.symLib) {
+  console.log('\n-- symbol tables: in Settings, not in the memory page --');
+  // 2026-10-06: "the volatile memory symbol table should probably be on settings
+  // and not in the module itself". And it says what the appliance has (2026-10-05).
+  check(!byText('Symbol tables'), 'the Volatile Memory page no longer has a Symbol tables tab');
+  win.Alpine.store('app').switchTab('settings');
+  await sleep(800);
+  const memTab = [...doc.querySelectorAll('button')].find(b => (b.getAttribute('@click') || '').includes("settingsTab = 'memory'"));
+  check(!!memTab, 'Settings has a Volatile Memory tab');
+  if (memTab) {
+    store.symLib = null; store.symLibErr = '';
+    memTab.click();
+    for (let i = 0; i < 40 && !store.symLib && !store.symLibErr; i++) await sleep(250);
+    check(!!store.symLib, `the library loaded from /api/memory/symbols (${store.symLibErr || 'ok'})`);
     await sleep(200);
-    const txt = (doc.querySelector('[x-show="memoryTab === \'symbols\'"]') || doc.body).textContent;
+    const panel = doc.querySelector('[x-show^="settingsTab === \'memory\'"]');
+    const txt = panel ? panel.textContent : '';
     check(/On this appliance/.test(txt), 'the "On this appliance" card is shown');
-    // 2026-10-06: no pointer to the 2019 Volatility pack; the release carries the tables
-    check(!/volatilityfoundation/.test(txt), 'the page no longer sends the operator to the 2019 pack');
-    check(/Upgrade the appliance/.test(txt) && /msdl\.microsoft\.com/.test(txt),
-          'the page says to upgrade, and how to fetch a build that is not covered');
-    check(store.symLib.packs.every(p => p.dated) && (!store.symLib.packs.length || /newest table dated/.test(txt)),
-          `each pack shows the date of its newest table (${store.symLib.packs.map(p => p.name + ' ' + p.dated).join(', ') || 'no pack'})`);
+    check(store.symLib && store.symLib.packs.every(p => p.dated), 'each pack shows a date');
     check(/per-kernel table/.test(txt), 'the per-kernel count is shown');
-    check(/Symbol index:/.test(txt) && store.symIndexState() !== 'unknown', `the index state is shown (${store.symIndexLabel()})`);
+    check(/Symbol index:/.test(txt) && store.symLib && store.symIndexState() !== 'unknown',
+          `the index state is shown (${store.symLib ? store.symIndexLabel() : '-'})`);
+    check(!/volatilityfoundation/.test(txt), 'no link to the outdated 2019 pack');
+    check(/Upgrading the appliance installs the newest/.test(txt), 'it says the release brings the tables');
+    check(/A newer Intact\.AI release/.test(txt) && /msdl\.microsoft\.com/.test(txt) && /A connected Intact\.AI appliance/.test(txt),
+          'it names the other places to get a table');
+    check(!!panel.querySelector('input[type="file"]'), 'the upload is there');
   }
+  win.Alpine.store('app').switchTab('modules-memory');
+  await sleep(600);
 
   console.log('\n-- acquire: every mode the page can produce --');
   // The page derives the mode from the blueprint + the checkbox, which is the

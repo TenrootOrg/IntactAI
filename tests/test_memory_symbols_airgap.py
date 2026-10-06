@@ -435,10 +435,10 @@ class TestTheSymbolStoreIsReportedNotGuessed(unittest.TestCase):
         self.assertIn("3006AD7DBD884D8EB8F92EC21FFCEE4E2", reason)
         self.assertIn("MEMORY_SYMBOLS_AIRGAP", reason)
         # 2026-10-06: the operator gets the download link, built from the ID in the
-        # image -- the Symbol tables page sends them here instead of to the 2019 pack.
+        # image -- Settings → Volatile Memory sends them here instead of to the 2019 pack.
         self.assertIn("https://msdl.microsoft.com/download/symbols/ntkrnlmp.pdb/"
                       "3006AD7DBD884D8EB8F92EC21FFCEE4E2/ntkrnlmp.pdb", reason)
-        self.assertIn("Memory → Symbol tables", reason)
+        self.assertIn("Settings → Volatile Memory", reason)
 
 
 if __name__ == "__main__":
