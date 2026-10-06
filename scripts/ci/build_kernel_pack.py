@@ -152,10 +152,10 @@ def convert(pdb: str, guid: str, age: int, cache: str) -> str:
 
 
 def build(out_dir: str, cache: str, since: str, jobs: int, data: dict | None = None,
-          skip_zip: str | None = None, log=print) -> dict:
+          skip_zip: str | None = None, versions=SUPPORTED, log=print) -> dict:
     os.makedirs(out_dir, exist_ok=True)
     os.makedirs(cache, exist_ok=True)
-    todo = [b for name in FILES for b in builds(name, since, (data or {}).get(name))]
+    todo = [b for name in FILES for b in builds(name, since, (data or {}).get(name), versions)]
     # Tables Volatility's own windows.zip already carries are not shipped twice.
     have = set()
     if skip_zip:
@@ -218,9 +218,12 @@ def main(argv=None) -> int:
     ap.add_argument("--since", default="2000-01-01",
                     help="only builds released on/after this date (default: every build of a supported version)")
     ap.add_argument("--skip-zip", help="a symbol pack whose tables need not be built again (windows.zip)")
+    ap.add_argument("--versions", default=",".join(SUPPORTED),
+                    help="Winbindex Windows version keys, comma separated (default: every supported one)")
     ap.add_argument("--jobs", type=int, default=max(2, (os.cpu_count() or 2)))
     a = ap.parse_args(argv)
-    build(a.out, os.path.expanduser(a.cache), a.since, a.jobs, skip_zip=a.skip_zip)
+    build(a.out, os.path.expanduser(a.cache), a.since, a.jobs, skip_zip=a.skip_zip,
+          versions=tuple(v for v in a.versions.split(",") if v))
     return 0
 
 
