@@ -126,6 +126,31 @@ what the box downloads from Microsoft itself) are never removed — each is a
 different kernel, not an older copy. A site can still drop its own pack or ISFs
 into `data/volweb-symbols/`.
 
+## Option 3 — the Intact kernel pack, every supported Windows build (shipped)
+
+`windows.zip` stops in 2019: a Windows 10 20H2+ or Windows 11 image is not in it.
+Measured on Windows 11 IoT Enterprise LTSC 24H2 (DESKTOP-2175T02): its kernel,
+10.0.26100.1742, needs `ntkrnlmp.pdb/953A8DE880B0818C32DA2DEC1D79C2D9-1`, which a
+connected box downloads from Microsoft and an air-gapped one cannot get.
+
+So every release also ships **`volweb_symbols/intact-windows-kernels.zip`**, built
+in CI by `scripts/ci/build_kernel_pack.py` (workflow `kernel-pack.yml`):
+
+| | |
+|---|---|
+| what | `ntkrnlmp.pdb` + `tcpip.pdb` tables for **every x64 build** of every Windows version Microsoft still supports — Windows 10 1507/1607/1809/21H2/22H2 (LTSC and Server lines included), Windows 11 22H2–26H1 |
+| how | Winbindex lists the builds; each kernel's PDB identity is read from Microsoft's symbol server; the PDB is converted with Volatility 3.2.28's own `pdbconv` — the same server and converter VolWeb uses, and the same table (checked: identical to the one VolWeb downloaded itself) |
+| skips | tables `windows.zip` already has |
+| size | ~690 kernels + ~370 tcpip ≈ 530 MB |
+| fresh | `kernel-pack.yml` runs weekly on `main` (a warm cache for the next release) and in every release |
+
+Install and upgrade treat it exactly like `windows.zip`: staged, seeded into
+`media/symbols`, replaced when it changed, indexed in the background. An upgrade
+fetches the volweb asset when **any** pack file differs from the box's
+(`volweb_symbols.files` in the release index), even when VolWeb itself does not
+move. Not covered: Windows builds older than the supported set and newer than
+`windows.zip` (out-of-support Windows 10 1703–21H1); upload those per Option 1.
+
 ## Check where you stand
 
 The installer and every upgrade print one of:
