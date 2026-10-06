@@ -18,7 +18,7 @@ name: test
 on:
   workflow_dispatch:
   push:
-    branches: ["main", "development"]   # TEMPORARY (2026-10-06): kernel-pack testing on development
+    branches: ["main"]
   pull_request:
 
 jobs:
