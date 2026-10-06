@@ -94,9 +94,21 @@ def builds(name: str, since: str, data: dict | None = None, versions=VERSIONS) -
     return out
 
 
+# Every link is COMPUTED from the build being processed -- nothing names a
+# version, a date or a build. Microsoft's symbol server addresses a binary by its
+# PE timestamp + image size (from Winbindex) and a PDB by its GUID + age (from
+# the binary's own CodeView record); Winbindex addresses its list by file name.
+def binary_url(b: dict) -> str:
+    return f"{MSDL}/{b['file']}/{b['timestamp']:08X}{b['virtualSize']:X}/{b['file']}"
+
+
+def pdb_url(pdb: str, guid: str, age: int) -> str:
+    return f"{MSDL}/{pdb}/{guid}{age:X}/{pdb}"
+
+
 def codeview(b: dict) -> tuple[str, str, int]:
     """(pdb name, GUID, age) from the PE's CodeView debug record."""
-    url = f"{MSDL}/{b['file']}/{b['timestamp']:08X}{b['virtualSize']:X}/{b['file']}"
+    url = binary_url(b)
     head = _get(url, (0, 4095))
     pe = struct.unpack_from("<I", head, 0x3C)[0]
     nsec = struct.unpack_from("<H", head, pe + 6)[0]
@@ -139,7 +151,7 @@ def convert(pdb: str, guid: str, age: int, cache: str) -> str:
     with tempfile.TemporaryDirectory() as tmp:
         local = os.path.join(tmp, pdb)
         with open(local, "wb") as fh:
-            fh.write(_get(f"{MSDL}/{pdb}/{guid}{age:X}/{pdb}", timeout=600))
+            fh.write(_get(pdb_url(pdb, guid, age), timeout=600))
         out = os.path.join(tmp, "out.json.xz")
         # -p names the database. Without it pdbconv falls back to what the PDB
         # says, which for tcpip.pdb is nothing: the table was written as

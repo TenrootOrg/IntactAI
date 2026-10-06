@@ -58,6 +58,35 @@ def pe_with_codeview(guid_hex: str, age: int, pdb: str) -> bytes:
     return bytes(b)
 
 
+class TheLinksAreComputed(unittest.TestCase):
+    """2026-10-06: "the link is generic and it will always work and not
+    hardcoded". Every symbol-server link comes from the build being processed;
+    the Winbindex list from the file name. Checked against two real builds."""
+
+    def test_a_binary_is_addressed_by_its_own_timestamp_and_size(self):
+        # Winbindex's own record for Windows 10 1507 10.0.10240.17914 (KB4338829)
+        b = {"file": "ntoskrnl.exe", "timestamp": 1530169124, "virtualSize": 8744960}
+        self.assertEqual(k.binary_url(b), "https://msdl.microsoft.com/download/symbols/"
+                                          "ntoskrnl.exe/5B348724857000/ntoskrnl.exe")
+
+    def test_a_pdb_is_addressed_by_its_own_guid_and_age(self):
+        # the exact URL VolWeb itself downloaded for that PC on 2026-09-28
+        self.assertEqual(k.pdb_url("ntkrnlmp.pdb", GUID, 1),
+                         "https://msdl.microsoft.com/download/symbols/ntkrnlmp.pdb/"
+                         "953A8DE880B0818C32DA2DEC1D79C2D91/ntkrnlmp.pdb")
+        self.assertTrue(k.pdb_url("tcpip.pdb", "AB", 26).endswith("/tcpip.pdb/AB1A/tcpip.pdb"))  # age in hex
+
+    def test_the_build_list_is_per_file_never_per_version(self):
+        self.assertEqual(k.WINBINDEX.format("tcpip.sys"),
+                         "https://winbindex.m417z.com/data/by_filename_compressed/tcpip.sys.json.gz")
+
+    def test_no_link_names_a_build_a_version_or_a_date(self):
+        import re
+        src = open(k.__file__).read()
+        for url in re.findall(r"https://[^\s\"']+", src):
+            self.assertNotRegex(url, r"10\.0\.\d|20\d\d-\d\d|[0-9A-F]{32}", url)
+
+
 class WhichBuilds(unittest.TestCase):
     DATA = winbindex((34404, ["11-24H2"], "2024-09-10"),       # the LTSC base build: in
                      (34404, ["1709"], "2019-04-09"),          # out of support: still in
@@ -175,6 +204,54 @@ class ThePack(unittest.TestCase):
     def test_nothing_built_is_a_failure_not_an_empty_pack(self):
         with mock.patch.object(k, "builds", lambda *a, **kw: []), self.assertRaises(SystemExit):
             k.build(self.out, self.cache, "2000-01-01", 1, {}, log=lambda m: None)
+
+
+class SeedingFromThePreviousRelease(unittest.TestCase):
+    """A release starts from the previous release's pack: its tables and the PDB
+    identities it was built from are reused, so only new builds are converted --
+    no schedule, no CI cache (2026-10-06)."""
+
+    def setUp(self):
+        import json
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, ignore_errors=True)
+        self.prev = os.path.join(self.d, "previous.zip")
+        with zipfile.ZipFile(self.prev, "w") as z:
+            z.writestr(f"windows/ntkrnlmp.pdb/{GUID}-1.json.xz", b"old-release-table")
+            z.writestr("codeview.json", json.dumps({"ntoskrnl.exe:1000:4096": ["ntkrnlmp.pdb", GUID, 1]}))
+            z.writestr("intact-kernel-pack.json", "{}")
+        self.cache = os.path.join(self.d, "cache")
+        os.makedirs(self.cache)
+
+    def test_tables_and_identities_come_back(self):
+        import json
+        self.assertEqual(k.seed(self.cache, self.prev, log=lambda m: None), 1)
+        with open(os.path.join(self.cache, f"windows/ntkrnlmp.pdb/{GUID}-1.json.xz"), "rb") as fh:
+            self.assertEqual(fh.read(), b"old-release-table")
+        with open(os.path.join(self.cache, "codeview.json")) as fh:
+            self.assertEqual(json.load(fh)["ntoskrnl.exe:1000:4096"], ["ntkrnlmp.pdb", GUID, 1])
+
+    def test_a_seeded_build_asks_microsoft_nothing_and_converts_nothing(self):
+        k.seed(self.cache, self.prev, log=lambda m: None)
+        data = {"ntoskrnl.exe": winbindex((34404, ["11-24H2"], "2024-09-10")), "tcpip.sys": {}}
+
+        def boom(*a, **kw):
+            raise AssertionError("network or conversion for a build the previous release had")
+        with mock.patch.object(k, "codeview", boom), mock.patch.object(k, "_get", boom), \
+                mock.patch.object(k.subprocess, "run", boom):
+            res = k.build(os.path.join(self.d, "out"), self.cache, "2000-01-01", 1, data, log=lambda m: None)
+        self.assertEqual((res["tables"], res["failed"]), (1, []))
+        self.assertIn(f"windows/ntkrnlmp.pdb/{GUID}-1.json.xz", zipfile.ZipFile(res["pack"]).namelist())
+        self.assertIn("codeview.json", zipfile.ZipFile(res["pack"]).namelist())   # handed to the next release
+
+    def test_a_table_already_in_the_cache_is_not_overwritten(self):
+        dest = os.path.join(self.cache, f"windows/ntkrnlmp.pdb/{GUID}-1.json.xz")
+        os.makedirs(os.path.dirname(dest))
+        with open(dest, "wb") as fh:
+            fh.write(b"fresh")
+        self.assertEqual(k.seed(self.cache, self.prev, log=lambda m: None), 0)
+        with open(dest, "rb") as fh:
+            self.assertEqual(fh.read(), b"fresh")
 
 
 if __name__ == "__main__":

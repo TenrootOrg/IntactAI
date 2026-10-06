@@ -1093,6 +1093,60 @@ def _config_at_ref_from_checkout(source_dir, ref, log):
     return cfg
 
 
+def _bundle_kernel_pack(sym_dir: str, manifest: Dict, log: Callable,
+                        kpack: Optional[str] = None, in_ci: Optional[bool] = None) -> None:
+    """Put the CI-built Windows kernel pack into the volweb asset beside windows.zip
+    and name every pack file with its sha256 in the manifest.
+
+    A function, not inline in prepare_upgrade_package, so it can be run in a test:
+    the release only ever executes it on GitHub, where a bug would surface as a
+    release without the tables an air-gapped box needs."""
+    if kpack is None:
+        kpack = os.environ.get("INTACT_KERNEL_PACK") or ""
+    if in_ci is None:
+        in_ci = os.environ.get("GITHUB_ACTIONS") == "true"
+    # Our own pack beside it: tables for every supported Windows
+    # kernel build (scripts/ci/build_kernel_pack.py, the
+    # kernel-pack workflow). windows.zip stops in 2019; an
+    # air-gapped Windows 11 image needs these. CI hands the zip in
+    # through INTACT_KERNEL_PACK; a box's own Prepare Upgrade has
+    # no such thing and only warns.
+    sym_files = {}
+    if manifest["contents"].get("volweb_symbols"):
+        v = manifest["contents"]["volweb_symbols"]
+        sym_files["windows.zip"] = {k: v[k] for k in ("sha256", "size", "tables")}
+    kp_tables = 0
+    if kpack and os.path.isfile(kpack):
+        try:
+            import zipfile
+            with zipfile.ZipFile(kpack) as z:
+                kp_tables = sum(1 for n in z.namelist()
+                                if n.startswith("windows/") and n.endswith(".json.xz"))
+        except (zipfile.BadZipFile, OSError):
+            kp_tables = 0
+    if kp_tables:
+        os.makedirs(sym_dir, exist_ok=True)
+        kp_dst = os.path.join(sym_dir, "intact-windows-kernels.zip")
+        shutil.copyfile(kpack, kp_dst)
+        h = hashlib.sha256()
+        with open(kp_dst, 'rb') as fh:
+            for chunk in iter(lambda: fh.read(4 << 20), b""):
+                h.update(chunk)
+        sym_files["intact-windows-kernels.zip"] = {
+            "sha256": h.hexdigest(), "size": os.path.getsize(kp_dst), "tables": kp_tables}
+        log(f"  ✓ intact-windows-kernels.zip ({os.path.getsize(kp_dst) / 1048576:.0f} MB, "
+            f"{kp_tables:,} tables)", "success")
+    else:
+        msg = (f"Windows kernel symbol pack not bundled "
+               f"({'not a symbol pack: ' + kpack if kpack else 'INTACT_KERNEL_PACK not set'})")
+        if in_ci:
+            raise RuntimeError(msg)
+        log(f"  ✗ {msg} — air-gapped boxes cannot analyse Windows builds newer "
+            f"than 2019 without uploading their tables", "warning")
+    if sym_files:
+        manifest["contents"]["volweb_symbols_files"] = sym_files
+
+
 def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                             compress: bool = True,
                             work_dir: Optional[str] = None,
@@ -2711,47 +2765,7 @@ def prepare_upgrade_package(modules: Dict, run_id: str, logger: Callable = None,
                             f"online, or stage them by hand (docs/MEMORY_SYMBOLS_AIRGAP.md)",
                             "warning")
 
-                    # Our own pack beside it: tables for every supported Windows
-                    # kernel build (scripts/ci/build_kernel_pack.py, the
-                    # kernel-pack workflow). windows.zip stops in 2019; an
-                    # air-gapped Windows 11 image needs these. CI hands the zip in
-                    # through INTACT_KERNEL_PACK; a box's own Prepare Upgrade has
-                    # no such thing and only warns.
-                    sym_files = {}
-                    if manifest["contents"].get("volweb_symbols"):
-                        v = manifest["contents"]["volweb_symbols"]
-                        sym_files["windows.zip"] = {k: v[k] for k in ("sha256", "size", "tables")}
-                    kpack = os.environ.get("INTACT_KERNEL_PACK") or ""
-                    kp_tables = 0
-                    if kpack and os.path.isfile(kpack):
-                        try:
-                            import zipfile
-                            with zipfile.ZipFile(kpack) as z:
-                                kp_tables = sum(1 for n in z.namelist()
-                                                if n.startswith("windows/") and n.endswith(".json.xz"))
-                        except (zipfile.BadZipFile, OSError):
-                            kp_tables = 0
-                    if kp_tables:
-                        os.makedirs(sym_dir, exist_ok=True)
-                        kp_dst = os.path.join(sym_dir, "intact-windows-kernels.zip")
-                        shutil.copyfile(kpack, kp_dst)
-                        h = hashlib.sha256()
-                        with open(kp_dst, 'rb') as fh:
-                            for chunk in iter(lambda: fh.read(4 << 20), b""):
-                                h.update(chunk)
-                        sym_files["intact-windows-kernels.zip"] = {
-                            "sha256": h.hexdigest(), "size": os.path.getsize(kp_dst), "tables": kp_tables}
-                        log(f"  ✓ intact-windows-kernels.zip ({os.path.getsize(kp_dst) / 1048576:.0f} MB, "
-                            f"{kp_tables:,} tables)", "success")
-                    else:
-                        msg = (f"Windows kernel symbol pack not bundled "
-                               f"({'not a symbol pack: ' + kpack if kpack else 'INTACT_KERNEL_PACK not set'})")
-                        if os.environ.get("GITHUB_ACTIONS") == "true":
-                            raise RuntimeError(msg)
-                        log(f"  ✗ {msg} — air-gapped boxes cannot analyse Windows builds newer "
-                            f"than 2019 without uploading their tables", "warning")
-                    if sym_files:
-                        manifest["contents"]["volweb_symbols_files"] = sym_files
+                    _bundle_kernel_pack(sym_dir, manifest, log)
             elif module == 'aws_sigma':
                 # aws_sigma ships no docker image — the versioned artifact is the
                 # SIGMA AWS CloudTrail rule pack (cloned from SigmaHQ into
