@@ -10,6 +10,11 @@
 name: Windows kernel symbol pack
 
 on:
+  # TEMPORARY (2026-10-06): a manual trigger only works once this file is on
+  # main, so a test run on development is started by a commit whose message
+  # carries [kernel-pack]. Removed before the release.
+  push:
+    branches: ["development"]
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -27,6 +32,7 @@ permissions:
 
 jobs:
   kernel-pack:
+    if: github.event_name != 'push' || contains(github.event.head_commit.message, '[kernel-pack]')
     runs-on: ubuntu-latest
     timeout-minutes: 340          # a first, unseeded build is ~3 h; GitHub's ceiling is 6 h
     steps:
