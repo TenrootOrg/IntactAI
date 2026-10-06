@@ -254,5 +254,78 @@ class SeedingFromThePreviousRelease(unittest.TestCase):
             self.assertEqual(fh.read(), b"fresh")
 
 
+class ProgressAndFanOut(unittest.TestCase):
+    """2026-10-06: "we need more logs and progress bar" and "try to optimize it
+    it takes very long". A CI log shows every table as it lands, with where the
+    build is and when it ends; the conversion fans out over N jobs and the
+    assembling build converts nothing they did."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, ignore_errors=True)
+        self.converted = []
+
+    def fake_convert(self, pdb, guid, age, cache):
+        rel = f"windows/{pdb}/{guid}-{age}.json.xz"
+        os.makedirs(os.path.dirname(os.path.join(cache, rel)), exist_ok=True)
+        with open(os.path.join(cache, rel), "wb") as fh:
+            fh.write(b"table")
+        self.converted.append(rel)
+        return rel
+
+    # 5 kernel builds; builds 1000 and 1001 share one PDB (the same table)
+    BUILDS = [{"file": "ntoskrnl.exe", "timestamp": t, "virtualSize": 1, "version": str(t),
+               "released": "2025-01-01", "windows": ["11-24H2"]} for t in range(1000, 1005)]
+    IDS = {1000: ("ntkrnlmp.pdb", "AA", 1), 1001: ("ntkrnlmp.pdb", "AA", 1), 1002: ("ntkrnlmp.pdb", "BB", 1),
+           1003: ("ntkrnlmp.pdb", "CC", 1), 1004: ("ntkrnlmp.pdb", "DD", 1)}
+
+    def patched(self):
+        return (mock.patch.object(k, "builds", lambda name, *a, **kw: self.BUILDS if name == "ntoskrnl.exe" else []),
+                mock.patch.object(k, "codeview", lambda b: self.IDS[b["timestamp"]]),
+                mock.patch.object(k, "convert", self.fake_convert))
+
+    def test_every_table_logs_a_progress_line_with_an_eta(self):
+        lines = []
+        b, c, v = self.patched()
+        with b, c, v:
+            k.build(os.path.join(self.d, "out"), os.path.join(self.d, "cache"), "2000-01-01", 1, log=lines.append)
+        prog = [l for l in lines if "/4 " in l and "ok   ntkrnlmp.pdb/" in l]
+        self.assertEqual(len(prog), 4, lines)
+        self.assertIn("ETA", prog[0])
+        self.assertIn("[####################] 4/4 100%", prog[-1])
+
+    def test_a_table_two_builds_share_is_converted_once(self):
+        b, c, v = self.patched()
+        with b, c, v:
+            k.build(os.path.join(self.d, "out"), os.path.join(self.d, "cache"), "2000-01-01", 4, log=lambda m: None)
+        self.assertEqual(sorted(self.converted), sorted(set(self.converted)))
+        self.assertEqual(len(self.converted), 4)
+
+    def test_plan_shards_and_assembly_convert_each_table_exactly_once(self):
+        import contextlib
+        import io
+        import json
+        base, plan = os.path.join(self.d, "base"), os.path.join(self.d, "plan.json")
+        b, c, v = self.patched()
+        with b, c, v, contextlib.redirect_stdout(io.StringIO()):
+            k.main(["--cache", base, "--plan-out", plan])
+            self.assertEqual(self.converted, [])                  # planning converts nothing
+            for i in range(3):
+                k.main(["--cache", os.path.join(self.d, f"shard{i}"), "--plan", plan, "--shard", f"{i}/3"])
+            self.assertEqual(len(self.converted), 4)
+            self.assertEqual(len(set(self.converted)), 4)         # no table twice across shards
+            for i in range(3):                                    # the assembling job merges the shards
+                src = os.path.join(self.d, f"shard{i}")
+                for root, _dirs, files in os.walk(src):
+                    for f in files:
+                        dst = os.path.join(base, os.path.relpath(os.path.join(root, f), src))
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        shutil.copyfile(os.path.join(root, f), dst)
+            k.main(["--cache", base, "--out", os.path.join(self.d, "out")])
+        self.assertEqual(len(self.converted), 4)                  # the assembly converted nothing
+        z = zipfile.ZipFile(os.path.join(self.d, "out", "intact-windows-kernels.zip"))
+        self.assertEqual(len(json.loads(z.read("intact-kernel-pack.json"))["tables"]), 4)
+
+
 if __name__ == "__main__":
     unittest.main()

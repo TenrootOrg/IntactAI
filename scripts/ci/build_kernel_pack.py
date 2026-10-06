@@ -36,6 +36,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 import zipfile
 
@@ -202,9 +203,57 @@ def seed(cache: str, pack: str, log=print) -> int:
     return n
 
 
-def build(out_dir: str, cache: str, since: str, jobs: int, data: dict | None = None,
-          skip_zip: str | None = None, versions=VERSIONS, log=print) -> dict:
-    os.makedirs(out_dir, exist_ok=True)
+def _hms(sec: float) -> str:
+    sec = int(sec)
+    return f"{sec // 3600}h{sec % 3600 // 60:02d}m" if sec >= 3600 else f"{sec // 60}m{sec % 60:02d}s"
+
+
+def _bar(done: int, total: int, t0: float, now: float) -> str:
+    """[#######-------------] 412/1470  28% · 31m05s · ETA 1h20m -- one line per
+    finished item, so a CI log shows where a build is and when it will end."""
+    frac = done / total if total else 1.0
+    fill = int(20 * frac)
+    eta = (now - t0) / done * (total - done) if done else 0
+    return (f"[{'#' * fill}{'-' * (20 - fill)}] {done}/{total} {frac:4.0%} · {_hms(now - t0)}"
+            + (f" · ETA {_hms(eta)}" if done < total else ""))
+
+
+def _key(b: dict) -> str:
+    return f"{b['file']}:{b['timestamp']}:{b['virtualSize']}"
+
+
+def identify(todo: list[dict], ids: dict, jobs: int, log=print) -> list[str]:
+    """Fill `ids` (build key -> [pdb, GUID, age]) for every build it lacks, with
+    range requests to Microsoft's symbol server. A build's identity never
+    changes, so a seeded or warm run asks the server nothing."""
+    need = [b for b in todo if _key(b) not in ids]
+    failed: list[str] = []
+    if not need:
+        return failed
+    log(f"kernel pack: reading the PDB identity of {len(need)} build(s) from the symbol server")
+    t0 = time.monotonic()
+    # I/O, not CPU: many more threads than cores.
+    with cf.ThreadPoolExecutor(max_workers=max(16, jobs)) as ex:
+        futs = {ex.submit(codeview, b): b for b in need}
+        for n, f in enumerate(cf.as_completed(futs), 1):
+            b = futs[f]
+            try:
+                ids[_key(b)] = list(f.result())
+            except Exception as e:                       # noqa: BLE001 -- one bad build, not the pack
+                failed.append(f"{b['file']} {b['version']}: identity: {str(e)[:150]}")
+            if n % 100 == 0 or n == len(need):
+                log(f"  identities {_bar(n, len(need), t0, time.monotonic())} · {len(failed)} failed")
+    return failed
+
+
+def make_plan(cache: str, since: str, jobs: int, data: dict | None = None,
+              skip_zip: str | None = None, versions=VERSIONS, log=print):
+    """What the pack holds and what is still to convert.
+
+    Returns (tables, work, failed): tables = {rel: {version, released, windows}}
+    for every table the pack should carry; work = the [pdb, GUID, age] of each
+    one not in the cache yet -- each ONCE, though several builds may share it
+    (converting it twice wasted a CPU minute and raced on the same file)."""
     os.makedirs(cache, exist_ok=True)
     todo = [b for name in FILES for b in builds(name, since, (data or {}).get(name), versions)]
     # Tables Volatility's own windows.zip already carries are not shipped twice.
@@ -212,41 +261,68 @@ def build(out_dir: str, cache: str, since: str, jobs: int, data: dict | None = N
     if skip_zip:
         have = {n for n in zipfile.ZipFile(skip_zip).namelist() if n.endswith((".json.xz", ".json"))}
     log(f"kernel pack: {len(todo)} x64 build(s) of {', '.join(FILES)} "
-        f"({', '.join(versions) if versions else 'every Windows version'}), released since {since}" + (f"; skipping {len(have)} table(s) in {skip_zip}" if have else ""))
-    tables, failed = {}, []
-    # A build's PDB identity never changes, so it is cached too: a warm run then
-    # makes no symbol-server request at all for a build it has seen.
+        f"({', '.join(versions) if versions else 'every Windows version'}), released since {since}"
+        + (f"; skipping {len(have)} table(s) in {skip_zip}" if have else ""))
     ids_path = os.path.join(cache, "codeview.json")
     try:
         with open(ids_path) as fh:
             ids = json.load(fh)
     except (OSError, ValueError):
         ids = {}
-
-    def one(b):
-        key = f"{b['file']}:{b['timestamp']}:{b['virtualSize']}"
-        if key not in ids:
-            ids[key] = list(codeview(b))
-        pdb, guid, age = ids[key]
-        rel = f"windows/{pdb}/{guid}-{age}.json.xz"
-        if rel in have:
-            return b, None
-        return b, convert(pdb, guid, age, cache)
-
-    with cf.ThreadPoolExecutor(max_workers=jobs) as ex:
-        for f in cf.as_completed([ex.submit(one, b) for b in todo]):
-            try:
-                b, rel = f.result()
-                if rel:
-                    tables.setdefault(rel, {"version": b["version"], "released": b["released"],
-                                            "windows": b["windows"]})
-            except Exception as e:                       # noqa: BLE001 -- one bad build, not the pack
-                failed.append(str(e)[:200])
+    failed = identify(todo, ids, jobs, log)
     with open(ids_path + ".tmp", "w") as fh:
         json.dump(ids, fh)
     os.replace(ids_path + ".tmp", ids_path)
+    tables, work = {}, []
+    for b in todo:
+        if _key(b) not in ids:
+            continue
+        pdb, guid, age = ids[_key(b)]
+        rel = f"windows/{pdb}/{guid}-{age}.json.xz"
+        if rel in have or rel in tables:
+            continue
+        tables[rel] = {"version": b["version"], "released": b["released"], "windows": b["windows"]}
+        if not os.path.exists(os.path.join(cache, rel)):
+            work.append([pdb, guid, age])
+    log(f"kernel pack: {len(tables)} table(s) in the pack; {len(tables) - len(work)} already converted, "
+        f"{len(work)} to convert")
+    return tables, work, failed
+
+
+def convert_all(work: list, cache: str, jobs: int, log=print) -> list[str]:
+    """Convert every [pdb, GUID, age] in `work` into the cache, one progress line
+    per table. Returns the failures; one bad PDB never stops the rest."""
+    failed: list[str] = []
+    if not work:
+        return failed
+    log(f"kernel pack: converting {len(work)} table(s), {jobs} at a time")
+    t0 = time.monotonic()
+    with cf.ThreadPoolExecutor(max_workers=jobs) as ex:
+        futs = {ex.submit(lambda w: (time.monotonic(), convert(*w, cache), time.monotonic()), w): w for w in work}
+        for n, f in enumerate(cf.as_completed(futs), 1):
+            pdb, guid, age = futs[f]
+            try:
+                st, _rel, end = f.result()
+                what = f"ok   {pdb}/{guid}-{age} ({end - st:.0f}s)"
+            except Exception as e:                       # noqa: BLE001
+                failed.append(f"{pdb}/{guid}-{age}: {str(e)[:150]}")
+                what = f"FAIL {pdb}/{guid}-{age}: {str(e)[:120]}"
+            log(f"  {_bar(n, len(work), t0, time.monotonic())} · {what}")
+    log(f"kernel pack: converted {len(work) - len(failed)}/{len(work)} in {_hms(time.monotonic() - t0)}"
+        + (f", {len(failed)} failed" if failed else ""))
+    return failed
+
+
+def build(out_dir: str, cache: str, since: str, jobs: int, data: dict | None = None,
+          skip_zip: str | None = None, versions=VERSIONS, log=print) -> dict:
+    os.makedirs(out_dir, exist_ok=True)
+    tables, work, failed = make_plan(cache, since, jobs, data, skip_zip, versions, log)
+    failed += convert_all(work, cache, jobs, log)
+    tables = {rel: m for rel, m in tables.items() if os.path.exists(os.path.join(cache, rel))}
     if not tables:
         raise SystemExit(f"kernel pack: nothing built ({len(failed)} failure(s); first: {failed[:1]})")
+    with open(os.path.join(cache, "codeview.json")) as fh:
+        ids = json.load(fh)
     pack = os.path.join(out_dir, "intact-windows-kernels.zip")
     with zipfile.ZipFile(pack + ".tmp", "w", zipfile.ZIP_STORED) as z:   # .xz is already compressed
         for rel in sorted(tables):
@@ -265,7 +341,7 @@ def build(out_dir: str, cache: str, since: str, jobs: int, data: dict | None = N
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--out", help="where intact-windows-kernels.zip is written")
     ap.add_argument("--cache", required=True)
     ap.add_argument("--since", default="2000-01-01",
                     help="only builds released on/after this date (default: every build of a supported version)")
@@ -274,12 +350,34 @@ def main(argv=None) -> int:
     ap.add_argument("--versions", default="",
                     help="Winbindex Windows version keys, comma separated (default: every version)")
     ap.add_argument("--jobs", type=int, default=max(2, (os.cpu_count() or 2)))
+    # CI fans the conversion out (volweb-symbols-pack.yml): one job writes the
+    # plan, N jobs each convert every Nth table of it, one job builds the zip
+    # from the merged tables. A cold build is ~1,470 tables at ~45 s of one CPU
+    # each -- ~4 h on one runner, ~40 min on eight.
+    ap.add_argument("--plan-out", help="write what is to convert to this file, and stop")
+    ap.add_argument("--plan", help="the --plan-out file a --shard converts from")
+    ap.add_argument("--shard", help="K/N: convert every Nth table of --plan, starting at K, into --cache")
     a = ap.parse_args(argv)
-    os.makedirs(os.path.expanduser(a.cache), exist_ok=True)
+    cache = os.path.expanduser(a.cache)
+    os.makedirs(cache, exist_ok=True)
     if a.seed_zip and os.path.isfile(a.seed_zip):
-        seed(os.path.expanduser(a.cache), a.seed_zip)
-    build(a.out, os.path.expanduser(a.cache), a.since, a.jobs, skip_zip=a.skip_zip,
-          versions=tuple(v for v in a.versions.split(",") if v) or None)
+        seed(cache, a.seed_zip)
+    versions = tuple(v for v in a.versions.split(",") if v) or None
+    if a.shard:
+        k, n = (int(x) for x in a.shard.split("/"))
+        with open(a.plan) as fh:
+            work = json.load(fh)["convert"][k::n]
+        print(f"kernel pack: shard {k + 1}/{n}: {len(work)} table(s)")
+        convert_all(work, cache, a.jobs)
+        return 0                  # failures are retried by the assembling build
+    if a.plan_out:
+        _tables, work, failed = make_plan(cache, a.since, a.jobs, skip_zip=a.skip_zip, versions=versions)
+        with open(a.plan_out, "w") as fh:
+            json.dump({"convert": work, "identity_failures": failed}, fh)
+        return 0
+    if not a.out:
+        ap.error("--out is required to build the pack")
+    build(a.out, cache, a.since, a.jobs, skip_zip=a.skip_zip, versions=versions)
     return 0
 
 

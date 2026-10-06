@@ -257,9 +257,9 @@ jobs:
   # The newest Windows kernel symbol tables (air-gapped memory analysis), built
   # now, seeded from the previous release's pack, and shipped with windows.zip
   # as the release's own <tag>-volweb_symbols.tar -- outside every module asset.
-  kernel-pack:
+  volweb-symbols-pack:
     needs: resolve
-    uses: ./.github/workflows/kernel-pack.yml
+    uses: ./.github/workflows/volweb-symbols-pack.yml
     with:
       ref: ${{ needs.resolve.outputs.commit }}
       tag: ${{ needs.resolve.outputs.tag }}
@@ -711,7 +711,7 @@ jobs:
   # The index is the CONTRACT: it is how a box learns which modules a release
   # carries and what each should hash to. It reads only the tiny sidecars.
   index:
-    needs: [resolve, build, kernel-pack]
+    needs: [resolve, build, volweb-symbols-pack]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8
@@ -843,7 +843,7 @@ jobs:
           # the upgrade's scoped verifier rejects them as undescribed.
           sym_meta = sorted(glob.glob("symmeta/**/*-volweb_symbols.tar.meta.json", recursive=True))
           if not sym_meta:
-              sys.exit("::error::no symbols asset -- the kernel-pack job produced nothing")
+              sys.exit("::error::no symbols asset -- the volweb-symbols-pack job produced nothing")
           sm = json.load(open(sym_meta[0]))
           index["volweb_symbols"] = {k: sm[k] for k in ("asset", "sha256", "size", "parts", "files", "tables")}
           for n, sha in sm["files"].items():
@@ -914,7 +914,7 @@ jobs:
   # one runner after the whole matrix finishes. This job keeps only the dry-run,
   # which genuinely needs every asset together in one package dir.
   verify-assets:
-    needs: [resolve, build, index, kernel-pack]
+    needs: [resolve, build, index, volweb-symbols-pack]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -1026,7 +1026,7 @@ jobs:
 
   # ----------------------------------------------------------------- attach
   publish:
-    needs: [resolve, build, index, system-bundle, bootstrap-asset, verify-assets, kernel-pack]
+    needs: [resolve, build, index, system-bundle, bootstrap-asset, verify-assets, volweb-symbols-pack]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

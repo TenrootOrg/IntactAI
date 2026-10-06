@@ -1,14 +1,19 @@
-# Volatility 3 symbol tables for every Windows 10/11 kernel build
-# (intact-windows-kernels.zip), so an AIR-GAPPED appliance can analyse a current
-# Windows memory image, shipped with Volatility's windows.zip as the release's
-# own <tag>-volweb_symbols.tar. See scripts/ci/build_kernel_pack.py for why and how.
+# volweb-symbols-pack: Volatility 3 symbol tables for every Windows 10/11 kernel
+# build (intact-windows-kernels.zip), so an AIR-GAPPED appliance can analyse a
+# current Windows memory image, shipped with Volatility's windows.zip as the
+# release's own <tag>-volweb_symbols.tar. See scripts/ci/build_kernel_pack.py.
 #
 # Runs as part of every release (build-release-assets.yml calls it), never on a
 # schedule: the release is when the newest tables have to be inside it. Builds
 # the list as of TODAY, starting from the PREVIOUS release's pack, so a release
-# converts only the Windows updates published since the last one (minutes).
-# Only the first release with a pack converts everything (~3 h).
-name: Windows kernel symbol pack
+# converts only the Windows updates published since the last one.
+#
+# Fanned out (2026-10-06: "try to optimize it it takes very long"): converting
+# is ~45 s of ONE CPU per table, ~1,470 tables cold -- ~4 h on one runner.
+#   plan      what is to convert (seeded, windows.zip skipped), once
+#   convert   8 runners, each every 8th table of the plan       (~40 min cold)
+#   assemble  the merged tables -> the zip -> the release asset (converts nothing)
+name: volweb-symbols-pack
 
 on:
   workflow_dispatch:
@@ -27,9 +32,9 @@ permissions:
   contents: read
 
 jobs:
-  kernel-pack:
+  plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 340          # a first, unseeded build is ~3 h; GitHub's ceiling is 6 h
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:
@@ -38,12 +43,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      # The converter VolWeb itself runs: VolWeb 3.16.0 bundles volatility3
-      # 2.28.0. A table from another version would load, but must not differ
-      # from what the appliance would have downloaded for itself.
-      - name: Install the Volatility converter
-        run: pip install --quiet "volatility3==2.28.0"
 
       # The newest published release that carries a pack: every table in it is
       # reused, so only what Microsoft published since is converted. None yet ->
@@ -72,18 +71,108 @@ jobs:
           cd .. && rm -rf seed
           ls -lh seed.zip 2>/dev/null || echo "no previous pack: full build"
 
-      # Only to skip what Volatility's own pack already carries (its 3,014
-      # tables are shipped as windows.zip beside this pack).
-      - name: Fetch windows.zip's table list
+      # Shipped beside this pack; its 3,014 tables are not converted again.
+      - name: Fetch windows.zip
         run: |
           curl -fL --retry 3 -C - --retry-all-errors --max-time 3600 -o windows.zip \
             https://downloads.volatilityfoundation.org/volatility3/symbols/windows.zip
 
+      - name: Plan the conversion
+        run: |
+          python3 -u scripts/ci/build_kernel_pack.py --cache cache --skip-zip windows.zip \
+            $( [ -f seed.zip ] && echo --seed-zip seed.zip ) --plan-out plan.json --jobs 16
+          python3 -c "import json; p=json.load(open('plan.json')); print(f\"to convert: {len(p['convert'])} table(s) over 8 runners\")"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vsp-plan
+          path: plan.json
+          retention-days: 1
+      # The seeded tables, the PDB identities (cache/codeview.json) and
+      # windows.zip, for the assembling job. NOT named asset-*/meta-*: those
+      # patterns are what the release's index, verify and publish jobs collect.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vsp-base
+          path: |
+            cache
+            windows.zip
+          retention-days: 1
+          compression-level: 0
+
+  convert:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    name: convert (${{ matrix.shard }})
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The converter VolWeb itself runs: VolWeb 3.16.0 bundles volatility3
+      # 2.28.0. A table from another version would load, but must not differ
+      # from what the appliance would have downloaded for itself.
+      - name: Install the Volatility converter
+        run: pip install --quiet "volatility3==2.28.0"
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: vsp-plan
+
+      # One pdbconv per core (each is single-threaded, ~0.5 GB).
+      - name: Convert every 8th table, starting at ${{ matrix.shard }}
+        run: |
+          python3 -u scripts/ci/build_kernel_pack.py --cache shard --plan plan.json \
+            --shard ${{ matrix.shard }}/8 --jobs "$(nproc)"
+          mkdir -p shard
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vsp-shard-${{ matrix.shard }}
+          path: shard
+          if-no-files-found: ignore
+          retention-days: 1
+          compression-level: 0
+
+  assemble:
+    needs: convert
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Only for a table a convert runner failed: it is retried here.
+      - name: Install the Volatility converter
+        run: pip install --quiet "volatility3==2.28.0"
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: vsp-base
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: vsp-shard-*
+          merge-multiple: true
+          path: cache
+
       - name: Build intact-windows-kernels.zip
         run: |
-          python3 scripts/ci/build_kernel_pack.py \
-            --out kernel-pack --cache "$RUNNER_TEMP/kernel-pack-cache" \
-            --skip-zip windows.zip $( [ -f seed.zip ] && echo --seed-zip seed.zip ) --jobs 8
+          python3 -u scripts/ci/build_kernel_pack.py --out kernel-pack --cache cache \
+            --skip-zip windows.zip --jobs "$(nproc)"
           ls -lh kernel-pack
 
       # The release asset: both packs, outside every module asset (the volweb

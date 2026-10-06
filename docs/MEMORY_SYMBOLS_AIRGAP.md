@@ -137,7 +137,7 @@ So every release also ships **`intact-windows-kernels.zip`**, beside `windows.zi
 in **`<tag>-volweb_symbols.tar`** — a release asset of its own, outside the volweb
 module asset (with both packs inside, that one passed GitHub's 2 GiB per-file
 limit). Built in CI by `scripts/ci/build_kernel_pack.py` (workflow
-`kernel-pack.yml`):
+`volweb-symbols-pack.yml`, fanned out over 8 runners):
 
 | | |
 |---|---|
