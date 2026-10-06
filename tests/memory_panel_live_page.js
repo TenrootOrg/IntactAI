@@ -251,6 +251,7 @@ const shown = (win, el) => {
     check(!!panel.querySelector('a[href="https://github.com/TenrootOrg/IntactAI/releases/latest"]'),
           'it links the newest release (generic, no tag)');
     check(panel.querySelectorAll('details ol li').length >= 9, 'each source has its steps');
+    check(/Connected to the internet\? Nothing to do/.test(txt), 'it says a connected box downloads tables itself');
     check(!!panel.querySelector('input[type="file"]'), 'the upload is there');
   }
   win.Alpine.store('app').switchTab('modules-memory');
