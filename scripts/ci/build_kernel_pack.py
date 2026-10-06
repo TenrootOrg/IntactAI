@@ -163,9 +163,20 @@ def build(out_dir: str, cache: str, since: str, jobs: int, data: dict | None = N
     log(f"kernel pack: {len(todo)} x64 build(s) of {', '.join(FILES)} in supported Windows "
         f"versions, released since {since}" + (f"; skipping {len(have)} table(s) in {skip_zip}" if have else ""))
     tables, failed = {}, []
+    # A build's PDB identity never changes, so it is cached too: a warm run then
+    # makes no symbol-server request at all for a build it has seen.
+    ids_path = os.path.join(cache, "codeview.json")
+    try:
+        with open(ids_path) as fh:
+            ids = json.load(fh)
+    except (OSError, ValueError):
+        ids = {}
 
     def one(b):
-        pdb, guid, age = codeview(b)
+        key = f"{b['file']}:{b['timestamp']}:{b['virtualSize']}"
+        if key not in ids:
+            ids[key] = list(codeview(b))
+        pdb, guid, age = ids[key]
         rel = f"windows/{pdb}/{guid}-{age}.json.xz"
         if rel in have:
             return b, None
@@ -180,6 +191,9 @@ def build(out_dir: str, cache: str, since: str, jobs: int, data: dict | None = N
                                             "windows": b["windows"]})
             except Exception as e:                       # noqa: BLE001 -- one bad build, not the pack
                 failed.append(str(e)[:200])
+    with open(ids_path + ".tmp", "w") as fh:
+        json.dump(ids, fh)
+    os.replace(ids_path + ".tmp", ids_path)
     if not tables:
         raise SystemExit(f"kernel pack: nothing built ({len(failed)} failure(s); first: {failed[:1]})")
     pack = os.path.join(out_dir, "intact-windows-kernels.zip")

@@ -254,8 +254,17 @@ jobs:
           retention-days: 1
 
   # ------------------------------------------------------------------ build
+  # Windows kernel symbol tables for the volweb asset (air-gapped memory
+  # analysis). Its own workflow so main can keep a warm cache weekly -- a
+  # release run can restore main's cache but never another tag's.
+  kernel-pack:
+    needs: resolve
+    uses: ./.github/workflows/kernel-pack.yml
+    with:
+      ref: ${{ needs.resolve.outputs.commit }}
+
   build:
-    needs: [resolve, build-image]
+    needs: [resolve, build-image, kernel-pack]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -324,6 +333,15 @@ jobs:
             exit 1
           fi
 
+      # The pack rides in the volweb asset beside Volatility's windows.zip;
+      # package.py picks it up from INTACT_KERNEL_PACK.
+      - name: Fetch the Windows kernel symbol pack
+        if: matrix.module == 'volweb'
+        uses: actions/download-artifact@v8
+        with:
+          name: intact-windows-kernels
+          path: kernel-pack
+
       - name: Build the ${{ matrix.module }} asset
         env:
           TAG: ${{ needs.resolve.outputs.tag }}
@@ -346,6 +364,7 @@ jobs:
             -e INTACT_HOST_PATH="$GITHUB_WORKSPACE" \
             -e GITHUB_TOKEN="$GITHUB_TOKEN" \
             -e TAG="$TAG" -e MODULE="$MODULE" -e COMMIT="$COMMIT" \
+            -e INTACT_KERNEL_PACK="$GITHUB_WORKSPACE/kernel-pack/intact-windows-kernels.zip" \
             -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
             -v /opt/sigma-rules:/opt/sigma-rules:ro \
             -v "$GITHUB_WORKSPACE/out:/output" \
@@ -759,6 +778,12 @@ jobs:
               if c.get("volweb_symbols"):
                   entries[mod]["volweb_symbols"] = {k: c["volweb_symbols"].get(k)
                                                     for k in ("sha256", "size", "tables")}
+                  # Every pack file by name (windows.zip + intact-windows-kernels.zip):
+                  # the upgrade fetches the asset when ANY of them differs. The
+                  # single sha256 above stays for engines that only know windows.zip.
+                  if c.get("volweb_symbols_files"):
+                      entries[mod]["volweb_symbols"]["files"] = {
+                          n: f.get("sha256") for n, f in c["volweb_symbols_files"].items()}
               for img in (c.get("images") or []):
                   if img in images and images[img] != mod:
                       problems.append(f"image {img} claimed by both {images[img]} and {mod}")

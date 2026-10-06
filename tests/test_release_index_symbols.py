@@ -32,7 +32,11 @@ class TheIndexCarriesThePack(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.d, ignore_errors=True)
         for mod, contents in (("volweb", {"volweb_symbols": {"file": "volweb_symbols/windows.zip",
                                                              "sha256": "231d6973", "size": 839727133,
-                                                             "tables": 3014, "source_url": "u"}}),
+                                                             "tables": 3014, "source_url": "u"},
+                                          "volweb_symbols_files": {
+                                              "windows.zip": {"sha256": "231d6973", "size": 1, "tables": 3014},
+                                              "intact-windows-kernels.zip": {"sha256": "k3rn", "size": 2,
+                                                                             "tables": 1065}}}),
                               ("intact", {})):
             asset = f"t-{mod}.tar.gz"
             os.makedirs(os.path.join(self.d, "meta", mod))
@@ -50,8 +54,14 @@ class TheIndexCarriesThePack(unittest.TestCase):
         self.index = json.load(open(os.path.join(self.d, "out", "t.index.json")))
 
     def test_the_volweb_entry_names_its_pack(self):
-        self.assertEqual(self.index["assets"]["volweb"]["volweb_symbols"],
-                         {"sha256": "231d6973", "size": 839727133, "tables": 3014})
+        vs = dict(self.index["assets"]["volweb"]["volweb_symbols"])
+        vs.pop("files", None)
+        self.assertEqual(vs, {"sha256": "231d6973", "size": 839727133, "tables": 3014})
+
+    def test_every_pack_file_is_named_with_its_checksum(self):
+        # windows.zip AND the kernel pack: an upgrade fetches the asset when either moves
+        self.assertEqual(self.index["assets"]["volweb"]["volweb_symbols"]["files"],
+                         {"windows.zip": "231d6973", "intact-windows-kernels.zip": "k3rn"})
 
     def test_a_module_without_a_pack_has_no_such_field(self):
         self.assertNotIn("volweb_symbols", self.index["assets"]["intact"])

@@ -1,0 +1,81 @@
+# Volatility 3 symbol tables for every supported Windows kernel build
+# (intact-windows-kernels.zip), so an AIR-GAPPED appliance can analyse a current
+# Windows memory image. See scripts/ci/build_kernel_pack.py for why and how.
+#
+# CACHE SCOPE IS THE WHOLE DESIGN. A run restores caches from its own ref and the
+# default branch only -- a release built from tag B never sees tag A's cache. A
+# cold build is ~1,065 conversions (~2 h on a hosted runner); a warm one converts
+# only the Windows updates published since. So this runs weekly on main, which
+# keeps a cache every release can restore, and is also CALLED by the release
+# workflow, which then converts at most a week of new updates.
+name: Windows kernel symbol pack
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"          # Mondays: Patch Tuesday is the following week's input
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: commit to build the pack with (the release's resolved commit)
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  kernel-pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340          # a cold cache is ~2 h; GitHub's ceiling is 6 h
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The converter VolWeb itself runs: VolWeb 3.16.0 bundles volatility3
+      # 2.28.0. A table from another version would load, but must not differ
+      # from what the appliance would have downloaded for itself.
+      - name: Install the Volatility converter
+        run: pip install --quiet "volatility3==2.28.0"
+
+      - name: Restore converted tables
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/intact-kernel-pack
+          key: kernel-pack-v1-${{ github.run_id }}
+          restore-keys: kernel-pack-v1-
+
+      # Only to skip what Volatility's own pack already carries (its 3,014
+      # tables are shipped as windows.zip beside this pack).
+      - name: Fetch windows.zip's table list
+        run: |
+          curl -fL --retry 3 -C - --retry-all-errors --max-time 3600 -o windows.zip \
+            https://downloads.volatilityfoundation.org/volatility3/symbols/windows.zip
+
+      - name: Build intact-windows-kernels.zip
+        run: |
+          python3 scripts/ci/build_kernel_pack.py \
+            --out kernel-pack --cache ~/.cache/intact-kernel-pack \
+            --skip-zip windows.zip --jobs 8
+          ls -lh kernel-pack
+
+      # Saved even when the build failed part-way: every table converted so far
+      # is work the next run does not repeat.
+      - name: Save converted tables
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/intact-kernel-pack
+          key: kernel-pack-v1-${{ github.run_id }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: intact-windows-kernels
+          path: kernel-pack/intact-windows-kernels.zip
+          retention-days: 7
+          compression-level: 0     # .json.xz inside: already compressed

@@ -118,6 +118,17 @@ class ThePack(unittest.TestCase):
         meta = json.loads(zipfile.ZipFile(self.res["pack"]).read("intact-kernel-pack.json"))
         self.assertEqual(meta["tables"][f"windows/ntkrnlmp.pdb/{GUID}-1.json.xz"]["windows"], ["11-24H2"])
 
+    def test_a_warm_cache_asks_the_symbol_server_nothing(self):
+        data = {"ntoskrnl.exe": winbindex((34404, ["11-24H2"], "2024-09-10"), (34404, ["1607"], "2017-01-01")),
+                "tcpip.sys": {}}
+
+        def no_network(b):
+            raise AssertionError("codeview() called for a build already in the cache")
+        with mock.patch.object(k, "codeview", no_network), \
+                mock.patch.object(k, "convert", lambda pdb, guid, age, cache: f"windows/{pdb}/{guid}-{age}.json.xz"):
+            res = k.build(self.out, self.cache, "2000-01-01", 1, data, skip_zip=self.skip, log=lambda m: None)
+        self.assertEqual(res["failed"], [])
+
     def test_nothing_built_is_a_failure_not_an_empty_pack(self):
         with mock.patch.object(k, "builds", lambda *a, **kw: []), self.assertRaises(SystemExit):
             k.build(self.out, self.cache, "2000-01-01", 1, {}, log=lambda m: None)

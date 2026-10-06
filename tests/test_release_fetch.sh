@@ -105,8 +105,8 @@ test_happy_path_stages_the_bundle() {
 # branch out of lib/release.sh and running it -- a reimplementation here would
 # pass while the shipped logic drifted.
 # ---------------------------------------------------------------------------
-_selection() {   # <INTACT_RELEASE_ONLY_MODULES> [<box symbols sha>] -> the asset names it would fetch
-    INTACT_RELEASE_ONLY_MODULES="$1" INTACT_HAVE_SYMBOLS_SHA256="${2:-}" \
+_selection() {   # <INTACT_RELEASE_ONLY_MODULES> [<box packs as JSON>] [<index flavour>] -> asset names fetched
+    INTACT_RELEASE_ONLY_MODULES="$1" INTACT_HAVE_SYMBOLS="${2:-}" OLD_INDEX="${3:-}" \
         python3 - "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/release.sh" <<'PYEOF'
 import json, os, sys
 src = open(sys.argv[1]).read().split("\n")
@@ -119,8 +119,11 @@ index = {"assets": {
     "iris":      {"asset": "t-iris.tar.gz",      "sha256": "c", "parts": []},
     "portainer": {"asset": "t-portainer.tar.gz", "sha256": "d", "parts": []},
     "volweb":    {"asset": "t-volweb.tar.gz",    "sha256": "e", "parts": [],
-                  "volweb_symbols": {"sha256": "PACK2026", "size": 1, "tables": 1}},
+                  "volweb_symbols": {"sha256": "PACK2026", "size": 1, "tables": 1,
+                                     "files": {"windows.zip": "PACK2026", "intact-windows-kernels.zip": "KERN"}}},
 }}
+if os.environ.get("OLD_INDEX"):          # an index from before the kernel pack: windows.zip alone
+    del index["assets"]["volweb"]["volweb_symbols"]["files"]
 names = [v["asset"] for v in index["assets"].values()] + ["t.manifest.json"]
 tag = "t"
 os.environ["INDEX_JSON"] = json.dumps(index)
@@ -180,23 +183,33 @@ test_upgrade_sh_always_appends_intact_to_the_filter() {
     assert_eq "${r% }" "intact elk" "the de-dup must collapse a repeated intact"
 }
 
-# 2026-10-05: the symbol pack rides in the volweb asset, but VolWeb itself moves
-# every few months -- a filtered upgrade must still bring a NEWER pack.
+# 2026-10-05: the symbol packs ride in the volweb asset, but VolWeb itself moves
+# every few months -- a filtered upgrade must still bring NEWER packs.
+SAME='{"windows.zip": "PACK2026", "intact-windows-kernels.zip": "KERN"}'
 test_a_newer_symbol_pack_brings_the_volweb_asset_along() {
-    assert_contains "$(_selection "elk intact" "PACK2019")" "t-volweb.tar.gz" \
-        "the release pack differs from the box pack: fetch the asset that carries it"
-    assert_contains "$(_selection "elk intact" "none")" "t-volweb.tar.gz" \
-        "a box with no pack at all gets the release one"
+    assert_contains "$(_selection "elk intact" '{"windows.zip": "PACK2019", "intact-windows-kernels.zip": "KERN"}')" \
+        "t-volweb.tar.gz" "windows.zip differs: fetch the asset that carries it"
+    assert_contains "$(_selection "elk intact" '{"windows.zip": "PACK2026", "intact-windows-kernels.zip": "none"}')" \
+        "t-volweb.tar.gz" "a box without the kernel pack gets it"
+    assert_contains "$(_selection "elk intact" '{"windows.zip": "none", "intact-windows-kernels.zip": "none"}')" \
+        "t-volweb.tar.gz" "a box with no pack at all gets both"
 }
 
-test_the_same_pack_downloads_nothing_extra() {
-    assert_not_contains "$(_selection "elk intact" "PACK2026")" "t-volweb.tar.gz" \
-        "an unchanged pack must not cost a 1.4 GB download"
+test_the_same_packs_download_nothing_extra() {
+    assert_not_contains "$(_selection "elk intact" "$SAME")" "t-volweb.tar.gz" \
+        "unchanged packs must not cost a 2 GB download"
 }
 
 test_no_volweb_on_the_box_means_no_pack_fetch() {
     assert_not_contains "$(_selection "elk intact" "")" "t-volweb.tar.gz" \
         "VolWeb not running here: leave the asset"
+}
+
+test_an_older_index_compares_windows_zip_alone() {
+    assert_not_contains "$(_selection "elk intact" '{"windows.zip": "PACK2026", "intact-windows-kernels.zip": "none"}' old)" \
+        "t-volweb.tar.gz" "an index without a files map knows only windows.zip"
+    assert_contains "$(_selection "elk intact" '{"windows.zip": "PACK2019", "intact-windows-kernels.zip": "none"}' old)" \
+        "t-volweb.tar.gz" "...and still fetches when windows.zip differs"
 }
 
 test_install_never_sets_the_filter() {

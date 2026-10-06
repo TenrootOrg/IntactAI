@@ -76,16 +76,18 @@ download_release_assets() {
     # release carries a newer one (see the selection below). Only for a
     # filtered fetch -- an install takes everything anyway -- and only when
     # VolWeb runs here. "none" = VolWeb runs but holds no pack.
+    # Every pack file a release ships, by name -- "none" for one this box lacks.
     local have_sym=""
     if [[ -n "${INTACT_RELEASE_ONLY_MODULES:-}" ]] \
             && [[ "$(docker inspect -f '{{.State.Running}}' intact_volweb_backend 2>/dev/null)" == "true" ]]; then
         have_sym="$(docker exec intact_volweb_backend sh -c \
-            'sha256sum /home/app/web/media/symbols/windows.zip 2>/dev/null | cut -d" " -f1' 2>/dev/null)"
-        have_sym="${have_sym:-none}"
+            'cd /home/app/web/media/symbols 2>/dev/null; for f in windows.zip intact-windows-kernels.zip; do
+                 s=$(sha256sum "$f" 2>/dev/null | cut -d" " -f1); echo "$f ${s:-none}"; done' 2>/dev/null \
+            | python3 -c 'import json, sys; print(json.dumps(dict(l.split() for l in sys.stdin if l.strip())))' 2>/dev/null)"
     fi
 
     local names
-    names="$(printf '%s' "$json" | INDEX_TAG="$tag" INDEX_JSON="$index_json" INTACT_HAVE_SYMBOLS_SHA256="$have_sym" python3 -c '
+    names="$(printf '%s' "$json" | INDEX_TAG="$tag" INDEX_JSON="$index_json" INTACT_HAVE_SYMBOLS="$have_sym" python3 -c '
 import json, os, sys
 tag = os.environ["INDEX_TAG"]
 try:
@@ -130,16 +132,21 @@ if index:
     # nothing to exec into and the box silently applies the release with its
     # OWN older engine.
     only = {m for m in (os.environ.get("INTACT_RELEASE_ONLY_MODULES") or "").split() if m}
-    # The Volatility symbol pack rides in the volweb asset, and VolWeb moves
-    # every few months while the pack should reach every box every release
-    # (2026-10-05). So that asset comes along whenever its pack differs from
-    # the one on this box -- "none" when there is none; unset or empty when
-    # VolWeb is not running here, which means: leave it.
-    have_sym = os.environ.get("INTACT_HAVE_SYMBOLS_SHA256") or ""
+    # The symbol packs ride in the volweb asset, and VolWeb moves every few
+    # months while the packs should reach every box every release
+    # (2026-10-05). So that asset comes along whenever ANY of its pack files
+    # differs from the one on this box -- "none" for a file the box lacks; an
+    # empty map when VolWeb is not running here, which means: leave it. An
+    # older index names windows.zip alone, by its single sha256.
+    try:
+        have_sym = json.loads(os.environ.get("INTACT_HAVE_SYMBOLS") or "{}")
+    except Exception:
+        have_sym = {}
     attached, missing = set(names), []
     for mod, entry in (index.get("assets") or {}).items():
-        sym = (entry.get("volweb_symbols") or {}).get("sha256") or ""
-        newer_pack = bool(have_sym and sym and sym != have_sym)
+        vs = entry.get("volweb_symbols") or {}
+        packs = vs.get("files") or ({"windows.zip": vs["sha256"]} if vs.get("sha256") else {})
+        newer_pack = bool(have_sym) and any(sha and have_sym.get(n, "none") != sha for n, sha in packs.items())
         if only and mod not in only and not newer_pack:
             continue
         whole, sha = entry["asset"], entry.get("sha256") or ""
