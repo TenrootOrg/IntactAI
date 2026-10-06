@@ -340,7 +340,13 @@
                                     <template x-for="p in $store.memory.symLib.packs" :key="p.name">
                                         <div><b x-text="p.name"></b> —
                                             <span x-text="p.tables.toLocaleString() + ' Windows tables'"></span> ·
-                                            <span>newest table dated <b class="text-gray-100" x-text="$store.memory.symDate(p.dated)"></b></span> ·
+                                            <template x-if="p.covers">
+                                                <span>covers <b class="text-gray-100" x-text="p.covers[0] + ' → ' + p.covers[1]"></b> ·
+                                                    newest build <b class="text-gray-100" x-text="p.newest_build"></b>,
+                                                    released <b class="text-gray-100" x-text="$store.memory.symDate(p.dated)"></b> ·
+                                                    <span class="text-gray-400" x-text="'built ' + $store.memory.symDate(p.built)"></span></span>
+                                            </template>
+                                            <span x-show="!p.covers">newest table dated <b class="text-gray-100" x-text="$store.memory.symDate(p.dated)"></b></span> ·
                                             <span x-text="Math.round(p.size / 1048576) + ' MB'"></span> ·
                                             <span class="text-gray-400" x-text="'on this appliance since ' + $store.memory.symDate(p.added)"></span></div>
                                     </template>

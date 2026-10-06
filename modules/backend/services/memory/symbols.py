@@ -137,15 +137,31 @@ for root, _dirs, files in os.walk(lib):
         except OSError:
             continue
         if f.endswith(".zip") and root == lib:
+            meta = {}
             try:
                 with zipfile.ZipFile(p) as z:
                     infos = [i for i in z.infolist() if i.filename.startswith("windows/")
                              and i.filename.endswith((".json.xz", ".json"))]
+                    if "intact-kernel-pack.json" in z.namelist():
+                        meta = json.loads(z.read("intact-kernel-pack.json"))
                 newest = max((i.date_time for i in infos), default=None)
-            except (zipfile.BadZipFile, OSError):
+            except (zipfile.BadZipFile, OSError, ValueError):
                 infos, newest = [], None
-            packs.append({"name": f, "size": st.st_size, "added": iso(st.st_mtime), "tables": len(infos),
-                          "dated": dt.date(*newest[:3]).isoformat() if newest else None})
+            pack = {"name": f, "size": st.st_size, "added": iso(st.st_mtime), "tables": len(infos),
+                    "dated": dt.date(*newest[:3]).isoformat() if newest else None}
+            # Our kernel pack says which Windows each table is for. Its date is
+            # then the newest WINDOWS build it covers -- the zip entries carry
+            # only the day CI converted them, which says nothing about coverage.
+            rows = list((meta.get("tables") or {}).values())
+            if rows:
+                top = max(rows, key=lambda r: r.get("released") or "")
+                vers = sorted({w for r in rows for w in r.get("windows") or []},
+                              key=lambda w: (w.startswith("11-"), w))
+                label = lambda w: "Windows 11 " + w[3:] if w.startswith("11-") else "Windows 10 " + w
+                pack.update(dated=top.get("released"), built=meta.get("built"),
+                            newest_build=(top.get("version") or "").split(" ")[0],
+                            covers=[label(vers[0]), label(vers[-1])] if vers else None)
+            packs.append(pack)
         elif f.endswith((".json.xz", ".json", ".json.gz")) and "/windows/" in p:
             kernels.append((st.st_mtime, os.path.relpath(p, lib)))
 kernels.sort()

@@ -66,6 +66,34 @@ class WhatTheApplianceHas(unittest.TestCase):
         self.assertEqual(out["kernels"], 2)
         self.assertEqual({v["state"] for v in out["index"].values()}, {"ready"})
 
+    def test_the_kernel_pack_says_what_windows_it_covers(self):
+        # 2026-10-06: the zip entries carry the day CI converted them, which says
+        # nothing about coverage; the pack's manifest names each table's Windows.
+        import json as _json
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        with zipfile.ZipFile(os.path.join(d, "intact-windows-kernels.zip"), "w") as z:
+            z.writestr("windows/ntkrnlmp.pdb/A-1.json.xz", b"x")
+            z.writestr("windows/ntkrnlmp.pdb/B-1.json.xz", b"x")
+            z.writestr("intact-kernel-pack.json", _json.dumps({"built": "2026-10-06T06:18:00+00:00", "tables": {
+                "windows/ntkrnlmp.pdb/A-1.json.xz": {"version": "10.0.10240.17914 (th1)", "released": "2018-07-10",
+                                                    "windows": ["1507"]},
+                "windows/ntkrnlmp.pdb/B-1.json.xz": {"version": "10.0.26100.1742 (WinBuild)", "released": "2024-09-10",
+                                                    "windows": ["11-24H2", "11-25H2"]}}}))
+        real_run = subprocess.run
+
+        def run(script, timeout=60):
+            return real_run(["sh", "-c", script.replace(symbols.SYMBOLS_DIR, d)],
+                            capture_output=True, text=True, timeout=timeout)
+        idx = subprocess.CompletedProcess([], 0, stdout="ready 1791194240\n", stderr="")
+        with mock.patch.object(symbols, "_exec", run), \
+                mock.patch.object(symbols.subprocess, "run", side_effect=lambda *a, **k: idx
+                                  if a[0][:2] == ["docker", "exec"] else real_run(*a, **k)):
+            pack = symbols.library()["packs"][0]
+        self.assertEqual(pack["covers"], ["Windows 10 1507", "Windows 11 25H2"])
+        self.assertEqual((pack["newest_build"], pack["dated"]), ("10.0.26100.1742", "2024-09-10"))
+        self.assertEqual(pack["tables"], 2)
+
     def test_an_unreachable_volweb_is_said_not_shown_as_empty(self):
         with mock.patch.object(symbols, "_exec", side_effect=FileNotFoundError):
             self.assertIn("error", symbols.library())
