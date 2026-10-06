@@ -16,8 +16,8 @@ one image: the same Microsoft symbol server, the same Volatility converter.
   3. The PDB comes from msdl.microsoft.com and `volatility3 ... pdbconv` turns it
      into windows/<pdb>/<GUID>-<age>.json.xz, the layout VolWeb reads in a pack.
 
-A cache directory keeps every converted table, so a release only converts the
-Windows updates published since the last one. Exits non-zero only when nothing
+Each release starts from the previous release's pack (--seed-zip), so it only
+converts the Windows updates published since; only the first one is a cold build. Exits non-zero only when nothing
 at all could be built; individual failures are reported and skipped.
 
     python3 scripts/ci/build_kernel_pack.py --out dist/ --cache ~/.cache/kpack --since 2024-10-01
@@ -239,6 +239,7 @@ def build(out_dir: str, cache: str, since: str, jobs: int, data: dict | None = N
     with zipfile.ZipFile(pack + ".tmp", "w", zipfile.ZIP_STORED) as z:   # .xz is already compressed
         for rel in sorted(tables):
             z.write(os.path.join(cache, rel), rel)
+        z.writestr("codeview.json", json.dumps(ids, sort_keys=True))
         z.writestr("intact-kernel-pack.json", json.dumps(
             {"built": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "since": since,
              "tables": tables, "failed": len(failed)}, indent=1, sort_keys=True))
@@ -257,10 +258,14 @@ def main(argv=None) -> int:
     ap.add_argument("--since", default="2000-01-01",
                     help="only builds released on/after this date (default: every build of a supported version)")
     ap.add_argument("--skip-zip", help="a symbol pack whose tables need not be built again (windows.zip)")
+    ap.add_argument("--seed-zip", help="a previous intact-windows-kernels.zip to start from")
     ap.add_argument("--versions", default="",
                     help="Winbindex Windows version keys, comma separated (default: every version)")
     ap.add_argument("--jobs", type=int, default=max(2, (os.cpu_count() or 2)))
     a = ap.parse_args(argv)
+    os.makedirs(os.path.expanduser(a.cache), exist_ok=True)
+    if a.seed_zip and os.path.isfile(a.seed_zip):
+        seed(os.path.expanduser(a.cache), a.seed_zip)
     build(a.out, os.path.expanduser(a.cache), a.since, a.jobs, skip_zip=a.skip_zip,
           versions=tuple(v for v in a.versions.split(",") if v) or None)
     return 0

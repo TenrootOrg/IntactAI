@@ -254,14 +254,14 @@ jobs:
           retention-days: 1
 
   # ------------------------------------------------------------------ build
-  # Windows kernel symbol tables for the volweb asset (air-gapped memory
-  # analysis). Its own workflow so main can keep a warm cache weekly -- a
-  # release run can restore main's cache but never another tag's.
+  # The newest Windows kernel symbol tables for the volweb asset (air-gapped
+  # memory analysis), built now, seeded from the previous release's pack.
   kernel-pack:
     needs: resolve
     uses: ./.github/workflows/kernel-pack.yml
     with:
       ref: ${{ needs.resolve.outputs.commit }}
+      tag: ${{ needs.resolve.outputs.tag }}
 
   build:
     needs: [resolve, build-image, kernel-pack]

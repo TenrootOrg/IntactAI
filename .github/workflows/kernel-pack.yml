@@ -1,23 +1,24 @@
-# Volatility 3 symbol tables for every supported Windows kernel build
+# Volatility 3 symbol tables for every Windows 10/11 kernel build
 # (intact-windows-kernels.zip), so an AIR-GAPPED appliance can analyse a current
 # Windows memory image. See scripts/ci/build_kernel_pack.py for why and how.
 #
-# CACHE SCOPE IS THE WHOLE DESIGN. A run restores caches from its own ref and the
-# default branch only -- a release built from tag B never sees tag A's cache. A
-# cold build is ~1,065 conversions (~2 h on a hosted runner); a warm one converts
-# only the Windows updates published since. So this runs weekly on main, which
-# keeps a cache every release can restore, and is also CALLED by the release
-# workflow, which then converts at most a week of new updates.
+# Runs as part of every release (build-release-assets.yml calls it), never on a
+# schedule: the release is when the newest tables have to be inside it. Builds
+# the list as of TODAY, starting from the PREVIOUS release's pack, so a release
+# converts only the Windows updates published since the last one (minutes).
+# Only the first release with a pack converts everything (~3 h).
 name: Windows kernel symbol pack
 
 on:
-  schedule:
-    - cron: "17 3 * * 1"          # Mondays: Patch Tuesday is the following week's input
   workflow_dispatch:
   workflow_call:
     inputs:
       ref:
         description: commit to build the pack with (the release's resolved commit)
+        type: string
+        required: false
+      tag:
+        description: the release being built (never seeded from itself)
         type: string
         required: false
 
@@ -27,7 +28,7 @@ permissions:
 jobs:
   kernel-pack:
     runs-on: ubuntu-latest
-    timeout-minutes: 340          # a cold cache is ~2 h; GitHub's ceiling is 6 h
+    timeout-minutes: 340          # a first, unseeded build is ~3 h; GitHub's ceiling is 6 h
     steps:
       - uses: actions/checkout@v7
         with:
@@ -43,12 +44,32 @@ jobs:
       - name: Install the Volatility converter
         run: pip install --quiet "volatility3==2.28.0"
 
-      - name: Restore converted tables
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.cache/intact-kernel-pack
-          key: kernel-pack-v1-${{ github.run_id }}
-          restore-keys: kernel-pack-v1-
+      # The newest published release that carries a pack: every table in it is
+      # reused, so only what Microsoft published since is converted. None yet ->
+      # a full build.
+      - name: Seed from the previous release's pack
+        env:
+          GH_TOKEN: ${{ github.token }}
+          THIS_TAG: ${{ inputs.tag }}
+        run: |
+          set -uo pipefail
+          mkdir -p seed && cd seed
+          for t in $(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 15 \
+                       --json tagName --jq '.[].tagName'); do
+            [ "$t" = "${THIS_TAG:-}" ] && continue
+            gh release download "$t" --repo "$GITHUB_REPOSITORY" -p "$t.index.json" --clobber 2>/dev/null || continue
+            python3 -c "import json,sys; v=json.load(open('$t.index.json'))['assets'].get('volweb',{}); \
+              sys.exit(0 if 'intact-windows-kernels.zip' in (v.get('volweb_symbols') or {}).get('files',{}) else 1)" \
+              || continue
+            echo "seeding from $t"
+            gh release download "$t" --repo "$GITHUB_REPOSITORY" -p "$t-volweb.tar.gz*" --clobber || break
+            cat $(ls "$t"-volweb.tar.gz* | sort) > volweb.tar.gz
+            tar -xzf volweb.tar.gz --wildcards --no-anchored 'volweb_symbols/intact-windows-kernels.zip'
+            find . -name intact-windows-kernels.zip -path '*volweb_symbols*' -exec mv {} ../seed.zip \;
+            break
+          done
+          cd .. && rm -rf seed
+          ls -lh seed.zip 2>/dev/null || echo "no previous pack: full build"
 
       # Only to skip what Volatility's own pack already carries (its 3,014
       # tables are shipped as windows.zip beside this pack).
@@ -60,18 +81,9 @@ jobs:
       - name: Build intact-windows-kernels.zip
         run: |
           python3 scripts/ci/build_kernel_pack.py \
-            --out kernel-pack --cache ~/.cache/intact-kernel-pack \
-            --skip-zip windows.zip --jobs 8
+            --out kernel-pack --cache "$RUNNER_TEMP/kernel-pack-cache" \
+            --skip-zip windows.zip $( [ -f seed.zip ] && echo --seed-zip seed.zip ) --jobs 8
           ls -lh kernel-pack
-
-      # Saved even when the build failed part-way: every table converted so far
-      # is work the next run does not repeat.
-      - name: Save converted tables
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.cache/intact-kernel-pack
-          key: kernel-pack-v1-${{ github.run_id }}
 
       - uses: actions/upload-artifact@v7
         with:
