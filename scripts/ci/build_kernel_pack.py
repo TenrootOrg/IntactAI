@@ -141,16 +141,53 @@ def convert(pdb: str, guid: str, age: int, cache: str) -> str:
         with open(local, "wb") as fh:
             fh.write(_get(f"{MSDL}/{pdb}/{guid}{age:X}/{pdb}", timeout=600))
         out = os.path.join(tmp, "out.json.xz")
+        # -p names the database. Without it pdbconv falls back to what the PDB
+        # says, which for tcpip.pdb is nothing: the table was written as
+        # "unknown.pdb", Volatility indexed it under that name, and NetStat
+        # could not find a table that was in the pack (2026-10-06, air-gap proof).
         r = subprocess.run([sys.executable, "-m", "volatility3.framework.symbols.windows.pdbconv",
-                            "-f", local, "-o", out], capture_output=True, text=True, timeout=1800)
+                            "-f", local, "-p", pdb, "-o", out], capture_output=True, text=True, timeout=1800)
         if r.returncode != 0 or not os.path.exists(out):
             raise RuntimeError((r.stderr or r.stdout or "pdbconv failed")[-300:])
         meta = json.load(lzma.open(out))["metadata"]["windows"]["pdb"]
-        if meta["GUID"].upper() != guid or int(meta["age"]) != age:
-            raise RuntimeError(f"converted table says {meta['GUID']}-{meta['age']}")
+        # All three are what Volatility indexes a table by (pdb|GUID|age): a table
+        # it cannot look up is a table the pack does not have.
+        if meta["GUID"].upper() != guid or int(meta["age"]) != age or meta.get("database") != pdb:
+            raise RuntimeError(f"converted table says {meta.get('database')}/{meta['GUID']}-{meta['age']}, "
+                               f"wanted {pdb}/{guid}-{age}")
         shutil.move(out, dest + ".tmp")
         os.replace(dest + ".tmp", dest)
     return rel
+
+
+def seed(cache: str, pack: str, log=print) -> int:
+    """Start from a previous release's intact-windows-kernels.zip: every table in
+    it, and the PDB identities it was built from, are reused as converted. The
+    release workflow seeds from the last published release, so a release converts
+    only the Windows updates published since -- with no schedule and no CI cache
+    (a release run cannot restore another tag's cache anyway)."""
+    n = 0
+    with zipfile.ZipFile(pack) as z:
+        for name in z.namelist():
+            if name.startswith("windows/") and name.endswith(".json.xz"):
+                dest = os.path.join(cache, name)
+                if not os.path.exists(dest):
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    with z.open(name) as src, open(dest, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    n += 1
+        if "codeview.json" in z.namelist():
+            ids_path = os.path.join(cache, "codeview.json")
+            try:
+                with open(ids_path) as fh:
+                    ids = json.load(fh)
+            except (OSError, ValueError):
+                ids = {}
+            ids.update(json.loads(z.read("codeview.json")))
+            with open(ids_path, "w") as fh:
+                json.dump(ids, fh)
+    log(f"kernel pack: seeded {n} table(s) from {pack}")
+    return n
 
 
 def build(out_dir: str, cache: str, since: str, jobs: int, data: dict | None = None,

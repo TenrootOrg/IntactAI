@@ -90,6 +90,39 @@ class TheCodeViewRecord(unittest.TestCase):
                              ("ntkrnlmp.pdb", GUID, 1))
 
 
+class TheConversion(unittest.TestCase):
+    """2026-10-06, the air-gap proof: tcpip tables converted without -p were
+    written as database "unknown.pdb"; Volatility indexed them under that name
+    and NetStat could not find a table that was in the pack."""
+
+    def run_convert(self, written_as):
+        import json, lzma
+        calls = []
+
+        def fake_pdbconv(cmd, **kw):
+            calls.append(cmd)
+            out = cmd[cmd.index("-o") + 1]
+            with lzma.open(out, "wt") as fh:
+                json.dump({"metadata": {"windows": {"pdb": {"GUID": GUID, "age": 1, "database": written_as}}}}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        cache = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, cache, ignore_errors=True)
+        with mock.patch.object(k, "_get", lambda *a, **kw: b"pdb"), \
+                mock.patch.object(k.subprocess, "run", fake_pdbconv):
+            rel = k.convert("tcpip.pdb", GUID, 1, cache)
+        return calls, rel
+
+    def test_the_database_name_is_given_to_pdbconv(self):
+        calls, rel = self.run_convert("tcpip.pdb")
+        self.assertEqual(calls[0][calls[0].index("-p") + 1], "tcpip.pdb")
+        self.assertEqual(rel, f"windows/tcpip.pdb/{GUID}-1.json.xz")
+
+    def test_a_table_volatility_could_not_look_up_is_refused(self):
+        with self.assertRaises(RuntimeError) as e:
+            self.run_convert("unknown.pdb")
+        self.assertIn("unknown.pdb", str(e.exception))
+
+
 class ThePack(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
