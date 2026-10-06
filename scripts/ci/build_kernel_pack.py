@@ -45,14 +45,16 @@ AMD64 = 34404
 # The binaries whose PDBs Volatility's Windows plugins need: the kernel (every
 # plugin) and tcpip (NetScan / NetStat).
 FILES = ("ntoskrnl.exe", "tcpip.sys")
-# EVERY build of every Windows version Microsoft still supports, LTSC and Server
-# lines included -- not "the last N months". Measured on the image that started
-# this: Windows 11 IoT Enterprise LTSC 24H2 runs 10.0.26100.1742, the September
-# 2024 base build, a year older than a 12-month window reaches. LTSC/IoT boxes sit
-# on their base build for years. Winbindex keys (Server 2016/2019/2022/2025 share
-# 1607/1809/21H2/11-24H2). ~690 kernels + ~370 tcpip, ~530 MB.
-SUPPORTED = ("1507", "1607", "1809", "21H2", "22H2",
-             "11-22H2", "11-23H2", "11-24H2", "11-25H2", "11-26H1")
+# EVERY x64 build of EVERY Windows 10/11 version Winbindex knows -- not "still
+# supported", not "the last N months". Organisations run old Windows for years
+# and new Windows the week it ships; an air-gapped box cannot fill a gap later.
+# Measured on the image that started this: Windows 11 IoT Enterprise LTSC 24H2
+# runs 10.0.26100.1742, the September 2024 base build. None (no filter) also
+# means a Windows version Microsoft ships tomorrow is in the next build with no
+# change here. Server 2016/2019/2025 share their kernels with Windows 10
+# 1607/1809 and Windows 11 24H2 and are covered; Server 2022 (build 20348) is
+# NOT in Winbindex and needs another source. ~920 kernels + ~550 tcpip, ~700 MB.
+VERSIONS = None
 UA = {"User-Agent": "Microsoft-Symbol-Server/10.0.0.0"}
 
 
@@ -69,7 +71,7 @@ def _get(url: str, rng: tuple[int, int] | None = None, timeout: int = 120) -> by
         return body
 
 
-def builds(name: str, since: str, data: dict | None = None, versions=SUPPORTED) -> list[dict]:
+def builds(name: str, since: str, data: dict | None = None, versions=VERSIONS) -> list[dict]:
     """x64 builds of `name` in one of `versions` (None: any), shipped in an update
     released on/after `since`."""
     if data is None:
@@ -152,7 +154,7 @@ def convert(pdb: str, guid: str, age: int, cache: str) -> str:
 
 
 def build(out_dir: str, cache: str, since: str, jobs: int, data: dict | None = None,
-          skip_zip: str | None = None, versions=SUPPORTED, log=print) -> dict:
+          skip_zip: str | None = None, versions=VERSIONS, log=print) -> dict:
     os.makedirs(out_dir, exist_ok=True)
     os.makedirs(cache, exist_ok=True)
     todo = [b for name in FILES for b in builds(name, since, (data or {}).get(name), versions)]
@@ -160,8 +162,8 @@ def build(out_dir: str, cache: str, since: str, jobs: int, data: dict | None = N
     have = set()
     if skip_zip:
         have = {n for n in zipfile.ZipFile(skip_zip).namelist() if n.endswith((".json.xz", ".json"))}
-    log(f"kernel pack: {len(todo)} x64 build(s) of {', '.join(FILES)} in supported Windows "
-        f"versions, released since {since}" + (f"; skipping {len(have)} table(s) in {skip_zip}" if have else ""))
+    log(f"kernel pack: {len(todo)} x64 build(s) of {', '.join(FILES)} "
+        f"({', '.join(versions) if versions else 'every Windows version'}), released since {since}" + (f"; skipping {len(have)} table(s) in {skip_zip}" if have else ""))
     tables, failed = {}, []
     # A build's PDB identity never changes, so it is cached too: a warm run then
     # makes no symbol-server request at all for a build it has seen.
@@ -218,12 +220,12 @@ def main(argv=None) -> int:
     ap.add_argument("--since", default="2000-01-01",
                     help="only builds released on/after this date (default: every build of a supported version)")
     ap.add_argument("--skip-zip", help="a symbol pack whose tables need not be built again (windows.zip)")
-    ap.add_argument("--versions", default=",".join(SUPPORTED),
-                    help="Winbindex Windows version keys, comma separated (default: every supported one)")
+    ap.add_argument("--versions", default="",
+                    help="Winbindex Windows version keys, comma separated (default: every version)")
     ap.add_argument("--jobs", type=int, default=max(2, (os.cpu_count() or 2)))
     a = ap.parse_args(argv)
     build(a.out, os.path.expanduser(a.cache), a.since, a.jobs, skip_zip=a.skip_zip,
-          versions=tuple(v for v in a.versions.split(",") if v))
+          versions=tuple(v for v in a.versions.split(",") if v) or None)
     return 0
 
 

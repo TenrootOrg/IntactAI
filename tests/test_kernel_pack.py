@@ -60,13 +60,23 @@ def pe_with_codeview(guid_hex: str, age: int, pdb: str) -> bytes:
 
 class WhichBuilds(unittest.TestCase):
     DATA = winbindex((34404, ["11-24H2"], "2024-09-10"),       # the LTSC base build: in
-                     (34404, ["1709"], "2019-04-09"),          # out of support: out
+                     (34404, ["1709"], "2019-04-09"),          # out of support: still in
                      (332, ["11-24H2"], "2025-01-01"),         # x86: out
                      (34404, ["1809", "1607"], "2021-01-12"))  # LTSC/Server lines: in
 
-    def test_every_build_of_a_supported_version_whatever_its_age(self):
+    def test_every_x64_build_of_every_version_whatever_its_age(self):
+        # 2026-10-06: "most organizations maybe dont have the newest windows version
+        # but we do need to support the latest" -- out-of-support 1709 included.
         got = k.builds("ntoskrnl.exe", "2000-01-01", self.DATA)
-        self.assertEqual(sorted(b["version"] for b in got), ["10.0.0", "10.0.3"])
+        self.assertEqual(sorted(b["version"] for b in got), ["10.0.0", "10.0.1", "10.0.3"])
+
+    def test_a_windows_version_shipped_tomorrow_needs_no_change(self):
+        data = winbindex((34404, ["11-27H1"], "2027-03-01"))
+        self.assertEqual([b["windows"] for b in k.builds("ntoskrnl.exe", "2000-01-01", data)], [["11-27H1"]])
+
+    def test_an_explicit_version_list_still_narrows(self):
+        got = k.builds("ntoskrnl.exe", "2000-01-01", self.DATA, versions=("11-24H2",))
+        self.assertEqual([b["version"] for b in got], ["10.0.0"])
 
     def test_since_still_narrows_when_asked(self):
         self.assertEqual([b["version"] for b in k.builds("ntoskrnl.exe", "2024-01-01", self.DATA)], ["10.0.0"])

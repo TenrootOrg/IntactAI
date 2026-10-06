@@ -138,18 +138,19 @@ in CI by `scripts/ci/build_kernel_pack.py` (workflow `kernel-pack.yml`):
 
 | | |
 |---|---|
-| what | `ntkrnlmp.pdb` + `tcpip.pdb` tables for **every x64 build** of every Windows version Microsoft still supports — Windows 10 1507/1607/1809/21H2/22H2 (LTSC and Server lines included), Windows 11 22H2–26H1 |
+| what | `ntkrnlmp.pdb` + `tcpip.pdb` tables for **every x64 build of every Windows 10 and 11 version** (1507 → 26H1, LTSC included, out-of-support versions too — organisations run them), and with them Server 2016/2019/2025, which share those kernels. A Windows version released tomorrow is in the next build with no code change |
+| not covered | **Server 2022** (build 20348, its own kernel) — Winbindex indexes client Windows only. Windows 7/8.1/Server 2012 R2 only as far as `windows.zip` (2019) |
 | how | Winbindex lists the builds; each kernel's PDB identity is read from Microsoft's symbol server; the PDB is converted with Volatility 3.2.28's own `pdbconv` — the same server and converter VolWeb uses, and the same table (checked: identical to the one VolWeb downloaded itself) |
 | skips | tables `windows.zip` already has |
-| size | ~690 kernels + ~370 tcpip ≈ 530 MB |
+| size | ~920 kernels + ~550 tcpip ≈ 700 MB |
 | fresh | `kernel-pack.yml` runs weekly on `main` (a warm cache for the next release) and in every release |
 
 Install and upgrade treat it exactly like `windows.zip`: staged, seeded into
 `media/symbols`, replaced when it changed, indexed in the background. An upgrade
 fetches the volweb asset when **any** pack file differs from the box's
 (`volweb_symbols.files` in the release index), even when VolWeb itself does not
-move. Not covered: Windows builds older than the supported set and newer than
-`windows.zip` (out-of-support Windows 10 1703–21H1); upload those per Option 1.
+move. Not covered: Server 2022 and post-2019 Windows 7/8.1/Server 2012 R2
+updates; upload those per Option 1.
 
 ## Check where you stand
 
