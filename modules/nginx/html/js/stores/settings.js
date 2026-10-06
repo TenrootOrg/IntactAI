@@ -983,6 +983,7 @@ document.addEventListener('alpine:init', () => {
         // The operator picks ONE Intact release, system derives the
         // per-module work list. See services/upgrade/resolver.py.
         upgradeRefs: [],            // populated by fetchUpgradeRefs()
+        showPrereleases: false,     // development pre-releases (intact-<date>-devN) -- opt-in, 2026-10-06
         selectedRef: '',            // the ref the operator picked in the dropdown
         upgradePlan: null,          // ONLINE mode: forced/optional table from /api/upgrade/plan
         optedInOptional: [],        // ONLINE mode: module IDs the operator ticked in the optional table
@@ -1094,6 +1095,15 @@ document.addEventListener('alpine:init', () => {
             if (!ref || !ref.name) return 'unknown';
             if (ref.kind === 'branch') return 'rolling';
             const cur = this.currentIntactVersion || '';
+            // Release tags and development pre-releases (intact-<date>-devN,
+            // 2026-10-06): date, then dev number, dev builds before the
+            // stable release of their date -- the engine's own order.
+            const rank = (n) => {
+                const m = (n || '').match(/^intact-(\d{8})(?:-dev(\d+))?$/);
+                return m ? Number(m[1]) * 1000 + (m[2] ? Number(m[2]) : 999) : null;
+            };
+            const rc = rank(cur), rr = rank(ref.name);
+            if (rc !== null && rr !== null) return rr > rc ? 'newer' : rr < rc ? 'older' : 'same';
             const dateRx = /^intact-(\d{8})/;
             const curMatch = cur.match(dateRx);
             const refMatch = ref.name.match(dateRx);
@@ -1156,14 +1166,20 @@ document.addEventListener('alpine:init', () => {
                 return m ? m[1] : null;
             };
             const same = this.upgradeRefs.filter(r => this.classifyUpgradeRef(r) === 'same');
+            // The one hop is to the next STABLE release. Development
+            // pre-releases are for testing: hidden unless asked for, and then
+            // every newer one is offered, not just the nearest.
             const newer = this.upgradeRefs
-                .filter(r => this.classifyUpgradeRef(r) === 'newer' && dateOf(r))
+                .filter(r => !r.prerelease && this.classifyUpgradeRef(r) === 'newer' && dateOf(r))
                 .sort((a, b) => dateOf(a).localeCompare(dateOf(b)));
+            const pre = this.showPrereleases
+                ? this.upgradeRefs.filter(r => r.prerelease && this.classifyUpgradeRef(r) === 'newer')
+                : [];
             // Undated entries (e.g. the synthetic `development` ref) are not
             // part of the hop sequence; pass them through untouched.
             const undated = this.upgradeRefs.filter(
                 r => !dateOf(r) && this.classifyUpgradeRef(r) !== 'older');
-            return [...(newer.length ? [newer[0]] : []), ...same, ...undated];
+            return [...(newer.length ? [newer[0]] : []), ...pre, ...same, ...undated];
         },
 
         async fetchGithubQuota() {

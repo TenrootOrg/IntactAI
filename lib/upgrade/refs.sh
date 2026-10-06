@@ -118,8 +118,10 @@ if isinstance(rels, dict):
     raise SystemExit(1)
 
 def datekey(tag):
-    m = re.match(r"^intact-(\d{8})$", tag or "")
-    return int(m.group(1)) if m else -1
+    # Date, then -devN: a development pre-release (intact-<date>-devN,
+    # 2026-10-06) sorts before the stable release of the same date.
+    m = re.match(r"^intact-(\d{8})(?:-dev(\d+))?$", tag or "")
+    return int(m.group(1)) * 1000 + (int(m.group(2)) if m.group(2) else 999) if m else -1
 
 cur = datekey(current)
 rows, skipped = [], []
@@ -134,7 +136,7 @@ for r in rels:
         skipped.append(tag)
         continue
     shape = "per-module" if any(a["name"].endswith("index.json") for a in assets) else "legacy"
-    rows.append((datekey(tag), tag, payload, shape))
+    rows.append((datekey(tag), tag, payload, shape, bool(r.get("prerelease"))))
 
 rows.sort()
 
@@ -147,8 +149,9 @@ if json_mode:
                 "payload_bytes": size,
                 "shape": shape,
                 "note": ("installed" if key == cur else "older" if key < cur else "newer"),
+                "prerelease": pre,
             }
-            for key, tag, size, shape in rows
+            for key, tag, size, shape, pre in rows
         ],
         "skipped": skipped,
     }))
@@ -159,16 +162,17 @@ if not rows:
     raise SystemExit(0)
 
 print("\n  %-24s %10s   %s" % ("RELEASE", "PAYLOAD", ""))
-for key, tag, size, shape in rows:
+for key, tag, size, shape, pre in rows:
     if key == cur:
         note = "<- installed"
     elif key < cur:
         note = "older"
     else:
         note = "newer"
-    print("  %-24s %9.2fG   %s" % (tag, size / 1e9, note))
+    print("  %-24s %9.2fG   %s" % (tag, size / 1e9, note + ("  (pre-release)" if pre else "")))
 
-newer = [t for k, t, _, _ in rows if k > cur]
+# Never suggests a development pre-release: those are taken by name only.
+newer = [t for k, t, _, _, pre in rows if k > cur and not pre]
 if newer:
     print("\n  Next:  sudo bash scripts/upgrade.sh %s" % newer[0])
     if len(newer) > 1:

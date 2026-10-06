@@ -171,6 +171,29 @@ jobs:
           echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
           echo "Building $TAG @ $COMMIT"
 
+      # Releases for other branches (2026-10-06: "we need an option to make
+      # release for other branchs [so i can test it for development"). A
+      # release from any commit NOT on main is a development build: it must
+      # be a GitHub PRE-RELEASE, which an appliance lists only when asked
+      # ("Show development pre-releases") and never suggests as the next hop.
+      # A -devN tag must be one too. Otherwise a test build would be offered
+      # to every customer as the newest release.
+      - name: A build from another branch must be a pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.r.outputs.tag }}
+          COMMIT: ${{ steps.r.outputs.commit }}
+        run: |
+          PRE="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease 2>/dev/null || echo unknown)"
+          ON_MAIN=no; git merge-base --is-ancestor "$COMMIT" origin/main 2>/dev/null && ON_MAIN=yes
+          echo "on main: $ON_MAIN · pre-release: $PRE"
+          if [ "$PRE" != true ] && { [ "$ON_MAIN" = no ] || [[ "$TAG" == *-dev* ]]; }; then
+            echo "::error title=Not a pre-release::$TAG is a development build (not on main, or a -dev tag) but its release is not marked pre-release."
+            echo "  Edit the release, tick 'Set as a pre-release', and re-run -- or tag a commit on main."
+            echo "  Development tags: intact-YYYYMMDD-devN (e.g. intact-20261006-dev1)."
+            exit 1
+          fi
+
       # The backend package is importable straight from the checkout for this
       # (it only reads config.yaml + UPGRADE_ORDER), so no container needed.
       #

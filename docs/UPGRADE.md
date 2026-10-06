@@ -152,6 +152,24 @@ no way back. Attempting one does not restore the old state, it destroys the
 current one. Genuinely reverting a module means wiping its volume and
 restoring from a backup — a deliberate operation, not an upgrade.
 
+## Development pre-releases
+
+A branch other than `main` can be released for testing. Tag it
+`intact-YYYYMMDD-devN` (e.g. `intact-20261006-dev1`) and tick **Set as a
+pre-release** on GitHub. Before tagging, stamp the branch exactly as for a
+normal release: `VERSION` and `versions.backend` in `config.yaml` set to the
+tag. The release workflow refuses a build from a commit not on `main`, or a
+`-dev` tag, that is not marked pre-release, so a test build is never offered
+to customers as the newest release.
+
+On the appliance, pre-releases are listed (`upgrade.sh --list` marks them
+`(pre-release)`; Settings shows them after **Show development pre-releases**
+is ticked) but never suggested as the next hop. Upgrade to one by name:
+`sudo bash scripts/upgrade.sh intact-20261006-dev1`. Ordering is by date,
+then dev number, and dev builds come before the stable release of their date
+(`-dev1` < `-dev2` < `intact-20261006`), so moving from a dev build to that
+day's stable release is an upgrade, and back is a refused downgrade.
+
 ## If something goes wrong
 
 The full log is `upgrade_<timestamp>.log` in the repo root, and its path is

@@ -97,6 +97,19 @@ test_release_tags_compare_by_date() {
     assert_false _version_is_older intact-20260809 intact-20260809
 }
 
+# 2026-10-06: development pre-releases, intact-<date>-devN.
+test_dev_prereleases_order_before_their_stable_release() {
+    _setup
+    assert_true  _version_is_older intact-20261005 intact-20261006-dev1
+    assert_true  _version_is_older intact-20261006-dev1 intact-20261006-dev2
+    assert_true  _version_is_older intact-20261006-dev2 intact-20261006
+    assert_true  _version_is_older intact-20261006-dev9 intact-20261006-dev10    # numbers, not strings
+    assert_true  _version_is_older intact-20261006-dev08 intact-20261006-dev09   # no octal trap
+    assert_false _version_is_older intact-20261006 intact-20261006-dev3          # the stable release is newer than its dev builds
+    assert_false _version_is_older intact-20261006-dev1 intact-20261005
+    assert_false _version_is_older intact-20261006-old-modules intact-20261007   # other suffixes: still unordered
+}
+
 test_timesketch_style_date_pins_compare_numerically() {
     _setup
     assert_true  _version_is_older 20260617 20260630

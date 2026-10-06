@@ -323,23 +323,28 @@ def list_upgrade_refs():
     # options -- the release list looked empty while being perfectly populated.
     # `kind` and `latest` are read by the same markup. The deleted resolver
     # built exactly these three; keep the wording it used.
+    # "latest" is the newest STABLE release: a development pre-release
+    # (intact-<date>-devN, 2026-10-06) is never the one to recommend. The
+    # list is ordered by the engine, oldest first.
     newest = ""
     for r in releases:
-        if r.get("tag", "") > newest:
+        if not r.get("prerelease"):
             newest = r.get("tag", "")
 
     refs = []
     for r in releases:
         tag = r["tag"]
         label = f"release {tag}"
-        if tag == newest:
+        if r.get("prerelease"):
+            label += " (pre-release)"
+        elif tag == newest:
             label += " (latest)"
         refs.append({
             "kind": "tag",
             "name": tag,
             "label": label,
             "latest": tag == newest,
-            "prerelease": False,
+            "prerelease": bool(r.get("prerelease")),
             "package_mb": round(r.get("payload_bytes", 0) / (1024 * 1024), 1),
             "shape": r.get("shape"),
         })

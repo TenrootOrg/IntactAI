@@ -1743,6 +1743,14 @@
                                         </svg>
                                     </button>
                                 </div>
+                                <!-- 2026-10-06: development releases (intact-<date>-devN, GitHub
+                                     pre-releases) for testing a branch. Off by default: an operator
+                                     never lands on a test build by accident. -->
+                                <label x-show="$store.settings.prepareModalMode === 'online'"
+                                       class="flex items-center gap-2 text-xs text-gray-400 mt-2 cursor-pointer">
+                                    <input type="checkbox" x-model="$store.settings.showPrereleases" class="rounded">
+                                    Show development pre-releases
+                                </label>
                                 <!-- Say WHY the list is empty, and say the RIGHT why. Online mode
                                      offers only the current release and the next one (the one-hop
                                      rule), so an empty list is legitimate — but it has two quite

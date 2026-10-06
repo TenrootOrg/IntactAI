@@ -46,18 +46,24 @@ declare -gA PLAN_NOTE=()      # module -> short parenthetical for the ACTION col
 # first boot with no way back. Refusing an upgrade we could have done is an
 # inconvenience; allowing a downgrade destroys evidence.
 #
-# Handles: 9.4.4, v2.4.27, 0.77.1, 2.39.5, 20260630, 2026.04, intact-20260809.
+# Handles: 9.4.4, v2.4.27, 0.77.1, 2.39.5, 20260630, 2026.04, intact-20260809, intact-20261006-dev1.
 # ---------------------------------------------------------------------------
 _version_is_older() {
     local a="$1" b="$2"
     [[ -n "$a" && -n "$b" ]] || return 1
     [[ "$a" == "$b" ]] && return 1
 
-    # Release-tag shape: compare the date suffix.
-    if [[ "$a" =~ ^intact-([0-9]{8})$ && "$b" =~ ^intact-([0-9]{8})$ ]]; then
-        local da="${a#intact-}" db="${b#intact-}"
-        (( 10#$da < 10#$db )) && return 0
-        return 1
+    # Release-tag shape: compare the date, then -devN. A development
+    # pre-release (intact-<date>-devN, 2026-10-06) comes before the stable
+    # release of the same date: dev1 < dev2 < intact-<date>.
+    local rx='^intact-([0-9]{8})(-dev([0-9]+))?$'
+    if [[ "$a" =~ $rx ]]; then
+        local ra=$(( 10#${BASH_REMATCH[1]} * 1000 + 10#${BASH_REMATCH[3]:-999} ))
+        if [[ "$b" =~ $rx ]]; then
+            local rb=$(( 10#${BASH_REMATCH[1]} * 1000 + 10#${BASH_REMATCH[3]:-999} ))
+            (( ra < rb )) && return 0
+            return 1
+        fi
     fi
 
     local na="${a#v}" nb="${b#v}"
