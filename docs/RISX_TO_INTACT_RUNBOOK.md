@@ -169,24 +169,17 @@ you have copied the wrong file — stop and find the right one.
 
 A backup that only exists on the box you are about to wipe is not a backup.
 
-```
-# From your laptop (not the risx box):
-scp -r RISX_BOX:~/velociraptor_backup ./          # RISX_BOX = your ssh target, e.g. ops@10.0.0.5
-ls -lh velociraptor_backup/
-```
-
-Then verify the copy on your laptop opens and shows the **same** CA fingerprint
-as above:
+On your laptop (PowerShell), replace the `<...>` parts:
 
 ```
-python3 -c "
-import hashlib, yaml
-d = yaml.safe_load(open('velociraptor_backup/server.config.yaml'))
-print('CA fingerprint :', hashlib.sha256(d['CA']['private_key'].encode()).hexdigest()[:16])
-"
+cd C:\Users\<your-windows-user>
+scp -r <user>@<risx-box-ip>:/home/<user>/velociraptor_backup .
+dir .\velociraptor_backup
 ```
 
-Only once those fingerprints match are you allowed to move on to Step 2.
+Example: `scp -r tenroot@192.168.10.105:/home/tenroot/velociraptor_backup .`
+
+Move on to Step 2 only once `server.config.yaml` is in that listing.
 
 > **`server.config.yaml` is a credential.** It contains the Velociraptor CA
 > private key and the client nonce — anyone holding it can impersonate the
@@ -302,9 +295,10 @@ setup. Do not migrate before the appliance is healthy on its own.
 
 Copy the backup folder onto the Intact box first:
 
+On your laptop (PowerShell), onto the NEW appliance:
+
 ```
-# From your laptop, onto the NEW appliance:
-scp -r velociraptor_backup INTACT_BOX:~/          # INTACT_BOX = your ssh target for the new appliance
+scp -r $HOME\velociraptor_backup <user>@<intact-box-ip>:~/
 ```
 
 Then, on the Intact box, **from the install root**:
