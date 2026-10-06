@@ -53,13 +53,37 @@
                                 builds up to that release — <b class="text-gray-300">upgrading the appliance installs the newest</b>.
                                 A connected appliance also downloads a missing one by itself.
                             </p>
+                            <!-- 2026-10-06: "there is no explaination how to do it ... and also link is
+                                 missing". One collapsed line per source, the steps inside; links are
+                                 generic (releases/latest, the log's own msdl link), never a fixed tag. -->
                             <div class="text-sm text-gray-400 mt-3">
-                                Build not covered? Upload its table below, from:
-                                <ul class="list-disc ml-5 mt-1 space-y-0.5">
-                                    <li>A newer Intact.AI release — <code>intact-windows-kernels.zip</code> from its <code>volweb_symbols.tar</code></li>
-                                    <li>Microsoft — the <code>.pdb</code> link (msdl.microsoft.com) printed in the analysis log</li>
-                                    <li>A connected Intact.AI appliance — the <code>.json.xz</code> files in its <code>media/symbols/windows/</code></li>
-                                </ul>
+                                Build not covered? Get its table on a computer with internet and upload it below:
+                                <div class="mt-1.5 space-y-1">
+                                    <details>
+                                        <summary class="cursor-pointer text-gray-300">From a newer Intact.AI release</summary>
+                                        <ol class="list-decimal ml-9 mt-1 space-y-0.5">
+                                            <li>Open <a href="https://github.com/TenrootOrg/IntactAI/releases/latest" target="_blank" rel="noopener" class="text-blue-400 hover:underline">github.com/TenrootOrg/IntactAI/releases/latest</a> and download <code>&lt;release&gt;-volweb_symbols.tar</code></li>
+                                            <li>Extract it: <code>tar -xf &lt;release&gt;-volweb_symbols.tar</code> (or 7-Zip on Windows)</li>
+                                            <li>Upload <code>volweb_symbols/intact-windows-kernels.zip</code> — no upgrade needed</li>
+                                        </ol>
+                                    </details>
+                                    <details>
+                                        <summary class="cursor-pointer text-gray-300">From Microsoft, one build at a time</summary>
+                                        <ol class="list-decimal ml-9 mt-1 space-y-0.5">
+                                            <li>Open the failed analysis's Log: it gives the exact link, <code class="break-all">https://msdl.microsoft.com/download/symbols/&lt;file&gt;/&lt;ID&gt;/&lt;file&gt;</code></li>
+                                            <li>Open that link in a browser — it downloads the <code>.pdb</code></li>
+                                            <li>Upload the <code>.pdb</code>; it is converted here</li>
+                                        </ol>
+                                    </details>
+                                    <details>
+                                        <summary class="cursor-pointer text-gray-300">From a connected Intact.AI appliance</summary>
+                                        <ol class="list-decimal ml-9 mt-1 space-y-0.5">
+                                            <li>Analyse an image of that build there — it downloads the table by itself</li>
+                                            <li>Copy the tables out: <code class="break-all">docker cp intact_volweb_backend:/home/app/web/media/symbols/windows ./symbols</code></li>
+                                            <li>Upload the <code>.json.xz</code> files you need</li>
+                                        </ol>
+                                    </details>
+                                </div>
                             </div>
                         </div>
 

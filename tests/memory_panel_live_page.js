@@ -245,8 +245,12 @@ const shown = (win, el) => {
           `the index state is shown (${store.symLib ? store.symIndexLabel() : '-'})`);
     check(!/volatilityfoundation/.test(txt), 'no link to the outdated 2019 pack');
     check(/upgrading the appliance installs the newest/i.test(txt), 'it says the release brings the tables');
-    check(/A newer Intact\.AI release/.test(txt) && /msdl\.microsoft\.com/.test(txt) && /A connected Intact\.AI appliance/.test(txt),
+    check(/a newer Intact\.AI release/i.test(txt) && /msdl\.microsoft\.com/.test(txt) && /a connected Intact\.AI appliance/i.test(txt),
           'it names the other places to get a table');
+    // 2026-10-06: "there is no explaination how to do it ... and also link is missing"
+    check(!!panel.querySelector('a[href="https://github.com/TenrootOrg/IntactAI/releases/latest"]'),
+          'it links the newest release (generic, no tag)');
+    check(panel.querySelectorAll('details ol li').length >= 9, 'each source has its steps');
     check(!!panel.querySelector('input[type="file"]'), 'the upload is there');
   }
   win.Alpine.store('app').switchTab('modules-memory');
