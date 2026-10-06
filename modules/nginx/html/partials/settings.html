@@ -47,36 +47,19 @@
                     <div x-show="settingsTab === 'memory' && $store.services.has('volweb')" x-transition class="space-y-4">
                         <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
                             <h3 class="text-lg font-semibold text-white">Volatility symbol tables</h3>
+                            <!-- 2026-10-06: "its too heavy on the eyes ... make it more simple" -->
                             <p class="text-sm text-gray-400 mt-1">
-                                Memory analysis needs the symbol table of the image's exact Windows build. A connected
-                                appliance downloads a missing one from Microsoft by itself during the analysis; an
-                                air-gapped appliance uses only the tables listed below.
+                                Each Windows build needs its own table. Every release ships them for all Windows 10/11
+                                builds up to that release — <b class="text-gray-300">upgrading the appliance installs the newest</b>.
+                                A connected appliance also downloads a missing one by itself.
                             </p>
-                            <p class="text-sm text-gray-300 mt-3">
-                                <b>Every release brings them.</b> Each Intact.AI release ships the VolWeb symbols
-                                (<code class="text-indigo-300">&lt;release&gt;-volweb_symbols.tar</code> on the release page):
-                                a table for every Windows 10 and 11 build published until that release — Windows Server
-                                2016, 2019 and 2025 included — plus Volatility's pack for Windows 7, 8.1 and early
-                                Windows 10. <b>Upgrading the appliance installs the newest.</b>
-                            </p>
-                            <div class="text-sm text-gray-300 mt-3">
-                                <b>For a build that is not covered</b> (Windows Server 2022, or a Windows update newer than
-                                this appliance's release), get its table from one of these — on a connected computer — and
-                                upload it below:
-                                <ol class="list-decimal ml-5 mt-1.5 space-y-1 text-gray-400">
-                                    <li><b class="text-gray-300">A newer Intact.AI release</b> — download its
-                                        <code class="text-indigo-300">volweb_symbols.tar</code> from the GitHub release page,
-                                        take <code>volweb_symbols/intact-windows-kernels.zip</code> out of it and upload the
-                                        <code>.zip</code>. No upgrade needed.</li>
-                                    <li><b class="text-gray-300">Microsoft's symbol server</b>, one build at a time — the
-                                        analysis log names the missing file and gives its link,
-                                        <code class="text-indigo-300 break-all">https://msdl.microsoft.com/download/symbols/&lt;file&gt;/&lt;ID&gt;/&lt;file&gt;</code>.
-                                        Upload the <code>.pdb</code>; it is converted here.</li>
-                                    <li><b class="text-gray-300">A connected Intact.AI appliance</b> — every table its
-                                        analyses downloaded is kept in its VolWeb library
-                                        (<code>media/symbols/windows/&lt;file&gt;/&lt;ID&gt;.json.xz</code>); upload those
-                                        <code>.json.xz</code> files.</li>
-                                </ol>
+                            <div class="text-sm text-gray-400 mt-3">
+                                Build not covered? Upload its table below, from:
+                                <ul class="list-disc ml-5 mt-1 space-y-0.5">
+                                    <li>A newer Intact.AI release — <code>intact-windows-kernels.zip</code> from its <code>volweb_symbols.tar</code></li>
+                                    <li>Microsoft — the <code>.pdb</code> link (msdl.microsoft.com) printed in the analysis log</li>
+                                    <li>A connected Intact.AI appliance — the <code>.json.xz</code> files in its <code>media/symbols/windows/</code></li>
+                                </ul>
                             </div>
                         </div>
 

@@ -244,7 +244,7 @@ const shown = (win, el) => {
     check(/Symbol index:/.test(txt) && store.symLib && store.symIndexState() !== 'unknown',
           `the index state is shown (${store.symLib ? store.symIndexLabel() : '-'})`);
     check(!/volatilityfoundation/.test(txt), 'no link to the outdated 2019 pack');
-    check(/Upgrading the appliance installs the newest/.test(txt), 'it says the release brings the tables');
+    check(/upgrading the appliance installs the newest/i.test(txt), 'it says the release brings the tables');
     check(/A newer Intact\.AI release/.test(txt) && /msdl\.microsoft\.com/.test(txt) && /A connected Intact\.AI appliance/.test(txt),
           'it names the other places to get a table');
     check(!!panel.querySelector('input[type="file"]'), 'the upload is there');
