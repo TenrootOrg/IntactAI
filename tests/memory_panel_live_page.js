@@ -232,6 +232,10 @@ const shown = (win, el) => {
     await sleep(200);
     const txt = (doc.querySelector('[x-show="memoryTab === \'symbols\'"]') || doc.body).textContent;
     check(/On this appliance/.test(txt), 'the "On this appliance" card is shown');
+    // 2026-10-06: no pointer to the 2019 Volatility pack; the release carries the tables
+    check(!/volatilityfoundation/.test(txt), 'the page no longer sends the operator to the 2019 pack');
+    check(/Upgrade the appliance/.test(txt) && /msdl\.microsoft\.com/.test(txt),
+          'the page says to upgrade, and how to fetch a build that is not covered');
     check(store.symLib.packs.every(p => p.dated) && (!store.symLib.packs.length || /newest table dated/.test(txt)),
           `each pack shows the date of its newest table (${store.symLib.packs.map(p => p.name + ' ' + p.dated).join(', ') || 'no pack'})`);
     check(/per-kernel table/.test(txt), 'the per-kernel count is shown');

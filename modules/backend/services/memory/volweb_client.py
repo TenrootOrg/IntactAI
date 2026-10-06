@@ -1020,8 +1020,15 @@ class VolWebClient:
         # instead of a description of one.
         hint = re.search(r"pdbconv\.py\s+-p\s+(\S+)\s+-g\s+(\S+)", text)
         if hint:
+            # The download link, built from the ID Volatility read out of the
+            # image -- Microsoft's symbol server addresses every PDB as
+            # <pdb>/<GUID><age>/<pdb>. The Symbol tables page tells the operator
+            # to copy it from here onto a connected computer.
             parts.append(
-                f"The image needs the ISF for {hint.group(1)} {hint.group(2)}."
+                f"The image needs the ISF for {hint.group(1)} {hint.group(2)}: "
+                f"on a connected computer download https://msdl.microsoft.com/download/symbols/"
+                f"{hint.group(1)}/{hint.group(2)}/{hint.group(1)} and upload it in "
+                f"Memory → Symbol tables."
             )
         count = self.windows_symbol_isf_count()
         if count == 0:

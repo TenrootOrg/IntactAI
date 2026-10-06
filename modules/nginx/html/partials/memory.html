@@ -311,17 +311,19 @@
                         <div class="bg-gray-800 rounded-lg p-6 border border-gray-700">
                             <label class="block text-sm font-medium text-gray-300">Symbol tables (air-gapped analysis)</label>
                             <p class="text-xs text-gray-400 mt-1">
-                                Volatility needs the symbol table of the image's exact Windows build. An air-gapped appliance
-                                cannot download it — upload it here.
+                                Volatility needs the symbol table of the image's exact Windows build. A connected appliance
+                                downloads a missing one from Microsoft by itself; an air-gapped one uses the tables below.
                             </p>
                             <p class="text-xs text-gray-300 mt-3">
-                                <b>Full Windows pack:</b> on a connected computer download
-                                <code class="text-indigo-300 break-all">https://downloads.volatilityfoundation.org/volatility3/symbols/windows.zip</code>
-                                (840 MB, Volatility Foundation) and upload the <code>.zip</code> as it is.
+                                <b>Every Windows build up to your release is already here.</b> Each Intact.AI release ships
+                                tables for every Windows 10 and 11 build published until that release (Server 2016, 2019
+                                and 2025 included), plus Windows 7 / 8.1. <b>Upgrade the appliance</b> to get the newest ones.
                             </p>
                             <p class="text-[11px] text-gray-500 mt-2">
-                                That pack was last updated in October 2019, so it covers Windows builds up to then. A newer build
-                                needs its own table: upload its <code>.pdb</code> from Microsoft or a <code>.json.xz</code>.
+                                Not covered: Windows Server 2022, and Windows updates released after your installed release.
+                                For one of those, the analysis log names the file it needs and gives its Microsoft link
+                                (<code>https://msdl.microsoft.com/download/symbols/&lt;file&gt;/&lt;ID&gt;/&lt;file&gt;</code>):
+                                download it on a connected computer and upload the <code>.pdb</code> here.
                             </p>
                         </div>
 
