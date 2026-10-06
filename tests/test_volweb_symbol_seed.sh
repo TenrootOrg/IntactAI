@@ -89,7 +89,8 @@ case "$OUT" in
 esac
 
 for w in intact_volweb_workers intact_volweb_workers_yarascan; do
-    if grep -q "^exec -d -u app ${w} sh -c mkdir -p .*SqliteCache(" "$DOCKER_CALLS"; then
+    # the snippet spans several lines: the call starts on one, the update is further down
+    if grep -q "^exec -d -u app ${w} sh -c mkdir -p" "$DOCKER_CALLS" && grep -q "SqliteCache(" "$DOCKER_CALLS"; then
         ok "the symbol index is built in the background in ${w}"
     else
         fail "the symbol index is built in the background in ${w}" "$(grep -- '-d' "$DOCKER_CALLS")"

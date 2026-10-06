@@ -660,9 +660,27 @@ seed_yara_rulesets() {
 # for the 3,014-table windows.zip that took ~14 minutes per worker on
 # 2026-10-05, inside the analysis's own budget. With XDG_CACHE_HOME on the media
 # volume (docker-compose.yaml) the index outlives recreates and upgrades; when
-# nothing changed this is a quick mtime check. Same snippet as
-# services/memory/symbols.py:_PREWARM. Never waited on, never fatal.
-_VOLWEB_PREWARM_PY='import os, volatility3.symbols as s; s.__path__.append(os.path.abspath("media/symbols")); from volatility3.framework import constants; from volatility3.framework.automagic import symbol_cache as c; c.SqliteCache(os.path.join(constants.CACHE_PATH, constants.IDENTIFIERS_FILENAME)).update()'
+# nothing changed this is a quick mtime check. A pack replaced under the same
+# name has its index rows dropped first -- Volatility itself re-reads a known
+# location only after 3 days. Same snippet as services/memory/symbols.py:_PREWARM.
+# Never waited on, never fatal.
+_VOLWEB_PREWARM_PY='import os, sqlite3, datetime as dt, volatility3.symbols as s
+s.__path__.append(os.path.abspath("media/symbols"))
+from volatility3.framework import constants
+from volatility3.framework.automagic import symbol_cache as c
+idx = os.path.join(constants.CACHE_PATH, constants.IDENTIFIERS_FILENAME)
+try:
+    con = sqlite3.connect(idx)
+    for f in os.listdir("media/symbols"):
+        if f.endswith(".zip"):
+            p = os.path.abspath(os.path.join("media/symbols", f))
+            mt = dt.datetime.fromtimestamp(os.path.getmtime(p), dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            con.execute("DELETE FROM cache WHERE location LIKE ? AND cached < ?", ("jar:file:" + p + "!%", mt))
+    con.commit()
+    con.close()
+except sqlite3.Error:
+    pass
+c.SqliteCache(idx).update()'
 prewarm_volweb_symbol_index() {
     local c
     for c in intact_volweb_workers intact_volweb_workers_yarascan; do

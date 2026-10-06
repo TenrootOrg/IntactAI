@@ -77,10 +77,28 @@ print(json.dumps({"file": "windows/%s/%s-%d.json.xz" % (db, guid, age),
 # the library changed, so the next memory analysis does not pay for it: vol3
 # indexes every table before any plugin runs, ~14 minutes for windows.zip
 # (2026-10-05). Same snippet as lib/modules/volweb.sh:_VOLWEB_PREWARM_PY.
-_PREWARM = ('import os, volatility3.symbols as s; s.__path__.append(os.path.abspath("media/symbols")); '
-            'from volatility3.framework import constants; '
-            'from volatility3.framework.automagic import symbol_cache as c; '
-            'c.SqliteCache(os.path.join(constants.CACHE_PATH, constants.IDENTIFIERS_FILENAME)).update()')
+# A pack REPLACED under the same name keeps its index rows: Volatility re-reads
+# a known location only after 3 days (SQLITE_CACHE_PERIOD), so a corrected
+# table went on being looked up under its old name (2026-10-06, air-gap proof:
+# tcpip tables first indexed as "unknown.pdb"). Rows of a zip newer than when
+# they were indexed are dropped first, so update() reads them again now.
+_PREWARM = '''import os, sqlite3, datetime as dt, volatility3.symbols as s
+s.__path__.append(os.path.abspath("media/symbols"))
+from volatility3.framework import constants
+from volatility3.framework.automagic import symbol_cache as c
+idx = os.path.join(constants.CACHE_PATH, constants.IDENTIFIERS_FILENAME)
+try:
+    con = sqlite3.connect(idx)
+    for f in os.listdir("media/symbols"):
+        if f.endswith(".zip"):
+            p = os.path.abspath(os.path.join("media/symbols", f))
+            mt = dt.datetime.fromtimestamp(os.path.getmtime(p), dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            con.execute("DELETE FROM cache WHERE location LIKE ? AND cached < ?", ("jar:file:" + p + "!%", mt))
+    con.commit()
+    con.close()
+except sqlite3.Error:
+    pass
+c.SqliteCache(idx).update()'''
 _INDEX_WORKERS = ("intact_volweb_workers", "intact_volweb_workers_yarascan")
 
 
