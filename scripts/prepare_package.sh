@@ -455,6 +455,16 @@ for mod, e in sorted(available.items()):
         sys.exit("index lists %s but the release does not publish it" % whole)
     for f in files:
         print("%s\t%s\t%s\t%s\t%d" % (f, mod, urls[f], sha, e.get("size") or 0))
+# The VolWeb symbol packs (windows.zip + the Windows kernel pack) ride in their
+# own asset, outside every module (2026-10-06). An air-gapped box has no other
+# way to get them, so every prepared package carries it, whatever the modules.
+sym = idx.get("volweb_symbols") or {}
+if sym.get("asset"):
+    files = [sym["asset"]] if sym["asset"] in urls else [p for p in (sym.get("parts") or []) if p in urls]
+    if not files:
+        sys.exit("index lists %s but the release does not publish it" % sym["asset"])
+    for f in files:
+        print("%s\t%s\t%s\t%s\t%d" % (f, "volweb_symbols", urls[f], sym.get("sha256", ""), sym.get("size") or 0))
 ')"
 NFILES="$(printf '%s\n' "$PLAN" | grep -c . || true)"
 TOTAL_BYTES="$(printf '%s\n' "$PLAN" | awk -F'\t' '{s+=$5} END {print s+0}')"

@@ -1,10 +1,13 @@
-"""The release index records the symbol pack carried by the volweb asset.
+"""The release index lists the VolWeb symbols asset -- outside the modules.
 
-2026-10-05: VolWeb moves every few months, the Volatility symbol pack should
-reach every box every release. A filtered upgrade decides whether to fetch the
-volweb asset for its pack alone (lib/release.sh) -- from the index, the only
-thing it has read by then. This runs the REAL "Build and validate the index"
-step of build-release-assets.yml on two fake module sidecars.
+2026-10-06: the Volatility symbol packs ride in their own <tag>-volweb_symbols.tar
+("pack it out of the volweb ... so we wont pass the limit"). The index must:
+name it under index["volweb_symbols"] (never index["assets"], where --only, the
+version plan and the completeness check would treat it as a module), carry each
+pack's sha256 so an upgrade can tell a changed pack, add the packs to the merged
+manifest's sha256 map (or the upgrade's scoped verifier rejects them), and stop
+the release when the asset is missing. Runs the REAL "Build and validate the
+index" step of build-release-assets.yml on fake sidecars.
 """
 import json
 import os
@@ -16,6 +19,9 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WF = os.path.join(ROOT, ".github/workflows/build-release-assets.yml")
+SYM = {"asset": "t-volweb_symbols.tar", "sha256": "5ym", "size": 3, "parts": [],
+       "files": {"windows.zip": "231d6973", "intact-windows-kernels.zip": "k3rn"},
+       "tables": {"windows.zip": 3014, "intact-windows-kernels.zip": 1470}}
 
 
 def index_step() -> str:
@@ -26,45 +32,50 @@ def index_step() -> str:
     return textwrap.dedent("\n".join(lines[py + 1:end]))
 
 
-class TheIndexCarriesThePack(unittest.TestCase):
+def run(d, with_symbols=True):
+    for mod in ("volweb", "intact"):
+        asset = f"t-{mod}.tar"
+        os.makedirs(os.path.join(d, "meta", mod))
+        json.dump({"module": mod, "asset": asset, "source_commit": "c0ffee", "release_tag": "t",
+                   "modules": {mod: "1"}, "size": 1, "sha256": mod, "parts": []},
+                  open(os.path.join(d, "meta", mod, asset + ".meta.json"), "w"))
+        json.dump({"contents": {"sha256": {f"images/{mod}.tar": mod}}},
+                  open(os.path.join(d, "meta", mod, asset + ".manifest.json"), "w"))
+    if with_symbols:
+        os.makedirs(os.path.join(d, "symmeta"))
+        json.dump(SYM, open(os.path.join(d, "symmeta", "t-volweb_symbols.tar.meta.json"), "w"))
+    os.makedirs(os.path.join(d, "out"))                      # the step's own `mkdir -p out`
+    env = dict(os.environ, TAG="t", COMMIT="c0ffee", EXPECTED_MODULES='["volweb", "intact"]')
+    env.pop("GITHUB_STEP_SUMMARY", None)
+    return subprocess.run(["python3", "-c", index_step()], cwd=d, env=env,
+                          capture_output=True, text=True, timeout=60)
+
+
+class TheIndexCarriesTheSymbols(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.d, ignore_errors=True)
-        for mod, contents in (("volweb", {"volweb_symbols": {"file": "volweb_symbols/windows.zip",
-                                                             "sha256": "231d6973", "size": 839727133,
-                                                             "tables": 3014, "source_url": "u"},
-                                          "volweb_symbols_files": {
-                                              "windows.zip": {"sha256": "231d6973", "size": 1, "tables": 3014},
-                                              "intact-windows-kernels.zip": {"sha256": "k3rn", "size": 2,
-                                                                             "tables": 1065}}}),
-                              ("intact", {})):
-            asset = f"t-{mod}.tar.gz"
-            os.makedirs(os.path.join(self.d, "meta", mod))
-            json.dump({"module": mod, "asset": asset, "source_commit": "c0ffee", "release_tag": "t",
-                       "modules": {mod: "1"}, "size": 1, "sha256": mod, "parts": []},
-                      open(os.path.join(self.d, "meta", mod, asset + ".meta.json"), "w"))
-            json.dump({"contents": contents},
-                      open(os.path.join(self.d, "meta", mod, asset + ".manifest.json"), "w"))
-        os.makedirs(os.path.join(self.d, "out"))               # the step's own `mkdir -p out`
-        env = dict(os.environ, TAG="t", COMMIT="c0ffee", EXPECTED_MODULES='["volweb", "intact"]')
-        env.pop("GITHUB_STEP_SUMMARY", None)
-        r = subprocess.run(["python3", "-c", index_step()], cwd=self.d, env=env,
-                           capture_output=True, text=True, timeout=60)
+
+    def test_the_symbols_asset_is_listed_outside_the_modules(self):
+        r = run(self.d)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.index = json.load(open(os.path.join(self.d, "out", "t.index.json")))
-
-    def test_the_volweb_entry_names_its_pack(self):
-        vs = dict(self.index["assets"]["volweb"]["volweb_symbols"])
-        vs.pop("files", None)
-        self.assertEqual(vs, {"sha256": "231d6973", "size": 839727133, "tables": 3014})
-
-    def test_every_pack_file_is_named_with_its_checksum(self):
-        # windows.zip AND the kernel pack: an upgrade fetches the asset when either moves
-        self.assertEqual(self.index["assets"]["volweb"]["volweb_symbols"]["files"],
+        index = json.load(open(os.path.join(self.d, "out", "t.index.json")))
+        self.assertEqual(index["volweb_symbols"]["asset"], "t-volweb_symbols.tar")
+        self.assertEqual(index["volweb_symbols"]["files"],
                          {"windows.zip": "231d6973", "intact-windows-kernels.zip": "k3rn"})
+        self.assertEqual(sorted(index["assets"]), ["intact", "volweb"])     # not a module
 
-    def test_a_module_without_a_pack_has_no_such_field(self):
-        self.assertNotIn("volweb_symbols", self.index["assets"]["intact"])
+    def test_the_packs_are_in_the_merged_sha256_map(self):
+        run(self.d)
+        shas = json.load(open(os.path.join(self.d, "out", "t.manifest.json")))["contents"]["sha256"]
+        self.assertEqual(shas["volweb_symbols/windows.zip"], "231d6973")
+        self.assertEqual(shas["volweb_symbols/intact-windows-kernels.zip"], "k3rn")
+        self.assertEqual(shas["images/volweb.tar"], "volweb")                # modules untouched
+
+    def test_a_release_without_the_symbols_asset_stops(self):
+        r = run(self.d, with_symbols=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("no symbols asset", r.stdout + r.stderr)
 
 
 if __name__ == "__main__":

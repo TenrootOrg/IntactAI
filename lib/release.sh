@@ -132,31 +132,37 @@ if index:
     # nothing to exec into and the box silently applies the release with its
     # OWN older engine.
     only = {m for m in (os.environ.get("INTACT_RELEASE_ONLY_MODULES") or "").split() if m}
-    # The symbol packs ride in the volweb asset, and VolWeb moves every few
-    # months while the packs should reach every box every release
-    # (2026-10-05). So that asset comes along whenever ANY of its pack files
-    # differs from the one on this box -- "none" for a file the box lacks; an
-    # empty map when VolWeb is not running here, which means: leave it. An
-    # older index names windows.zip alone, by its single sha256.
     try:
         have_sym = json.loads(os.environ.get("INTACT_HAVE_SYMBOLS") or "{}")
     except Exception:
         have_sym = {}
     attached, missing = set(names), []
-    for mod, entry in (index.get("assets") or {}).items():
-        vs = entry.get("volweb_symbols") or {}
-        packs = vs.get("files") or ({"windows.zip": vs["sha256"]} if vs.get("sha256") else {})
-        newer_pack = bool(have_sym) and any(sha and have_sym.get(n, "none") != sha for n, sha in packs.items())
-        if only and mod not in only and not newer_pack:
-            continue
-        whole, sha = entry["asset"], entry.get("sha256") or ""
-        parts = [p for p in (entry.get("parts") or []) if p in attached]
+
+    def take(whole, sha, parts):
+        parts = [p for p in (parts or []) if p in attached]
         if whole in attached:
             want.append((whole, whole, sha))
         elif parts:
             want.extend((p, whole, sha) for p in parts)
         else:
             missing.append(whole)
+
+    for mod, entry in (index.get("assets") or {}).items():
+        if only and mod not in only:
+            continue
+        take(entry["asset"], entry.get("sha256") or "", entry.get("parts"))
+    # The Volatility symbol packs ride in their OWN asset, outside every module
+    # (2026-10-06), listed as index["volweb_symbols"]. Taken on every install (no
+    # filter), when volweb itself is fetched (an upgrade that installs VolWeb
+    # needs them), and when ANY pack file differs from the one on this box --
+    # "none" for a file the box lacks; an empty map when VolWeb is not running
+    # here, which means: leave it. An unchanged pack costs no download.
+    sym = index.get("volweb_symbols") or {}
+    if sym.get("asset"):
+        differs = bool(have_sym) and any(
+            s and have_sym.get(n, "none") != s for n, s in (sym.get("files") or {}).items())
+        if not only or "volweb" in only or differs:
+            take(sym["asset"], sym.get("sha256") or "", sym.get("parts"))
     if missing:
         # Marker on STDOUT -- stderr is discarded by the caller, so a bare
         # sys.exit(msg) here would read to the shell as "no assets found".

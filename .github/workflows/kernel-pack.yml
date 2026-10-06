@@ -1,6 +1,7 @@
 # Volatility 3 symbol tables for every Windows 10/11 kernel build
 # (intact-windows-kernels.zip), so an AIR-GAPPED appliance can analyse a current
-# Windows memory image. See scripts/ci/build_kernel_pack.py for why and how.
+# Windows memory image, shipped with Volatility's windows.zip as the release's
+# own <tag>-volweb_symbols.tar. See scripts/ci/build_kernel_pack.py for why and how.
 #
 # Runs as part of every release (build-release-assets.yml calls it), never on a
 # schedule: the release is when the newest tables have to be inside it. Builds
@@ -52,7 +53,8 @@ jobs:
 
       # The newest published release that carries a pack: every table in it is
       # reused, so only what Microsoft published since is converted. None yet ->
-      # a full build.
+      # a full build. The packs travel in that release's <tag>-volweb_symbols.tar
+      # (plain tar, possibly split into .part-NN like every asset over 1.9 GiB).
       - name: Seed from the previous release's pack
         env:
           GH_TOKEN: ${{ github.token }}
@@ -64,13 +66,12 @@ jobs:
                        --json tagName --jq '.[].tagName'); do
             [ "$t" = "${THIS_TAG:-}" ] && continue
             gh release download "$t" --repo "$GITHUB_REPOSITORY" -p "$t.index.json" --clobber 2>/dev/null || continue
-            python3 -c "import json,sys; v=json.load(open('$t.index.json'))['assets'].get('volweb',{}); \
-              sys.exit(0 if 'intact-windows-kernels.zip' in (v.get('volweb_symbols') or {}).get('files',{}) else 1)" \
-              || continue
+            python3 -c "import json,sys; s=json.load(open('$t.index.json')).get('volweb_symbols') or {}; \
+              sys.exit(0 if 'intact-windows-kernels.zip' in (s.get('files') or {}) else 1)" || continue
             echo "seeding from $t"
-            gh release download "$t" --repo "$GITHUB_REPOSITORY" -p "$t-volweb.tar.gz*" --clobber || break
-            cat $(ls "$t"-volweb.tar.gz* | sort) > volweb.tar.gz
-            tar -xzf volweb.tar.gz --wildcards --no-anchored 'volweb_symbols/intact-windows-kernels.zip'
+            gh release download "$t" --repo "$GITHUB_REPOSITORY" -p "$t-volweb_symbols.tar*" --clobber || break
+            cat $(ls "$t"-volweb_symbols.tar* | sort) > symbols.tar
+            tar -xf symbols.tar --wildcards --no-anchored 'volweb_symbols/intact-windows-kernels.zip'
             find . -name intact-windows-kernels.zip -path '*volweb_symbols*' -exec mv {} ../seed.zip \;
             break
           done
@@ -91,9 +92,54 @@ jobs:
             --skip-zip windows.zip $( [ -f seed.zip ] && echo --seed-zip seed.zip ) --jobs 8
           ls -lh kernel-pack
 
+      # The release asset: both packs, outside every module asset (the volweb
+      # asset with them passed GitHub's 2 GiB per-file limit). The release index
+      # lists it as index["volweb_symbols"]; see scripts/ci/build_symbols_asset.py.
+      - name: Build the symbols asset
+        env:
+          TAG: ${{ inputs.tag || 'dev' }}
+        run: |
+          python3 scripts/ci/build_symbols_asset.py --tag "$TAG" --out out \
+            --pack windows.zip --pack kernel-pack/intact-windows-kernels.zip
+
+      # Same split as every module asset (build-release-assets.yml "Checksum and
+      # split"): over 1.9 GiB it goes out as .part-NN, and the meta says so.
+      - name: Checksum and split
+        working-directory: out
+        run: |
+          set -euo pipefail
+          PKG="$(ls -1 *-volweb_symbols.tar | head -1)"
+          echo "sha256 $(sha256sum "$PKG" | cut -d' ' -f1)  $PKG"
+          SIZE=$(stat -c%s "$PKG")
+          if [ "$SIZE" -gt $((1900 * 1024 * 1024)) ]; then
+            echo "$PKG is $((SIZE/1024/1024)) MiB — splitting"
+            split -b 1900m -d -a 2 "$PKG" "$PKG.part-"
+            rm -f "$PKG"
+          fi
+          python3 - "$PKG" <<'PY'
+          import glob, json, os, sys
+          pkg = sys.argv[1]
+          meta_path = pkg + ".meta.json"
+          meta = json.load(open(meta_path))
+          meta["parts"] = sorted(os.path.basename(p) for p in glob.glob(pkg + ".part-*"))
+          json.dump(meta, open(meta_path, "w"), indent=2)
+          print(f"{pkg}: {len(meta['parts']) or 'no'} part(s)")
+          PY
+          ls -lh
+
+      # asset-* is what verify-assets and publish collect; the description
+      # travels apart (the index job needs only it) and is NOT named meta-*,
+      # which the index reads as module sidecars.
       - uses: actions/upload-artifact@v7
         with:
-          name: intact-windows-kernels
-          path: kernel-pack/intact-windows-kernels.zip
+          name: asset-volweb_symbols
+          path: |
+            out/*
+            !out/*.json
           retention-days: 7
-          compression-level: 0     # .json.xz inside: already compressed
+          compression-level: 0
+      - uses: actions/upload-artifact@v7
+        with:
+          name: volweb_symbols-meta
+          path: out/*.meta.json
+          retention-days: 7

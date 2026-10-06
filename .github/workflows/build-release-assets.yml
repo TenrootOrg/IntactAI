@@ -254,8 +254,9 @@ jobs:
           retention-days: 1
 
   # ------------------------------------------------------------------ build
-  # The newest Windows kernel symbol tables for the volweb asset (air-gapped
-  # memory analysis), built now, seeded from the previous release's pack.
+  # The newest Windows kernel symbol tables (air-gapped memory analysis), built
+  # now, seeded from the previous release's pack, and shipped with windows.zip
+  # as the release's own <tag>-volweb_symbols.tar -- outside every module asset.
   kernel-pack:
     needs: resolve
     uses: ./.github/workflows/kernel-pack.yml
@@ -264,7 +265,7 @@ jobs:
       tag: ${{ needs.resolve.outputs.tag }}
 
   build:
-    needs: [resolve, build-image, kernel-pack]
+    needs: [resolve, build-image]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -333,15 +334,6 @@ jobs:
             exit 1
           fi
 
-      # The pack rides in the volweb asset beside Volatility's windows.zip;
-      # package.py picks it up from INTACT_KERNEL_PACK.
-      - name: Fetch the Windows kernel symbol pack
-        if: matrix.module == 'volweb'
-        uses: actions/download-artifact@v8
-        with:
-          name: intact-windows-kernels
-          path: kernel-pack
-
       - name: Build the ${{ matrix.module }} asset
         env:
           TAG: ${{ needs.resolve.outputs.tag }}
@@ -364,7 +356,6 @@ jobs:
             -e INTACT_HOST_PATH="$GITHUB_WORKSPACE" \
             -e GITHUB_TOKEN="$GITHUB_TOKEN" \
             -e TAG="$TAG" -e MODULE="$MODULE" -e COMMIT="$COMMIT" \
-            -e INTACT_KERNEL_PACK="$GITHUB_WORKSPACE/kernel-pack/intact-windows-kernels.zip" \
             -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
             -v /opt/sigma-rules:/opt/sigma-rules:ro \
             -v "$GITHUB_WORKSPACE/out:/output" \
@@ -720,13 +711,20 @@ jobs:
   # The index is the CONTRACT: it is how a box learns which modules a release
   # carries and what each should hash to. It reads only the tiny sidecars.
   index:
-    needs: [resolve, build]
+    needs: [resolve, build, kernel-pack]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8
         with:
           path: meta
           pattern: meta-*
+
+      # The symbols asset's description -- deliberately not meta-*, which the
+      # loop below reads as module sidecars.
+      - uses: actions/download-artifact@v8
+        with:
+          name: volweb_symbols-meta
+          path: symmeta
 
       - name: Build and validate the index
         env:
@@ -773,17 +771,6 @@ jobs:
                                   f"other assets cannot be checked")
                   continue
               c = (json.load(open(man)).get("contents") or {})
-              # The symbol pack's identity, so a filtered upgrade can decide to
-              # fetch this asset for a newer pack alone (lib/release.sh).
-              if c.get("volweb_symbols"):
-                  entries[mod]["volweb_symbols"] = {k: c["volweb_symbols"].get(k)
-                                                    for k in ("sha256", "size", "tables")}
-                  # Every pack file by name (windows.zip + intact-windows-kernels.zip):
-                  # the upgrade fetches the asset when ANY of them differs. The
-                  # single sha256 above stays for engines that only know windows.zip.
-                  if c.get("volweb_symbols_files"):
-                      entries[mod]["volweb_symbols"]["files"] = {
-                          n: f.get("sha256") for n, f in c["volweb_symbols_files"].items()}
               for img in (c.get("images") or []):
                   if img in images and images[img] != mod:
                       problems.append(f"image {img} claimed by both {images[img]} and {mod}")
@@ -849,6 +836,18 @@ jobs:
 
           index = {"release_tag": tag, "source_commit": commit,
                    "assets": entries}
+          # The symbols asset (both Volatility packs): its own key, never in
+          # "assets", so --only, the version plan and the completeness check
+          # above never see it. lib/release.sh fetches it on every install and
+          # on an upgrade whose packs differ. Its files join the sha256 map, or
+          # the upgrade's scoped verifier rejects them as undescribed.
+          sym_meta = sorted(glob.glob("symmeta/**/*-volweb_symbols.tar.meta.json", recursive=True))
+          if not sym_meta:
+              sys.exit("::error::no symbols asset -- the kernel-pack job produced nothing")
+          sm = json.load(open(sym_meta[0]))
+          index["volweb_symbols"] = {k: sm[k] for k in ("asset", "sha256", "size", "parts", "files", "tables")}
+          for n, sha in sm["files"].items():
+              shas[f"volweb_symbols/{n}"] = sha
           out = f"out/{tag}.index.json"
           json.dump(index, open(out, "w"), indent=2)
           print(f"indexed {len(entries)} module(s): {', '.join(sorted(entries))}")
@@ -915,7 +914,7 @@ jobs:
   # one runner after the whole matrix finishes. This job keeps only the dry-run,
   # which genuinely needs every asset together in one package dir.
   verify-assets:
-    needs: [resolve, build, index]
+    needs: [resolve, build, index, kernel-pack]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -1027,7 +1026,7 @@ jobs:
 
   # ----------------------------------------------------------------- attach
   publish:
-    needs: [resolve, build, index, system-bundle, bootstrap-asset, verify-assets]
+    needs: [resolve, build, index, system-bundle, bootstrap-asset, verify-assets, kernel-pack]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -1111,6 +1110,9 @@ jobs:
           idx=json.load(open(sys.argv[1]))
           for m,e in sorted(idx['assets'].items()):
               print(m, e['asset'], e['sha256'])
+          s=idx.get('volweb_symbols')
+          if s:
+              print('volweb_symbols', s['asset'], s['sha256'])   # artifact asset-volweb_symbols
           " "$INDEX")
           exit $fail
 

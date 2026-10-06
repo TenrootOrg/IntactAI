@@ -50,11 +50,18 @@ echo 1 > "${FIX}/eng-src/BOOTSTRAP_PROTOCOL"
 tar -czf "${FIX}/${TAG}-engine.tar.gz" -C "${FIX}/eng-src" .
 ( cd "${FIX}" && sha256sum "${TAG}-engine.tar.gz" > "${TAG}-engine.tar.gz.sha256" )
 
+# The VolWeb symbols asset (2026-10-06): its own release asset, outside every
+# module, listed as index["volweb_symbols"].
+mkdir -p "${FIX}/sym-src/intact-upgrade-${TAG}/volweb_symbols"
+echo "fake pack" > "${FIX}/sym-src/intact-upgrade-${TAG}/volweb_symbols/intact-windows-kernels.zip"
+tar -cf "${FIX}/${TAG}-volweb_symbols.tar" -C "${FIX}/sym-src" "intact-upgrade-${TAG}"
+
 cat > "${FIX}/index.json" <<JSON
 {
   "assets": {
     "velociraptor": {"asset": "${TAG}-velociraptor.tar", "sha256": "$(sha256sum "${FIX}/${TAG}-velociraptor.tar" | awk '{print $1}')", "size": $(stat -c%s "${FIX}/${TAG}-velociraptor.tar")}
-  }
+  },
+  "volweb_symbols": {"asset": "${TAG}-volweb_symbols.tar", "sha256": "$(sha256sum "${FIX}/${TAG}-volweb_symbols.tar" | awk '{print $1}')", "size": $(stat -c%s "${FIX}/${TAG}-volweb_symbols.tar"), "parts": [], "files": {"intact-windows-kernels.zip": "x"}}
 }
 JSON
 
@@ -77,6 +84,7 @@ cat > "${FIX}/release.json" <<JSON
     {"name": "${TAG}.index.json", "url": "https://api.github.com/fake/asset/index"},
     {"name": "${TAG}.manifest.json", "url": "https://api.github.com/fake/asset/manifest"},
     {"name": "${TAG}-velociraptor.tar", "url": "https://api.github.com/fake/asset/velociraptor", "size": $(stat -c%s "${FIX}/${TAG}-velociraptor.tar")},
+    {"name": "${TAG}-volweb_symbols.tar", "url": "https://api.github.com/fake/asset/volweb_symbols", "size": $(stat -c%s "${FIX}/${TAG}-volweb_symbols.tar")},
     {"name": "${TAG}-system-bundle.tar", "url": "https://api.github.com/fake/asset/bundle", "size": $(stat -c%s "${FIX}/${TAG}-system-bundle.tar")},
     {"name": "${TAG}-system-bundle.tar.sha256", "url": "https://api.github.com/fake/asset/bundle-sha"}
   ]
@@ -136,6 +144,7 @@ case "\$url" in
     */fake/asset/index) cp "${FIX}/index.json" "\$out" ;;
     */fake/asset/manifest) cp "${FIX}/merged-manifest.json" "\$out" ;;
     */fake/asset/velociraptor) cp "${FIX}/${TAG}-velociraptor.tar" "\$out" ;;
+    */fake/asset/volweb_symbols) cp "${FIX}/${TAG}-volweb_symbols.tar" "\$out" ;;
     */fake/asset/bundle-sha) cp "${FIX}/${TAG}-system-bundle.tar.sha256" "\$out" ;;
     */fake/asset/bundle) cp "${FIX}/${TAG}-system-bundle.tar" "\$out" ;;
     */${TAG}-engine.tar.gz.sha256) cp "${FIX}/${TAG}-engine.tar.gz.sha256" "\$out" ;;
@@ -165,6 +174,9 @@ test_wrapper_includes_the_system_bundle() {
 
     local listing; listing="$(tar -tf "$wrapper" 2>/dev/null)"
     assert_contains "$listing" "${TAG}-velociraptor.tar" "module asset must be in the wrapper"
+    # 2026-10-06: the symbol packs travel in every air-gapped package -- the box
+    # has no other way to get them.
+    assert_contains "$listing" "${TAG}-volweb_symbols.tar" "the VolWeb symbols asset must be in the wrapper"
     assert_contains "$listing" "${TAG}.index.json" "index must be in the wrapper"
     assert_contains "$listing" "${TAG}-system-bundle.tar" \
         "defect (1): the wrapper must carry the system bundle, not just module assets"
