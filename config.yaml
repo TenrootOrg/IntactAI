@@ -156,6 +156,12 @@ modules:
     enabled: true
     id: tenroot
     password: '123123'
+  # Presidio — OPTIONAL PII NER sidecar. A second masking pass that catches the
+  # free-text leftovers (person/company names) the deterministic masker cannot.
+  # OFF by default: it ships its own container with a ~1GB spaCy model baked in,
+  # so operators opt in per box. With it off the backend's masking.ner is a no-op.
+  presidio:
+    enabled: false
 project_name: intact
 versions:
   elk: '9.4.4'
@@ -219,6 +225,14 @@ versions:
   # services/upgrade/base.set_module_version_in_config — but this protects
   # the OLD code we can't change in an already-deployed release.)
   backend: 'intact-20261005'
+
+  # Presidio PII NER sidecar (modules/presidio). Tracks the release tag, like the
+  # backend — CI builds intact-presidio:<this> with the spaCy model baked in.
+  presidio: 'intact-20261005'
+  # Which spaCy model CI bakes into the image (no GPU anywhere, so the transformer
+  # model is not an option). lg = best recall, ~740MB RAM; md = lighter (~360MB),
+  # same result on typical payloads — switch to md for 16GB boxes.
+  presidio_model: 'en_core_web_lg'
 
   # ── External sidecar pins (postgres / opensearch / redis / nginx / rabbitmq) ──
   # 2026-06-14 refactor: these used to be scraped live from each

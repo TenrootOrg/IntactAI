@@ -726,6 +726,20 @@ update_env_files() {
         log_success "Updated Nginx .env (NGINX_VERSION=$nginx_version)"
     fi
 
+    # Presidio PII NER sidecar — version pin + which spaCy model CI baked in.
+    # Written even when the module is off: compose's ${PRESIDIO_VERSION:?…} would
+    # fail loudly otherwise, and the file is harmless when the service isn't run.
+    local presidio_env="${SCRIPT_DIR}/modules/presidio/.env"
+    local presidio_version=$(read_config "['versions']['presidio']")
+    if [[ -n "$presidio_version" && "$presidio_version" != "None" ]]; then
+        [[ -f "$presidio_env" ]] || touch "$presidio_env"
+        update_env_var "$presidio_env" "PRESIDIO_VERSION" "$presidio_version"
+        local presidio_model=$(read_config "['versions']['presidio_model']")
+        [[ -z "$presidio_model" || "$presidio_model" == "None" ]] && presidio_model="en_core_web_lg"
+        update_env_var "$presidio_env" "PRESIDIO_MODEL" "$presidio_model"
+        log_success "Updated Presidio .env (PRESIDIO_VERSION=$presidio_version, PRESIDIO_MODEL=$presidio_model)"
+    fi
+
     # Backend - update credentials and Plaso version
     local backend_env="${SCRIPT_DIR}/modules/backend/.env"
     if [[ -f "$backend_env" ]]; then
