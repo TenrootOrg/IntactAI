@@ -70,18 +70,81 @@ def _plausible_name(s: str) -> bool:
 _PSEUDO_PREFIX = {"PERSON": "Person", "ORG": "Org", "LOCATION": "Loc", "GPE": "Loc", "NRP": "Group"}
 
 
-# Production runs Presidio in its OWN container (modules/presidio); the backend
-# POSTs text to it and gets back entity offsets. In dev/tests Presidio may instead
-# be importable in-process. Either path feeds the same scrub() below.
-_SIDECAR_URL = os.environ.get("PRESIDIO_URL", "http://intact_presidio:3000")
+# Production runs Presidio in its OWN container (modules/presidio), ON DEMAND like
+# plaso: the backend `docker run`s it when a report needs the NER pass, calls it
+# over HTTP, and the container exits itself when idle (so it is "active only while
+# used, then off"). In dev/tests Presidio may instead be importable in-process.
+# Either path feeds the same scrub() below.
+import threading
+
+_CONTAINER = "intact_presidio"
+_NETWORK = os.environ.get("INTACT_NETWORK", "intact_network")
+_MEM = os.environ.get("PRESIDIO_MEMORY", "2g")
+_SIDECAR_URL = os.environ.get("PRESIDIO_URL", f"http://{_CONTAINER}:3000")
 _SIDECAR_STATE: dict = {"ok": None, "checked_at": 0.0}
-_SIDECAR_TTL = 30.0                                    # re-probe health at most this often
+_SIDECAR_TTL = 15.0                                    # re-probe health at most this often
+_START_LOCK = threading.Lock()
+
+
+def _image() -> str:
+    """The intact-presidio image tag — versions.presidio via the backend config,
+    else the env override, else the pinned default."""
+    try:
+        from config import get_presidio_image            # noqa: PLC0415
+        img = get_presidio_image()
+        if img:
+            return img
+    except Exception:                                    # noqa: BLE001 — config/dep absent
+        pass
+    return os.environ.get("PRESIDIO_IMAGE", "intact-presidio:2.2.364")
+
+
+def _image_present() -> bool:
+    try:
+        import subprocess
+        return subprocess.run(["docker", "image", "inspect", _image()],
+                              capture_output=True, timeout=10).returncode == 0
+    except Exception:                                    # noqa: BLE001
+        return False
 
 
 def available() -> bool:
-    """True iff the NER engine can be reached — the sidecar container (production)
-    or an in-process Presidio + spaCy model (dev/tests)."""
-    return _sidecar_ok() or (_analyzer() is not None)
+    """True iff the NER engine can be reached/started — the sidecar is already up,
+    its image is present (so we can start it on demand), or in-process (dev/tests)."""
+    return _sidecar_ok() or _image_present() or (_analyzer() is not None)
+
+
+def _ensure_sidecar() -> bool:
+    """Make the sidecar healthy, starting it on demand if its image is present.
+    Serialised so two concurrent reports don't both `docker run` it. Returns
+    False (and the caller falls back) if it can't be reached or started."""
+    if _sidecar_ok():
+        return True
+    if not _image_present():
+        return False
+    with _START_LOCK:
+        if _sidecar_ok():                                # started while we waited
+            return True
+        try:
+            import subprocess
+            cmd = ["docker", "run", "-d", "--rm", "--name", _CONTAINER,
+                   "--network", _NETWORK, "--memory", _MEM]
+            model = os.environ.get("PRESIDIO_MODEL")
+            if model:
+                cmd += ["-e", f"PRESIDIO_MODEL={model}"]
+            cmd.append(_image())
+            # A name clash means it is already running (another worker won the race);
+            # either way we then poll health below, so ignore the run's own result.
+            subprocess.run(cmd, capture_output=True, timeout=30)
+        except Exception:                                # noqa: BLE001
+            pass
+        import time
+        for _ in range(45):                              # ~45s: cold model load + boot
+            _SIDECAR_STATE["ok"] = None                  # force a fresh probe
+            if _sidecar_ok():
+                return True
+            time.sleep(1)
+        return False
 
 
 def _sidecar_ok() -> bool:
@@ -105,8 +168,8 @@ def _sidecar_ok() -> bool:
 def _detect_spans(text, entities, threshold):
     """Return [{entity_type,start,end,score}, …] via the sidecar, else in-process,
     else []. Never raises — a detection failure degrades to no masking."""
-    # Sidecar first (the production path).
-    if _sidecar_ok():
+    # Sidecar first (the production path) — started on demand if needed.
+    if _ensure_sidecar():
         try:
             import json
             import urllib.request

@@ -88,7 +88,7 @@ source "${SCRIPT_DIR}/lib/common.sh"
 source "${SCRIPT_DIR}/lib/config.sh"
 source "${SCRIPT_DIR}/lib/deps.sh"
 source "${SCRIPT_DIR}/lib/docker.sh"
-for _lib in shared elk timesketch velociraptor iris portainer volweb backend presidio nginx orchestrator; do
+for _lib in shared elk timesketch velociraptor iris portainer volweb backend nginx orchestrator; do
     # shellcheck source=/dev/null
     source "${SCRIPT_DIR}/lib/modules/${_lib}.sh" || { echo "Cannot source lib/modules/${_lib}.sh" >&2; exit 2; }
 done

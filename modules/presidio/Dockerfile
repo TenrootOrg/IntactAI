@@ -18,9 +18,8 @@ RUN pip install --no-cache-dir -r requirements.txt \
 COPY server.py .
 
 EXPOSE 3000
-# Warm the model at boot (first request otherwise pays the ~2s load); 2 workers,
-# long timeout because a large payload's NER pass can take a couple of seconds.
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
-    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:3000/health',timeout=5).status==200 else 1)"
-CMD ["gunicorn", "--bind", "0.0.0.0:3000", "--workers", "2", "--timeout", "120", \
-     "--preload", "--access-logfile", "-", "server:APP"]
+# ON-DEMAND, single process: the backend `docker run`s this when it needs NER;
+# server.py warms the model, serves, and exits itself when idle (PRESIDIO_IDLE_SECONDS)
+# so the --rm container is removed. No gunicorn: one serial caller (the backend
+# during report masking), and a single process is what can cleanly self-exit.
+CMD ["python", "server.py"]

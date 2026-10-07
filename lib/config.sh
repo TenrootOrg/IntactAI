@@ -726,19 +726,6 @@ update_env_files() {
         log_success "Updated Nginx .env (NGINX_VERSION=$nginx_version)"
     fi
 
-    # Presidio PII NER sidecar — version pin + which spaCy model CI baked in.
-    # Written even when the module is off: compose's ${PRESIDIO_VERSION:?…} would
-    # fail loudly otherwise, and the file is harmless when the service isn't run.
-    local presidio_env="${SCRIPT_DIR}/modules/presidio/.env"
-    local presidio_version=$(read_config "['versions']['presidio']")
-    if [[ -n "$presidio_version" && "$presidio_version" != "None" ]]; then
-        [[ -f "$presidio_env" ]] || touch "$presidio_env"
-        update_env_var "$presidio_env" "PRESIDIO_VERSION" "$presidio_version"
-        local presidio_model=$(read_config "['versions']['presidio_model']")
-        [[ -z "$presidio_model" || "$presidio_model" == "None" ]] && presidio_model="en_core_web_lg"
-        update_env_var "$presidio_env" "PRESIDIO_MODEL" "$presidio_model"
-        log_success "Updated Presidio .env (PRESIDIO_VERSION=$presidio_version, PRESIDIO_MODEL=$presidio_model)"
-    fi
 
     # Backend - update credentials and Plaso version
     local backend_env="${SCRIPT_DIR}/modules/backend/.env"
@@ -752,12 +739,22 @@ update_env_files() {
         local o365rc_version=$(read_config "['versions']['o365rc']")
         local tusd_version=$(read_config "['versions']['backend_tusd']")
         local backend_version=$(read_config "['versions']['backend']")
+        # Presidio PII NER image is run ON DEMAND by the backend (get_presidio_image),
+        # so its pins live in the BACKEND .env, not a module .env — like PLASO_VERSION.
+        local presidio_version=$(read_config "['versions']['presidio']")
+        local presidio_model=$(read_config "['versions']['presidio_model']")
 
         update_env_var "$backend_env" "TIMESKETCH_USER" "$ts_user"
         update_env_var "$backend_env" "TIMESKETCH_PASS" "$ts_pass"
         [[ -n "$es_user" && "$es_user" != "None" ]] && update_env_var "$backend_env" "ELASTICSEARCH_USER" "$es_user"
         [[ -n "$es_pass" && "$es_pass" != "None" ]] && update_env_var "$backend_env" "ELASTICSEARCH_PASSWORD" "$es_pass"
         update_env_var "$backend_env" "PLASO_VERSION" "$plaso_version"
+        # Presidio on-demand image pins (versions.presidio / versions.presidio_model)
+        # -> PRESIDIO_VERSION / PRESIDIO_MODEL in the backend .env, read by
+        # config.get_presidio_image() and services/presidio_masker.py. Guarded so an
+        # older config without the keys keeps the code defaults.
+        [[ -n "$presidio_version" && "$presidio_version" != "None" ]] && update_env_var "$backend_env" "PRESIDIO_VERSION" "$presidio_version"
+        [[ -n "$presidio_model" && "$presidio_model" != "None" ]] && update_env_var "$backend_env" "PRESIDIO_MODEL" "$presidio_model"
         # tusd sidecar pin (versions.backend_tusd) -> TUSD_VERSION in the backend
         # compose. Guarded so an older config without the key keeps the compose default.
         [[ -n "$tusd_version" && "$tusd_version" != "None" ]] && update_env_var "$backend_env" "TUSD_VERSION" "$tusd_version"

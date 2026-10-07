@@ -15,12 +15,34 @@ The backend does all masking/pseudonymisation/reversibility itself from these
 spans — this service returns ONLY the detected offsets, never stores anything.
 """
 import os
+import threading
+import time
 
 from flask import Flask, jsonify, request
 
 APP = Flask(__name__)
 _ENGINE = None
 _MODEL = None
+
+# ON-DEMAND LIFECYCLE (like plaso/log2timeline). The backend starts this
+# container only when it needs the NER pass; the container then exits itself once
+# no request has arrived for PRESIDIO_IDLE_SECONDS, so it is "active only while
+# used, then off". 0 disables the self-shutdown (dev).
+_LAST_REQUEST = time.time()
+IDLE_SECONDS = int(os.environ.get("PRESIDIO_IDLE_SECONDS", "180"))
+
+
+@APP.before_request
+def _touch_idle_timer():
+    global _LAST_REQUEST
+    _LAST_REQUEST = time.time()
+
+
+def _idle_watchdog():
+    while True:
+        time.sleep(15)
+        if IDLE_SECONDS > 0 and (time.time() - _LAST_REQUEST) > IDLE_SECONDS:
+            os._exit(0)   # process exits -> the --rm container is removed -> "off"
 
 
 def _engine():

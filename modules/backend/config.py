@@ -128,6 +128,18 @@ def get_dfir_o365rc_image():
     """DFIR-O365RC image, read fresh from .env so upgrades apply without restart."""
     return _fresh_image_from_env('DFIR_O365RC_VERSION', 'anssi/dfir-o365rc:{}', DFIR_O365RC_IMAGE)
 
+
+# Presidio PII NER — our own CI-built image, run ON DEMAND (services/presidio_masker.py
+# `docker run`s it for a report's masking, it self-stops when idle). Pinned to
+# presidio-analyzer's own version (versions.presidio -> PRESIDIO_VERSION in .env).
+PRESIDIO_VERSION = os.environ.get('PRESIDIO_VERSION', '2.2.364')
+PRESIDIO_IMAGE = f"intact-presidio:{PRESIDIO_VERSION}"
+
+
+def get_presidio_image():
+    """intact-presidio image, read fresh from .env so upgrades apply without restart."""
+    return _fresh_image_from_env('PRESIDIO_VERSION', 'intact-presidio:{}', PRESIDIO_IMAGE)
+
 # Velociraptor data path inside container (where collections are stored)
 VELOCIRAPTOR_DATA_PATH = "/var."
 

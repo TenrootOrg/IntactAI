@@ -77,10 +77,6 @@ start_services() {
     # and never fails the install.
     seed_volweb_symbols || true
     echo ""
-    # Optional PII NER sidecar (modules/presidio). Independent of the others;
-    # off unless modules.presidio.enabled. A failure here never blocks the install.
-    deploy_presidio || true
-    echo ""
     deploy_nginx
     echo ""
 
