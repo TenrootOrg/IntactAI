@@ -4676,7 +4676,10 @@ def set_analysis_config(case_id, cfg) -> dict:
         mk = cfg.get("masking") or {}
         patch["masking"] = {"enabled": bool(mk.get("enabled")),
                             "patterns": [p for p in (mk.get("patterns") or []) if p],
-                            "ner": bool(mk.get("ner"))}      # optional NER (presidio) second pass
+                            # NER (Presidio) only applies WITH masking on — enforce
+                            # it server-side too, not just in the UI, so an API caller
+                            # can't set ner without enabled.
+                            "ner": bool(mk.get("ner")) and bool(mk.get("enabled"))}
     if "included_run_ids" in cfg:          # None = all; list = subset (legacy)
         patch["included_run_ids"] = cfg["included_run_ids"]
     if "excluded_hosts" in cfg:            # host labels to drop from the report/LLM

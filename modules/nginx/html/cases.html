@@ -896,9 +896,9 @@ function renderConfig(info){
             const badge=dis?'<span class="modbadge dis">disabled</span>':(m.default?'<span class="modbadge def">default</span>':'');
             return `<label class="modrow${dis?' dis':''}${on?' on':''}"><input type="checkbox" data-mod="${m.name}" ${on?'checked':''} ${dis?'disabled':''} onchange="_refusionGuard()"/> <span class="t">${esc(m.label)}</span>${badge}</label>`;}).join('')}
         </div>
-        <label style="margin-top:8px"><input type="checkbox" id="cf-mask" ${mk.enabled!==false?'checked':''} style="width:auto"/> Mask <span class="info" title="Replaces identifying values with placeholders (Hostname1, Username2, ExternalIP3) in everything sent to the AI model — the report payload and every chat question. Covers host names, user names, IP addresses, e-mail addresses, domains, GUIDs and credentials found in the case. The answer comes back masked and the real values are put back before you see it, so the report and chat you read are unchanged. The case data itself is never altered; this only controls what leaves the appliance. Use it when the AI model is a cloud provider and the customer's names must not reach it.">i</span></label>
+        <label style="margin-top:8px"><input type="checkbox" id="cf-mask" ${mk.enabled!==false?'checked':''} onchange="_maskNerSync()" style="width:auto"/> Mask <span class="info" title="Replaces identifying values with placeholders (Hostname1, Username2, ExternalIP3) in everything sent to the AI model — the report payload and every chat question. Covers host names, user names, IP addresses, e-mail addresses, domains, GUIDs and credentials found in the case. The answer comes back masked and the real values are put back before you see it, so the report and chat you read are unchanged. The case data itself is never altered; this only controls what leaves the appliance. Use it when the AI model is a cloud provider and the customer's names must not reach it.">i</span></label>
         <div class="cfghint">Hides host names, user names, IPs, e-mails, domains and credentials from the AI model (<code>Hostname1</code>, <code>Username2</code>, <code>ExternalIP3</code>); you still see the real values.</div>
-        <label style="margin-top:6px;margin-left:16px" title="A second pass that also hides person and company NAMES the pattern masker cannot catch — they appear in free text (analyst notes, document bodies, PowerShell) with no fixed shape, so a regex/field rule misses them. Uses the Presidio NER container, started on demand only while a report is being masked and stopped when idle. Names come back as Person1, Org1 and the real values are restored before you see the report."><input type="checkbox" id="cf-maskner" ${mk.ner!==false?'checked':''} style="width:auto"/> Also hide person &amp; company names <span style="color:var(--muted)">(AI/NER — uses the Presidio container)</span></label>
+        <label id="cf-maskner-row" style="margin-top:6px;margin-left:16px${mk.enabled!==false?'':';opacity:.5'}" title="Presidio — a second pass (NER) that also hides person and company NAMES the pattern masker cannot catch. They appear in free text (analyst notes, document bodies, PowerShell) with no fixed shape, so a regex/field rule misses them. Runs in the Presidio container, started on demand only while a report is being masked and stopped when idle. Names come back as Person1, Org1 and the real values are restored before you see the report. Only applies when Mask is on."><input type="checkbox" id="cf-maskner" ${mk.ner!==false?'checked':''} ${mk.enabled!==false?'':'disabled'} style="width:auto"/> Presidio <span class="info" title="Presidio — a second pass (NER) that also hides person and company NAMES the pattern masker cannot catch. They appear in free text (analyst notes, document bodies, PowerShell) with no fixed shape, so a regex/field rule misses them. Runs in the Presidio container, started on demand only while a report is being masked and stopped when idle. Names come back as Person1, Org1 and the real values are restored before you see the report. Only applies when Mask is on.">i</span> <span style="color:var(--muted)">— also hide person &amp; company names (AI/NER)</span></label>
         <label style="margin-top:6px">Custom patterns <span style="color:var(--muted)">— optional</span></label>
         <textarea id="cf-maskpat" placeholder="one per line, e.g. ACME Corp" title="Your own values to mask, on top of the automatic ones — an organisation or customer name, a project name, a person, anything you would rather not send. One per line. Plain text masks that exact value (ACME Corp). *.corp.local masks anything matching the wildcard. alice|bob masks either. /regex/ masks anything the regular expression matches. An invalid line is ignored." style="min-height:38px">${esc((mk.patterns||[]).join('\n'))}</textarea>
         <div class="cfghint">Anything else you want hidden — the organisation's name, a project, a person: <code>ACME Corp</code>, <code>*.corp.local</code>, <code>alice|bob</code>, <code>/regex/</code>.</div>
@@ -1722,6 +1722,17 @@ function _refusionGuard(){
     const labels=asList(curInfo&&curInfo.modules_catalog).filter(m=>asList(curInfo.modules_with_runs).includes(m.name)).map(m=>m.label);
     hint.textContent=noMod?'None of this case\u2019s runs come from the selected modules, so nothing would be fused. Select '+labels.join(' or ')+' to run Refusion.':'Select at least one host to run Refusion.'; }
 }
+// The Presidio (NER) second pass only makes sense WITH masking on: it hides the
+// free-text names the deterministic masker misses. So its checkbox is enabled
+// only while Mask is checked — greyed and unchecked-effect otherwise. The save
+// (buildCfg) also forces ner=false when mask is off, and the backend enforces it.
+function _maskNerSync(){
+  const m=$('#cf-mask'), n=$('#cf-maskner'), row=$('#cf-maskner-row');
+  if(!n) return;
+  const on=!!(m&&m.checked);
+  n.disabled=!on;
+  if(row) row.style.opacity=on?'':'.5';
+}
 function toggleHost(host,inc){ inc?_hostExc.delete(host):_hostExc.add(host); _refusionGuard(); }   // checked=include
 function hostSelectAll(inc){
   const q=(($('#cf-hostfilter')||{}).value||'').toLowerCase();
@@ -1761,7 +1772,7 @@ async function _railCfg(){
     fusion_modules:[...document.querySelectorAll('#cf-modules input[data-mod]:checked')].map(c=>c.dataset.mod),
     excluded_hosts:[..._caseExc].filter(h=>_hostExc.has(h)),        // legacy case-wide; only ever shrinks
     scope_hidden_hosts:[..._hostExc].filter(h=>!_caseExc.has(h)),   // this timeframe only
-    masking:{enabled:$('#cf-mask').checked, ner:($('#cf-maskner')||{}).checked!==false, patterns:$('#cf-maskpat').value.split('\n').map(s=>s.trim()).filter(Boolean)},
+    masking:{enabled:$('#cf-mask').checked, ner:$('#cf-mask').checked && ($('#cf-maskner')||{}).checked===true, patterns:$('#cf-maskpat').value.split('\n').map(s=>s.trim()).filter(Boolean)},
     auto_report:$('#cf-autoreport') ? $('#cf-autoreport').checked : undefined
   };
   // Hosts not loaded yet = nothing known to send; an empty list would clear them.
