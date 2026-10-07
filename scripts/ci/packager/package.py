@@ -1033,6 +1033,40 @@ def _prepare_backend_images(package_dir: str, target_version: str, manifest: Dic
                 "error": f"backend image save failed: {save.get('error', '')[:200]}"}
     manifest["contents"]["images"].append(f"intact-backend-{be_tag}.tar")
     log(f"  Backend image exported ({_format_size(os.path.getsize(_out))})", "success")
+
+    # Presidio PII NER image — OUR image, BUILT here (not pulled) from
+    # modules/presidio, with the spaCy model baked in at build time. The backend
+    # runs it ON DEMAND (config.get_presidio_image), so it rides the intact asset
+    # like tusd. BEST-EFFORT: a box without it just loses the NER second pass
+    # (masking.ner falls back to the deterministic mask), so a build/save failure
+    # warns and is skipped rather than failing the whole release — unlike the
+    # backend image above, which is fatal.
+    try:
+        _pres_ver = str((_versions or {}).get('presidio') or '').strip()
+        _pres_model = str((_versions or {}).get('presidio_model') or 'en_core_web_lg').strip()
+        if _pres_ver:
+            _pres_img = f"intact-presidio:{_pres_ver}"
+            _pres_ctx = os.path.join(src_root, "modules", "presidio")
+            _pb = run_command(
+                f"docker build -t {_pres_img} --build-arg PRESIDIO_MODEL={_pres_model} "
+                f"-f {_pres_ctx}/Dockerfile {_pres_ctx}",
+                timeout=1800, logger=None, run_id=run_id)
+            if _pb.get("success"):
+                _pout = f"{package_dir}/images/intact-presidio-{_pres_ver}.tar"
+                _ps = run_command(f"docker save -o {_pout} {_pres_img}",
+                                  timeout=600, logger=None, run_id=run_id)
+                if _ps.get("success"):
+                    manifest["contents"]["images"].append(f"intact-presidio-{_pres_ver}.tar")
+                    log(f"  Presidio image exported ({_format_size(os.path.getsize(_pout))})", "success")
+                else:
+                    log(f"  Presidio image save failed — skipping (best-effort): "
+                        f"{str(_ps.get('error', ''))[:150]}", "warn")
+            else:
+                log(f"  Presidio image build failed — skipping (best-effort): "
+                    f"{str(_pb.get('error', ''))[:150]}", "warn")
+    except Exception as _pe:                              # noqa: BLE001 — never fail the release
+        log(f"  Presidio bundling skipped (best-effort): {_pe}", "warn")
+
     return {"success": True}
 
 
