@@ -1358,6 +1358,25 @@ PHASE_SYSTEM_PROMPT = (
     "detection is not HIGH confidence. No preamble, no headings of your own."
 )
 
+# 2026-10-07, a real two-server admin case: the model read "Suspicious Service
+# Path" on a security agent's own updater as a masquerading backdoor, called
+# WinRAR installers years of data staging, rated phases with no critical finding
+# "Severity: Critical" and the case "Risk: CRITICAL". The findings now arrive
+# weighed (config/fusion_weighting.yaml), and this tells the model to respect it;
+# _cap_severity_word() enforces the ceiling whatever the model writes.
+WEIGHTING_RULE = (
+    "WEIGHTING: every finding's severity has already been weighed against ordinary "
+    "explanations -- installers and versioned copies of programs, software that updates "
+    "itself, people's routine use of their own hosts, everyday websites. A summary says "
+    "when and why something was lowered. Do not raise a finding above its given severity "
+    "and do not call anything malicious from its title alone: say what the evidence shows "
+    "and give the ordinary explanation when one fits (a security or management product's "
+    "own files under its own vendor folder are most likely that product). A low, "
+    "informational, 'recurring maintenance' or 'established pattern' finding never sets a "
+    "Severity or Risk by itself. A phase's Severity is at most its strongest finding's; "
+    "the case Risk is at most the strongest finding in scope."
+)
+
 SYNTHESIS_SYSTEM_PROMPT = (
     "You are a senior DFIR consultant writing the EXECUTIVE LAYER of an incident "
     "report. The case has already been split into PHASES and each analysed; you are "
@@ -1618,6 +1637,37 @@ ESTIMATES_RULE = (
     "there. Never write 'confirmed' for an estimate.")
 
 
+def _scope_max_severity(graph, window, min_severity) -> str | None:
+    """The strongest finding the report covers (its window, at or above its floor)."""
+    from .correlate import in_window
+    levels = [f.severity for f in getattr(graph, "findings", []) or []
+              if f.severity in sev.LEVELS and sev.at_least(f.severity, min_severity)
+              and (not window or in_window(f.ts, window))]
+    return max(levels, key=sev.rank) if levels else None
+
+
+_SEV_WORD = re.compile(r"(\*\*(?:Risk|Severity):\*\*\s*|\*\*Risk:\s*)(critical|high|medium|low)\b", re.I)
+
+
+def _cap_severity_word(text, ceiling, what) -> str:
+    """Hold a model-written "**Risk:** X" / "**Severity:** X" to `ceiling`, the
+    strongest finding it describes, and say so when it had to. WEIGHTING_RULE asks;
+    this enforces (2026-10-07: "Severity: Critical" on phases with no critical
+    finding, "Risk: CRITICAL" on a case whose worst finding was high)."""
+    if not text or not ceiling or ceiling not in sev.LEVELS:
+        return text
+    cap = "low" if ceiling == "informational" else ceiling
+
+    def fix(m):
+        said = m.group(2)
+        if sev.rank(said.lower()) <= sev.rank(cap):
+            return m.group(0)
+        word = cap.upper() if said.isupper() else cap.capitalize()
+        return (f"{m.group(1)}{word} _(the model said {said}; held to the strongest "
+                f"finding in this {what}, which is {ceiling})_")
+    return _SEV_WORD.sub(fix, text)
+
+
 def _with_deadline(fn, seconds, what):
     """Run `fn`, hedge it if it is slow, and give up after `seconds` whatever the
     provider's client does. Abandoned calls are left to die on their own (they
@@ -1730,7 +1780,7 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
         body = json.dumps(p)
         if mask:
             body = _apply_mask(body, mask)
-        sys_p = PHASE_SYSTEM_PROMPT
+        sys_p = PHASE_SYSTEM_PROMPT + "\n\n" + WEIGHTING_RULE
         if (analyst or {}).get("automated_estimates"):
             sys_p = sys_p + "\n\n" + ESTIMATES_RULE
         if master_prompt:
@@ -1810,7 +1860,8 @@ def _phase_sections(graph, zt, *, window, min_severity, me, bc, max_identities,
                 if m:
                     name = m.group(1).strip().strip("*").strip()
                     text = text[:m.start()] + text[m.end():]
-                results[z["n"]] = {"name": name, "body": text.strip()}
+                results[z["n"]] = {"name": name,
+                                   "body": _cap_severity_word(text.strip(), z.get("severity"), "phase")}
                 if not should_continue or should_continue():   # a stopped run's lines are not this run's
                     _case_event(run_id, f"Report · phase {z['n']} of {_total} — answered", "success",
                                 f"{z.get('_seconds', '?')}s · {len(text):,} chars")
@@ -1942,7 +1993,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
                 if mask:
                     payload_str = _apply_mask(payload_str, mask)
             system = (SYNTHESIS_SYSTEM_PROMPT if altitude == "macro"
-                      else REPORT_SYSTEM_PROMPT_FOCUSED)
+                      else REPORT_SYSTEM_PROMPT_FOCUSED) + "\n\n" + WEIGHTING_RULE
             if altitude == "macro" and _zt and any((_phase_out.get(z["n"]) or {}).get("error")
                                                    for z in render.analysable(_zt)):
                 system += ("\n\nSome phases carry `not_analysed` instead of an analysis: the "
@@ -2009,6 +2060,7 @@ def generate_report(graph, *, window=None, min_severity="informational",
             except Exception as _se:                     # noqa: BLE001
                 narrative = _keep_phases(_se)
             narrative = _revert_mask(narrative, mask)   # un-mask the LLM's output
+            narrative = _cap_severity_word(narrative, _scope_max_severity(graph, window, min_severity), "case")
             # AN EMPTY NARRATIVE IS A FAILED CALL, NOT A REPORT.
             #
             # A reasoning model draws its thinking from the same output allowance as
