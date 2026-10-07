@@ -1077,10 +1077,19 @@ def _cross_host_findings(g: FusionGraph) -> None:
                     ts=_entity_ts(g, e), kind="cross_host"))
                 continue
             title = f"Indicator {e.label} seen on {len(assets)} hosts"
-            summ = (f"The indicator {e.label} ({kind}) appears on multiple "
-                    f"assets ({hosts}) — shared C2 / common infrastructure across hosts.")
+            # Graded by the indicator itself (2026-10-07: www.7-zip.org on two admin
+            # servers was a HIGH "shared C2" and topped the host-risk table). Only a
+            # suspicious indicator is called shared infrastructure.
+            if e.anomaly >= 10:
+                summ = (f"The indicator {e.label} ({kind}) appears on multiple "
+                        f"assets ({hosts}) — shared C2 / common infrastructure across hosts.")
+                severity = "high"
+            else:
+                summ = (f"The indicator {e.label} ({kind}) appears on multiple assets "
+                        f"({hosts}). Nothing about it is suspicious on its own: check whether "
+                        f"it is shared attacker infrastructure or ordinary use on both hosts.")
+                severity = "medium"
             mitre = ["T1071"]
-            severity = "high"
         else:
             title = f"YARA rule {e.label} hit on {len(assets)} hosts"
             summ = f"Signature {e.label} matched on multiple assets ({hosts})."
