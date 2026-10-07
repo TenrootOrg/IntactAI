@@ -1669,6 +1669,42 @@ def _run_owed_fuse(case_id) -> None:
     threading.Thread(target=_go, daemon=True, name=f"fuse-owed-{case_id}").start()
 
 
+def _fuse_progress_logger(plog, every=30.0):
+    """The listener correlate.assemble reports to: at most one "building case
+    graph" line every `every` seconds, saying which step, how far, how fast and
+    how long is left. 2026-10-07: a 233k-row fuse sat on "building case graph ·
+    45%" for 15+ minutes with nothing after it, and a slow build and a stuck one
+    looked exactly alike. Now the last line names the step it is in and how long
+    it has been there -- a stuck step shows as one whose line stopped changing.
+    The ETA is for the CURRENT step only, from that step's own rows (uniform
+    work); _plog's no-ETA rule is about the whole fuse, whose phases are not."""
+    import time as _t
+    now0 = _t.monotonic()
+    st = {"last": now0, "stage": None, "since": now0, "from": 0}
+
+    def _fmt(sec):
+        sec = int(sec)
+        return f"{sec}s" if sec < 90 else f"{sec // 60} min {sec % 60:02d}s"
+
+    def cb(stage, done=None, total=None):
+        now = _t.monotonic()
+        if stage != st["stage"]:
+            st.update(stage=stage, since=now, **{"from": done or 0})
+        if now - st["last"] < every:
+            return
+        st["last"] = now
+        msg = stage
+        if done is not None and total:
+            el = now - st["since"]
+            rate = (done - st["from"]) / el if el > 0 else 0
+            msg += f" — {done:,} of {total:,} ({done * 100 // total}%)"
+            if rate > 0:
+                msg += f" · {rate:,.0f}/s · about {_fmt((total - done) / rate)} left"
+        msg += f" · {_fmt(now - st['since'])} in this step"
+        plog("Refusion · building case graph", "info", msg, pct=45)
+    return cb
+
+
 def _wait_for_fuses(case_id, timeout=900) -> bool:
     """Block until no fuse is running or owed for this case, so what reads the
     stored graph next (a report) reads the one with every saved change in it.
@@ -2090,7 +2126,8 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
                            min_severity=min_sev, dispositions=d.get("dispositions") or None,
                            seed=seed_graph, errors=_assembly_errors,
                            excluded_hosts=d.get("excluded_hosts"),
-                           identity_decisions=_identity_decisions(d))
+                           identity_decisions=_identity_decisions(d),
+                           progress=_fuse_progress_logger(_plog))
     # Optional cross-infra identity correlation: add analyst-confirmed / auto / manual
     # identity edges. Best-effort + fully isolated — never breaks the fuse (below).
     _apply_identity_links(g, d, log=_plog if _record else None)

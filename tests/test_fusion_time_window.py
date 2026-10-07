@@ -51,6 +51,8 @@ def _load_in_window(keys_mod):
     schema = types.ModuleType("_fuse_pkg.schema")
     for name in ("FusionGraph", "Finding", "EvidenceRef"):
         setattr(schema, name, type(name, (), {}))
+    schema.fusion_tick = lambda *a, **k: None          # the progress hook (2026-10-07)
+    schema._PROGRESS = None
     sys.modules["_fuse_pkg.schema"] = schema
     sys.modules["_fuse_pkg.severity"] = types.ModuleType("_fuse_pkg.severity")
     mod = types.ModuleType("_fuse_pkg.correlate")

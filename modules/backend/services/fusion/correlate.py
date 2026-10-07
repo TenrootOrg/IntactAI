@@ -18,7 +18,7 @@ import hashlib
 import re
 import traceback
 
-from .schema import FusionGraph, Finding, EvidenceRef
+from .schema import FusionGraph, Finding, EvidenceRef, fusion_tick, _PROGRESS
 from . import schema as _schema
 from . import severity as sev
 from . import keys
@@ -112,6 +112,7 @@ def _guarded(errs: list, name: str, fn, *args, **kwargs):
     cosmetic: tests/test_incremental_fusion.py checks that the passes run over
     the merged graph by looking for `_derive_findings(g` and friends in source.
     """
+    fusion_tick(f"analysis · {name.lstrip('_').replace('_', ' ')}")
     try:
         return fn(*args, **kwargs)
     except Exception as exc:                   # noqa: BLE001
@@ -121,7 +122,8 @@ def _guarded(errs: list, name: str, fn, *args, **kwargs):
 
 def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None,
              min_severity="informational", dispositions=None, seed=None,
-             errors=None, excluded_hosts=None, identity_decisions=None) -> FusionGraph:
+             errors=None, excluded_hosts=None, identity_decisions=None,
+             progress=None) -> FusionGraph:
     """Build the case graph from `contributions`.
 
     `seed` is an existing graph to add to instead of starting empty — the
@@ -171,6 +173,7 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     # Isolation is always on; `errors` only decides whether the caller hears
     # about it (store.py reports it as a PARTIAL graph).
     _errs = errors if errors is not None else []
+    _PROGRESS.set(progress)            # this thread's listener for fusion_tick (None: nobody)
     _below: dict = {}                  # artifact -> rows dropped by the severity floor
     pending_rels = []
     _held: dict = {}            # in the window but below the severity floor
@@ -195,7 +198,9 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
         except Exception as _e:                               # noqa: BLE001
             _record_error(_errs, "a contribution that is not (entities, relationships)", _e)
             continue
-        for e in ents:
+        for _i, e in enumerate(ents):
+            if _i % 5000 == 0:
+                fusion_tick("merging mapped items", _i, len(ents))
             # Filter ONLY time-stamped rows (the bulk: events / files / hashes) by
             # window + severity. NEVER drop:
             #   - assets (hosts) — the graph's anchors;
@@ -240,6 +245,7 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     # chain (account -> process -> detection -> hash) survives. It never becomes a
     # finding by itself (_derive_findings skips `context`).
     _ctx_count: dict = {}
+    fusion_tick("linking", 0, len(pending_rels))
     for r in pending_rels:
         try:
             if _schema.sanitize_relationship(r) is None:

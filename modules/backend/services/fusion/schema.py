@@ -13,10 +13,28 @@ reverse).
 
 from __future__ import annotations
 
+import contextvars
 import datetime as _dt
 import math
 from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
+
+# FUSION PROGRESS. Who wants to hear how a long fuse is going (store.py, which
+# writes it to the case Log), set per thread for the duration of one assemble.
+# 2026-10-07: a 233k-row fuse said "building case graph · 45%" and nothing else
+# for 15+ minutes, so a slow build and a stuck one looked the same. Lives here
+# because the mappers and correlate both import schema and nothing else shared.
+_PROGRESS: contextvars.ContextVar = contextvars.ContextVar("fusion_progress", default=None)
+
+
+def fusion_tick(stage: str, done: int | None = None, total: int | None = None) -> None:
+    """Report progress to whoever set _PROGRESS; never fails the fuse."""
+    cb = _PROGRESS.get()
+    if cb is not None:
+        try:
+            cb(stage, done, total)
+        except Exception:                      # noqa: BLE001
+            pass
 
 
 ENTITY_TYPES: tuple[str, ...] = (

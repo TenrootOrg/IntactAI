@@ -13,7 +13,7 @@ import hashlib
 import re
 
 from .. import keys
-from ..schema import Entity, Relationship, EvidenceRef
+from ..schema import Entity, Relationship, EvidenceRef, fusion_tick
 from ..anomaly import score_row
 from ..severity import from_anomaly, from_string
 from . import fieldspec as F
@@ -526,7 +526,10 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
         # artifact->entity function (so its unit tests exercise the handlers
         # directly). `ab` is still used by the sub-source-aware dispatch below
         # (e.g. SAM/users `.endswith`).
+        _n = len(rows) if isinstance(rows, list) else None
         for i, r in enumerate(rows or []):
+            if i % 5000 == 0:
+                fusion_tick(f"mapping {artifact}", i, _n)
             if not isinstance(r, dict):
                 continue
             asset, host = asset_of(r)
