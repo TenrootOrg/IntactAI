@@ -114,36 +114,71 @@ def available() -> bool:
     return _sidecar_ok() or _image_present() or (_analyzer() is not None)
 
 
-def _ensure_sidecar() -> bool:
+def _log(msg, level="info", logfn=None):
+    """Route a lifecycle/error line to the caller's logger (the case Log, when one
+    is given) AND always to backend stdout, so `docker logs intact_backend` shows
+    the Presidio container coming up even on a path with no case logger."""
+    try:
+        print(f"[Presidio] {msg}", flush=True)
+    except Exception:                                    # noqa: BLE001
+        pass
+    if logfn:
+        try:
+            logfn(f"Presidio · {msg}", level)
+        except Exception:                                # noqa: BLE001
+            pass
+
+
+def _ensure_sidecar(logfn=None) -> bool:
     """Make the sidecar healthy, starting it on demand if its image is present.
-    Serialised so two concurrent reports don't both `docker run` it. Returns
-    False (and the caller falls back) if it can't be reached or started."""
+    Serialised so two concurrent reports don't both `docker run` it. Every outcome
+    is logged. Returns False (and the caller falls back to the deterministic mask
+    only) if it can't be reached or started — a NER failure never fails a report."""
     if _sidecar_ok():
         return True
     if not _image_present():
+        _log(f"image {_image()} not present — skipping the NER pass "
+             f"(deterministic masking still applies)", "warning", logfn)
         return False
     with _START_LOCK:
         if _sidecar_ok():                                # started while we waited
             return True
+        import subprocess
         try:
-            import subprocess
             cmd = ["docker", "run", "-d", "--rm", "--name", _CONTAINER,
                    "--network", _NETWORK, "--memory", _MEM]
             model = os.environ.get("PRESIDIO_MODEL")
             if model:
                 cmd += ["-e", f"PRESIDIO_MODEL={model}"]
             cmd.append(_image())
-            # A name clash means it is already running (another worker won the race);
-            # either way we then poll health below, so ignore the run's own result.
-            subprocess.run(cmd, capture_output=True, timeout=30)
-        except Exception:                                # noqa: BLE001
-            pass
+            _log(f"starting the PII NER container ({_image()})…", "info", logfn)
+            r = subprocess.run(cmd, capture_output=True, timeout=60, text=True)
+            # A name clash means it is already running (another worker won the race)
+            # — not an error; we poll health below either way. Any OTHER non-zero is.
+            err = (r.stderr or "").strip()
+            if r.returncode != 0 and "already in use" not in err.lower():
+                _log(f"could not start the container: {err[:200]} — skipping the NER "
+                     f"pass (deterministic masking still applies)", "warning", logfn)
+                return False
+        except FileNotFoundError:
+            _log("docker CLI not available in the backend — skipping the NER pass",
+                 "warning", logfn)
+            return False
+        except subprocess.TimeoutExpired:
+            _log("timed out launching the container — skipping the NER pass", "warning", logfn)
+            return False
+        except Exception as e:                           # noqa: BLE001
+            _log(f"error launching the container: {e} — skipping the NER pass", "warning", logfn)
+            return False
         import time
-        for _ in range(45):                              # ~45s: cold model load + boot
+        for i in range(45):                              # ~45s: cold model load + boot
             _SIDECAR_STATE["ok"] = None                  # force a fresh probe
             if _sidecar_ok():
+                _log("container is up and healthy", "info", logfn)
                 return True
             time.sleep(1)
+        _log("container did not become healthy within 45s — skipping the NER pass "
+             "(deterministic masking still applies)", "warning", logfn)
         return False
 
 
@@ -165,11 +200,11 @@ def _sidecar_ok() -> bool:
     return ok
 
 
-def _detect_spans(text, entities, threshold):
+def _detect_spans(text, entities, threshold, logfn=None):
     """Return [{entity_type,start,end,score}, …] via the sidecar, else in-process,
     else []. Never raises — a detection failure degrades to no masking."""
     # Sidecar first (the production path) — started on demand if needed.
-    if _ensure_sidecar():
+    if _ensure_sidecar(logfn):
         try:
             import json
             import urllib.request
@@ -242,17 +277,19 @@ def _register(mask, original: str, pseudo: str) -> None:
 
 
 def scrub(text, mask=None, *, entities=DEFAULT_ENTITIES, min_score=DEFAULT_MIN_SCORE,
-          cfg=None):
+          cfg=None, logfn=None):
     """Second-pass scrub of residual free-text PII. Returns (scrubbed_text, hits).
 
     No-op (text, []) when disabled/unavailable or text is empty. Each detected
     span becomes a stable pseudonym registered in `mask` for reversibility; the
-    same surface form always maps to the same pseudonym within this instance."""
+    same surface form always maps to the same pseudonym within this instance.
+    `logfn(msg, level)` (optional) routes container lifecycle + result lines to
+    the case Log."""
     if not text or not isinstance(text, str):
         return text, []
     if not enabled(cfg, mask):
         return text, []
-    spans = _detect_spans(text, entities, min_score)
+    spans = _detect_spans(text, entities, min_score, logfn)
     if not spans:
         return text, []
 
@@ -286,6 +323,9 @@ def scrub(text, mask=None, *, entities=DEFAULT_ENTITIES, min_score=DEFAULT_MIN_S
     out = text
     for surface in sorted(assigned, key=len, reverse=True):
         out = re.sub(r"\b" + re.escape(surface) + r"\b", assigned[surface], out)
+    if assigned:
+        _log(f"masked {len(assigned)} free-text name(s) the pattern masker missed",
+             "info", logfn)
     return out, hits
 
 

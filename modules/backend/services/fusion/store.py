@@ -660,6 +660,11 @@ def create_case(name, *, time_window=None, initial_access=None,
                  "initial_access_estimate": initial_access, "min_severity": min_severity,
                  "member_run_ids": list(member_run_ids or []),
                  "is_default": bool(is_default), "is_system": bool(is_system),
+                 # Masking ON by default (customer-facing): hide identifying values
+                 # from the AI model, including the NER second pass for free-text
+                 # person/company names. Reversible — the operator still sees the real
+                 # values. The UI checkbox defaults to match this.
+                 "masking": {"enabled": True, "ner": True, "patterns": []},
                  "fusion_graph": {}, "report_md": "", "chat_messages": []})
 
 
@@ -2188,6 +2193,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
             from services.data_anonymizer import DataAnonymizer
             mask = DataAnonymizer(custom_patterns=mk.get("patterns") or [])
             mask._ner = bool(mk.get("ner"))     # optional NER second pass (presidio_masker)
+            mask._logfn = log or (lambda m, l="info": log_case_event(case_id, "Report", l, m))  # Presidio lifecycle -> case Log
         except Exception:
             mask = None
     # host-exclusion: assemble() already removed the excluded hosts. This view filter

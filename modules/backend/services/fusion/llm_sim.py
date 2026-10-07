@@ -1259,7 +1259,7 @@ def _apply_mask(text, mask):
     # installed; its hits register into `mask` so the existing revert restores them.
     try:
         from services import presidio_masker
-        text, _ = presidio_masker.scrub(text, mask)
+        text, _ = presidio_masker.scrub(text, mask, logfn=getattr(mask, "_logfn", None))
     except Exception:                                 # noqa: BLE001 — never break the mask
         pass
     return text
