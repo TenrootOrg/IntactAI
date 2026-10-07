@@ -12,7 +12,7 @@ from .. import keys
 # accounts become one global node and local ones are asset-scoped, so the same
 # person seen in memory and in a collection is ONE identity, not two.
 from .agentic import _account_eid
-from ..schema import Entity, Relationship, EvidenceRef
+from ..schema import Entity, Relationship, EvidenceRef, map_skip
 from ..anomaly import score_row
 from ..severity import from_anomaly
 from . import fieldspec as F
@@ -69,105 +69,129 @@ def map_memory(payload: dict, *, run_id: str, asset: str, hostname=None) -> tupl
     proc_rows: dict[str, list] = {}                 # pid -> [(src, row), ...]
     for src in ("pslist", "psscan", "pstree"):
         for r in by_short.get(src, []):
-            pid = F.get(r, *F.PID)
-            if pid is not None:
-                proc_rows.setdefault(str(pid), []).append((src, r))
+            try:
+                pid = F.get(r, *F.PID)
+                if pid is not None:
+                    proc_rows.setdefault(str(pid), []).append((src, r))
+            except Exception as _x:                       # noqa: BLE001 -- one bad item, not the run
+                map_skip("memory " + src, _x)
+                continue
 
     seen_proc: dict[str, str] = {}                  # pid -> canonical entity id
     for pid, rows in proc_rows.items():
-        srcs = {s for s, _ in rows}
-        hidden = "psscan" in srcs and "pslist" not in srcs
-        ct_buckets = list(dict.fromkeys(
-            keys.ct_bucket(F.get(r, *F.CREATETIME))
-            for _, r in rows
-            if keys.ct_bucket(F.get(r, *F.CREATETIME)) != "?"))
-        # >=2 distinct createtimes on one PID == reuse -> keep each row split.
-        groups = ([[pr] for pr in rows] if len(ct_buckets) >= 2 else [rows])
-        for grp in groups:
-            canon = next((r for _, r in grp
-                          if keys.ct_bucket(F.get(r, *F.CREATETIME)) != "?"), grp[0][1])
-            ct = F.get(canon, *F.CREATETIME)
-            name = next((F.get(r, *F.PROC_NAME) for _, r in grp
-                         if F.get(r, *F.PROC_NAME)), None) or "?"
-            pid_eid = keys.process_id(asset, pid, ct, name)
-            seen_proc[pid] = pid_eid
-            cmd = cmd_by_pid.get(pid)
-            anom = max([score_row(r) for _, r in grp]
-                       + ([score_row({"c": cmd})] if cmd else [0]))
-            ents.append(_ent(pid_eid, "process", f"{name} ({pid})", asset, run_id,
-                             f"{'/'.join(sorted(srcs))}/PID={pid}", anomaly=anom,
-                             first=keys.norm_ts(ct), flags=(["hidden"] if hidden else []),
-                             pid=pid, name=name, cmdline=cmd,
-                             createtime=keys.norm_ts(ct), seen_by=sorted(srcs)))
+        try:
+            srcs = {s for s, _ in rows}
+            hidden = "psscan" in srcs and "pslist" not in srcs
+            ct_buckets = list(dict.fromkeys(
+                keys.ct_bucket(F.get(r, *F.CREATETIME))
+                for _, r in rows
+                if keys.ct_bucket(F.get(r, *F.CREATETIME)) != "?"))
+            # >=2 distinct createtimes on one PID == reuse -> keep each row split.
+            groups = ([[pr] for pr in rows] if len(ct_buckets) >= 2 else [rows])
+            for grp in groups:
+                canon = next((r for _, r in grp
+                              if keys.ct_bucket(F.get(r, *F.CREATETIME)) != "?"), grp[0][1])
+                ct = F.get(canon, *F.CREATETIME)
+                name = next((F.get(r, *F.PROC_NAME) for _, r in grp
+                             if F.get(r, *F.PROC_NAME)), None) or "?"
+                pid_eid = keys.process_id(asset, pid, ct, name)
+                seen_proc[pid] = pid_eid
+                cmd = cmd_by_pid.get(pid)
+                anom = max([score_row(r) for _, r in grp]
+                           + ([score_row({"c": cmd})] if cmd else [0]))
+                ents.append(_ent(pid_eid, "process", f"{name} ({pid})", asset, run_id,
+                                 f"{'/'.join(sorted(srcs))}/PID={pid}", anomaly=anom,
+                                 first=keys.norm_ts(ct), flags=(["hidden"] if hidden else []),
+                                 pid=pid, name=name, cmdline=cmd,
+                                 createtime=keys.norm_ts(ct), seen_by=sorted(srcs)))
+        except Exception as _x:                       # noqa: BLE001 -- one bad item, not the run
+            map_skip("memory process groups", _x)
+            continue
 
     # spawned edges from PPID
     for src in ("pslist", "psscan", "pstree"):
         for r in by_short.get(src, []):
-            pid, ppid = F.get(r, *F.PID), F.get(r, *F.PPID)
-            if pid is None or ppid is None:
+            try:
+                pid, ppid = F.get(r, *F.PID), F.get(r, *F.PPID)
+                if pid is None or ppid is None:
+                    continue
+                child = seen_proc.get(str(pid))
+                parent = seen_proc.get(str(ppid))
+                if child and parent and child != parent:
+                    rels.append(Relationship(parent, child, "spawned", sources=[MODULE]))
+            except Exception as _x:                       # noqa: BLE001 -- one bad item, not the run
+                map_skip("memory " + src, _x)
                 continue
-            child = seen_proc.get(str(pid))
-            parent = seen_proc.get(str(ppid))
-            if child and parent and child != parent:
-                rels.append(Relationship(parent, child, "spawned", sources=[MODULE]))
 
     # ---- malfind -> injected processes ---------------------------------
     for r in by_short.get("malfind", []):
-        pid = F.get(r, *F.PID)
-        if pid is None:
+        try:
+            pid = F.get(r, *F.PID)
+            if pid is None:
+                continue
+            eid = seen_proc.get(str(pid))
+            prot = str(F.get(r, "Protection", default="") or "")
+            if eid:
+                for e in ents:
+                    if e.id == eid:
+                        e.flags = list(dict.fromkeys(e.flags + ["injected"]))
+                        e.anomaly = max(e.anomaly, score_row(r), 100)
+                        e.severity = from_anomaly(e.anomaly)
+                        e.attrs["protection"] = prot or e.attrs.get("protection")
+                        break
+            else:
+                name = F.get(r, *F.PROC_NAME) or "?"
+                eid = keys.process_id(asset, pid, None, name)
+                seen_proc[str(pid)] = eid     # so yara/netconn for this PID still link
+                ents.append(_ent(eid, "process", f"{name} ({pid})", asset, run_id,
+                                 f"malfind/PID={pid}", anomaly=max(score_row(r), 100),
+                                 flags=["injected"], pid=str(pid), name=name, protection=prot))
+        except Exception as _x:                       # noqa: BLE001 -- one bad item, not the run
+            map_skip("memory malfind", _x)
             continue
-        eid = seen_proc.get(str(pid))
-        prot = str(F.get(r, "Protection", default="") or "")
-        if eid:
-            for e in ents:
-                if e.id == eid:
-                    e.flags = list(dict.fromkeys(e.flags + ["injected"]))
-                    e.anomaly = max(e.anomaly, score_row(r), 100)
-                    e.severity = from_anomaly(e.anomaly)
-                    e.attrs["protection"] = prot or e.attrs.get("protection")
-                    break
-        else:
-            name = F.get(r, *F.PROC_NAME) or "?"
-            eid = keys.process_id(asset, pid, None, name)
-            seen_proc[str(pid)] = eid     # so yara/netconn for this PID still link
-            ents.append(_ent(eid, "process", f"{name} ({pid})", asset, run_id,
-                             f"malfind/PID={pid}", anomaly=max(score_row(r), 100),
-                             flags=["injected"], pid=str(pid), name=name, protection=prot))
 
     # ---- network (netscan/netstat) -> netconn + ioc --------------------
     for src in ("netscan", "netstat"):
         for r in by_short.get(src, []):
-            raddr = F.get(r, *F.REMOTE_ADDR)
-            laddr = F.get(r, *F.LOCAL_ADDR)
-            rport = F.get(r, "RemotePort", "Rport", "ForeignPort", default="")
-            lport = F.get(r, "LocalPort", "Lport", default="")
-            state = F.get(r, *F.STATE)
-            pid = F.get(r, *F.PID)
-            nid = keys.netconn_id(asset, laddr, lport, raddr, rport)
-            ents.append(_ent(nid, "netconn", f"{laddr}:{lport}->{raddr}:{rport}", asset,
-                             run_id, f"{src}/{raddr}", anomaly=score_row(r),
-                             state=state, raddr=raddr, laddr=laddr))
-            if pid is not None and seen_proc.get(str(pid)):
-                rels.append(Relationship(seen_proc[str(pid)], nid, "connected", sources=[MODULE]))
-            kind = keys.classify_indicator(raddr)
-            if kind:
-                iid = keys.ioc_id(kind, raddr)
-                ents.append(_ent(iid, "ioc", str(raddr), asset, run_id, f"{src}/{raddr}",
-                                 anomaly=1, ioc_kind=kind))
-                rels.append(Relationship(nid, iid, "connected", sources=[MODULE]))
+            try:
+                raddr = F.get(r, *F.REMOTE_ADDR)
+                laddr = F.get(r, *F.LOCAL_ADDR)
+                rport = F.get(r, "RemotePort", "Rport", "ForeignPort", default="")
+                lport = F.get(r, "LocalPort", "Lport", default="")
+                state = F.get(r, *F.STATE)
+                pid = F.get(r, *F.PID)
+                nid = keys.netconn_id(asset, laddr, lport, raddr, rport)
+                ents.append(_ent(nid, "netconn", f"{laddr}:{lport}->{raddr}:{rport}", asset,
+                                 run_id, f"{src}/{raddr}", anomaly=score_row(r),
+                                 state=state, raddr=raddr, laddr=laddr))
+                if pid is not None and seen_proc.get(str(pid)):
+                    rels.append(Relationship(seen_proc[str(pid)], nid, "connected", sources=[MODULE]))
+                kind = keys.classify_indicator(raddr)
+                if kind:
+                    iid = keys.ioc_id(kind, raddr)
+                    ents.append(_ent(iid, "ioc", str(raddr), asset, run_id, f"{src}/{raddr}",
+                                     anomaly=1, ioc_kind=kind))
+                    rels.append(Relationship(nid, iid, "connected", sources=[MODULE]))
+            except Exception as _x:                       # noqa: BLE001 -- one bad item, not the run
+                map_skip("memory " + src, _x)
+                continue
 
     # ---- services ------------------------------------------------------
     for r in by_short.get("svcscan", []):
-        name = F.get(r, "Name", "ServiceName", default=None)
-        if not name:
+        try:
+            name = F.get(r, "Name", "ServiceName", default=None)
+            if not name:
+                continue
+            sid = keys.service_id(asset, name)
+            ents.append(_ent(sid, "service", str(name), asset, run_id, f"svcscan/{name}",
+                             anomaly=score_row(r), state=F.get(r, *F.STATE),
+                             binary=F.get(r, "Binary", "BinaryPath", default=None)))
+            pid = F.get(r, *F.PID)
+            if pid is not None and seen_proc.get(str(pid)):
+                rels.append(Relationship(seen_proc[str(pid)], sid, "ran_service", sources=[MODULE]))
+        except Exception as _x:                       # noqa: BLE001 -- one bad item, not the run
+            map_skip("memory svcscan", _x)
             continue
-        sid = keys.service_id(asset, name)
-        ents.append(_ent(sid, "service", str(name), asset, run_id, f"svcscan/{name}",
-                         anomaly=score_row(r), state=F.get(r, *F.STATE),
-                         binary=F.get(r, "Binary", "BinaryPath", default=None)))
-        pid = F.get(r, *F.PID)
-        if pid is not None and seen_proc.get(str(pid)):
-            rels.append(Relationship(seen_proc[str(pid)], sid, "ran_service", sources=[MODULE]))
 
     # ---- sessions -> who was logged on, and what they ran ---------------
     #
@@ -180,47 +204,55 @@ def map_memory(payload: dict, *, run_id: str, asset: str, hostname=None) -> tupl
     # `DESKTOP-566AT85/vagrant` out of a memory image and `vagrant` out of SAM
     # are one account rather than two entries for one person.
     for r in by_short.get("sessions", []):
-        raw_user = F.get(r, "User Name", "UserName", "User", default=None)
-        if not raw_user:
+        try:
+            raw_user = F.get(r, "User Name", "UserName", "User", default=None)
+            if not raw_user:
+                continue
+            # "N/A" FIRST, before the separator swap: sessions writes DOMAIN/user
+            # and the graph speaks DOMAIN\user, so rewriting the slash first turns
+            # the literal "N/A" into the domain account "n\a" — 38 processes' worth
+            # of a person who does not exist, on the real image this was built from.
+            user = str(raw_user).strip()
+            if user.lower() in ("", "n/a", "-", "n\\a", "/", "\\"):
+                continue
+            # Strip the separator before rewriting it: sessions writes an
+            # unqualified account as "/SYSTEM", which would otherwise arrive as
+            # the user "\system" — the same principal under a second name.
+            user = user.strip("/\\").replace("/", "\\")
+            # The machine's own account. Real, but not a person, and listing it in
+            # Identities beside the humans is noise.
+            if user.rstrip("\\").endswith("$"):
+                continue
+            aeid, dom, usr = _account_eid(asset, None, user, local_hosts=[hostname] if hostname else [])
+            if not aeid:
+                continue
+            ents.append(_ent(aeid, "account", (f"{dom}\\{usr}" if dom else usr),
+                             asset, run_id, f"sessions/{usr}",
+                             user=usr, domain=dom or None,
+                             session_type=F.get(r, "Session Type", "SessionType", default=None)))
+            pid = F.get(r, "Process ID", "ProcessID", *F.PID)
+            if pid is not None and seen_proc.get(str(pid)):
+                rels.append(Relationship(aeid, seen_proc[str(pid)], "executed",
+                                         sources=[MODULE],
+                                         ts=F.get(r, "Create Time", "CreateTime", default=None)))
+        except Exception as _x:                       # noqa: BLE001 -- one bad item, not the run
+            map_skip("memory sessions", _x)
             continue
-        # "N/A" FIRST, before the separator swap: sessions writes DOMAIN/user
-        # and the graph speaks DOMAIN\user, so rewriting the slash first turns
-        # the literal "N/A" into the domain account "n\a" — 38 processes' worth
-        # of a person who does not exist, on the real image this was built from.
-        user = str(raw_user).strip()
-        if user.lower() in ("", "n/a", "-", "n\\a", "/", "\\"):
-            continue
-        # Strip the separator before rewriting it: sessions writes an
-        # unqualified account as "/SYSTEM", which would otherwise arrive as
-        # the user "\system" — the same principal under a second name.
-        user = user.strip("/\\").replace("/", "\\")
-        # The machine's own account. Real, but not a person, and listing it in
-        # Identities beside the humans is noise.
-        if user.rstrip("\\").endswith("$"):
-            continue
-        aeid, dom, usr = _account_eid(asset, None, user, local_hosts=[hostname] if hostname else [])
-        if not aeid:
-            continue
-        ents.append(_ent(aeid, "account", (f"{dom}\\{usr}" if dom else usr),
-                         asset, run_id, f"sessions/{usr}",
-                         user=usr, domain=dom or None,
-                         session_type=F.get(r, "Session Type", "SessionType", default=None)))
-        pid = F.get(r, "Process ID", "ProcessID", *F.PID)
-        if pid is not None and seen_proc.get(str(pid)):
-            rels.append(Relationship(aeid, seen_proc[str(pid)], "executed",
-                                     sources=[MODULE],
-                                     ts=F.get(r, "Create Time", "CreateTime", default=None)))
 
     # ---- yara hits -> yarahit + matched --------------------------------
     for h in yara:
-        rule = F.get(h, "rule", "Rule", "name", default=None)
-        if not rule:
+        try:
+            rule = F.get(h, "rule", "Rule", "name", default=None)
+            if not rule:
+                continue
+            pid = F.get(h, *F.PID)
+            yid = keys.yarahit_id(asset, rule, pid or "")
+            ents.append(_ent(yid, "yarahit", str(rule), asset, run_id, f"yara/{rule}",
+                             anomaly=50, rule=rule, tags=F.get(h, "tags", default=None)))
+            if pid is not None and seen_proc.get(str(pid)):
+                rels.append(Relationship(yid, seen_proc[str(pid)], "matched", sources=[MODULE]))
+        except Exception as _x:                       # noqa: BLE001 -- one bad item, not the run
+            map_skip("memory yara", _x)
             continue
-        pid = F.get(h, *F.PID)
-        yid = keys.yarahit_id(asset, rule, pid or "")
-        ents.append(_ent(yid, "yarahit", str(rule), asset, run_id, f"yara/{rule}",
-                         anomaly=50, rule=rule, tags=F.get(h, "tags", default=None)))
-        if pid is not None and seen_proc.get(str(pid)):
-            rels.append(Relationship(yid, seen_proc[str(pid)], "matched", sources=[MODULE]))
 
     return ents, rels

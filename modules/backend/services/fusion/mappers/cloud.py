@@ -15,7 +15,7 @@ is the cloud asset anchor.
 from __future__ import annotations
 
 from .. import keys
-from ..schema import Entity, Relationship, EvidenceRef
+from ..schema import Entity, Relationship, EvidenceRef, map_skip
 from ..severity import from_string, rank
 from . import fieldspec as F
 
@@ -101,44 +101,48 @@ def map_cloud(findings, *, run_id: str, provider: str = "cloud", account=None) -
                        sources=[MODULE], evidence=[EvidenceRef(MODULE, run_id, "asset")]))
 
     for i, f in enumerate(findings or []):
-        if not isinstance(f, dict):
+        try:
+            if not isinstance(f, dict):
+                continue
+            rec = f.get("matched_record") if isinstance(f.get("matched_record"), dict) else f
+            ts = keys.norm_ts(F.get(f, "_timestamp", "_finding_time", default=None)
+                              or F.get(rec, "eventTime", "timeGenerated", "createdDateTime",
+                                       "activityDateTime", "time", default=None))
+            rule = (F.get(f, "rule_title", "rule", "title", "_rule", default=None)
+                    or F.get(rec, "eventName", "operationName", "displayName", default="cloud event"))
+            severity = from_string(F.get(f, "_severity", "severity", "Severity", "riskLevel",
+                                         default="medium"))
+            mitre = _mitre_ids(f.get("mitre_attack") or f.get("mitre"))
+            loc = f"{provider}/finding={i}"
+            eid = keys.event_id(casset, ts, f"{provider}:{rule}")
+            ents.append(Entity(id=eid, type="event", label=f"{provider}: {rule}",
+                               attrs={"_assets": [casset], "provider": provider, "rule": rule,
+                                      "mitre": list(mitre), "cloud_finding": rank(severity) >= rank("medium")},
+                               sources=[MODULE], evidence=[EvidenceRef(MODULE, run_id, loc)],
+                               severity=severity, anomaly=_RW.get(severity, 0),
+                               first_seen=ts, last_seen=ts))
+
+            aeid = _account_key(_user(rec))
+            if aeid:
+                u = aeid.split("\\")[-1].split(":")[-1]
+                ents.append(Entity(id=aeid, type="account", label=u, attrs={"_assets": [casset]},
+                                   sources=[MODULE], evidence=[EvidenceRef(MODULE, run_id, loc)],
+                                   first_seen=ts))
+                rels.append(Relationship(aeid, eid, "executed", sources=[MODULE], ts=ts))
+                rels.append(Relationship(aeid, casset, "authenticated", sources=[MODULE], ts=ts))
+
+            ip = _ip(rec)
+            kind = keys.classify_indicator(ip) if ip else None
+            if kind:
+                iid = keys.ioc_id(kind, ip)
+                ents.append(Entity(id=iid, type="ioc", label=str(ip),
+                                   attrs={"_assets": [casset], "ioc_kind": kind},
+                                   sources=[MODULE], evidence=[EvidenceRef(MODULE, run_id, loc)],
+                                   anomaly=1, first_seen=ts))
+                rels.append(Relationship(eid, iid, "event_about", sources=[MODULE], ts=ts))
+        except Exception as _x:                       # noqa: BLE001 -- one bad item, not the run
+            map_skip(f"{provider} findings", _x)
             continue
-        rec = f.get("matched_record") if isinstance(f.get("matched_record"), dict) else f
-        ts = keys.norm_ts(F.get(f, "_timestamp", "_finding_time", default=None)
-                          or F.get(rec, "eventTime", "timeGenerated", "createdDateTime",
-                                   "activityDateTime", "time", default=None))
-        rule = (F.get(f, "rule_title", "rule", "title", "_rule", default=None)
-                or F.get(rec, "eventName", "operationName", "displayName", default="cloud event"))
-        severity = from_string(F.get(f, "_severity", "severity", "Severity", "riskLevel",
-                                     default="medium"))
-        mitre = _mitre_ids(f.get("mitre_attack") or f.get("mitre"))
-        loc = f"{provider}/finding={i}"
-        eid = keys.event_id(casset, ts, f"{provider}:{rule}")
-        ents.append(Entity(id=eid, type="event", label=f"{provider}: {rule}",
-                           attrs={"_assets": [casset], "provider": provider, "rule": rule,
-                                  "mitre": list(mitre), "cloud_finding": rank(severity) >= rank("medium")},
-                           sources=[MODULE], evidence=[EvidenceRef(MODULE, run_id, loc)],
-                           severity=severity, anomaly=_RW.get(severity, 0),
-                           first_seen=ts, last_seen=ts))
-
-        aeid = _account_key(_user(rec))
-        if aeid:
-            u = aeid.split("\\")[-1].split(":")[-1]
-            ents.append(Entity(id=aeid, type="account", label=u, attrs={"_assets": [casset]},
-                               sources=[MODULE], evidence=[EvidenceRef(MODULE, run_id, loc)],
-                               first_seen=ts))
-            rels.append(Relationship(aeid, eid, "executed", sources=[MODULE], ts=ts))
-            rels.append(Relationship(aeid, casset, "authenticated", sources=[MODULE], ts=ts))
-
-        ip = _ip(rec)
-        kind = keys.classify_indicator(ip) if ip else None
-        if kind:
-            iid = keys.ioc_id(kind, ip)
-            ents.append(Entity(id=iid, type="ioc", label=str(ip),
-                               attrs={"_assets": [casset], "ioc_kind": kind},
-                               sources=[MODULE], evidence=[EvidenceRef(MODULE, run_id, loc)],
-                               anomaly=1, first_seen=ts))
-            rels.append(Relationship(eid, iid, "event_about", sources=[MODULE], ts=ts))
 
     return ents, rels
 

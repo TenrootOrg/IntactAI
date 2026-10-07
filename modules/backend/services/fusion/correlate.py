@@ -18,7 +18,7 @@ import hashlib
 import re
 import traceback
 
-from .schema import FusionGraph, Finding, EvidenceRef, fusion_tick, _PROGRESS
+from .schema import FusionGraph, Finding, EvidenceRef, fusion_tick, _PROGRESS, _MAP_SKIPS
 from . import schema as _schema
 from . import severity as sev
 from . import keys
@@ -174,6 +174,8 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     # about it (store.py reports it as a PARTIAL graph).
     _errs = errors if errors is not None else []
     _PROGRESS.set(progress)            # this thread's listener for fusion_tick (None: nobody)
+    _skips: dict = {}                  # where -> (rows skipped by the mapper, first error)
+    _MAP_SKIPS.set(_skips)
     _below: dict = {}                  # artifact -> rows dropped by the severity floor
     pending_rels = []
     _held: dict = {}            # in the window but below the severity floor
@@ -237,6 +239,14 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
             except Exception as _e:                           # noqa: BLE001
                 _record_error(_errs, f"entity {getattr(e, 'id', '?')!r}", _e)
         pending_rels.extend(rels)
+    _MAP_SKIPS.set(None)
+    for _where, (_n, _first) in sorted(_skips.items()):
+        if len(_errs) < _ERROR_DETAIL_CAP:
+            _errs.append({"where": f"mapping {_where}: {_n:,} item(s) skipped"[:200], "error": _first})
+        elif _errs and _errs[-1].get("overflow") is not None:
+            _errs[-1]["overflow"] += 1
+        else:
+            _errs.append({"where": "(further failures)", "error": "not listed", "overflow": 1})
     # CONTEXT, NOT FINDINGS. The severity floor removed every process a detection
     # was about -- a process is "informational" on its own -- and every edge went
     # with it. Measured on a real collection: 135 links mapped, 4 kept; the case

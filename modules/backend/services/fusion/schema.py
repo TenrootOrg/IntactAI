@@ -27,6 +27,28 @@ from typing import Any, Optional
 _PROGRESS: contextvars.ContextVar = contextvars.ContextVar("fusion_progress", default=None)
 
 
+# MAPPING SKIPS. One bad row must cost that row, not the run: until 2026-10-07
+# a single malformed row raised out of map_agentic and the whole run (233k rows
+# on the case that found it) contributed nothing. The mappers skip the item and
+# count it here, per artifact or pass; assemble collects the counts and reports
+# them as recoverable errors. Counts and the first error only -- bounded however
+# many rows fail.
+_MAP_SKIPS: contextvars.ContextVar = contextvars.ContextVar("fusion_map_skips", default=None)
+
+
+def map_skip(where: str, exc: BaseException) -> None:
+    """Count one skipped mapping item under `where`; never raises."""
+    try:
+        box = _MAP_SKIPS.get()
+        if box is None:
+            print(f"[FUSION] mapping skipped an item in {where}: {type(exc).__name__}: {exc}"[:300])
+            return
+        n, first = box.get(where, (0, None))
+        box[where] = (n + 1, first or f"{type(exc).__name__}: {exc}"[:300])
+    except Exception:                          # noqa: BLE001
+        pass
+
+
 def fusion_tick(stage: str, done: int | None = None, total: int | None = None) -> None:
     """Report progress to whoever set _PROGRESS; never fails the fuse."""
     cb = _PROGRESS.get()

@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 
 from .. import keys
-from ..schema import Entity, Relationship, EvidenceRef
+from ..schema import Entity, Relationship, EvidenceRef, map_skip
 from ..anomaly import score_row
 from ..severity import from_anomaly
 from . import fieldspec as F
@@ -40,33 +40,37 @@ def map_timesketch(events, *, run_id: str, asset: str, hostname=None) -> tuple[l
                        sources=[MODULE], evidence=[EvidenceRef(MODULE, run_id, "asset")]))
 
     for i, e in enumerate(events or []):
-        if not isinstance(e, dict):
-            continue
-        ts = keys.norm_ts(F.get(e, "datetime", "Timestamp", "TimeCreated", *F.TIMES))
-        msg = str(F.get(e, "message", "Message", "description", default="") or "")
-        anom = score_row(e)
-        loc = f"event/row={i}"
-        eid = keys.event_id(asset, ts, msg)
-        ents.append(_ent(eid, "event", (msg[:80] or F.get(e, "parser", default="event")),
-                         asset, run_id, loc, anomaly=anom, first=ts,
-                         parser=F.get(e, "parser", "source_name", default=None)))
-
-        # indicators from explicit fields + the message text
-        cand = set()
-        for v in (F.get(e, "src_ip", "dst_ip", "ip", "RemoteAddr", "ipAddress", default=None),):
-            if v:
-                cand.add(str(v))
-        for m in _IP.findall(msg):
-            cand.add(m)
-        for h in _HASH.findall(msg):
-            cand.add(h)
-        for val in cand:
-            kind = keys.classify_indicator(val)
-            if not kind:
+        try:
+            if not isinstance(e, dict):
                 continue
-            iid = keys.ioc_id(kind, val)
-            ents.append(_ent(iid, "ioc", str(val), asset, run_id, loc, anomaly=1,
-                             ioc_kind=kind, first=ts))
-            rels.append(Relationship(eid, iid, "event_about", sources=[MODULE], ts=ts))
+            ts = keys.norm_ts(F.get(e, "datetime", "Timestamp", "TimeCreated", *F.TIMES))
+            msg = str(F.get(e, "message", "Message", "description", default="") or "")
+            anom = score_row(e)
+            loc = f"event/row={i}"
+            eid = keys.event_id(asset, ts, msg)
+            ents.append(_ent(eid, "event", (msg[:80] or F.get(e, "parser", default="event")),
+                             asset, run_id, loc, anomaly=anom, first=ts,
+                             parser=F.get(e, "parser", "source_name", default=None)))
+
+            # indicators from explicit fields + the message text
+            cand = set()
+            for v in (F.get(e, "src_ip", "dst_ip", "ip", "RemoteAddr", "ipAddress", default=None),):
+                if v:
+                    cand.add(str(v))
+            for m in _IP.findall(msg):
+                cand.add(m)
+            for h in _HASH.findall(msg):
+                cand.add(h)
+            for val in cand:
+                kind = keys.classify_indicator(val)
+                if not kind:
+                    continue
+                iid = keys.ioc_id(kind, val)
+                ents.append(_ent(iid, "ioc", str(val), asset, run_id, loc, anomaly=1,
+                                 ioc_kind=kind, first=ts))
+                rels.append(Relationship(eid, iid, "event_about", sources=[MODULE], ts=ts))
+        except Exception as _x:                       # noqa: BLE001 -- one bad item, not the run
+            map_skip("Timesketch events", _x)
+            continue
 
     return ents, rels

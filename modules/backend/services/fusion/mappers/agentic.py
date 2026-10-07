@@ -13,7 +13,7 @@ import hashlib
 import re
 
 from .. import keys
-from ..schema import Entity, Relationship, EvidenceRef, fusion_tick
+from ..schema import Entity, Relationship, EvidenceRef, fusion_tick, map_skip
 from ..anomaly import score_row
 from ..severity import from_anomaly, from_string
 from . import fieldspec as F
@@ -528,816 +528,820 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
         # (e.g. SAM/users `.endswith`).
         _n = len(rows) if isinstance(rows, list) else None
         for i, r in enumerate(rows or []):
-            if i % 5000 == 0:
-                fusion_tick(f"mapping {artifact}", i, _n)
-            if not isinstance(r, dict):
-                continue
-            asset, host = asset_of(r)
-            if asset not in assets_seen:
-                assets_seen[asset] = host
-                ents.append(Entity(id=asset, type="asset", label=str(host or asset.split(":")[-1]),
-                                   attrs={"hostname": host, "kind": "endpoint", "_assets": [asset]},
-                                   sources=[MODULE], evidence=[EvidenceRef(MODULE, run_id, "asset")]))
-            ts = F.first_ts(r)
-            loc = f"{artifact}/row={i}"
-
-            # ---- malfind -> injected process (memory injection via agentic) -
-            # Must precede the generic 'detection' catch-all, which would
-            # otherwise mis-type this rich injection signal as a plain event.
-            if "malfind" in an:
-                pid = F.get(r, *F.PID)
-                if pid is None:
+            try:
+                if i % 5000 == 0:
+                    fusion_tick(f"mapping {artifact}", i, _n)
+                if not isinstance(r, dict):
                     continue
-                name = F.get(r, *F.PROC_NAME) or "?"
-                ct = F.get(r, *F.CREATETIME)
-                prot = str(F.get(r, "Protection", default="") or "")
-                rwx = "x" in prot.lower() and "w" in prot.lower()
-                eid = keys.process_id(asset, pid, ct, name)
-                proc_by_asset_pid[(asset, str(pid))] = eid
-                ents.append(_ent(eid, "process", f"{name} ({pid})", asset, run_id, loc,
-                                 anomaly=100 if rwx else 60, first=keys.norm_ts(ct or ts),
-                                 flags=["injected"], pid=str(pid), name=name,
-                                 protection=prot,
-                                 address_range=F.get(r, "AddressRange", default=None),
-                                 createtime=keys.norm_ts(ct), artifact=artifact))
-                yh = F.get(r, "YaraHit", "Rule", "rule", default=None)
-                rule = (yh.get("Rule") if isinstance(yh, dict) else yh) if yh else None
-                if rule:
-                    yid = keys.yarahit_id(asset, rule, pid)
-                    ents.append(_ent(yid, "yarahit", str(rule), asset, run_id, loc,
-                                     anomaly=50, first=ts, rule=rule, artifact=artifact))
-                    rels.append(Relationship(yid, eid, "matched", sources=[MODULE], ts=ts))
+                asset, host = asset_of(r)
+                if asset not in assets_seen:
+                    assets_seen[asset] = host
+                    ents.append(Entity(id=asset, type="asset", label=str(host or asset.split(":")[-1]),
+                                       attrs={"hostname": host, "kind": "endpoint", "_assets": [asset]},
+                                       sources=[MODULE], evidence=[EvidenceRef(MODULE, run_id, "asset")]))
+                ts = F.first_ts(r)
+                loc = f"{artifact}/row={i}"
 
-            # ---- Linux agentic artifacts (quick_wins_linux) -----------------
-            # Placed before the generic Windows branches so e.g. linux.sys.services
-            # doesn't fall into the Windows 'services' handler. Pslist/Pstree/Netstat
-            # are intentionally NOT here — they reuse the generic process/network
-            # handlers below.
-            elif ab == "linux.persistence.ldpreload":
-                content = str(F.get(r, "Content", default="") or "").strip()
-                path = F.get(r, "OSPath", default="/etc/ld.so.preload")
-                eid = keys.event_key(asset, f"ldpreload:{content[:60]}", f"{path}")
-                ents.append(_ent(eid, "event", f"LD_PRELOAD persistence: {content[:55]}", asset,
-                                 run_id, loc, anomaly=70,
-                                 first=keys.norm_ts(F.get(r, "Mtime", "Ctime", default=ts)),
-                                 artifact=artifact, flags=["detection", "persistence", "linux"],
-                                 title="LD_PRELOAD persistence", path=str(path), content=content[:200]))
-
-            elif ab == "linux.detection.sshkeyfilecmd":
-                cmd = F.get(r, "CMD", "Command", default="")
-                path = F.get(r, "OSPath", default=None)
-                # shared id with the AuthorizedKeys handler for the same file so the two
-                # detectors of one backdoor key merge into ONE finding (not two).
-                eid = keys.event_key(asset, "ssh_authkey_backdoor", f"{path}")
-                ents.append(_ent(eid, "event", f"SSH forced-command backdoor: {str(cmd)[:45]}", asset,
-                                 run_id, loc, anomaly=70, first=ts, artifact=artifact,
-                                 flags=["detection", "persistence", "ssh", "linux"],
-                                 title="SSH authorized_keys command= backdoor",
-                                 path=str(path) if path else None, command=str(cmd)))
-
-            elif ab == "linux.detection.incorrectpermissions":
-                path = F.get(r, "OSPath", default="?")
-                mism = F.get(r, "Mismatch", default="")
-                eid = keys.event_key(asset, f"perm:{mism}", f"{path}")
-                ents.append(_ent(eid, "event", f"Permission anomaly: {str(path)[:45]} ({mism})", asset,
-                                 run_id, loc, anomaly=45,
-                                 first=keys.norm_ts(F.get(r, "Ctime", "Mtime", default=ts)),
-                                 artifact=artifact, flags=["detection", "linux"],
-                                 title="File permission anomaly", path=str(path), mismatch=str(mism)))
-
-            elif ab == "linux.forensics.environmentvariables":
-                line = str(F.get(r, "Line", default="") or "")
-                sev = _linux_susp(line)
-                eid = keys.event_key(asset, f"envvar:{line[:60]}", f"{F.get(r, 'OSPath', default='')}")
-                ents.append(_ent(eid, "event", f"shell-config: {line[:55]}", asset, run_id, loc,
-                                 anomaly=60 if sev else 5, first=ts, artifact=artifact,
-                                 flags=(["detection", "persistence", "linux"] if sev else ["linux"]),
-                                 title="Shell-config env persistence" if sev else None,
-                                 line=line[:200], path=F.get(r, "OSPath", default=None)))
-
-            elif ab == "linux.sys.crontab":
-                cmd = str(F.get(r, "Command", default="") or "")
-                sev = _linux_susp(cmd)
-                cu = F.get(r, "User", default=None); cpath = F.get(r, "Path", default=None)
-                eid = keys.event_key(asset, f"cron:{cmd[:50]}", f"{cpath}:{cu}")
-                ents.append(_ent(eid, "event", f"cron: {cmd[:55]}", asset, run_id, loc,
-                                 anomaly=60 if sev else 4, first=ts, artifact=artifact,
-                                 flags=(["detection", "persistence", "cron", "linux"] if sev
-                                        else ["cron", "linux"]),
-                                 title="Suspicious cron job" if sev else None,
-                                 command=cmd[:200], user=str(cu) if cu else None,
-                                 path=str(cpath) if cpath else None))
-
-            elif ab == "linux.sys.services":
-                name = F.get(r, "Name", "Id", "OSPath", default=artifact)
-                execs = str(F.get(r, "ExecStart", "Exec", "Fragment", default="") or "")
-                sev = _linux_susp(execs) or _linux_susp(str(name))
-                eid = keys.event_key(asset, f"svc:{name}", f"{name}")
-                ents.append(_ent(eid, "event", f"systemd service: {str(name)[:45]}", asset, run_id,
-                                 loc, anomaly=55 if sev else 3, first=ts, artifact=artifact,
-                                 flags=(["detection", "persistence", "linux"] if sev else ["linux"]),
-                                 title="Suspicious systemd service" if sev else None,
-                                 service=str(name), exec=execs[:200] if execs else None))
-
-            elif ab == "linux.users.rootusers":
-                uname = F.get(r, "User", "Name", default=None)
-                uid = F.get(r, "Uid", "UID", default=None)
-                aeid, d, u = _account_eid(asset, None, uname)
-                if aeid:
-                    rogue = str(uid) == "0" and str(uname).lower() != "root"
-                    ents.append(_ent(aeid, "account", (u or str(uname)), asset, run_id, loc,
-                                     anomaly=60 if rogue else 1, first=ts, user=u,
-                                     uid=str(uid) if uid is not None else None,
-                                     home=F.get(r, "Homedir", default=None),
-                                     shell=F.get(r, "Shell", default=None),
-                                     flags=(["detection", "privilege_escalation", "linux"] if rogue else None), artifact=artifact))
-
-            elif ab == "linux.syslog.sshlogin":
-                ip = F.get(r, "IP", default=None)
-                res = str(F.get(r, "Result", default="")).lower()
-                uname = F.get(r, "AttemptedUser", "User", default=None)
-                aeid, d, u = _account_eid(asset, None, uname)
-                if aeid:
-                    ents.append(_ent(aeid, "account", (u or str(uname)), asset, run_id, loc,
-                                     first=ts, user=u, artifact=artifact))
-                    if res == "accepted":
-                        rels.append(Relationship(aeid, asset, "authenticated", sources=[MODULE], ts=ts,
-                                    attrs={"src_ip": ip, "result": res,
-                                           "method": F.get(r, "Method", default=None)}))
-                if ip and keys.classify_indicator(ip) == "ip":
-                    iid = keys.ioc_id("ip", ip)
-                    ents.append(_ent(iid, "ioc", str(ip), asset, run_id, loc,
-                                     anomaly=1, ioc_kind="ip", first=ts, artifact=artifact))
-
-            elif ab == "linux.sys.suid":
-                path = str(F.get(r, "OSPath", *F.PATH, default="?"))
-                std = any(path.startswith(p) for p in ("/usr/bin/", "/bin/", "/usr/sbin/",
-                                                       "/sbin/", "/usr/lib/", "/lib/"))
-                eid = keys.event_key(asset, f"suid:{path}", f"{path}")
-                ents.append(_ent(eid, "event", f"SUID: {path[:50]}", asset, run_id, loc,
-                                 anomaly=60 if not std else 2,
-                                 first=keys.norm_ts(F.get(r, "Mtime", default=ts)), artifact=artifact,
-                                 flags=(["detection", "privilege_escalation", "linux"] if not std
-                                        else ["linux"]),
-                                 title="SUID binary in non-standard path" if not std else None, path=path))
-
-            elif ab == "linux.sys.getcap":
-                path = str(F.get(r, "OSPath", *F.PATH, default="?"))
-                cap = F.get(r, "Capabilities", "Cap", "Caps", default="")
-                eid = keys.event_key(asset, f"cap:{cap}", f"{path}")
-                ents.append(_ent(eid, "event", f"capability {str(cap)[:30]}: {path[:40]}", asset,
-                                 run_id, loc, anomaly=45, first=ts, artifact=artifact,
-                                 flags=["detection", "privilege_escalation", "linux"],
-                                 title="File capability (privesc vector)", path=path, capability=str(cap)))
-
-            elif ab == "linux.detection.memfd":
-                pid = F.get(r, *F.PID)
-                name = F.get(r, *F.PROC_NAME) or "?"
-                eid = keys.event_key(asset, f"memfd:{name}", f"{pid}")
-                ents.append(_ent(eid, "event", f"in-memory exec (memfd): {name}", asset, run_id, loc,
-                                 anomaly=80, first=ts, artifact=artifact,
-                                 flags=["detection", "defense_evasion", "linux"],
-                                 title="In-memory execution (memfd_create)",
-                                 pid=str(pid) if pid is not None else None, name=name))
-
-            elif ab == "linux.ssh.authorizedkeys":
-                opts = F.get(r, "options", default=None)
-                path = F.get(r, "OSPath", default=None)
-                kt = F.get(r, "keytype", default=None)
-                comment = F.get(r, "comment", default=None)
-                has_cmd = bool(opts and any("command=" in str(o)
-                                            for o in (opts if isinstance(opts, (list, tuple)) else [opts])))
-                # a forced-command key is the same backdoor SSHKeyFileCmd flags — share its
-                # event id (per file) so they dedup to one finding; benign keys keep their own.
-                eid = keys.event_key(asset, "ssh_authkey_backdoor" if has_cmd else f"authkey:{comment or kt}", f"{path}")
-                ents.append(_ent(eid, "event", f"SSH authorized_key: {str(comment or kt)[:40]}", asset,
-                                 run_id, loc, anomaly=65 if has_cmd else 6, first=ts, artifact=artifact,
-                                 flags=(["detection", "persistence", "ssh", "linux"] if has_cmd
-                                        else ["ssh", "linux"]),
-                                 title="SSH authorized_keys forced-command backdoor" if has_cmd else None,
-                                 path=str(path) if path else None, keytype=str(kt) if kt else None,
-                                 comment=str(comment) if comment else None))
-
-            # ---- named pipes -> detection event (C2 / lateral movement) ------
-            # DetectRaptor flags these (e.g. "Cobalt Strike: trick_ryuk.profile" in
-            # `Detection`); a flagged pipe is a real C2 detection, not noise — score
-            # it high so it survives the severity floor and becomes a finding.
-            elif "namedpipe" in an:
-                pipe = F.get(r, "PipeName", "Name", default=None)
-                if not pipe:
-                    continue
-                detn = F.get(r, "Detection", default=None)
-                pid = F.get(r, "ProcPid", *F.PID)
-                eid = keys.event_key(asset, f"pipe:{pipe}", f"{pid}")
-                ents.append(_ent(eid, "event",
-                                 f"named-pipe detection: {str(detn or pipe)[:60]}", asset, run_id,
-                                 loc, anomaly=70 if detn else (score_row(r) or 10), first=ts,
-                                 artifact=artifact,
-                                 flags=(["detection", "c2", "named_pipe"] if detn else None),
-                                 title=(str(detn) if detn else f"Named pipe {pipe}"),
-                                 pipe=str(pipe), detection=str(detn) if detn else None,
-                                 proc_name=F.get(r, "ProcName", default=None)))
-                src = proc_by_asset_pid.get((asset, str(pid))) if pid is not None else None
-                if src:
-                    rels.append(Relationship(src, eid, "event_about", sources=[MODULE], ts=ts))
-
-            # ---- processes -------------------------------------------------
-            elif "pstree" in an or "pslist" in an or "processes" in an:
-                pid = F.get(r, *F.PID)
-                if pid is None:
-                    continue
-                name = F.get(r, *F.PROC_NAME) or "?"
-                ct = F.get(r, *F.CREATETIME)
-                eid = keys.process_id(asset, pid, ct, name)
-                proc_by_asset_pid[(asset, str(pid))] = eid
-                # Pslist enrichment: unsigned image raises suspicion; elevation
-                # is privilege context. Both are forensic signal, not noise.
-                untrusted = _image_untrusted_and_odd(r)
-                phash = _sha256_of(r)
-                anom = score_row(r) + (40 if untrusted else 0)
-                pflags = ["unsigned"] if untrusted else []
-                ents.append(_ent(eid, "process", f"{name} ({pid})", asset, run_id, loc,
-                                 anomaly=anom, first=keys.norm_ts(ct or ts), flags=pflags,
-                                 pid=str(pid), name=name, cmdline=F.get(r, *F.CMDLINE),
-                                 createtime=keys.norm_ts(ct), sha256=phash,
-                                 elevated=F.get(r, "TokenIsElevated", default=None),
-                                 signed=(not untrusted) if F.get(r, "Authenticode") else None, artifact=artifact))
-                # Cross-host pivot: hash an UNSIGNED binary only (signed system
-                # binaries would flood the graph with benign hashes).
-                if phash and untrusted and keys.classify_indicator(phash) == "hash":
-                    iid = keys.ioc_id("hash", phash)
-                    ents.append(_ent(iid, "ioc", phash, asset, run_id, loc,           # full hash (IOC appendix)
-                                     anomaly=20, ioc_kind="hash", first=ts, full_hash=phash,
-                                     image=name, **_hash_attrs(r), artifact=artifact))   # md5/sha1 = bridge fuel
-                    rels.append(Relationship(eid, iid, "matched", sources=[MODULE], ts=ts))
-                owner = F.get(r, *F.USER)
-                if owner:
-                    aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), owner)
-                    if aeid:
-                        # The process's own start time, not the generic row ts.
-                        # Pstree has no top-level time field in F.TIMES, so `ts` is
-                        # None on every row: the process entity computes
-                        # norm_ts(ct or ts) from StartTime and lands dated, while
-                        # the account beside it took the bare `ts` and landed
-                        # undated. Measured across the four feature tests, that was
-                        # 87 of the 105 undated entities — every one a Pstree
-                        # account. Cross-host "Account X used across N hosts"
-                        # findings take their date from exactly this field.
-                        _acct_ts = keys.norm_ts(ct or ts)
-                        ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset,
-                                         run_id, loc, user=u, domain=d, artifact=artifact,
-                                         first=_acct_ts))
-                        rels.append(Relationship(aeid, eid, "executed", sources=[MODULE],
-                                                 ts=_acct_ts))
-
-            # ---- spawned (second pass would be cleaner; do inline by ppid) -
-            # handled in finalize below
-
-            # ---- logon / auth -> account authenticated to asset ----------
-            elif any(k in an for k in ("logon", "rdpauth", "rdpclient", "authentication",
-                                       "accountusage")):
-                user = F.get(r, *F.USER)
-                aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), user,
-                                          local_hosts=(host, r.get("Computer")))
-                if aeid:
-                    lproc = str(F.get(r, *F.LOGON_PROC) or "").lower()
-                    # runas/psexec/WinRM logon mechanisms are lateral-movement signals —
-                    # a conservative bump, never an auto-finding (protects clean silence).
-                    bump = 5 if any(k in lproc for k in ("seclogon", "psexec", "winrm",
-                                                         "wsmprovhost", "wmiprvse")) else 0
-                    ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset, run_id,
-                                     loc, anomaly=score_row(r) + bump, first=ts, user=u, domain=d, artifact=artifact))
-                    rels.append(Relationship(
-                        aeid, asset, "authenticated", sources=[MODULE], ts=ts,
-                        attrs={"logon_type": F.get(r, "LogonType", "LogonTypeDescription", default=None),
-                               "src_ip": F.get(r, *F.IP_ADDR, default=None),
-                               "workstation": F.get(r, *F.WORKSTATION, default=None),
-                               "auth_package": F.get(r, *F.AUTH_PKG, default=None),
-                               "logon_process": F.get(r, *F.LOGON_PROC, default=None),
-                               "event_id": F.get(r, *F.EVENT_ID, default=None),
-                               "dest_host": F.get(r, "DestinationHost", default=None)}))
-
-            # ---- Kerberos tickets -> suspicious-TGT event/finding ---------
-            elif "kerberos" in an or "goldenticket" in an:
-                susp = F.get(r, "Suspicious", default=None)
-                tt = F.get(r, "TicketType", default="ticket")
-                client = F.get(r, "Client", default="?")
-                server = F.get(r, "Server", default="?")
-                kid = keys.event_key(asset, f"krb:{tt}:{server}", f"{client}")
-                truthy = str(susp).strip().lower() in ("true", "1", "yes") or susp is True
-                ents.append(_ent(kid, "event", f"Kerberos {tt}: {client} -> {server}", asset,
-                                 run_id, loc, anomaly=60 if truthy else 1, first=ts,
-                                 artifact=artifact, flags=(["kerberos_suspicious"] if truthy
-                                                           else ["kerberos"]),
-                                 ticket_type=str(tt), client=str(client), server=str(server),
-                                 enctype=F.get(r, "EncType", default=None)))
-
-            # ---- user inventory (Sys.Users / AllUsers / SAM) -> account ---
-            elif "sys.users" in an or "allusers" in an or "localusers" in an \
-                    or ab.endswith(".users") or ab.endswith(".sam"):
-                _pv = r.get("ParsedV") if isinstance(r.get("ParsedV"), dict) else {}
-                _pf = r.get("ParsedF") if isinstance(r.get("ParsedF"), dict) else {}
-                # SAM/Parsed nests the name and the account details; reading only
-                # flat columns dropped all five of its rows.
-                uname = F.get(r, "Name", *F.USER) or _pv.get("username")
-                aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), uname, local_hosts=(host,))
-                if aeid:
-                    sid = F.get(r, "UUID", "Sid", "SID", "Uid", default=None)
-                    ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset,
-                                     run_id, loc, first=None if _pf else ts, user=u, domain=d, sid=sid,
-                                     home=F.get(r, "Directory", "HomeDir", "ProfilePath",
-                                                default=None),
-                                     # 1601-01-01 is Windows' zero date: "never".
-                                     last_login=(None if str(_pf.get("LastLoginDate") or "").startswith("1601-01-01")
-                                                 else _pf.get("LastLoginDate")),
-                                     password_reset=(None if str(_pf.get("PasswordResetDate") or "").startswith("1601-01-01")
-                                                     else _pf.get("PasswordResetDate")),
-                                     account_type=_pv.get("AccountType"), artifact=artifact))
-
-            # ---- powershell command history -> execution event -----------
-            elif "psreadline" in an:
-                line = F.get(r, "Line", "Command", "CommandLine", default=None)
-                if not line or str(line).lstrip().startswith("#"):
-                    continue                       # skip comments / blanks
-                # THE DETECTRAPTOR RULE OUTRANKS OUR KEYWORD LIST. These rows exist
-                # because a rule matched — RuleName/RuleID are on every row — and the
-                # branch ignored them, grading instead against _PS_SUSPICIOUS, which
-                # does not contain "mimikatz". Measured on a real case: 18 rows whose
-                # rule was "T1059.001-Mimikatz Execution via PowerShell" with
-                # Line == "invoke-mimikatz" landed at anomaly=1, severity=low, and
-                # 85% of rule-confirmed detections graded low overall.
-                _rule = F.get(r, "RuleName", "RuleID", default=None)
-                an_ps = max(_ps_anomaly(line), _rule_anomaly(_rule))
-                # PSReadline nests the history-file times under FileInfo and has no
-                # per-command time, so anchor on the file's last write (most recent
-                # PowerShell activity), then birth. Without this the events were undated.
-                _fi = r.get("FileInfo") if isinstance(r.get("FileInfo"), dict) else {}
-                ps_ts = keys.norm_ts(_fi.get("Mtime") or _fi.get("Btime") or _fi.get("Ctime")) or ts
-                owner = F.get(r, "Username", *F.USER)
-                # FullPath is None on every row here, so the path contributed nothing
-                # to identity and 91 of 178 rows merged — 15 of them fusing commands
-                # run by DIFFERENT users into one node. The owner and the line number
-                # are what actually separate two history entries.
-                eid = keys.event_key(asset, f"ps:{line}", owner,
-                                     F.get(r, "LineNum", default=None),
-                                     F.get(r, 'OSPath', default=''))
-                ents.append(_ent(eid, "event",
-                                 (f"{str(_rule)[:40]}: {str(line)[:60]}" if _rule
-                                  else f"powershell: {str(line)[:80]}"),
-                                 asset, run_id,
-                                 loc, anomaly=an_ps, first=ps_ts, artifact=artifact,
-                                 command=str(line)[:400],
-                                 detection=str(_rule) if _rule else None,
-                                 title=(f"PowerShell: {str(_rule)[:60]}" if _rule else None),
-                                 # An ATT&CK-mapped rule reaches the timeline; the
-                                 # local keyword heuristic still marks the row but
-                                 # does not promote it on its own.
-                                 flags=([f for f in
-                                         (["suspicious_powershell"] if an_ps >= 25 else [])
-                                         + (["detection"] if _rule_anomaly(_rule) >= 60 else [])]
-                                        or None)))
-                if owner:
-                    aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), owner)
-                    if aeid:
-                        ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset,
-                                         run_id, loc, user=u, domain=d, artifact=artifact, first=ps_ts))
-                        rels.append(Relationship(aeid, eid, "executed", sources=[MODULE], ts=ps_ts))
-
-            # ---- network -> netconn + ioc --------------------------------
-            elif "netstat" in an or "network" in an:
-                raddr = F.get(r, *F.REMOTE_ADDR)
-                if not raddr:
-                    continue
-                kind = keys.classify_indicator(raddr)
-                if kind:
-                    iid = keys.ioc_id(kind, raddr)
-                    ents.append(_ent(iid, "ioc", str(raddr), asset, run_id, loc,
-                                     anomaly=1, ioc_kind=kind, first=ts, artifact=artifact))
+                # ---- malfind -> injected process (memory injection via agentic) -
+                # Must precede the generic 'detection' catch-all, which would
+                # otherwise mis-type this rich injection signal as a plain event.
+                if "malfind" in an:
                     pid = F.get(r, *F.PID)
+                    if pid is None:
+                        continue
+                    name = F.get(r, *F.PROC_NAME) or "?"
+                    ct = F.get(r, *F.CREATETIME)
+                    prot = str(F.get(r, "Protection", default="") or "")
+                    rwx = "x" in prot.lower() and "w" in prot.lower()
+                    eid = keys.process_id(asset, pid, ct, name)
+                    proc_by_asset_pid[(asset, str(pid))] = eid
+                    ents.append(_ent(eid, "process", f"{name} ({pid})", asset, run_id, loc,
+                                     anomaly=100 if rwx else 60, first=keys.norm_ts(ct or ts),
+                                     flags=["injected"], pid=str(pid), name=name,
+                                     protection=prot,
+                                     address_range=F.get(r, "AddressRange", default=None),
+                                     createtime=keys.norm_ts(ct), artifact=artifact))
+                    yh = F.get(r, "YaraHit", "Rule", "rule", default=None)
+                    rule = (yh.get("Rule") if isinstance(yh, dict) else yh) if yh else None
+                    if rule:
+                        yid = keys.yarahit_id(asset, rule, pid)
+                        ents.append(_ent(yid, "yarahit", str(rule), asset, run_id, loc,
+                                         anomaly=50, first=ts, rule=rule, artifact=artifact))
+                        rels.append(Relationship(yid, eid, "matched", sources=[MODULE], ts=ts))
+
+                # ---- Linux agentic artifacts (quick_wins_linux) -----------------
+                # Placed before the generic Windows branches so e.g. linux.sys.services
+                # doesn't fall into the Windows 'services' handler. Pslist/Pstree/Netstat
+                # are intentionally NOT here — they reuse the generic process/network
+                # handlers below.
+                elif ab == "linux.persistence.ldpreload":
+                    content = str(F.get(r, "Content", default="") or "").strip()
+                    path = F.get(r, "OSPath", default="/etc/ld.so.preload")
+                    eid = keys.event_key(asset, f"ldpreload:{content[:60]}", f"{path}")
+                    ents.append(_ent(eid, "event", f"LD_PRELOAD persistence: {content[:55]}", asset,
+                                     run_id, loc, anomaly=70,
+                                     first=keys.norm_ts(F.get(r, "Mtime", "Ctime", default=ts)),
+                                     artifact=artifact, flags=["detection", "persistence", "linux"],
+                                     title="LD_PRELOAD persistence", path=str(path), content=content[:200]))
+
+                elif ab == "linux.detection.sshkeyfilecmd":
+                    cmd = F.get(r, "CMD", "Command", default="")
+                    path = F.get(r, "OSPath", default=None)
+                    # shared id with the AuthorizedKeys handler for the same file so the two
+                    # detectors of one backdoor key merge into ONE finding (not two).
+                    eid = keys.event_key(asset, "ssh_authkey_backdoor", f"{path}")
+                    ents.append(_ent(eid, "event", f"SSH forced-command backdoor: {str(cmd)[:45]}", asset,
+                                     run_id, loc, anomaly=70, first=ts, artifact=artifact,
+                                     flags=["detection", "persistence", "ssh", "linux"],
+                                     title="SSH authorized_keys command= backdoor",
+                                     path=str(path) if path else None, command=str(cmd)))
+
+                elif ab == "linux.detection.incorrectpermissions":
+                    path = F.get(r, "OSPath", default="?")
+                    mism = F.get(r, "Mismatch", default="")
+                    eid = keys.event_key(asset, f"perm:{mism}", f"{path}")
+                    ents.append(_ent(eid, "event", f"Permission anomaly: {str(path)[:45]} ({mism})", asset,
+                                     run_id, loc, anomaly=45,
+                                     first=keys.norm_ts(F.get(r, "Ctime", "Mtime", default=ts)),
+                                     artifact=artifact, flags=["detection", "linux"],
+                                     title="File permission anomaly", path=str(path), mismatch=str(mism)))
+
+                elif ab == "linux.forensics.environmentvariables":
+                    line = str(F.get(r, "Line", default="") or "")
+                    sev = _linux_susp(line)
+                    eid = keys.event_key(asset, f"envvar:{line[:60]}", f"{F.get(r, 'OSPath', default='')}")
+                    ents.append(_ent(eid, "event", f"shell-config: {line[:55]}", asset, run_id, loc,
+                                     anomaly=60 if sev else 5, first=ts, artifact=artifact,
+                                     flags=(["detection", "persistence", "linux"] if sev else ["linux"]),
+                                     title="Shell-config env persistence" if sev else None,
+                                     line=line[:200], path=F.get(r, "OSPath", default=None)))
+
+                elif ab == "linux.sys.crontab":
+                    cmd = str(F.get(r, "Command", default="") or "")
+                    sev = _linux_susp(cmd)
+                    cu = F.get(r, "User", default=None); cpath = F.get(r, "Path", default=None)
+                    eid = keys.event_key(asset, f"cron:{cmd[:50]}", f"{cpath}:{cu}")
+                    ents.append(_ent(eid, "event", f"cron: {cmd[:55]}", asset, run_id, loc,
+                                     anomaly=60 if sev else 4, first=ts, artifact=artifact,
+                                     flags=(["detection", "persistence", "cron", "linux"] if sev
+                                            else ["cron", "linux"]),
+                                     title="Suspicious cron job" if sev else None,
+                                     command=cmd[:200], user=str(cu) if cu else None,
+                                     path=str(cpath) if cpath else None))
+
+                elif ab == "linux.sys.services":
+                    name = F.get(r, "Name", "Id", "OSPath", default=artifact)
+                    execs = str(F.get(r, "ExecStart", "Exec", "Fragment", default="") or "")
+                    sev = _linux_susp(execs) or _linux_susp(str(name))
+                    eid = keys.event_key(asset, f"svc:{name}", f"{name}")
+                    ents.append(_ent(eid, "event", f"systemd service: {str(name)[:45]}", asset, run_id,
+                                     loc, anomaly=55 if sev else 3, first=ts, artifact=artifact,
+                                     flags=(["detection", "persistence", "linux"] if sev else ["linux"]),
+                                     title="Suspicious systemd service" if sev else None,
+                                     service=str(name), exec=execs[:200] if execs else None))
+
+                elif ab == "linux.users.rootusers":
+                    uname = F.get(r, "User", "Name", default=None)
+                    uid = F.get(r, "Uid", "UID", default=None)
+                    aeid, d, u = _account_eid(asset, None, uname)
+                    if aeid:
+                        rogue = str(uid) == "0" and str(uname).lower() != "root"
+                        ents.append(_ent(aeid, "account", (u or str(uname)), asset, run_id, loc,
+                                         anomaly=60 if rogue else 1, first=ts, user=u,
+                                         uid=str(uid) if uid is not None else None,
+                                         home=F.get(r, "Homedir", default=None),
+                                         shell=F.get(r, "Shell", default=None),
+                                         flags=(["detection", "privilege_escalation", "linux"] if rogue else None), artifact=artifact))
+
+                elif ab == "linux.syslog.sshlogin":
+                    ip = F.get(r, "IP", default=None)
+                    res = str(F.get(r, "Result", default="")).lower()
+                    uname = F.get(r, "AttemptedUser", "User", default=None)
+                    aeid, d, u = _account_eid(asset, None, uname)
+                    if aeid:
+                        ents.append(_ent(aeid, "account", (u or str(uname)), asset, run_id, loc,
+                                         first=ts, user=u, artifact=artifact))
+                        if res == "accepted":
+                            rels.append(Relationship(aeid, asset, "authenticated", sources=[MODULE], ts=ts,
+                                        attrs={"src_ip": ip, "result": res,
+                                               "method": F.get(r, "Method", default=None)}))
+                    if ip and keys.classify_indicator(ip) == "ip":
+                        iid = keys.ioc_id("ip", ip)
+                        ents.append(_ent(iid, "ioc", str(ip), asset, run_id, loc,
+                                         anomaly=1, ioc_kind="ip", first=ts, artifact=artifact))
+
+                elif ab == "linux.sys.suid":
+                    path = str(F.get(r, "OSPath", *F.PATH, default="?"))
+                    std = any(path.startswith(p) for p in ("/usr/bin/", "/bin/", "/usr/sbin/",
+                                                           "/sbin/", "/usr/lib/", "/lib/"))
+                    eid = keys.event_key(asset, f"suid:{path}", f"{path}")
+                    ents.append(_ent(eid, "event", f"SUID: {path[:50]}", asset, run_id, loc,
+                                     anomaly=60 if not std else 2,
+                                     first=keys.norm_ts(F.get(r, "Mtime", default=ts)), artifact=artifact,
+                                     flags=(["detection", "privilege_escalation", "linux"] if not std
+                                            else ["linux"]),
+                                     title="SUID binary in non-standard path" if not std else None, path=path))
+
+                elif ab == "linux.sys.getcap":
+                    path = str(F.get(r, "OSPath", *F.PATH, default="?"))
+                    cap = F.get(r, "Capabilities", "Cap", "Caps", default="")
+                    eid = keys.event_key(asset, f"cap:{cap}", f"{path}")
+                    ents.append(_ent(eid, "event", f"capability {str(cap)[:30]}: {path[:40]}", asset,
+                                     run_id, loc, anomaly=45, first=ts, artifact=artifact,
+                                     flags=["detection", "privilege_escalation", "linux"],
+                                     title="File capability (privesc vector)", path=path, capability=str(cap)))
+
+                elif ab == "linux.detection.memfd":
+                    pid = F.get(r, *F.PID)
+                    name = F.get(r, *F.PROC_NAME) or "?"
+                    eid = keys.event_key(asset, f"memfd:{name}", f"{pid}")
+                    ents.append(_ent(eid, "event", f"in-memory exec (memfd): {name}", asset, run_id, loc,
+                                     anomaly=80, first=ts, artifact=artifact,
+                                     flags=["detection", "defense_evasion", "linux"],
+                                     title="In-memory execution (memfd_create)",
+                                     pid=str(pid) if pid is not None else None, name=name))
+
+                elif ab == "linux.ssh.authorizedkeys":
+                    opts = F.get(r, "options", default=None)
+                    path = F.get(r, "OSPath", default=None)
+                    kt = F.get(r, "keytype", default=None)
+                    comment = F.get(r, "comment", default=None)
+                    has_cmd = bool(opts and any("command=" in str(o)
+                                                for o in (opts if isinstance(opts, (list, tuple)) else [opts])))
+                    # a forced-command key is the same backdoor SSHKeyFileCmd flags — share its
+                    # event id (per file) so they dedup to one finding; benign keys keep their own.
+                    eid = keys.event_key(asset, "ssh_authkey_backdoor" if has_cmd else f"authkey:{comment or kt}", f"{path}")
+                    ents.append(_ent(eid, "event", f"SSH authorized_key: {str(comment or kt)[:40]}", asset,
+                                     run_id, loc, anomaly=65 if has_cmd else 6, first=ts, artifact=artifact,
+                                     flags=(["detection", "persistence", "ssh", "linux"] if has_cmd
+                                            else ["ssh", "linux"]),
+                                     title="SSH authorized_keys forced-command backdoor" if has_cmd else None,
+                                     path=str(path) if path else None, keytype=str(kt) if kt else None,
+                                     comment=str(comment) if comment else None))
+
+                # ---- named pipes -> detection event (C2 / lateral movement) ------
+                # DetectRaptor flags these (e.g. "Cobalt Strike: trick_ryuk.profile" in
+                # `Detection`); a flagged pipe is a real C2 detection, not noise — score
+                # it high so it survives the severity floor and becomes a finding.
+                elif "namedpipe" in an:
+                    pipe = F.get(r, "PipeName", "Name", default=None)
+                    if not pipe:
+                        continue
+                    detn = F.get(r, "Detection", default=None)
+                    pid = F.get(r, "ProcPid", *F.PID)
+                    eid = keys.event_key(asset, f"pipe:{pipe}", f"{pid}")
+                    ents.append(_ent(eid, "event",
+                                     f"named-pipe detection: {str(detn or pipe)[:60]}", asset, run_id,
+                                     loc, anomaly=70 if detn else (score_row(r) or 10), first=ts,
+                                     artifact=artifact,
+                                     flags=(["detection", "c2", "named_pipe"] if detn else None),
+                                     title=(str(detn) if detn else f"Named pipe {pipe}"),
+                                     pipe=str(pipe), detection=str(detn) if detn else None,
+                                     proc_name=F.get(r, "ProcName", default=None)))
                     src = proc_by_asset_pid.get((asset, str(pid))) if pid is not None else None
                     if src:
-                        rels.append(Relationship(src, iid, "connected", sources=[MODULE], ts=ts))
+                        rels.append(Relationship(src, eid, "event_about", sources=[MODULE], ts=ts))
 
-            # ---- detections / yara ---------------------------------------
-            elif "yara" in an:
-                rule = F.get(r, "Rule", "rule", "RuleName", "name", default=None) or artifact
-                pid = F.get(r, *F.PID)
-                # THE FILE IS PART OF THE HIT. A file-scan yara artifact has no pid,
-                # so the id degenerated to (asset, rule) and every file matching one
-                # signature collapsed into a single node — three distinct webshells
-                # under C:\AtomicRedTeam\atomics\T1505.003 (b.jsp, tests.jsp,
-                # cmd.aspx) became one, and the path was never stored, so nothing
-                # said WHICH file matched.
-                ypath = F.get(r, "OSPath", *F.PATH, default=None)
-                yid = keys.yarahit_id(asset, rule, pid if pid is not None else (ypath or ""))
-                # A yarahit only became a finding through the CROSS-HOST path
-                # (correlate.py: type in ("ioc","account","yarahit") and >= 2 assets),
-                # so a signature hit on a single host produced no timeline row at
-                # all. A webshell on disk is a detection on one host as much as on
-                # five — flag it so it reaches the analyst.
-                ents.append(_ent(yid, "yarahit", str(rule), asset, run_id, loc, anomaly=50,
-                                 first=ts, rule=rule, artifact=artifact,
-                                 path=str(ypath) if ypath else None,
-                                 flags=["detection"],
-                                 title=f"YARA: {str(rule)[:60]}"
-                                       + (f" — {str(ypath).split(chr(92))[-1][:40]}" if ypath else "")))
-                if pid is not None and proc_by_asset_pid.get((asset, str(pid))):
-                    rels.append(Relationship(yid, proc_by_asset_pid[(asset, str(pid))],
-                                             "matched", sources=[MODULE], ts=ts))
+                # ---- processes -------------------------------------------------
+                elif "pstree" in an or "pslist" in an or "processes" in an:
+                    pid = F.get(r, *F.PID)
+                    if pid is None:
+                        continue
+                    name = F.get(r, *F.PROC_NAME) or "?"
+                    ct = F.get(r, *F.CREATETIME)
+                    eid = keys.process_id(asset, pid, ct, name)
+                    proc_by_asset_pid[(asset, str(pid))] = eid
+                    # Pslist enrichment: unsigned image raises suspicion; elevation
+                    # is privilege context. Both are forensic signal, not noise.
+                    untrusted = _image_untrusted_and_odd(r)
+                    phash = _sha256_of(r)
+                    anom = score_row(r) + (40 if untrusted else 0)
+                    pflags = ["unsigned"] if untrusted else []
+                    ents.append(_ent(eid, "process", f"{name} ({pid})", asset, run_id, loc,
+                                     anomaly=anom, first=keys.norm_ts(ct or ts), flags=pflags,
+                                     pid=str(pid), name=name, cmdline=F.get(r, *F.CMDLINE),
+                                     createtime=keys.norm_ts(ct), sha256=phash,
+                                     elevated=F.get(r, "TokenIsElevated", default=None),
+                                     signed=(not untrusted) if F.get(r, "Authenticode") else None, artifact=artifact))
+                    # Cross-host pivot: hash an UNSIGNED binary only (signed system
+                    # binaries would flood the graph with benign hashes).
+                    if phash and untrusted and keys.classify_indicator(phash) == "hash":
+                        iid = keys.ioc_id("hash", phash)
+                        ents.append(_ent(iid, "ioc", phash, asset, run_id, loc,           # full hash (IOC appendix)
+                                         anomaly=20, ioc_kind="hash", first=ts, full_hash=phash,
+                                         image=name, **_hash_attrs(r), artifact=artifact))   # md5/sha1 = bridge fuel
+                        rels.append(Relationship(eid, iid, "matched", sources=[MODULE], ts=ts))
+                    owner = F.get(r, *F.USER)
+                    if owner:
+                        aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), owner)
+                        if aeid:
+                            # The process's own start time, not the generic row ts.
+                            # Pstree has no top-level time field in F.TIMES, so `ts` is
+                            # None on every row: the process entity computes
+                            # norm_ts(ct or ts) from StartTime and lands dated, while
+                            # the account beside it took the bare `ts` and landed
+                            # undated. Measured across the four feature tests, that was
+                            # 87 of the 105 undated entities — every one a Pstree
+                            # account. Cross-host "Account X used across N hosts"
+                            # findings take their date from exactly this field.
+                            _acct_ts = keys.norm_ts(ct or ts)
+                            ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset,
+                                             run_id, loc, user=u, domain=d, artifact=artifact,
+                                             first=_acct_ts))
+                            rels.append(Relationship(aeid, eid, "executed", sources=[MODULE],
+                                                     ts=_acct_ts))
 
-            # ---- web / dns -> domain ioc (+ web detection event) ------------
-            elif "dnscache" in an or "webhistory" in an or "history" in an or "download" in an:
-                # DetectRaptor.Webhistory flags suspicious visits (Detection/Category,
-                # e.g. Category='Enumeration', Domain='advanced-ip-scanner.com'). Turn a
-                # flagged visit into a detection event so it surfaces as a finding.
-                detn = F.get(r, "Detection", default=None)
-                cat = F.get(r, "Category", default=None)
-                dom = F.get(r, "Domain", "Host", default=None)
-                # Webhistory nests the visit time in ArtifactData (Visit_Date /
-                # Last_Visit_Date). Use it when sane; guard corrupt pre-epoch values
-                # (some collections emit year 1601/1810 for unconverted WebKit/Chrome
-                # timestamps) so the timeline is never polluted with false dates.
-                _ad = r.get("ArtifactData") if isinstance(r.get("ArtifactData"), dict) else {}
-                web_ts = keys.norm_ts(_ad.get("Visit_Date") or _ad.get("Last_Visit_Date")) or ts
-                if web_ts and web_ts < "2000":
-                    web_ts = None
-                if detn or cat:
-                    dname = (detn.get("Category") if isinstance(detn, dict) else detn) or cat or "web"
-                    title = f"Web: {str(dname)[:30]} — {str(dom)[:40]}" if dom else f"Web: {str(dname)[:40]}"
-                    eid = keys.event_key(asset, f"webdet:{dname}:{dom}", f"{dom}")
+                # ---- spawned (second pass would be cleaner; do inline by ppid) -
+                # handled in finalize below
+
+                # ---- logon / auth -> account authenticated to asset ----------
+                elif any(k in an for k in ("logon", "rdpauth", "rdpclient", "authentication",
+                                           "accountusage")):
+                    user = F.get(r, *F.USER)
+                    aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), user,
+                                              local_hosts=(host, r.get("Computer")))
+                    if aeid:
+                        lproc = str(F.get(r, *F.LOGON_PROC) or "").lower()
+                        # runas/psexec/WinRM logon mechanisms are lateral-movement signals —
+                        # a conservative bump, never an auto-finding (protects clean silence).
+                        bump = 5 if any(k in lproc for k in ("seclogon", "psexec", "winrm",
+                                                             "wsmprovhost", "wmiprvse")) else 0
+                        ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset, run_id,
+                                         loc, anomaly=score_row(r) + bump, first=ts, user=u, domain=d, artifact=artifact))
+                        rels.append(Relationship(
+                            aeid, asset, "authenticated", sources=[MODULE], ts=ts,
+                            attrs={"logon_type": F.get(r, "LogonType", "LogonTypeDescription", default=None),
+                                   "src_ip": F.get(r, *F.IP_ADDR, default=None),
+                                   "workstation": F.get(r, *F.WORKSTATION, default=None),
+                                   "auth_package": F.get(r, *F.AUTH_PKG, default=None),
+                                   "logon_process": F.get(r, *F.LOGON_PROC, default=None),
+                                   "event_id": F.get(r, *F.EVENT_ID, default=None),
+                                   "dest_host": F.get(r, "DestinationHost", default=None)}))
+
+                # ---- Kerberos tickets -> suspicious-TGT event/finding ---------
+                elif "kerberos" in an or "goldenticket" in an:
+                    susp = F.get(r, "Suspicious", default=None)
+                    tt = F.get(r, "TicketType", default="ticket")
+                    client = F.get(r, "Client", default="?")
+                    server = F.get(r, "Server", default="?")
+                    kid = keys.event_key(asset, f"krb:{tt}:{server}", f"{client}")
+                    truthy = str(susp).strip().lower() in ("true", "1", "yes") or susp is True
+                    ents.append(_ent(kid, "event", f"Kerberos {tt}: {client} -> {server}", asset,
+                                     run_id, loc, anomaly=60 if truthy else 1, first=ts,
+                                     artifact=artifact, flags=(["kerberos_suspicious"] if truthy
+                                                               else ["kerberos"]),
+                                     ticket_type=str(tt), client=str(client), server=str(server),
+                                     enctype=F.get(r, "EncType", default=None)))
+
+                # ---- user inventory (Sys.Users / AllUsers / SAM) -> account ---
+                elif "sys.users" in an or "allusers" in an or "localusers" in an \
+                        or ab.endswith(".users") or ab.endswith(".sam"):
+                    _pv = r.get("ParsedV") if isinstance(r.get("ParsedV"), dict) else {}
+                    _pf = r.get("ParsedF") if isinstance(r.get("ParsedF"), dict) else {}
+                    # SAM/Parsed nests the name and the account details; reading only
+                    # flat columns dropped all five of its rows.
+                    uname = F.get(r, "Name", *F.USER) or _pv.get("username")
+                    aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), uname, local_hosts=(host,))
+                    if aeid:
+                        sid = F.get(r, "UUID", "Sid", "SID", "Uid", default=None)
+                        ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset,
+                                         run_id, loc, first=None if _pf else ts, user=u, domain=d, sid=sid,
+                                         home=F.get(r, "Directory", "HomeDir", "ProfilePath",
+                                                    default=None),
+                                         # 1601-01-01 is Windows' zero date: "never".
+                                         last_login=(None if str(_pf.get("LastLoginDate") or "").startswith("1601-01-01")
+                                                     else _pf.get("LastLoginDate")),
+                                         password_reset=(None if str(_pf.get("PasswordResetDate") or "").startswith("1601-01-01")
+                                                         else _pf.get("PasswordResetDate")),
+                                         account_type=_pv.get("AccountType"), artifact=artifact))
+
+                # ---- powershell command history -> execution event -----------
+                elif "psreadline" in an:
+                    line = F.get(r, "Line", "Command", "CommandLine", default=None)
+                    if not line or str(line).lstrip().startswith("#"):
+                        continue                       # skip comments / blanks
+                    # THE DETECTRAPTOR RULE OUTRANKS OUR KEYWORD LIST. These rows exist
+                    # because a rule matched — RuleName/RuleID are on every row — and the
+                    # branch ignored them, grading instead against _PS_SUSPICIOUS, which
+                    # does not contain "mimikatz". Measured on a real case: 18 rows whose
+                    # rule was "T1059.001-Mimikatz Execution via PowerShell" with
+                    # Line == "invoke-mimikatz" landed at anomaly=1, severity=low, and
+                    # 85% of rule-confirmed detections graded low overall.
+                    _rule = F.get(r, "RuleName", "RuleID", default=None)
+                    an_ps = max(_ps_anomaly(line), _rule_anomaly(_rule))
+                    # PSReadline nests the history-file times under FileInfo and has no
+                    # per-command time, so anchor on the file's last write (most recent
+                    # PowerShell activity), then birth. Without this the events were undated.
+                    _fi = r.get("FileInfo") if isinstance(r.get("FileInfo"), dict) else {}
+                    ps_ts = keys.norm_ts(_fi.get("Mtime") or _fi.get("Btime") or _fi.get("Ctime")) or ts
+                    owner = F.get(r, "Username", *F.USER)
+                    # FullPath is None on every row here, so the path contributed nothing
+                    # to identity and 91 of 178 rows merged — 15 of them fusing commands
+                    # run by DIFFERENT users into one node. The owner and the line number
+                    # are what actually separate two history entries.
+                    eid = keys.event_key(asset, f"ps:{line}", owner,
+                                         F.get(r, "LineNum", default=None),
+                                         F.get(r, 'OSPath', default=''))
+                    ents.append(_ent(eid, "event",
+                                     (f"{str(_rule)[:40]}: {str(line)[:60]}" if _rule
+                                      else f"powershell: {str(line)[:80]}"),
+                                     asset, run_id,
+                                     loc, anomaly=an_ps, first=ps_ts, artifact=artifact,
+                                     command=str(line)[:400],
+                                     detection=str(_rule) if _rule else None,
+                                     title=(f"PowerShell: {str(_rule)[:60]}" if _rule else None),
+                                     # An ATT&CK-mapped rule reaches the timeline; the
+                                     # local keyword heuristic still marks the row but
+                                     # does not promote it on its own.
+                                     flags=([f for f in
+                                             (["suspicious_powershell"] if an_ps >= 25 else [])
+                                             + (["detection"] if _rule_anomaly(_rule) >= 60 else [])]
+                                            or None)))
+                    if owner:
+                        aeid, d, u = _account_eid(asset, F.get(r, *F.DOMAIN), owner)
+                        if aeid:
+                            ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset,
+                                             run_id, loc, user=u, domain=d, artifact=artifact, first=ps_ts))
+                            rels.append(Relationship(aeid, eid, "executed", sources=[MODULE], ts=ps_ts))
+
+                # ---- network -> netconn + ioc --------------------------------
+                elif "netstat" in an or "network" in an:
+                    raddr = F.get(r, *F.REMOTE_ADDR)
+                    if not raddr:
+                        continue
+                    kind = keys.classify_indicator(raddr)
+                    if kind:
+                        iid = keys.ioc_id(kind, raddr)
+                        ents.append(_ent(iid, "ioc", str(raddr), asset, run_id, loc,
+                                         anomaly=1, ioc_kind=kind, first=ts, artifact=artifact))
+                        pid = F.get(r, *F.PID)
+                        src = proc_by_asset_pid.get((asset, str(pid))) if pid is not None else None
+                        if src:
+                            rels.append(Relationship(src, iid, "connected", sources=[MODULE], ts=ts))
+
+                # ---- detections / yara ---------------------------------------
+                elif "yara" in an:
+                    rule = F.get(r, "Rule", "rule", "RuleName", "name", default=None) or artifact
+                    pid = F.get(r, *F.PID)
+                    # THE FILE IS PART OF THE HIT. A file-scan yara artifact has no pid,
+                    # so the id degenerated to (asset, rule) and every file matching one
+                    # signature collapsed into a single node — three distinct webshells
+                    # under C:\AtomicRedTeam\atomics\T1505.003 (b.jsp, tests.jsp,
+                    # cmd.aspx) became one, and the path was never stored, so nothing
+                    # said WHICH file matched.
+                    ypath = F.get(r, "OSPath", *F.PATH, default=None)
+                    yid = keys.yarahit_id(asset, rule, pid if pid is not None else (ypath or ""))
+                    # A yarahit only became a finding through the CROSS-HOST path
+                    # (correlate.py: type in ("ioc","account","yarahit") and >= 2 assets),
+                    # so a signature hit on a single host produced no timeline row at
+                    # all. A webshell on disk is a detection on one host as much as on
+                    # five — flag it so it reaches the analyst.
+                    ents.append(_ent(yid, "yarahit", str(rule), asset, run_id, loc, anomaly=50,
+                                     first=ts, rule=rule, artifact=artifact,
+                                     path=str(ypath) if ypath else None,
+                                     flags=["detection"],
+                                     title=f"YARA: {str(rule)[:60]}"
+                                           + (f" — {str(ypath).split(chr(92))[-1][:40]}" if ypath else "")))
+                    if pid is not None and proc_by_asset_pid.get((asset, str(pid))):
+                        rels.append(Relationship(yid, proc_by_asset_pid[(asset, str(pid))],
+                                                 "matched", sources=[MODULE], ts=ts))
+
+                # ---- web / dns -> domain ioc (+ web detection event) ------------
+                elif "dnscache" in an or "webhistory" in an or "history" in an or "download" in an:
+                    # DetectRaptor.Webhistory flags suspicious visits (Detection/Category,
+                    # e.g. Category='Enumeration', Domain='advanced-ip-scanner.com'). Turn a
+                    # flagged visit into a detection event so it surfaces as a finding.
+                    detn = F.get(r, "Detection", default=None)
+                    cat = F.get(r, "Category", default=None)
+                    dom = F.get(r, "Domain", "Host", default=None)
+                    # Webhistory nests the visit time in ArtifactData (Visit_Date /
+                    # Last_Visit_Date). Use it when sane; guard corrupt pre-epoch values
+                    # (some collections emit year 1601/1810 for unconverted WebKit/Chrome
+                    # timestamps) so the timeline is never polluted with false dates.
+                    _ad = r.get("ArtifactData") if isinstance(r.get("ArtifactData"), dict) else {}
+                    web_ts = keys.norm_ts(_ad.get("Visit_Date") or _ad.get("Last_Visit_Date")) or ts
+                    if web_ts and web_ts < "2000":
+                        web_ts = None
+                    if detn or cat:
+                        dname = (detn.get("Category") if isinstance(detn, dict) else detn) or cat or "web"
+                        title = f"Web: {str(dname)[:30]} — {str(dom)[:40]}" if dom else f"Web: {str(dname)[:40]}"
+                        eid = keys.event_key(asset, f"webdet:{dname}:{dom}", f"{dom}")
+                        ents.append(_ent(eid, "event", title, asset, run_id, loc,
+                                         anomaly=40, first=web_ts, artifact=artifact,
+                                         flags=["detection", "web"], title=title,
+                                         category=str(cat) if cat else None,
+                                         domain=str(dom) if dom else None,
+                                         browser=F.get(r, "BrowserArtifact", default=None)))
+                    url = F.get(r, "Url", "URL", "Name", "Domain", "Host", default=None)
+                    kind = keys.classify_indicator(url) if url else None
+                    if kind:
+                        iid = keys.ioc_id(kind, url)
+                        ents.append(_ent(iid, "ioc", str(url), asset, run_id, loc, anomaly=1,
+                                         ioc_kind=kind, first=ts, artifact=artifact))
+
+                # ---- persistence: services / autoruns / scheduled tasks ------
+                elif any(k in an for k in ("autoruns", "services", "scheduledtask",
+                                           "taskscheduler", "scheduled")):
+                    sname = (F.get(r, "Name", "ServiceName", "TaskName", "Entry", "Rule", default=None)
+                             or artifact)
+                    binary = F.get(r, "AbsoluteExePath", "PathName", "Binary", "BinaryPath",
+                                   "ImagePath", "Command", *F.PATH, default=None)
+                    # path-aware scoring for real service rows; generic fallback otherwise
+                    anom = _service_anomaly(binary) if "service" in an else score_row(r)
+                    sid = keys.service_id(asset, sname)
+                    ents.append(_ent(sid, "service", str(sname), asset, run_id, loc,
+                                     anomaly=anom, first=ts, artifact=artifact, binary=binary,
+                                     start_mode=F.get(r, "StartMode", "StartType", default=None),
+                                     state=F.get(r, *F.STATE)))
+
+                # ---- Hayabusa / SIGMA detections -> severity-typed event ------
+                # The richest agentic signal: Title is the detection, Level the
+                # severity. Generic handling discarded both, so SIGMA hits never
+                # became findings. Keep them as level-scored events flagged 'sigma'.
+                elif "hayabusa" in an or "sigma" in an:
+                    # AGGREGATE PER (host, rule). This used to emit ONE ENTITY PER ROW —
+                    # the id carried RecordID, which is unique per event-log record —
+                    # so a 9-host import produced 183,436 sigma nodes for 534 distinct
+                    # (host, rule) pairs: a 344:1 over-production, in a component whose
+                    # whole job is to REDUCE. 156,017 of those rows are Level
+                    # "informational", which is why lowering a case's severity filter
+                    # to informational built 71,375 relationships and exhausted a 15 GB
+                    # appliance until the kernel took the backend down.
+                    #
+                    # Collapsing by id alone would not work: upsert preserves forensic
+                    # integrity by keeping conflicting attr values in `<k>_observations`
+                    # lists, so 183k merges would grow 183k-element lists instead. The
+                    # rows are folded HERE, keeping a count, the true first/last times,
+                    # and the highest-severity row as the exemplar whose parsed evidence
+                    # (cmdline / proc / pid / user / hashes) is carried.
+                    title = F.get(r, "Title", "RuleTitle", "Rule", "Message", default=artifact)
+                    level = F.get(r, "Level", "Severity", default="informational")
+                    anom = _level_anomaly(level)
+                    akey = (asset, str(title), _logged_host(r, host) or "")
+                    agg = sigma_agg.get(akey)
+                    # Which Windows events this rule fired on. Only medium+ rows can
+                    # reach a finding or a burst, so informational rows (85% of them)
+                    # cost nothing here.
+                    _wids = (win_event_ids(r) if anom >= _level_anomaly("medium") else [])
+                    if agg is None:
+                        sigma_agg[akey] = agg = {
+                            "n": 1, "first": ts, "last": ts, "anom": anom, "level": level,
+                            "row": r, "loc": loc, "run_id": run_id, "artifact": artifact,
+                            "wids": set(), "first_wids": set(_wids),
+                            # medium+ rules keep every hit so the fold below can split
+                            # them into episodes (keys.split_episodes); informational/
+                            # low stay one fold — they never reach a finding
+                            "hits": [] if anom >= _level_anomaly("medium") else None,
+                        }
+                        if agg["hits"] is not None:
+                            agg["hits"].append((ts, anom, level, r, loc, _wids))
+                    else:
+                        if agg["hits"] is not None:
+                            agg["hits"].append((ts, anom, level, r, loc, _wids))
+                        agg["n"] += 1
+                        if ts and (not agg["first"] or ts < agg["first"]):
+                            agg["first"] = ts
+                            agg["first_wids"] = set(_wids)
+                        elif ts and ts == agg["first"]:
+                            agg["first_wids"].update(_wids)
+                        if ts and (not agg["last"] or ts > agg["last"]):
+                            agg["last"] = ts
+                        # the loudest row wins the exemplar — its parsed evidence is what
+                        # an analyst opens the finding to read
+                        if anom > agg["anom"]:
+                            agg.update({"anom": anom, "level": level, "row": r, "loc": loc})
+                    # ponytail: capped per (host, rule); a rule firing more often than
+                    # this on one host is matched on its first 2,000 events only
+                    if len(agg["wids"]) < _WIDS_CAP:
+                        agg["wids"].update(_wids)
+
+                # ---- MFT detections -> criticality-typed event ----------------
+                # Detection={Name,Criticality}; OSPath is the file. Criticality is
+                # the rule author's rating (often benign BAU), so type + rank but do
+                # NOT auto-finding.
+                # ---- PowerShell ISE autosave: attacker script content ----------
+                elif "iseautosave" in an or "autosave" in an:
+                    # The row's point is the rule that fired (ATT&CK-tagged) and the
+                    # file it fired on; keep only those plus the date (nested in
+                    # FileInfo.Mtime, so first_ts()'s top-level spec misses it). Drop
+                    # Content / Regex / IgnoreRegex / the other MACB times.
+                    _d = r.get("Detection") if isinstance(r.get("Detection"), dict) else {}
+                    dname = _d.get("Name") or "PowerShell ISE autosave"
+                    _fi = r.get("FileInfo") if isinstance(r.get("FileInfo"), dict) else {}
+                    ipath = _fi.get("OSPath") or F.get(r, "OSPath", *F.PATH, default="")
+                    ise_ts = keys.norm_ts(_fi.get("Mtime") or _fi.get("Btime") or ts)
+                    ents.append(_ent(keys.event_key(asset, f"iseautosave:{dname}", f"{ipath}"),
+                                     "event", f"ISE autosave: {str(dname)[:60]}", asset,
+                                     run_id, loc, anomaly=max(50, _rule_anomaly(dname)),
+                                     first=ise_ts, artifact=artifact,
+                                     flags=["detection"] if _rule_anomaly(dname) >= 60 else None,
+                                     detection=str(dname), path=str(ipath)[:200],
+                                     title=f"ISE autosave: {str(dname)[:60]}", on_disk=True))
+
+                elif "mft" in an and "detection" in an \
+                        and "hijacklib" not in an:
+                    det = F.get(r, "Detection", default=None)
+                    dname = (det.get("Name") if isinstance(det, dict) else det) or artifact
+                    crit = (det.get("Criticality") if isinstance(det, dict) else None) or "low"
+                    path = F.get(r, "OSPath", *F.PATH, default="")
+                    # DetectRaptor MFT rows nest the $SI/$FN MACB times inside the
+                    # SITimestamps / FNTimestamps objects, so the generic first_ts() spec
+                    # (top-level keys only) misses them and the event used to land with NO
+                    # timestamp (blank on the timeline). Anchor on $FN Created — it's set at
+                    # local MFT-record creation, so it reflects when the file appeared on
+                    # THIS host and resists $SI copy-preservation / timestomping (a tool
+                    # built in 2022 but dropped in 2025 shows 2025 via $FN, not its inherited
+                    # $SI 2022). Fall back to $SI Created, then the modified times.
+                    _si = r.get("SITimestamps") if isinstance(r.get("SITimestamps"), dict) else {}
+                    _fn = r.get("FNTimestamps") if isinstance(r.get("FNTimestamps"), dict) else {}
+                    mft_ts = keys.norm_ts(_fn.get("Created0x30") or _si.get("Created0x10")
+                                          or _si.get("LastModified0x10") or _fn.get("LastModified0x30") or ts)
+                    # "mft_detection" only: its rules match BAU files like OneDrive
+                    # uploads and must not become findings. (Erasing.Tools, which used
+                    # to promote here, is no longer fused -- see SUPPORTED_ARTIFACTS.)
+                    ev = _ent(keys.event_key(asset, f"mft:{dname}", f"{path}"),
+                              "event", f"MFT: {str(dname)[:70]}", asset, run_id, loc,
+                              anomaly=_level_anomaly(crit), first=mft_ts, artifact=artifact,
+                              # NOT "detection" for general MFT rules — that flag is the
+                              # correlator's promote-me signal (correlate.py: "Keyed by
+                              # the 'detection' flag the mapper stamps"), so stamping it
+                              # for a routine BAU file would turn every rule-author
+                              # "High" into a case finding. The event still lands on the
+                              # timeline; nothing filters events on flags.
+                              flags=["mft_detection"],
+                              title=f"MFT: {str(dname)[:60]}", detection=str(dname),
+                              criticality=str(crit).lower(), path=str(path)[:200],
+                              # a file FOUND on disk, not a record of it running
+                              # (correlate words the row that way — TASK-12666)
+                              on_disk=True)
+                    ev.severity = from_string(str(crit))
+                    ents.append(ev)
+
+                # ---- application inventory detections (RMM / LOLRMM) ----------
+                elif ("application" in an and "detection" in an) or "lolrmm" in an:
+                    cat = F.get(r, "Category", default="") or ""
+                    name = F.get(r, "DisplayName", "Name", default=artifact)
+                    rmm = any(k in str(cat).lower() for k in ("rmm", "remote", "lolrmm"))
+                    ents.append(_ent(keys.event_key(asset, f"app:{cat}:{name}", f"{name}"),
+                                     "event", f"app: {str(name)[:50]} [{str(cat)[:30]}]", asset,
+                                     run_id, loc, anomaly=30 if rmm else 1, first=ts, artifact=artifact,
+                                     flags=(["rmm_tool"] if rmm else None), category=str(cat),
+                                     app=str(name), version=F.get(r, "DisplayVersion", default=None)))
+
+                # ---- execution evidence -> event (+ file + hash ioc) ---------
+                elif any(k in an for k in ("amcache", "prefetch", "userassist", "shimcache",
+                                           "appcompat", "srum", "bam")):
+                    # DetectRaptor's Amcache calls its path EntryPath and its binary
+                    # EntryName — neither is in F.PATH, and the fallback alias here was
+                    # "Name", not "EntryName". Both lookups missed, so `path` fell back
+                    # to the ARTIFACT NAME on every row: measured on a real case, all 59
+                    # execution events were labelled "executed:
+                    # DetectRaptor.Windows.Detection.Amcache" — 59 anonymous nodes, one
+                    # silent id collision, and the rule that fired (14 High-criticality
+                    # hits incl. Mimikatz Tools, PsExec and four Credential Theft) never
+                    # read at all. The row had every one of those fields.
+                    path = F.get(r, "EntryPath", *F.PATH) \
+                        or F.get(r, "EntryName", "OriginalFileName", "Name", default=artifact)
+                    _d = r.get("Detection")
+                    dname = (_d.get("Name") if isinstance(_d, dict) else _d) or None
+                    crit = (_d.get("Criticality") if isinstance(_d, dict) else None)
+                    eid = keys.event_key(asset, f"exec:{path}", ts, dname)
+                    _label = (f"{str(dname)[:44]}: {str(path)[:60]}" if dname
+                              else f"executed: {str(path)[:60]}")
+                    ents.append(_ent(eid, "event", _label, asset, run_id, loc,
+                                     anomaly=max(score_row(r), _level_anomaly(crit) if crit else 0),
+                                     first=ts, artifact=artifact, path=str(path),
+                                     # Same gate — see the Evtx branch. On a clean host
+                                     # this promotes nothing, because Amcache's rules
+                                     # there are BAU ("BAU Cloud Data Transfer",
+                                     # "RMM - Microsoft Quick Assist"), which is correct.
+                                     flags=(["detection"] if _rule_anomaly(dname) >= 60
+                                            else None),
+                                     detection=str(dname) if dname else None,
+                                     criticality=str(crit) if crit else None,
+                                     title=(f"Execution: {str(dname)[:60]}" if dname else None)))
+
+                # ---- LolDrivers -> driver/module entity (BYOVD, T1068) --------
+                elif "loldriver" in an:
+                    dname = F.get(r, "Name", "DriverName", *F.PATH, default=artifact)
+                    malicious = "malicious" in an
+                    sha = _sha256_of(r) or F.get(r, "SHA1", "Sha1", "sha1")
+                    path = F.get(r, "OSPath", "EntryKey", "HivePath", *F.PATH, default=None)
+                    mid = keys.module_id(asset, str(path or dname))
+                    ents.append(_ent(mid, "module", f"driver: {str(dname)[:50]}", asset, run_id, loc,
+                                     anomaly=60 if malicious else 20, first=ts, artifact=artifact,
+                                     flags=(["loldriver", "byovd"] if malicious else ["loldriver"]),
+                                     driver=str(dname), path=str(path) if path else None,
+                                     full_hash=str(sha) if sha else None, **_hash_attrs(r)))
+
+                # ---- HijackLibs -> DLL-sideload event (T1574) -----------------
+                elif "hijacklib" in an:
+                    info = F.get(r, "HijackLibInfo", default=None)
+                    dll = (info.get("DllName") if isinstance(info, dict) else None) \
+                        or F.get(r, "DllName", "OSPath", "Name", *F.PATH, default=artifact)
+                    historical = "mft" in an
+                    # HijackLibsMFT nests its $SI/$FN MACB times like Detection.MFT, so
+                    # first_ts() (top-level) misses them; anchor on $FN Created (local
+                    # record creation), then $SI Created, else the generic row time. The
+                    # Env variant has no such nesting and safely falls back to ts.
+                    _si = r.get("SITimestamps") if isinstance(r.get("SITimestamps"), dict) else {}
+                    _fn = r.get("FNTimestamps") if isinstance(r.get("FNTimestamps"), dict) else {}
+                    hj_ts = keys.norm_ts(_fn.get("Created0x30") or _si.get("Created0x10")) or ts
+                    eid = keys.event_key(asset, f"hijacklib:{dll}", f"{dll}")
+                    ents.append(_ent(eid, "event", f"DLL sideload: {str(dll)[:50]}", asset, run_id,
+                                     loc, anomaly=15 if historical else 40, first=hj_ts, artifact=artifact,
+                                     flags=["dll_hijack"], dll=str(dll),
+                                     path=F.get(r, "OSPath", "ExecutablePath", default=None),
+                                     hijack_type=(info.get("Type") if isinstance(info, dict) else
+                                                  F.get(r, "Type", default=None))))
+
+                # ---- binary rename / masquerading -> detection event (T1036) ---
+                # DetectRaptor.BinaryRename flags an executable whose real identity (per
+                # its version info / hash) differs from its on-disk name — classic evasion.
+                # Pre-filtered hit => real detection; carry the file + hash for pivoting.
+                elif "binaryrename" in an:
+                    name = F.get(r, "Name", default=None)
+                    path = F.get(r, "OSPath", *F.PATH, default=None)
+                    sha = _sha256_of(r)
+                    btime = keys.norm_ts(F.get(r, "Btime", "Ctime", "Mtime", default=ts))
+                    title = f"Renamed binary: {str(name or path)[:55]}"
+                    _vi = r.get("VersionInformation") if isinstance(r.get("VersionInformation"), dict) else {}
+                    _orig = _vi.get("OriginalFilename") or _vi.get("InternalName")
+                    eid = keys.event_key(asset, f"binrename:{name or path}", f"{path}")
                     ents.append(_ent(eid, "event", title, asset, run_id, loc,
-                                     anomaly=40, first=web_ts, artifact=artifact,
-                                     flags=["detection", "web"], title=title,
-                                     category=str(cat) if cat else None,
-                                     domain=str(dom) if dom else None,
-                                     browser=F.get(r, "BrowserArtifact", default=None)))
-                url = F.get(r, "Url", "URL", "Name", "Domain", "Host", default=None)
-                kind = keys.classify_indicator(url) if url else None
-                if kind:
-                    iid = keys.ioc_id(kind, url)
-                    ents.append(_ent(iid, "ioc", str(url), asset, run_id, loc, anomaly=1,
-                                     ioc_kind=kind, first=ts, artifact=artifact))
+                                     anomaly=50, first=btime, artifact=artifact,
+                                     flags=["detection", "masquerading"], title=title,
+                                     original_name=str(_orig) if _orig else None,
+                                     name=str(name) if name else None,
+                                     path=str(path) if path else None,
+                                     full_hash=str(sha) if sha else None, **_hash_attrs(r)))
 
-            # ---- persistence: services / autoruns / scheduled tasks ------
-            elif any(k in an for k in ("autoruns", "services", "scheduledtask",
-                                       "taskscheduler", "scheduled")):
-                sname = (F.get(r, "Name", "ServiceName", "TaskName", "Entry", "Rule", default=None)
-                         or artifact)
-                binary = F.get(r, "AbsoluteExePath", "PathName", "Binary", "BinaryPath",
-                               "ImagePath", "Command", *F.PATH, default=None)
-                # path-aware scoring for real service rows; generic fallback otherwise
-                anom = _service_anomaly(binary) if "service" in an else score_row(r)
-                sid = keys.service_id(asset, sname)
-                ents.append(_ent(sid, "service", str(sname), asset, run_id, loc,
-                                 anomaly=anom, first=ts, artifact=artifact, binary=binary,
-                                 start_mode=F.get(r, "StartMode", "StartType", default=None),
-                                 state=F.get(r, *F.STATE)))
+                # ---- Bootloaders -> firmware event (verdict-gated finding) -----
+                elif "bootloader" in an:
+                    name = F.get(r, "Name", "OSPath", *F.PATH, default=artifact)
+                    bad = bool(F.get(r, "Revoked", "Malicious", "Vulnerable", "Detection",
+                                     default=None))
+                    eid = keys.event_key(asset, f"boot:{name}", f"{name}")
+                    ents.append(_ent(eid, "event", f"bootloader: {str(name)[:50]}", asset, run_id,
+                                     loc, anomaly=50 if bad else 1, first=ts, artifact=artifact,
+                                     flags=(["firmware", "firmware_bad"] if bad else ["firmware"]),
+                                     path=F.get(r, "OSPath", default=None)))
 
-            # ---- Hayabusa / SIGMA detections -> severity-typed event ------
-            # The richest agentic signal: Title is the detection, Level the
-            # severity. Generic handling discarded both, so SIGMA hits never
-            # became findings. Keep them as level-scored events flagged 'sigma'.
-            elif "hayabusa" in an or "sigma" in an:
-                # AGGREGATE PER (host, rule). This used to emit ONE ENTITY PER ROW —
-                # the id carried RecordID, which is unique per event-log record —
-                # so a 9-host import produced 183,436 sigma nodes for 534 distinct
-                # (host, rule) pairs: a 344:1 over-production, in a component whose
-                # whole job is to REDUCE. 156,017 of those rows are Level
-                # "informational", which is why lowering a case's severity filter
-                # to informational built 71,375 relationships and exhausted a 15 GB
-                # appliance until the kernel took the backend down.
-                #
-                # Collapsing by id alone would not work: upsert preserves forensic
-                # integrity by keeping conflicting attr values in `<k>_observations`
-                # lists, so 183k merges would grow 183k-element lists instead. The
-                # rows are folded HERE, keeping a count, the true first/last times,
-                # and the highest-severity row as the exemplar whose parsed evidence
-                # (cmdline / proc / pid / user / hashes) is carried.
-                title = F.get(r, "Title", "RuleTitle", "Rule", "Message", default=artifact)
-                level = F.get(r, "Level", "Severity", default="informational")
-                anom = _level_anomaly(level)
-                akey = (asset, str(title), _logged_host(r, host) or "")
-                agg = sigma_agg.get(akey)
-                # Which Windows events this rule fired on. Only medium+ rows can
-                # reach a finding or a burst, so informational rows (85% of them)
-                # cost nothing here.
-                _wids = (win_event_ids(r) if anom >= _level_anomaly("medium") else [])
-                if agg is None:
-                    sigma_agg[akey] = agg = {
-                        "n": 1, "first": ts, "last": ts, "anom": anom, "level": level,
-                        "row": r, "loc": loc, "run_id": run_id, "artifact": artifact,
-                        "wids": set(), "first_wids": set(_wids),
-                        # medium+ rules keep every hit so the fold below can split
-                        # them into episodes (keys.split_episodes); informational/
-                        # low stay one fold — they never reach a finding
-                        "hits": [] if anom >= _level_anomaly("medium") else None,
-                    }
-                    if agg["hits"] is not None:
-                        agg["hits"].append((ts, anom, level, r, loc, _wids))
-                else:
-                    if agg["hits"] is not None:
-                        agg["hits"].append((ts, anom, level, r, loc, _wids))
-                    agg["n"] += 1
-                    if ts and (not agg["first"] or ts < agg["first"]):
-                        agg["first"] = ts
-                        agg["first_wids"] = set(_wids)
-                    elif ts and ts == agg["first"]:
-                        agg["first_wids"].update(_wids)
-                    if ts and (not agg["last"] or ts > agg["last"]):
-                        agg["last"] = ts
-                    # the loudest row wins the exemplar — its parsed evidence is what
-                    # an analyst opens the finding to read
-                    if anom > agg["anom"]:
-                        agg.update({"anom": anom, "level": level, "row": r, "loc": loc})
-                # ponytail: capped per (host, rule); a rule firing more often than
-                # this on one host is matched on its first 2,000 events only
-                if len(agg["wids"]) < _WIDS_CAP:
-                    agg["wids"].update(_wids)
+                # ---- suspicious WMI consumers -> persistence finding (T1546.003) -
+                # Windows.Analysis.SuspiciousWMIConsumers pre-filters the benign default
+                # consumers, so every row is a real lead: a WMI event subscription whose
+                # action runs a command/script at a trigger. High anomaly so it clears the
+                # severity floor and becomes a finding; carry the action + WQL trigger for
+                # the LLM. No reliable timestamp on the row -> kept as no-ts entity.
+                elif "wmiconsumer" in an:
+                    cons = F.get(r, "ConsumerDetails", default=None)
+                    filt = F.get(r, "FilterDetails", default=None)
+                    cons = cons if isinstance(cons, dict) else {}
+                    filt = filt if isinstance(filt, dict) else {}
+                    cname = cons.get("Name") or "WMI consumer"
+                    action = (cons.get("CommandLineTemplate") or cons.get("ExecutablePath")
+                              or cons.get("ScriptText") or cons.get("ScriptFileName") or "")
+                    query = filt.get("Query") or None
+                    ns = F.get(r, "Namespace", default=None)
+                    title = f"WMI persistence: {str(cname)[:50]}"
+                    eid = keys.event_key(asset, f"wmiconsumer:{cname}:{str(action)[:40]}", f"{cname}")
+                    ents.append(_ent(eid, "event", title, asset, run_id, loc,
+                                     anomaly=70, first=ts, artifact=artifact,
+                                     flags=["detection", "persistence", "wmi"], title=title,
+                                     consumer=str(cname),
+                                     action=str(action)[:400] if action else None,
+                                     wql=str(query)[:300] if query else None,
+                                     namespace=str(ns) if ns else None))
 
-            # ---- MFT detections -> criticality-typed event ----------------
-            # Detection={Name,Criticality}; OSPath is the file. Criticality is
-            # the rule author's rating (often benign BAU), so type + rank but do
-            # NOT auto-finding.
-            # ---- PowerShell ISE autosave: attacker script content ----------
-            elif "iseautosave" in an or "autosave" in an:
-                # The row's point is the rule that fired (ATT&CK-tagged) and the
-                # file it fired on; keep only those plus the date (nested in
-                # FileInfo.Mtime, so first_ts()'s top-level spec misses it). Drop
-                # Content / Regex / IgnoreRegex / the other MACB times.
-                _d = r.get("Detection") if isinstance(r.get("Detection"), dict) else {}
-                dname = _d.get("Name") or "PowerShell ISE autosave"
-                _fi = r.get("FileInfo") if isinstance(r.get("FileInfo"), dict) else {}
-                ipath = _fi.get("OSPath") or F.get(r, "OSPath", *F.PATH, default="")
-                ise_ts = keys.norm_ts(_fi.get("Mtime") or _fi.get("Btime") or ts)
-                ents.append(_ent(keys.event_key(asset, f"iseautosave:{dname}", f"{ipath}"),
-                                 "event", f"ISE autosave: {str(dname)[:60]}", asset,
-                                 run_id, loc, anomaly=max(50, _rule_anomaly(dname)),
-                                 first=ise_ts, artifact=artifact,
-                                 flags=["detection"] if _rule_anomaly(dname) >= 60 else None,
-                                 detection=str(dname), path=str(ipath)[:200],
-                                 title=f"ISE autosave: {str(dname)[:60]}", on_disk=True))
+                # ---- other high-signal detections -> event -------------------
+                elif any(k in an for k in ("evtx", "eventlog", "binaryrename",
+                                           "lnk", "detection")):
+                    msg = F.get(r, "Message", "Description", "Name", *F.PATH, default=artifact)
+                    # THE RULE THAT FIRED IS THE POINT OF THE ROW. DetectRaptor nests it
+                    # in Detection{Name, Criticality}; this branch used to read neither,
+                    # so the name never reached the graph AND never entered the identity.
+                    # Measured on a real case: 2,960 Evtx rows carrying 16 distinct rules
+                    # collapsed to 2,080 nodes — 878 detections (29.7%) destroyed, one
+                    # node fusing six DIFFERENT rules, and the survivors labelled with
+                    # raw OS message text (untranslated Chinese in that dataset).
+                    _d = r.get("Detection")
+                    dname = (_d.get("Name") if isinstance(_d, dict) else _d) or None
+                    crit = (_d.get("Criticality") if isinstance(_d, dict) else None)
+                    eid = keys.event_key(asset, f"{an}:{msg}", ts, dname)
+                    # Lead with the rule when we have one — an analyst scanning the
+                    # timeline needs "what fired", not the first 80 chars of a
+                    # localized Windows message.
+                    _label = (f"{str(dname)[:60]} — {str(msg)[:60]}" if dname
+                              else f"{artifact}: {str(msg)[:80]}")
+                    ents.append(_ent(eid, "event", _label, asset, run_id,
+                                     loc, anomaly=max(score_row(r),
+                                                      _level_anomaly(crit) if crit else 0,
+                                                      _rule_anomaly(dname)),
+                                     first=ts, artifact=artifact,
+                                     # PROMOTE ONLY WHAT THE RULE SET STANDS BEHIND.
+                                     # The timeline renders FINDINGS, and a finding needs
+                                     # this flag — so an artifact could carry a title and
+                                     # still never appear. Measured on a live QuickWins
+                                     # run: Evtx had 63 titled events and 0 flagged, so
+                                     # 37 hits of "T1059.001-Use of Base64 Commands" were
+                                     # invisible in the timeline.
+                                     # _rule_anomaly is the gate: ATT&CK-mapped and C2-
+                                     # rules promote; "IN DEVELOPMENT" and unmapped BAU
+                                     # rules do not. That keeps the MFT lesson intact —
+                                     # its rules here are "BAU Cloud Data Transfer"
+                                     # (OneDrive) and "RMM - Microsoft Quick Assist",
+                                     # which must never become case findings.
+                                     flags=(["detection"] if _rule_anomaly(dname) >= 60
+                                            else None),
+                                     detection=str(dname) if dname else None,
+                                     criticality=str(crit) if crit else None,
+                                     logged_host=_logged_host(r, host),
+                                     recorded_host=r.get("Computer"),
+                                     channel=r.get("Channel") or None,
+                                     eid_num=r.get("EventID") or None,
+                                     win_ids=win_event_ids(r) or None,
+                                     # ONE SOURCE, ONE NAME. A detection carrying a
+                                     # Windows channel AND an event id is a rule
+                                     # firing on the event log — the same source
+                                     # Hayabusa reads, so it is labelled the same
+                                     # way. Presenting it as "Evtx:" beside
+                                     # Hayabusa's "SIGMA:" made one source look
+                                     # like two detectors in the timeline
+                                     # (TASK-12662). Everything else keeps its
+                                     # artifact name, because MFT and LNK really
+                                     # are different sources.
+                                     title=(f"{_detection_prefix(r, artifact)}"
+                                            f"{str(dname)[:60]}" if dname else None)))
 
-            elif "mft" in an and "detection" in an \
-                    and "hijacklib" not in an:
-                det = F.get(r, "Detection", default=None)
-                dname = (det.get("Name") if isinstance(det, dict) else det) or artifact
-                crit = (det.get("Criticality") if isinstance(det, dict) else None) or "low"
-                path = F.get(r, "OSPath", *F.PATH, default="")
-                # DetectRaptor MFT rows nest the $SI/$FN MACB times inside the
-                # SITimestamps / FNTimestamps objects, so the generic first_ts() spec
-                # (top-level keys only) misses them and the event used to land with NO
-                # timestamp (blank on the timeline). Anchor on $FN Created — it's set at
-                # local MFT-record creation, so it reflects when the file appeared on
-                # THIS host and resists $SI copy-preservation / timestomping (a tool
-                # built in 2022 but dropped in 2025 shows 2025 via $FN, not its inherited
-                # $SI 2022). Fall back to $SI Created, then the modified times.
-                _si = r.get("SITimestamps") if isinstance(r.get("SITimestamps"), dict) else {}
-                _fn = r.get("FNTimestamps") if isinstance(r.get("FNTimestamps"), dict) else {}
-                mft_ts = keys.norm_ts(_fn.get("Created0x30") or _si.get("Created0x10")
-                                      or _si.get("LastModified0x10") or _fn.get("LastModified0x30") or ts)
-                # "mft_detection" only: its rules match BAU files like OneDrive
-                # uploads and must not become findings. (Erasing.Tools, which used
-                # to promote here, is no longer fused -- see SUPPORTED_ARTIFACTS.)
-                ev = _ent(keys.event_key(asset, f"mft:{dname}", f"{path}"),
-                          "event", f"MFT: {str(dname)[:70]}", asset, run_id, loc,
-                          anomaly=_level_anomaly(crit), first=mft_ts, artifact=artifact,
-                          # NOT "detection" for general MFT rules — that flag is the
-                          # correlator's promote-me signal (correlate.py: "Keyed by
-                          # the 'detection' flag the mapper stamps"), so stamping it
-                          # for a routine BAU file would turn every rule-author
-                          # "High" into a case finding. The event still lands on the
-                          # timeline; nothing filters events on flags.
-                          flags=["mft_detection"],
-                          title=f"MFT: {str(dname)[:60]}", detection=str(dname),
-                          criticality=str(crit).lower(), path=str(path)[:200],
-                          # a file FOUND on disk, not a record of it running
-                          # (correlate words the row that way — TASK-12666)
-                          on_disk=True)
-                ev.severity = from_string(str(crit))
-                ents.append(ev)
-
-            # ---- application inventory detections (RMM / LOLRMM) ----------
-            elif ("application" in an and "detection" in an) or "lolrmm" in an:
-                cat = F.get(r, "Category", default="") or ""
-                name = F.get(r, "DisplayName", "Name", default=artifact)
-                rmm = any(k in str(cat).lower() for k in ("rmm", "remote", "lolrmm"))
-                ents.append(_ent(keys.event_key(asset, f"app:{cat}:{name}", f"{name}"),
-                                 "event", f"app: {str(name)[:50]} [{str(cat)[:30]}]", asset,
-                                 run_id, loc, anomaly=30 if rmm else 1, first=ts, artifact=artifact,
-                                 flags=(["rmm_tool"] if rmm else None), category=str(cat),
-                                 app=str(name), version=F.get(r, "DisplayVersion", default=None)))
-
-            # ---- execution evidence -> event (+ file + hash ioc) ---------
-            elif any(k in an for k in ("amcache", "prefetch", "userassist", "shimcache",
-                                       "appcompat", "srum", "bam")):
-                # DetectRaptor's Amcache calls its path EntryPath and its binary
-                # EntryName — neither is in F.PATH, and the fallback alias here was
-                # "Name", not "EntryName". Both lookups missed, so `path` fell back
-                # to the ARTIFACT NAME on every row: measured on a real case, all 59
-                # execution events were labelled "executed:
-                # DetectRaptor.Windows.Detection.Amcache" — 59 anonymous nodes, one
-                # silent id collision, and the rule that fired (14 High-criticality
-                # hits incl. Mimikatz Tools, PsExec and four Credential Theft) never
-                # read at all. The row had every one of those fields.
-                path = F.get(r, "EntryPath", *F.PATH) \
-                    or F.get(r, "EntryName", "OriginalFileName", "Name", default=artifact)
-                _d = r.get("Detection")
-                dname = (_d.get("Name") if isinstance(_d, dict) else _d) or None
-                crit = (_d.get("Criticality") if isinstance(_d, dict) else None)
-                eid = keys.event_key(asset, f"exec:{path}", ts, dname)
-                _label = (f"{str(dname)[:44]}: {str(path)[:60]}" if dname
-                          else f"executed: {str(path)[:60]}")
-                ents.append(_ent(eid, "event", _label, asset, run_id, loc,
-                                 anomaly=max(score_row(r), _level_anomaly(crit) if crit else 0),
-                                 first=ts, artifact=artifact, path=str(path),
-                                 # Same gate — see the Evtx branch. On a clean host
-                                 # this promotes nothing, because Amcache's rules
-                                 # there are BAU ("BAU Cloud Data Transfer",
-                                 # "RMM - Microsoft Quick Assist"), which is correct.
-                                 flags=(["detection"] if _rule_anomaly(dname) >= 60
-                                        else None),
-                                 detection=str(dname) if dname else None,
-                                 criticality=str(crit) if crit else None,
-                                 title=(f"Execution: {str(dname)[:60]}" if dname else None)))
-
-            # ---- LolDrivers -> driver/module entity (BYOVD, T1068) --------
-            elif "loldriver" in an:
-                dname = F.get(r, "Name", "DriverName", *F.PATH, default=artifact)
-                malicious = "malicious" in an
-                sha = _sha256_of(r) or F.get(r, "SHA1", "Sha1", "sha1")
-                path = F.get(r, "OSPath", "EntryKey", "HivePath", *F.PATH, default=None)
-                mid = keys.module_id(asset, str(path or dname))
-                ents.append(_ent(mid, "module", f"driver: {str(dname)[:50]}", asset, run_id, loc,
-                                 anomaly=60 if malicious else 20, first=ts, artifact=artifact,
-                                 flags=(["loldriver", "byovd"] if malicious else ["loldriver"]),
-                                 driver=str(dname), path=str(path) if path else None,
-                                 full_hash=str(sha) if sha else None, **_hash_attrs(r)))
-
-            # ---- HijackLibs -> DLL-sideload event (T1574) -----------------
-            elif "hijacklib" in an:
-                info = F.get(r, "HijackLibInfo", default=None)
-                dll = (info.get("DllName") if isinstance(info, dict) else None) \
-                    or F.get(r, "DllName", "OSPath", "Name", *F.PATH, default=artifact)
-                historical = "mft" in an
-                # HijackLibsMFT nests its $SI/$FN MACB times like Detection.MFT, so
-                # first_ts() (top-level) misses them; anchor on $FN Created (local
-                # record creation), then $SI Created, else the generic row time. The
-                # Env variant has no such nesting and safely falls back to ts.
-                _si = r.get("SITimestamps") if isinstance(r.get("SITimestamps"), dict) else {}
-                _fn = r.get("FNTimestamps") if isinstance(r.get("FNTimestamps"), dict) else {}
-                hj_ts = keys.norm_ts(_fn.get("Created0x30") or _si.get("Created0x10")) or ts
-                eid = keys.event_key(asset, f"hijacklib:{dll}", f"{dll}")
-                ents.append(_ent(eid, "event", f"DLL sideload: {str(dll)[:50]}", asset, run_id,
-                                 loc, anomaly=15 if historical else 40, first=hj_ts, artifact=artifact,
-                                 flags=["dll_hijack"], dll=str(dll),
-                                 path=F.get(r, "OSPath", "ExecutablePath", default=None),
-                                 hijack_type=(info.get("Type") if isinstance(info, dict) else
-                                              F.get(r, "Type", default=None))))
-
-            # ---- binary rename / masquerading -> detection event (T1036) ---
-            # DetectRaptor.BinaryRename flags an executable whose real identity (per
-            # its version info / hash) differs from its on-disk name — classic evasion.
-            # Pre-filtered hit => real detection; carry the file + hash for pivoting.
-            elif "binaryrename" in an:
-                name = F.get(r, "Name", default=None)
-                path = F.get(r, "OSPath", *F.PATH, default=None)
-                sha = _sha256_of(r)
-                btime = keys.norm_ts(F.get(r, "Btime", "Ctime", "Mtime", default=ts))
-                title = f"Renamed binary: {str(name or path)[:55]}"
-                _vi = r.get("VersionInformation") if isinstance(r.get("VersionInformation"), dict) else {}
-                _orig = _vi.get("OriginalFilename") or _vi.get("InternalName")
-                eid = keys.event_key(asset, f"binrename:{name or path}", f"{path}")
-                ents.append(_ent(eid, "event", title, asset, run_id, loc,
-                                 anomaly=50, first=btime, artifact=artifact,
-                                 flags=["detection", "masquerading"], title=title,
-                                 original_name=str(_orig) if _orig else None,
-                                 name=str(name) if name else None,
-                                 path=str(path) if path else None,
-                                 full_hash=str(sha) if sha else None, **_hash_attrs(r)))
-
-            # ---- Bootloaders -> firmware event (verdict-gated finding) -----
-            elif "bootloader" in an:
-                name = F.get(r, "Name", "OSPath", *F.PATH, default=artifact)
-                bad = bool(F.get(r, "Revoked", "Malicious", "Vulnerable", "Detection",
-                                 default=None))
-                eid = keys.event_key(asset, f"boot:{name}", f"{name}")
-                ents.append(_ent(eid, "event", f"bootloader: {str(name)[:50]}", asset, run_id,
-                                 loc, anomaly=50 if bad else 1, first=ts, artifact=artifact,
-                                 flags=(["firmware", "firmware_bad"] if bad else ["firmware"]),
-                                 path=F.get(r, "OSPath", default=None)))
-
-            # ---- suspicious WMI consumers -> persistence finding (T1546.003) -
-            # Windows.Analysis.SuspiciousWMIConsumers pre-filters the benign default
-            # consumers, so every row is a real lead: a WMI event subscription whose
-            # action runs a command/script at a trigger. High anomaly so it clears the
-            # severity floor and becomes a finding; carry the action + WQL trigger for
-            # the LLM. No reliable timestamp on the row -> kept as no-ts entity.
-            elif "wmiconsumer" in an:
-                cons = F.get(r, "ConsumerDetails", default=None)
-                filt = F.get(r, "FilterDetails", default=None)
-                cons = cons if isinstance(cons, dict) else {}
-                filt = filt if isinstance(filt, dict) else {}
-                cname = cons.get("Name") or "WMI consumer"
-                action = (cons.get("CommandLineTemplate") or cons.get("ExecutablePath")
-                          or cons.get("ScriptText") or cons.get("ScriptFileName") or "")
-                query = filt.get("Query") or None
-                ns = F.get(r, "Namespace", default=None)
-                title = f"WMI persistence: {str(cname)[:50]}"
-                eid = keys.event_key(asset, f"wmiconsumer:{cname}:{str(action)[:40]}", f"{cname}")
-                ents.append(_ent(eid, "event", title, asset, run_id, loc,
-                                 anomaly=70, first=ts, artifact=artifact,
-                                 flags=["detection", "persistence", "wmi"], title=title,
-                                 consumer=str(cname),
-                                 action=str(action)[:400] if action else None,
-                                 wql=str(query)[:300] if query else None,
-                                 namespace=str(ns) if ns else None))
-
-            # ---- other high-signal detections -> event -------------------
-            elif any(k in an for k in ("evtx", "eventlog", "binaryrename",
-                                       "lnk", "detection")):
-                msg = F.get(r, "Message", "Description", "Name", *F.PATH, default=artifact)
-                # THE RULE THAT FIRED IS THE POINT OF THE ROW. DetectRaptor nests it
-                # in Detection{Name, Criticality}; this branch used to read neither,
-                # so the name never reached the graph AND never entered the identity.
-                # Measured on a real case: 2,960 Evtx rows carrying 16 distinct rules
-                # collapsed to 2,080 nodes — 878 detections (29.7%) destroyed, one
-                # node fusing six DIFFERENT rules, and the survivors labelled with
-                # raw OS message text (untranslated Chinese in that dataset).
-                _d = r.get("Detection")
-                dname = (_d.get("Name") if isinstance(_d, dict) else _d) or None
-                crit = (_d.get("Criticality") if isinstance(_d, dict) else None)
-                eid = keys.event_key(asset, f"{an}:{msg}", ts, dname)
-                # Lead with the rule when we have one — an analyst scanning the
-                # timeline needs "what fired", not the first 80 chars of a
-                # localized Windows message.
-                _label = (f"{str(dname)[:60]} — {str(msg)[:60]}" if dname
-                          else f"{artifact}: {str(msg)[:80]}")
-                ents.append(_ent(eid, "event", _label, asset, run_id,
-                                 loc, anomaly=max(score_row(r),
-                                                  _level_anomaly(crit) if crit else 0,
-                                                  _rule_anomaly(dname)),
-                                 first=ts, artifact=artifact,
-                                 # PROMOTE ONLY WHAT THE RULE SET STANDS BEHIND.
-                                 # The timeline renders FINDINGS, and a finding needs
-                                 # this flag — so an artifact could carry a title and
-                                 # still never appear. Measured on a live QuickWins
-                                 # run: Evtx had 63 titled events and 0 flagged, so
-                                 # 37 hits of "T1059.001-Use of Base64 Commands" were
-                                 # invisible in the timeline.
-                                 # _rule_anomaly is the gate: ATT&CK-mapped and C2-
-                                 # rules promote; "IN DEVELOPMENT" and unmapped BAU
-                                 # rules do not. That keeps the MFT lesson intact —
-                                 # its rules here are "BAU Cloud Data Transfer"
-                                 # (OneDrive) and "RMM - Microsoft Quick Assist",
-                                 # which must never become case findings.
-                                 flags=(["detection"] if _rule_anomaly(dname) >= 60
-                                        else None),
-                                 detection=str(dname) if dname else None,
-                                 criticality=str(crit) if crit else None,
-                                 logged_host=_logged_host(r, host),
-                                 recorded_host=r.get("Computer"),
-                                 channel=r.get("Channel") or None,
-                                 eid_num=r.get("EventID") or None,
-                                 win_ids=win_event_ids(r) or None,
-                                 # ONE SOURCE, ONE NAME. A detection carrying a
-                                 # Windows channel AND an event id is a rule
-                                 # firing on the event log — the same source
-                                 # Hayabusa reads, so it is labelled the same
-                                 # way. Presenting it as "Evtx:" beside
-                                 # Hayabusa's "SIGMA:" made one source look
-                                 # like two detectors in the timeline
-                                 # (TASK-12662). Everything else keeps its
-                                 # artifact name, because MFT and LNK really
-                                 # are different sources.
-                                 title=(f"{_detection_prefix(r, artifact)}"
-                                        f"{str(dname)[:60]}" if dname else None)))
-
-            # ---- hash extraction -> cross-host-capable IOC ---------------
-            # Process artifacts handle their own hashes selectively above (only
-            # unsigned), so skip them here to avoid flooding benign hashes.
-            is_proc = "pstree" in an or "pslist" in an or "processes" in an
-            is_exec = any(k in an for k in ("amcache", "prefetch", "userassist",
-                                            "shimcache", "appcompat", "srum", "bam"))
-            # sha256 preferred; sha1 fallback for Amcache (sha1-only) — the bridge
-            # collapses a sha1 node into its sha256 twin later.
-            h = None if is_proc else (_sha256_of(r) or F.get(r, "SHA1", "Sha1", "sha1"))
-            if h and keys.classify_indicator(str(h)) == "hash":
-                h = str(h)
-                iid = keys.ioc_id("hash", h)
-                # Carry the SOURCE filename so the IOC list is actionable ("block this
-                # hash" needs a name). Generic: reads whatever name field the detection
-                # row exposes, so it works for any binary incl. custom/unknown ones.
-                _sn = F.get(r, "EntryName", "OriginalFileName", "Name", "Binary", "Image",
-                            "FilePath", "Path", "FullPath", "Executable", default=None)
-                if not _sn:
-                    _ep = F.get(r, "EntryPath", "SourceFile", default=None)
-                    _sn = str(_ep).replace("\\", "/").rsplit("/", 1)[-1] if _ep else None
-                _sa = {"source_name": str(_sn)} if _sn else {}
-                # execution-evidence hashes are benign context (anomaly 0, never
-                # auto cross-host); detection hashes (binaryrename) stay suspicious.
-                ents.append(_ent(iid, "ioc", h, asset, run_id, loc,               # full hash (IOC appendix)
-                                 anomaly=0 if is_exec else 10, ioc_kind="hash",
-                                 first=ts, full_hash=h, **_hash_attrs(r), **_sa, artifact=artifact))
+                # ---- hash extraction -> cross-host-capable IOC ---------------
+                # Process artifacts handle their own hashes selectively above (only
+                # unsigned), so skip them here to avoid flooding benign hashes.
+                is_proc = "pstree" in an or "pslist" in an or "processes" in an
+                is_exec = any(k in an for k in ("amcache", "prefetch", "userassist",
+                                                "shimcache", "appcompat", "srum", "bam"))
+                # sha256 preferred; sha1 fallback for Amcache (sha1-only) — the bridge
+                # collapses a sha1 node into its sha256 twin later.
+                h = None if is_proc else (_sha256_of(r) or F.get(r, "SHA1", "Sha1", "sha1"))
+                if h and keys.classify_indicator(str(h)) == "hash":
+                    h = str(h)
+                    iid = keys.ioc_id("hash", h)
+                    # Carry the SOURCE filename so the IOC list is actionable ("block this
+                    # hash" needs a name). Generic: reads whatever name field the detection
+                    # row exposes, so it works for any binary incl. custom/unknown ones.
+                    _sn = F.get(r, "EntryName", "OriginalFileName", "Name", "Binary", "Image",
+                                "FilePath", "Path", "FullPath", "Executable", default=None)
+                    if not _sn:
+                        _ep = F.get(r, "EntryPath", "SourceFile", default=None)
+                        _sn = str(_ep).replace("\\", "/").rsplit("/", 1)[-1] if _ep else None
+                    _sa = {"source_name": str(_sn)} if _sn else {}
+                    # execution-evidence hashes are benign context (anomaly 0, never
+                    # auto cross-host); detection hashes (binaryrename) stay suspicious.
+                    ents.append(_ent(iid, "ioc", h, asset, run_id, loc,               # full hash (IOC appendix)
+                                     anomaly=0 if is_exec else 10, ioc_kind="hash",
+                                     first=ts, full_hash=h, **_hash_attrs(r), **_sa, artifact=artifact))
+            except Exception as _x:                       # noqa: BLE001 -- one bad item, not the run
+                map_skip(artifact, _x)
+                continue
 
     # ---- fold the sigma occurrences: one entity per (host, rule, EPISODE) ----
     # A medium+ rule's hits are split where it goes quiet for longer than
@@ -1347,61 +1351,69 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
     # it was given for, and later episodes arrive open.
     _episodes = []
     for (a_id, title, logged), agg in sigma_agg.items():
-        if not agg.get("hits"):
-            _episodes.append(((a_id, title, logged), agg, 0))
+        try:
+            if not agg.get("hits"):
+                _episodes.append(((a_id, title, logged), agg, 0))
+                continue
+            for i, ep in enumerate(keys.split_episodes(agg["hits"], lambda h: h[0])):
+                dated = [h for h in ep if h[0]]
+                top = max(ep, key=lambda h: h[1])
+                first = min((h[0] for h in dated), default=None)
+                wids, first_wids = set(), set()
+                for h in ep:
+                    if len(wids) < _WIDS_CAP:
+                        wids.update(h[5])
+                    if h[0] == first:
+                        first_wids.update(h[5])
+                _episodes.append(((a_id, title, logged), {
+                    "n": len(ep), "first": first,
+                    "last": max((h[0] for h in dated), default=None),
+                    "anom": top[1], "level": top[2], "row": top[3], "loc": top[4],
+                    "run_id": agg["run_id"], "artifact": agg["artifact"],
+                    "wids": wids, "first_wids": first_wids}, i))
+        except Exception as _x:                       # noqa: BLE001 -- one bad item, not the run
+            map_skip("Hayabusa/Sigma rule folding", _x)
             continue
-        for i, ep in enumerate(keys.split_episodes(agg["hits"], lambda h: h[0])):
-            dated = [h for h in ep if h[0]]
-            top = max(ep, key=lambda h: h[1])
-            first = min((h[0] for h in dated), default=None)
-            wids, first_wids = set(), set()
-            for h in ep:
-                if len(wids) < _WIDS_CAP:
-                    wids.update(h[5])
-                if h[0] == first:
-                    first_wids.update(h[5])
-            _episodes.append(((a_id, title, logged), {
-                "n": len(ep), "first": first,
-                "last": max((h[0] for h in dated), default=None),
-                "anom": top[1], "level": top[2], "row": top[3], "loc": top[4],
-                "run_id": agg["run_id"], "artifact": agg["artifact"],
-                "wids": wids, "first_wids": first_wids}, i))
     for (a_id, title, logged), agg, _ep_i in _episodes:
-        r = agg["row"]
-        raw_details = str(F.get(r, "Details", "Message", default=""))
-        pd = DET.parse_details(raw_details)      # parse ONCE, for the exemplar only
-        _hh = DET.hashes(pd)
-        _edom, _eusr = DET.user(pd)
-        eid = keys.event_key(a_id, f"sigma:{title}" + (f"@{logged}" if logged else "")
-                             + (f"#{agg['first']}" if _ep_i else ""))
-        n = agg["n"]
-        ev = _ent(eid, "event",
-                  (f"SIGMA: {str(title)[:80]}" if n == 1
-                   else f"SIGMA: {str(title)[:70]} (x{n:,})"),
-                  a_id, agg["run_id"], agg["loc"],
-                  anomaly=agg["anom"], first=agg["first"], artifact=agg["artifact"],
-                  flags=["sigma"], title=str(title), level=str(agg["level"]).lower(),
-                  logged_host=logged or None,
-                  recorded_host=F.get(r, "Computer", default=None),
-                  occurrences=n,
-                  channel=F.get(r, "Channel", default=None),
-                  eid_num=F.get(r, "EID", "EventID", default=None),
-                  details=raw_details[:_EV_DETAILS_CAP],
-                  ev_cmdline=DET.cmdline(pd), ev_proc=DET.proc(pd),
-                  ev_pid=DET.pid(pd), ev_parentpid=DET.parentpid(pd),
-                  ev_user=(f"{_edom}\\{_eusr}" if _edom and _eusr else _eusr),
-                  ev_tgtip=DET.tgtip(pd),
-                  ev_sha256=_hh.get("sha256"), ev_md5=_hh.get("md5"),
-                  win_ids=sorted(agg["wids"]) or None,
-                  win_ids_first=sorted(agg["first_wids"]) or None)
-        ev.severity = from_string(str(agg["level"]))   # true SIGMA level
-        ev.last_seen = agg["last"]
-        ents.append(ev)
-        # One linking entry per RULE, not per row: the pass below creates
-        # processes/accounts/IOCs from parsed details, and feeding it 183k rows
-        # to produce a handful of capped entities was pure waste.
-        sigma_events.append((eid, a_id, pd, agg["first"], agg["artifact"],
-                             (assets_seen.get(a_id), logged), r))
+        try:
+            r = agg["row"]
+            raw_details = str(F.get(r, "Details", "Message", default=""))
+            pd = DET.parse_details(raw_details)      # parse ONCE, for the exemplar only
+            _hh = DET.hashes(pd)
+            _edom, _eusr = DET.user(pd)
+            eid = keys.event_key(a_id, f"sigma:{title}" + (f"@{logged}" if logged else "")
+                                 + (f"#{agg['first']}" if _ep_i else ""))
+            n = agg["n"]
+            ev = _ent(eid, "event",
+                      (f"SIGMA: {str(title)[:80]}" if n == 1
+                       else f"SIGMA: {str(title)[:70]} (x{n:,})"),
+                      a_id, agg["run_id"], agg["loc"],
+                      anomaly=agg["anom"], first=agg["first"], artifact=agg["artifact"],
+                      flags=["sigma"], title=str(title), level=str(agg["level"]).lower(),
+                      logged_host=logged or None,
+                      recorded_host=F.get(r, "Computer", default=None),
+                      occurrences=n,
+                      channel=F.get(r, "Channel", default=None),
+                      eid_num=F.get(r, "EID", "EventID", default=None),
+                      details=raw_details[:_EV_DETAILS_CAP],
+                      ev_cmdline=DET.cmdline(pd), ev_proc=DET.proc(pd),
+                      ev_pid=DET.pid(pd), ev_parentpid=DET.parentpid(pd),
+                      ev_user=(f"{_edom}\\{_eusr}" if _edom and _eusr else _eusr),
+                      ev_tgtip=DET.tgtip(pd),
+                      ev_sha256=_hh.get("sha256"), ev_md5=_hh.get("md5"),
+                      win_ids=sorted(agg["wids"]) or None,
+                      win_ids_first=sorted(agg["first_wids"]) or None)
+            ev.severity = from_string(str(agg["level"]))   # true SIGMA level
+            ev.last_seen = agg["last"]
+            ents.append(ev)
+            # One linking entry per RULE, not per row: the pass below creates
+            # processes/accounts/IOCs from parsed details, and feeding it 183k rows
+            # to produce a handful of capped entities was pure waste.
+            sigma_events.append((eid, a_id, pd, agg["first"], agg["artifact"],
+                                 (assets_seen.get(a_id), logged), r))
+        except Exception as _x:                       # noqa: BLE001 -- one bad item, not the run
+            map_skip("Hayabusa/Sigma rule episodes", _x)
+            continue
 
     # ---- spawned edges (ppid) across the processes we created -----------
     for artifact, rows in (collected_data or {}).items():
@@ -1409,16 +1421,20 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
         if not ("pstree" in an or "pslist" in an or "processes" in an):
             continue
         for r in rows or []:
-            if not isinstance(r, dict):
+            try:
+                if not isinstance(r, dict):
+                    continue
+                asset, _ = asset_of(r)
+                pid, ppid = F.get(r, *F.PID), F.get(r, *F.PPID)
+                if pid is None or ppid is None:
+                    continue
+                child = proc_by_asset_pid.get((asset, str(pid)))
+                parent = proc_by_asset_pid.get((asset, str(ppid)))
+                if child and parent and child != parent:
+                    rels.append(Relationship(parent, child, "spawned", sources=[MODULE]))
+            except Exception as _x:                       # noqa: BLE001 -- one bad item, not the run
+                map_skip(artifact + " (process tree)", _x)
                 continue
-            asset, _ = asset_of(r)
-            pid, ppid = F.get(r, *F.PID), F.get(r, *F.PPID)
-            if pid is None or ppid is None:
-                continue
-            child = proc_by_asset_pid.get((asset, str(pid)))
-            parent = proc_by_asset_pid.get((asset, str(ppid)))
-            if child and parent and child != parent:
-                rels.append(Relationship(parent, child, "spawned", sources=[MODULE]))
 
     # ---- detection -> entity linking (Hayabusa Details) -----------------
     # Attach each SIGMA detection to the process/account/IOC it references, and
@@ -1428,18 +1444,22 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
     _det_made: dict = {}
     # (A) create from_detection processes where Pstree missed them
     for eid, asset, pd, ts, src_artifact, _hosts, _row in sigma_events:
-        p, pname = DET.pid(pd), DET.proc(pd)
-        if not p or not pname or (asset, p) in proc_by_asset_pid:
+        try:
+            p, pname = DET.pid(pd), DET.proc(pd)
+            if not p or not pname or (asset, p) in proc_by_asset_pid:
+                continue
+            if _det_made.get(asset, 0) >= _DET_CAP:
+                continue
+            name = pname.replace("\\", "/").rstrip("/").split("/")[-1] or pname
+            peid = keys.process_id(asset, p, ts, name)   # event ts = createtime fallback
+            proc_by_asset_pid[(asset, p)] = peid
+            _det_made[asset] = _det_made.get(asset, 0) + 1
+            ents.append(_ent(peid, "process", f"{name} ({p})", asset, run_id, _det_locator(src_artifact),
+                             anomaly=0, first=keys.norm_ts(ts), flags=["from_detection"],
+                             pid=p, name=name, cmdline=DET.cmdline(pd), createtime=keys.norm_ts(ts), artifact=src_artifact))
+        except Exception as _x:                       # noqa: BLE001 -- one bad item, not the run
+            map_skip("detection linking", _x)
             continue
-        if _det_made.get(asset, 0) >= _DET_CAP:
-            continue
-        name = pname.replace("\\", "/").rstrip("/").split("/")[-1] or pname
-        peid = keys.process_id(asset, p, ts, name)   # event ts = createtime fallback
-        proc_by_asset_pid[(asset, p)] = peid
-        _det_made[asset] = _det_made.get(asset, 0) + 1
-        ents.append(_ent(peid, "process", f"{name} ({p})", asset, run_id, _det_locator(src_artifact),
-                         anomaly=0, first=keys.norm_ts(ts), flags=["from_detection"],
-                         pid=p, name=name, cmdline=DET.cmdline(pd), createtime=keys.norm_ts(ts), artifact=src_artifact))
     # Every SID -> name a host's own events state, for naming bare SIDs below.
     _sid_names: dict = {}
     if sigma_events:
@@ -1448,62 +1468,70 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
             if not ("hayabusa" in an or "sigma" in an):
                 continue
             for r in rows or []:
-                if isinstance(r, dict):
-                    for sid, dom, usr in _sid_name_pairs(r):
-                        _sid_names.setdefault((asset_of(r)[0], sid), (dom, usr))
+                try:
+                    if isinstance(r, dict):
+                        for sid, dom, usr in _sid_name_pairs(r):
+                            _sid_names.setdefault((asset_of(r)[0], sid), (dom, usr))
+                except Exception as _x:                       # noqa: BLE001 -- one bad item, not the run
+                    map_skip(artifact + " (SID names)", _x)
+                    continue
     # (B) edges: event_about(proc), spawned(parent), executed(account), connected(ioc)
     for eid, asset, pd, ts, src_artifact, _hosts, _row in sigma_events:
-        p = DET.pid(pd)
-        proc_eid = proc_by_asset_pid.get((asset, p)) if p else None
-        if proc_eid:
-            rels.append(Relationship(proc_eid, eid, "event_about", sources=[MODULE], ts=ts))
-            pp = DET.parentpid(pd)
-            parent = proc_by_asset_pid.get((asset, pp)) if pp else None
-            if parent and parent != proc_eid:
-                rels.append(Relationship(parent, proc_eid, "spawned", sources=[MODULE], ts=ts))
-        dom, usr = DET.user(pd)
-        if usr:
-            aeid, d, u = _account_eid(asset, dom, usr, local_hosts=_hosts)
-            if aeid:
-                ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset, run_id,
-                                 _det_locator(src_artifact), user=u, domain=d, artifact=src_artifact, first=ts))
+        try:
+            p = DET.pid(pd)
+            proc_eid = proc_by_asset_pid.get((asset, p)) if p else None
+            if proc_eid:
+                rels.append(Relationship(proc_eid, eid, "event_about", sources=[MODULE], ts=ts))
+                pp = DET.parentpid(pd)
+                parent = proc_by_asset_pid.get((asset, pp)) if pp else None
+                if parent and parent != proc_eid:
+                    rels.append(Relationship(parent, proc_eid, "spawned", sources=[MODULE], ts=ts))
+            dom, usr = DET.user(pd)
+            if usr:
+                aeid, d, u = _account_eid(asset, dom, usr, local_hosts=_hosts)
+                if aeid:
+                    ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset, run_id,
+                                     _det_locator(src_artifact), user=u, domain=d, artifact=src_artifact, first=ts))
+                    if proc_eid:
+                        rels.append(Relationship(aeid, proc_eid, "executed", sources=[MODULE], ts=ts))
+                    # The detection itself too: with no process found, the account's
+                    # card said "no findings" for an event that names it.
+                    rels.append(Relationship(aeid, eid, "executed", sources=[MODULE], ts=ts))
+            # Accounts the full event names only by SID: the actor ran it, the member
+            # / target is what it is about. Only SIDs this host's own events name —
+            # never a guess from the RID. ponytail: the exemplar row only, so a
+            # (host, rule) aggregate across many users links the top row's accounts.
+            actor, about = _event_sids(_row) if isinstance(_row, dict) else (None, [])
+            for sid, kind in [(actor, "executed")] + [(t, "event_about") for t in about]:
+                named = _sid_names.get((asset, sid)) if sid else None
+                if not named:
+                    continue
+                aeid, d, u = _account_eid(asset, named[0], named[1], local_hosts=_hosts)
+                if aeid:
+                    ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset, run_id,
+                                     _det_locator(src_artifact), user=u, domain=d, artifact=src_artifact,
+                                     first=ts, sid=sid))
+                    rels.append(Relationship(aeid, eid, kind, sources=[MODULE], ts=ts))
+            tip = DET.tgtip(pd)
+            if tip and keys.classify_indicator(tip) == "ip":
+                # link only — anomaly 0 so benign cloud telemetry never auto-finds
+                iid = keys.ioc_id("ip", tip)
+                ents.append(_ent(iid, "ioc", str(tip), asset, run_id, _det_locator(src_artifact),
+                                 anomaly=0, ioc_kind="ip", first=ts, from_detection=True, artifact=src_artifact))
                 if proc_eid:
-                    rels.append(Relationship(aeid, proc_eid, "executed", sources=[MODULE], ts=ts))
-                # The detection itself too: with no process found, the account's
-                # card said "no findings" for an event that names it.
-                rels.append(Relationship(aeid, eid, "executed", sources=[MODULE], ts=ts))
-        # Accounts the full event names only by SID: the actor ran it, the member
-        # / target is what it is about. Only SIDs this host's own events name —
-        # never a guess from the RID. ponytail: the exemplar row only, so a
-        # (host, rule) aggregate across many users links the top row's accounts.
-        actor, about = _event_sids(_row) if isinstance(_row, dict) else (None, [])
-        for sid, kind in [(actor, "executed")] + [(t, "event_about") for t in about]:
-            named = _sid_names.get((asset, sid)) if sid else None
-            if not named:
-                continue
-            aeid, d, u = _account_eid(asset, named[0], named[1], local_hosts=_hosts)
-            if aeid:
-                ents.append(_ent(aeid, "account", (f"{d}\\{u}" if d else u), asset, run_id,
-                                 _det_locator(src_artifact), user=u, domain=d, artifact=src_artifact,
-                                 first=ts, sid=sid))
-                rels.append(Relationship(aeid, eid, kind, sources=[MODULE], ts=ts))
-        tip = DET.tgtip(pd)
-        if tip and keys.classify_indicator(tip) == "ip":
-            # link only — anomaly 0 so benign cloud telemetry never auto-finds
-            iid = keys.ioc_id("ip", tip)
-            ents.append(_ent(iid, "ioc", str(tip), asset, run_id, _det_locator(src_artifact),
-                             anomaly=0, ioc_kind="ip", first=ts, from_detection=True, artifact=src_artifact))
-            if proc_eid:
-                rels.append(Relationship(proc_eid, iid, "connected", sources=[MODULE], ts=ts))
-        # Details carry MD5+SHA256 together -> the bridge's alias fuel (anomaly 0).
-        hh = DET.hashes(pd)
-        sha = hh.get("sha256")
-        if sha and keys.classify_indicator(sha) == "hash":
-            hid = keys.ioc_id("hash", sha)
-            ents.append(_ent(hid, "ioc", sha, asset, run_id, _det_locator(src_artifact),  # full hash
-                             anomaly=0, ioc_kind="hash", first=ts, full_hash=sha,
-                             md5=hh.get("md5"), imphash=hh.get("imphash"), artifact=src_artifact))
-            if proc_eid:
-                rels.append(Relationship(proc_eid, hid, "matched", sources=[MODULE], ts=ts))
+                    rels.append(Relationship(proc_eid, iid, "connected", sources=[MODULE], ts=ts))
+            # Details carry MD5+SHA256 together -> the bridge's alias fuel (anomaly 0).
+            hh = DET.hashes(pd)
+            sha = hh.get("sha256")
+            if sha and keys.classify_indicator(sha) == "hash":
+                hid = keys.ioc_id("hash", sha)
+                ents.append(_ent(hid, "ioc", sha, asset, run_id, _det_locator(src_artifact),  # full hash
+                                 anomaly=0, ioc_kind="hash", first=ts, full_hash=sha,
+                                 md5=hh.get("md5"), imphash=hh.get("imphash"), artifact=src_artifact))
+                if proc_eid:
+                    rels.append(Relationship(proc_eid, hid, "matched", sources=[MODULE], ts=ts))
+        except Exception as _x:                       # noqa: BLE001 -- one bad item, not the run
+            map_skip("detection linking", _x)
+            continue
 
     return ents, rels
