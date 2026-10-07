@@ -2187,6 +2187,7 @@ def _fuse_case_locked(case_id, *, contributions_override=None, log=None, _record
         try:
             from services.data_anonymizer import DataAnonymizer
             mask = DataAnonymizer(custom_patterns=mk.get("patterns") or [])
+            mask._ner = bool(mk.get("ner"))     # optional NER second pass (presidio_masker)
         except Exception:
             mask = None
     # host-exclusion: assemble() already removed the excluded hosts. This view filter
@@ -4371,6 +4372,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
         try:
             from services.data_anonymizer import DataAnonymizer
             mask = DataAnonymizer(custom_patterns=mk.get("patterns") or [])
+            mask._ner = bool(mk.get("ner"))     # optional NER second pass (presidio_masker)
         except Exception:
             mask = None
     llm_ent, llm_chars = _llm_payload_budget(d)
@@ -4667,7 +4669,8 @@ def set_analysis_config(case_id, cfg) -> dict:
     if "masking" in cfg:
         mk = cfg.get("masking") or {}
         patch["masking"] = {"enabled": bool(mk.get("enabled")),
-                            "patterns": [p for p in (mk.get("patterns") or []) if p]}
+                            "patterns": [p for p in (mk.get("patterns") or []) if p],
+                            "ner": bool(mk.get("ner"))}      # optional NER (presidio) second pass
     if "included_run_ids" in cfg:          # None = all; list = subset (legacy)
         patch["included_run_ids"] = cfg["included_run_ids"]
     if "excluded_hosts" in cfg:            # host labels to drop from the report/LLM
@@ -5913,6 +5916,7 @@ def chat_case(case_id, question) -> str:
         try:
             from services.data_anonymizer import DataAnonymizer
             mask = DataAnonymizer(custom_patterns=mk.get("patterns") or [])
+            mask._ner = bool(mk.get("ner"))     # optional NER second pass (presidio_masker)
         except Exception:
             mask = None
     try:

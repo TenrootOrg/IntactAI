@@ -233,6 +233,7 @@ def mask_for(details, graph):
         from services.data_anonymizer import DataAnonymizer
         from .llm_sim import _build_mask_mapping
         mask = DataAnonymizer(custom_patterns=mk.get("patterns") or [])
+        mask._ner = bool(mk.get("ner"))     # optional NER second pass (presidio_masker)
         _build_mask_mapping(graph, mask)
         return mask
     except Exception as e:  # noqa: BLE001

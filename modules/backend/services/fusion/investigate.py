@@ -245,6 +245,7 @@ def _mask_for_case(d, graph, run_id):
     try:
         from services.data_anonymizer import DataAnonymizer
         mask = DataAnonymizer(custom_patterns=mk.get("patterns") or [])
+        mask._ner = bool(mk.get("ner"))     # optional NER second pass (presidio_masker)
         llm_sim._build_mask_mapping(graph, mask)
         llm_sim._log_mask_audit(run_id, mask)
         return mask

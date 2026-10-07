@@ -1,0 +1,18 @@
+# Intact.AI Backend - OPTIONAL PII NER second pass (services/presidio_masker.py)
+#
+# NOT installed by default and NOT air-gap-friendly: Presidio pulls in spaCy and a
+# language model (hundreds of MB), and the model is fetched from the internet. The
+# deterministic DataAnonymizer stays the primary, always-on masker; this is only a
+# second pass that catches free-text leftovers (person/company names) NER is good at.
+# With these NOT installed, services/presidio_masker is a no-op and the pipeline is
+# unchanged. Enable per case with masking.ner = true.
+#
+# Install (online box):
+#   pip install -r requirements-pii-ner.txt
+#   python -m spacy download en_core_web_lg      # recommended on 32GB boxes
+#   # or en_core_web_md (~356MB RAM, same result on typical payloads) on 16GB boxes
+# Model choice (no GPU): md is the safe default for 16GB; lg for 32GB. trf is ruled
+# out on CPU (200-500ms/doc). presidio_masker tries lg -> md -> sm, uses what's present.
+
+presidio-analyzer>=2.2,<3
+spacy>=3.7,<4

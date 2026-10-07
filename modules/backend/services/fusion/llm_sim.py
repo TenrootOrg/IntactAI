@@ -1253,6 +1253,15 @@ def _apply_mask(text, mask):
     for orig in sorted((k for k in mapping if k), key=len, reverse=True):
         ps = mapping[orig]
         text = _mask_pattern(orig, True).sub(lambda _m, _p=ps: _p, text)
+    # Optional NER second pass: scrub free-text leftovers the deterministic layer
+    # cannot catch (person/company names in notes, docs, scriptblocks). No-op
+    # unless the case enabled it (mask._ner) AND Presidio + a spaCy model are
+    # installed; its hits register into `mask` so the existing revert restores them.
+    try:
+        from services import presidio_masker
+        text, _ = presidio_masker.scrub(text, mask)
+    except Exception:                                 # noqa: BLE001 — never break the mask
+        pass
     return text
 
 
