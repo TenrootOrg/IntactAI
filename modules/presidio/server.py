@@ -101,6 +101,9 @@ def analyze():
 
 
 if __name__ == "__main__":
-    # Dev entry point only; production runs under gunicorn (see Dockerfile CMD).
-    _engine()  # warm the model at startup so the first request isn't slow
+    # The container's entry point (Dockerfile CMD). Warm the model so the first
+    # request isn't slow, start the idle watchdog so the container turns itself
+    # off when unused, then serve.
+    _engine()
+    threading.Thread(target=_idle_watchdog, daemon=True).start()
     APP.run(host="0.0.0.0", port=int(os.environ.get("PORT", "3000")))
