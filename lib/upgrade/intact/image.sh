@@ -45,6 +45,29 @@ _intact_ensure_image() {
     return 1
 }
 
+# The Presidio PII NER image rides the intact asset (packager: images/
+# intact-presidio-<ver>.tar) and the backend `docker run`s it on demand. A fresh
+# install loads every tar in the package; an UPGRADE loaded only the backend
+# image, so a box upgraded from a release without Presidio got the code that
+# calls the sidecar but never the image -- masking silently lost its NER pass.
+# BEST-EFFORT, like the packager side: a missing or unloadable tar warns and the
+# upgrade carries on (masking falls back to the pattern masker alone).
+_intact_ensure_presidio() {
+    local envf="$1" ver
+    ver="$(_intact_pkg_image_version "intact-presidio-")"
+    if [[ -z "$ver" ]]; then
+        _u_image_present "intact-presidio:$(grep -E '^PRESIDIO_VERSION=' "$envf" 2>/dev/null | cut -d= -f2)" \
+            || log_warn "  this package carries no Presidio image — the NER masking pass stays off"
+        return 0
+    fi
+    if ! _u_ensure_image "intact-presidio:${ver}" "intact-presidio-${ver}.tar"; then
+        log_warn "  could not load intact-presidio:${ver} — the NER masking pass stays off"
+        return 0
+    fi
+    _u_stamp "$envf" "PRESIDIO_VERSION=${ver}" || log_warn "  could not pin PRESIDIO_VERSION=${ver}"
+    return 0
+}
+
 # Import-check the mirrored tree inside the TARGET image, before anything
 # restarts. A syntax error or a missing dependency turns into a clean rollback
 # here instead of a backend that will not boot.

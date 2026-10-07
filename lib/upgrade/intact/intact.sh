@@ -143,6 +143,7 @@ upgrade_module_intact() {
     #    that cannot import is a bricked appliance, and the gate is what turns
     #    that into a clean rollback instead.
     u_do --timeout 1800 "ensure intact-backend:${target}" -- _intact_ensure_image "$target"
+    u_do --timeout 1800 "ensure the Presidio image (best-effort)" -- _intact_ensure_presidio "$envf"
     u_do --timeout 300 "verify the new backend compiles" -- _intact_compile_gate "$target"
 
     # 5. Swap.
