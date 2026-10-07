@@ -144,7 +144,9 @@ class TestAddingCannotDuplicate(unittest.TestCase):
         seg = read(SCHEMA)
         body = seg[seg.index("def upsert(self, e: Entity)"):]
         body = body[:body.index("\n    def ", 10)]
-        self.assertIn("_union_evidence(cur.evidence, e.evidence)", body)
+        # The key set rides along since 2026-10-07 (kept per entity, not rebuilt
+        # per merge -- test_fusion_evidence_merge_linear.py), so match the call.
+        self.assertIn("_union_evidence(cur.evidence, e.evidence", body)
         self.assertNotIn("cur.evidence.extend(", body,
                          "evidence is appended again, so re-fusing a run doubles it")
 
