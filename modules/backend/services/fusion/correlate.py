@@ -294,6 +294,7 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     _guarded(_errs, "_derive_findings", lambda: _derive_findings(g, baseline=baseline, window=window))
     _guarded(_errs, "_coordinated_activity", lambda: _coordinated_activity(g, window=window, baseline=baseline))
     _guarded(_errs, "_collapse_recurring_bursts", lambda: _collapse_recurring_bursts(g))
+    _guarded(_errs, "_fold_maintenance", lambda: _fold_maintenance(g))
     _guarded(_errs, "_recover_mitre_from_text", lambda: _recover_mitre_from_text(g))               # after EVERY finding exists
     _guarded(_errs, "_mitre_from_rule_titles", lambda: _mitre_from_rule_titles(g))                 # titles with no id in them
     _guarded(_errs, "_corroboration", lambda: _corroboration(g))
@@ -2044,6 +2045,80 @@ def _collapse_recurring_bursts(g: FusionGraph) -> None:
     new, drop = _fold_routines(
         by_key, lambda k, f: f"Burst — {k[1]}",
         lambda k, f: f.title.rsplit(" on ", 1)[1] if " on " in f.title else "")
+    if new:
+        g.findings = [f for f in g.findings if f.id not in drop] + new
+
+
+# RECURRING MAINTENANCE. 2026-10-07, a real two-server case: a security agent's
+# own updater service, reinstalled every few weeks for 2.5 years
+# (...\Drivers\<vendor>\18913-<name>.exe, 19011-<name>.exe, ...), fired the
+# same high SIGMA rule ~45 times. Each episode was its own HIGH row, it drove
+# the host's risk, and the report called it a masquerading backdoor. The daily /
+# weekly routine fold cannot see it: software updates are irregular. The
+# pattern that marks maintenance, for any vendor: the SAME detection on the SAME
+# host, many times over months, about an object that differs only by numbers
+# (versions, build ids). Folded into one LOW row that still shows count and span;
+# a one-off, a new object or a critical row is never folded.
+MAINT_MIN_EPISODES = 6
+MAINT_MIN_SPAN_DAYS = 60
+MAINT_SAME_SHARE = 0.8          # share of episodes whose object must normalise alike
+_MAINT_NUM = re.compile(r"[0-9a-f]{6,}|\d+", re.I)
+
+
+def _maintenance_signature(g, f) -> str:
+    """The episode's object with every number, build id and hash blanked."""
+    for eid in f.entity_ids or []:
+        det = str(((g.entities.get(eid) or None) and g.entities[eid].attrs or {}).get("details") or "")
+        if det:
+            return " ".join(_MAINT_NUM.sub("#", det.lower()).split())
+    return ""
+
+
+def _fold_maintenance(g: FusionGraph) -> None:
+    groups: dict = {}
+    for f in g.findings:
+        if f.kind == "single" and not getattr(f, "recurring", None) and f.ts \
+                and keys.to_utc_dt(f.ts) and f.severity != "critical":
+            groups.setdefault((tuple(sorted(f.asset_ids or [])), _detection_name(f)), []).append(f)
+    drop, new = set(), []
+    for (assets, name), eps in groups.items():
+        if len(eps) < MAINT_MIN_EPISODES:
+            continue
+        eps.sort(key=lambda f: keys.to_utc_dt(f.ts))
+        first, last = eps[0], eps[-1]
+        span = (keys.to_utc_dt(last.occ_latest or last.ts) - keys.to_utc_dt(first.ts)).days
+        if span < MAINT_MIN_SPAN_DAYS:
+            continue
+        sigs = [_maintenance_signature(g, f) for f in eps]
+        common = max(set(sigs), key=sigs.count)
+        if not common or sigs.count(common) < MAINT_SAME_SHARE * len(eps):
+            continue
+        same = [f for f, s in zip(eps, sigs) if s == common]
+        host = first.title.rsplit(" on ", 1)[1] if " on " in first.title else ""
+        latest = max((f.occ_latest or f.ts for f in same), key=lambda x: keys.to_utc_dt(x) or x)
+        ents: list = []
+        for f in same:
+            ents += [e for e in f.entity_ids if e not in ents]
+        hits = sum(int(f.occ_count or 1) for f in same)
+        new.append(Finding(
+            id=same[0].id,
+            title=(f"{name} (recurring maintenance, {len(same)}× over {span} days) on {host}"
+                   if host else f"{name} (recurring maintenance, {len(same)}×)"),
+            severity="low",
+            confidence=same[0].confidence,
+            summary=(f"{name} matched {len(same)} times between {same[0].ts} and {latest} "
+                     f"({hits} hit(s)), each time about the same object with only numbers "
+                     f"changing (versions, build ids) — the pattern of software that updates "
+                     f"itself, such as an agent or service updater. Lowered from "
+                     f"{max(same, key=lambda f: sev.rank(f.severity)).severity}; an episode "
+                     f"about a different object stays its own row."),
+            entity_ids=ents[:50], asset_ids=list(same[0].asset_ids), sources=same[0].sources,
+            evidence=[x for f in same[:3] for x in f.evidence[:1]], mitre=same[0].mitre,
+            ts=same[0].ts, kind=same[0].kind, occ_count=hits, occ_latest=latest,
+            aliases=[x for f in same for x in f.ids() + _part_ids(f) if x != same[0].id],
+            recurring={"period": "maintenance", "tod": None, "days": len(same),
+                       "per_day_max": None, "span_days": span}))
+        drop.update(f.id for f in same)
     if new:
         g.findings = [f for f in g.findings if f.id not in drop] + new
 

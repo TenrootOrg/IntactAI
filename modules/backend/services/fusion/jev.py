@@ -274,7 +274,11 @@ def finding_state(g, f) -> dict:
     # A daily routine is the strongest sign of scheduled, expected activity —
     # without it Jev rated one routine "92% likely true positive" once per day.
     r = getattr(f, "recurring", None)
-    if r:
+    if r and r.get("period") == "maintenance":
+        state["pattern"] = (f"the same detection about the same object, {r.get('days')} times over "
+                            f"{r.get('span_days')} days, only version numbers changing — the "
+                            f"pattern of software updating itself")
+    elif r:
         weekly = r.get("period") == "weekly"
         state["pattern"] = (f"recurring every {'week' if weekly else 'day'} at about {r.get('tod')} "
                             f"UTC for {r.get('days')} {'weeks' if weekly else 'days'}, the same small "
