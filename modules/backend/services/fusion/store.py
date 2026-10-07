@@ -4028,6 +4028,23 @@ def _report_watchdog(case_id, model_label, stop, *, gen_id=None, write_off=True)
                 _was = min(max(0.0, _age or 0.0), hb * 2)   # ...never more than it can be
             silent = _was + (_time.monotonic() - _seen_at)
             _d = lambda sec: f"{int(sec)}s" if sec < 90 else f"{round(sec / 60)} min"
+            _phase = d.get("report_phase")
+            if _phase == "waiting_for_fusion":
+                # Not a model being silent: the fuse wait has its own bound
+                # (_wait_for_fuses), so this is never written off as stuck.
+                _fz = next((str(e.get("action") or "") for e in reversed(d.get("activity_log") or [])
+                            if str(e.get("action") or "").startswith("Refusion")), "")
+                log_case_event(case_id, "Report · waiting for the case fusion", "info",
+                               f"the case is being re-fused ({_fz or 'fusion in progress'}) — the report "
+                               f"starts as soon as it finishes; waited {_d(silent)} so far, and after "
+                               f"15 min it is written from the graph the case already has")
+                continue
+            if _phase == "preparing":
+                log_case_event(case_id, "Report · preparing", "info",
+                               f"reading the case graph and its verdict suggestions, {_d(silent)} so far")
+                continue
+            if _phase == "writing":
+                model_label = "the offline report writer (no AI model configured)"
             if write_off and silent >= stuck:
                 _retire_generation(
                     case_id, "Report · written off as stuck",
@@ -4044,12 +4061,32 @@ def _report_watchdog(case_id, model_label, stop, *, gen_id=None, write_off=True)
                           + (f" and retried {llm_sim._phase_retries()}×" if llm_sim._phase_retries() else ""))
             except Exception:                          # noqa: BLE001
                 _calls = ""
+            if _phase == "writing":
+                log_case_event(case_id, "Report · still writing", "info",
+                               f"no AI model is configured — writing the offline report from the "
+                               f"case evidence, {_d(silent)} so far")
+                continue
             log_case_event(case_id, "Report · still waiting on the model", "info",
                            f"{model_label} has not answered for {_d(silent)}" + _calls
                            + (f"; the report is written off after {_d(stuck)} with no answer at all"
                               if write_off else ""))
         except Exception:                              # noqa: BLE001 — never kill the run
             continue
+
+
+def _set_report_phase(case_id, gen_id, phase) -> None:
+    """Record which step a background report is on, for the watchdog and the
+    banner -- only while this generation is still the current one, and with the
+    progress stamp reset so silence is measured from the start of THIS step."""
+    if gen_id is None:
+        return
+    try:
+        if _generation_is_current(case_id, gen_id):
+            now = _now_iso()
+            _merge_case_details(case_id, {"report_phase": phase, "report_phase_started_at": now,
+                                          "report_last_progress_at": now})
+    except Exception:                                      # noqa: BLE001 — never fail a report
+        pass
 
 
 class ReportGenerationBusy(Exception):
@@ -4249,11 +4286,15 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
     """
     if audience:
         set_branding(case_id, audience=audience)
-    # Written from the STORED graph — so never from one a running or owed fuse is
-    # about to replace (QA: verdicts made during a Refusion never reached the report).
+    # Say what the run is waiting for. Until 2026-10-07 the phase was "narrative"
+    # from the first second, so while this waited on a 15-minute fuse (233k rows)
+    # the watchdog logged "the plan's default model (claude) has not answered" --
+    # on a box with no AI configured at all, that never called any model.
+    _set_report_phase(case_id, gen_id, "waiting_for_fusion")
     if not _wait_for_fuses(case_id):
         log_case_event(case_id, "Report · written from an older graph", "warning",
                        "the case was still fusing after 15 minutes — writing from the graph it has")
+    _set_report_phase(case_id, gen_id, "preparing")
     # Jev's after-fuse pass (verdict suggestions, compromise estimates) is read by
     # the report: wait for it, bounded, so a report written right after a fuse is
     # not written without them. Off, slow or unreachable: written without, as before.
@@ -4317,6 +4358,7 @@ def regenerate_report(case_id, *, audience=None, use_llm=False, gen_id=None, off
     else:
         log_case_event(case_id, "Report · regenerating (deterministic)", "info",
                        "no LLM tokens spent")
+    _set_report_phase(case_id, gen_id, "narrative" if will_narrate else "writing")
     _estimates = _jev_estimates(case_id, d, gv, will_narrate, waited=_jev_wait)
     try:
         report = llm_sim.generate_report(
