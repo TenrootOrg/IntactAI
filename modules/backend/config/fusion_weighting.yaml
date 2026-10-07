@@ -112,6 +112,25 @@ entity_rules:
       - {artifact: DetectRaptor.Windows.Detection.BinaryRename, type: event, flags: [detection, masquerading],
          anomaly: 50, attrs: {name: svchost.exe, original_name: mimikatz.exe}, expect: high}
 
+  # ---- SIGMA/Hayabusa heuristics that over-fire (not a specific technique) ----
+  # A broad "PowerShell looks suspicious" heuristic fires on almost any PowerShell,
+  # including benign module auto-loads (e.g. the NetTCPIP module). Measured: 446 hits
+  # from one APTSimulator run and 260 on a clean box, nearly all benign. It is a
+  # medium by default, which (once the finding floor is medium) would bury the real
+  # medium techniques beside it. Downweight the HEURISTIC to low -- still visible,
+  # not a finding. A specific-technique SIGMA rule (WMI Persistence, credential
+  # access, defense evasion) is NOT matched here and keeps its rating.
+  - id: sigma-powershell-heuristic-noise
+    reason: "a broad PowerShell-execution heuristic, not a specific technique -- fires on benign module loads, very high false-positive"
+    when: {type: [event], flags_any: [sigma], attr_words: {title: [potentially malicious pwsh,
+           uncommon powershell host]}}
+    then: {anomaly: 5}
+    examples:
+      - {type: event, flags: [sigma], attrs: {title: "Potentially Malicious PwSh"}, expect: low}
+      - {type: event, flags: [sigma], attrs: {title: "Uncommon PowerShell Hosts"}, expect: low}
+      # a specific technique the heuristic rule must NOT touch (stays medium):
+      - {type: event, flags: [sigma], anomaly: 15, attrs: {title: "WMI Persistence"}, expect: medium}
+
 pattern_rules:
 
   - id: recurring-maintenance

@@ -304,6 +304,7 @@ def assemble(case_id: str, contributions, run_ids, *, baseline=None, window=None
     _guarded(_errs, "_identity_cross_host_findings", lambda: _identity_cross_host_findings(g))
     _guarded(_errs, "_derive_findings", lambda: _derive_findings(g, baseline=baseline, window=window))
     _guarded(_errs, "_coordinated_activity", lambda: _coordinated_activity(g, window=window, baseline=baseline))
+    _guarded(_errs, "_lone_medium_detections", lambda: _lone_medium_detections(g, baseline=baseline, window=window))
     _guarded(_errs, "_collapse_recurring_bursts", lambda: _collapse_recurring_bursts(g))
     _guarded(_errs, "weighting patterns",
              lambda: _whits.update(_weighting.apply_patterns(g, _wcat, _werrs)))
@@ -1447,8 +1448,12 @@ def _derive_findings(g: FusionGraph, *, baseline=None, window=None) -> None:
             evidence=list(e.evidence), mitre=mitre, ts=e.first_seen, kind="single"))
 
     # endpoint SIGMA detections (Hayabusa) -> findings, grouped by detection
-    # title per host so a rule firing N times is ONE finding (not N). Only
-    # high/critical surface as findings; medium/low stay as ranked events.
+    # title per host so a rule firing N times is ONE finding (not N). HIGH/critical
+    # only HERE, so the high-detection bridging in _coordinated_activity has its rows
+    # to point at. Real MEDIUM techniques are surfaced in a later pass
+    # (_lone_medium_detections), but only those a burst did not already claim -- so a
+    # handful of real mediums (WMI Persistence, "Change PowerShell Policy to
+    # Insecure") each get a row, while a dense cluster of mediums stays one burst.
     _sigma_groups: dict = {}
     _grouping: dict = {}        # finding id -> (asset, logged_as) for same-moment grouping
     for e in g.by_type("event"):
@@ -2344,6 +2349,55 @@ def _bursts(evs: list, when=lambda e: e.first_seen) -> list:
         return out
     except Exception:                                         # noqa: BLE001
         return [list(evs)]
+
+
+def _lone_medium_detections(g: FusionGraph, *, baseline=None, window=None) -> None:
+    """A real medium SIGMA technique that no burst folded gets its own row.
+
+    2026-10-07, an APTSimulator run on a lab Win11: WMI Persistence, "Change
+    PowerShell Policy to Insecure" and a firewall rule added via WmiPrvSE were all
+    DETECTED (Hayabusa medium) yet surfaced NOWHERE — the individual SIGMA floor is
+    high (so the burst bridging has its rows), and a burst needs >=3 coordinated
+    titles, which a handful of real mediums does not reach. So they fell through both.
+
+    This runs AFTER _coordinated_activity: an event a burst already shows (its id is
+    in a 'Burst of…' finding) is skipped, so a dense cluster stays one burst and only
+    the lone/few mediums each get a row. The broad PowerShell heuristics are
+    downweighted to low in fusion_weighting.yaml, so they are below this medium floor
+    and never reach here — the noise does not come back with the signal."""
+    base_titles = _baseline_sigma_titles(baseline)
+    claimed = {i for f in g.findings for i in (f.entity_ids or [])}
+    groups: dict = {}
+    for e in g.by_type("event"):
+        fl = e.flags or []
+        if "sigma" not in fl or "context" in fl or e.severity != "medium":
+            continue
+        if e.id in claimed or not in_window(e.first_seen, window):
+            continue
+        title = e.attrs.get("title") or e.label
+        if title in base_titles:
+            continue
+        for a in _assets_of(e) or ["?"]:
+            groups.setdefault((a, title, e.attrs.get("logged_host") or ""), []).append(e)
+    for (asset_id, title, logged), all_evs in groups.items():
+        host = _host_label(g, asset_id) + (f" (logged as {logged})" if logged else "")
+        _key = f"{asset_id}:{title}" + (f":{logged}" if logged else "")
+        for i, evs in enumerate(keys.split_episodes(all_evs, lambda e: e.first_seen,
+                                                    end_of=lambda e: e.last_seen or e.first_seen)):
+            top = max(evs, key=lambda x: x.anomaly)
+            first, latest = _ep_bounds(evs)
+            n = _ep_hits(evs)
+            chans = sorted({x.attrs.get("channel") for x in evs if x.attrs.get("channel")})
+            _sid = _fid("sigmed", _key) if i == 0 else _fid("sigmed", _key, str(first))
+            g.add_finding(Finding(
+                id=_sid, title=f"SIGMA: {title} on {host}",
+                severity="medium", confidence="medium",
+                summary=f"Hayabusa/SIGMA rule '{title}' matched {n:,}× on {host}"
+                        f"{(' (' + ', '.join(chans) + ')') if chans else ''} — a medium-severity "
+                        f"technique detection, shown on its own (not part of a coordinated burst).",
+                entity_ids=[e.id for e in evs[:25]], asset_ids=[asset_id],
+                sources=top.sources, evidence=list(top.evidence), mitre=[],
+                ts=first, kind="single", occ_count=n, occ_latest=latest))
 
 
 def _coordinated_activity(g: FusionGraph, *, window=None, baseline=None) -> None:
