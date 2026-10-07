@@ -118,3 +118,8 @@ pattern_rules:
     pattern: recurring_maintenance
     reason: "the same detection on the same host for months, about an object that differs only by numbers -- software updating itself"
     params: {min_episodes: 6, min_span_days: 60, same_share: 0.8, severity: low}
+
+  - id: routine-account-spread
+    pattern: routine_account_spread
+    reason: "an account used on several hosts for a long time with many observations -- people's normal work, not lateral movement"
+    params: {min_span_days: 30, min_observations: 20, severity: low}

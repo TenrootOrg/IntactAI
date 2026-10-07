@@ -2147,6 +2147,40 @@ def _fold_maintenance(g: FusionGraph, params: dict | None = None) -> int:
     return len(drop)
 
 
+@_weighting.pattern("routine_account_spread")
+def _routine_account_spread(g: FusionGraph, params: dict | None = None) -> int:
+    """An account on several hosts for a LONG time with MANY observations is an
+    established working pattern -- administrators on their own servers -- not
+    lateral movement. 2026-10-07, a real case: 13 admin accounts used on both of
+    their two servers for 1-2 years were 13 medium "lateral movement" rows. A
+    spread that is new or rare stays as rated, and so does an account that
+    carries suspicious signals of its own (severity medium+)."""
+    p = params or {}
+    min_span, min_obs = int(p.get("min_span_days", 30)), int(p.get("min_observations", 20))
+    to_sev = str(p.get("severity", "low"))
+    n = 0
+    for f in g.findings:
+        if f.kind != "cross_host" or not sev.at_least(f.severity, to_sev) or f.severity == "critical":
+            continue
+        accts = [g.entities[e] for e in f.entity_ids or [] if e in g.entities
+                 and g.entities[e].type == "account"]
+        if not accts or any(sev.at_least(a.severity, "medium") for a in accts):
+            continue
+        t0 = min((keys.to_utc_dt(a.first_seen) for a in accts if a.first_seen), default=None)
+        t1 = max((keys.to_utc_dt(a.last_seen or a.first_seen) for a in accts if a.first_seen), default=None)
+        obs = sum(len(a.evidence or []) for a in accts)
+        if not t0 or not t1 or (t1 - t0).days < min_span or obs < min_obs:
+            continue
+        before = f.severity
+        f.severity = to_sev
+        f.summary = (f"{f.summary.split(' — consistent with')[0]} — for {(t1 - t0).days} days "
+                     f"({obs:,} observations): an established pattern, such as administrators' "
+                     f"normal work on their own servers. Lowered from {before}; review it if "
+                     f"this account should not use these hosts.")
+        n += 1
+    return n
+
+
 def _detection_name(f) -> str:
     """A detection row's name without its host part or "(+N related)" count."""
     return _RELATED_SUFFIX.sub("", f.title.rsplit(" on ", 1)[0]).strip()
