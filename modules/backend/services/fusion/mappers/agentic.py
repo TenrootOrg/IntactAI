@@ -233,6 +233,21 @@ def _web_weight(category, domain) -> int:
     return _WEB_UNKNOWN_WEIGHT
 
 
+def _same_program(name, original) -> bool:
+    """True when an on-disk name is the ORIGINAL name plus a version / installer /
+    copy suffix: winrar-x64-611.exe, winrar-x64-700b3 (1).exe <- WinRAR.exe.
+    2026-10-07: every WinRAR installer on a real case was a HIGH "Renamed binary"
+    (masquerading, T1036.003). A masquerade renames to a DIFFERENT name
+    (svchost.exe <- mimikatz.exe), which this never excuses; nor a short original
+    (cmd, sc, at), which would prefix-match too much."""
+    def stem(v):
+        v = str(v or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
+        v = v.rsplit(".", 1)[0] if "." in v else v
+        return "".join(c for c in v if c.isalnum())
+    n, o = stem(name), stem(original)
+    return len(o) >= 4 and n != o and n.startswith(o)
+
+
 def _artifact_base(name):
     """Normalize a collected-data key to its base artifact name: strip an 'All '
     export prefix and any '/SubSource' suffix -> lowercase base."""
@@ -1262,9 +1277,12 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                     _vi = r.get("VersionInformation") if isinstance(r.get("VersionInformation"), dict) else {}
                     _orig = _vi.get("OriginalFilename") or _vi.get("InternalName")
                     eid = keys.event_key(asset, f"binrename:{name or path}", f"{path}")
+                    _versioned = _same_program(name or path, _orig)
                     ents.append(_ent(eid, "event", title, asset, run_id, loc,
-                                     anomaly=50, first=btime, artifact=artifact,
-                                     flags=["detection", "masquerading"], title=title,
+                                     anomaly=0 if _versioned else 50, first=btime,
+                                     artifact=artifact,
+                                     flags=(["detection", "versioned_copy"] if _versioned
+                                            else ["detection", "masquerading"]), title=title,
                                      original_name=str(_orig) if _orig else None,
                                      name=str(name) if name else None,
                                      path=str(path) if path else None,
@@ -1389,9 +1407,13 @@ def map_agentic(collected_data: dict, *, run_id: str, hostnames: dict | None = N
                         _sn = str(_ep).replace("\\", "/").rsplit("/", 1)[-1] if _ep else None
                     _sa = {"source_name": str(_sn)} if _sn else {}
                     # execution-evidence hashes are benign context (anomaly 0, never
-                    # auto cross-host); detection hashes (binaryrename) stay suspicious.
+                    # auto cross-host); detection hashes (binaryrename) stay suspicious --
+                    # unless the "rename" is the same program's versioned/installer name.
+                    _vi2 = r.get("VersionInformation") if isinstance(r.get("VersionInformation"), dict) else {}
+                    _copy = "binaryrename" in an and _same_program(
+                        F.get(r, "Name", default=None), _vi2.get("OriginalFilename") or _vi2.get("InternalName"))
                     ents.append(_ent(iid, "ioc", h, asset, run_id, loc,               # full hash (IOC appendix)
-                                     anomaly=0 if is_exec else 10, ioc_kind="hash",
+                                     anomaly=0 if (is_exec or _copy) else 10, ioc_kind="hash",
                                      first=ts, full_hash=h, **_hash_attrs(r), **_sa, artifact=artifact))
             except Exception as _x:                       # noqa: BLE001 -- one bad item, not the run
                 map_skip(artifact, _x)
